@@ -11,30 +11,31 @@
 use std::io::IoSlice;
 use std::sync::Arc;
 
-use ahash::{HashMap, HashSet};
+use ahash::HashMap;
 use bytes::BytesMut;
 use metrics::{Histogram, histogram};
 use rocksdb::{BoundColumnFamily, WriteBatch};
-use smallvec::{SmallVec, smallvec, smallvec_inline};
+use smallvec::SmallVec;
 use tokio::sync::mpsc;
 use tracing::{debug, error, trace};
 
-use restate_core::{ShutdownError, TaskCenter, TaskKind};
-use restate_memory::MemoryLease;
-use restate_rocksdb::{IoMode, Priority, RocksDb};
+use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_token};
+use restate_rocksdb::{IoMode, Priority, RocksDb, RocksError};
 use restate_types::GenerationalNodeId;
 use restate_types::config::{Configuration, LogServerOptions};
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
-use restate_types::net::log_server::{Seal, Store, StoreFlags, Trim};
+use restate_types::net::log_server::{Payloads, Status};
 
 use super::keys::{DataRecordKey, KeyPrefixKind, MetadataKey};
 use super::record_format::DataRecordEncoder;
 use super::{DATA_CF, METADATA_CF};
-use restate_futures_util::monotonic_token::{Token, TokenListener, TokenOwner, Tokens};
 
-use crate::logstore::{Commit, LogStoreState, WriteDisableReason};
+use crate::logstore::{LogStoreState, WriteDisableReason};
 use crate::metadata::LogletState;
 use crate::metric_definitions::LOG_SERVER_WRITE_BATCH_SIZE_BYTES;
+use crate::tasks::{
+    SealStorageTask, StoreStorageTask, SyncGlobalTailStorageTask, TrimStorageTask, WriteStorageTask,
+};
 
 /// Commands sent to the [`LogStoreWriter`] over the mpsc channel.
 enum LogStoreWriteCommand {
@@ -59,12 +60,16 @@ impl std::fmt::Debug for LogStoreWriteCommand {
             LogStoreWriteCommand::Write(cmd) => {
                 write!(f, "Write(")?;
                 match &cmd.data_update {
-                    Some(DataUpdate::StoreBatch { .. }) => write!(f, "Store")?,
+                    Some(DataUpdate::StoreBatch {
+                        first_offset,
+                        last_offset,
+                        ..
+                    }) => write!(f, "Store[{first_offset}..{last_offset}]")?,
                     Some(DataUpdate::TrimLogRecords { .. }) => write!(f, "Trim")?,
-                    None if cmd.metadata_updates.is_empty() => write!(f, "Noop!")?,
+                    None if cmd.metadata_update.is_none() => write!(f, "Noop!")?,
                     None => {}
                 }
-                for update in &cmd.metadata_updates {
+                if let Some(update) = &cmd.metadata_update {
                     match update {
                         MetadataUpdate::Seal => write!(f, "+Seal")?,
                         MetadataUpdate::SetSequencer { .. } => write!(f, "+SetSequencer")?,
@@ -73,13 +78,7 @@ impl std::fmt::Debug for LogStoreWriteCommand {
                         MetadataUpdate::UpdateLocalTail { .. } => write!(f, "+UpdateLocalTail")?,
                     }
                 }
-                write!(
-                    f,
-                    ", loglet={}, token={:?}, reservation={})",
-                    cmd.loglet_id,
-                    cmd.token,
-                    cmd.reservation.size(),
-                )
+                write!(f, ")")
             }
             LogStoreWriteCommand::Register {
                 loglet_id,
@@ -108,20 +107,21 @@ impl std::fmt::Debug for LogStoreWriteCommand {
 }
 
 struct WriteCommand {
-    /// Monotonically increasing token assigned by the `TokenGenerator`. Used to
-    /// notify the flush listener after durable commit.
-    token: Token<Commit>,
-    loglet_id: LogletId,
+    /// A storage task that will be notified when the write is complete.
+    task: Option<Box<dyn WriteStorageTask>>,
     data_update: Option<DataUpdate>,
-    metadata_updates: SmallVec<[MetadataUpdate; 2]>,
-    /// Memory reservation held until the write is committed to RocksDB.
-    /// This ensures backpressure from RocksDB stalls propagates to the network layer.
-    reservation: MemoryLease,
+    metadata_update: Option<MetadataUpdate>,
 }
 
 enum DataUpdate {
-    StoreBatch { store_message: Store },
-    TrimLogRecords { trim_point: LogletOffset },
+    StoreBatch {
+        payloads: Payloads,
+        first_offset: LogletOffset,
+        last_offset: LogletOffset,
+    },
+    TrimLogRecords {
+        trim_point: LogletOffset,
+    },
 }
 
 enum MetadataUpdate {
@@ -161,13 +161,10 @@ impl LogStoreWriterBuilder {
     pub fn start(self) -> Result<RocksDbLogWriterHandle, ShutdownError> {
         // The channel is bounded by the ability to acquire memory for those writes via the memory
         // pool.
-        let (hi_pri_tx, mut hi_pri_rx) = mpsc::unbounded_channel();
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let token_owner = TokenOwner::new();
-        let tokens = token_owner.new_tokens();
 
-        TaskCenter::spawn_unmanaged(
-            TaskKind::SystemService,
+        TaskCenter::spawn(
+            TaskKind::LogStoreWriter,
             "log-server-rocksdb-writer",
             async move {
                 let data_cf = self
@@ -185,8 +182,6 @@ impl LogStoreWriterBuilder {
                     rocksdb: &self.rocksdb,
                     data_cf,
                     metadata_cf,
-                    token_owner,
-                    sealed_loglets: HashSet::default(),
                     state_map: HashMap::default(),
                     arena: BytesMut::default(),
                     log_store_state: self.log_store_state.clone(),
@@ -195,19 +190,16 @@ impl LogStoreWriterBuilder {
                 debug!("Start running LogStoreWriter");
                 let mut config = Configuration::live();
                 let mut batch = Batch::default();
+                let cancel = cancellation_token();
+                let mut draining = false;
 
                 loop {
-                    let config = &config.live_load().log_server;
-                    // The assumption here is that most of the bytes will do into the data column
-                    // family.
-                    //
-                    // todo(asoli): replace 4 with a shared const.
-                    let target_batch_size_bytes =
-                        config.rocksdb_data_memtables_budget().as_usize() / 4;
                     tokio::select! {
                         biased;
-                        Some(cmd)= hi_pri_rx.recv() => {
-                            writer.handle_command(cmd, &mut batch);
+                        () = cancel.cancelled(), if !draining => {
+                            draining = true;
+                            rx.close();
+                            continue;
                         }
                         Some(cmd) = rx.recv() => {
                             writer.handle_command(cmd, &mut batch);
@@ -218,24 +210,12 @@ impl LogStoreWriterBuilder {
                         }
                     }
 
-                    // Opportunistically drain hi-pri commands. Bounded to avoid
-                    // starving the normal-pri channel when hi-pri bursts occur
-                    // (e.g. many seals during reconfiguration).
-                    const MAX_HI_PRI_DRAIN: usize = 256;
-                    for _ in 0..MAX_HI_PRI_DRAIN {
-                        // We don't send data through hi-pri channel, so we don't think
-                        // too much about big the batch size is.
-                        if let Ok(cmd) = hi_pri_rx.try_recv() {
-                            writer.handle_command(cmd, &mut batch);
-                        } else {
-                            break;
-                        }
-                    }
-
-                    // Opportunistically drain normal-pri commands. Bounded to
-                    // a single memtable's worth of data to avoid excessive ballooning
-                    // and overshooting the target budget.
-                    while batch.size_in_bytes() < target_batch_size_bytes
+                    let config = &config.live_load().log_server;
+                    // Opportunistically drain normal-pri commands.
+                    while batch.size_in_bytes() < config.write_batch_bytes().as_usize()
+                        && config
+                            .write_batch_commit_count
+                            .is_none_or(|c| batch.len() < c.get())
                         && let Ok(cmd) = rx.try_recv()
                     {
                         writer.handle_command(cmd, &mut batch);
@@ -260,49 +240,39 @@ impl LogStoreWriterBuilder {
                     self.log_store_state
                         .disable_writes(WriteDisableReason::Shutdown);
                 } else {
-                    // gauranteed that it's initialized
+                    // guaranteed that it's initialized
                     let reason = self.log_store_state.wait_disabled().await;
                     error!(
                         "Writes to log-server have been disabled until the node is manually restarted and \
                          the underlying reason has been resolved. Reason: {reason}",
                     );
                 }
+                Ok(())
             },
         )?;
-        Ok(RocksDbLogWriterHandle {
-            tx,
-            hi_pri_tx,
-            tokens,
-        })
+        Ok(RocksDbLogWriterHandle { tx })
     }
 }
 
+#[derive(Default)]
+struct LogletBatch {
+    /// max committed offset for the current batch.
+    max_offset: Option<LogletOffset>,
+    notify_seal: bool,
+    tasks: SmallVec<[Box<dyn WriteStorageTask>; 2]>,
+}
+
 struct Batch {
-    memory: MemoryLease,
     write_batch: WriteBatch,
-    /// The highest token seen in the current batch. After a successful commit,
-    /// we call `token_owner.notify_through(max_batch_token)` to unblock waiters.
-    max_batch_token: Option<Token<Commit>>,
-    /// Per-loglet max committed offset for the current batch.
-    max_offsets: HashMap<LogletId, LogletOffset>,
-    /// Loglets that had a seal command in this batch.
-    seals: HashSet<LogletId>,
+    loglets: HashMap<LogletId, LogletBatch>,
     sync_write_is_required: bool,
 }
 
 impl Batch {
     /// Resets the batch for the next commit cycle.
-    ///
-    /// Note: `max_batch_token` is intentionally *not* cleared here. Tokens are
-    /// monotonically increasing, so a stale value is harmless —
-    /// [`TokenOwner::retire_through`] with an already-retired token is a no-op.
-    /// The field is unconditionally overwritten by the next `Write` command
-    /// before the next commit.
     fn clear(&mut self) {
-        self.memory = MemoryLease::unlinked();
         self.write_batch.clear();
-        self.max_offsets.clear();
-        self.seals.clear();
+        self.loglets.clear();
         self.sync_write_is_required = false;
     }
 
@@ -323,11 +293,8 @@ impl Batch {
 impl Default for Batch {
     fn default() -> Self {
         Self {
-            memory: MemoryLease::unlinked(),
+            loglets: HashMap::default(),
             write_batch: WriteBatch::default(),
-            max_batch_token: None,
-            max_offsets: HashMap::default(),
-            seals: HashSet::default(),
             sync_write_is_required: false,
         }
     }
@@ -337,10 +304,6 @@ struct LogStoreWriter<'a> {
     rocksdb: &'a Arc<RocksDb>,
     data_cf: Arc<BoundColumnFamily<'a>>,
     metadata_cf: Arc<BoundColumnFamily<'a>>,
-    token_owner: TokenOwner<Commit>,
-    /// The set of loglets that we have observed to be sealed while processing
-    /// commands.
-    sealed_loglets: HashSet<LogletId>,
     /// Registered loglet states. The writer uses these to advance tail watches
     /// after durable commit.
     state_map: HashMap<LogletId, LogletState>,
@@ -352,7 +315,6 @@ struct LogStoreWriter<'a> {
 }
 
 impl LogStoreWriter<'_> {
-    // Returns true if the store is accepting writes
     fn handle_command(&mut self, command: LogStoreWriteCommand, batch: &mut Batch) {
         trace!("LogStoreWriter: {command:?}");
         match command {
@@ -360,9 +322,6 @@ impl LogStoreWriter<'_> {
                 loglet_id,
                 loglet_state,
             } => {
-                if loglet_state.is_sealed() {
-                    self.sealed_loglets.insert(loglet_id);
-                }
                 self.state_map.insert(loglet_id, loglet_state);
             }
             LogStoreWriteCommand::Unregister {
@@ -379,68 +338,54 @@ impl LogStoreWriter<'_> {
                         .same_watch(&loglet_state.get_local_tail_watch())
                 {
                     self.state_map.remove(&loglet_id);
-                    self.sealed_loglets.remove(&loglet_id);
                 }
             }
             LogStoreWriteCommand::Write(command) => {
-                // Track the highest token in this batch.
-                batch.max_batch_token.replace(
-                    batch
-                        .max_batch_token
-                        .map_or(command.token, |t| t.max(command.token)),
-                );
+                let WriteCommand {
+                    task,
+                    data_update,
+                    metadata_update,
+                } = command;
 
-                for metadata_update in &command.metadata_updates {
+                let mut task = task.expect("task must be set");
+                let loglet_id = task.loglet_id();
+                let loglet_batch = batch.loglets.entry(loglet_id).or_default();
+                task.on_start();
+                loglet_batch.tasks.push(task);
+
+                if let Some(metadata_update) = metadata_update {
                     // We won't write the seal again to the database, but we
                     // will still consider the Token for this operation as flushed.
-                    if let MetadataUpdate::Seal = metadata_update
-                        && !self.sealed_loglets.contains(&command.loglet_id)
-                    {
+                    if let MetadataUpdate::Seal = metadata_update {
                         // We'd like to always sync-write the seal
                         batch.sync_write_is_required = true;
-                        // We immediately consider this loglet as sealed so we can
-                        // drop the remaining stores in the batch.
-                        self.sealed_loglets.insert(command.loglet_id);
-                        // let's notify watchers
-                        batch.seals.insert(command.loglet_id);
+                        loglet_batch.notify_seal = true;
                     }
                     Self::update_metadata(
                         &self.metadata_cf,
                         &mut batch.write_batch,
-                        command.loglet_id,
-                        metadata_update,
+                        loglet_id,
+                        &metadata_update,
                     )
                 }
 
-                match command.data_update {
-                    Some(DataUpdate::StoreBatch { store_message }) => {
-                        let loglet_id = store_message.header.loglet_id;
-                        let last_offset = store_message.last_offset().expect("non-empty store");
-                        // We will ignore non-repair stores that were received after
-                        // the loglet has been sealed.
-                        if !store_message.flags.contains(StoreFlags::IgnoreSeal)
-                            && self.sealed_loglets.contains(&loglet_id)
-                        {
-                            trace!(
-                                "Ignoring storing [{}..{last_offset}] for loglet {loglet_id} after it was sealed",
-                                store_message.first_offset,
-                            );
-                            return;
-                        }
+                match data_update {
+                    Some(DataUpdate::StoreBatch {
+                        payloads,
+                        first_offset,
+                        last_offset,
+                        ..
+                    }) => {
                         // Track the max committed offset per loglet in this batch.
                         // Multiple stores for the same loglet coalesce into a single
                         // notify_offset_update with the highest offset. The tail watch
                         // itself is monotonic (combine() ignores backward moves), so
                         // we only need to track the batch-local max here.
-                        batch
-                            .max_offsets
-                            .entry(loglet_id)
-                            .and_modify(|existing| {
-                                *existing = (*existing).max(last_offset);
-                            })
-                            .or_insert(last_offset);
+                        loglet_batch.max_offset = loglet_batch.max_offset.max(Some(last_offset));
                         Self::process_store_message(
-                            store_message,
+                            loglet_id,
+                            first_offset,
+                            payloads,
                             &self.data_cf,
                             &mut batch.write_batch,
                             &mut self.arena,
@@ -450,30 +395,27 @@ impl LogStoreWriter<'_> {
                         Self::trim_log_records(
                             &self.data_cf,
                             &mut batch.write_batch,
-                            command.loglet_id,
+                            loglet_id,
                             trim_point,
                         );
                     }
                     None => {}
                 }
-
-                // Combine all memory reservations into one so we can drop them
-                // all at once cheaply.
-                batch.memory.merge(command.reservation);
             }
         }
     }
 
     fn process_store_message(
-        store_message: Store,
+        loglet_id: LogletId,
+        first_offset: LogletOffset,
+        payloads: Payloads,
         data_cf: &Arc<BoundColumnFamily>,
         write_batch: &mut WriteBatch,
         arena: &mut BytesMut,
     ) {
-        let mut offset = store_message.first_offset;
-        for payload in store_message.payloads.iter() {
-            let key_bytes =
-                DataRecordKey::new(store_message.header.loglet_id, offset).to_binary_array();
+        let mut offset = first_offset;
+        for payload in payloads.iter() {
+            let key_bytes = DataRecordKey::new(loglet_id, offset).to_binary_array();
             let encoder = DataRecordEncoder::from(payload);
             let value_bytes = encoder.encode_to_disk_format(arena);
             // Shortcut: we know that the chain is 2 slices wide, todo is to introduce an
@@ -567,57 +509,66 @@ impl LogStoreWriter<'_> {
             IoMode::Default
         };
 
-        let result = self
-            .rocksdb
-            .write_batch(
-                "loglet-write-batch",
-                Priority::High,
-                io_mode,
-                write_opts,
-                write_batch,
-            )
-            .await;
+        let result = if opts.read_only {
+            Err(RocksError::ReadOnly)
+        } else {
+            self.rocksdb
+                .write_batch(
+                    "loglet-write-batch",
+                    Priority::High,
+                    io_mode,
+                    write_opts,
+                    write_batch,
+                )
+                .await
+        };
 
         match result {
             Ok(write_batch) => {
                 // Reuse the batch for the next commit, we must clear it first. Otherwise,
                 // the same batch will be re-appended in the next round.
                 batch.write_batch = write_batch;
-                // Reset the flag until we see a command that requires a sync write again.
-                batch.sync_write_is_required = false;
 
-                // Advance tail watches — one notification per loglet with the max offset.
-                for (loglet_id, offset) in batch.max_offsets.drain() {
-                    if let Some(loglet_state) = self.state_map.get(&loglet_id) {
-                        loglet_state
-                            .local_tail_watch()
-                            .notify(self.sealed_loglets.contains(&loglet_id), offset.next());
+                for (loglet_id, loglet_batch) in batch.loglets.drain() {
+                    let Some(loglet_state) = self.state_map.get(&loglet_id) else {
+                        error!(
+                            "Storage task completed after the loglet was unregistered from log-server writer."
+                        );
+                        // panic in debug mode.
+                        debug_assert!(
+                            false,
+                            "Storage task completed after the loglet {loglet_id} was unregistered from log-server writer."
+                        );
+                        continue;
+                    };
+
+                    // Advance tail watches — one notification per loglet with the max offset.
+                    loglet_state.local_tail_watch().notify(
+                        loglet_batch.notify_seal,
+                        loglet_batch.max_offset.unwrap_or(LogletOffset::INVALID),
+                    );
+                    // the updated local tail
+                    let local_tail = loglet_state.local_tail();
+                    // Notify tasks
+                    for mut task in loglet_batch.tasks {
+                        task.on_complete(local_tail, loglet_state.known_global_tail(), Status::Ok);
                     }
                 }
-                for loglet_id in batch.seals.drain() {
-                    if let Some(loglet_state) = self.state_map.get(&loglet_id) {
-                        loglet_state.notify_seal();
-                    }
-                }
-                // Release memory back to the pool BEFORE retiring tokens. This is
-                // intentional: waiters woken by `retire_through` can immediately
-                // enqueue new writes that reuse the freed budget, improving
-                // throughput by overlapping the next batch's ingestion with
-                // the current notification phase.
+
                 batch.clear();
-                // Notify the flush listener that all tokens in this batch are durable.
-                // This must happen AFTER watch updates so that when the listener
-                // fires, loglet state already reflects the committed data.
-                if let Some(token) = batch.max_batch_token {
-                    self.token_owner.retire_through(token);
-                }
                 true
             }
             Err(e) => {
                 // Disable writes to unblock all store waiters and to prevent future writes until
                 // the node has been manually restarted.
-                self.log_store_state
-                    .disable_writes(WriteDisableReason::Error(e.into()));
+                error!("Cannot write to log-server database: {e}");
+                let reason = if matches!(e, RocksError::ReadOnly) {
+                    WriteDisableReason::Manual
+                } else {
+                    WriteDisableReason::Error(e.into())
+                };
+
+                self.log_store_state.disable_writes(reason);
                 batch.clear();
                 // Stops the writer
                 false
@@ -629,18 +580,13 @@ impl LogStoreWriter<'_> {
 #[derive(Clone)]
 pub struct RocksDbLogWriterHandle {
     tx: mpsc::UnboundedSender<LogStoreWriteCommand>,
-    hi_pri_tx: mpsc::UnboundedSender<LogStoreWriteCommand>,
-    tokens: Tokens<Commit>,
 }
 
 impl RocksDbLogWriterHandle {
-    pub fn commit_listener(&self) -> TokenListener<Commit> {
-        self.tokens.new_listener()
-    }
     /// Registers a loglet's state with the writer so it can advance the tail
     /// watch after durable commits.
     pub fn register_loglet(&self, loglet_id: LogletId, loglet_state: LogletState) -> bool {
-        self.hi_pri_tx
+        self.tx
             .send(LogStoreWriteCommand::Register {
                 loglet_id,
                 loglet_state,
@@ -651,7 +597,9 @@ impl RocksDbLogWriterHandle {
     /// Unregisters a loglet's state. Uses identity check (`same_watch()`) to
     /// prevent a stale unregister from removing a fresh registration.
     pub fn unregister_loglet(&self, loglet_id: LogletId, loglet_state: LogletState) -> bool {
-        self.hi_pri_tx
+        // Using the normal channel to ensure unregistration happens after processing all
+        // commands/tasks
+        self.tx
             .send(LogStoreWriteCommand::Unregister {
                 loglet_id,
                 loglet_state,
@@ -659,27 +607,14 @@ impl RocksDbLogWriterHandle {
             .is_ok()
     }
 
-    pub fn enqueue_seal(
-        &self,
-        seal_message: Seal,
-        known_global_tail: LogletOffset,
-    ) -> Option<Token<Commit>> {
-        let token = self.tokens.next();
-        let metadata_updates = smallvec_inline![
-            MetadataUpdate::UpdateGlobalTail { known_global_tail },
-            MetadataUpdate::Seal
-        ];
-
-        self.hi_pri_tx
+    pub fn enqueue_seal(&self, task: SealStorageTask) -> bool {
+        self.tx
             .send(LogStoreWriteCommand::Write(WriteCommand {
-                token,
-                loglet_id: seal_message.header.loglet_id,
+                task: Some(Box::new(task)),
                 data_update: None,
-                metadata_updates,
-                reservation: MemoryLease::unlinked(),
+                metadata_update: Some(MetadataUpdate::Seal),
             }))
             .is_ok()
-            .then_some(token)
     }
 
     /// Enqueues a store batch for writing to RocksDB. The writer will derive
@@ -687,73 +622,55 @@ impl RocksDbLogWriterHandle {
     /// loglet's tail watch after the batch is durably committed.
     pub fn enqueue_put_records(
         &self,
-        store_message: Store,
-        set_sequencer_in_metadata: bool,
-        known_global_tail: LogletOffset,
-        reservation: MemoryLease,
-    ) -> Option<Token<Commit>> {
-        let loglet_id = store_message.header.loglet_id;
-        let mut metadata_updates = SmallVec::default();
-        if set_sequencer_in_metadata {
-            metadata_updates.push(MetadataUpdate::SetSequencer {
-                sequencer: store_message.sequencer,
-            });
-        }
-        metadata_updates.push(MetadataUpdate::UpdateGlobalTail { known_global_tail });
-        let token = self.tokens.next();
-        trace!(loglet_id = %store_message.header.loglet_id, "Sending store ({}..{:?}) to writer at token {token:?}", store_message.first_offset, store_message.last_offset());
-        let data_update = DataUpdate::StoreBatch { store_message };
-        self.send_command(LogStoreWriteCommand::Write(WriteCommand {
-            token,
-            loglet_id,
-            data_update: Some(data_update),
-            metadata_updates,
-            reservation,
-        }))
-        .then_some(token)
-    }
-
-    pub fn enqueue_trim(
-        &self,
-        trim_message: Trim,
-        known_global_tail: LogletOffset,
-    ) -> Option<Token<Commit>> {
-        let data_update = DataUpdate::TrimLogRecords {
-            trim_point: trim_message.trim_point,
+        first_offset: LogletOffset,
+        last_offset: LogletOffset,
+        payloads: Payloads,
+        task: StoreStorageTask,
+    ) -> bool {
+        let metadata_update = task
+            .sequencer()
+            .map(|sequencer| MetadataUpdate::SetSequencer { sequencer });
+        trace!(loglet_id = %task.loglet_id(), "Sending store [{first_offset}..{last_offset}] to writer");
+        let data_update = DataUpdate::StoreBatch {
+            payloads,
+            first_offset,
+            last_offset,
         };
-        let metadata_updates = smallvec_inline![
-            MetadataUpdate::UpdateGlobalTail { known_global_tail },
-            MetadataUpdate::UpdateTrimPoint {
-                new_trim_point: trim_message.trim_point,
-            },
-        ];
-
-        let token = self.tokens.next();
-        self.send_command(LogStoreWriteCommand::Write(WriteCommand {
-            token,
-            loglet_id: trim_message.header.loglet_id,
+        self.send_command(WriteCommand {
+            task: Some(Box::new(task)),
             data_update: Some(data_update),
-            metadata_updates,
-            reservation: MemoryLease::unlinked(),
-        }))
-        .then_some(token)
+            metadata_update,
+        })
     }
 
-    pub fn enqueue_set_global_tail(&self, loglet_id: LogletId, known_global_tail: LogletOffset) {
-        let metadata_updates = smallvec![MetadataUpdate::UpdateGlobalTail { known_global_tail }];
-        let token = self.tokens.next();
-        let _ = self
-            .hi_pri_tx
-            .send(LogStoreWriteCommand::Write(WriteCommand {
-                token,
-                loglet_id,
-                data_update: None,
-                metadata_updates,
-                reservation: MemoryLease::unlinked(),
-            }));
+    pub fn enqueue_trim(&self, task: TrimStorageTask) -> bool {
+        let data_update = DataUpdate::TrimLogRecords {
+            trim_point: task.trim_point(),
+        };
+        let metadata_update = Some(MetadataUpdate::UpdateTrimPoint {
+            new_trim_point: task.trim_point(),
+        });
+
+        self.send_command(WriteCommand {
+            task: Some(Box::new(task)),
+            data_update: Some(data_update),
+            metadata_update,
+        })
     }
 
-    fn send_command(&self, command: LogStoreWriteCommand) -> bool {
-        self.tx.send(command).is_ok()
+    pub fn enqueue_set_global_tail(&self, task: SyncGlobalTailStorageTask) {
+        let metadata_update = Some(MetadataUpdate::UpdateGlobalTail {
+            known_global_tail: task.global_tail(),
+        });
+
+        let _ = self.tx.send(LogStoreWriteCommand::Write(WriteCommand {
+            task: Some(Box::new(task)),
+            data_update: None,
+            metadata_update,
+        }));
+    }
+
+    fn send_command(&self, cmd: WriteCommand) -> bool {
+        self.tx.send(LogStoreWriteCommand::Write(cmd)).is_ok()
     }
 }
