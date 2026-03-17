@@ -40,6 +40,10 @@ impl<Offset: SequenceNumber> TailState<Offset> {
         }
     }
 
+    pub fn invalid() -> Self {
+        TailState::Open(Offset::INVALID)
+    }
+
     /// Combines two TailStates together
     ///
     /// Only applies updates to the value according to the following rules:

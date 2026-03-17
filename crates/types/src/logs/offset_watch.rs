@@ -53,8 +53,8 @@ impl TailOffsetWatch {
         self.sender.send_if_modified(|v| v.combine(false, offset));
     }
 
-    pub fn notify_seal(&self) {
-        self.sender.send_if_modified(|v| v.seal());
+    pub fn notify_seal(&self) -> bool {
+        self.sender.send_if_modified(|v| v.seal())
     }
 
     pub fn latest_offset(&self) -> LogletOffset {

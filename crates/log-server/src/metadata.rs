@@ -213,10 +213,7 @@ pub struct LogletWorkerState {
     pub staging_local_tail: LogletOffset,
     pub accepting_writes: bool,
     pub seal_enqueued: bool,
-    pub pending_stores: u32,
-    pub pending_repair_stores: u32,
     pub pending_seals: u32,
-    pub pending_trims: u32,
     pub pending_tail_waiters: u32,
     pub last_request_at: MillisSinceEpoch,
 }

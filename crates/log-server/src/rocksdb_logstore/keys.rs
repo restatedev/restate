@@ -29,7 +29,7 @@ pub enum KeyPrefixKind {
     // data column family
     DataRecord = b'd',
     /// Introduced in v1.6.3. No compatibility version barrier required.
-    /// Will receive writes in 1.6.3
+    /// Will receive writes in v1.6.3
     LastKnownGlobalTail = b'g',
     // Introduced in v1.6.3 for forward-compatibility.
     // Should receive writes in >= v1.8
