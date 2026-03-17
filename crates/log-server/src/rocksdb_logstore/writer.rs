@@ -113,6 +113,8 @@ struct WriteCommand {
     token: Token<Commit>,
     loglet_id: LogletId,
     data_update: Option<DataUpdate>,
+    // inlining size=2 to optimize for the common case of updating the global tail
+    // along with another metadata update.
     metadata_updates: SmallVec<[MetadataUpdate; 2]>,
     /// Memory reservation held until the write is committed to RocksDB.
     /// This ensures backpressure from RocksDB stalls propagates to the network layer.
@@ -198,16 +200,22 @@ impl LogStoreWriterBuilder {
 
                 loop {
                     let config = &config.live_load().log_server;
-                    // The assumption here is that most of the bytes will do into the data column
-                    // family.
-                    //
-                    // todo(asoli): replace 4 with a shared const.
-                    let target_batch_size_bytes =
-                        config.rocksdb_data_memtables_budget().as_usize() / 4;
                     tokio::select! {
                         biased;
                         Some(cmd)= hi_pri_rx.recv() => {
                             writer.handle_command(cmd, &mut batch);
+                            // Opportunistically drain hi-pri commands.
+                            // We don't send data through hi-pri channel, so we don't think
+                            // too much about big the batch size is.
+                            while let Ok(cmd) = hi_pri_rx.try_recv() {
+                                writer.handle_command(cmd, &mut batch);
+                            }
+                            if writer.commit(config, &mut batch).await {
+                               continue;
+                            } else {
+                                // the store is disabled, will drop the rest of the commands.
+                                break;
+                            }
                         }
                         Some(cmd) = rx.recv() => {
                             writer.handle_command(cmd, &mut batch);
@@ -218,24 +226,11 @@ impl LogStoreWriterBuilder {
                         }
                     }
 
-                    // Opportunistically drain hi-pri commands. Bounded to avoid
-                    // starving the normal-pri channel when hi-pri bursts occur
-                    // (e.g. many seals during reconfiguration).
-                    const MAX_HI_PRI_DRAIN: usize = 256;
-                    for _ in 0..MAX_HI_PRI_DRAIN {
-                        // We don't send data through hi-pri channel, so we don't think
-                        // too much about big the batch size is.
-                        if let Ok(cmd) = hi_pri_rx.try_recv() {
-                            writer.handle_command(cmd, &mut batch);
-                        } else {
-                            break;
-                        }
-                    }
-
-                    // Opportunistically drain normal-pri commands. Bounded to
-                    // a single memtable's worth of data to avoid excessive ballooning
-                    // and overshooting the target budget.
-                    while batch.size_in_bytes() < target_batch_size_bytes
+                    // Opportunistically drain normal-pri commands.
+                    while batch.size_in_bytes() < config.write_batch_bytes().as_usize()
+                        && config
+                            .write_batch_count
+                            .is_none_or(|c| batch.len() < c.get())
                         && let Ok(cmd) = rx.try_recv()
                     {
                         writer.handle_command(cmd, &mut batch);
@@ -260,7 +255,7 @@ impl LogStoreWriterBuilder {
                     self.log_store_state
                         .disable_writes(WriteDisableReason::Shutdown);
                 } else {
-                    // gauranteed that it's initialized
+                    // guaranteed that it's initialized
                     let reason = self.log_store_state.wait_disabled().await;
                     error!(
                         "Writes to log-server have been disabled until the node is manually restarted and \
@@ -352,7 +347,6 @@ struct LogStoreWriter<'a> {
 }
 
 impl LogStoreWriter<'_> {
-    // Returns true if the store is accepting writes
     fn handle_command(&mut self, command: LogStoreWriteCommand, batch: &mut Batch) {
         trace!("LogStoreWriter: {command:?}");
         match command {

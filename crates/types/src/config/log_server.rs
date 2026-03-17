@@ -139,6 +139,26 @@ pub struct LogServerOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "schemars", schemars(skip))]
     rocksdb_max_background_compactions: Option<NonZeroU32>,
+
+    /// # Write Batch (in bytes)
+    ///
+    /// If unset, a reasonable value is automatically derived from the memory budget
+    /// available for memtables of the log-server.
+    ///
+    /// If `write-batch-size` is set, the write batch will be limited to whichever
+    /// of the two is reached first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    write_batch_bytes: Option<NonZeroByteCount>,
+
+    /// # Write Batch (count)
+    ///
+    /// The number of records to batch in a single write batch. This is a (soft) upper bound
+    /// and the actual number of records may be lower in low-throughput scenarios or if
+    /// the write batch size (in bytes) is reached first.
+    ///
+    /// If unset, the write batch will only be limited by its size in bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub write_batch_count: Option<NonZeroUsize>,
 }
 
 fn is_zero(value: &ByteCount<true>) -> bool {
@@ -206,6 +226,21 @@ impl LogServerOptions {
         }
     }
 
+    pub fn write_batch_bytes(&self) -> NonZeroByteCount {
+        // The assumption here is that most of the bytes will go into
+        // the data column family.
+        //
+        // todo(asoli): replace 4 with a shared const (or config). We divide by 4
+        // to cap the batch size to a single memtable's worth of data at most
+        // (as we allow total of 4 memtables for the data CF).
+        self.write_batch_bytes.unwrap_or_else(|| {
+            // we divide by 4 to get the size of a single memtable, then by 4
+            // to put an upper bound over the ballooning per individual memtables to 25%
+            // over its budget.
+            self.rocksdb_data_memtables_budget().div_ceil(8)
+        })
+    }
+
     pub fn rocksdb_memory_budget(&self) -> NonZeroByteCount {
         self.rocksdb_memory_budget.unwrap_or_else(|| {
             warn!(
@@ -256,6 +291,8 @@ impl Default for LogServerOptions {
             rocksdb_disable_blob_compression: false,
             rocksdb_max_background_flushes: None,
             rocksdb_max_background_compactions: None,
+            write_batch_bytes: None,
+            write_batch_count: None,
         }
     }
 }

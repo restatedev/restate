@@ -299,8 +299,6 @@ impl LogStore for RocksDbLogStore {
             };
             // If the loglet is trimmed (all records were removed) and we know the trim_point, then we
             // use the trim_point.next() as the local_tail.
-            //
-            // Another way to describe this is `if trim_point >= local_tail`.
             if trim_point >= local_tail {
                 local_tail = trim_point.next();
             }
