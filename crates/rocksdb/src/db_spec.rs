@@ -135,6 +135,12 @@ impl CfNameMatch for CfExactPattern {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenMode {
+    ReadWrite,
+    ReadOnly,
+}
+
 #[derive(Builder)]
 #[builder(pattern = "owned", build_fn(name = "build"))]
 pub struct DbSpec {
@@ -166,6 +172,10 @@ pub struct DbSpec {
 impl DbSpec {
     pub fn name(&self) -> &DbName {
         &self.name
+    }
+
+    pub fn open_mode(&self) -> OpenMode {
+        self.db_configurator.get_db_open_mode()
     }
 }
 

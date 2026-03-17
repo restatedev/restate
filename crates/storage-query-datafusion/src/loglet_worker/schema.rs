@@ -44,14 +44,8 @@ define_table!(
         seal_enqueued: DataType::Boolean,
         /// Whether the worker is accepting new writes. Only set when active.
         accepting_writes: DataType::Boolean,
-        /// Number of pending store RPCs. Only set when active.
-        pending_stores: DataType::UInt32,
-        /// Number of pending repair store RPCs. Only set when active.
-        pending_repair_stores: DataType::UInt32,
         /// Number of pending seal RPCs. Only set when active.
         pending_seals: DataType::UInt32,
-        /// Number of pending trim RPCs. Only set when active.
-        pending_trims: DataType::UInt32,
         /// Number of pending tail-wait RPCs. Only set when active.
         pending_tail_waiters: DataType::UInt32,
         /// Timestamp of the last request to the worker. Only set when active.
