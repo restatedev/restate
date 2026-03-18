@@ -36,7 +36,6 @@ use restate_types::nodes_config::NodesConfiguration;
 use restate_types::{PlainNodeId, Version};
 use std::collections::HashMap;
 use std::sync::Arc;
-use thiserror::__private17::AsDisplay;
 use tracing::{debug, info, warn};
 
 pub struct Uninitialized {
@@ -136,7 +135,7 @@ impl Uninitialized {
             jump minor versions but instead go through all minor versions to run all required \
             migrations. If you are sure that the local metadata store data directory does not contain \
             relevant data, then you can also delete it to allow this node to provision on restart.",
-                local_metadata_store_data_dir.as_display()
+                local_metadata_store_data_dir.display()
             );
         }
 

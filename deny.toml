@@ -8,7 +8,7 @@ ignore = [
     { id = "RUSTSEC-2024-0436", reason = "crate is unmaintained. We need to migrate to a different crate than `paste`" },
     { id = "RUSTSEC-2024-0437", reason = "protobuf-rs stackoverflow in deep nested messages, not fixed yet" },
     { id = "RUSTSEC-2025-0057", reason = "fxhash is not maintained anymore, currently used only by raft-rs" },
-    { id = "RUSTSEC-2025-0141", reason = "bincode is no longer maintained, it's only used by restate-queue which will soon be removed" }
+    { id = "RUSTSEC-2025-0141", reason = "bincode is no longer maintained, it's only used by restate-queue which will soon be removed" },
 ]
 
 
@@ -36,6 +36,7 @@ allow = [
     # inferno (CDDL-1.0, only included when heap-flamegraph feature is enabled).
     "MPL-2.0",
     "CDDL-1.0",
+    "Apache-2.0 WITH LLVM-exception",
 ]
 # The confidence threshold for detecting a license from license text.
 # The higher the value, the more closely the license text must be to the
