@@ -380,7 +380,7 @@ pub struct CommonOptions {
     /// use this value as an upper bound.
     ///
     /// You can use a tool like `fio` to measure the actual IO bandwidth of your storage
-    /// devide (use block size of 64k, direct IO, and iodepth of 32 across 4 jobs to get a
+    /// device (use block size of 64k, direct IO, and iodepth of 32 across 4 jobs to get a
     /// reasonable estimate).
     ///
     /// The default value assumes a fast NVMe with bandwidth of 7GiB (per second).

@@ -21,6 +21,8 @@ use super::record_format::RecordDecodeError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RocksDbLogStoreError {
+    #[error("db is on read-only mode")]
+    ReadOnly,
     #[error("cannot accept offset {0}")]
     InvalidOffset(LogletOffset),
     #[error(transparent)]
@@ -38,6 +40,7 @@ pub enum RocksDbLogStoreError {
 impl MaybeRetryableError for RocksDbLogStoreError {
     fn retryable(&self) -> bool {
         match self {
+            Self::ReadOnly => false,
             Self::InvalidOffset(_) => false,
             Self::Decode(_) => false,
             Self::Rocksdb(_) => true,

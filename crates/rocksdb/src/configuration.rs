@@ -15,11 +15,15 @@ use rocksdb::{BlockBasedOptions, Cache, WriteBufferManager};
 use restate_types::config::{RocksDbLogLevel, RocksDbOptions, StatisticsLevel};
 
 use crate::logging::LoggingEventListener;
-use crate::{DbName, RocksAccess};
+use crate::{DbName, OpenMode, RocksAccess};
 
 /// A trait for customizing database options when it's being opened and enables live reaction to
 /// configuration changes.
 pub trait DbConfigurator {
+    fn get_db_open_mode(&self) -> OpenMode {
+        OpenMode::ReadWrite
+    }
+
     fn get_db_options(
         &self,
         db_name: &DbName,
