@@ -87,6 +87,9 @@ jobs:
       - name: Check Cargo.lock file is updated
         run: cargo update -w --locked
 
+      - name: Disk usage before verify
+        run: df -h && du -sh target target/tests 2>/dev/null || true
+
       - name: Run verify
         run: just verify
         id: justVerify
@@ -94,6 +97,16 @@ jobs:
           LOCAL_CLUSTER_RUNNER_FORWARD_LOGS: "true"
           LOCAL_CLUSTER_RUNNER_RETAIN_TEMPDIR: "true"
           LOCAL_CLUSTER_RUNNER_TEMPDIR: ${{ runner.temp }}/lcr
+
+      - name: Disk usage after verify
+        if: always()
+        run: df -h && du -sh target target/tests ${{ runner.temp }}/lcr 2>/dev/null || true
+
+      - name: Debug via SSH on failure
+        if: failure()
+        uses: WarpBuilds/action-debugger@v1.3
+        with:
+          timeout: 600
 
       - uses: actions/upload-artifact@v4
         if: always()
