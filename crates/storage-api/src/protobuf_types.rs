@@ -3927,6 +3927,7 @@ pub mod v1 {
             check_wire_type(WireType::LengthDelimited, wire_type)?;
             let len = decode_varint(buf)?;
             if len > buf.len() as u64 {
+                #[allow(deprecated)]
                 return Err(prost::DecodeError::new("buffer underflow"));
             }
             let len = len as usize;
