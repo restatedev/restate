@@ -15,21 +15,14 @@ use std::sync::Arc;
 use tokio::sync::SetOnce;
 
 use restate_bifrost::loglet::OperationError;
-use restate_memory::MemoryLease;
 use restate_types::health::{HealthStatus, LogServerStatus};
 use restate_types::logs::{LogletId, LogletOffset};
-use restate_types::net::log_server::{Digest, GetDigest, GetRecords, Records, Seal, Store, Trim};
-
-use restate_futures_util::monotonic_token::{Token, TokenListener};
+use restate_types::net::log_server::{Digest, GetDigest, GetRecords, Payloads, Records};
 
 use crate::metadata::{LogStoreMarker, LogletState};
+use crate::tasks::{SealStorageTask, StoreStorageTask, SyncGlobalTailStorageTask, TrimStorageTask};
 
 pub type Result<T, E = OperationError> = std::result::Result<T, E>;
-
-/// A marker type for commit/durability notifications.
-///
-/// Used within Token<Commit> to signal the last durable operation.
-pub struct Commit;
 
 // --- Store-level health state ---
 
@@ -116,8 +109,6 @@ pub trait LogStore: Clone + Send + 'static {
     /// A per-loglet write handle. Created via [`LogStore::create_loglet_writer`].
     type Writer: LogletWriter;
 
-    fn commit_listener(&self) -> TokenListener<Commit>;
-
     /// Loads the [`LogStoreMarker`] for this node
     fn load_marker(&self) -> impl Future<Output = Result<Option<LogStoreMarker>>> + Send + '_;
     /// Unconditionally stores this marker value on this node
@@ -167,30 +158,22 @@ pub trait LogletWriter: Send + 'static {
     /// watch after the batch is durably committed.
     fn enqueue_store(
         &mut self,
-        store_message: Store,
-        set_sequencer_in_metadata: bool,
-        known_global_tail: LogletOffset,
-        reservation: MemoryLease,
-    ) -> Option<Token<Commit>>;
+        first_offset: LogletOffset,
+        last_offset: LogletOffset,
+        payloads: Payloads,
+        task: StoreStorageTask,
+    ) -> bool;
 
     /// Enqueues a seal operation. After durable commit, the writer notifies the seal
     /// through the registered TailOffsetWatch.
-    fn enqueue_seal(
-        &mut self,
-        seal_message: Seal,
-        known_global_tail: LogletOffset,
-    ) -> Option<Token<Commit>>;
+    fn enqueue_seal(&mut self, task: SealStorageTask) -> bool;
 
     /// Enqueues a trim operation. After durable commit, the writer will advance
     /// the trim-point in via the LogState's trim-point watch.
-    fn enqueue_trim(
-        &mut self,
-        trim_message: Trim,
-        known_global_tail: LogletOffset,
-    ) -> Option<Token<Commit>>;
+    fn enqueue_trim(&mut self, task: TrimStorageTask) -> bool;
 
     /// Best-effort store the known global tail in the log-store.
-    fn set_known_global_tail(&mut self, known_global_tail: LogletOffset);
+    fn set_known_global_tail(&mut self, task: SyncGlobalTailStorageTask);
 
     /// Closes this log-store writer and unregisters from the writer task.
     fn close(&mut self);

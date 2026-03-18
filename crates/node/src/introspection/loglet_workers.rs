@@ -142,10 +142,7 @@ fn append_loglet_worker_row(
         row.staging_local_tail(u32::from(ws.staging_local_tail));
         row.seal_enqueued(ws.seal_enqueued);
         row.accepting_writes(ws.accepting_writes);
-        row.pending_stores(ws.pending_stores);
-        row.pending_repair_stores(ws.pending_repair_stores);
         row.pending_seals(ws.pending_seals);
-        row.pending_trims(ws.pending_trims);
         row.pending_tail_waiters(ws.pending_tail_waiters);
         row.last_request_at(ws.last_request_at.as_u64() as i64);
     }
