@@ -241,7 +241,7 @@ async fn query_sys_invocation_with_protocol_v4() {
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn query_sys_invocation_status_completed() {
+async fn query_sys_invocation_completed() {
     let invocation_target = InvocationTarget::mock_service();
 
     // To have deterministic ordering
@@ -296,7 +296,7 @@ async fn query_sys_invocation_status_completed() {
                 id,
                 completed_at + completion_retention AS completion_expiration,
                 completed_at + journal_retention AS journal_expiration
-            FROM sys_invocation_status
+            FROM sys_invocation
             WHERE journal_retention >= INTERVAL 5 SECOND
             ORDER BY id ASC",
         )

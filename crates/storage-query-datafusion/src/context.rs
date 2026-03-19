@@ -26,6 +26,8 @@ use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion::sql::TableReference;
 
+use crate::empty_invoker_status_handle::EmptyInvokerStatusHandle;
+use crate::remote_query_scanner_manager::RemoteScannerManager;
 use codederror::CodedError;
 use restate_core::{Metadata, TaskCenter};
 use restate_invoker_api::StatusHandle;
@@ -40,9 +42,7 @@ use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 
-use crate::remote_query_scanner_manager::RemoteScannerManager;
-
-const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
+const SYS_INVOCATION_OLD_VIEW: &str = "CREATE VIEW sys_invocation_old as SELECT
             ss.id,
             ss.target,
             ss.target_service_name,
@@ -189,6 +189,23 @@ where
             self.partition_store_manager.clone(),
             &self.remote_scanner_manager,
         )?;
+        if let Some(status) = self.status.clone() {
+            crate::invocation::register_self(
+                ctx,
+                self.partition_selector.clone(),
+                status,
+                self.partition_store_manager.clone(),
+                &self.remote_scanner_manager,
+            )?;
+        } else {
+            crate::invocation::register_self(
+                ctx,
+                self.partition_selector.clone(),
+                EmptyInvokerStatusHandle,
+                self.partition_store_manager.clone(),
+                &self.remote_scanner_manager,
+            )?;
+        }
         crate::keyed_service_status::register_self(
             ctx,
             self.partition_selector.clone(),
@@ -232,7 +249,7 @@ where
             &self.remote_scanner_manager,
         )?;
 
-        ctx.datafusion_context.sql(SYS_INVOCATION_VIEW).await?;
+        ctx.datafusion_context.sql(SYS_INVOCATION_OLD_VIEW).await?;
 
         Ok(())
     }
