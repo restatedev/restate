@@ -63,6 +63,9 @@ jobs:
         with:
           cache-on-failure: "true"
 
+      - name: Disk usage after cache restore
+        run: df -h / && du -sh target/ 2>/dev/null || true
+
       - name: Install cargo-hakari
         uses: taiki-e/install-action@v2
         with:
@@ -87,19 +90,35 @@ jobs:
       - name: Check Cargo.lock file is updated
         run: cargo update -w --locked
 
-      - name: Run verify
-        run: just verify
-        id: justVerify
+      - name: Run lint
+        run: just lint
+
+      - name: Disk usage after lint
+        run: df -h / && du -sh target/ 2>/dev/null || true
+
+      - name: Run test
+        run: just test
         env:
           LOCAL_CLUSTER_RUNNER_FORWARD_LOGS: "true"
           LOCAL_CLUSTER_RUNNER_RETAIN_TEMPDIR: "true"
           LOCAL_CLUSTER_RUNNER_TEMPDIR: ${{ runner.temp }}/lcr
+
+      - name: Disk usage after test
+        if: always()
+        run: df -h / && du -sh target/ 2>/dev/null || true
+
+      - name: Run doctest
+        run: just doctest
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: local-cluster-runner
           path: ${{ runner.temp }}/lcr
+
+      - name: Disk usage before cache save
+        if: always()
+        run: df -h / && du -sh target/ 2>/dev/null || true
 
   docker:
     name: Create docker image
