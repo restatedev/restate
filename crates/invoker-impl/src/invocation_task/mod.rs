@@ -496,6 +496,8 @@ impl ResponseStream {
         // This task::spawn won't be required by hyper 1.0, as the connection will be driven by a task
         // spawned somewhere else (perhaps in the connection pool).
         // See: https://github.com/restatedev/restate/issues/96 and https://github.com/restatedev/restate/issues/76
+
+        //todo: this is a temp clone to test
         Self::WaitingHeaders {
             join_handle: AbortOnDropHandle::new(tokio::task::spawn(client.call(req))),
         }

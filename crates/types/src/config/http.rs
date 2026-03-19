@@ -8,10 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroUsize;
+
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use restate_time_util::NonZeroFriendlyDuration;
+use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
 
 /// # HTTP client options
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
@@ -23,7 +25,6 @@ pub struct HttpOptions {
     /// # HTTP/2 Keep-alive
     ///
     /// Configuration for the HTTP/2 keep-alive mechanism, using PING frames.
-    /// If unset, HTTP/2 keep-alive are disabled.
     pub http_keep_alive_options: Http2KeepAliveOptions,
     /// # Proxy URI
     ///
@@ -59,7 +60,15 @@ pub struct HttpOptions {
     ///
     /// **NOTE**: Setting this value to None (default) users the default
     /// recommended value from HTTP2 specs
-    pub initial_max_send_streams: Option<usize>,
+    pub initial_max_send_streams: Option<u32>,
+
+    /// # Max HTTP2 Connections
+    ///
+    /// Sets the maximum number of open HTTP/2 connections per
+    /// client for a single host.
+    ///
+    /// Default: 20
+    pub max_http2_connections: NonZeroUsize,
 }
 
 impl Default for HttpOptions {
@@ -70,6 +79,7 @@ impl Default for HttpOptions {
             no_proxy: None,
             connect_timeout: NonZeroFriendlyDuration::from_secs_unchecked(10),
             initial_max_send_streams: None,
+            max_http2_connections: NonZeroUsize::new(20).unwrap(),
         }
     }
 }
@@ -100,8 +110,10 @@ pub struct Http2KeepAliveOptions {
     /// Sets an interval for HTTP/2 PING frames should be sent to keep a
     /// connection alive.
     ///
+    /// `0` disables keep-alive pings entirely. Defaults to `40s`.
+    ///
     /// You should set this timeout with a value lower than the `abort_timeout`.
-    pub interval: NonZeroFriendlyDuration,
+    pub interval: FriendlyDuration,
 
     /// # Timeout
     ///
@@ -109,13 +121,15 @@ pub struct Http2KeepAliveOptions {
     ///
     /// If the ping is not acknowledged within the timeout, the connection will
     /// be closed.
+    ///
+    /// Only meaningful when `keep_alive_interval` is `Some`. Defaults to 20 s.
     pub timeout: NonZeroFriendlyDuration,
 }
 
 impl Default for Http2KeepAliveOptions {
     fn default() -> Self {
         Self {
-            interval: NonZeroFriendlyDuration::from_secs_unchecked(40),
+            interval: FriendlyDuration::from_secs(40),
             timeout: NonZeroFriendlyDuration::from_secs_unchecked(20),
         }
     }
