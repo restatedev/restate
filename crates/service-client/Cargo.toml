@@ -25,6 +25,7 @@ base64 = { workspace = true }
 bs58 = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
+dashmap = { workspace = true }
 derive_builder = { workspace = true }
 futures = { workspace = true }
 h2 = "0.4.12"
@@ -53,6 +54,12 @@ tracing = { workspace = true }
 zstd = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true, features = ["async_tokio"] }
 googletest = { workspace = true }
+pprof = { version = "0.15", features = ["criterion", "flamegraph"] }
 tempfile = { workspace = true }
 tokio-stream = {workspace = true}
+
+[[bench]]
+name = "h2_pool_benchmark"
+harness = false
