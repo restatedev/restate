@@ -44,6 +44,7 @@ jobs:
         os: [warp-ubuntu-latest-x64-16x]
     env:
       RUST_BACKTRACE: full
+      CARGO_INCREMENTAL: "0"
     steps:
       # Disabled as uring is not used in production yet.
       # - name: Install liburing
