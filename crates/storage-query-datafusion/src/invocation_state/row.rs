@@ -10,6 +10,7 @@
 
 use restate_invoker_api::InvocationStatusReport;
 use restate_types::identifiers::WithPartitionKey;
+use restate_types::invocation::ServiceType;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::time::MillisSinceEpoch;
 
@@ -28,6 +29,37 @@ pub(crate) fn append_invocation_state_row(
     if row.is_id_defined() {
         row.fmt_id(invocation_id);
     }
+
+    if (row.is_target_service_name_defined()
+        || row.is_target_service_key_defined()
+        || row.is_target_handler_name_defined()
+        || row.is_target_defined()
+        || row.is_target_service_ty_defined())
+        && let Some(invocation_target) = status_row.invocation_target()
+    {
+        if row.is_target_service_name_defined() {
+            row.target_service_name(invocation_target.service_name().as_ref());
+        }
+        if row.is_target_service_key_defined() {
+            if let Some(key) = invocation_target.key() {
+                row.target_service_key(key.as_ref());
+            }
+        }
+        if row.is_target_handler_name_defined() {
+            row.target_handler_name(invocation_target.handler_name().as_ref());
+        }
+        if row.is_target_defined() {
+            row.fmt_target(invocation_target);
+        }
+        if row.is_target_service_ty_defined() {
+            row.target_service_ty(match invocation_target.service_ty() {
+                ServiceType::Service => "service",
+                ServiceType::VirtualObject => "virtual_object",
+                ServiceType::Workflow => "workflow",
+            });
+        }
+    }
+
     row.in_flight(status_row.in_flight());
     row.retry_count(status_row.retry_count() as u64);
     row.last_start_at(MillisSinceEpoch::as_u64(&status_row.last_start_at().into()) as i64);

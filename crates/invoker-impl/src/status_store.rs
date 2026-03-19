@@ -45,6 +45,7 @@ impl InvocationStatusStore {
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
+        invocation_target: InvocationTarget,
     ) {
         let report = self
             .0
@@ -52,6 +53,7 @@ impl InvocationStatusStore {
             .or_default()
             .entry(invocation_id)
             .or_default();
+        report.invocation_target = Some(invocation_target);
         report.start_count += 1;
         report.last_start_at = SystemTime::now();
         report.next_retry_at = None;

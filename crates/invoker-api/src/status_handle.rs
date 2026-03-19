@@ -12,6 +12,7 @@ use codederror::Code;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
+use restate_types::invocation::InvocationTarget;
 use restate_types::journal::{EntryIndex, EntryType};
 use restate_types::service_protocol::ServiceProtocolVersion;
 use std::future::Future;
@@ -22,6 +23,7 @@ use std::time::SystemTime;
 
 #[derive(Debug, Clone)]
 pub struct InvocationStatusReportInner {
+    pub invocation_target: Option<InvocationTarget>,
     pub in_flight: bool,
     pub start_count: usize,
     pub last_start_at: SystemTime,
@@ -35,6 +37,7 @@ pub struct InvocationStatusReportInner {
 impl Default for InvocationStatusReportInner {
     fn default() -> Self {
         Self {
+            invocation_target: None,
             in_flight: false,
             start_count: 0,
             last_start_at: SystemTime::now(),
@@ -73,6 +76,10 @@ impl InvocationStatusReport {
 
     pub fn leader_epoch(&self) -> LeaderEpoch {
         self.1.1
+    }
+
+    pub fn invocation_target(&self) -> Option<&InvocationTarget> {
+        self.2.invocation_target.as_ref()
     }
 
     pub fn in_flight(&self) -> bool {
