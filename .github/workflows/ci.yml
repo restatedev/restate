@@ -101,10 +101,6 @@ jobs:
           name: local-cluster-runner
           path: ${{ runner.temp }}/lcr
 
-      - name: Clean up test artifacts before cache save
-        if: always()
-        run: rm -rf target/tests
-
   docker:
     name: Create docker image
     uses: ./.github/workflows/docker.yml

@@ -156,10 +156,10 @@ run *flags: (_target-installed target)
 test: (_target-installed target)
     # remove possible old test ports
     rm -rf {{RESTATE_TEST_PORTS_POOL}}
-    cargo nextest run {{ _target-option }} {{ _test_features }} --target-dir target/tests
+    cargo nextest run {{ _target-option }} {{ _test_features }}
 
 test-package package *flags:
-    cargo nextest run {{ _test_features }} --no-capture --package {{ package }} --target-dir target/tests {{ flags }}
+    cargo nextest run {{ _test_features }} --no-capture --package {{ package }} {{ flags }}
 
 doctest:
     cargo test --doc
