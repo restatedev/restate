@@ -36,6 +36,7 @@ use std::sync::Arc;
 
 mod http;
 mod lambda;
+pub mod pool;
 mod proxy;
 mod request_identity;
 mod utils;
