@@ -3575,10 +3575,16 @@ pub mod v1 {
                         let failure_message = Vec::<u8>::from(failure.failure_message);
                         let failure_message = String::from_utf8(failure_message)
                             .map_err(ConversionError::invalid_data)?;
-                        restate_types::invocation::ResponseResult::Failure(InvocationError::new(
-                            failure.failure_code,
-                            failure_message,
-                        ))
+                        restate_types::invocation::ResponseResult::Failure(
+                            InvocationError::new(failure.failure_code, failure_message)
+                                .with_metadata_vec(
+                                    failure
+                                        .failure_metadata
+                                        .into_iter()
+                                        .map(|m| (m.key, m.value))
+                                        .collect(),
+                                ),
+                        )
                     }
                 };
 
