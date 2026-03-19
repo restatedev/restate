@@ -105,3 +105,29 @@ where
         }
     }
 }
+
+/// [`Predicate`] implementation which responds if the service health status falls between
+/// (inclusive) `low` and `high` values.
+#[derive(Clone, Debug)]
+pub struct StatusInRange<T> {
+    status: HealthStatus<T>,
+    low: T,
+    high: T,
+}
+
+impl<T: PartialOrd> StatusInRange<T> {
+    pub fn new(status: HealthStatus<T>, low: T, high: T) -> Self {
+        Self { status, low, high }
+    }
+}
+
+impl<T: PartialOrd> Predicate for StatusInRange<T> {
+    fn check(&mut self, request: Request<Body>) -> Result<Request<Body>, Box<Status>> {
+        let current = self.status.get();
+        if *current >= self.low && *current <= self.high {
+            Ok(request)
+        } else {
+            Err(Box::new(Status::unavailable("svc is not ready yet")))
+        }
+    }
+}

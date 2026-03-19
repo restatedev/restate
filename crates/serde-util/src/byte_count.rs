@@ -102,6 +102,15 @@ impl ByteCount<false> {
     pub const fn saturating_mul(self, other: NonZeroU64) -> ByteCount<false> {
         ByteCount(self.0.saturating_mul(other.get()))
     }
+
+    /// Calculates the quotient of self and rhs, rounding the result towards positive infinity.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `rhs` is 0.
+    pub fn div_ceil(self, rhs: u64) -> ByteCount<false> {
+        ByteCount(self.0.div_ceil(rhs))
+    }
 }
 
 impl Mul<u64> for ByteCount<false> {

@@ -155,6 +155,7 @@ pub enum TaskKind {
     ReplicatedLogletReadStream,
     // -- Log-server tasks
     LogletWorker,
+    LogStoreWriter,
     // - Datafusion
     DfScanner,
 }
