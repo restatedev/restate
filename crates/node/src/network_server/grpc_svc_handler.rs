@@ -48,18 +48,20 @@ use restate_types::storage::StorageCodec;
 
 use crate::{ClusterConfiguration, provision_cluster_metadata};
 
-/// Maps database names to their corresponding DatabaseKind
-fn db_name_to_kind(name: &str) -> DatabaseKind {
+/// Maps database names to their corresponding DatabaseKind.
+/// Returns None for unrecognized names so they are skipped rather than
+/// accidentally compacted if new databases are added without updating this mapping.
+fn db_name_to_kind(name: &str) -> Option<DatabaseKind> {
     if name == "log-server" {
-        DatabaseKind::LogServer
+        Some(DatabaseKind::LogServer)
     } else if name == "replicated-metadata-server" {
-        DatabaseKind::MetadataServer
+        Some(DatabaseKind::MetadataServer)
     } else if name == "local-loglet" {
-        DatabaseKind::LocalLoglet
+        Some(DatabaseKind::LocalLoglet)
     } else if name == "db" || name.starts_with("db-") {
-        DatabaseKind::PartitionStore
+        Some(DatabaseKind::PartitionStore)
     } else {
-        DatabaseKind::Unknown
+        None
     }
 }
 
@@ -283,18 +285,15 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
     ) -> Result<Response<TriggerCompactionResponse>, Status> {
         let request = request.into_inner();
 
-        // Determine which database kinds to compact
-        let requested_kinds: Vec<DatabaseKind> = if request.databases.is_empty() {
-            vec![DatabaseKind::All]
-        } else {
-            request
-                .databases
-                .into_iter()
-                .map(|k| DatabaseKind::try_from(k).unwrap_or(DatabaseKind::Unknown))
-                .collect()
-        };
-
-        let compact_all = requested_kinds.contains(&DatabaseKind::All);
+        // An empty databases list means compact all; otherwise filter to the requested kinds,
+        // ignoring any unspecified/unknown values.
+        let compact_all = request.databases.is_empty();
+        let requested_kinds: Vec<DatabaseKind> = request
+            .databases
+            .into_iter()
+            .filter_map(|k| DatabaseKind::try_from(k).ok())
+            .filter(|k| *k != DatabaseKind::Unspecified)
+            .collect();
 
         let Some(manager) = RocksDbManager::maybe_get() else {
             return Err(Status::unavailable("RocksDB manager not initialized"));
@@ -303,13 +302,15 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         let all_dbs = manager.get_all_dbs();
         let mut results = Vec::new();
 
+        // Compactions run sequentially to avoid overwhelming the system with
+        // concurrent I/O from multiple databases.
         for db in all_dbs {
             let db_name = db.name().to_string();
 
-            // Check if this database should be compacted
+            // Check if this database should be compacted. Skip databases whose names
+            // are not recognized so newly added databases are not accidentally compacted.
             let should_compact = compact_all || {
-                let kind = db_name_to_kind(&db_name);
-                requested_kinds.contains(&kind)
+                db_name_to_kind(&db_name).is_some_and(|kind| requested_kinds.contains(&kind))
             };
 
             if !should_compact {
@@ -317,14 +318,20 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
             }
 
             let cf_count = db.cfs().len() as u32;
-            db.compact_all().await;
-
-            results.push(DatabaseCompactionResult {
-                db_name,
-                success: true,
-                error: None,
-                column_families_compacted: cf_count,
-            });
+            match db.compact_all().await {
+                Ok(()) => results.push(DatabaseCompactionResult {
+                    db_name,
+                    success: true,
+                    error: None,
+                    column_families_compacted: cf_count,
+                }),
+                Err(e) => results.push(DatabaseCompactionResult {
+                    db_name,
+                    success: false,
+                    error: Some(e.to_string()),
+                    column_families_compacted: 0,
+                }),
+            }
         }
 
         Ok(Response::new(TriggerCompactionResponse { results }))
@@ -457,33 +464,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_db_name_to_kind_partition_store() {
-        assert_eq!(db_name_to_kind("db"), DatabaseKind::PartitionStore);
-        assert_eq!(db_name_to_kind("db-0"), DatabaseKind::PartitionStore);
-        assert_eq!(db_name_to_kind("db-123"), DatabaseKind::PartitionStore);
-    }
-
-    #[test]
-    fn test_db_name_to_kind_log_server() {
-        assert_eq!(db_name_to_kind("log-server"), DatabaseKind::LogServer);
-    }
-
-    #[test]
-    fn test_db_name_to_kind_metadata_server() {
+    fn test_db_name_to_kind() {
+        assert_eq!(db_name_to_kind("db"), Some(DatabaseKind::PartitionStore));
+        assert_eq!(db_name_to_kind("db-0"), Some(DatabaseKind::PartitionStore));
+        assert_eq!(
+            db_name_to_kind("db-123"),
+            Some(DatabaseKind::PartitionStore)
+        );
+        assert_eq!(db_name_to_kind("log-server"), Some(DatabaseKind::LogServer));
         assert_eq!(
             db_name_to_kind("replicated-metadata-server"),
-            DatabaseKind::MetadataServer
+            Some(DatabaseKind::MetadataServer)
         );
-    }
-
-    #[test]
-    fn test_db_name_to_kind_local_loglet() {
-        assert_eq!(db_name_to_kind("local-loglet"), DatabaseKind::LocalLoglet);
-    }
-
-    #[test]
-    fn test_db_name_to_kind_unknown() {
-        assert_eq!(db_name_to_kind("unknown"), DatabaseKind::Unknown);
-        assert_eq!(db_name_to_kind("random-name"), DatabaseKind::Unknown);
+        assert_eq!(
+            db_name_to_kind("local-loglet"),
+            Some(DatabaseKind::LocalLoglet)
+        );
+        // Unknown names return None so they are safely skipped
+        assert_eq!(db_name_to_kind("unknown"), None);
+        assert_eq!(db_name_to_kind("random-name"), None);
     }
 }

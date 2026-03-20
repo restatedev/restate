@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::time::Duration;
-
 use cling::prelude::*;
 use tokio::task::JoinSet;
 use tracing::info;
@@ -20,64 +18,61 @@ use restate_cli_util::{CliContext, c_println};
 use restate_core::protobuf::node_ctl_svc::{
     DatabaseKind, TriggerCompactionRequest, new_node_ctl_client,
 };
+use restate_types::PlainNodeId;
 use restate_types::net::address::{AdvertisedAddress, FabricPort};
 
 use crate::connection::ConnectionInfo;
 use crate::util::grpc_channel;
 
-const COMPACTION_TIMEOUT: Duration = Duration::from_secs(300);
-
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "compact")]
 pub struct CompactOpts {
-    /// Database type(s) to compact: all, partition-store, log-server,
-    /// metadata-server, local-loglet. Defaults to all.
-    #[arg(long, short = 'd', value_delimiter = ',')]
-    database: Vec<String>,
+    /// Database type(s) to compact: partition-store, log-server,
+    /// metadata-server, local-loglet. Defaults to all databases.
+    #[arg(long, short = 'd', value_delimiter = ',', value_parser = parse_database_kind)]
+    database: Vec<DatabaseKind>,
 
-    /// Target specific node addresses (default: all nodes from cluster)
+    /// Target specific nodes by node ID (e.g. N1,N2). Defaults to all nodes in the cluster.
     #[arg(long, short = 'n', value_delimiter = ',')]
-    node: Vec<AdvertisedAddress<FabricPort>>,
+    node: Vec<PlainNodeId>,
 }
 
-fn parse_database_kind(s: &str) -> Option<DatabaseKind> {
+fn parse_database_kind(s: &str) -> Result<DatabaseKind, String> {
     match s.to_lowercase().as_str() {
-        "all" => Some(DatabaseKind::All),
-        "partition-store" => Some(DatabaseKind::PartitionStore),
-        "log-server" => Some(DatabaseKind::LogServer),
-        "metadata-server" => Some(DatabaseKind::MetadataServer),
-        "local-loglet" => Some(DatabaseKind::LocalLoglet),
-        _ => None,
+        "partition-store" => Ok(DatabaseKind::PartitionStore),
+        "log-server" => Ok(DatabaseKind::LogServer),
+        "metadata-server" => Ok(DatabaseKind::MetadataServer),
+        "local-loglet" => Ok(DatabaseKind::LocalLoglet),
+        _ => Err(format!(
+            "Unknown database type '{}'. Valid options: partition-store, log-server, metadata-server, local-loglet",
+            s
+        )),
     }
 }
 
 async fn compact(connection: &ConnectionInfo, opts: &CompactOpts) -> anyhow::Result<()> {
-    // Parse database kinds
-    let database_kinds: Vec<i32> = if opts.database.is_empty() {
-        vec![DatabaseKind::All as i32]
-    } else {
-        opts.database
-            .iter()
-            .filter_map(|s| parse_database_kind(s))
-            .map(|k| k as i32)
-            .collect()
-    };
+    // An empty list means "compact all" at the server side.
+    let database_kinds: Vec<i32> = opts.database.iter().map(|k| *k as i32).collect();
 
-    if database_kinds.is_empty() {
-        anyhow::bail!(
-            "Invalid database type(s). Valid options: all, partition-store, log-server, metadata-server, local-loglet"
-        );
-    }
-
-    // Get target addresses
+    // Resolve target node addresses from the cluster configuration.
+    let nodes_config = connection.get_nodes_configuration().await?;
     let addresses: Vec<AdvertisedAddress<FabricPort>> = if opts.node.is_empty() {
-        let nodes_config = connection.get_nodes_configuration().await?;
         nodes_config
             .iter()
             .map(|(_, node)| node.address.clone())
             .collect()
     } else {
-        opts.node.clone()
+        opts.node
+            .iter()
+            .map(|node_id| {
+                nodes_config
+                    .find_node_by_id(*node_id)
+                    .map(|n| n.address.clone())
+                    .map_err(|_| {
+                        anyhow::anyhow!("Node {} not found in cluster configuration", node_id)
+                    })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?
     };
 
     if addresses.is_empty() {
@@ -86,7 +81,7 @@ async fn compact(connection: &ConnectionInfo, opts: &CompactOpts) -> anyhow::Res
 
     c_println!("Triggering compaction on {} node(s)...", addresses.len());
 
-    // Spawn compaction tasks in parallel
+    // Spawn compaction tasks in parallel across nodes.
     let mut tasks = JoinSet::new();
     for address in addresses {
         let db_kinds = database_kinds.clone();
@@ -155,10 +150,11 @@ async fn trigger_compaction_on_node(
     let channel = grpc_channel(address.clone());
     let mut client = new_node_ctl_client(channel, &CliContext::get().network);
 
+    let timeout = CliContext::get().request_timeout();
     let request = TriggerCompactionRequest { databases };
-    let response = tokio::time::timeout(COMPACTION_TIMEOUT, client.trigger_compaction(request))
+    let response = tokio::time::timeout(timeout, client.trigger_compaction(request))
         .await
-        .map_err(|_| anyhow::anyhow!("Compaction timed out after {:?}", COMPACTION_TIMEOUT))?
+        .map_err(|_| anyhow::anyhow!("Compaction timed out after {:?}", timeout))?
         .map_err(|e| anyhow::anyhow!("gRPC error: {}", e))?;
 
     Ok(response.into_inner())
@@ -169,56 +165,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_database_kind_all() {
-        assert_eq!(parse_database_kind("all"), Some(DatabaseKind::All));
-        assert_eq!(parse_database_kind("ALL"), Some(DatabaseKind::All));
-        assert_eq!(parse_database_kind("All"), Some(DatabaseKind::All));
-    }
-
-    #[test]
-    fn test_parse_database_kind_partition_store() {
+    fn test_parse_database_kind() {
         assert_eq!(
             parse_database_kind("partition-store"),
-            Some(DatabaseKind::PartitionStore)
+            Ok(DatabaseKind::PartitionStore)
         );
         assert_eq!(
             parse_database_kind("PARTITION-STORE"),
-            Some(DatabaseKind::PartitionStore)
+            Ok(DatabaseKind::PartitionStore)
         );
-    }
-
-    #[test]
-    fn test_parse_database_kind_log_server() {
         assert_eq!(
             parse_database_kind("log-server"),
-            Some(DatabaseKind::LogServer)
+            Ok(DatabaseKind::LogServer)
         );
         assert_eq!(
             parse_database_kind("LOG-SERVER"),
-            Some(DatabaseKind::LogServer)
+            Ok(DatabaseKind::LogServer)
         );
-    }
-
-    #[test]
-    fn test_parse_database_kind_metadata_server() {
         assert_eq!(
             parse_database_kind("metadata-server"),
-            Some(DatabaseKind::MetadataServer)
+            Ok(DatabaseKind::MetadataServer)
         );
-    }
-
-    #[test]
-    fn test_parse_database_kind_local_loglet() {
         assert_eq!(
             parse_database_kind("local-loglet"),
-            Some(DatabaseKind::LocalLoglet)
+            Ok(DatabaseKind::LocalLoglet)
         );
-    }
-
-    #[test]
-    fn test_parse_database_kind_invalid() {
-        assert_eq!(parse_database_kind("invalid"), None);
-        assert_eq!(parse_database_kind(""), None);
-        assert_eq!(parse_database_kind("db"), None);
+        // Invalid values should return an error
+        assert!(parse_database_kind("invalid").is_err());
+        assert!(parse_database_kind("all").is_err());
+        assert!(parse_database_kind("").is_err());
+        assert!(parse_database_kind("db").is_err());
     }
 }
