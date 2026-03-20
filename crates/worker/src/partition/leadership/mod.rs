@@ -46,7 +46,7 @@ use restate_timer::TokioClock;
 use restate_types::cluster::cluster_state::RunMode;
 use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
-use restate_types::identifiers::{LeaderEpoch, PartitionLeaderEpoch};
+use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
 use restate_types::identifiers::{PartitionKey, PartitionProcessorRpcRequestId};
 use restate_types::logs::Keys;
 use restate_types::message::MessageIndex;
@@ -202,6 +202,10 @@ where
 
     pub(crate) fn is_leader(&self) -> bool {
         matches!(self.state, State::Leader(_))
+    }
+
+    pub(crate) fn partition_id(&self) -> PartitionId {
+        self.partition.partition_id
     }
 
     pub fn effective_mode(&self) -> RunMode {

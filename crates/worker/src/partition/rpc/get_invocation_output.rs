@@ -134,6 +134,26 @@ where
                     .await;
             }
             GetInvocationOutputResponseMode::ReplyIfNotReady => {
+                // Reading invocation output from a non-leader partition processor can return
+                // stale results (e.g. NotFound for an invocation that exists on the leader)
+                // because the follower's local store may not have replayed all log entries yet.
+                // To prevent stale reads, we only serve this point-read from the leader whose
+                // store is authoritative. Non-leaders return NotLeader, which the ingress retry
+                // loop will retry until the request reaches the actual leader.
+                //
+                // TODO: We could relax the leadership requirement by implementing linearizable
+                // reads on followers using the wait_for_tail_then pattern: find the current log
+                // tail and wait until this replica has applied up to that point before serving the
+                // read. This would allow followers to serve reads and reduce load on the leader.
+                // An open question is how to handle partitioned followers that can no longer apply
+                // the latest records (e.g. due to network partitions) — they would need to time
+                // out and return an error rather than blocking indefinitely.
+                if !self.proposer.is_leader() {
+                    replier.send_result(Err(PartitionProcessorRpcError::NotLeader(
+                        self.proposer.partition_id(),
+                    )));
+                    return Ok(());
+                }
                 replier.send_result(
                     self.get_invocation_output(request_id, invocation_query)
                         .await
