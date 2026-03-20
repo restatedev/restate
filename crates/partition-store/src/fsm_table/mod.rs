@@ -14,6 +14,7 @@ use restate_storage_api::fsm_table::{
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_types::SemanticRestateVersion;
+use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
@@ -57,6 +58,13 @@ pub(crate) mod fsm_variable {
     /// Stores the current and next partition configuration from the latest AnnounceLeader.
     /// *Since v1.6*
     pub(crate) const PARTITION_CONFIG_STATE: u64 = 7;
+
+    /// The last deterministic monotonic timestamp emitted by the state machine, used to
+    /// ensure correct vqueue inbox ordering across crash recovery.
+    ///
+    /// TODO: This is a temporary workaround until <https://github.com/restatedev/restate/issues/4516>
+    ///  is resolved by storing a proper HLC timestamp in Bifrost `Record.created_at`.
+    pub(crate) const LAST_RECORD_UNIQUE_TS: u64 = 8;
 }
 
 fn get<T: PartitionStoreProtobufValue, S: StorageAccess>(
@@ -167,6 +175,15 @@ impl ReadFsmTable for PartitionStore {
         let key = create_key(self.partition_id(), fsm_variable::PARTITION_CONFIG_STATE);
         self.get_value_storage_codec(key)
     }
+
+    async fn get_last_record_unique_ts(&mut self) -> Result<Option<UniqueTimestamp>> {
+        get::<SequenceNumber, _>(
+            self,
+            self.partition_id(),
+            fsm_variable::LAST_RECORD_UNIQUE_TS,
+        )
+        .map(|opt| opt.and_then(|s| UniqueTimestamp::try_from(u64::from(s)).ok()))
+    }
 }
 
 impl WriteFsmTable for PartitionStoreTransaction<'_> {
@@ -223,5 +240,14 @@ impl WriteFsmTable for PartitionStoreTransaction<'_> {
     fn put_partition_config_state(&mut self, state: &CachedEpochMetadata) -> Result<()> {
         let key = create_key(self.partition_id(), fsm_variable::PARTITION_CONFIG_STATE);
         self.put_kv_storage_codec(key, state)
+    }
+
+    fn put_last_record_unique_ts(&mut self, ts: UniqueTimestamp) -> Result<()> {
+        put(
+            self,
+            self.partition_id(),
+            fsm_variable::LAST_RECORD_UNIQUE_TS,
+            &SequenceNumber::from(ts.as_u64()),
+        )
     }
 }

@@ -148,6 +148,34 @@ impl UniqueTimestamp {
         Self::from_parts_unchecked(unix_millis.as_u64() - RESTATE_EPOCH.as_u64(), 0)
     }
 
+    /// Advances this timestamp using a deterministic HLC-like algorithm driven by an
+    /// external millisecond clock source. Returns a new [`UniqueTimestamp`] that is
+    /// guaranteed to be strictly greater than `self`.
+    ///
+    /// If `unix_millis` advances past `self`'s physical component, the logical clock
+    /// resets to 0. Otherwise, the logical clock is incremented.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the logical clock overflows (more than [`LC_MAX`] increments within
+    /// the same millisecond, i.e. >4M records/ms).
+    pub fn next_from_millis(&self, unix_millis: MillisSinceEpoch) -> Self {
+        debug_assert!(
+            unix_millis.as_u64() >= RESTATE_EPOCH.as_u64(),
+            "HLC timestamps below Jan 01 2022 00:00:00 GMT+0000 are invalid"
+        );
+        let new_phy = unix_millis.as_u64() - RESTATE_EPOCH.as_u64();
+        let my_phy = self.physical_raw();
+
+        if new_phy > my_phy {
+            Self::from_parts_unchecked(new_phy, 0)
+        } else {
+            // Physical clock hasn't advanced (same millisecond or clock went backwards).
+            // Increment logical counter to maintain strict monotonicity.
+            Self::from_parts_unchecked(my_phy, self.logical_raw() + 1)
+        }
+    }
+
     pub const fn to_unix_millis(&self) -> MillisSinceEpoch {
         MillisSinceEpoch::new(self.physical_raw() + RESTATE_EPOCH.as_u64())
     }
@@ -306,5 +334,71 @@ mod tests {
         let unique = UniqueTimestamp::from_unix_millis_unchecked(ts);
 
         assert_eq!(unique.to_unix_millis(), ts);
+    }
+
+    #[test]
+    fn next_from_millis_advances_physical_clock() {
+        let ts1 = MillisSinceEpoch::new(1704067200120);
+        let ts2 = MillisSinceEpoch::new(1704067200130);
+
+        let a = UniqueTimestamp::MIN.next_from_millis(ts1);
+        let b = a.next_from_millis(ts2);
+
+        // Physical time advances, logical clock resets
+        assert_eq!(a.to_unix_millis(), ts1);
+        assert_eq!(a.logical_raw(), 0);
+        assert_eq!(b.to_unix_millis(), ts2);
+        assert_eq!(b.logical_raw(), 0);
+        assert!(b > a);
+    }
+
+    #[test]
+    fn next_from_millis_increments_logical_clock_within_same_ms() {
+        let ts = MillisSinceEpoch::new(1704067200120);
+
+        let a = UniqueTimestamp::MIN.next_from_millis(ts);
+        let b = a.next_from_millis(ts);
+        let c = b.next_from_millis(ts);
+
+        // Same millisecond → logical clock increments
+        assert_eq!(a.to_unix_millis(), ts);
+        assert_eq!(a.logical_raw(), 0);
+        assert_eq!(b.logical_raw(), 1);
+        assert_eq!(c.logical_raw(), 2);
+        assert!(a < b);
+        assert!(b < c);
+    }
+
+    #[test]
+    fn next_from_millis_handles_clock_going_backwards() {
+        let ts_later = MillisSinceEpoch::new(1704067200200);
+        let ts_earlier = MillisSinceEpoch::new(1704067200100);
+
+        let a = UniqueTimestamp::MIN.next_from_millis(ts_later);
+        let b = a.next_from_millis(ts_earlier);
+
+        // Clock went backwards — keeps the higher physical time and increments lc
+        assert_eq!(b.to_unix_millis(), ts_later);
+        assert_eq!(b.logical_raw(), 1);
+        assert!(b > a);
+    }
+
+    #[test]
+    fn next_from_millis_always_strictly_monotonic() {
+        let ts = MillisSinceEpoch::new(1704067200120);
+        let mut prev = UniqueTimestamp::MIN.next_from_millis(ts);
+
+        // Many records within the same millisecond
+        for _ in 0..1000 {
+            let next = prev.next_from_millis(ts);
+            assert!(next > prev, "{next:?} should be > {prev:?}");
+            prev = next;
+        }
+
+        // Advancing the clock resets and is still monotonic
+        let ts2 = MillisSinceEpoch::new(1704067200121);
+        let next = prev.next_from_millis(ts2);
+        assert!(next > prev, "{next:?} should be > {prev:?}");
+        assert_eq!(next.logical_raw(), 0);
     }
 }

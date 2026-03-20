@@ -66,7 +66,8 @@ mod tests {
             None, /* outbox_head_seq_number */
             PartitionKey::MIN..=PartitionKey::MAX,
             SemanticRestateVersion::unknown().clone(),
-            Default::default(),
+            Default::default(), /* schema */
+            None,               /* last_record_unique_ts */
         );
         // this is fine as we are always above the unknown version (current > 0.0.0)
         let mut test_env = TestEnv::create_with_state_machine(state_machine).await;
@@ -108,7 +109,8 @@ mod tests {
             None, /* outbox_head_seq_number */
             PartitionKey::MIN..=PartitionKey::MAX,
             SemanticRestateVersion::unknown().clone(),
-            Default::default(),
+            Default::default(), /* schema */
+            None,               /* last_record_unique_ts */
         );
         // this is fine as we are always above the unknown version (current > 0.0.0)
         let mut test_env = TestEnv::create_with_state_machine(state_machine).await;
