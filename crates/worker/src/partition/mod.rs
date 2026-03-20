@@ -237,6 +237,7 @@ where
         let outbox_head_seq_number = partition_store.get_outbox_head_seq_number().await?;
         let min_restate_version = partition_store.get_min_restate_version().await?;
         let schema = partition_store.get_schema().await?;
+        let last_record_unique_ts = partition_store.get_last_record_unique_ts().await?;
 
         if !SemanticRestateVersion::current().is_equal_or_newer_than(&min_restate_version) {
             gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL =>
@@ -257,6 +258,7 @@ where
             partition_store.partition_key_range().clone(),
             min_restate_version,
             schema,
+            last_record_unique_ts,
         );
 
         Ok(state_machine)
@@ -1009,6 +1011,9 @@ where
                         self.leadership_state.is_leader(),
                     )
                     .await?;
+                transaction
+                    .put_last_record_unique_ts(self.state_machine.last_record_unique_ts())
+                    .map_err(state_machine::Error::Storage)?;
             }
         } else {
             self.status.num_skipped_records += 1;

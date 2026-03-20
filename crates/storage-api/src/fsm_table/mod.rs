@@ -12,6 +12,7 @@ use std::future::Future;
 
 use bytes::BytesMut;
 
+use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::LeaderEpoch;
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
@@ -48,6 +49,16 @@ pub trait ReadFsmTable {
     fn get_partition_config_state(
         &mut self,
     ) -> impl Future<Output = Result<Option<CachedEpochMetadata>>> + Send + '_;
+
+    /// Returns the last record's deterministic monotonic timestamp used for vqueue inbox
+    /// ordering. Returns `None` on first boot or upgrade from a version that didn't persist
+    /// this value.
+    ///
+    /// TODO: This is a temporary workaround until <https://github.com/restatedev/restate/issues/4516>
+    ///  is resolved by storing a proper HLC timestamp in Bifrost `Record.created_at`.
+    fn get_last_record_unique_ts(
+        &mut self,
+    ) -> impl Future<Output = Result<Option<UniqueTimestamp>>> + Send + '_;
 }
 
 pub trait WriteFsmTable {
@@ -64,6 +75,14 @@ pub trait WriteFsmTable {
     fn put_schema(&mut self, schema: &Schema) -> Result<()>;
 
     fn put_partition_config_state(&mut self, state: &CachedEpochMetadata) -> Result<()>;
+
+    /// Persists the last record's deterministic monotonic timestamp used for vqueue inbox
+    /// ordering. Must be persisted atomically with the record's effects to ensure correct
+    /// recovery after crashes.
+    ///
+    /// TODO: This is a temporary workaround until <https://github.com/restatedev/restate/issues/4516>
+    ///  is resolved by storing a proper HLC timestamp in Bifrost `Record.created_at`.
+    fn put_last_record_unique_ts(&mut self, ts: UniqueTimestamp) -> Result<()>;
 }
 
 #[derive(Debug, Clone, Copy, derive_more::From, derive_more::Into)]

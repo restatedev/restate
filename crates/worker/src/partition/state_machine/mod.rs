@@ -154,6 +154,15 @@ pub struct StateMachine {
     pub(crate) schema: Option<Schema>,
 
     pub(crate) partition_key_range: RangeInclusive<PartitionKey>,
+
+    /// A deterministic monotonic timestamp derived from each Bifrost record's wall-clock
+    /// timestamp. Uses an HLC-like algorithm: if consecutive records share the same millisecond,
+    /// the logical clock is incremented to preserve ordering. Persisted to the FSM table so
+    /// that crash recovery produces correctly ordered timestamps.
+    ///
+    /// TODO: This is a temporary workaround until <https://github.com/restatedev/restate/issues/4516>
+    ///  is resolved by storing a proper HLC timestamp in Bifrost `Record.created_at`.
+    last_record_unique_ts: UniqueTimestamp,
 }
 
 impl Debug for StateMachine {
@@ -239,6 +248,7 @@ impl StateMachine {
         partition_key_range: RangeInclusive<PartitionKey>,
         min_restate_version: SemanticRestateVersion,
         schema: Option<Schema>,
+        last_record_unique_ts: Option<UniqueTimestamp>,
     ) -> Self {
         Self {
             inbox_seq_number,
@@ -247,7 +257,13 @@ impl StateMachine {
             partition_key_range,
             min_restate_version,
             schema,
+            last_record_unique_ts: last_record_unique_ts.unwrap_or(UniqueTimestamp::MIN),
         }
+    }
+
+    /// Returns the last emitted deterministic monotonic timestamp.
+    pub fn last_record_unique_ts(&self) -> UniqueTimestamp {
+        self.last_record_unique_ts
     }
 }
 
@@ -255,6 +271,10 @@ pub(crate) struct StateMachineApplyContext<'a, S> {
     storage: &'a mut S,
     record_created_at: MillisSinceEpoch,
     record_lsn: Lsn,
+    /// A deterministic monotonic [`UniqueTimestamp`] derived from this record's wall-clock
+    /// timestamp. Guaranteed to be strictly greater than the timestamp of any previously
+    /// applied record, even when multiple records share the same millisecond.
+    record_unique_ts: UniqueTimestamp,
     action_collector: &'a mut ActionCollector,
     vqueues_cache: &'a mut VQueuesMetaMut,
     inbox_seq_number: &'a mut MessageIndex,
@@ -286,6 +306,14 @@ impl StateMachine {
         vqueues_cache: &mut VQueuesMetaMut,
         is_leader: bool,
     ) -> Result<(), Error> {
+        // Advance the deterministic monotonic timestamp using an HLC-like algorithm.
+        // If the current record's millisecond timestamp is ahead of the last emitted
+        // timestamp's physical component, use it with lc=0. Otherwise, increment the
+        // logical clock to maintain strict monotonicity across same-millisecond records.
+        self.last_record_unique_ts = self
+            .last_record_unique_ts
+            .next_from_millis(record_created_at);
+
         let span = utils::state_machine_apply_command_span(is_leader, &command);
         async {
             let start = Instant::now();
@@ -295,6 +323,7 @@ impl StateMachine {
                 storage: transaction,
                 record_created_at,
                 record_lsn,
+                record_unique_ts: self.last_record_unique_ts,
                 action_collector,
                 inbox_seq_number: &mut self.inbox_seq_number,
                 outbox_seq_number: &mut self.outbox_seq_number,
@@ -316,6 +345,15 @@ impl StateMachine {
 }
 
 impl<S> StateMachineApplyContext<'_, S> {
+    /// Returns a deterministic, monotonically increasing [`UniqueTimestamp`] for the current
+    /// Bifrost record. This is pre-computed using an HLC-like algorithm that guarantees
+    /// strict ordering across records, even when multiple records share the same millisecond
+    /// wall-clock timestamp. This is critical for deterministic FIFO ordering in vqueue
+    /// inboxes.
+    fn record_unique_ts(&self) -> UniqueTimestamp {
+        self.record_unique_ts
+    }
+
     async fn get_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
@@ -475,6 +513,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     cmd.assignment.partition_key,
                     VQueueInstance::from_raw(cmd.assignment.instance),
                 );
+                let record_unique_ts = self.record_unique_ts();
                 let mut inbox = VQueues::new(
                     qid,
                     self.storage,
@@ -482,8 +521,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                     self.is_leader.then_some(self.action_collector),
                 );
 
-                let record_unique_ts =
-                    UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
                 for entry in cmd.assignment.entries {
                     inbox.yield_running(record_unique_ts, entry.card).await?;
                 }
@@ -902,7 +939,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         // todo(asoli): temporary until we move this to the invocation id creation site.
         let qid = Self::vqueue_id_from_invocation(&invocation_id, &metadata.invocation_target);
 
-        let record_unique_ts = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
+        let record_unique_ts = self.record_unique_ts();
         let visible_at = VisibleAt::new(metadata.execution_time.unwrap_or(self.record_created_at));
 
         VQueues::new(
@@ -1828,8 +1865,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         )?;
 
         if Configuration::pinned().common.experimental_enable_vqueues {
-            let record_unique_ts =
-                UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
+            let record_unique_ts = self.record_unique_ts();
             // Is this an invocation that has a vqueue inbox?
             if !VQueues::end_by_id(
                 self.storage,
@@ -1936,8 +1972,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         )?;
 
         if Configuration::pinned().common.experimental_enable_vqueues {
-            let record_unique_ts =
-                UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
+            let record_unique_ts = self.record_unique_ts();
             // Is this an invocation that has a vqueue inbox?
             if !VQueues::end_by_id(
                 self.storage,
@@ -2780,8 +2815,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     .map_err(Error::Storage)?;
             }
 
-            let record_unique_ts =
-                UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
+            let record_unique_ts = self.record_unique_ts();
 
             // we need to remove the invocation from the running list
             VQueues::end_by_id(
@@ -2870,7 +2904,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             VQueueInstance::from_raw(command.assignment.instance),
         );
 
-        let record_unique_ts = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
+        let record_unique_ts = self.record_unique_ts();
         let updated_run_token_bucket_zero_time =
             command.meta_updates.updated_token_bucket_zero_time;
         for entry in command.assignment.entries {
@@ -5172,14 +5206,14 @@ impl<S> StateMachineApplyContext<'_, S> {
             );
         };
 
+        let now = self.record_unique_ts();
+
         let mut vqueue = VQueues::new(
             qid,
             self.storage,
             self.vqueues_cache,
             self.is_leader.then_some(self.action_collector),
         );
-
-        let now = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
 
         let should_release_concurrency_token = match cause {
             ParkCause::Suspend => {
@@ -5246,14 +5280,14 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         let qid = entry_state_header.vqueue_id();
 
+        let now = self.record_unique_ts();
+
         let mut vqueue = VQueues::new(
             qid,
             self.storage,
             self.vqueues_cache,
             self.is_leader.then_some(self.action_collector),
         );
-
-        let now = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
 
         match entry_state_header.stage() {
             Stage::Park => {
@@ -5338,7 +5372,7 @@ impl<S> StateMachineApplyContext<'_, S> {
     where
         S: WriteVQueueTable + ReadVQueueTable + WriteFsmTable,
     {
-        let now = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
+        let now = self.record_unique_ts();
         let visible_at = VisibleAt::Now;
 
         let service_id = &state_mutation.service_id;

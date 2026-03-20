@@ -97,7 +97,8 @@ impl TestEnv {
             None, /* outbox_head_seq_number */
             PartitionKey::MIN..=PartitionKey::MAX,
             min_restate_version,
-            None,
+            None, /* schema */
+            None, /* last_record_unique_ts */
         ))
         .await
     }
@@ -1088,7 +1089,8 @@ async fn truncate_outbox_with_gap() -> Result<(), Error> {
         Some(outbox_head_index),
         PartitionKey::MIN..=PartitionKey::MAX,
         SemanticRestateVersion::unknown().clone(),
-        None,
+        None, /* schema */
+        None, /* last_record_unique_ts */
     ))
     .await;
 
