@@ -167,6 +167,16 @@ enum TerminalLoopState<T> {
     Failed(InvokerError),
 }
 
+impl<T> TerminalLoopState<T> {
+    fn is_closed(&self) -> bool {
+        matches!(self, Self::Closed)
+    }
+
+    fn is_suspend(&self) -> bool {
+        matches!(self, Self::Suspended(_) | Self::SuspendedV2(_))
+    }
+}
+
 impl<T, E: Into<InvokerError>> From<Result<T, E>> for TerminalLoopState<T> {
     fn from(value: Result<T, E>) -> Self {
         match value {
@@ -486,6 +496,8 @@ impl ResponseStream {
         // This task::spawn won't be required by hyper 1.0, as the connection will be driven by a task
         // spawned somewhere else (perhaps in the connection pool).
         // See: https://github.com/restatedev/restate/issues/96 and https://github.com/restatedev/restate/issues/76
+
+        //todo: this is a temp clone to test
         Self::WaitingHeaders {
             join_handle: AbortOnDropHandle::new(tokio::task::spawn(client.call(req))),
         }

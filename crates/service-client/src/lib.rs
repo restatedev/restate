@@ -19,7 +19,7 @@ use arc_swap::ArcSwapOption;
 use bytes::Bytes;
 use bytestring::ByteString;
 use core::fmt;
-use futures::FutureExt;
+use futures::{FutureExt, future};
 use http_body_util::Full;
 use hyper::body::Body;
 use hyper::http::uri::PathAndQuery;
@@ -30,19 +30,18 @@ use restate_types::schema::deployment::EndpointLambdaCompression;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Formatter;
-use std::future;
-use std::future::Future;
 use std::sync::Arc;
 
 mod http;
 mod lambda;
+pub mod pool;
 mod proxy;
 mod request_identity;
 mod utils;
 
-pub type ResponseBody = http_body_util::Either<hyper::body::Incoming, Full<Bytes>>;
+pub type ResponseBody = http_body_util::Either<http::ResponseBody, Full<Bytes>>;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ServiceClient {
     // TODO a single client uses the pooling provided by hyper, but this is not enough.
     //  See https://github.com/restatedev/restate/issues/76 for more background on the topic.
