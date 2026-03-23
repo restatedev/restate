@@ -6728,6 +6728,7 @@ dependencies = [
  "restate-errors",
  "restate-ingestion-client",
  "restate-metadata-providers",
+ "restate-metadata-server-grpc",
  "restate-metadata-store",
  "restate-service-client",
  "restate-service-protocol",
