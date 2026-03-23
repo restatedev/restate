@@ -8,12 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
 use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::error::DataFusionError;
-use futures::StreamExt;
 use futures::stream::BoxStream;
+use futures::{Stream, StreamExt};
 use tonic::codec::CompressionEncoding;
 use tonic::{Request, Response, Status, async_trait};
 use tracing::info;
@@ -25,14 +28,15 @@ use restate_core::protobuf::cluster_ctrl_svc::{
     CreatePartitionSnapshotResponse, DescribeLogRequest, DescribeLogResponse, FindTailRequest,
     FindTailResponse, GetClusterConfigurationRequest, GetClusterConfigurationResponse,
     ListLogsRequest, ListLogsResponse, MigrateMetadataRequest, MigrateMetadataResponse,
-    QueryRequest, QueryResponse, SealAndExtendChainRequest, SealAndExtendChainResponse,
-    SealChainRequest, SealChainResponse, SealedSegment, SetClusterConfigurationRequest,
-    SetClusterConfigurationResponse, TailState, TrimLogRequest,
+    QueryRequest, QueryResponse, QueryWarning, SealAndExtendChainRequest,
+    SealAndExtendChainResponse, SealChainRequest, SealChainResponse, SealedSegment,
+    SetClusterConfigurationRequest, SetClusterConfigurationResponse, TailState, TrimLogRequest,
     cluster_ctrl_svc_server::{ClusterCtrlSvc, ClusterCtrlSvcServer},
 };
 use restate_core::{Metadata, MetadataWriter};
 use restate_metadata_store::WriteError;
 use restate_storage_query_datafusion::context::QueryContext;
+use restate_storage_query_datafusion::node_fan_out::NodeWarnings;
 use restate_types::config::{MetadataClientKind, MetadataClientOptions, NetworkingOptions};
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::{Logs, SegmentIndex};
@@ -419,21 +423,37 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         request: Request<QueryRequest>,
     ) -> std::result::Result<Response<Self::QueryStream>, tonic::Status> {
         let request = request.into_inner();
-        let stream = self
+        let query_result = self
             .query_context
             .execute(&request.query)
             .await
             .map_err(datafusion_error_to_status)?;
 
-        Ok(Response::new(
-            WriteRecordBatchStream::<StreamWriter<Vec<u8>>>::new(stream, request.query)
-                .map_err(datafusion_error_to_status)?
-                .map(|item| {
-                    item.map(|encoded| QueryResponse { encoded })
-                        .map_err(datafusion_error_to_status)
-                })
-                .boxed(),
-        ))
+        let node_warnings = query_result.node_warnings;
+
+        let data_stream = WriteRecordBatchStream::<StreamWriter<Vec<u8>>>::new(
+            query_result.stream,
+            request.query,
+        )
+        .map_err(datafusion_error_to_status)?
+        .map(|item| {
+            item.map(|encoded| QueryResponse {
+                encoded,
+                ..Default::default()
+            })
+            .map_err(datafusion_error_to_status)
+        });
+
+        // Wrap the data stream to attach per-node warnings to the final
+        // response message, avoiding an extra trailing empty-data message.
+        let stream = QueryWarningStream {
+            inner: data_stream.boxed(),
+            node_warnings,
+            last_response: None,
+            done: false,
+        };
+
+        Ok(Response::new(stream.boxed()))
     }
 
     /// Migrate metadata from the current metadata store to a target store
@@ -537,6 +557,72 @@ fn serialize_value<T: StorageEncode>(value: &T) -> Bytes {
     let mut buf = BytesMut::new();
     StorageCodec::encode(value, &mut buf).expect("We can always serialize");
     buf.freeze()
+}
+
+/// Stream wrapper that buffers the last response from the inner stream, and
+/// when the inner stream ends, attaches any accumulated per-node warnings
+/// to that final response before yielding it.
+struct QueryWarningStream {
+    inner: BoxStream<'static, Result<QueryResponse, Status>>,
+    node_warnings: Vec<NodeWarnings>,
+    last_response: Option<Result<QueryResponse, Status>>,
+    done: bool,
+}
+
+impl Stream for QueryWarningStream {
+    type Item = Result<QueryResponse, Status>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.done {
+            return Poll::Ready(None);
+        }
+
+        loop {
+            match self.inner.poll_next_unpin(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(None) => {
+                    self.done = true;
+                    // Inner stream ended. Yield the buffered last response
+                    // with warnings attached, or a warnings-only response.
+                    let warnings = drain_node_warnings(&self.node_warnings);
+                    return match self.last_response.take() {
+                        Some(Ok(mut resp)) => {
+                            resp.warnings = warnings;
+                            Poll::Ready(Some(Ok(resp)))
+                        }
+                        Some(Err(err)) => Poll::Ready(Some(Err(err))),
+                        None if !warnings.is_empty() => {
+                            // No data at all, but we have warnings
+                            Poll::Ready(Some(Ok(QueryResponse {
+                                encoded: Default::default(),
+                                warnings,
+                            })))
+                        }
+                        None => Poll::Ready(None),
+                    };
+                }
+                Poll::Ready(Some(item)) => {
+                    // Yield the previously buffered response, buffer this one
+                    if let Some(prev) = self.last_response.replace(item) {
+                        return Poll::Ready(Some(prev));
+                    }
+                    // First item — buffer it and poll for the next
+                    continue;
+                }
+            }
+        }
+    }
+}
+
+fn drain_node_warnings(node_warnings: &[NodeWarnings]) -> Vec<QueryWarning> {
+    let mut out = Vec::new();
+    for nw in node_warnings {
+        out.extend(nw.lock().drain(..).map(|w| QueryWarning {
+            node_id: w.node_id,
+            message: w.message,
+        }));
+    }
+    out
 }
 
 fn datafusion_error_to_status(err: DataFusionError) -> Status {
