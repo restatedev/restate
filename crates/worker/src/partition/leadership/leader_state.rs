@@ -658,7 +658,7 @@ impl LeaderState {
                 invocation_id,
                 invocation_target,
             } => {
-                let (permit, mut memory_lease) = match self.scheduler.pop_resources(item_hash) {
+                let (permit, memory_lease) = match self.scheduler.pop_resources(item_hash) {
                     Some(resources) => (resources.permit, resources.memory_lease),
                     None => {
                         tracing::warn!(
@@ -667,8 +667,9 @@ impl LeaderState {
                         (Permit::new_empty(), memory_pool.empty_lease())
                     }
                 };
-                let outbound_seed =
-                    memory_lease.split(restate_invoker_api::capacity::OUTBOUND_SEED_SIZE);
+                // Full lease goes to outbound; inbound gets an empty lease
+                // (inbound budgeting is not yet wired).
+                let inbound_seed = memory_pool.empty_lease();
                 invoker_tx
                     .vqueue_invoke(
                         partition_leader_epoch,
@@ -676,8 +677,8 @@ impl LeaderState {
                         permit,
                         invocation_id,
                         invocation_target,
+                        inbound_seed,
                         memory_lease,
-                        outbound_seed,
                     )
                     .map_err(Error::Invoker)?
             }

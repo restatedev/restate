@@ -383,9 +383,12 @@ where
             .select_protocol_version_and_run(&mut invocation_reader, &mut budget)
             .await;
 
-        // Only Failed returns the budget so the invoker main loop can stash
-        // it on the ISM for retry reuse. ShouldYield drops the budget to free
-        // memory. Other terminal states (Closed, Suspended) end the invocation.
+        // Failed and ShouldYield return the budget to the invoker main loop.
+        // Failed: the budget is stashed on the ISM for retry reuse.
+        // ShouldYield: the main loop either drops the budget (yield path) or
+        //   stashes it for retry (error fallback path).
+        // Other terminal states (Closed, Suspended) end the invocation and the
+        // budget is implicitly dropped here.
         let inner = match terminal_state {
             TerminalLoopState::Continue(_) => {
                 unreachable!("This is not supposed to happen. This is a runtime bug")

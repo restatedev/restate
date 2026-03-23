@@ -16,6 +16,8 @@ pub const VQUEUE_RUN_CONFIRMED: &str = "restate.vqueue.scheduler.run_confirmed.t
 pub const VQUEUE_RUN_REJECTED: &str = "restate.vqueue.scheduler.run_rejected.total";
 pub const VQUEUE_INVOKER_CAPACITY_WAIT_MS: &str =
     "restate.vqueue.scheduler.invoker_capacity_wait_ms.total";
+pub const VQUEUE_INVOKER_MEMORY_WAIT_MS: &str =
+    "restate.vqueue.scheduler.invoker_memory_wait_ms.total";
 
 // Node-level scheduler throttling (affects resume/start)
 pub const VQUEUE_GLOBAL_THROTTLE_WAIT_MS: &str =
@@ -55,7 +57,13 @@ pub fn describe_metrics() {
     describe_counter!(
         VQUEUE_INVOKER_CAPACITY_WAIT_MS,
         Unit::Count,
-        "Cumulative number of seconds spent waiting for global invoker capacity"
+        "Cumulative number of milliseconds spent waiting for global invoker capacity"
+    );
+
+    describe_counter!(
+        VQUEUE_INVOKER_MEMORY_WAIT_MS,
+        Unit::Count,
+        "Cumulative number of milliseconds spent waiting for invoker memory pool"
     );
 
     describe_counter!(

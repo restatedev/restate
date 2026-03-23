@@ -39,6 +39,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 
+use restate_serde_util::ByteCount;
 use tokio::sync::Notify;
 use tokio::sync::futures::OwnedNotified;
 
@@ -47,7 +48,8 @@ use crate::{MemoryLease, MemoryPool};
 /// Returned by [`LocalMemoryPool::reserve`] when the requested memory cannot
 /// be satisfied even in the best case (all in-flight reclaimed + entire global
 /// pool available).
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("out of memory: requested {} but the budget cannot satisfy the request", ByteCount::from(*.needed))]
 pub struct OutOfMemory {
     /// The number of bytes that were requested but could not be allocated.
     pub needed: usize,
@@ -78,18 +80,22 @@ impl InvocationMemory {
         outbound_seed: MemoryLease,
         outbound_upper_bound: usize,
     ) -> Self {
-        let pool = inbound_seed.budget().clone();
         let inbound_min = inbound_seed.size().as_usize();
         let outbound_min = outbound_seed.size().as_usize();
 
         Self {
             inbound: LocalMemoryPool::new(
-                pool.clone(),
+                inbound_seed.budget().clone(),
                 inbound_seed,
                 inbound_min,
                 inbound_upper_bound,
             ),
-            outbound: LocalMemoryPool::new(pool, outbound_seed, outbound_min, outbound_upper_bound),
+            outbound: LocalMemoryPool::new(
+                outbound_seed.budget().clone(),
+                outbound_seed,
+                outbound_min,
+                outbound_upper_bound,
+            ),
         }
     }
 
@@ -249,6 +255,9 @@ impl LocalMemoryPool {
             }
         }
 
+        // Safety invariant: `in_flight` must stay below `DEAD_BIT` (2^63) for the
+        // dead-bit protocol to work correctly. This requires < 8 EiB of in-flight
+        // memory, which is infeasible in practice.
         self.shared.in_flight.fetch_add(size, Ordering::Relaxed);
         Some(LocalMemoryLease {
             shared: Arc::clone(&self.shared),

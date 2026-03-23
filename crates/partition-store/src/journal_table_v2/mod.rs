@@ -289,6 +289,7 @@ fn delete_journal<S: StorageAccess>(
         Ok(notification_id)
     })
     .collect::<Result<Vec<_>>>()?;
+
     for notification_id in notification_id_index {
         storage.delete_key(
             &notification_id_to_notification_index

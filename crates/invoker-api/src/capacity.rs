@@ -16,15 +16,9 @@ use restate_types::config::ThrottlingOptions;
 
 pub type TokenBucket<C = gardal::TokioClock> = gardal::SharedTokenBucket<C>;
 
-/// Size of the inbound seed lease (~2 HTTP/2 frames).
-pub const INBOUND_SEED_SIZE: usize = 64 * 1024;
-
-/// Size of the outbound seed lease. Zero for now; will be non-zero once
-/// outbound budget is pushed into the storage layer.
-pub const OUTBOUND_SEED_SIZE: usize = 0;
-
-/// Combined seed size reserved from the memory pool per invocation.
-pub const SEED_SIZE: usize = INBOUND_SEED_SIZE + OUTBOUND_SEED_SIZE;
+/// Default seed size reserved from the memory pool per invocation
+/// for the outbound budget.
+pub const DEFAULT_SEED_SIZE: usize = 32 * 1024;
 
 #[derive(Clone)]
 pub struct InvokerCapacity {
@@ -32,6 +26,8 @@ pub struct InvokerCapacity {
     pub invocation_token_bucket: Option<TokenBucket>,
     pub action_token_bucket: Option<TokenBucket>,
     pub memory_pool: MemoryPool,
+    /// Outbound seed size in bytes reserved from the memory pool per invocation.
+    pub seed_size: usize,
 }
 
 impl InvokerCapacity {
@@ -41,6 +37,7 @@ impl InvokerCapacity {
             invocation_token_bucket: None,
             action_token_bucket: None,
             memory_pool: MemoryPool::unlimited(),
+            seed_size: DEFAULT_SEED_SIZE,
         }
     }
 
@@ -49,6 +46,7 @@ impl InvokerCapacity {
         invocation_throttling: Option<&ThrottlingOptions>,
         action_throttling: Option<&ThrottlingOptions>,
         memory_pool: MemoryPool,
+        seed_size: usize,
     ) -> Self {
         Self {
             concurrency: Concurrency::new(concurrency),
@@ -59,6 +57,7 @@ impl InvokerCapacity {
                 TokenBucket::new(gardal::Limit::from(opts.clone()), gardal::TokioClock)
             }),
             memory_pool,
+            seed_size,
         }
     }
 }
