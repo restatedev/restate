@@ -95,6 +95,7 @@ restate-vqueues = { path = "crates/vqueues" }
 restate-wal-protocol = { path = "crates/wal-protocol" }
 restate-worker = { path = "crates/worker" }
 restate-ingestion-client = { path = "crates/ingestion-client" }
+restate-limiter = { path = "crates/limiter" }
 
 # this workspace-hack package is overridden by a patch below to use workspace-hack subdir when building in this repo
 # outside this repo, the crates.io restate-workspace-hack (an empty package) will be used instead
@@ -160,7 +161,8 @@ futures-sink = "0.3.31"
 futures-util = "0.3.31"
 gardal = { version = "0.0.1-alpha.9" }
 googletest = { version = "0.10", features = ["anyhow"] }
-hashbrown = { version = "0.16"  }
+hashbrown = { version = "0.16" }
+slotmap = { version = "1" }
 hostname = { version = "0.4.2" }
 http = "1.4.0"
 http-body = "1.0.1"
