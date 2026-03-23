@@ -37,6 +37,11 @@ enum ServiceProtocolVersion {
   // * StartMessage.random_seed
   // * Failure.metadata
   V6 = 6;
+  // Added:
+  // * EagerStateEntryMessage and EagerStateCompleteMessage for streaming state
+  //   entries after the StartMessage, allowing state sizes to exceed the
+  //   maximum message size limit.
+  V7 = 7;
 }
 
 // --- Core frames ---
@@ -142,6 +147,28 @@ message ProposeRunCompletionMessage {
     Failure failure = 15;
   };
 }
+
+// Type: 0x0000 + 6
+// Carries a batch of state entries to the SDK during the state transfer
+// phase between StartMessage and journal replay entries.
+// May be sent zero or more times. Only valid in V7+.
+message EagerStateEntryMessage {
+  // protolint:disable:next REPEATED_FIELD_NAMES_PLURALIZED
+  repeated StartMessage.StateEntry state_map = 1;
+}
+
+// Type: 0x0000 + 7
+// Signals the end of the eager state transfer phase.
+// Sent exactly once, after the last EagerStateEntryMessage (or
+// immediately after StartMessage if no entries are streamed).
+// Only valid in V7+.
+message EagerStateCompleteMessage {
+  // When true, the combined state from StartMessage.state_map and all
+  // preceding EagerStateEntryMessages is only a partial view.
+  // The SDK must use lazy state commands for missing keys.
+  bool partial_state = 1;
+}
+
 
 // --- Commands and Notifications ---
 
