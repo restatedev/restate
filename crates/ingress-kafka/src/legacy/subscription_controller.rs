@@ -8,28 +8,28 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::{HashMap, HashSet};
+
 use anyhow::Context;
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::partitions::PartitionRouting;
-use std::collections::HashSet;
-
-use restate_bifrost::Bifrost;
-use restate_core::cancellation_watcher;
-use restate_types::config::IngressOptions;
-use restate_types::identifiers::SubscriptionId;
-use restate_types::live::{Live, LiveLoad};
-use restate_types::retries::RetryPolicy;
-use restate_types::schema::Schema;
-use restate_types::schema::subscriptions::{Source, Subscription};
-use std::time::Duration;
-use tokio::sync::mpsc;
-use tracing::warn;
 
 use crate::legacy::consumer_task::{self, MessageSender};
 use crate::legacy::dispatcher::KafkaIngressDispatcher;
 use crate::legacy::metric_definitions;
 use crate::legacy::subscription_controller::task_orchestrator::TaskOrchestrator;
 use crate::{Command, SubscriptionCommandReceiver, SubscriptionCommandSender};
+use restate_bifrost::Bifrost;
+use restate_core::cancellation_watcher;
+use restate_types::identifiers::SubscriptionId;
+use restate_types::live::Live;
+use restate_types::retries::RetryPolicy;
+use restate_types::schema::Schema;
+use restate_types::schema::kafka::KafkaCluster;
+use restate_types::schema::subscriptions::{Source, Subscription};
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tracing::warn;
 
 // For simplicity of the current implementation, this currently lives in this module
 // In future versions, we should either pull this out in a separate process, or generify it and move it to the worker, or an ad-hoc module
@@ -70,10 +70,7 @@ where
         self.commands_tx.clone()
     }
 
-    pub async fn run(
-        mut self,
-        mut updateable_config: impl LiveLoad<Live = IngressOptions>,
-    ) -> anyhow::Result<()> {
+    pub async fn run(mut self) -> anyhow::Result<()> {
         let shutdown = cancellation_watcher();
         tokio::pin!(shutdown);
 
@@ -84,20 +81,11 @@ where
             Some(Duration::from_secs(10)),
         ));
 
-        // NOTE: Configuration is pinned to a certain snapshot until we support adding/removing
-        // subscriptions dynamically from config
-        let options = &updateable_config.live_load();
-
         loop {
             tokio::select! {
                 Some(cmd) = self.commands_rx.recv() => {
                     match cmd {
-                        Command::StartSubscription(sub) => if let Err(e) = self.handle_start_subscription(options, sub, &mut task_orchestrator) {
-                            warn!("Error when starting a subscription: {e:?}");
-                            break;
-                        },
-                        Command::StopSubscription(sub_id) => self.handle_stop_subscription(sub_id, &mut task_orchestrator),
-                        Command::UpdateSubscriptions(subscriptions) => if let Err(e) = self.handle_update_subscriptions(options, subscriptions, &mut task_orchestrator) {
+                        Command::UpdateSubscriptions(kafka_clusters, subscriptions) => if let Err(e) = self.reconcile_subscriptions(kafka_clusters, subscriptions, &mut task_orchestrator) {
                             warn!("Error when updating subscriptions: {e:?}");
                             break;
                         },
@@ -117,7 +105,7 @@ where
 
     fn handle_start_subscription(
         &mut self,
-        options: &IngressOptions,
+        kafka_cluster: KafkaCluster,
         subscription: Subscription,
         task_orchestrator: &mut TaskOrchestrator<T>,
     ) -> anyhow::Result<()> {
@@ -125,15 +113,10 @@ where
         // enabling probing for the ca certificates if the user does not specify anything else
         client_config.set("https.ca.location", "probe");
 
-        let Source::Kafka { cluster, topic, .. } = subscription.source();
+        let Source::Kafka { topic, .. } = subscription.source();
 
-        // Copy cluster options and subscription metadata into client_config
-        let cluster_options = options
-            .get_kafka_cluster(cluster)
-            .with_context(|| format!("KafkaOptions is expected to contain the cluster '{}'. This might happen if you registered a subscription with a cluster name, but this cluster is not available anymore in the configuration. Configured Kafka clusters: {:?}", cluster, options.available_kafka_clusters()))?;
-
-        client_config.set("metadata.broker.list", cluster_options.brokers.join(","));
-        for (k, v) in cluster_options.additional_options.clone() {
+        // Copy first the cluster properties, then the metadata properties (one might override the other)
+        for (k, v) in &kafka_cluster.properties {
             client_config.set(k, v);
         }
         for (k, v) in subscription.metadata() {
@@ -153,10 +136,14 @@ where
             self.partition_routing.clone(),
             client_config,
             vec![topic.to_string()],
-            MessageSender::new(subscription, self.dispatcher.clone(), self.schema.clone()),
+            MessageSender::new(
+                subscription.clone(),
+                self.dispatcher.clone(),
+                self.schema.clone(),
+            ),
         );
 
-        task_orchestrator.start(subscription_id, consumer_task);
+        task_orchestrator.start(subscription_id, consumer_task, kafka_cluster, subscription);
 
         Ok(())
     }
@@ -169,26 +156,67 @@ where
         task_orchestrator.stop(subscription_id);
     }
 
-    fn handle_update_subscriptions(
+    fn reconcile_subscriptions(
         &mut self,
-        options: &IngressOptions,
+        kafka_clusters: Vec<KafkaCluster>,
         subscriptions: Vec<Subscription>,
         task_orchestrator: &mut TaskOrchestrator<T>,
     ) -> anyhow::Result<()> {
+        // Build a map from cluster name to KafkaCluster for quick lookup
+        let cluster_map: HashMap<&str, &KafkaCluster> = kafka_clusters
+            .iter()
+            .map(|cluster| (cluster.name(), cluster))
+            .collect();
+
+        // Track which running subscriptions we've seen in the new configuration
         let mut running_subscriptions: HashSet<_> =
             task_orchestrator.running_subscriptions().cloned().collect();
 
         for subscription in subscriptions {
-            if !running_subscriptions.contains(&subscription.id()) {
-                self.handle_start_subscription(options, subscription, task_orchestrator)?;
+            let subscription_id = subscription.id();
+
+            // Find the KafkaCluster for this subscription
+            let Source::Kafka { cluster, .. } = subscription.source();
+            let kafka_cluster = cluster_map.get(cluster.as_str()).cloned().with_context(|| {
+                format!(
+                    "KafkaCluster '{}' not found for subscription {}. This might happen if you registered a subscription with a cluster name, but this cluster is not available anymore in the configuration. Configured Kafka clusters: {:?}",
+                    cluster, subscription_id, cluster_map.keys().collect::<Vec<_>>()
+                )
+            })?;
+
+            if let Some((running_cluster, running_subscription)) =
+                task_orchestrator.get_running_config(&subscription_id)
+            {
+                // Subscription is already running - check if configuration changed
+                let config_changed = running_subscription != &subscription
+                    || running_cluster.properties != kafka_cluster.properties;
+
+                if config_changed {
+                    // Configuration changed -> restart the subscription
+                    self.handle_stop_subscription(subscription_id, task_orchestrator);
+                    self.handle_start_subscription(
+                        kafka_cluster.clone(),
+                        subscription,
+                        task_orchestrator,
+                    )?;
+                }
+                // We're good with this subscription
+                running_subscriptions.remove(&subscription_id);
             } else {
-                running_subscriptions.remove(&subscription.id());
+                // New subscription -> start it
+                self.handle_start_subscription(
+                    kafka_cluster.clone(),
+                    subscription,
+                    task_orchestrator,
+                )?;
             }
         }
 
+        // Stop any subscriptions that are no longer in the configuration
         for subscription_id in running_subscriptions {
             self.handle_stop_subscription(subscription_id, task_orchestrator);
         }
+
         Ok(())
     }
 }
@@ -201,6 +229,8 @@ mod task_orchestrator {
     use restate_timer_queue::TimerQueue;
     use restate_types::identifiers::SubscriptionId;
     use restate_types::retries::{RetryIter, RetryPolicy};
+    use restate_types::schema::kafka::KafkaCluster;
+    use restate_types::schema::subscriptions::Subscription;
     use std::collections::HashMap;
     use std::time::SystemTime;
     use tokio::sync::oneshot;
@@ -213,6 +243,9 @@ mod task_orchestrator {
         consumer_task_clone: consumer_task::ConsumerTask<T>,
         task_state_inner: TaskStateInner,
         retry_iter: RetryIter<'static>,
+        // Store the KafkaCluster and Subscription to detect configuration changes
+        kafka_cluster: KafkaCluster,
+        subscription: Subscription,
     }
 
     enum TaskStateInner {
@@ -336,18 +369,27 @@ mod task_orchestrator {
 
             let TaskState {
                 consumer_task_clone,
+                kafka_cluster,
+                subscription,
                 ..
             } = self
                 .subscription_id_to_task_state
                 .remove(&subscription_id)
                 .expect("Checked in the previous match statement");
-            self.start(subscription_id, consumer_task_clone);
+            self.start(
+                subscription_id,
+                consumer_task_clone,
+                kafka_cluster,
+                subscription,
+            );
         }
 
         pub(super) fn start(
             &mut self,
             subscription_id: SubscriptionId,
             consumer_task_clone: consumer_task::ConsumerTask<T>,
+            kafka_cluster: KafkaCluster,
+            subscription: Subscription,
         ) {
             // Shutdown old task, if any
             if let Some(task_state) = self.subscription_id_to_task_state.remove(&subscription_id) {
@@ -388,6 +430,8 @@ mod task_orchestrator {
                         _close_ch: tx,
                     },
                     retry_iter: self.retry_policy.clone().into_iter(),
+                    kafka_cluster,
+                    subscription,
                 },
             );
         }
@@ -411,6 +455,15 @@ mod task_orchestrator {
 
         pub(super) fn running_subscriptions(&self) -> impl Iterator<Item = &SubscriptionId> {
             self.subscription_id_to_task_state.keys()
+        }
+
+        pub(super) fn get_running_config(
+            &self,
+            subscription_id: &SubscriptionId,
+        ) -> Option<(&KafkaCluster, &Subscription)> {
+            self.subscription_id_to_task_state
+                .get(subscription_id)
+                .map(|state| (&state.kafka_cluster, &state.subscription))
         }
     }
 }
