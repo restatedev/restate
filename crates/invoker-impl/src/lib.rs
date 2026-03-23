@@ -1067,7 +1067,9 @@ where
             .remove_invocation(partition, &invocation_id)
         {
             counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_SUSPENDED, "partition_id" => ID_LOOKUP.get(partition.0)).increment(1);
-            self.quota.unreserve_slot();
+            if ism._permit.is_empty() {
+                self.quota.unreserve_slot();
+            }
             self.status_store.on_end(&partition, &invocation_id);
 
             if ism.requested_pause {
@@ -1128,7 +1130,9 @@ where
         {
             counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_SUSPENDED, "partition_id" => ID_LOOKUP.get(partition.0))
                 .increment(1);
-            self.quota.unreserve_slot();
+            if ism._permit.is_empty() {
+                self.quota.unreserve_slot();
+            }
             self.status_store.on_end(&partition, &invocation_id);
 
             if ism.requested_pause {
@@ -1223,7 +1227,9 @@ where
                 "Aborting invocation"
             );
             ism.abort();
-            self.quota.unreserve_slot();
+            if ism._permit.is_empty() {
+                self.quota.unreserve_slot();
+            }
             self.status_store.on_end(&partition, &invocation_id);
         } else {
             trace!(
@@ -1333,7 +1339,9 @@ where
                     "Aborting invocation"
                 );
                 ism.abort();
-                self.quota.unreserve_slot();
+                if ism._permit.is_empty() {
+                    self.quota.unreserve_slot();
+                }
                 self.status_store.on_end(&partition, &fid);
             }
         } else {
@@ -1479,7 +1487,9 @@ where
                     restate.invocation.target = %ism.invocation_target,
                     restate.deployment.id = %attempt_deployment_id,
                     "Error when executing the invocation, pausing the invocation.");
-                self.quota.unreserve_slot();
+                if ism._permit.is_empty() {
+                    self.quota.unreserve_slot();
+                }
                 self.status_store.on_end(&partition, &invocation_id);
 
                 let journal_v2_related_command_type =
@@ -1541,7 +1551,9 @@ where
                     restate.invocation.target = %ism.invocation_target,
                     restate.deployment.id = %attempt_deployment_id,
                     "Error when executing the invocation, not going to retry.");
-                self.quota.unreserve_slot();
+                if ism._permit.is_empty() {
+                    self.quota.unreserve_slot();
+                }
                 self.status_store.on_end(&partition, &invocation_id);
 
                 let _ = self
