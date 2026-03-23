@@ -25,7 +25,7 @@ arrow-ipc = { version = "57", features = ["lz4"] }
 arrow-schema = { version = "57", default-features = false, features = ["canonical_extension_types"] }
 aws-credential-types = { version = "1", default-features = false, features = ["test-util"] }
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
-aws-lc-sys = { version = "0.38", default-features = false, features = ["prebuilt-nasm"] }
+aws-lc-sys = { version = "0.39", default-features = false, features = ["prebuilt-nasm"] }
 aws-runtime = { version = "1", default-features = false, features = ["event-stream"] }
 aws-sdk-sts = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
 aws-sigv4 = { version = "1", features = ["http0-compat", "sign-eventstream"] }
@@ -153,7 +153,7 @@ arrow-ipc = { version = "57", features = ["lz4"] }
 arrow-schema = { version = "57", default-features = false, features = ["canonical_extension_types"] }
 aws-credential-types = { version = "1", default-features = false, features = ["test-util"] }
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
-aws-lc-sys = { version = "0.38", default-features = false, features = ["prebuilt-nasm"] }
+aws-lc-sys = { version = "0.39", default-features = false, features = ["prebuilt-nasm"] }
 aws-runtime = { version = "1", default-features = false, features = ["event-stream"] }
 aws-sdk-sts = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
 aws-sigv4 = { version = "1", features = ["http0-compat", "sign-eventstream"] }
