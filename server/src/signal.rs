@@ -63,11 +63,20 @@ pub(super) async fn sighup_compact() {
                 ),
             };
             let db_name = db.name().to_owned();
-            db.compact_all().await;
-            let _ = writeln!(
-                std::io::stderr(),
-                "Database '{db_name}' compaction requested",
-            );
+            match db.compact_all().await {
+                Ok(()) => {
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "Database '{db_name}' compaction requested",
+                    );
+                }
+                Err(e) => {
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "Database '{db_name}' compaction failed: {e}",
+                    );
+                }
+            }
         }
     }
 }
