@@ -254,6 +254,8 @@ pub enum DurabilityMode {
 pub const DEFAULT_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(60);
 // Changed from 60s to 10min in response to issue #3961
 pub const DEFAULT_ABORT_TIMEOUT: Duration = Duration::from_secs(600);
+/// Default per-invocation initial memory (32 KiB inbound + 32 KiB outbound).
+pub const DEFAULT_PER_INVOCATION_INITIAL_MEMORY: usize = 64 * 1024;
 
 /// # Invoker options
 #[serde_as]
@@ -372,6 +374,28 @@ pub struct InvokerOptions {
     ///
     /// To effectively disable memory limiting, set this to a very large value.
     pub memory_limit: NonZeroByteCount,
+
+    /// # Per-invocation memory limit
+    ///
+    /// Maximum memory (in bytes) a single invocation may use per direction (inbound and
+    /// outbound). Once an invocation's directional budget reaches this ceiling it must
+    /// wait for in-flight data to be consumed or yield back to the scheduler.
+    ///
+    /// If unset, defaults to `message-size-limit`. If set, it will be clamped at
+    /// the value of `message-size-limit`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    per_invocation_memory_limit: Option<ByteCount>,
+
+    /// # Per-invocation initial memory
+    ///
+    /// Memory (in bytes) reserved from the global memory pool before an invocation
+    /// starts. The reservation is split equally between inbound and outbound
+    /// directions and acts as the minimum reserved floor for each.
+    ///
+    /// Smaller values allow more concurrent invocations but may cause frequent
+    /// round-trips to the global pool. Larger values reduce contention but limit
+    /// maximum concurrency.
+    pub per_invocation_initial_memory: ByteCount,
 }
 
 impl InvokerOptions {
@@ -402,6 +426,14 @@ impl InvokerOptions {
             // We only add 1/4 of the overhead to leave room for outer envelope/messages
             limit.saturating_add(MESSAGE_SIZE_OVERHEAD.div_ceil(4))
         }
+    }
+
+    /// Resolved per-invocation per-direction memory upper bound.
+    /// Falls back to `message_size_limit()` when unset.
+    pub fn per_invocation_memory_limit(&self) -> usize {
+        self.per_invocation_memory_limit
+            .map(|v| v.as_usize())
+            .unwrap_or(self.message_size_limit().get())
     }
 
     /// Resolved eager state size limit in bytes. After `merge()`, this is guaranteed
@@ -438,6 +470,13 @@ impl InvokerOptions {
                 .map(|limit| limit.min(opts.message_size_limit.into()))
                 .unwrap_or(opts.message_size_limit.into()),
         );
+
+        // Resolve per_invocation_memory_limit, clamped to message_size_limit
+        self.per_invocation_memory_limit = Some(
+            self.per_invocation_memory_limit
+                .map(|limit| limit.min(opts.message_size_limit.into()))
+                .unwrap_or(opts.message_size_limit.into()),
+        );
     }
 }
 
@@ -460,6 +499,8 @@ impl Default for InvokerOptions {
             memory_limit: NonZeroByteCount::new(
                 NonZeroUsize::new(256 * 1024 * 1024).unwrap(), // 256 MiB
             ),
+            per_invocation_memory_limit: None,
+            per_invocation_initial_memory: ByteCount::from(DEFAULT_PER_INVOCATION_INITIAL_MEMORY),
         }
     }
 }

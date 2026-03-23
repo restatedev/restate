@@ -20,6 +20,7 @@ hashbrown = { workspace = true }
 metrics = { workspace = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true }
 

@@ -219,6 +219,12 @@ struct InvokerBody {
     /// Lease from the most recently yielded frame. Held until the next frame
     /// arrives or the body is dropped, ensuring the memory stays reserved while
     /// hyper is processing the frame's bytes.
+    ///
+    /// **Approximation**: The lease is released when the *next* frame arrives,
+    /// not when hyper finishes consuming the previous frame's `Bytes`. If hyper
+    /// retains a `Bytes` reference (e.g., in an internal write buffer) after we
+    /// drop the lease, actual RSS can temporarily exceed what the budget tracks
+    /// by up to one frame per invocation.
     current_lease: Option<LocalMemoryLease>,
 }
 
@@ -401,9 +407,12 @@ where
             .select_protocol_version_and_run(&mut invocation_reader, &mut budget)
             .await;
 
-        // Only Failed returns the budget so the invoker main loop can stash
-        // it on the ISM for retry reuse. ShouldYield drops the budget to free
-        // memory. Other terminal states (Closed, Suspended) end the invocation.
+        // Failed and ShouldYield return the budget to the invoker main loop.
+        // Failed: the budget is stashed on the ISM for retry reuse.
+        // ShouldYield: the main loop either drops the budget (yield path) or
+        //   stashes it for retry (error fallback path).
+        // Other terminal states (Closed, Suspended) end the invocation and the
+        // budget is implicitly dropped here.
         let inner = match terminal_state {
             TerminalLoopState::Continue(_) => {
                 unreachable!("This is not supposed to happen. This is a runtime bug")

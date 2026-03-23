@@ -684,8 +684,7 @@ impl LeaderState {
                         (Permit::new_empty(), memory_pool.empty_lease())
                     }
                 };
-                let outbound_seed =
-                    memory_lease.split(restate_invoker_api::capacity::OUTBOUND_SEED_SIZE);
+                let outbound_seed = memory_lease.split(memory_lease.size().as_usize() / 2);
                 invoker_tx
                     .vqueue_invoke(
                         partition_leader_epoch,

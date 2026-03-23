@@ -468,6 +468,7 @@ const _: () = {
     const fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<MemoryPool>();
     assert_send_sync::<MemoryLease>();
+    assert_send_sync::<PollMemoryPool>();
 };
 
 #[cfg(test)]
