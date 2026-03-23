@@ -456,6 +456,24 @@ impl std::error::Error for SimpleStatus {
     }
 }
 
+/// Check if a gRPC status represents a retryable error.
+///
+/// Transport errors can manifest in different ways:
+/// - `Unknown`: General transport errors
+/// - `Unavailable`: Server is not reachable or temporarily unable to serve
+/// - `Cancelled`: Connection was terminated (common with UDS when server is killed)
+/// - `Internal` with h2 errors: HTTP/2 protocol errors (e.g., connection reset, stream errors)
+pub fn is_retryable_status(status: &tonic::Status) -> bool {
+    match status.code() {
+        tonic::Code::Unavailable | tonic::Code::Unknown | tonic::Code::Cancelled => true,
+        tonic::Code::Internal => {
+            let message = status.message();
+            message.contains("h2 protocol error") || message.contains("http2 error")
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

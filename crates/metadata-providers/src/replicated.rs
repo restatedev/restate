@@ -29,8 +29,7 @@ use restate_metadata_store::{
     MetadataStore, MetadataStoreClient, ProvisionError, ReadError, WriteError,
 };
 use restate_types::config::Configuration;
-use restate_types::errors::ConversionError;
-use restate_types::errors::SimpleStatus;
+use restate_types::errors::{ConversionError, SimpleStatus, is_retryable_status};
 use restate_types::metadata::{Precondition, VersionedValue};
 use restate_types::net::address::{AdvertisedAddress, FabricPort};
 use restate_types::net::connect_opts::{CommonClientConnectionOptions, GrpcConnectionOptions};
@@ -470,25 +469,6 @@ fn map_status_to_provision_error(
         ProvisionError::retryable(StatusError::new(address, status))
     } else {
         ProvisionError::terminal(StatusError::new(address, status))
-    }
-}
-
-/// Check if a gRPC status represents a retryable error.
-///
-/// Transport errors can manifest in different ways:
-/// - `Unknown`: General transport errors
-/// - `Unavailable`: Server is not reachable
-/// - `Cancelled`: Connection was terminated (common with UDS when server is killed)
-/// - `Internal` with h2 errors: HTTP/2 protocol errors (e.g., connection reset, stream errors)
-fn is_retryable_status(status: &Status) -> bool {
-    match status.code() {
-        Code::Unavailable | Code::Unknown | Code::Cancelled => true,
-        // h2 protocol errors surface as Internal errors but are transport-related and retryable
-        Code::Internal => {
-            let message = status.message();
-            message.contains("h2 protocol error") || message.contains("http2 error")
-        }
-        _ => false,
     }
 }
 

@@ -26,7 +26,7 @@ pub mod metadata_proxy_svc {
         use tonic::{Code, Status};
         use tonic::{codec::CompressionEncoding, transport::Channel};
 
-        use restate_types::errors::SimpleStatus;
+        use restate_types::errors::{SimpleStatus, is_retryable_status};
         use restate_types::{
             Version,
             metadata::{Precondition, VersionedValue},
@@ -143,21 +143,20 @@ pub mod metadata_proxy_svc {
         }
 
         fn to_read_err(status: Status) -> ReadError {
-            // Currently, we treat all returned statuses as terminal errors since
-            // retryability is not encoded in the status response.
-            //
-            // Additionally, users of this proxy client (e.g., `restatectl`) are
-            // unlikely to retry on errors and will typically attempt to use
-            // another node instead.
-            ReadError::terminal(SimpleStatus::from(status))
+            if is_retryable_status(&status) {
+                ReadError::retryable(SimpleStatus::from(status))
+            } else {
+                ReadError::terminal(SimpleStatus::from(status))
+            }
         }
 
         fn to_write_err(status: Status) -> WriteError {
-            match status.code() {
-                Code::FailedPrecondition => {
-                    WriteError::FailedPrecondition(SimpleStatus::from(status).to_string())
-                }
-                _ => WriteError::terminal(SimpleStatus::from(status)),
+            if status.code() == Code::FailedPrecondition {
+                WriteError::FailedPrecondition(SimpleStatus::from(status).to_string())
+            } else if is_retryable_status(&status) {
+                WriteError::retryable(SimpleStatus::from(status))
+            } else {
+                WriteError::terminal(SimpleStatus::from(status))
             }
         }
     }

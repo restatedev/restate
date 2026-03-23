@@ -33,10 +33,10 @@ use restate_core::protobuf::node_ctl_svc::{
 };
 use restate_core::{Identification, MetadataWriter};
 use restate_core::{Metadata, MetadataKind};
-use restate_metadata_store::{MetadataStoreClient, WriteError};
+use restate_metadata_store::{MetadataStoreClient, ReadError, WriteError};
 use restate_types::Version;
 use restate_types::config::{Configuration, NetworkingOptions};
-use restate_types::errors::ConversionError;
+use restate_types::errors::{ConversionError, MaybeRetryableError};
 use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration};
 use restate_types::metadata::VersionedValue;
 use restate_types::nodes_config::Role;
@@ -304,7 +304,7 @@ impl MetadataProxySvc for MetadataProxySvcHandler {
             .inner()
             .get(request.key.into())
             .await
-            .map_err(|err| Status::internal(err.to_string()))?;
+            .map_err(read_err_to_status)?;
 
         let response = GetResponse {
             value: value.map(Into::into),
@@ -324,7 +324,7 @@ impl MetadataProxySvc for MetadataProxySvcHandler {
             .inner()
             .get_version(request.key.into())
             .await
-            .map_err(|err| Status::internal(err.to_string()))?;
+            .map_err(read_err_to_status)?;
 
         let response = GetVersionResponse {
             version: value.map(Into::into),
@@ -351,10 +351,7 @@ impl MetadataProxySvc for MetadataProxySvcHandler {
             .inner()
             .put(request.key.into(), value, precondition)
             .await
-            .map_err(|err| match err {
-                WriteError::FailedPrecondition(msg) => Status::failed_precondition(msg),
-                err => Status::internal(err.to_string()),
-            })?;
+            .map_err(write_err_to_status)?;
 
         Ok(Response::new(()))
     }
@@ -373,11 +370,24 @@ impl MetadataProxySvc for MetadataProxySvcHandler {
             .inner()
             .delete(request.key.into(), precondition)
             .await
-            .map_err(|err| match err {
-                WriteError::FailedPrecondition(msg) => Status::failed_precondition(msg),
-                err => Status::internal(err.to_string()),
-            })?;
+            .map_err(write_err_to_status)?;
 
         Ok(Response::new(()))
+    }
+}
+
+fn read_err_to_status(err: ReadError) -> Status {
+    if err.retryable() {
+        Status::unavailable(err.to_string())
+    } else {
+        Status::internal(err.to_string())
+    }
+}
+
+fn write_err_to_status(err: WriteError) -> Status {
+    match err {
+        WriteError::FailedPrecondition(msg) => Status::failed_precondition(msg),
+        err if err.retryable() => Status::unavailable(err.to_string()),
+        err => Status::internal(err.to_string()),
     }
 }
