@@ -15,17 +15,41 @@ use futures::{Stream, StreamExt, TryStreamExt};
 
 use restate_invoker_api::JournalMetadata;
 use restate_invoker_api::invocation_reader::{
-    EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry,
+    EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
+    JournalKind,
 };
+use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
 use restate_storage_api::state_table::ReadStateTable;
-use restate_storage_api::{IsolationLevel, journal_table as journal_table_v1, journal_table_v2};
+use restate_storage_api::{
+    BudgetedReadError, IsolationLevel, journal_table as journal_table_v1, journal_table_v2,
+};
 use restate_types::identifiers::{InvocationId, ServiceId};
 
 #[derive(Debug, thiserror::Error)]
 pub enum InvokerStorageReaderError {
     #[error(transparent)]
     Storage(#[from] restate_storage_api::StorageError),
+    #[error("outbound memory budget exhausted (needed {needed} bytes)")]
+    OutOfMemory { needed: usize },
+}
+
+impl InvocationReaderError for InvokerStorageReaderError {
+    fn budget_exhaustion(&self) -> Option<usize> {
+        match self {
+            Self::OutOfMemory { needed } => Some(*needed),
+            _ => None,
+        }
+    }
+}
+
+impl From<BudgetedReadError> for InvokerStorageReaderError {
+    fn from(e: BudgetedReadError) -> Self {
+        match e {
+            BudgetedReadError::Storage(e) => Self::Storage(e),
+            BudgetedReadError::OutOfMemory { needed } => Self::OutOfMemory { needed },
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -39,9 +63,14 @@ impl<Storage> InvokerStorageReader<Storage> {
 
 impl<Storage> InvocationReader for InvokerStorageReader<Storage>
 where
-    Storage: restate_storage_api::Storage + 'static,
+    Storage: restate_storage_api::Storage
+        + journal_table_v1::ReadJournalTable
+        + journal_table_v2::ReadJournalTable
+        + Send
+        + 'static,
 {
     type Transaction<'a> = InvokerStorageReaderTransaction<'a, Storage>;
+    type Error = InvokerStorageReaderError;
 
     fn transaction(&mut self) -> Self::Transaction<'_> {
         InvokerStorageReaderTransaction {
@@ -50,6 +79,76 @@ where
                 // we must use repeatable reads to avoid reading inconsistent values in the presence
                 // of concurrent writes
                 .transaction_with_isolation(IsolationLevel::RepeatableReads),
+        }
+    }
+
+    async fn read_journal_entry(
+        &mut self,
+        invocation_id: &InvocationId,
+        entry_index: restate_types::identifiers::EntryIndex,
+        journal_kind: JournalKind,
+    ) -> Result<Option<JournalEntry>, InvokerStorageReaderError> {
+        if journal_kind == JournalKind::V2 {
+            let entry = journal_table_v2::ReadJournalTable::get_journal_entry(
+                &mut self.0,
+                *invocation_id,
+                entry_index,
+            )
+            .await?;
+            Ok(entry.map(JournalEntry::JournalV2))
+        } else {
+            let entry = journal_table_v1::ReadJournalTable::get_journal_entry(
+                &mut self.0,
+                invocation_id,
+                entry_index,
+            )
+            .await?;
+            Ok(entry.map(|je| match je {
+                journal_table_v1::JournalEntry::Entry(entry) => {
+                    JournalEntry::JournalV1(entry.erase_enrichment())
+                }
+                journal_table_v1::JournalEntry::Completion(result) => {
+                    JournalEntry::JournalV1Completion(result)
+                }
+            }))
+        }
+    }
+
+    async fn read_journal_entry_budgeted(
+        &mut self,
+        invocation_id: &InvocationId,
+        entry_index: restate_types::identifiers::EntryIndex,
+        journal_kind: JournalKind,
+        budget: &mut LocalMemoryPool,
+    ) -> Result<Option<(JournalEntry, LocalMemoryLease)>, InvokerStorageReaderError> {
+        if journal_kind == JournalKind::V2 {
+            let result = journal_table_v2::ReadJournalTable::get_journal_entry_budgeted(
+                &mut self.0,
+                *invocation_id,
+                entry_index,
+                budget,
+            )
+            .await?;
+            Ok(result.map(|(entry, lease)| (JournalEntry::JournalV2(entry), lease)))
+        } else {
+            let result = journal_table_v1::ReadJournalTable::get_journal_entry_budgeted(
+                &mut self.0,
+                invocation_id,
+                entry_index,
+                budget,
+            )
+            .await?;
+            Ok(result.map(|(je, lease)| {
+                let entry = match je {
+                    journal_table_v1::JournalEntry::Entry(entry) => {
+                        JournalEntry::JournalV1(entry.erase_enrichment())
+                    }
+                    journal_table_v1::JournalEntry::Completion(result) => {
+                        JournalEntry::JournalV1Completion(result)
+                    }
+                };
+                (entry, lease)
+            }))
         }
     }
 }
@@ -73,6 +172,18 @@ where
         = Pin<Box<dyn Stream<Item = Result<(Bytes, Bytes), Self::Error>> + Send + 'a>>
     where
         Self: 'a;
+    type LocalMemoryPooledJournalStream<'a>
+        = Pin<
+        Box<dyn Stream<Item = Result<(JournalEntry, LocalMemoryLease), Self::Error>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+    type LocalMemoryPooledStateStream<'a>
+        = Pin<
+        Box<dyn Stream<Item = Result<((Bytes, Bytes), LocalMemoryLease), Self::Error>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
     type Error = InvokerStorageReaderError;
 
     async fn read_journal_metadata(
@@ -93,7 +204,11 @@ where
                     *invocation_id,
                     1, // Just check first entry to determine version
                 )?);
-            let using_v2 = journal_v2_stream.next().await.transpose()?.is_some();
+            let journal_kind = if journal_v2_stream.next().await.transpose()?.is_some() {
+                JournalKind::V2
+            } else {
+                JournalKind::V1
+            };
 
             Ok(Some(JournalMetadata::new(
                 invoked_status.journal_metadata.length,
@@ -101,7 +216,7 @@ where
                 invoked_status.pinned_deployment,
                 invoked_status.timestamps.modification_time(),
                 random_seed,
-                using_v2,
+                journal_kind,
             )))
         } else {
             Ok(None)
@@ -112,9 +227,9 @@ where
         &self,
         invocation_id: &InvocationId,
         length: restate_types::identifiers::EntryIndex,
-        using_journal_table_v2: bool,
+        journal_kind: JournalKind,
     ) -> Result<Self::JournalStream<'_>, Self::Error> {
-        if using_journal_table_v2 {
+        if journal_kind == JournalKind::V2 {
             let journal_entries =
                 journal_table_v2::ReadJournalTable::get_journal(&self.txn, *invocation_id, length)?;
             Ok(Box::pin(journal_entries.map(|result| {
@@ -150,5 +265,62 @@ where
             .get_all_user_states_for_service(service_id)?
             .map_err(InvokerStorageReaderError::Storage);
         Ok(EagerState::new_complete(Box::pin(stream)))
+    }
+
+    fn read_journal_budgeted<'a>(
+        &'a self,
+        invocation_id: &InvocationId,
+        length: restate_types::identifiers::EntryIndex,
+        journal_kind: JournalKind,
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<Self::LocalMemoryPooledJournalStream<'a>, Self::Error> {
+        if journal_kind == JournalKind::V2 {
+            let stream = journal_table_v2::ReadJournalTable::get_journal_budgeted(
+                &self.txn,
+                *invocation_id,
+                length,
+                budget,
+            )?;
+            Ok(Box::pin(stream.map(|result| {
+                result
+                    .map(|(_, entry, lease)| (JournalEntry::JournalV2(entry), lease))
+                    .map_err(InvokerStorageReaderError::from)
+            })))
+        } else {
+            let stream = journal_table_v1::ReadJournalTable::get_journal_budgeted(
+                &self.txn,
+                invocation_id,
+                length,
+                budget,
+            )?;
+            Ok(Box::pin(stream.map(|result| {
+                result
+                    .map(|(_, journal_entry, lease)| {
+                        let je = match journal_entry {
+                            journal_table_v1::JournalEntry::Entry(entry) => {
+                                JournalEntry::JournalV1(entry.erase_enrichment())
+                            }
+                            journal_table_v1::JournalEntry::Completion(_) => {
+                                panic!("should only read entries when reading the journal")
+                            }
+                        };
+                        (je, lease)
+                    })
+                    .map_err(InvokerStorageReaderError::from)
+            })))
+        }
+    }
+
+    fn read_state_budgeted<'a>(
+        &'a self,
+        service_id: &ServiceId,
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<EagerState<Self::LocalMemoryPooledStateStream<'a>>, Self::Error> {
+        let stream = self.txn.get_all_user_states_budgeted(service_id, budget)?;
+        Ok(EagerState::new_complete(Box::pin(stream.map(|result| {
+            result
+                .map(|(key, value, lease)| ((key, value), lease))
+                .map_err(InvokerStorageReaderError::from)
+        }))))
     }
 }

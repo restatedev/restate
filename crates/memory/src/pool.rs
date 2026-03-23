@@ -17,10 +17,13 @@
 //!   ensuring that at least one lease of that size can always proceed
 //! - **Zero-overhead unlimited mode**: Unlimited budgets skip all tracking
 
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::task::Poll;
 
 use tokio::sync::Notify;
+use tokio::sync::futures::OwnedNotified;
 
 use restate_serde_util::{ByteCount, NonZeroByteCount};
 
@@ -37,7 +40,7 @@ pub struct MemoryPool {
 struct BoundedBudgetInner {
     capacity: AtomicUsize,
     used: AtomicUsize,
-    notify: Notify,
+    notify: Arc<Notify>,
 }
 
 impl MemoryPool {
@@ -53,7 +56,7 @@ impl MemoryPool {
             inner: Some(Arc::new(BoundedBudgetInner {
                 capacity: AtomicUsize::new(capacity.as_usize()),
                 used: AtomicUsize::new(0),
-                notify: Notify::new(),
+                notify: Arc::new(Notify::new()),
             })),
         }
     }
@@ -87,6 +90,21 @@ impl MemoryPool {
         match &self.inner {
             Some(inner) => ByteCount::from(inner.used.load(Ordering::Relaxed)),
             None => ByteCount::ZERO,
+        }
+    }
+
+    /// Returns the number of bytes currently available (capacity - used).
+    ///
+    /// For unlimited pools, returns `usize::MAX`.
+    #[inline]
+    pub fn available(&self) -> usize {
+        match &self.inner {
+            Some(inner) => {
+                let capacity = inner.capacity.load(Ordering::Relaxed);
+                let used = inner.used.load(Ordering::Relaxed);
+                capacity.saturating_sub(used)
+            }
+            None => usize::MAX,
         }
     }
 
@@ -162,8 +180,13 @@ impl MemoryPool {
         }
     }
 
+    /// Returns `amount` bytes back to the pool.
+    ///
+    /// Typically called via [`MemoryLease::drop`], but exposed publicly for cases
+    /// where memory tracking is managed externally (e.g., directional budgets that
+    /// act as local caches on top of this pool).
     #[inline]
-    fn return_memory(&self, amount: usize) {
+    pub fn return_memory(&self, amount: usize) {
         if amount == 0 {
             return;
         }
@@ -171,6 +194,18 @@ impl MemoryPool {
             inner.used.fetch_sub(amount, Ordering::Relaxed);
             inner.notify.notify_waiters();
         }
+    }
+
+    /// Returns a future that resolves when pool availability may have changed
+    /// (memory returned or capacity adjusted).
+    ///
+    /// Returns `None` for unlimited pools (which have no internal tracking).
+    /// The returned [`OwnedNotified`] future should be created *before*
+    /// checking availability to avoid missing concurrent notifications.
+    pub(crate) fn availability_notified_owned(&self) -> Option<OwnedNotified> {
+        self.inner
+            .as_ref()
+            .map(|inner| Arc::clone(&inner.notify).notified_owned())
     }
 
     #[inline]
@@ -352,6 +387,79 @@ impl Drop for MemoryLease {
     fn drop(&mut self) {
         if self.size > 0 {
             self.budget.return_memory(self.size);
+        }
+    }
+}
+
+/// A poll-compatible wrapper around [`MemoryPool`] for use in manual
+/// [`Future::poll`] implementations.
+///
+/// Caches an internal [`OwnedNotified`] future so that waker registration
+/// survives across poll calls — mirroring `PollSemaphore` from tokio-util.
+///
+/// Create the notified **before** checking availability so that a concurrent
+/// `return_memory()` (fired between our check and the next `.poll()`) is
+/// guaranteed to wake us.
+pub struct PollMemoryPool {
+    pool: MemoryPool,
+    /// Boxed to make it `Unpin` (`OwnedNotified` is `!Unpin`).
+    notified: Option<Pin<Box<OwnedNotified>>>,
+}
+
+impl PollMemoryPool {
+    pub fn new(pool: MemoryPool) -> Self {
+        Self {
+            pool,
+            notified: None,
+        }
+    }
+
+    /// Attempts to reserve `size` bytes, registering `cx` for wakeup if the
+    /// pool is currently exhausted.
+    ///
+    /// Returns `Poll::Ready(lease)` on success, `Poll::Pending` when memory
+    /// is unavailable (waker is registered for notification).
+    pub fn poll_reserve(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+        size: usize,
+    ) -> Poll<MemoryLease> {
+        // Fast path: unlimited pools and zero-size reservations always succeed.
+        if self.pool.is_unlimited() || size == 0 {
+            return Poll::Ready(
+                self.pool
+                    .try_reserve(size)
+                    .expect("unlimited pool or zero-size reserve must succeed"),
+            );
+        }
+
+        loop {
+            // Ensure we have a notified future *before* trying to reserve,
+            // so we don't miss a concurrent `return_memory()` notification.
+            let notified = self.notified.get_or_insert_with(|| {
+                Box::pin(
+                    self.pool
+                        .availability_notified_owned()
+                        .expect("bounded pool must provide notified"),
+                )
+            });
+
+            if let Some(lease) = self.pool.try_reserve(size) {
+                // Success — discard the cached notified so a fresh one is
+                // created on the next call.
+                self.notified = None;
+                return Poll::Ready(lease);
+            }
+
+            // Poll the notified future to register the waker.
+            match notified.as_mut().poll(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(()) => {
+                    // We were notified — discard the consumed future and loop
+                    // to retry `try_reserve` with a fresh notified.
+                    self.notified = None;
+                }
+            }
         }
     }
 }

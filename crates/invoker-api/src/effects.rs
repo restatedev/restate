@@ -8,6 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashSet;
+
+use restate_memory::LocalMemoryLease;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::InvocationId;
@@ -19,7 +22,6 @@ use restate_types::journal_v2::CommandIndex;
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
-use std::collections::HashSet;
 
 use crate::EffectKind::JournalEntryV2;
 
@@ -66,6 +68,10 @@ pub enum EffectKind {
     Paused {
         paused_event: RawEvent,
     },
+    /// The invoker yielded the invocation back to the scheduler. The partition
+    /// processor should re-schedule the invocation (via [`YieldReason`] the
+    /// scheduler can apply reason-specific strategies in the future).
+    Yield(YieldReason),
     /// This is sent always after [`Self::JournalEntry`] with `OutputStreamEntry`(s).
     End,
     /// This is sent when the invoker exhausted all its attempts to make progress on the specific invocation.
@@ -97,5 +103,48 @@ impl EffectKind {
         //     command_index_to_ack,
         //     raw_entry: raw_entry.into(),
         // }
+    }
+}
+
+/// Why the invoker yielded the invocation back to the scheduler.
+///
+/// New reasons can be added without a version barrier — nodes that don't
+/// recognize a reason will deserialize it as [`Unknown`](Self::Unknown) and
+/// apply the default re-scheduling strategy (immediate re-invoke).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(tag = "reason"))]
+pub enum YieldReason {
+    /// The invocation exhausted its memory budget.
+    OutOfMemory {
+        inbound_needed_memory: usize,
+        outbound_needed_memory: usize,
+    },
+    /// A yield reason not recognized by this node version. The partition
+    /// processor applies the default strategy (re-schedule immediately).
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
+}
+
+/// An invoker effect paired with an optional inbound memory lease.
+///
+/// The lease tracks the memory consumed by the effect's payload as it travels
+/// from the invoker through the partition processor into Bifrost. Attaching
+/// the lease here allows the bounded→unbounded channel migration: backpressure
+/// is provided by the memory budget rather than channel capacity.
+pub struct InvokerEffect {
+    pub effect: Box<Effect>,
+    pub inbound_lease: Option<LocalMemoryLease>,
+}
+
+impl std::fmt::Debug for InvokerEffect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InvokerEffect")
+            .field("effect", &self.effect)
+            .field(
+                "inbound_lease_bytes",
+                &self.inbound_lease.as_ref().map(|l| l.size()),
+            )
+            .finish()
     }
 }

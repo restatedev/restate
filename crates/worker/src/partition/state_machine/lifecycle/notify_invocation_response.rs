@@ -167,7 +167,7 @@ mod tests {
     };
     use restate_types::journal_v2::EntryMetadata;
     use restate_types::journal_v2::{
-        CallCommand, CallInvocationIdCompletion, CallRequest, Entry, EntryType,
+        CallCommand, CallInvocationIdCompletion, CallRequest, Entry, EntryType, NotificationId,
     };
     use restate_wal_protocol::Command;
 
@@ -218,11 +218,13 @@ mod tests {
             all![
                 contains(matchers::actions::forward_notification(
                     invocation_id,
-                    call_invocation_id_completion.clone()
+                    2,
+                    NotificationId::CompletionId(invocation_id_completion_id),
                 )),
                 contains(matchers::actions::forward_notification(
                     invocation_id,
-                    call_completion.clone()
+                    3,
+                    NotificationId::CompletionId(result_completion_id),
                 ))
             ]
         );

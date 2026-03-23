@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_invoker_api::InvokeInputJournal;
 use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_types::config::Configuration;
@@ -48,7 +47,6 @@ where
             ctx.action_collector.push(Action::Invoke {
                 invocation_id: self.invocation_id,
                 invocation_target,
-                invoke_input_journal: InvokeInputJournal::NoCachedJournal,
             });
         }
 

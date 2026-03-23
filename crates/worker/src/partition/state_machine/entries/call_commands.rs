@@ -160,7 +160,7 @@ mod tests {
     };
     use restate_types::journal_v2::{
         CallCommand, CallCompletion, CallInvocationIdCompletion, CallRequest, CallResult,
-        CommandType, Entry, EntryMetadata, EntryType, OneWayCallCommand,
+        CommandType, Entry, EntryMetadata, EntryType, NotificationId, OneWayCallCommand,
     };
     use restate_types::time::MillisSinceEpoch;
     use restate_wal_protocol::Command;
@@ -233,11 +233,13 @@ mod tests {
                 })),
                 contains(matchers::actions::forward_notification(
                     invocation_id,
-                    call_invocation_id_completion.clone()
+                    2,
+                    NotificationId::CompletionId(invocation_id_completion_id),
                 )),
                 contains(matchers::actions::forward_notification(
                     invocation_id,
-                    call_completion.clone()
+                    3,
+                    NotificationId::CompletionId(result_completion_id),
                 ))
             ]
         );
@@ -314,7 +316,8 @@ mod tests {
                 })),
                 contains(matchers::actions::forward_notification(
                     invocation_id,
-                    call_invocation_id_completion.clone()
+                    2,
+                    NotificationId::CompletionId(invocation_id_completion_id),
                 ))
             ]
         );

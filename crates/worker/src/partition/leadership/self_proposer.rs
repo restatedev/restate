@@ -134,6 +134,27 @@ impl SelfProposer {
         Ok(())
     }
 
+    /// Proposes a command with an optional memory lease attached. The lease will
+    /// be carried through to Bifrost and released when the record is durably committed.
+    pub async fn propose_with_lease(
+        &mut self,
+        partition_key: PartitionKey,
+        cmd: Command,
+        lease: Option<impl Send + Sync + 'static>,
+    ) -> Result<(), Error> {
+        let envelope = Envelope::new(self.create_header(partition_key), cmd);
+        let mut input: InputRecord<Envelope> = Arc::new(envelope).into();
+        if let Some(lease) = lease {
+            input = input.with_lease(lease);
+        }
+        self.bifrost_appender
+            .sender()
+            .enqueue(input)
+            .await
+            .map_err(|e| Error::SelfProposer(e.to_string()))?;
+        Ok(())
+    }
+
     pub async fn propose_with_notification(
         &mut self,
         partition_key: PartitionKey,

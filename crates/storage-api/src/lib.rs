@@ -10,6 +10,8 @@
 
 use std::future::Future;
 
+use restate_memory::OutOfMemory;
+
 /// Storage error
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
@@ -30,6 +32,26 @@ pub enum StorageError {
 }
 
 pub type Result<T, E = StorageError> = std::result::Result<T, E>;
+
+/// Error type for budget-gated storage reads.
+///
+/// Returned by budgeted stream methods on [`journal_table::ReadJournalTable`],
+/// [`journal_table_v2::ReadJournalTable`], and [`state_table::ReadStateTable`].
+/// Callers can distinguish between storage failures (retryable/fatal) and
+/// memory budget exhaustion.
+#[derive(Debug, thiserror::Error)]
+pub enum BudgetedReadError {
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+    #[error("memory budget exhausted (needed {needed} bytes)")]
+    OutOfMemory { needed: usize },
+}
+
+impl From<OutOfMemory> for BudgetedReadError {
+    fn from(e: OutOfMemory) -> Self {
+        Self::OutOfMemory { needed: e.needed }
+    }
+}
 
 pub mod deduplication_table;
 pub mod fsm_table;
