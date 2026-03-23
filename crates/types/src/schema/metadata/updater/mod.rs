@@ -631,6 +631,7 @@ impl SchemaUpdater {
             inactivity_timeout,
             abort_timeout,
             enable_lazy_state: service.enable_lazy_state,
+            eager_state_size_limit: None,
             retry_policy_initial_interval,
             retry_policy_exponentiation_factor,
             retry_policy_max_attempts,
@@ -1128,6 +1129,7 @@ impl Handler {
             inactivity_timeout,
             abort_timeout,
             enable_lazy_state: handler.enable_lazy_state,
+            eager_state_size_limit: None,
             public: handler.ingress_private.map(bool::not),
             retry_policy_on_max_attempts,
         })

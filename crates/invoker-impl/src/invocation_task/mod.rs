@@ -22,17 +22,19 @@ use std::task::{Context, Poll, ready};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use futures::{FutureExt, Stream};
+use futures::{FutureExt, Stream, StreamExt};
 use http::response::Parts as ResponseParts;
 use http::{HeaderName, HeaderValue, Response};
 use http_body::{Body, Frame};
-use metrics::histogram;
+use metrics::{counter, histogram};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::task::AbortOnDropHandle;
-use tracing::instrument;
+use tracing::{debug, instrument};
 
-use restate_invoker_api::invocation_reader::{InvocationReader, InvocationReaderTransaction};
+use restate_invoker_api::invocation_reader::{
+    EagerState, InvocationReader, InvocationReaderTransaction,
+};
 use restate_invoker_api::{EntryEnricher, InvokeInputJournal};
 use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClientError};
 use restate_types::deployment::PinnedDeployment;
@@ -51,7 +53,7 @@ use restate_types::service_protocol::ServiceProtocolVersion;
 use crate::TokenBucket;
 use crate::error::InvokerError;
 use crate::invocation_task::service_protocol_runner::ServiceProtocolRunner;
-use crate::metric_definitions::{ID_LOOKUP, INVOKER_TASK_DURATION};
+use crate::metric_definitions::{ID_LOOKUP, INVOKER_EAGER_STATE_TRUNCATED, INVOKER_TASK_DURATION};
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256
@@ -81,6 +83,56 @@ const SERVICE_PROTOCOL_VERSION_V6: HeaderValue =
 
 #[allow(clippy::declare_interior_mutable_const)]
 const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server");
+
+/// Collects state entries from an [`EagerState`] stream, respecting a size limit.
+///
+/// Returns a tuple of `(is_partial, entries)` where:
+/// - `is_partial` is true if the state was already partial or if collection stopped due to size limit
+/// - `entries` contains the collected and mapped key-value bytes
+///
+/// If the first entry already exceeds the size limit, then an empty entries [`Vec`] is returned.
+async fn collect_eager_state<S, E, T>(
+    state: Option<EagerState<S>>,
+    size_limit: usize,
+    mut mapper: impl FnMut((Bytes, Bytes)) -> T,
+) -> Result<(bool, Vec<T>), InvokerError>
+where
+    S: Stream<Item = Result<(Bytes, Bytes), E>> + Send,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    let Some(state) = state else {
+        return Ok((true, Vec::new()));
+    };
+
+    let mut is_partial = state.is_partial();
+    let mut entries = Vec::new();
+    let mut total_size: usize = 0;
+
+    let mut stream = std::pin::pin!(state.into_inner());
+    while let Some(result) = stream.next().await {
+        let (key, value) = result.map_err(|e| InvokerError::StateReader(e.into()))?;
+        let entry_size = key.len() + value.len();
+
+        // Check if adding this entry would exceed the limit
+        if total_size.saturating_add(entry_size) > size_limit {
+            debug!(
+                "Eager state size limit reached ({} bytes, limit: {} bytes), \
+                 sending partial state with {} entries",
+                total_size,
+                size_limit,
+                entries.len()
+            );
+            counter!(INVOKER_EAGER_STATE_TRUNCATED).increment(1);
+            is_partial = true;
+            break;
+        }
+
+        total_size = total_size.saturating_add(entry_size);
+        entries.push(mapper((key, value)));
+    }
+
+    Ok((is_partial, entries))
+}
 
 pub(super) struct InvocationTaskOutput {
     pub(super) partition: PartitionLeaderEpoch,
@@ -143,7 +195,7 @@ pub(super) struct InvocationTask<EE, DMR> {
     invocation_target: InvocationTarget,
     inactivity_timeout: Duration,
     abort_timeout: Duration,
-    disable_eager_state: bool,
+    eager_state_size_limit: usize,
     message_size_warning: NonZeroUsize,
     message_size_limit: NonZeroUsize,
     retry_count_since_last_stored_entry: u32,
@@ -203,7 +255,7 @@ where
         invocation_target: InvocationTarget,
         default_inactivity_timeout: Duration,
         default_abort_timeout: Duration,
-        disable_eager_state: bool,
+        eager_state_size_limit: usize,
         message_size_warning: NonZeroUsize,
         message_size_limit: NonZeroUsize,
         retry_count_since_last_stored_entry: u32,
@@ -220,7 +272,7 @@ where
             invocation_target,
             inactivity_timeout: default_inactivity_timeout,
             abort_timeout: default_abort_timeout,
-            disable_eager_state,
+            eager_state_size_limit,
             entry_enricher,
             schemas: deployment_metadata_resolver,
             invoker_tx,
@@ -379,10 +431,17 @@ where
             )));
         }
 
-        // Determine if we need to read state
+        // Resolve the effective eager state size limit:
+        // Per-handler/service override takes precedence over server-level config.
+        // 0 means "disable eager state", non-zero values are clamped to the message size limit.
+        if let Some(limit) = invocation_attempt_options.eager_state_size_limit {
+            let limit = limit.as_usize();
+            self.eager_state_size_limit = limit.min(self.message_size_limit.get());
+        }
+
+        // Determine if we need to read state (0 means lazy state / no eager state)
         let keyed_service_id = if self.invocation_target.as_keyed_service_id().is_some()
-            && invocation_attempt_options.enable_lazy_state != Some(true)
-            && !self.disable_eager_state
+            && self.eager_state_size_limit > 0
         {
             self.invocation_target.as_keyed_service_id()
         } else {
@@ -536,5 +595,134 @@ impl Stream for ResponseStream {
             }
             ResponseStreamProj::Terminated => Poll::Ready(None),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+    use futures::stream;
+
+    use restate_invoker_api::invocation_reader::EagerState;
+
+    use super::collect_eager_state;
+
+    type StateResult = Result<(Bytes, Bytes), std::io::Error>;
+
+    // Helper to create a (Bytes, Bytes) pair of known sizes
+    fn entry(key_size: usize, value_size: usize) -> StateResult {
+        Ok((
+            Bytes::from(vec![b'k'; key_size]),
+            Bytes::from(vec![b'v'; value_size]),
+        ))
+    }
+
+    #[tokio::test]
+    async fn collect_eager_state_no_state_returns_partial() {
+        let (is_partial, entries) = collect_eager_state::<
+            stream::Empty<Result<(Bytes, Bytes), std::io::Error>>,
+            _,
+            _,
+        >(None, 1024, std::convert::identity)
+        .await
+        .unwrap();
+
+        assert!(is_partial, "no state should be reported as partial");
+        assert!(entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn collect_eager_state_complete_within_limit() {
+        let items = vec![entry(10, 20), entry(5, 15)];
+        let state = EagerState::new_complete(stream::iter(items));
+
+        let (is_partial, entries) = collect_eager_state(Some(state), 1024, std::convert::identity)
+            .await
+            .unwrap();
+
+        assert!(!is_partial, "all entries fit within limit");
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn collect_eager_state_preserves_partial_flag() {
+        // Stream is pre-flagged as partial even though all entries fit
+        let items = vec![entry(10, 10)];
+        let state = EagerState::new_partial(stream::iter(items));
+
+        let (is_partial, entries) = collect_eager_state(Some(state), 1024, std::convert::identity)
+            .await
+            .unwrap();
+
+        assert!(is_partial, "partial flag should be preserved from source");
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn collect_eager_state_truncates_at_limit() {
+        // 3 entries of 50 bytes each, limit of 120 bytes => should fit 2
+        let items = vec![entry(25, 25), entry(25, 25), entry(25, 25)];
+        let state = EagerState::new_complete(stream::iter(items));
+
+        let (is_partial, entries) = collect_eager_state(Some(state), 120, std::convert::identity)
+            .await
+            .unwrap();
+
+        assert!(is_partial, "should be partial after truncation");
+        assert_eq!(entries.len(), 2, "only 2 entries should fit (100 bytes)");
+    }
+
+    #[tokio::test]
+    async fn collect_eager_state_first_entry_always_included() {
+        // Single entry larger than the limit — should return empty entries
+        let items = vec![entry(100, 101)];
+        let state = EagerState::new_complete(stream::iter(items));
+
+        let (is_partial, entries) = collect_eager_state(Some(state), 200, std::convert::identity)
+            .await
+            .unwrap();
+
+        assert!(is_partial, "first entry exceeded limit so partial state");
+        assert!(
+            entries.is_empty(),
+            "first entry exceeded limit so empty entries"
+        );
+    }
+
+    #[tokio::test]
+    async fn collect_eager_state_stream_error_propagated() {
+        let items: Vec<StateResult> = vec![Err(std::io::Error::other("boom"))];
+        let state = EagerState::new_complete(stream::iter(items));
+
+        let result = collect_eager_state(Some(state), 1024, std::convert::identity).await;
+        assert!(result.is_err(), "stream error should be propagated");
+    }
+
+    #[tokio::test]
+    async fn collect_eager_state_exact_boundary() {
+        // 2 entries of exactly 50 bytes each, limit of 100 => both should fit
+        let items = vec![entry(25, 25), entry(25, 25)];
+        let state = EagerState::new_complete(stream::iter(items));
+
+        let (is_partial, entries) = collect_eager_state(Some(state), 100, std::convert::identity)
+            .await
+            .unwrap();
+
+        assert!(!is_partial, "entries exactly at limit should fit");
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn collect_eager_state_one_byte_over_limit() {
+        // 2 entries of 50 bytes each, limit of 99 => only first should fit
+        let items = vec![entry(25, 25), entry(25, 25)];
+        let state = EagerState::new_complete(stream::iter(items));
+
+        let (is_partial, entries) = collect_eager_state(Some(state), 99, std::convert::identity)
+            .await
+            .unwrap();
+
+        assert!(is_partial, "should be partial when 1 byte over");
+        assert_eq!(entries.len(), 1, "only first entry should fit");
     }
 }

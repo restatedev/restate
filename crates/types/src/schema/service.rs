@@ -15,6 +15,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde::Serialize;
 
+use restate_serde_util::ByteCount;
 use restate_time_util::FriendlyDuration;
 
 use crate::config::{DEFAULT_ABORT_TIMEOUT, DEFAULT_INACTIVITY_TIMEOUT};
@@ -176,6 +177,15 @@ pub struct ServiceMetadata {
     /// This is relevant only for Workflows and Virtual Objects.
     #[serde(default = "restate_serde_util::default::bool::<false>")]
     pub enable_lazy_state: bool,
+
+    /// # Eager state size limit
+    ///
+    /// Maximum total size of state entries to send eagerly.
+    /// If set, it overrides the server-level `eager-state-size-limit` configuration.
+    /// A value of `0` is equivalent to enabling lazy state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "utoipa-schema", schema(value_type = Option<String>))]
+    pub eager_state_size_limit: Option<ByteCount>,
 
     /// # Retry policy
     ///
@@ -396,6 +406,15 @@ pub struct HandlerMetadata {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub enable_lazy_state: Option<bool>,
 
+    /// # Eager state size limit
+    ///
+    /// Maximum total size of state entries to send eagerly.
+    /// If set, it overrides the value set in the service.
+    /// A value of `0` is equivalent to enabling lazy state.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[cfg_attr(feature = "utoipa-schema", schema(value_type = Option<String>))]
+    pub eager_state_size_limit: Option<ByteCount>,
+
     /// # Public
     ///
     /// If true, this handler can be invoked through the ingress.
@@ -557,6 +576,7 @@ pub mod test_util {
                                 inactivity_timeout: None,
                                 abort_timeout: None,
                                 enable_lazy_state: None,
+                                eager_state_size_limit: None,
                                 public: true,
                                 input_description: "any".to_string(),
                                 output_description: "any".to_string(),
@@ -580,6 +600,7 @@ pub mod test_util {
                 inactivity_timeout: DEFAULT_INACTIVITY_TIMEOUT,
                 abort_timeout: DEFAULT_ABORT_TIMEOUT,
                 enable_lazy_state: false,
+                eager_state_size_limit: None,
                 retry_policy: Default::default(),
                 info: vec![],
             }
@@ -606,6 +627,7 @@ pub mod test_util {
                                 inactivity_timeout: None,
                                 abort_timeout: None,
                                 enable_lazy_state: None,
+                                eager_state_size_limit: None,
                                 public: true,
                                 input_description: "any".to_string(),
                                 output_description: "any".to_string(),
@@ -629,6 +651,7 @@ pub mod test_util {
                 inactivity_timeout: DEFAULT_INACTIVITY_TIMEOUT,
                 abort_timeout: DEFAULT_ABORT_TIMEOUT,
                 enable_lazy_state: false,
+                eager_state_size_limit: None,
                 retry_policy: Default::default(),
                 info: vec![],
             }
