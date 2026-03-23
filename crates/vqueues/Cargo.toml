@@ -19,10 +19,10 @@ restate-types = { workspace = true }
 bilrost = { workspace = true, features = ["smallvec"] }
 derive_more = { workspace = true, features = ["debug", "into_iterator", "is_variant"] }
 gardal = { workspace = true, features = ["tokio"] }
-hashbrown = { workspace = true  }
+hashbrown = { workspace = true }
 metrics = { workspace = true }
 pin-project = { workspace = true }
-slotmap = { version = "1" }
+slotmap = { workspace = true }
 smallvec = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 tokio-util = { workspace = true, features = ["time"] }

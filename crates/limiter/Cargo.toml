@@ -1,0 +1,26 @@
+[package]
+name = "restate-limiter"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Hierarchical concurrency limiter with 3-level rule matching"
+
+[dependencies]
+restate-workspace-hack = { workspace = true }
+
+restate-util-string = { workspace = true }
+
+slotmap = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+restate-test-util = { workspace = true }
+
+criterion = { workspace = true }
+rand = { workspace = true }
+test-log = { workspace = true }
+tracing = { workspace = true }
+tracing-test = { workspace = true }
