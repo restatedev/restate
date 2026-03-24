@@ -1253,7 +1253,7 @@ where
         invocation_id: InvocationId,
         inbound_needed: usize,
         outbound_needed: usize,
-        budget: InvocationMemory,
+        mut budget: InvocationMemory,
     ) {
         if let Some((sender, _, mut ism)) = self
             .invocation_state_machine_manager
@@ -1293,6 +1293,8 @@ where
                         direction: MemoryDirection::Outbound,
                     }
                 };
+                // release excess memory to give other invocations a chance to make progress
+                budget.release_excess();
                 ism.budget = Some(budget);
                 self.handle_error_event(partition, invocation_id, error, ism)
                     .await;
