@@ -39,6 +39,7 @@ metrics = { workspace = true }
 object_store = { workspace = true }
 parking_lot = { workspace = true }
 paste = { workspace = true }
+pin-project = { workspace = true }
 prost = { workspace = true }
 rand = { workspace = true }
 rocksdb = { workspace = true }

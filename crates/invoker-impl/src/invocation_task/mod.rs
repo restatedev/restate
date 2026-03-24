@@ -26,7 +26,9 @@ use http::response::Parts as ResponseParts;
 use http::{HeaderName, HeaderValue, Response};
 use http_body::{Body, Frame};
 use metrics::{counter, histogram};
-use restate_memory::{AvailabilityNotified, InvocationMemory, LocalMemoryLease, LocalMemoryPool};
+use restate_memory::{
+    AvailabilityNotified, InvocationMemory, LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream,
+};
 use tokio::sync::mpsc;
 use tokio_util::task::AbortOnDropHandle;
 use tracing::{debug, instrument};
@@ -97,7 +99,7 @@ async fn collect_eager_state<S, E, T>(
     mut mapper: impl FnMut((Bytes, Bytes)) -> T,
 ) -> Result<(bool, Vec<T>, Option<LocalMemoryLease>), InvokerError>
 where
-    S: Stream<Item = Result<((Bytes, Bytes), LocalMemoryLease), E>> + Send,
+    S: PinnableMemoryStream<Item = Result<(Bytes, Bytes, LocalMemoryLease), E>> + Send,
     E: InvocationReaderError,
 {
     let Some(state) = state else {
@@ -110,8 +112,8 @@ where
     let mut total_size: usize = 0;
 
     let mut stream = std::pin::pin!(state.into_inner());
-    while let Some(result) = stream.next().await {
-        let ((key, value), lease) = result.map_err(|e| InvokerError::StateReader(e.into()))?;
+    while let Some(result) = stream.as_mut().next().await {
+        let (key, value, lease) = result.map_err(|e| InvokerError::StateReader(e.into()))?;
         let entry_size = key.len() + value.len();
 
         // Check if adding this entry would exceed the limit
@@ -129,11 +131,16 @@ where
         }
 
         total_size = total_size.saturating_add(entry_size);
+        // Signal the underlying budgeted stream that this lease's memory is
+        // now pinned (accumulated) and won't be released until the entire
+        // StartMessage is sent.
+        let lease_size = lease.size();
         entries.push(mapper((key, value)));
         match &mut merged_lease {
             Some(existing) => existing.merge(lease),
             None => merged_lease = Some(lease),
         }
+        stream.as_mut().pin_memory(lease_size);
     }
 
     Ok((is_partial, entries, merged_lease))
@@ -682,6 +689,10 @@ pin_project_lite::pin_project! {
         // Tracks when release_excess was last called so we can piggyback
         // periodic releases on poll_next without an external timer.
         last_excess_release: tokio::time::Instant,
+        // Amount of in-flight memory the caller has accumulated (merged leases)
+        // that won't be released until the caller's operation completes.
+        // Updated by the caller via PinnableMemoryStream::pin_memory/unpin_memory.
+        pinned: usize,
     }
 }
 
@@ -717,6 +728,7 @@ impl<'a> ResponseStream<'a> {
             },
             budget: inbound_budget,
             pending_frame: None,
+            pinned: 0,
             budget_notified: None,
             last_excess_release: tokio::time::Instant::now(),
         }
@@ -797,9 +809,9 @@ impl Stream for ResponseStream<'_> {
         if let Some(lease) = this.budget.try_reserve(buf.len()) {
             return Poll::Ready(Some(Ok(ResponseChunk::Data(buf, lease))));
         }
-        if this.budget.is_out_of_memory(buf.len()) {
+        if this.budget.is_out_of_memory(buf.len(), *this.pinned) {
             return Poll::Ready(Some(Err(InvokerError::OutOfMemory {
-                needed: buf.len(),
+                needed: buf.len() + *this.pinned,
                 direction: MemoryDirection::Inbound,
             })));
         }
@@ -817,6 +829,17 @@ impl Stream for ResponseStream<'_> {
     }
 }
 
+impl PinnableMemoryStream for ResponseStream<'_> {
+    fn pin_memory(self: Pin<&mut Self>, amount: usize) {
+        *self.project().pinned += amount;
+    }
+
+    fn unpin_memory(self: Pin<&mut Self>, amount: usize) {
+        let pinned = self.project().pinned;
+        *pinned = pinned.saturating_sub(amount);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
@@ -827,7 +850,7 @@ mod tests {
     use super::collect_eager_state;
     use restate_invoker_api::InvocationReaderError;
     use restate_invoker_api::invocation_reader::EagerState;
-    use restate_memory::{LocalMemoryLease, LocalMemoryPool};
+    use restate_memory::{IgnorePinnableMemoryStream, LocalMemoryLease, LocalMemoryPool};
 
     #[derive(Debug, derive_more::Display)]
     struct TestError;
@@ -839,17 +862,15 @@ mod tests {
         }
     }
 
-    type StateResult = Result<((Bytes, Bytes), LocalMemoryLease), TestError>;
+    type StateResult = Result<(Bytes, Bytes, LocalMemoryLease), TestError>;
 
     static MEMORY_POOL: LazyLock<LocalMemoryPool> = LazyLock::new(LocalMemoryPool::unlimited);
 
-    // Helper to create a (Bytes, Bytes) pair of known sizes
+    // Helper to create a (key, value, lease) triple of known sizes
     fn entry(key_size: usize, value_size: usize) -> StateResult {
         Ok((
-            (
-                Bytes::from(vec![b'k'; key_size]),
-                Bytes::from(vec![b'v'; value_size]),
-            ),
+            Bytes::from(vec![b'k'; key_size]),
+            Bytes::from(vec![b'v'; value_size]),
             MEMORY_POOL.empty_lease(),
         ))
     }
@@ -857,7 +878,9 @@ mod tests {
     #[tokio::test]
     async fn collect_eager_state_no_state_returns_partial() {
         let (is_partial, entries, _memory_lease) = collect_eager_state::<
-            stream::Empty<Result<((Bytes, Bytes), LocalMemoryLease), Infallible>>,
+            IgnorePinnableMemoryStream<
+                stream::Empty<Result<(Bytes, Bytes, LocalMemoryLease), Infallible>>,
+            >,
             _,
             _,
         >(None, 1024, std::convert::identity)
@@ -871,7 +894,7 @@ mod tests {
     #[tokio::test]
     async fn collect_eager_state_complete_within_limit() {
         let items = vec![entry(10, 20), entry(5, 15)];
-        let state = EagerState::new_complete(stream::iter(items));
+        let state = EagerState::new_complete(IgnorePinnableMemoryStream::new(stream::iter(items)));
 
         let (is_partial, entries, _memory_lease) =
             collect_eager_state(Some(state), 1024, std::convert::identity)
@@ -886,7 +909,7 @@ mod tests {
     async fn collect_eager_state_preserves_partial_flag() {
         // Stream is pre-flagged as partial even though all entries fit
         let items = vec![entry(10, 10)];
-        let state = EagerState::new_partial(stream::iter(items));
+        let state = EagerState::new_partial(IgnorePinnableMemoryStream::new(stream::iter(items)));
 
         let (is_partial, entries, _memory_lease) =
             collect_eager_state(Some(state), 1024, std::convert::identity)
@@ -901,7 +924,7 @@ mod tests {
     async fn collect_eager_state_truncates_at_limit() {
         // 3 entries of 50 bytes each, limit of 120 bytes => should fit 2
         let items = vec![entry(25, 25), entry(25, 25), entry(25, 25)];
-        let state = EagerState::new_complete(stream::iter(items));
+        let state = EagerState::new_complete(IgnorePinnableMemoryStream::new(stream::iter(items)));
 
         let (is_partial, entries, _memory_lease) =
             collect_eager_state(Some(state), 120, std::convert::identity)
@@ -916,7 +939,7 @@ mod tests {
     async fn collect_eager_state_first_entry_always_included() {
         // Single entry larger than the limit — should return empty entries
         let items = vec![entry(100, 101)];
-        let state = EagerState::new_complete(stream::iter(items));
+        let state = EagerState::new_complete(IgnorePinnableMemoryStream::new(stream::iter(items)));
 
         let (is_partial, entries, _memory_lease) =
             collect_eager_state(Some(state), 200, std::convert::identity)
@@ -933,7 +956,7 @@ mod tests {
     #[tokio::test]
     async fn collect_eager_state_stream_error_propagated() {
         let items: Vec<StateResult> = vec![Err(TestError)];
-        let state = EagerState::new_complete(stream::iter(items));
+        let state = EagerState::new_complete(IgnorePinnableMemoryStream::new(stream::iter(items)));
 
         let result = collect_eager_state(Some(state), 1024, std::convert::identity).await;
         assert!(result.is_err(), "stream error should be propagated");
@@ -943,7 +966,7 @@ mod tests {
     async fn collect_eager_state_exact_boundary() {
         // 2 entries of exactly 50 bytes each, limit of 100 => both should fit
         let items = vec![entry(25, 25), entry(25, 25)];
-        let state = EagerState::new_complete(stream::iter(items));
+        let state = EagerState::new_complete(IgnorePinnableMemoryStream::new(stream::iter(items)));
 
         let (is_partial, entries, _memory_lease) =
             collect_eager_state(Some(state), 100, std::convert::identity)
@@ -958,7 +981,7 @@ mod tests {
     async fn collect_eager_state_one_byte_over_limit() {
         // 2 entries of 50 bytes each, limit of 99 => only first should fit
         let items = vec![entry(25, 25), entry(25, 25)];
-        let state = EagerState::new_complete(stream::iter(items));
+        let state = EagerState::new_complete(IgnorePinnableMemoryStream::new(stream::iter(items)));
 
         let (is_partial, entries, _memory_lease) =
             collect_eager_state(Some(state), 99, std::convert::identity)

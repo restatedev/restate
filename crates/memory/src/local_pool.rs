@@ -267,9 +267,14 @@ impl LocalMemoryPool {
     /// Reserves `size` bytes, waiting if necessary for in-flight memory to be
     /// reclaimed and/or global pool capacity to become available.
     ///
+    /// `pinned` is the amount of in-flight memory the caller knows is
+    /// **not reclaimable** (e.g. accumulated into a merged lease that won't be
+    /// released until the caller's operation completes). Pass `0` when the
+    /// caller does not accumulate leases.
+    ///
     /// Returns [`Err(OutOfMemory)`] if the request is infeasible — meaning
-    /// even after reclaiming all in-flight memory and tapping the entire global
-    /// pool, the request cannot be satisfied. This is checked on every
+    /// even after reclaiming all reclaimable in-flight memory and tapping the
+    /// global pool, the request cannot be satisfied. This is checked on every
     /// iteration after a notification wakes us, so transient exhaustion is
     /// retried while permanent exhaustion is detected promptly.
     ///
@@ -277,7 +282,11 @@ impl LocalMemoryPool {
     ///
     /// This method is cancel-safe: dropping the future before completion has no
     /// effect on the budget (no memory is reserved until the method returns).
-    pub async fn reserve(&mut self, size: usize) -> Result<LocalMemoryLease, OutOfMemory> {
+    pub async fn reserve(
+        &mut self,
+        size: usize,
+        pinned: usize,
+    ) -> Result<LocalMemoryLease, OutOfMemory> {
         loop {
             // Create the notification future *before* checking availability so
             // that a concurrent release (local in-flight drop or global pool
@@ -289,8 +298,13 @@ impl LocalMemoryPool {
             if let Some(lease) = self.try_reserve(size) {
                 return Ok(lease);
             }
-            if self.is_out_of_memory(size) {
-                return Err(OutOfMemory { needed: size });
+            if self.is_out_of_memory(size, pinned) {
+                // Report needed + pinned so the caller knows the total memory
+                // required to complete the operation (the current request plus
+                // the accumulated memory that won't be released).
+                return Err(OutOfMemory {
+                    needed: size.saturating_add(pinned),
+                });
             }
 
             // try_reserve failed but the request is feasible. Wait for either
@@ -312,20 +326,31 @@ impl LocalMemoryPool {
     }
 
     /// Returns `true` if the requested memory fundamentally cannot be satisfied
-    /// even after all in-flight memory is reclaimed and the global pool is tapped.
+    /// even after all *reclaimable* in-flight memory is reclaimed and the global
+    /// pool is tapped.
     ///
-    /// The theoretical maximum is `min(upper_bound, local_capacity + global_available)`:
-    /// - `upper_bound` is the hard ceiling per direction.
-    /// - `local_capacity + global_available` is the most we could ever hold locally
-    ///   (current capacity plus everything the global pool can give us), which accounts
-    ///   for in-flight reclaims since in-flight bytes are already part of local capacity.
-    pub fn is_out_of_memory(&self, needed: usize) -> bool {
+    /// `pinned` is the amount of in-flight memory that is **not reclaimable**
+    /// (e.g. accumulated into a merged lease held by the caller). Pass `0` when
+    /// the caller does not accumulate leases.
+    ///
+    /// The reclaimable capacity is:
+    /// - `capacity - pinned`: local capacity minus memory that won't be freed.
+    /// - Plus `min(global_available, upper_bound - capacity)`: how much we can
+    ///   still grow from the global pool without exceeding the per-direction cap.
+    pub fn is_out_of_memory(&self, needed: usize, pinned: usize) -> bool {
         if needed > self.upper_bound {
             return true;
         }
         let capacity = self.local_capacity.size().as_usize();
         let global_available = self.shared.pool.available();
-        needed > capacity.saturating_add(global_available)
+        let growth_possible = self
+            .upper_bound
+            .saturating_sub(capacity)
+            .min(global_available);
+        let reclaimable = capacity
+            .saturating_sub(pinned)
+            .saturating_add(growth_possible);
+        needed > reclaimable
     }
 
     /// Returns available memory (local capacity − in-flight).
@@ -668,8 +693,8 @@ mod tests {
         let global = pool(100);
         let budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
 
-        assert!(!budget.is_out_of_memory(100));
-        assert!(budget.is_out_of_memory(101));
+        assert!(!budget.is_out_of_memory(100, 0));
+        assert!(budget.is_out_of_memory(101, 0));
     }
 
     #[test]
@@ -677,8 +702,8 @@ mod tests {
         let global = pool(10000);
         let budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 200);
 
-        assert!(!budget.is_out_of_memory(200));
-        assert!(budget.is_out_of_memory(201));
+        assert!(!budget.is_out_of_memory(200, 0));
+        assert!(budget.is_out_of_memory(201, 0));
     }
 
     #[test]
@@ -714,7 +739,7 @@ mod tests {
             drop(lease1);
         });
 
-        let lease2 = budget.reserve(50).await.unwrap();
+        let lease2 = budget.reserve(50, 0).await.unwrap();
         assert_eq!(lease2.size(), 50);
         assert_eq!(budget.in_flight(), 50);
         assert_eq!(budget.available(), 50);
@@ -740,7 +765,7 @@ mod tests {
             drop(lease1);
         });
 
-        let lease2 = budget.reserve(50).await.unwrap();
+        let lease2 = budget.reserve(50, 0).await.unwrap();
         assert_eq!(lease2.size(), 50);
 
         drop(lease2);
@@ -758,7 +783,7 @@ mod tests {
         let external = global.try_reserve(50).unwrap();
         assert_eq!(global.available(), 0);
 
-        let lease = budget.reserve(50).await.unwrap();
+        let lease = budget.reserve(50, 0).await.unwrap();
         assert_eq!(lease.size(), 50);
 
         assert!(budget.try_reserve(30).is_none());
@@ -768,7 +793,7 @@ mod tests {
             drop(lease);
         });
 
-        let lease2 = budget.reserve(30).await.unwrap();
+        let lease2 = budget.reserve(30, 0).await.unwrap();
         assert_eq!(lease2.size(), 30);
 
         drop(lease2);
@@ -782,9 +807,9 @@ mod tests {
         let global = pool(10000);
         let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 200);
 
-        assert!(budget.reserve(201).await.is_err());
+        assert!(budget.reserve(201, 0).await.is_err());
 
-        let lease = budget.reserve(200).await.unwrap();
+        let lease = budget.reserve(200, 0).await.unwrap();
         assert_eq!(lease.size(), 200);
         drop(lease);
     }
@@ -796,9 +821,9 @@ mod tests {
 
         let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
 
-        assert!(budget.reserve(200).await.is_err());
+        assert!(budget.reserve(200, 0).await.is_err());
 
-        let lease = budget.reserve(10).await.unwrap();
+        let lease = budget.reserve(10, 0).await.unwrap();
         assert_eq!(lease.size(), 10);
 
         drop(lease);
@@ -824,10 +849,10 @@ mod tests {
         assert_eq!(global.available(), 0);
 
         // Budget has local_capacity=100 (all in-flight) + global_available=0.
-        // is_out_of_memory(50): 50 <= 100 + 0 → feasible (in-flight will reclaim).
+        // is_out_of_memory(50, 0): 50 <= 100 + 0 → feasible (in-flight will reclaim).
         // try_reserve(50): available=0 → fails. Growth needs 50 from global → fails.
         assert!(budget.try_reserve(50).is_none());
-        assert!(!budget.is_out_of_memory(50));
+        assert!(!budget.is_out_of_memory(50, 0));
 
         // Drop the external lease on another task — this returns memory to
         // the global pool (not to our local SharedState::notify). This lets
@@ -839,10 +864,11 @@ mod tests {
 
         // reserve() should wake up promptly via the global pool notification
         // and grow local capacity from the freed global pool memory.
-        let lease = tokio::time::timeout(std::time::Duration::from_millis(100), budget.reserve(50))
-            .await
-            .expect("should resolve promptly via global notification, not timeout")
-            .unwrap();
+        let lease =
+            tokio::time::timeout(std::time::Duration::from_millis(100), budget.reserve(50, 0))
+                .await
+                .expect("should resolve promptly via global notification, not timeout")
+                .unwrap();
         assert_eq!(lease.size(), 50);
 
         drop(local_lease);
@@ -1104,5 +1130,64 @@ mod tests {
         assert_eq!(lease.size(), 100);
         assert_eq!(budget.in_flight(), 100);
         drop(lease);
+    }
+
+    #[test]
+    fn is_out_of_memory_with_pinned_detects_livelock() {
+        // Simulate the accumulation livelock scenario:
+        // - Budget has capacity=200, upper_bound=200
+        // - All 200 bytes are in-flight (accumulated by the caller)
+        // - Without pinned tracking, is_out_of_memory(50, 0) returns false
+        //   because capacity(200) + global(0) >= 50
+        // - With pinned=200, is_out_of_memory(50, 200) returns true
+        //   because (200-200) + min(0, 200-200) = 0 < 50
+        let global = pool(200);
+        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 200);
+
+        let lease = budget.try_reserve(200).unwrap();
+        assert_eq!(budget.in_flight(), 200);
+        assert_eq!(budget.available(), 0);
+
+        // Without pinned: thinks memory is reclaimable — would livelock
+        assert!(!budget.is_out_of_memory(50, 0));
+        // With pinned: correctly detects that the accumulated memory is not reclaimable
+        assert!(budget.is_out_of_memory(50, 200));
+
+        drop(lease);
+    }
+
+    #[test]
+    fn is_out_of_memory_pinned_partial_accumulation() {
+        // Partial accumulation: some in-flight is pinned, some is reclaimable
+        let global = pool(200);
+        let seed = global.try_reserve(100).unwrap();
+        let mut budget = LocalMemoryPool::new(global.clone(), seed, 0, 300);
+
+        // Reserve 100 bytes (in-flight)
+        let _lease1 = budget.try_reserve(50).unwrap();
+        let _lease2 = budget.try_reserve(50).unwrap();
+
+        // 50 bytes of pinned (accumulated), 50 bytes reclaimable
+        // capacity=100, global_available=100, upper_bound=300
+        // reclaimable = (100 - 50) + min(100, 300-100) = 50 + 100 = 150
+        assert!(!budget.is_out_of_memory(150, 50));
+        assert!(budget.is_out_of_memory(151, 50));
+    }
+
+    #[tokio::test]
+    async fn reserve_with_pinned_detects_livelock() {
+        // When all in-flight is pinned, reserve should immediately return OOM
+        // instead of waiting forever.
+        let global = pool(100);
+        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 100);
+
+        let _accumulated = budget.try_reserve(100).unwrap();
+
+        // With pinned=100, reserve should return OOM immediately
+        let result = budget.reserve(50, 100).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        // needed should include pinned (50 + 100 = 150)
+        assert_eq!(err.needed, 150);
     }
 }

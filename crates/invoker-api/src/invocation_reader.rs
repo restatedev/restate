@@ -13,7 +13,7 @@ use std::future::Future;
 use bytes::Bytes;
 use futures::Stream;
 
-use restate_memory::{LocalMemoryLease, LocalMemoryPool};
+use restate_memory::{LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId};
 use restate_types::invocation::ServiceInvocationSpanContext;
@@ -143,7 +143,7 @@ pub trait InvocationReaderTransaction {
         + Send
     where
         Self: 'a;
-    type LocalMemoryPooledStateStream<'a>: Stream<Item = Result<((Bytes, Bytes), LocalMemoryLease), Self::Error>>
+    type LocalMemoryPooledStateStream<'a>: PinnableMemoryStream<Item = Result<(Bytes, Bytes, LocalMemoryLease), Self::Error>>
         + Send
     where
         Self: 'a;

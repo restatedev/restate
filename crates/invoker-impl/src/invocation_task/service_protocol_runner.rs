@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashSet;
+use std::pin::Pin;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -27,7 +28,7 @@ use restate_invoker_api::invocation_reader::{
     JournalKind,
 };
 use restate_invoker_api::{EntryEnricher, JournalMetadata};
-use restate_memory::{LocalMemoryLease, LocalMemoryPool};
+use restate_memory::{LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream};
 use restate_service_client::{Endpoint, Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::message::{
@@ -444,7 +445,7 @@ where
         outbound_budget: &mut LocalMemoryPool,
     ) -> TerminalLoopState<()>
     where
-        S: Stream<Item = Result<ResponseChunk, InvokerError>> + Unpin,
+        S: PinnableMemoryStream<Item = Result<ResponseChunk, InvokerError>> + Unpin,
         IR: InvocationReader,
     {
         let mut release_interval = tokio::time::interval(Self::BUDGET_RELEASE_INTERVAL);
@@ -488,7 +489,7 @@ where
                         }
                         Some(ResponseChunk::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
                         Some(ResponseChunk::Data(buf, lease)) => {
-                            crate::shortcircuit!(self.handle_read(parent_span_context, buf, lease));
+                            crate::shortcircuit!(self.handle_read(parent_span_context, http_stream_rx, buf, lease));
                         }
                     }
                 },
@@ -512,7 +513,7 @@ where
         http_stream_rx: &mut S,
     ) -> TerminalLoopState<()>
     where
-        S: Stream<Item = Result<ResponseChunk, InvokerError>> + Unpin,
+        S: PinnableMemoryStream<Item = Result<ResponseChunk, InvokerError>> + Unpin,
     {
         loop {
             tokio::select! {
@@ -523,7 +524,7 @@ where
                         }
                         Some(ResponseChunk::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
                         Some(ResponseChunk::Data(buf, lease)) => {
-                            crate::shortcircuit!(self.handle_read(parent_span_context, buf, lease));
+                            crate::shortcircuit!(self.handle_read(parent_span_context, http_stream_rx, buf, lease));
                         }
                     }
                 },
@@ -546,7 +547,7 @@ where
         duration_since_last_stored_entry: Duration,
     ) -> Result<(), InvokerError>
     where
-        S: Stream<Item = Result<((Bytes, Bytes), LocalMemoryLease), E>> + Send,
+        S: PinnableMemoryStream<Item = Result<(Bytes, Bytes, LocalMemoryLease), E>> + Send,
         E: InvocationReaderError,
     {
         // Collect state entries with size limit
@@ -657,18 +658,28 @@ where
         Ok(())
     }
 
-    fn handle_read(
+    fn handle_read<S>(
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
+        response_stream: &mut S,
         buf: Bytes,
         chunk_lease: LocalMemoryLease,
-    ) -> TerminalLoopState<()> {
+    ) -> TerminalLoopState<()>
+    where
+        S: PinnableMemoryStream + Unpin,
+    {
+        let chunk_size = chunk_lease.size();
         // Budget was already acquired by ResponseStream before yielding
         // this chunk. Merge the chunk's lease into the cumulative lease.
         match self.cumulative_inbound_lease.as_mut() {
             Some(cumulative) => cumulative.merge(chunk_lease),
             None => self.cumulative_inbound_lease = Some(chunk_lease),
         }
+        let mut response_stream = Pin::new(response_stream);
+
+        // The merged lease is pinned — it won't be released until a complete
+        // message is decoded and split off.
+        response_stream.as_mut().pin_memory(chunk_size);
 
         self.decoder.push(buf);
 
@@ -684,6 +695,8 @@ where
                 .as_mut()
                 .expect("cumulative lease set before decode loop")
                 .split(payload_size);
+            // The split portion is now an independent lease — unpin it.
+            response_stream.as_mut().unpin_memory(payload_size);
             crate::shortcircuit!(self.handle_message(
                 parent_span_context,
                 frame_header,

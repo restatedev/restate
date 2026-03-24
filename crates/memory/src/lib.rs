@@ -20,12 +20,14 @@ mod controller;
 mod footprint;
 pub mod local_pool;
 mod metric_definitions;
+mod pinned_memory_stream;
 mod pool;
 
 pub use controller::MemoryController;
 pub use local_pool::{
     AvailabilityNotified, InvocationMemory, LocalMemoryLease, LocalMemoryPool, OutOfMemory,
 };
+pub use pinned_memory_stream::{IgnorePinnableMemoryStream, PinnableMapErr, PinnableMemoryStream};
 pub use pool::{MemoryLease, MemoryPool, PollMemoryPool};
 pub use restate_serde_util::NonZeroByteCount;
 

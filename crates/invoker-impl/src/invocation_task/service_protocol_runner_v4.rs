@@ -32,7 +32,7 @@ use restate_invoker_api::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
     JournalKind,
 };
-use restate_memory::{LocalMemoryLease, LocalMemoryPool};
+use restate_memory::{LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream};
 use restate_service_client::{Endpoint, Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
@@ -590,7 +590,7 @@ where
         random_seed: u64,
     ) -> Result<(), InvokerError>
     where
-        S: Stream<Item = Result<((Bytes, Bytes), LocalMemoryLease), E>> + Send,
+        S: PinnableMemoryStream<Item = Result<(Bytes, Bytes, LocalMemoryLease), E>> + Send,
         E: InvocationReaderError,
     {
         // Collect state entries with size limit
@@ -1414,7 +1414,7 @@ impl<S> DecoderStream<S> {
 
 impl<S> Stream for DecoderStream<S>
 where
-    S: Stream<Item = Result<ResponseChunk, InvokerError>>,
+    S: PinnableMemoryStream<Item = Result<ResponseChunk, InvokerError>>,
 {
     type Item = Result<DecoderStreamItem, InvokerError>;
 
@@ -1429,6 +1429,9 @@ where
                         .as_mut()
                         .expect("cumulative lease set before decode")
                         .split(payload_size);
+                    // The split portion is now an independent lease that will be
+                    // released when the message consumer drops it — unpin it.
+                    this.inner.as_mut().unpin_memory(payload_size);
                     return Poll::Ready(Some(Ok(DecoderStreamItem::Message(
                         frame_header,
                         frame,
@@ -1441,10 +1444,14 @@ where
                             return Poll::Ready(Some(Ok(DecoderStreamItem::Parts(parts))));
                         }
                         ResponseChunk::Data(buf, lease) => {
+                            let lease_size = lease.size();
                             match this.cumulative_lease.as_mut() {
                                 Some(cumulative) => cumulative.merge(lease),
                                 None => *this.cumulative_lease = Some(lease),
                             }
+                            // The merged lease is now pinned — it won't be released
+                            // until a complete message is decoded and split off.
+                            this.inner.as_mut().pin_memory(lease_size);
                             this.decoder.push(buf);
                         }
                     },

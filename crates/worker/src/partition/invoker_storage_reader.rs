@@ -18,7 +18,7 @@ use restate_invoker_api::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
     JournalKind,
 };
-use restate_memory::{LocalMemoryLease, LocalMemoryPool};
+use restate_memory::{LocalMemoryLease, LocalMemoryPool, PinnableMapErr, PinnableMemoryStream};
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
 use restate_storage_api::state_table::ReadStateTable;
 use restate_storage_api::{
@@ -180,7 +180,11 @@ where
         Self: 'a;
     type LocalMemoryPooledStateStream<'a>
         = Pin<
-        Box<dyn Stream<Item = Result<((Bytes, Bytes), LocalMemoryLease), Self::Error>> + Send + 'a>,
+        Box<
+            dyn PinnableMemoryStream<Item = Result<(Bytes, Bytes, LocalMemoryLease), Self::Error>>
+                + Send
+                + 'a,
+        >,
     >
     where
         Self: 'a;
@@ -317,10 +321,9 @@ where
         budget: &'a mut LocalMemoryPool,
     ) -> Result<EagerState<Self::LocalMemoryPooledStateStream<'a>>, Self::Error> {
         let stream = self.txn.get_all_user_states_budgeted(service_id, budget)?;
-        Ok(EagerState::new_complete(Box::pin(stream.map(|result| {
-            result
-                .map(|(key, value, lease)| ((key, value), lease))
-                .map_err(InvokerStorageReaderError::from)
-        }))))
+        Ok(EagerState::new_complete(Box::pin(PinnableMapErr::new(
+            stream,
+            InvokerStorageReaderError::from,
+        ))))
     }
 }
