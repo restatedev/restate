@@ -128,6 +128,8 @@ impl<const CAN_BE_ZERO: bool> Display for ByteCount<CAN_BE_ZERO> {
 }
 
 impl<const CAN_BE_ZERO: bool> ByteCount<CAN_BE_ZERO> {
+    pub const MAX: Self = ByteCount(u64::MAX);
+
     pub const fn as_u64(&self) -> u64 {
         self.0
     }

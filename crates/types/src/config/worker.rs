@@ -451,6 +451,13 @@ impl InvokerOptions {
                 .unwrap_or(opts.message_size_limit),
         );
 
+        // Resolve per_invocation_memory_limit, clamped to message_size_limit
+        self.per_invocation_memory_limit = Some(
+            self.per_invocation_memory_limit
+                .map(|limit| limit.min(opts.message_size_limit.into()))
+                .unwrap_or(opts.message_size_limit.into()),
+        );
+
         // Fuse deprecated disable_eager_state into eager_state_size_limit
         if self.disable_eager_state {
             if self.eager_state_size_limit.is_some_and(|v| v.as_u64() > 0) {
@@ -464,19 +471,18 @@ impl InvokerOptions {
             }
         }
 
-        // Clamp eager_state_size_limit to the resolved message_size_limit
+        // Clamp eager_state_size_limit to the resolved message_size_limit.
+        // The eager_state_size_limit must not be larger than the per_invocation_memory_limit
+        // because that's the maximum amount of memory used for the outbound/inbound direction.
         self.eager_state_size_limit = Some(
             self.eager_state_size_limit
-                .map(|limit| limit.min(opts.message_size_limit.into()))
                 .unwrap_or(opts.message_size_limit.into()),
-        );
-
-        // Resolve per_invocation_memory_limit, clamped to message_size_limit
-        self.per_invocation_memory_limit = Some(
-            self.per_invocation_memory_limit
-                .map(|limit| limit.min(opts.message_size_limit.into()))
-                .unwrap_or(opts.message_size_limit.into()),
-        );
+        )
+        .map(|limit| {
+            limit
+                .min(opts.message_size_limit.into())
+                .min(self.per_invocation_memory_limit.unwrap_or(ByteCount::MAX))
+        });
     }
 }
 
