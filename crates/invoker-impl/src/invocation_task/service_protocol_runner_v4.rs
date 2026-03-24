@@ -21,7 +21,6 @@ use futures::{Stream, StreamExt};
 use gardal::futures::StreamExt as GardalStreamExt;
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
-use http_body::Frame;
 use opentelemetry::trace::TraceFlags;
 use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
@@ -64,9 +63,10 @@ use crate::error::{
     SdkInvocationErrorV2,
 };
 use crate::invocation_task::{
-    InvocationTask, InvocationTaskOutputInner, InvokerBody, InvokerBodySender, ResponseChunk,
+    InvocationTask, InvocationTaskOutputInner, InvokerBodySender, InvokerBodyType, ResponseChunk,
     ResponseStream, TerminalLoopState, X_RESTATE_SERVER, collect_eager_state,
-    invocation_id_to_header_value, retry_after, service_protocol_version_to_header_value,
+    invocation_id_to_header_value, leased_frame, new_invoker_body, retry_after,
+    service_protocol_version_to_header_value,
 };
 
 ///  Provides the value of the invocation id
@@ -360,11 +360,12 @@ where
         service_protocol_version: ServiceProtocolVersion,
         invocation_id: &InvocationId,
         parent_span_context: &ServiceInvocationSpanContext,
-    ) -> (InvokerBodySender, Request<InvokerBody>) {
+    ) -> (InvokerBodySender, Request<InvokerBodyType>) {
         // Use an unbounded channel: backpressure is provided by the memory budget
-        // (each frame carries an optional LocalMemoryLease) rather than channel capacity.
+        // (each frame's Bytes embeds a LocalMemoryLease via from_owner) rather than
+        // channel capacity.
         let (http_stream_tx, http_stream_rx) = mpsc::unbounded_channel();
-        let req_body = InvokerBody::new(http_stream_rx);
+        let req_body = new_invoker_body(http_stream_rx);
 
         let service_protocol_header_value =
             service_protocol_version_to_header_value(service_protocol_version);
@@ -726,7 +727,7 @@ where
         trace!(restate.protocol.message = ?msg, "Sending message");
         let buf = self.encoder.encode(msg);
 
-        if http_stream_tx.send((Frame::data(buf), lease)).is_err() {
+        if http_stream_tx.send(Ok(leased_frame(buf, lease))).is_err() {
             return Err(InvokerError::UnexpectedClosedRequestStream);
         };
         Ok(())
@@ -742,7 +743,7 @@ where
         trace!(restate.protocol.message = ?ty, "Sending message");
         let buf = self.encoder.encode_raw(ty, buf);
 
-        if http_stream_tx.send((Frame::data(buf), lease)).is_err() {
+        if http_stream_tx.send(Ok(leased_frame(buf, lease))).is_err() {
             return Err(InvokerError::UnexpectedClosedRequestStream);
         };
         Ok(())

@@ -20,14 +20,18 @@ use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 use std::time::{Duration, Instant};
 
+use std::convert::Infallible;
+
 use bytes::Bytes;
 use futures::{FutureExt, Stream, StreamExt};
 use http::response::Parts as ResponseParts;
 use http::{HeaderName, HeaderValue, Response};
 use http_body::{Body, Frame};
+use http_body_util::StreamBody;
 use metrics::{counter, histogram};
 use restate_memory::{InvocationMemory, LocalMemoryLease};
 use tokio::sync::mpsc;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::task::AbortOnDropHandle;
 use tracing::{debug, instrument};
 
@@ -186,74 +190,50 @@ pub(super) enum InvocationTaskOutputInner {
     },
 }
 
-/// A frame sent through the body channel, carrying an optional memory budget lease.
-///
-/// When hyper consumes this frame, the lease is dropped, returning memory to the
-/// outbound budget. For frames sent without budget tracking (e.g. the start message),
-/// the lease is `None`.
-type InvokerBodyFrame = (Frame<Bytes>, Option<LocalMemoryLease>);
-
 /// Sender half of the invoker body channel.
 ///
 /// Unbounded because backpressure is provided by the memory budget rather than
-/// channel capacity. Each frame carries an optional [`LocalMemoryLease`] that is held
-/// until hyper consumes the frame.
-type InvokerBodySender = mpsc::UnboundedSender<InvokerBodyFrame>;
+/// channel capacity. Each frame's [`Bytes`] may embed a [`LocalMemoryLease`] via
+/// [`Bytes::from_owner`], tying the budget lifetime to the bytes themselves — the
+/// lease is released when hyper (and the network stack) drops the `Bytes`.
+type InvokerBodySender = mpsc::UnboundedSender<Result<Frame<Bytes>, Infallible>>;
 
-/// HTTP request body that receives frames from the protocol runner.
+/// The HTTP request body type sent to hyper.
+type InvokerBodyType = StreamBody<UnboundedReceiverStream<Result<Frame<Bytes>, Infallible>>>;
+
+/// Combines encoded frame data with a memory budget lease so the lease is
+/// released when hyper drops the [`Bytes`] (after sending on the wire).
+struct LeasedBytes {
+    data: Bytes,
+    _lease: LocalMemoryLease,
+}
+
+impl AsRef<[u8]> for LeasedBytes {
+    fn as_ref(&self) -> &[u8] {
+        &self.data
+    }
+}
+
+/// Creates a body frame, optionally embedding a memory lease in the [`Bytes`].
 ///
-/// Implements [`Body<Data = Bytes>`] for use with hyper. Each frame carries an
-/// optional [`LocalMemoryLease`]. When `poll_frame` yields a new frame, the previous
-/// lease is dropped (releasing its memory back to the outbound budget). The final
-/// lease is dropped when the body itself is dropped (sender closed or request ends).
-struct InvokerBody {
-    rx: mpsc::UnboundedReceiver<InvokerBodyFrame>,
-    /// Lease from the most recently yielded frame. Held until the next frame
-    /// arrives or the body is dropped, ensuring the memory stays reserved while
-    /// hyper is processing the frame's bytes.
-    current_lease: Option<LocalMemoryLease>,
-}
-
-impl InvokerBody {
-    fn new(rx: mpsc::UnboundedReceiver<InvokerBodyFrame>) -> Self {
-        Self {
-            rx,
-            current_lease: None,
-        }
+/// When a lease is provided, it is attached to the bytes via [`Bytes::from_owner`]
+/// so the budget is held exactly as long as hyper holds the data — no circular
+/// dependency between frame N's lease and frame N+1's send.
+fn leased_frame(data: Bytes, lease: Option<LocalMemoryLease>) -> Frame<Bytes> {
+    match lease {
+        Some(lease) => Frame::data(Bytes::from_owner(LeasedBytes {
+            data,
+            _lease: lease,
+        })),
+        None => Frame::data(data),
     }
 }
 
-impl Body for InvokerBody {
-    type Data = Bytes;
-    type Error = std::convert::Infallible;
-
-    fn poll_frame(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        match self.rx.poll_recv(cx) {
-            Poll::Ready(Some((frame, lease))) => {
-                // Drop the previous lease (if any) and hold the new one.
-                self.current_lease = lease;
-                Poll::Ready(Some(Ok(frame)))
-            }
-            Poll::Ready(None) => {
-                // Channel closed — drop any remaining lease.
-                self.current_lease = None;
-                Poll::Ready(None)
-            }
-            Poll::Pending => Poll::Pending,
-        }
-    }
+fn new_invoker_body(
+    rx: mpsc::UnboundedReceiver<Result<Frame<Bytes>, Infallible>>,
+) -> InvokerBodyType {
+    StreamBody::new(UnboundedReceiverStream::new(rx))
 }
-
-// InvokerBody must be Send + Sync + Unpin for use with hyper.
-impl Unpin for InvokerBody {}
-
-const _: () = {
-    const fn assert_bounds<T: Send + Sync + Unpin + 'static>() {}
-    assert_bounds::<InvokerBody>();
-};
 
 /// Represents an open invocation stream
 pub(super) struct InvocationTask<EE, DMR> {
@@ -659,7 +639,7 @@ pin_project_lite::pin_project! {
 }
 
 impl ResponseStream {
-    fn initialize(client: &ServiceClient, req: Request<InvokerBody>) -> Self {
+    fn initialize(client: &ServiceClient, req: Request<InvokerBodyType>) -> Self {
         // Because the body sender blocks on waiting for the request body buffer to be available,
         // we need to spawn the request initiation separately, otherwise the loop below
         // will deadlock on the journal entry write.
