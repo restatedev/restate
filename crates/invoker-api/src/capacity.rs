@@ -26,8 +26,8 @@ pub struct InvokerCapacity {
     pub invocation_token_bucket: Option<TokenBucket>,
     pub action_token_bucket: Option<TokenBucket>,
     pub memory_pool: MemoryPool,
-    /// Outbound seed size in bytes reserved from the memory pool per invocation.
-    pub seed_size: usize,
+    /// Outbound initial memory in bytes reserved from the memory pool per invocation.
+    pub initial_invocation_memory: usize,
 }
 
 impl InvokerCapacity {
@@ -37,7 +37,7 @@ impl InvokerCapacity {
             invocation_token_bucket: None,
             action_token_bucket: None,
             memory_pool: MemoryPool::unlimited(),
-            seed_size: DEFAULT_SEED_SIZE,
+            initial_invocation_memory: DEFAULT_SEED_SIZE,
         }
     }
 
@@ -46,7 +46,7 @@ impl InvokerCapacity {
         invocation_throttling: Option<&ThrottlingOptions>,
         action_throttling: Option<&ThrottlingOptions>,
         memory_pool: MemoryPool,
-        seed_size: usize,
+        initial_invocation_memory: usize,
     ) -> Self {
         Self {
             concurrency: Concurrency::new(concurrency),
@@ -57,7 +57,7 @@ impl InvokerCapacity {
                 TokenBucket::new(gardal::Limit::from(opts.clone()), gardal::TokioClock)
             }),
             memory_pool,
-            seed_size,
+            initial_invocation_memory,
         }
     }
 }

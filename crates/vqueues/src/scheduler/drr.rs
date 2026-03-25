@@ -66,7 +66,8 @@ pub struct DRRScheduler<S: VQueueStore> {
     /// Limits the number of items included in a single decision across all queues
     max_items_per_decision: NonZeroU16,
     /// Memory to reserve per invocation from the memory pool
-    seed_size: usize,
+    // todo make dynamically configurable via configuration
+    initial_invocation_memory: usize,
 
     // SAFETY NOTE: **must** Keep this at the end since it needs to outlive all readers.
     storage: S,
@@ -80,7 +81,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
         concurrency_limiter: Concurrency,
         global_throttling: Option<GlobalTokenBucket>,
         memory_pool: MemoryPool,
-        seed_size: usize,
+        initial_invocation_memory: usize,
         storage: S,
         vqueues: VQueuesMeta<'_>,
     ) -> Self {
@@ -119,7 +120,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
             storage,
             limit_qid_per_poll,
             max_items_per_decision,
-            seed_size,
+            initial_invocation_memory,
             pending_resources: Default::default(),
         }
     }
@@ -184,7 +185,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
                 this.storage,
                 this.concurrency_limiter,
                 this.memory_limiter,
-                *this.seed_size,
+                *this.initial_invocation_memory,
                 this.global_throttling.as_ref(),
             )? {
                 Pop::DeficitExhausted => {

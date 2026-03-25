@@ -348,7 +348,7 @@ impl<S: VQueueStore> SchedulerService<S> {
         concurrency: Concurrency,
         global_throttling: Option<GlobalTokenBucket>,
         memory_pool: MemoryPool,
-        seed_size: usize,
+        initial_invocation_memory: usize,
         storage: S,
         vqueues_cache: &mut VQueuesMetaMut,
     ) -> Result<Self, StorageError>
@@ -374,7 +374,7 @@ impl<S: VQueueStore> SchedulerService<S> {
             concurrency,
             global_throttling,
             memory_pool,
-            seed_size,
+            initial_invocation_memory,
             storage,
             vqueues_cache.view(),
         )));

@@ -2561,6 +2561,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     .into_invocation_metadata()
                     .expect("Must be present if status is invoked");
                 debug_if_leader!(self.is_leader, ?reason, "Effect: Yield invocation");
+                // todo pass memory requirements from the reason to the vqueue scheduler and invoker
                 self.do_resume_service(effect.invocation_id, invocation_metadata)
                     .await?;
             }
