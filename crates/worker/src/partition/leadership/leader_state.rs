@@ -285,7 +285,7 @@ impl LeaderState {
                                 assignment.push(item, stats);
                             }
                             match action {
-                                scheduler::Action::MoveToRunning => {
+                                scheduler::Action::MoveToRun => {
                                     let command = vqueues::VQWaitingToRunning {
                                         assignment,
                                         meta_updates: vqueues::MetaUpdates {
@@ -305,21 +305,6 @@ impl LeaderState {
                                         qid.partition_key,
                                         Command::VQYieldRunning(command),
                                     ));
-                                }
-                                scheduler::Action::ResumeAlreadyRunning => {
-                                    todo!(
-                                        "Unsupported: We don't support directly resuming at the moment"
-                                    )
-                                    // invoker_tx
-                                    //     .run(
-                                    //         self.partition_id,
-                                    //         self.leader_epoch,
-                                    //         inv_id,
-                                    //         // todo: fix/remove
-                                    //         SharedString::from_borrowed(""),
-                                    //         SharedString::from_borrowed(""),
-                                    //     )
-                                    //     .map_err(Error::Invoker)?;
                                 }
                             }
                         }
