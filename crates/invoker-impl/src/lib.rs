@@ -438,13 +438,13 @@ where
     ) {
         // Pre-acquire a seed lease from the memory pool so the segment queue arm
         // can create a budget without blocking inside select!.
-        let seed_size = options.per_invocation_initial_memory.as_usize();
+        let initial_invocation_memory = options.per_invocation_initial_memory.as_usize();
         if segmented_input_queue.inner().is_empty() {
             // Release the seed if the queue drained since we acquired it, so the
             // memory is returned to the global pool instead of being held idle.
             self.pending_seed_lease = None;
         } else if self.pending_seed_lease.is_none() {
-            self.pending_seed_lease = self.memory_pool.try_reserve(seed_size);
+            self.pending_seed_lease = self.memory_pool.try_reserve(initial_invocation_memory);
         }
 
         tokio::select! {
@@ -500,12 +500,12 @@ where
                 }
             },
             Some(invoke_input_command) = segmented_input_queue.next(), if !segmented_input_queue.inner().is_empty() && self.quota.is_slot_available() && self.pending_seed_lease.is_some() => {
-                let mut inbound_seed = self.pending_seed_lease.take().unwrap();
-                let outbound_seed = inbound_seed.split(inbound_seed.size().as_usize() / 2);
-                let budget = self.create_invocation_memory(options, inbound_seed, outbound_seed);
+                let mut inbound_initial_memory = self.pending_seed_lease.take().unwrap();
+                let outbound_initial_memory = inbound_initial_memory.split(inbound_initial_memory.size().as_usize() / 2);
+                let budget = self.create_invocation_memory(options, inbound_initial_memory, outbound_initial_memory);
                 self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.invocation_id, invoke_input_command.invocation_target, budget);
             },
-            memory_lease = self.memory_pool.reserve(seed_size), if !segmented_input_queue.inner().is_empty() && self.pending_seed_lease.is_none() => {
+            memory_lease = self.memory_pool.reserve(initial_invocation_memory), if !segmented_input_queue.inner().is_empty() && self.pending_seed_lease.is_none() => {
                 self.pending_seed_lease = Some(memory_lease);
             }
             Some(invocation_task_msg) = self.invocation_tasks_rx.recv() => {
@@ -1692,7 +1692,7 @@ where
         }
     }
 
-    /// Create a per-invocation memory budget from the given seed leases.
+    /// Create a per-invocation memory budget from the given initial memory leases.
     ///
     /// The upper bound caps how much memory a single invocation may use per
     /// direction. Defaults to `per_invocation_memory_limit` (which itself
@@ -1700,11 +1700,16 @@ where
     fn create_invocation_memory(
         &self,
         options: &InvokerOptions,
-        inbound_seed: MemoryLease,
-        outbound_seed: MemoryLease,
+        inbound_initial_memory: MemoryLease,
+        outbound_initial_memory: MemoryLease,
     ) -> InvocationMemory {
         let upper_bound = options.per_invocation_memory_limit();
-        InvocationMemory::new(inbound_seed, upper_bound, outbound_seed, upper_bound)
+        InvocationMemory::new(
+            inbound_initial_memory,
+            upper_bound,
+            outbound_initial_memory,
+            upper_bound,
+        )
     }
 
     fn start_invocation_task(

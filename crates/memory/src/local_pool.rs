@@ -67,31 +67,31 @@ impl fmt::Debug for InvocationMemory {
 }
 
 impl InvocationMemory {
-    /// Creates a new invocation budget with per-direction seeds and upper bounds.
+    /// Creates a new invocation budget with per-direction initial memory and upper bounds.
     ///
-    /// Each seed's size defines the `min_reserved` floor for that direction's budget
+    /// Each initial memory's size defines the `min_reserved` floor for that direction's budget
     /// (i.e. [`release_excess`](LocalMemoryPool::release_excess) will never shrink below it).
     ///
     /// Both seeds must originate from the same [`MemoryPool`].
     pub fn new(
-        inbound_seed: MemoryLease,
+        inbound_initial_memory: MemoryLease,
         inbound_upper_bound: usize,
-        outbound_seed: MemoryLease,
+        outbound_initial_memory: MemoryLease,
         outbound_upper_bound: usize,
     ) -> Self {
-        let inbound_min = inbound_seed.size().as_usize();
-        let outbound_min = outbound_seed.size().as_usize();
+        let inbound_min = inbound_initial_memory.size().as_usize();
+        let outbound_min = outbound_initial_memory.size().as_usize();
 
         Self {
             inbound: LocalMemoryPool::new(
-                inbound_seed.budget().clone(),
-                inbound_seed,
+                inbound_initial_memory.budget().clone(),
+                inbound_initial_memory,
                 inbound_min,
                 inbound_upper_bound,
             ),
             outbound: LocalMemoryPool::new(
-                outbound_seed.budget().clone(),
-                outbound_seed,
+                outbound_initial_memory.budget().clone(),
+                outbound_initial_memory,
                 outbound_min,
                 outbound_upper_bound,
             ),

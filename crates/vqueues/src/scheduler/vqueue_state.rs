@@ -277,7 +277,7 @@ impl<S: VQueueStore> VQueueState<S> {
         storage: &S,
         concurrency_limiter: &mut Concurrency,
         memory_limiter: &mut PollMemoryPool,
-        seed_size: usize,
+        initial_invocation_memory: usize,
         global_throttling: Option<&GlobalTokenBucket>,
     ) -> Result<Pop<S::Item>, StorageError> {
         let (inbox_head, is_running) = match self.queue.head() {
@@ -358,7 +358,9 @@ impl<S: VQueueStore> VQueueState<S> {
                 // Reserve memory from the invoker's pool. If unavailable,
                 // drop the concurrency permit (it will be re-acquired on the
                 // next poll) and signal blocked-on-memory.
-                let Poll::Ready(memory_lease) = memory_limiter.poll_reserve(cx, seed_size) else {
+                let Poll::Ready(memory_lease) =
+                    memory_limiter.poll_reserve(cx, initial_invocation_memory)
+                else {
                     if has_tb_token && let Some(ref start_tb) = self.start_tb {
                         start_tb.add_tokens(1.0);
                     }

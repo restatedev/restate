@@ -403,7 +403,7 @@ where
                     self.invoker_capacity.concurrency.clone(),
                     self.invoker_capacity.invocation_token_bucket.clone(),
                     self.invoker_capacity.memory_pool.clone(),
-                    self.invoker_capacity.seed_size,
+                    self.invoker_capacity.initial_invocation_memory,
                     partition_store.partition_db().clone(),
                     vqueues_cache,
                 )
