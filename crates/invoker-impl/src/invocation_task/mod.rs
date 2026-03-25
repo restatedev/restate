@@ -204,6 +204,7 @@ pub(super) enum InvocationTaskOutputInner {
         outbound_needed: usize,
         budget: InvocationMemory,
         kind: OutOfMemoryKind,
+        context: &'static str,
     },
 }
 
@@ -290,6 +291,7 @@ enum TerminalLoopState<T> {
         needed: usize,
         direction: MemoryDirection,
         kind: OutOfMemoryKind,
+        context: &'static str,
     },
 }
 
@@ -304,10 +306,12 @@ impl<T, E: Into<InvokerError>> From<Result<T, E>> for TerminalLoopState<T> {
                         needed,
                         direction,
                         kind,
+                        context,
                     } => TerminalLoopState::ShouldYield {
                         needed,
                         direction,
                         kind,
+                        context,
                     },
                     other => TerminalLoopState::Failed(other),
                 }
@@ -329,11 +333,13 @@ macro_rules! shortcircuit {
                 needed,
                 direction,
                 kind,
+                context,
             } => {
                 return TerminalLoopState::ShouldYield {
                     needed,
                     direction,
                     kind,
+                    context,
                 }
             }
             TerminalLoopState::Failed(e) => return TerminalLoopState::Failed(e),
@@ -429,6 +435,7 @@ where
                 needed,
                 direction,
                 kind,
+                context,
             } => {
                 // Extract memory requirements before dropping the budget.
                 // The failing direction reports `needed`; the other reports
@@ -443,6 +450,7 @@ where
                     outbound_needed,
                     budget,
                     kind,
+                    context,
                 }
             }
         };
@@ -810,6 +818,7 @@ impl Stream for ResponseStream<'_> {
                 needed: oom.needed,
                 direction: MemoryDirection::Inbound,
                 kind: oom.kind,
+                context: "receiving response body from deployment",
             })));
         }
 

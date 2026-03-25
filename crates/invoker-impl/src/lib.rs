@@ -571,8 +571,8 @@ where
                     InvocationTaskOutputInner::SuspendedV2(notification_ids) => {
                         self.handle_invocation_task_suspended_v2(partition, invocation_id, notification_ids)
                     }
-                    InvocationTaskOutputInner::ShouldYield { inbound_needed, outbound_needed, budget, kind } => {
-                        self.handle_invocation_task_should_yield(partition, invocation_id, inbound_needed, outbound_needed, budget, kind)
+                    InvocationTaskOutputInner::ShouldYield { inbound_needed, outbound_needed, budget, kind, context } => {
+                        self.handle_invocation_task_should_yield(partition, invocation_id, inbound_needed, outbound_needed, budget, kind, context)
                     }
                 };
             },
@@ -1256,6 +1256,7 @@ where
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[instrument(
         level = "debug",
         skip_all,
@@ -1272,6 +1273,7 @@ where
         outbound_needed: usize,
         mut budget: InvocationMemory,
         kind: OutOfMemoryKind,
+        context: &'static str,
     ) {
         if let Some((sender, _, mut ism)) = self
             .invocation_state_machine_manager
@@ -1288,12 +1290,14 @@ where
                             needed: inbound_needed,
                             direction: MemoryDirection::Inbound,
                             kind,
+                            context,
                         }
                     } else {
                         InvokerError::OutOfMemory {
                             needed: outbound_needed,
                             direction: MemoryDirection::Outbound,
                             kind,
+                            context,
                         }
                     };
                     budget.release_excess();
@@ -1312,7 +1316,7 @@ where
                             restate.invocation.target = %ism.invocation_target,
                             inbound_needed,
                             outbound_needed,
-                            "Invocation yielding due to global memory pool exhaustion"
+                            "Invocation yielding due to global memory pool exhaustion while {context}"
                         );
                         ism.abort();
                         if ism._permit.is_empty() {
@@ -1336,12 +1340,14 @@ where
                                 needed: inbound_needed,
                                 direction: MemoryDirection::Inbound,
                                 kind,
+                                context,
                             }
                         } else {
                             InvokerError::OutOfMemory {
                                 needed: outbound_needed,
                                 direction: MemoryDirection::Outbound,
                                 kind,
+                                context,
                             }
                         };
                         // Release excess memory to give other invocations a chance to make progress
@@ -3181,6 +3187,7 @@ mod tests {
             32768,
             service_inner.test_budget(),
             OutOfMemoryKind::PoolExhausted,
+            "test",
         );
 
         // Should NOT emit EffectKind::Yield — instead the error goes through retry
@@ -3248,6 +3255,7 @@ mod tests {
             32768,
             service_inner.test_budget(),
             OutOfMemoryKind::PoolExhausted,
+            "test",
         );
 
         // Should emit EffectKind::Yield
