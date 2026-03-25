@@ -55,8 +55,7 @@ use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
 
 use crate::TokenBucket;
-use crate::error::{InvokerError, MemoryDirection};
-use crate::invocation_memory::OutOfMemoryKind;
+use crate::error::{InvocationMemoryExhausted, InvokerError};
 use crate::invocation_task::service_protocol_runner::ServiceProtocolRunner;
 use crate::metric_definitions::{ID_LOOKUP, INVOKER_EAGER_STATE_TRUNCATED, INVOKER_TASK_DURATION};
 
@@ -185,11 +184,8 @@ pub(super) enum InvocationTaskOutputInner {
     /// The invocation task yielded due to memory pressure.
     /// The budget was dropped, returning memory to the global pool.
     ShouldYield {
-        inbound_needed: usize,
-        outbound_needed: usize,
+        oom: InvocationMemoryExhausted,
         budget: InvocationMemory,
-        kind: OutOfMemoryKind,
-        context: &'static str,
     },
 }
 
@@ -272,12 +268,7 @@ enum TerminalLoopState<T> {
     SuspendedV2(HashSet<NotificationId>),
     Failed(InvokerError),
     /// Memory budget exhausted — the invocation should yield.
-    ShouldYield {
-        needed: usize,
-        direction: MemoryDirection,
-        kind: OutOfMemoryKind,
-        context: &'static str,
-    },
+    ShouldYield(InvocationMemoryExhausted),
 }
 
 impl<T> TerminalLoopState<T> {
@@ -297,17 +288,7 @@ impl<T, E: Into<InvokerError>> From<Result<T, E>> for TerminalLoopState<T> {
             Err(e) => {
                 let err = e.into();
                 match err {
-                    InvokerError::OutOfMemory {
-                        needed,
-                        direction,
-                        kind,
-                        context,
-                    } => TerminalLoopState::ShouldYield {
-                        needed,
-                        direction,
-                        kind,
-                        context,
-                    },
+                    InvokerError::OutOfMemory(oom) => TerminalLoopState::ShouldYield(oom),
                     other => TerminalLoopState::Failed(other),
                 }
             }
@@ -324,19 +305,7 @@ macro_rules! shortcircuit {
             TerminalLoopState::Closed => return TerminalLoopState::Closed,
             TerminalLoopState::Suspended(v) => return TerminalLoopState::Suspended(v),
             TerminalLoopState::SuspendedV2(v) => return TerminalLoopState::SuspendedV2(v),
-            TerminalLoopState::ShouldYield {
-                needed,
-                direction,
-                kind,
-                context,
-            } => {
-                return TerminalLoopState::ShouldYield {
-                    needed,
-                    direction,
-                    kind,
-                    context,
-                }
-            }
+            TerminalLoopState::ShouldYield(oom) => return TerminalLoopState::ShouldYield(oom),
             TerminalLoopState::Failed(e) => return TerminalLoopState::Failed(e),
         }
     };
@@ -426,27 +395,12 @@ where
                 budget.release_excess();
                 InvocationTaskOutputInner::Failed(e, budget)
             }
-            TerminalLoopState::ShouldYield {
-                needed,
-                direction,
-                kind,
-                context,
-            } => {
-                // Extract memory requirements before dropping the budget.
-                // The failing direction reports `needed`; the other reports
-                // its min_reserved (the seed amount for that direction).
-                let (inbound_needed, outbound_needed) = match direction {
-                    MemoryDirection::Inbound => (needed, budget.outbound.min_reserved()),
-                    MemoryDirection::Outbound => (budget.inbound.min_reserved(), needed),
-                };
-
-                InvocationTaskOutputInner::ShouldYield {
-                    inbound_needed,
-                    outbound_needed,
-                    budget,
-                    kind,
-                    context,
-                }
+            TerminalLoopState::ShouldYield(mut oom) => {
+                // Always request at least as much memory as the minimum for
+                // each direction so that re-scheduling can satisfy both sides.
+                oom.inbound_needed = oom.inbound_needed.max(budget.inbound.min_reserved());
+                oom.outbound_needed = oom.outbound_needed.max(budget.outbound.min_reserved());
+                InvocationTaskOutputInner::ShouldYield { oom, budget }
             }
         };
 

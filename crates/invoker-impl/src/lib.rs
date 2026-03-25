@@ -43,7 +43,7 @@ use restate_invoker_api::invocation_reader::InvocationReader;
 use restate_invoker_api::{
     Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvocationStatusReport, YieldReason,
 };
-use restate_memory::{InvocationMemory, MemoryLease, MemoryPool};
+use restate_memory::{ByteCount, InvocationMemory, MemoryLease, MemoryPool};
 use restate_queue::SegmentQueue;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_time_util::DurationExt;
@@ -64,8 +64,8 @@ use restate_types::schema::invocation_target::InvocationTargetResolver;
 use tokio_util::time::DelayQueue;
 use tokio_util::time::delay_queue::Key as RetryTimerKey;
 
+use crate::error::InvocationMemoryExhausted;
 use crate::error::InvokerError;
-use crate::error::MemoryDirection;
 use crate::error::SdkInvocationErrorV2;
 use crate::input_command::{InputCommand, InvokeCommand};
 use crate::invocation_memory::OutOfMemoryKind;
@@ -567,8 +567,8 @@ where
                     InvocationTaskOutputInner::SuspendedV2(notification_ids) => {
                         self.handle_invocation_task_suspended_v2(partition, invocation_id, notification_ids).await
                     }
-                    InvocationTaskOutputInner::ShouldYield { inbound_needed, outbound_needed, budget, kind, context } => {
-                        self.handle_invocation_task_should_yield(partition, invocation_id, inbound_needed, outbound_needed, budget, kind, context).await
+                    InvocationTaskOutputInner::ShouldYield { oom, budget } => {
+                        self.handle_invocation_task_should_yield(partition, invocation_id, oom, budget).await
                     }
                 };
             },
@@ -1240,7 +1240,6 @@ where
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[instrument(
         level = "debug",
         skip_all,
@@ -1253,41 +1252,28 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        inbound_needed: usize,
-        outbound_needed: usize,
+        oom: InvocationMemoryExhausted,
         mut budget: InvocationMemory,
-        kind: OutOfMemoryKind,
-        context: &'static str,
     ) {
         if let Some((sender, _, mut ism)) = self
             .invocation_state_machine_manager
             .remove_invocation(partition, &invocation_id)
         {
-            match kind {
+            match oom.kind {
                 OutOfMemoryKind::UpperBoundExceeded => {
                     // Per-invocation upper bound exceeded — yielding or retrying
                     // will never help. Route through the error handler which will
                     // immediately go to the terminal action (pause or kill) because
                     // this error is classified as non-transient.
-                    let error = if inbound_needed > budget.inbound.min_reserved() {
-                        InvokerError::OutOfMemory {
-                            needed: inbound_needed,
-                            direction: MemoryDirection::Inbound,
-                            kind,
-                            context,
-                        }
-                    } else {
-                        InvokerError::OutOfMemory {
-                            needed: outbound_needed,
-                            direction: MemoryDirection::Outbound,
-                            kind,
-                            context,
-                        }
-                    };
                     budget.release_excess();
                     ism.budget = Some(budget);
-                    self.handle_error_event(partition, invocation_id, error, ism)
-                        .await;
+                    self.handle_error_event(
+                        partition,
+                        invocation_id,
+                        InvokerError::OutOfMemory(oom),
+                        ism,
+                    )
+                    .await;
                 }
                 OutOfMemoryKind::PoolExhausted => {
                     // Global pool exhausted — yielding may help because freeing
@@ -1299,9 +1285,10 @@ where
                     {
                         debug!(
                             restate.invocation.target = %ism.invocation_target,
-                            inbound_needed,
-                            outbound_needed,
-                            "Invocation yielding due to global memory pool exhaustion while {context}"
+                            inbound_needed = %ByteCount::from(oom.inbound_needed),
+                            outbound_needed = %ByteCount::from(oom.outbound_needed),
+                            "Invocation yielding due to global memory pool exhaustion while {}",
+                            oom.context,
                         );
                         ism.abort();
                         self.status_store.on_end(&partition, &invocation_id);
@@ -1309,33 +1296,22 @@ where
                             .send(Box::new(Effect {
                                 invocation_id,
                                 kind: EffectKind::Yield(YieldReason::OutOfMemory {
-                                    inbound_needed_memory: inbound_needed,
-                                    outbound_needed_memory: outbound_needed,
+                                    inbound_needed_memory: oom.inbound_needed,
+                                    outbound_needed_memory: oom.outbound_needed,
                                 }),
                             }))
                             .await;
                     } else {
                         // Yield flag disabled: fall back to retry.
-                        let error = if inbound_needed > budget.inbound.min_reserved() {
-                            InvokerError::OutOfMemory {
-                                needed: inbound_needed,
-                                direction: MemoryDirection::Inbound,
-                                kind,
-                                context,
-                            }
-                        } else {
-                            InvokerError::OutOfMemory {
-                                needed: outbound_needed,
-                                direction: MemoryDirection::Outbound,
-                                kind,
-                                context,
-                            }
-                        };
-                        // Release excess memory to give other invocations a chance to make progress
                         budget.release_excess();
                         ism.budget = Some(budget);
-                        self.handle_error_event(partition, invocation_id, error, ism)
-                            .await;
+                        self.handle_error_event(
+                            partition,
+                            invocation_id,
+                            InvokerError::OutOfMemory(oom),
+                            ism,
+                        )
+                        .await;
                     }
                 }
             }
@@ -1855,7 +1831,7 @@ mod tests {
 
     use restate_memory::OutOfMemoryKind;
 
-    use crate::error::{InvokerError, SdkInvocationErrorV2};
+    use crate::error::{InvocationMemoryExhausted, InvokerError, SdkInvocationErrorV2};
     use crate::quota::{ConcurrencySlot, InvokerConcurrencyQuota};
 
     // -- Mocks
@@ -3183,11 +3159,13 @@ mod tests {
             .handle_invocation_task_should_yield(
                 MOCK_PARTITION,
                 invocation_id,
-                65536,
-                32768,
+                InvocationMemoryExhausted {
+                    inbound_needed: 65536,
+                    outbound_needed: 32768,
+                    kind: OutOfMemoryKind::PoolExhausted,
+                    context: "test",
+                },
                 service_inner.test_budget(),
-                OutOfMemoryKind::PoolExhausted,
-                "test",
             )
             .await;
 
@@ -3253,11 +3231,13 @@ mod tests {
             .handle_invocation_task_should_yield(
                 MOCK_PARTITION,
                 invocation_id,
-                65536,
-                32768,
+                InvocationMemoryExhausted {
+                    inbound_needed: 65536,
+                    outbound_needed: 32768,
+                    kind: OutOfMemoryKind::PoolExhausted,
+                    context: "test",
+                },
                 service_inner.test_budget(),
-                OutOfMemoryKind::PoolExhausted,
-                "test",
             )
             .await;
 
