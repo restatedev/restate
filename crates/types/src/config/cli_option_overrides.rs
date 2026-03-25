@@ -123,7 +123,7 @@ pub struct CommonOptionCliOverride {
     #[clap(long, global = true)]
     pub metadata_store_address: Option<AdvertisedAddress<FabricPort>>,
 
-    /// Address to bind for the node-to-node communication. e.g. `0.0.0.0:5122`.
+    /// Address to bind for the node-to-node communication. e.g. `[::]:5122`.
     /// This overrides bind-ip and bind-port if set.
     #[clap(long, env = "RESTATE_BIND_ADDRESS", global = true)]
     pub bind_address: Option<BindAddress<FabricPort>>,

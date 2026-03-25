@@ -329,7 +329,7 @@ pub struct CommonOptions {
     pub log_disable_ansi_codes: bool,
 
     /// Address to bind for the tokio-console tracing subscriber. If unset and restate-server is
-    /// built with tokio-console support, it'll listen on `0.0.0.0:6669`.
+    /// built with tokio-console support, it'll listen on `[::]:6669`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub tokio_console_bind_address: Option<BindAddress<TokioConsolePort>>,
