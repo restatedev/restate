@@ -28,7 +28,7 @@ derive_more = { workspace = true, features = ["as_ref", "debug", "deref", "displ
 metrics = {workspace = true }
 parking_lot = { workspace = true }
 rocksdb = { workspace = true }
-smartstring = { workspace = true }
+restate-util-string = { workspace = true }
 static_assertions = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }

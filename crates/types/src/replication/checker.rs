@@ -26,7 +26,7 @@ use crate::nodes_config::{NodesConfiguration, StorageState};
 use super::DecoratedNodeSet;
 use super::{NodeSet, ReplicationProperty};
 
-type SmartString = smartstring::SmartString<smartstring::LazyCompact>;
+use restate_util_string::ReString;
 
 /// Possible results of f-majority checks for a subset of the NodeSet.
 /// Read variant docs for details.
@@ -674,7 +674,7 @@ impl<Attr> HashPtr<Attr> {
 #[derive(Debug)]
 struct LocationScopeState<Attr> {
     /// domains at that scope
-    failure_domains: HashMap<SmartString, Box<FailureDomainState<Attr>>>,
+    failure_domains: HashMap<ReString, Box<FailureDomainState<Attr>>>,
     /// maps between node-id to the domain it belongs to for fast lookups
     node_to_fd: HashMap<PlainNodeId, HashPtr<Attr>>,
     /// replication factor at that scope
