@@ -186,12 +186,15 @@ pub(crate) enum InvokerError {
     #[code(restate_errors::RT0020)]
     DeploymentDeprecated(String, DeploymentId),
 
-    #[error("memory budget exhausted ({kind}): needed {needed} bytes, direction: {direction}")]
+    #[error(
+        "memory budget exhausted ({kind}) while {context}: needed {needed} bytes, direction: {direction}"
+    )]
     #[code(restate_errors::RT0001)]
     OutOfMemory {
         needed: usize,
         direction: MemoryDirection,
         kind: OutOfMemoryKind,
+        context: &'static str,
     },
 }
 
@@ -267,6 +270,7 @@ impl InvokerError {
                 needed: oom.needed,
                 direction: MemoryDirection::Outbound,
                 kind: oom.kind,
+                context: "reading journal entries",
             }
         } else {
             InvokerError::JournalReader(e.into())
@@ -281,6 +285,7 @@ impl InvokerError {
                 needed: oom.needed,
                 direction: MemoryDirection::Outbound,
                 kind: oom.kind,
+                context: "reading service state",
             }
         } else {
             InvokerError::StateReader(e.into())
