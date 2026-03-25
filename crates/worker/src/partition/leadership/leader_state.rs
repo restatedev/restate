@@ -267,7 +267,6 @@ impl LeaderState {
     pub async fn handle_action_effects(
         &mut self,
         action_effects: impl IntoIterator<Item = ActionEffect>,
-        // invoker_tx: &mut impl restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
     ) -> Result<(), Error> {
         for effect in action_effects {
             match effect {
@@ -285,7 +284,7 @@ impl LeaderState {
                                 assignment.push(item, stats);
                             }
                             match action {
-                                scheduler::Action::MoveToRunning => {
+                                scheduler::Action::MoveToRun => {
                                     let command = vqueues::VQWaitingToRunning {
                                         assignment,
                                         meta_updates: vqueues::MetaUpdates {
@@ -305,21 +304,6 @@ impl LeaderState {
                                         qid.partition_key,
                                         Command::VQYieldRunning(command),
                                     ));
-                                }
-                                scheduler::Action::ResumeAlreadyRunning => {
-                                    todo!(
-                                        "Unsupported: We don't support directly resuming at the moment"
-                                    )
-                                    // invoker_tx
-                                    //     .run(
-                                    //         self.partition_id,
-                                    //         self.leader_epoch,
-                                    //         inv_id,
-                                    //         // todo: fix/remove
-                                    //         SharedString::from_borrowed(""),
-                                    //         SharedString::from_borrowed(""),
-                                    //     )
-                                    //     .map_err(Error::Invoker)?;
                                 }
                             }
                         }

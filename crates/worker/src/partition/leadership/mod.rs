@@ -640,9 +640,7 @@ where
                 // nothing to do :-)
             }
             State::Leader(leader_state) => {
-                leader_state
-                    .handle_action_effects(action_effects /*, &mut self.invoker_tx */)
-                    .await?
+                leader_state.handle_action_effects(action_effects).await?
             }
         }
 
