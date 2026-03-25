@@ -24,7 +24,6 @@ pub const VQUEUE_GLOBAL_THROTTLE_WAIT_MS: &str =
 pub const VQUEUE_LOCAL_THROTTLE_WAIT_MS: &str = "restate.vqueue.scheduler.vqueue_throttle_ms.total";
 
 pub const ACTION_YIELD: &str = "yield";
-pub const ACTION_RESUME: &str = "resume";
 pub const ACTION_RUN: &str = "run";
 pub const ACTION_START: &str = "start";
 
@@ -72,14 +71,8 @@ pub fn describe_metrics() {
     );
 }
 
-pub fn publish_scheduler_decision_metrics(
-    num_start: u16,
-    num_run: u16,
-    num_yield: u16,
-    num_resume: u16,
-) {
+pub fn publish_scheduler_decision_metrics(num_start: u16, num_run: u16, num_yield: u16) {
     counter!(VQUEUE_SCHEDULER_DECISION, "action" => ACTION_START).increment(num_start as u64);
     counter!(VQUEUE_SCHEDULER_DECISION, "action" => ACTION_RUN).increment(num_run as u64);
-    counter!(VQUEUE_SCHEDULER_DECISION, "action" => ACTION_RESUME).increment(num_resume as u64);
     counter!(VQUEUE_SCHEDULER_DECISION, "action" => ACTION_YIELD).increment(num_yield as u64);
 }

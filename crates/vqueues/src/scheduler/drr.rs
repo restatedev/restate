@@ -646,7 +646,7 @@ mod tests {
 
         decision.into_iter().for_each(|(qid, assignments)| {
             for (action, mut items) in assignments.into_iter_per_action() {
-                assert_eq!(action, Action::MoveToRunning);
+                assert_eq!(action, Action::MoveToRun);
                 // for each vqueue, we should see the head item. The head item is the lowest
                 // ID, so we should expect the item ID to the same as the queue ID.
                 assert_eq!(items.len(), 1);
@@ -868,7 +868,7 @@ mod tests {
             // creation timestamp is identical (for the purpose of the test)
             for (action, entries) in assignments.iter() {
                 assert_eq!(entries.len(), 2);
-                assert_eq!(action, Action::MoveToRunning);
+                assert_eq!(action, Action::MoveToRun);
                 assert_eq!(entries[0].item.priority, EffectivePriority::UserDefault);
                 assert_eq!(entries[0].item.id, EntryId::new([1; 16]));
                 in_flight.push(entries[0].item.clone());
@@ -920,7 +920,7 @@ mod tests {
 
             for (action, entries) in assignments.iter() {
                 assert_eq!(entries.len(), 2);
-                assert_eq!(action, Action::MoveToRunning);
+                assert_eq!(action, Action::MoveToRun);
                 // Verify first item is high priority
                 assert_eq!(entries[0].item.priority, EffectivePriority::UserHigh);
                 assert_eq!(entries[0].item.id, EntryId::new([125; 16]));
@@ -973,7 +973,7 @@ mod tests {
         for (_, assignments) in decision {
             for (action, entries) in assignments.iter() {
                 assert_eq!(entries.len(), 2);
-                assert_eq!(action, Action::MoveToRunning);
+                assert_eq!(action, Action::MoveToRun);
                 // Verify first item is high priority
                 assert_eq!(entries[0].item.priority, EffectivePriority::UserDefault);
                 assert_eq!(entries[0].item.id, EntryId::new([4; 16]));
@@ -994,7 +994,7 @@ mod tests {
         for (_, assignments) in decision {
             for (action, entries) in assignments.iter() {
                 assert_eq!(entries.len(), 2);
-                assert_eq!(action, Action::MoveToRunning);
+                assert_eq!(action, Action::MoveToRun);
                 // Verify first item is high priority
                 assert_eq!(entries[0].item.priority, EffectivePriority::UserDefault);
                 assert_eq!(entries[0].item.id, EntryId::new([6; 16]));
