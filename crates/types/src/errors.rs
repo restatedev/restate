@@ -165,7 +165,9 @@ pub mod codes {
     codes!(
         BAD_REQUEST 400 "Bad request",
         NOT_FOUND 404 "Not found",
+        // Aborted is used for cancel/kill
         ABORTED 409 "Aborted",
+        // Conflict is used for promise already completed, workflow already running
         CONFLICT 409 "Conflict",
         GONE 410 "Gone",
         NOT_READY 470 "Not ready",
