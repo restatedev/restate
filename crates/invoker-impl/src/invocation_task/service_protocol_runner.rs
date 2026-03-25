@@ -45,9 +45,7 @@ use restate_types::schema::deployment::{Deployment, DeploymentType, ProtocolType
 use restate_types::service_protocol::ServiceProtocolVersion;
 
 use crate::Notification;
-use crate::error::{
-    InvocationErrorRelatedEntry, InvokerError, MemoryDirection, SdkInvocationError,
-};
+use crate::error::{InvocationErrorRelatedEntry, InvokerError, SdkInvocationError};
 use crate::invocation_task::{
     InvocationTask, InvocationTaskOutputInner, InvokerBodySender, InvokerBodyType, ResponseChunk,
     ResponseStream, TerminalLoopState, X_RESTATE_SERVER, collect_eager_state,
@@ -401,13 +399,9 @@ where
                             panic!("Unexpected JournalV1Completion during replay: completion arrived before entry was stored")
                         }
                         Some(Err(e)) => {
-                            if let Some(needed) = e.budget_exhaustion() {
-                                return TerminalLoopState::ShouldYield {
-                                    needed,
-                                    direction: MemoryDirection::Outbound,
-                                };
-                            }
-                            return TerminalLoopState::Failed(InvokerError::JournalReader(e.into()));
+                            return TerminalLoopState::from(
+                                Err::<(), _>(InvokerError::from_journal_reader(e)),
+                            );
                         }
                         None => {
                             // No need to wait for the headers to continue

@@ -10,7 +10,7 @@
 
 use std::future::Future;
 
-use restate_memory::OutOfMemory;
+use restate_memory::{OutOfMemory, OutOfMemoryKind};
 
 /// Storage error
 #[derive(Debug, thiserror::Error)]
@@ -43,13 +43,19 @@ pub type Result<T, E = StorageError> = std::result::Result<T, E>;
 pub enum BudgetedReadError {
     #[error(transparent)]
     Storage(#[from] StorageError),
-    #[error("memory budget exhausted (needed {})", restate_memory::ByteCount::from(*.needed))]
-    OutOfMemory { needed: usize },
+    #[error("memory budget exhausted ({kind}): needed {}", restate_memory::ByteCount::from(*.needed))]
+    OutOfMemory {
+        needed: usize,
+        kind: OutOfMemoryKind,
+    },
 }
 
 impl From<OutOfMemory> for BudgetedReadError {
     fn from(e: OutOfMemory) -> Self {
-        Self::OutOfMemory { needed: e.needed }
+        Self::OutOfMemory {
+            needed: e.needed,
+            kind: e.kind,
+        }
     }
 }
 
