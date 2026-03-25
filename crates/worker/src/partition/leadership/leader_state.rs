@@ -267,7 +267,6 @@ impl LeaderState {
     pub async fn handle_action_effects(
         &mut self,
         action_effects: impl IntoIterator<Item = ActionEffect>,
-        // invoker_tx: &mut impl restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
     ) -> Result<(), Error> {
         for effect in action_effects {
             match effect {
