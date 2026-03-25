@@ -118,7 +118,7 @@ where
 
     let mut stream = std::pin::pin!(state.into_inner());
     while let Some(result) = stream.as_mut().next().await {
-        let (key, value, lease) = result.map_err(|e| InvokerError::StateReader(e.into()))?;
+        let (key, value, lease) = result.map_err(InvokerError::from_state_reader)?;
         let entry_size = key.len() + value.len();
 
         // Check if adding this entry would exceed the limit
