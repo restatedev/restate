@@ -59,8 +59,7 @@ use restate_types::service_protocol::ServiceProtocolVersion;
 
 use crate::Notification;
 use crate::error::{
-    CommandPreconditionError, InvocationErrorRelatedCommandV2, InvokerError, MemoryDirection,
-    SdkInvocationErrorV2,
+    CommandPreconditionError, InvocationErrorRelatedCommandV2, InvokerError, SdkInvocationErrorV2,
 };
 use crate::invocation_task::{
     InvocationTask, InvocationTaskOutputInner, InvokerBodySender, InvokerBodyType, ResponseChunk,
@@ -432,13 +431,9 @@ where
                             panic!("Unexpected JournalV1Completion during replay: completion arrived before entry was stored")
                         }
                         Some(Err(e)) => {
-                            if let Some(needed) = e.budget_exhaustion() {
-                                return TerminalLoopState::ShouldYield {
-                                    needed,
-                                    direction: MemoryDirection::Outbound,
-                                };
-                            }
-                            return TerminalLoopState::Failed(InvokerError::JournalReader(e.into()));
+                            return TerminalLoopState::from(
+                                Err::<(), _>(InvokerError::from_journal_reader(e)),
+                            );
                         }
                         None => {
                             // Let's verify if we sent all the entries we promised, otherwise the stream will hang in a bad way!

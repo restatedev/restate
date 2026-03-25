@@ -57,6 +57,7 @@ use restate_types::service_protocol::ServiceProtocolVersion;
 
 use crate::TokenBucket;
 use crate::error::{InvokerError, MemoryDirection};
+use crate::invocation_memory::OutOfMemoryKind;
 use crate::invocation_task::service_protocol_runner::ServiceProtocolRunner;
 use crate::metric_definitions::{ID_LOOKUP, INVOKER_EAGER_STATE_TRUNCATED, INVOKER_TASK_DURATION};
 
@@ -202,6 +203,7 @@ pub(super) enum InvocationTaskOutputInner {
         inbound_needed: usize,
         outbound_needed: usize,
         budget: InvocationMemory,
+        kind: OutOfMemoryKind,
     },
 }
 
@@ -287,6 +289,7 @@ enum TerminalLoopState<T> {
     ShouldYield {
         needed: usize,
         direction: MemoryDirection,
+        kind: OutOfMemoryKind,
     },
 }
 
@@ -297,9 +300,15 @@ impl<T, E: Into<InvokerError>> From<Result<T, E>> for TerminalLoopState<T> {
             Err(e) => {
                 let err = e.into();
                 match err {
-                    InvokerError::OutOfMemory { needed, direction } => {
-                        TerminalLoopState::ShouldYield { needed, direction }
-                    }
+                    InvokerError::OutOfMemory {
+                        needed,
+                        direction,
+                        kind,
+                    } => TerminalLoopState::ShouldYield {
+                        needed,
+                        direction,
+                        kind,
+                    },
                     other => TerminalLoopState::Failed(other),
                 }
             }
@@ -316,8 +325,16 @@ macro_rules! shortcircuit {
             TerminalLoopState::Closed => return TerminalLoopState::Closed,
             TerminalLoopState::Suspended(v) => return TerminalLoopState::Suspended(v),
             TerminalLoopState::SuspendedV2(v) => return TerminalLoopState::SuspendedV2(v),
-            TerminalLoopState::ShouldYield { needed, direction } => {
-                return TerminalLoopState::ShouldYield { needed, direction }
+            TerminalLoopState::ShouldYield {
+                needed,
+                direction,
+                kind,
+            } => {
+                return TerminalLoopState::ShouldYield {
+                    needed,
+                    direction,
+                    kind,
+                }
             }
             TerminalLoopState::Failed(e) => return TerminalLoopState::Failed(e),
         }
@@ -408,7 +425,11 @@ where
                 budget.release_excess();
                 InvocationTaskOutputInner::Failed(e, budget)
             }
-            TerminalLoopState::ShouldYield { needed, direction } => {
+            TerminalLoopState::ShouldYield {
+                needed,
+                direction,
+                kind,
+            } => {
                 // Extract memory requirements before dropping the budget.
                 // The failing direction reports `needed`; the other reports
                 // its min_reserved (the seed amount for that direction).
@@ -421,6 +442,7 @@ where
                     inbound_needed,
                     outbound_needed,
                     budget,
+                    kind,
                 }
             }
         };
@@ -783,10 +805,11 @@ impl Stream for ResponseStream<'_> {
         if let Some(lease) = this.budget.try_reserve(buf.len()) {
             return Poll::Ready(Some(Ok(ResponseChunk::Data(buf, lease))));
         }
-        if this.budget.is_out_of_memory(buf.len(), *this.pinned) {
+        if let Err(oom) = this.budget.check_out_of_memory(buf.len(), *this.pinned) {
             return Poll::Ready(Some(Err(InvokerError::OutOfMemory {
-                needed: buf.len() + *this.pinned,
+                needed: oom.needed,
                 direction: MemoryDirection::Inbound,
+                kind: oom.kind,
             })));
         }
 
@@ -831,7 +854,7 @@ mod tests {
 
     impl std::error::Error for TestError {}
     impl InvocationReaderError for TestError {
-        fn budget_exhaustion(&self) -> Option<usize> {
+        fn budget_exhaustion(&self) -> Option<restate_memory::OutOfMemory> {
             None
         }
     }

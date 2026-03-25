@@ -25,7 +25,7 @@ use pin_project_lite::pin_project;
 /// By calling [`pin_memory`](Self::pin_memory) after each merge and
 /// [`unpin_memory`](Self::unpin_memory) after each split/release, the consumer
 /// informs the stream how much of the in-flight memory is pinned. The stream
-/// passes this to [`LocalMemoryPool::is_out_of_memory`](crate::LocalMemoryPool::is_out_of_memory)
+/// passes this to [`LocalMemoryPool::check_out_of_memory`](crate::LocalMemoryPool::check_out_of_memory)
 /// so that truly infeasible requests are detected promptly instead of waiting
 /// forever.
 pub trait PinnableMemoryStream: Stream {

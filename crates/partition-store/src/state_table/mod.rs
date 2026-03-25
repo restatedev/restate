@@ -401,12 +401,9 @@ impl<DB: DBAccess + Send> Stream for BudgetedStateStream<'_, DB> {
                     this.lease.merge(extra);
                     *this.pending_deficit = 0;
                     // Fall through to try_produce_next below.
-                } else if this.budget.is_out_of_memory(deficit, *this.pinned) {
+                } else if let Err(oom) = this.budget.check_out_of_memory(deficit, *this.pinned) {
                     *this.pending_deficit = 0;
-                    return Poll::Ready(Some(Err(restate_memory::OutOfMemory {
-                        needed: deficit.saturating_add(*this.pinned),
-                    }
-                    .into())));
+                    return Poll::Ready(Some(Err(oom.into())));
                 } else {
                     // Transient failure — register for notification and wait.
                     this.notified.set(Some(this.budget.availability_notified()));

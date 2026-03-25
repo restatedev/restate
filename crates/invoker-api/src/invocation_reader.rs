@@ -13,7 +13,7 @@ use std::future::Future;
 use bytes::Bytes;
 use futures::Stream;
 
-use restate_memory::{LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream};
+use restate_memory::{LocalMemoryLease, LocalMemoryPool, OutOfMemory, PinnableMemoryStream};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId};
 use restate_types::invocation::ServiceInvocationSpanContext;
@@ -80,13 +80,13 @@ pub enum JournalEntry {
 /// exhaustion so that callers can yield the invocation instead of treating
 /// it as a transient storage error.
 pub trait InvocationReaderError: std::error::Error + Send + Sync + 'static {
-    /// If this error represents a memory budget exhaustion, returns the number
-    /// of bytes that were requested but could not be allocated.
-    fn budget_exhaustion(&self) -> Option<usize>;
+    /// If this error represents a memory budget exhaustion, returns the
+    /// [`OutOfMemory`] describing what was requested and why it failed.
+    fn budget_exhaustion(&self) -> Option<OutOfMemory>;
 }
 
 impl InvocationReaderError for std::convert::Infallible {
-    fn budget_exhaustion(&self) -> Option<usize> {
+    fn budget_exhaustion(&self) -> Option<OutOfMemory> {
         match *self {}
     }
 }

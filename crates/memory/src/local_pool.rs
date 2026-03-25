@@ -44,14 +44,38 @@ use tokio::sync::futures::OwnedNotified;
 
 use crate::{MemoryLease, MemoryPool};
 
-/// Returned by [`LocalMemoryPool::reserve`] when the requested memory cannot
-/// be satisfied even in the best case (all in-flight reclaimed + entire global
-/// pool available).
+/// Why memory could not be allocated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutOfMemoryKind {
+    /// The request exceeds the per-direction upper bound. Retrying or yielding
+    /// will not help — the user must increase `per_invocation_memory_limit`.
+    UpperBoundExceeded,
+    /// Global pool + reclaimable local memory cannot satisfy the request right
+    /// now. Yielding may help if other invocations free their memory.
+    PoolExhausted,
+}
+
+impl fmt::Display for OutOfMemoryKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UpperBoundExceeded => f.write_str("upper bound exceeded"),
+            Self::PoolExhausted => f.write_str("pool exhausted"),
+        }
+    }
+}
+
+/// Returned by [`LocalMemoryPool::reserve`] and
+/// [`LocalMemoryPool::check_out_of_memory`] when the requested memory cannot
+/// be satisfied.
 #[derive(Debug, thiserror::Error)]
-#[error("out of memory: requested {needed} bytes but the budget cannot satisfy the request")]
+#[error(
+    "out of memory ({kind}): requested {needed} bytes but the budget cannot satisfy the request"
+)]
 pub struct OutOfMemory {
     /// The number of bytes that were requested but could not be allocated.
     pub needed: usize,
+    /// Why the allocation failed.
+    pub kind: OutOfMemoryKind,
 }
 
 /// Per-invocation budget grouping inbound and outbound directional budgets.
@@ -298,14 +322,7 @@ impl LocalMemoryPool {
             if let Some(lease) = self.try_reserve(size) {
                 return Ok(lease);
             }
-            if self.is_out_of_memory(size, pinned) {
-                // Report needed + pinned so the caller knows the total memory
-                // required to complete the operation (the current request plus
-                // the accumulated memory that won't be released).
-                return Err(OutOfMemory {
-                    needed: size.saturating_add(pinned),
-                });
-            }
+            self.check_out_of_memory(size, pinned)?;
 
             // try_reserve failed but the request is feasible. Wait for either
             // a local in-flight lease to be dropped or global pool availability
@@ -325,9 +342,17 @@ impl LocalMemoryPool {
         }
     }
 
-    /// Returns `true` if the requested memory fundamentally cannot be satisfied
-    /// even after all *reclaimable* in-flight memory is reclaimed and the global
-    /// pool is tapped.
+    /// Returns `Ok(())` if the request is still feasible, or
+    /// `Err(OutOfMemory)` if the request is fundamentally infeasible.
+    ///
+    /// The [`OutOfMemoryKind`] distinguishes **why** the allocation failed:
+    ///
+    /// - [`UpperBoundExceeded`](OutOfMemoryKind::UpperBoundExceeded): the
+    ///   request exceeds the upper bound. Retrying or yielding
+    ///   will not help — the limit must be increased.
+    /// - [`PoolExhausted`](OutOfMemoryKind::PoolExhausted): even after
+    ///   reclaiming all reclaimable in-flight memory and tapping the global
+    ///   pool, the request cannot be satisfied right now. Yielding may help.
     ///
     /// `pinned` is the amount of in-flight memory that is **not reclaimable**
     /// (e.g. accumulated into a merged lease held by the caller). Pass `0` when
@@ -337,10 +362,14 @@ impl LocalMemoryPool {
     /// - `capacity - pinned`: local capacity minus memory that won't be freed.
     /// - Plus `min(global_available, upper_bound - capacity)`: how much we can
     ///   still grow from the global pool without exceeding the per-direction cap.
-    pub fn is_out_of_memory(&self, needed: usize, pinned: usize) -> bool {
-        if needed > self.upper_bound {
-            return true;
+    pub fn check_out_of_memory(&self, needed: usize, pinned: usize) -> Result<(), OutOfMemory> {
+        if needed > self.upper_bound.saturating_sub(pinned) {
+            return Err(OutOfMemory {
+                needed: needed.saturating_add(pinned),
+                kind: OutOfMemoryKind::UpperBoundExceeded,
+            });
         }
+
         let capacity = self.local_capacity.size().as_usize();
         let global_available = self.shared.pool.available();
         let growth_possible = self
@@ -350,7 +379,15 @@ impl LocalMemoryPool {
         let reclaimable = capacity
             .saturating_sub(pinned)
             .saturating_add(growth_possible);
-        needed > reclaimable
+
+        if needed > reclaimable {
+            Err(OutOfMemory {
+                needed: needed.saturating_add(pinned),
+                kind: OutOfMemoryKind::PoolExhausted,
+            })
+        } else {
+            Ok(())
+        }
     }
 
     /// Returns available memory (local capacity − in-flight).
@@ -689,21 +726,23 @@ mod tests {
     }
 
     #[test]
-    fn is_out_of_memory_checks_theoretical_max() {
+    fn check_out_of_memory_checks_theoretical_max() {
         let global = pool(100);
         let budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
 
-        assert!(!budget.is_out_of_memory(100, 0));
-        assert!(budget.is_out_of_memory(101, 0));
+        assert!(budget.check_out_of_memory(100, 0).is_ok());
+        let err = budget.check_out_of_memory(101, 0).unwrap_err();
+        assert_eq!(err.kind, OutOfMemoryKind::PoolExhausted);
     }
 
     #[test]
-    fn is_out_of_memory_respects_upper_bound() {
+    fn check_out_of_memory_respects_upper_bound() {
         let global = pool(10000);
         let budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 200);
 
-        assert!(!budget.is_out_of_memory(200, 0));
-        assert!(budget.is_out_of_memory(201, 0));
+        assert!(budget.check_out_of_memory(200, 0).is_ok());
+        let err = budget.check_out_of_memory(201, 0).unwrap_err();
+        assert_eq!(err.kind, OutOfMemoryKind::UpperBoundExceeded);
     }
 
     #[test]
@@ -849,10 +888,10 @@ mod tests {
         assert_eq!(global.available(), 0);
 
         // Budget has local_capacity=100 (all in-flight) + global_available=0.
-        // is_out_of_memory(50, 0): 50 <= 100 + 0 → feasible (in-flight will reclaim).
+        // check_out_of_memory(50, 0): 50 <= 100 + 0 → feasible (in-flight will reclaim).
         // try_reserve(50): available=0 → fails. Growth needs 50 from global → fails.
         assert!(budget.try_reserve(50).is_none());
-        assert!(!budget.is_out_of_memory(50, 0));
+        assert!(budget.check_out_of_memory(50, 0).is_ok());
 
         // Drop the external lease on another task — this returns memory to
         // the global pool (not to our local SharedState::notify). This lets
@@ -1133,14 +1172,14 @@ mod tests {
     }
 
     #[test]
-    fn is_out_of_memory_with_pinned_detects_livelock() {
+    fn check_out_of_memory_with_pinned_detects_livelock() {
         // Simulate the accumulation livelock scenario:
         // - Budget has capacity=200, upper_bound=200
         // - All 200 bytes are in-flight (accumulated by the caller)
-        // - Without pinned tracking, is_out_of_memory(50, 0) returns false
+        // - Without pinned tracking, check_out_of_memory(50, 0) returns Ok
         //   because capacity(200) + global(0) >= 50
-        // - With pinned=200, is_out_of_memory(50, 200) returns true
-        //   because (200-200) + min(0, 200-200) = 0 < 50
+        // - With pinned=200, check_out_of_memory(50, 200) returns Err
+        //   because pinned exhausts the upper_bound (200 - 200 = 0 < 50)
         let global = pool(200);
         let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 200);
 
@@ -1149,15 +1188,17 @@ mod tests {
         assert_eq!(budget.available(), 0);
 
         // Without pinned: thinks memory is reclaimable — would livelock
-        assert!(!budget.is_out_of_memory(50, 0));
-        // With pinned: correctly detects that the accumulated memory is not reclaimable
-        assert!(budget.is_out_of_memory(50, 200));
+        assert!(budget.check_out_of_memory(50, 0).is_ok());
+        // With pinned: the upper bound is fully consumed by pinned memory,
+        // so any new allocation exceeds it.
+        let err = budget.check_out_of_memory(50, 200).unwrap_err();
+        assert_eq!(err.kind, OutOfMemoryKind::UpperBoundExceeded);
 
         drop(lease);
     }
 
     #[test]
-    fn is_out_of_memory_pinned_partial_accumulation() {
+    fn check_out_of_memory_pinned_partial_accumulation() {
         // Partial accumulation: some in-flight is pinned, some is reclaimable
         let global = pool(200);
         let seed = global.try_reserve(100).unwrap();
@@ -1170,8 +1211,9 @@ mod tests {
         // 50 bytes of pinned (accumulated), 50 bytes reclaimable
         // capacity=100, global_available=100, upper_bound=300
         // reclaimable = (100 - 50) + min(100, 300-100) = 50 + 100 = 150
-        assert!(!budget.is_out_of_memory(150, 50));
-        assert!(budget.is_out_of_memory(151, 50));
+        assert!(budget.check_out_of_memory(150, 50).is_ok());
+        let err = budget.check_out_of_memory(151, 50).unwrap_err();
+        assert_eq!(err.kind, OutOfMemoryKind::PoolExhausted);
     }
 
     #[tokio::test]
@@ -1183,11 +1225,14 @@ mod tests {
 
         let _accumulated = budget.try_reserve(100).unwrap();
 
-        // With pinned=100, reserve should return OOM immediately
+        // With pinned=100, reserve should return OOM immediately.
+        // The upper bound (100) is fully consumed by pinned memory,
+        // so any new allocation exceeds it.
         let result = budget.reserve(50, 100).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         // needed should include pinned (50 + 100 = 150)
         assert_eq!(err.needed, 150);
+        assert_eq!(err.kind, OutOfMemoryKind::UpperBoundExceeded);
     }
 }

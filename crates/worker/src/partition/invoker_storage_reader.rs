@@ -18,7 +18,10 @@ use restate_invoker_api::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
     JournalKind,
 };
-use restate_memory::{LocalMemoryLease, LocalMemoryPool, PinnableMapErr, PinnableMemoryStream};
+use restate_memory::{
+    LocalMemoryLease, LocalMemoryPool, OutOfMemory, OutOfMemoryKind, PinnableMapErr,
+    PinnableMemoryStream,
+};
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
 use restate_storage_api::state_table::ReadStateTable;
 use restate_storage_api::{
@@ -30,14 +33,20 @@ use restate_types::identifiers::{InvocationId, ServiceId};
 pub enum InvokerStorageReaderError {
     #[error(transparent)]
     Storage(#[from] restate_storage_api::StorageError),
-    #[error("outbound memory budget exhausted (needed {needed} bytes)")]
-    OutOfMemory { needed: usize },
+    #[error("outbound memory budget exhausted ({kind}): needed {needed} bytes")]
+    OutOfMemory {
+        needed: usize,
+        kind: OutOfMemoryKind,
+    },
 }
 
 impl InvocationReaderError for InvokerStorageReaderError {
-    fn budget_exhaustion(&self) -> Option<usize> {
+    fn budget_exhaustion(&self) -> Option<OutOfMemory> {
         match self {
-            Self::OutOfMemory { needed } => Some(*needed),
+            Self::OutOfMemory { needed, kind } => Some(OutOfMemory {
+                needed: *needed,
+                kind: *kind,
+            }),
             _ => None,
         }
     }
@@ -47,7 +56,7 @@ impl From<BudgetedReadError> for InvokerStorageReaderError {
     fn from(e: BudgetedReadError) -> Self {
         match e {
             BudgetedReadError::Storage(e) => Self::Storage(e),
-            BudgetedReadError::OutOfMemory { needed } => Self::OutOfMemory { needed },
+            BudgetedReadError::OutOfMemory { needed, kind } => Self::OutOfMemory { needed, kind },
         }
     }
 }
