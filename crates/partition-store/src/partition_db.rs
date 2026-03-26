@@ -34,7 +34,7 @@ use crate::keys::KeyKind;
 use crate::memory::MemoryBudget;
 use crate::snapshots::LocalPartitionSnapshot;
 
-type SmartString = smartstring::SmartString<smartstring::LazyCompact>;
+use restate_util_string::ReString;
 
 #[derive(Clone)]
 pub struct PartitionDb {
@@ -86,7 +86,7 @@ impl PartitionDb {
         self.cf_handle()
     }
 
-    pub fn cf_names(&self) -> Vec<SmartString> {
+    pub fn cf_names(&self) -> Vec<ReString> {
         vec![self.meta.cf_name().into_inner()]
     }
 

@@ -16,7 +16,7 @@ use crate::PlainNodeId;
 
 use super::LocationScope;
 
-type SmartString = smartstring::SmartString<smartstring::LazyCompact>;
+use restate_util_string::ReString;
 
 #[derive(thiserror::Error, Debug)]
 #[error("Invalid node location string: {0}")]
@@ -44,7 +44,7 @@ const NODE_DELIMITER: &str = ":";
 ///
 /// Technical details: this is a home-made smallvec-like structure to avoid heap-allocations and to
 /// improve cache-friendlyness. It's a fixed-size array of labels, where each label is a highly-likely
-/// stack-inlined `SmartString`.
+/// stack-inlined `ReString`.
 #[derive(
     Clone, Default, PartialEq, Eq, serde_with::DeserializeFromStr, serde_with::SerializeDisplay,
 )]
@@ -52,7 +52,7 @@ pub struct NodeLocation {
     /// Internal storage for labels of all scopes, the order of scopes in the array
     /// is the reverse order of their type value: largest scope (i.e. Region) gets
     /// stored at index 0, and so on...
-    labels: [SmartString; LocationScope::num_scopes()],
+    labels: [ReString; LocationScope::num_scopes()],
     /// number of (non-empty) scope labels specified
     num_defined_scopes: u8,
 }
@@ -61,7 +61,7 @@ impl NodeLocation {
     /// Creates a new empty NodeLocation
     pub const fn new() -> Self {
         Self {
-            labels: [const { SmartString::new_const() }; LocationScope::num_scopes()],
+            labels: [const { ReString::from_static("") }; LocationScope::num_scopes()],
             num_defined_scopes: 0,
         }
     }
@@ -244,7 +244,7 @@ impl FromStr for NodeLocation {
         }
 
         let mut n_tokens: usize = 0;
-        let mut labels = [const { SmartString::new_const() }; LocationScope::num_scopes()];
+        let mut labels = [const { ReString::from_static("") }; LocationScope::num_scopes()];
         let mut tokens = tokens.into_iter();
 
         while n_tokens < LocationScope::num_scopes() {
