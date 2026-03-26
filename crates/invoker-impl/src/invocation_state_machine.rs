@@ -21,6 +21,8 @@ use restate_types::retries;
 use restate_types::schema::invocation_target::OnMaxAttempts;
 use restate_types::vqueue::VQueueId;
 
+use crate::quota::ConcurrencySlot;
+
 use super::*;
 
 /// Trait alias for types that can be used as retry timer keys.
@@ -49,6 +51,7 @@ pub(super) struct InvocationStateMachine<K: TimerKey = tokio_util::time::delay_q
     /// For more details of when we bump it, see [`InvokerError::should_bump_start_message_retry_count_since_last_stored_entry`].
     pub(super) start_message_retry_count_since_last_stored_command: u32,
     pub(super) requested_pause: bool,
+    _concurrency_slot: ConcurrencySlot,
 }
 
 /// This struct tracks which commands the invocation task generates,
@@ -199,6 +202,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         invocation_target: InvocationTarget,
         retry_iter: retries::RetryIter<'static>,
         on_max_attempts: OnMaxAttempts,
+        concurrency_slot: ConcurrencySlot,
     ) -> InvocationStateMachine<K> {
         Self {
             qid,
@@ -213,6 +217,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             },
             start_message_retry_count_since_last_stored_command: 0,
             requested_pause: false,
+            _concurrency_slot: concurrency_slot,
         }
     }
 
@@ -617,6 +622,7 @@ mod tests {
             InvocationTarget::mock_virtual_object(),
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
             OnMaxAttempts::Kill,
+            ConcurrencySlot::empty(),
         )
     }
 
