@@ -237,9 +237,7 @@ impl<Item> AssignmentSegment<Item> {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Action {
     /// Items are in inbox, let's move them to running queue.
-    MoveToRunning,
-    /// Items are already in running queue, execute them now.
-    ResumeAlreadyRunning,
+    MoveToRun,
     /// Items was already in running queue and we want them to yield back to the inbox
     Yield,
 }
@@ -252,8 +250,6 @@ pub struct Decision<Item> {
     num_start: u16,
     /// running items previously started
     num_run: u16,
-    /// running items that should continue to run
-    num_resume: u16,
     /// Items in run queue that need to go back to waiting inbox
     num_yield: u16,
 }
@@ -264,7 +260,6 @@ impl<Item> Default for Decision<Item> {
             q: HashMap::default(),
             num_start: 0,
             num_run: 0,
-            num_resume: 0,
             num_yield: 0,
         }
     }
@@ -281,10 +276,9 @@ impl<Item: VQueueEntry> Decision<Item> {
         let assignments = self.q.entry_ref(qid).or_default();
         assignments.set_latest_run_tb_zero_time(updated_zt);
         match action {
-            Action::ResumeAlreadyRunning => self.num_resume += 1,
             Action::Yield => self.num_yield += 1,
-            Action::MoveToRunning if entry.item.priority().is_new() => self.num_start += 1,
-            Action::MoveToRunning => self.num_run += 1,
+            Action::MoveToRun if entry.item.priority().is_new() => self.num_start += 1,
+            Action::MoveToRun => self.num_run += 1,
         }
         assignments.push(action, entry);
     }
@@ -314,30 +308,17 @@ impl<Item: VQueueEntry> Decision<Item> {
     }
 
     #[cfg(test)]
-    pub fn num_resume(&self) -> usize {
-        self.num_resume as usize
-    }
-
-    #[cfg(test)]
     pub fn num_yield(&self) -> usize {
         self.num_yield as usize
     }
 
     /// Total number of items in all queues
     pub fn total_items(&self) -> usize {
-        self.num_start as usize
-            + self.num_run as usize
-            + self.num_resume as usize
-            + self.num_yield as usize
+        self.num_start as usize + self.num_run as usize + self.num_yield as usize
     }
 
     pub fn report_metrics(&self) {
-        publish_scheduler_decision_metrics(
-            self.num_start,
-            self.num_run,
-            self.num_yield,
-            self.num_resume,
-        );
+        publish_scheduler_decision_metrics(self.num_start, self.num_run, self.num_yield);
     }
 }
 
