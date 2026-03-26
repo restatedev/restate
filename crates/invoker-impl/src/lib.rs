@@ -609,6 +609,7 @@ where
                 .invocation_state_machine_manager
                 .partition_storage_reader(command.partition)
                 .expect("partition is registered");
+            let concurrency_slot = self.quota.acquire_slot();
             self.start_invocation_task(
                 options,
                 command.partition,
@@ -621,6 +622,7 @@ where
                     command.invocation_target,
                     retry_iter,
                     on_max_attempts,
+                    concurrency_slot,
                 ),
             )
         } else {
@@ -665,7 +667,7 @@ where
                 .invocation_state_machine_manager
                 .partition_storage_reader(partition)
                 .expect("partition is registered");
-            self.quota.reserve_slot();
+            let concurrency_slot = self.quota.acquire_slot();
             self.start_invocation_task(
                 options,
                 partition,
@@ -678,6 +680,7 @@ where
                     invocation_target,
                     retry_iter,
                     on_max_attempts,
+                    concurrency_slot,
                 ),
             )
         } else {
@@ -1031,10 +1034,7 @@ where
             trace!(
                 restate.invocation.target = %ism.invocation_target,
                 "Invocation task closed correctly");
-            if ism._permit.is_empty() {
-                // the permit is empty when we are using a real permit token (vqueues).
-                self.quota.unreserve_slot();
-            }
+
             self.status_store.on_end(&partition, &invocation_id);
             let _ = sender
                 .send(Box::new(Effect {
@@ -1067,7 +1067,6 @@ where
             .remove_invocation(partition, &invocation_id)
         {
             counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_SUSPENDED, "partition_id" => ID_LOOKUP.get(partition.0)).increment(1);
-            self.quota.unreserve_slot();
             self.status_store.on_end(&partition, &invocation_id);
 
             if ism.requested_pause {
@@ -1128,7 +1127,6 @@ where
         {
             counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_SUSPENDED, "partition_id" => ID_LOOKUP.get(partition.0))
                 .increment(1);
-            self.quota.unreserve_slot();
             self.status_store.on_end(&partition, &invocation_id);
 
             if ism.requested_pause {
@@ -1223,7 +1221,6 @@ where
                 "Aborting invocation"
             );
             ism.abort();
-            self.quota.unreserve_slot();
             self.status_store.on_end(&partition, &invocation_id);
         } else {
             trace!(
@@ -1333,7 +1330,6 @@ where
                     "Aborting invocation"
                 );
                 ism.abort();
-                self.quota.unreserve_slot();
                 self.status_store.on_end(&partition, &fid);
             }
         } else {
@@ -1479,7 +1475,6 @@ where
                     restate.invocation.target = %ism.invocation_target,
                     restate.deployment.id = %attempt_deployment_id,
                     "Error when executing the invocation, pausing the invocation.");
-                self.quota.unreserve_slot();
                 self.status_store.on_end(&partition, &invocation_id);
 
                 let journal_v2_related_command_type =
@@ -1541,7 +1536,6 @@ where
                     restate.invocation.target = %ism.invocation_target,
                     restate.deployment.id = %attempt_deployment_id,
                     "Error when executing the invocation, not going to retry.");
-                self.quota.unreserve_slot();
                 self.status_store.on_end(&partition, &invocation_id);
 
                 let _ = self
@@ -1686,7 +1680,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use crate::error::{InvokerError, SdkInvocationErrorV2};
-    use crate::quota::InvokerConcurrencyQuota;
+    use crate::quota::{ConcurrencySlot, InvokerConcurrencyQuota};
 
     // -- Mocks
 
@@ -2240,6 +2234,7 @@ mod tests {
             invocation_target.clone(),
             RetryPolicy::fixed_delay(Duration::from_millis(100), None).into_iter(),
             OnMaxAttempts::Kill,
+            ConcurrencySlot::empty(),
         );
         let (tx, _rx) = mpsc::unbounded_channel();
         ism.start(tokio::spawn(async {}).abort_handle(), tx);
