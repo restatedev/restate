@@ -9,8 +9,10 @@
 // by the Apache License, Version 2.0.
 
 mod restricted_value;
+mod string;
 
 pub use restricted_value::{RestrictedValue, RestrictedValueError};
+pub use string::{ReString, ToReString};
 
 use std::fmt;
 use std::hash::Hash;

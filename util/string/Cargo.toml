@@ -9,6 +9,18 @@ publish = false
 
 [features]
 default = []
+serde = ["dep:serde", "compact_str/serde"]
+bytes = ["dep:bytes", "compact_str/bytes"]
+bilrost = ["dep:bilrost", "bytes"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
+
+bilrost = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+compact_str = { workspace = true, features = ["std"] }
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+restate-util-string = {path = ".", default-features = false, features = ["bytes", "bilrost", "serde"]}
+
