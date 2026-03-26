@@ -255,11 +255,6 @@ impl<S: VQueueStore> VQueueState<S> {
         }
 
         if is_running {
-            // switch between these to change the behavior as needed
-            // Action::ResumeAlreadyRunning;
-            // Note that resumption requires acquiring concurrency permits similar to
-            // MoveToRunning. This is currently not implemented since (at the moment) we
-            // only support yielding.
             let result = Pop::Item {
                 action: Action::Yield,
                 permit: None,
@@ -337,7 +332,7 @@ impl<S: VQueueStore> VQueueState<S> {
         self.unconfirmed_assignments
             .insert(inbox_head.unique_hash());
         let result = Pop::Item {
-            action: Action::MoveToRunning,
+            action: Action::MoveToRun,
             permit,
             entry: Entry {
                 item: inbox_head.clone(),
