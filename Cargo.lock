@@ -7354,6 +7354,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-limiter"
+version = "1.6.3-dev"
+dependencies = [
+ "bilrost",
+ "criterion",
+ "rand 0.9.2",
+ "restate-limiter",
+ "restate-test-util",
+ "restate-util-string",
+ "restate-workspace-hack",
+ "slotmap",
+ "test-log",
+ "thiserror 2.0.18",
+ "tracing",
+ "tracing-test",
+]
+
+[[package]]
 name = "restate-lite"
 version = "1.6.3-dev"
 dependencies = [
