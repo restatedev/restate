@@ -19,9 +19,11 @@ use crate::replication::{NodeSet, ReplicationProperty};
 
 use crate::locality::LocationScope;
 
+use restate_util_string::ReString;
+
 const HASH_SALT: u64 = 14712721395741015273;
-type RegionLabel = smartstring::SmartString<smartstring::LazyCompact>;
-type ZoneLabel = smartstring::SmartString<smartstring::LazyCompact>;
+type RegionLabel = ReString;
+type ZoneLabel = ReString;
 
 pub type RegionKey = u32;
 pub type ZoneKey = u32;
