@@ -41,6 +41,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", default-features = false, features = ["color", "derive", "env", "error-context", "help", "std", "suggestions", "usage", "wrap_help"] }
 clap_builder = { version = "4", default-features = false, features = ["color", "env", "std", "suggestions", "usage", "wrap_help"] }
 comfy-table = { version = "7" }
+compact_str = { version = "0.9", default-features = false, features = ["bytes", "serde", "std"] }
 constant_time_eq = { version = "0.4" }
 criterion = { version = "0.5", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
@@ -170,6 +171,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", default-features = false, features = ["color", "derive", "env", "error-context", "help", "std", "suggestions", "usage", "wrap_help"] }
 clap_builder = { version = "4", default-features = false, features = ["color", "env", "std", "suggestions", "usage", "wrap_help"] }
 comfy-table = { version = "7" }
+compact_str = { version = "0.9", default-features = false, features = ["bytes", "serde", "std"] }
 constant_time_eq = { version = "0.4" }
 criterion = { version = "0.5", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }

@@ -33,9 +33,10 @@
 
 use std::borrow::Borrow;
 use std::fmt;
+use std::ops::Deref;
 use std::str::FromStr;
 
-use crate::{OwnedStringLike, StringLike};
+use crate::{OwnedStringLike, ReString, StringLike};
 
 /// Maximum length of a restricted value in bytes.
 pub const MAX_LEN: usize = 36;
@@ -108,11 +109,36 @@ impl<T> RestrictedValue<T> {
     pub const MAX_LEN: usize = 36;
 }
 
+impl<S: Deref> RestrictedValue<S> {
+    /// Converts from `RestrictedValue<T>` (or `&RestrictedValue<T>`) to `RestrictedValue<&T::Target>`.
+    /// Leaves the original RestrictedValue in-place, creating a new one with a reference to the
+    /// original one, additionally coercing the contents via Deref.
+    #[inline]
+    pub fn as_deref(&self) -> RestrictedValue<&<S as std::ops::Deref>::Target> {
+        RestrictedValue(self.0.deref())
+    }
+}
+
 impl<S: StringLike> RestrictedValue<S> {
     /// Create a new restricted value, validating the input.
     pub fn new(s: S) -> Result<Self, RestrictedValueError> {
         validate(s.as_ref())?;
         Ok(Self(s))
+    }
+
+    /// Wrap a well-formed restricted value without checking it.
+    ///
+    /// # Safety
+    ///
+    /// This is unsafe because it skips input validation. It's the caller's responsibility to
+    /// ensure that the input is a valid RestrictedValue.
+    pub unsafe fn new_unchecked(s: S) -> Self {
+        Self(s)
+    }
+
+    /// Clones the inner value into a shared
+    pub fn to_cheap_cloneable(&self) -> RestrictedValue<ReString> {
+        RestrictedValue(ReString::new_shared(self.0.as_ref()))
     }
 
     /// Returns the value as a string slice.
