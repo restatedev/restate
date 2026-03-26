@@ -105,13 +105,14 @@ where
             .ok_or_else(|| MetaApiError::KafkaClusterNotFound(cluster_name.clone()))?;
 
         KafkaClusterResponse {
-            name: cluster.name().to_string(),
-            properties: cluster.properties().clone(),
+            name: cluster.name.to_string(),
+            properties: cluster.properties,
             created_at: SystemTime::from(cluster.created_at).into(),
             subscriptions: subscriptions
                 .into_iter()
                 .map(SubscriptionResponse::from)
                 .collect(),
+            info: cluster.info,
         }
     } else {
         let cluster = state
@@ -120,10 +121,11 @@ where
             .ok_or_else(|| MetaApiError::KafkaClusterNotFound(cluster_name.clone()))?;
 
         KafkaClusterResponse {
-            name: cluster.name().to_string(),
-            properties: cluster.properties().clone(),
+            name: cluster.name.to_string(),
+            properties: cluster.properties,
             created_at: SystemTime::from(cluster.created_at).into(),
             subscriptions: vec![],
+            info: cluster.info,
         }
     }))
 }

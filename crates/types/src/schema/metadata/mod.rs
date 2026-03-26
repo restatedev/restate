@@ -45,7 +45,9 @@ use crate::schema::invocation_target::{
     InputRules, InvocationAttemptOptions, InvocationTargetMetadata, InvocationTargetResolver,
     OnMaxAttempts, OutputRules,
 };
-use crate::schema::kafka::{KafkaCluster, KafkaClusterResolver};
+use crate::schema::kafka::{
+    DUPLICATED_KAFKA_CLUSTER_INFO_MESSAGE, KafkaCluster, KafkaClusterResolver,
+};
 use crate::schema::metadata::openapi::ServiceOpenAPI;
 use crate::schema::service::{
     HandlerRetryPolicyMetadata, ServiceMetadataResolver, ServiceRetryPolicyMetadata,
@@ -910,17 +912,24 @@ impl KafkaClusterResolver for Schema {
         cluster_name: &str,
         redact_secrets: Redaction,
     ) -> Option<KafkaCluster> {
-        self.kafka_clusters
-            .get(cluster_name)
-            .cloned()
-            .or_else(|| {
-                Configuration::pinned()
-                    .ingress
-                    .get_kafka_cluster(cluster_name)
-                    .cloned()
-                    .map(Into::into)
-            })
-            .map(|cluster| cluster.redact(redact_secrets))
+        let cluster_from_schema_registry = self.kafka_clusters.get(cluster_name);
+
+        let config = Configuration::pinned();
+        let cluster_from_configuration = config.ingress.get_kafka_cluster(cluster_name);
+
+        match (cluster_from_schema_registry, cluster_from_configuration) {
+            (Some(c), None) => Some(c.clone()),
+            (None, Some(c)) => Some(c.clone().into()),
+            (Some(c), Some(_)) => {
+                let mut cluster = c.clone();
+                cluster
+                    .info_mut()
+                    .push(Info::new(DUPLICATED_KAFKA_CLUSTER_INFO_MESSAGE));
+                Some(cluster)
+            }
+            _ => None,
+        }
+        .map(|cluster| cluster.redact(redact_secrets))
     }
 
     fn get_kafka_cluster_and_subscriptions(
@@ -943,16 +952,32 @@ impl KafkaClusterResolver for Schema {
     }
 
     fn list_kafka_clusters(&self, redact_secrets: Redaction) -> Vec<KafkaCluster> {
-        self.kafka_clusters
-            .values()
-            .map(|cluster| cluster.clone().redact(redact_secrets))
-            .chain(
-                Configuration::pinned()
-                    .ingress
-                    .kafka_clusters
-                    .iter()
-                    .map(|cluster| KafkaCluster::from(cluster.clone()).redact(redact_secrets)),
-            )
+        let config = Configuration::pinned();
+        let config_clusters = &config.ingress.kafka_clusters;
+
+        let schema_clusters = self.kafka_clusters.values().map(|cluster| {
+            let mut cluster = cluster.clone();
+            // Add duplicated info if there's any match with a cluster from the schema cluster
+            if config_clusters.iter().any(|c| c.name == cluster.name()) {
+                cluster
+                    .info_mut()
+                    .push(Info::new(DUPLICATED_KAFKA_CLUSTER_INFO_MESSAGE));
+            }
+            cluster
+        });
+
+        let extra_config_clusters = config_clusters.iter().filter_map(|c| {
+            if self.kafka_clusters.contains_key(&c.name) {
+                // Filter out clusters with duplicate names: schema clusters take precedence over config clusters
+                None
+            } else {
+                Some(KafkaCluster::from(c.clone()))
+            }
+        });
+
+        schema_clusters
+            .chain(extra_config_clusters)
+            .map(|cluster| cluster.redact(redact_secrets))
             .collect()
     }
 }

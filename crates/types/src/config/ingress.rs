@@ -36,6 +36,9 @@ pub struct IngressOptions {
     /// the ingress will reply immediately with an appropriate status code. Default is unlimited.
     concurrent_api_requests_limit: Option<NonZeroUsize>,
 
+    /// # Kafka clusters
+    ///
+    /// **Deprecated**: Kafka clusters should now be configured through the UI/Admin API
     pub kafka_clusters: Vec<KafkaClusterOptions>,
 
     /// # Ingress endpoint

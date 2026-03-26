@@ -9,6 +9,7 @@
 
 use crate::config::KafkaClusterOptions;
 use crate::schema::Redaction;
+use crate::schema::info::Info;
 use crate::schema::subscriptions::Subscription;
 use crate::time::MillisSinceEpoch;
 use http::uri::Authority;
@@ -61,6 +62,12 @@ pub struct KafkaCluster {
     pub name: KafkaClusterName,
     pub properties: HashMap<String, String>,
     pub created_at: MillisSinceEpoch,
+
+    /// # Info
+    ///
+    /// List of configuration/deprecation information related to this cluster.
+    #[serde(skip, default)] // Serde skip because we generate this at runtime
+    pub info: Vec<Info>,
 }
 
 impl KafkaCluster {
@@ -69,6 +76,7 @@ impl KafkaCluster {
             name,
             properties,
             created_at: MillisSinceEpoch::now(),
+            info: vec![],
         }
     }
 
@@ -86,6 +94,10 @@ impl KafkaCluster {
 
     pub(in crate::schema) fn properties_mut(&mut self) -> &mut HashMap<String, String> {
         &mut self.properties
+    }
+
+    pub(in crate::schema) fn info_mut(&mut self) -> &mut Vec<Info> {
+        &mut self.info
     }
 }
 
@@ -120,6 +132,10 @@ impl From<KafkaClusterOptions> for KafkaCluster {
             name: KafkaClusterName(name),
             properties,
             created_at: MillisSinceEpoch::UNIX_EPOCH,
+            info: vec![Info::new(DEPRECATED_KAFKA_CLUSTER_INFO_MESSAGE)],
         }
     }
 }
+
+pub(in crate::schema) const DUPLICATED_KAFKA_CLUSTER_INFO_MESSAGE: &str = "A Kafka cluster with the same name exists in the static cluster configuration, please remove it from the static configuration as it's deprecated.";
+pub(in crate::schema) const DEPRECATED_KAFKA_CLUSTER_INFO_MESSAGE: &str = "This Kafka cluster was configured in the static cluster configuration, this is deprecated. Please register it using the new Kafka Admin functionalities.";

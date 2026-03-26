@@ -8,12 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::subscriptions::SubscriptionResponse;
+use restate_types::schema::info::Info;
+use restate_types::schema::kafka::{KafkaCluster, KafkaClusterName};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::SystemTime;
-
-use crate::subscriptions::SubscriptionResponse;
-use restate_types::schema::kafka::{KafkaCluster, KafkaClusterName};
 
 /// Create Kafka cluster request
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
@@ -65,14 +65,21 @@ pub struct SimpleKafkaClusterResponse {
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
     #[cfg_attr(feature = "schema", schema(value_type = String))]
     pub created_at: humantime::Timestamp,
+
+    /// # Info
+    ///
+    /// List of configuration/deprecation information related to this deployment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub info: Vec<Info>,
 }
 
 impl From<KafkaCluster> for SimpleKafkaClusterResponse {
     fn from(cluster: KafkaCluster) -> Self {
         Self {
-            name: cluster.name().to_string(),
-            properties: cluster.properties().clone(),
+            name: cluster.name.to_string(),
+            properties: cluster.properties,
             created_at: SystemTime::from(cluster.created_at).into(),
+            info: cluster.info,
         }
     }
 }
@@ -101,6 +108,12 @@ pub struct KafkaClusterResponse {
     ///
     /// Subscriptions to this Kafka cluster, returned only when `include_subscriptions` is enabled.
     pub subscriptions: Vec<SubscriptionResponse>,
+
+    /// # Info
+    ///
+    /// List of configuration/deprecation information related to this deployment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub info: Vec<Info>,
 }
 
 /// List of all Kafka clusters.
