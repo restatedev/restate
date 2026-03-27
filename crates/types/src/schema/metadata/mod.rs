@@ -465,6 +465,7 @@ impl ServiceRevision {
 
         service_openapi.to_openapi_contract(
             &self.name,
+            &self.metadata,
             ingress_address,
             self.documentation.as_deref(),
             self.revision,
