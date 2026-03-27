@@ -35,6 +35,7 @@ use rocksdb::statistics::HistogramData;
 use rocksdb::statistics::Ticker;
 
 use restate_core::ShutdownError;
+use restate_types::protobuf::common::DatabaseKind;
 
 // re-exports
 pub use self::db_manager::RocksDbManager;
@@ -110,6 +111,10 @@ static_assertions::assert_impl_all!(RocksDb: Send, Sync);
 impl RocksDb {
     pub fn name(&self) -> &DbName {
         &self.db.spec().name
+    }
+
+    pub fn kind(&self) -> DatabaseKind {
+        self.db.spec().kind
     }
 
     pub(crate) async fn open(

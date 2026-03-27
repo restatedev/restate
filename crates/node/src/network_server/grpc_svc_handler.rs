@@ -28,7 +28,7 @@ use restate_types::net::connect_opts::GrpcConnectionOptions;
 use restate_core::network::net_util::{DNSResolution, create_tonic_channel};
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::{NodeCtlSvc, NodeCtlSvcServer};
 use restate_core::protobuf::node_ctl_svc::{
-    ClusterHealthResponse, DatabaseCompactionResult, DatabaseKind, EmbeddedMetadataClusterHealth,
+    ClusterHealthResponse, DatabaseCompactionResult, EmbeddedMetadataClusterHealth,
     GetMetadataRequest, GetMetadataResponse, IdentResponse, ProvisionClusterRequest,
     ProvisionClusterResponse, TriggerCompactionRequest, TriggerCompactionResponse,
 };
@@ -43,27 +43,11 @@ use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration};
 use restate_types::metadata::VersionedValue;
 use restate_types::nodes_config::Role;
 use restate_types::protobuf::cluster::ClusterConfiguration as ProtoClusterConfiguration;
+use restate_types::protobuf::common::DatabaseKind;
 use restate_types::replication::ReplicationProperty;
 use restate_types::storage::StorageCodec;
 
 use crate::{ClusterConfiguration, provision_cluster_metadata};
-
-/// Maps database names to their corresponding DatabaseKind.
-/// Returns None for unrecognized names so they are skipped rather than
-/// accidentally compacted if new databases are added without updating this mapping.
-fn db_name_to_kind(name: &str) -> Option<DatabaseKind> {
-    if name == "log-server" {
-        Some(DatabaseKind::LogServer)
-    } else if name == "replicated-metadata-server" {
-        Some(DatabaseKind::MetadataServer)
-    } else if name == "local-loglet" {
-        Some(DatabaseKind::LocalLoglet)
-    } else if name == "db" || name.starts_with("db-") {
-        Some(DatabaseKind::PartitionStore)
-    } else {
-        None
-    }
-}
 
 pub struct NodeCtlSvcHandler {
     metadata_writer: MetadataWriter,
@@ -306,12 +290,10 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         // concurrent I/O from multiple databases.
         for db in all_dbs {
             let db_name = db.name().to_string();
+            let kind = db.kind();
 
-            // Check if this database should be compacted. Skip databases whose names
-            // are not recognized so newly added databases are not accidentally compacted.
-            let should_compact = compact_all || {
-                db_name_to_kind(&db_name).is_some_and(|kind| requested_kinds.contains(&kind))
-            };
+            let should_compact = compact_all
+                || (kind != DatabaseKind::Unspecified && requested_kinds.contains(&kind));
 
             if !should_compact {
                 continue;
@@ -471,27 +453,16 @@ fn write_err_to_status(err: WriteError) -> Status {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use restate_types::protobuf::common::DatabaseKind;
 
     #[test]
-    fn test_db_name_to_kind() {
-        assert_eq!(db_name_to_kind("db"), Some(DatabaseKind::PartitionStore));
-        assert_eq!(db_name_to_kind("db-0"), Some(DatabaseKind::PartitionStore));
+    fn test_database_kind_db_names() {
+        assert_eq!(DatabaseKind::LogServer.db_name(), "log-server");
         assert_eq!(
-            db_name_to_kind("db-123"),
-            Some(DatabaseKind::PartitionStore)
+            DatabaseKind::MetadataServer.db_name(),
+            "replicated-metadata-server"
         );
-        assert_eq!(db_name_to_kind("log-server"), Some(DatabaseKind::LogServer));
-        assert_eq!(
-            db_name_to_kind("replicated-metadata-server"),
-            Some(DatabaseKind::MetadataServer)
-        );
-        assert_eq!(
-            db_name_to_kind("local-loglet"),
-            Some(DatabaseKind::LocalLoglet)
-        );
-        // Unknown names return None so they are safely skipped
-        assert_eq!(db_name_to_kind("unknown"), None);
-        assert_eq!(db_name_to_kind("random-name"), None);
+        assert_eq!(DatabaseKind::LocalLoglet.db_name(), "local-loglet");
+        assert_eq!(DatabaseKind::PartitionStore.db_name(), "db");
     }
 }

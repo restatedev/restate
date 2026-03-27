@@ -15,6 +15,5 @@ mod rocksdb_builder;
 pub use rocksdb::{BuildError, Error, RocksDbStorage};
 
 const DATA_DIR: &str = "replicated-metadata-server";
-const DB_NAME: &str = "replicated-metadata-server";
 const DATA_CF: &str = "data";
 const METADATA_CF: &str = "metadata";

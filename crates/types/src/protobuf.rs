@@ -80,6 +80,23 @@ pub mod common {
             false
         }
     }
+
+    impl DatabaseKind {
+        /// The canonical RocksDB database name for this kind.
+        ///
+        /// For [`DatabaseKind::PartitionStore`], this returns the base prefix `"db"`.
+        /// Individual partition databases may be named `"db-{partition_id}"` in
+        /// multi-db mode.
+        pub fn db_name(&self) -> &'static str {
+            match self {
+                DatabaseKind::LogServer => "log-server",
+                DatabaseKind::MetadataServer => "replicated-metadata-server",
+                DatabaseKind::LocalLoglet => "local-loglet",
+                DatabaseKind::PartitionStore => "db",
+                DatabaseKind::Unspecified => "unspecified",
+            }
+        }
+    }
 }
 
 pub mod cluster {

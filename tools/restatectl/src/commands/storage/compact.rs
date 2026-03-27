@@ -15,11 +15,10 @@ use tracing::info;
 use restate_cli_util::_comfy_table::{Cell, Table};
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::{CliContext, c_println};
-use restate_core::protobuf::node_ctl_svc::{
-    DatabaseKind, TriggerCompactionRequest, new_node_ctl_client,
-};
+use restate_core::protobuf::node_ctl_svc::{TriggerCompactionRequest, new_node_ctl_client};
 use restate_types::PlainNodeId;
 use restate_types::net::address::{AdvertisedAddress, FabricPort};
+use restate_types::protobuf::common::DatabaseKind;
 
 use crate::connection::ConnectionInfo;
 use crate::util::grpc_channel;

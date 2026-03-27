@@ -19,6 +19,7 @@ use crate::identifiers::{PartitionId, PartitionKey};
 use crate::logs::LogId;
 use crate::metadata::GlobalMetadata;
 use crate::net::metadata::{MetadataContainer, MetadataKind};
+use crate::protobuf::common::DatabaseKind;
 use crate::replication::ReplicationProperty;
 use crate::{Version, Versioned, flexbuffers_storage_encode_decode};
 
@@ -298,13 +299,14 @@ impl Partition {
     }
 
     pub fn db_name(&self) -> DbName {
+        let base = DatabaseKind::PartitionStore.db_name();
         #[cfg(feature = "multi-db")]
         return self
             .db_name
             .clone()
-            .unwrap_or_else(|| DbName::from(format!("db-{}", self.partition_id)));
+            .unwrap_or_else(|| DbName::from(format!("{base}-{}", self.partition_id)));
         #[cfg(not(feature = "multi-db"))]
-        return self.db_name.clone().unwrap_or_else(|| DbName::from("db"));
+        return self.db_name.clone().unwrap_or_else(|| DbName::from(base));
     }
 
     pub fn cf_name(&self) -> CfName {

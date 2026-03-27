@@ -29,7 +29,5 @@ pub use self::builder::RocksDbLogStoreBuilder;
 pub use self::store::RocksDbLogStore;
 pub(crate) use error::*;
 
-// matches the default directory name
-const DB_NAME: &str = "log-server";
 pub const DATA_CF: &str = "data";
 pub const METADATA_CF: &str = "metadata";

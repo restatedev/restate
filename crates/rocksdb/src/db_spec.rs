@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use derive_builder::Builder;
 
+use restate_types::protobuf::common::DatabaseKind;
 use restate_util_string::ReString;
 
 use crate::BoxedCfMatcher;
@@ -145,6 +146,7 @@ pub enum OpenMode {
 #[builder(pattern = "owned", build_fn(name = "build"))]
 pub struct DbSpec {
     pub(crate) name: DbName,
+    pub(crate) kind: DatabaseKind,
     pub(crate) path: PathBuf,
     /// All column families that should be flushed on shutdown, no flush will be performed if empty
     /// which should be the default for most cases.
@@ -174,6 +176,10 @@ impl DbSpec {
         &self.name
     }
 
+    pub fn kind(&self) -> DatabaseKind {
+        self.kind
+    }
+
     pub fn open_mode(&self) -> OpenMode {
         self.db_configurator.get_db_open_mode()
     }
@@ -182,11 +188,13 @@ impl DbSpec {
 impl DbSpecBuilder {
     pub fn new(
         name: DbName,
+        kind: DatabaseKind,
         path: PathBuf,
         configurator: impl DbConfigurator + Send + Sync + 'static,
     ) -> DbSpecBuilder {
         Self {
             name: Some(name),
+            kind: Some(kind),
             path: Some(path),
             db_configurator: Some(Box::new(configurator)),
             ..Self::default()

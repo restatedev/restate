@@ -113,16 +113,8 @@ message EmbeddedMetadataClusterHealth {
   repeated restate.common.NodeId members = 1;
 }
 
-enum DatabaseKind {
-  DATABASE_KIND_UNSPECIFIED = 0;
-  DATABASE_KIND_PARTITION_STORE = 2;
-  DATABASE_KIND_LOG_SERVER = 3;
-  DATABASE_KIND_METADATA_SERVER = 4;
-  DATABASE_KIND_LOCAL_LOGLET = 5;
-}
-
 message TriggerCompactionRequest {
-  repeated DatabaseKind databases = 1;
+  repeated restate.common.DatabaseKind databases = 1;
 }
 
 message TriggerCompactionResponse {

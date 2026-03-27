@@ -29,11 +29,12 @@ use restate_types::GenerationalNodeId;
 use restate_types::logs::{LogletId, LogletOffset, Record, SequenceNumber};
 use restate_types::net::log_server::{LogServerRequestHeader, Status, Store, StoreFlags, Stored};
 
+use restate_types::protobuf::common::DatabaseKind;
+
 use crate::payload::{PayloadPool, PayloadSpec};
 use crate::report::{BenchCounters, IntervalReporter, RunSummary, SystemSnapshot, print_summary};
 
 const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
-const DB_NAME: &str = "log-server";
 /// Number of pre-generated payload batches to cycle through.
 const POOL_BATCHES: usize = 1024;
 
@@ -145,11 +146,14 @@ pub async fn run<S: LogStore + Sync>(
 
     // Set up reporting
     let counters = BenchCounters::new();
-    let (reporter, latency_collector) =
-        IntervalReporter::new(report_interval, DB_NAME, counters.clone());
+    let (reporter, latency_collector) = IntervalReporter::new(
+        report_interval,
+        DatabaseKind::LogServer.db_name(),
+        counters.clone(),
+    );
     let reporter_handle = tokio::spawn(reporter.run());
 
-    let start_snapshot = SystemSnapshot::capture(DB_NAME);
+    let start_snapshot = SystemSnapshot::capture(DatabaseKind::LogServer.db_name());
     let num_loglets = loglets.len();
     let payload_size = opts.payload.payload_size.as_u64();
     let deadline = opts.duration.map(|d| Instant::now() + *d);
@@ -190,7 +194,7 @@ pub async fn run<S: LogStore + Sync>(
         Err(_) => hdrhistogram::Histogram::<u64>::new(3)?,
     };
 
-    let end_snapshot = SystemSnapshot::capture(DB_NAME);
+    let end_snapshot = SystemSnapshot::capture(DatabaseKind::LogServer.db_name());
     let total_records = batch_count * records_per_batch as u64;
 
     print_summary(&RunSummary {
@@ -205,7 +209,7 @@ pub async fn run<S: LogStore + Sync>(
         latencies: &combined,
         start_snapshot: &start_snapshot,
         end_snapshot: &end_snapshot,
-        db_name: DB_NAME,
+        db_name: DatabaseKind::LogServer.db_name(),
         raw_rocksdb_stats,
     });
 

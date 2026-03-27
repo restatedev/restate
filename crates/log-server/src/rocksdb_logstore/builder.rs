@@ -20,10 +20,10 @@ use restate_rocksdb::{
 use restate_serde_util::ByteCount;
 use restate_types::config::{Configuration, LogServerOptions};
 use restate_types::health::HealthStatus;
-use restate_types::protobuf::common::LogServerStatus;
+use restate_types::protobuf::common::{DatabaseKind, LogServerStatus};
 
 use super::writer::LogStoreWriterBuilder;
-use super::{DATA_CF, DB_NAME, METADATA_CF};
+use super::{DATA_CF, METADATA_CF};
 use super::{RocksDbLogStore, RocksDbLogStoreError};
 use crate::logstore::LogStoreState;
 use crate::rocksdb_logstore::keys::KeyPrefix;
@@ -36,12 +36,14 @@ pub struct RocksDbLogStoreBuilder {
 
 impl RocksDbLogStoreBuilder {
     pub async fn create() -> Result<Self, RocksDbLogStoreError> {
-        let db_name = DbName::new(DB_NAME);
+        let kind = DatabaseKind::LogServer;
+        let db_name = DbName::new(kind.db_name());
         let db_manager = RocksDbManager::get();
         let cfs = vec![CfName::new(DATA_CF), CfName::new(METADATA_CF)];
 
         let db_spec = DbSpecBuilder::new(
             db_name,
+            kind,
             Configuration::pinned().log_server.data_dir(),
             RocksConfigurator,
         )

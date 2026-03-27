@@ -35,6 +35,7 @@ use restate_types::config_loader::ConfigLoaderBuilder;
 use restate_types::live::{Live, LiveLoadExt};
 use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
+use restate_types::protobuf::common::DatabaseKind;
 
 // Configure jemalloc similar to mimic restate server
 #[cfg(not(target_env = "msvc"))]
@@ -119,7 +120,7 @@ fn main() -> anyhow::Result<()> {
 
         // print rocksdb stats if asked.
         if !args.no_rocksdb_stats {
-            print_rocksdb_stats("local-loglet");
+            print_rocksdb_stats(DatabaseKind::LocalLoglet.db_name());
         }
 
         // We shutdown the database after stats to avoid enclosing the shutdown process in our
