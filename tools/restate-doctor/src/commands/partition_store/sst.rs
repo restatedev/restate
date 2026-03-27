@@ -403,7 +403,8 @@ fn decode_key_details(kind: KeyKind, key: &[u8]) -> Option<String> {
                     KeyKind::ServiceStatus => &["service_name", "service_key"],
                     KeyKind::Promise => &["service_name", "service_key", "promise_key"],
                     KeyKind::Idempotency => {
-                        &["service_name", "service_key", "handler", "idempotency_key"]
+                        // Idempotency table was removed in v1.7
+                        &[]
                     }
                     _ => &[],
                 };

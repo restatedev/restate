@@ -219,12 +219,6 @@ where
             self.partition_store_manager.clone(),
             &self.remote_scanner_manager,
         )?;
-        crate::idempotency::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
         crate::promise::register_self(
             ctx,
             self.partition_selector.clone(),

@@ -24,7 +24,6 @@ use crate::partition;
 use crate::partition::leadership::LeadershipState;
 use restate_core::network::{Oneshot, Reciprocal, TransportConnect};
 use restate_invoker_api::InvokerHandle;
-use restate_storage_api::idempotency_table::ReadOnlyIdempotencyTable;
 use restate_storage_api::invocation_status_table::ReadInvocationStatusTable;
 use restate_storage_api::journal_table as journal_table_v1;
 use restate_storage_api::journal_table_v2::ReadJournalTable;
@@ -188,7 +187,6 @@ where
     TSchemas: DeploymentResolver,
     TStorage: ReadInvocationStatusTable
         + ReadVirtualObjectStatusTable
-        + ReadOnlyIdempotencyTable
         + ReadJournalTable
         + journal_table_v1::ReadJournalTable,
 {

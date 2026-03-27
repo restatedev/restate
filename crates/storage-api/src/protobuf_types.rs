@@ -10,9 +10,9 @@
 
 use bytes::{Buf, BytesMut};
 
-use restate_types::SemanticRestateVersion;
 use restate_types::errors::IdDecodeError;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageDecodeError, StorageEncode};
+use restate_types::SemanticRestateVersion;
 
 use crate::StorageError;
 
@@ -140,7 +140,7 @@ pub mod v1 {
         use restate_types::logs::Lsn;
         use restate_types::service_protocol::ServiceProtocolVersion;
         use restate_types::time::MillisSinceEpoch;
-        use restate_types::{GenerationalNodeId, journal_v2};
+        use restate_types::{journal_v2, GenerationalNodeId};
 
         use super::dedup_sequence_number::Variant;
         use super::enriched_entry_header::{
@@ -151,24 +151,23 @@ pub mod v1 {
         };
         use super::entry::EntryType;
         use super::journal_entry::completion_result::{Empty, Failure, Success};
-        use super::journal_entry::{CompletionResult, Kind, completion_result};
+        use super::journal_entry::{completion_result, CompletionResult, Kind};
         use super::outbox_message::{
             OutboxCancel, OutboxKill, OutboxServiceInvocation, OutboxServiceInvocationResponse,
         };
         use super::service_invocation_response_sink::{Ingress, PartitionProcessor, ResponseSink};
         use super::{
-            BackgroundCallResolutionResult, DedupSequenceNumber, Duration, EnrichedEntryHeader,
-            Entry, EntryResult, EpochSequenceNumber, FailureMetadata, Header, IdempotencyId,
-            IdempotencyMetadata, InboxEntry, InvocationId, InvocationResolutionResult,
+            enriched_entry_header, entry, entry_result, inbox_entry, invocation_resolution_result,
+            invocation_status_v2, invocation_target, journal_entry, outbox_message, promise,
+            response_result, source, span_relation, submit_notification_sink, timer,
+            virtual_object_status, BackgroundCallResolutionResult, DedupSequenceNumber, Duration,
+            EnrichedEntryHeader, Entry, EntryResult, EpochSequenceNumber, FailureMetadata, Header,
+            IdempotencyId, InboxEntry, InvocationId, InvocationResolutionResult,
             InvocationStatusV2, InvocationTarget, InvocationV2Lite, JournalCompletionTarget,
             JournalEntry, JournalEntryIndex, JournalMeta, KvPair, OutboxMessage,
             PartitionDurability, Promise, ResponseResult, RestateVersion, SequenceNumber,
             ServiceId, ServiceInvocation, ServiceInvocationResponseSink, Source, SpanContext,
             SpanRelation, StateMutation, SubmitNotificationSink, Timer, VirtualObjectStatus,
-            enriched_entry_header, entry, entry_result, inbox_entry, invocation_resolution_result,
-            invocation_status_v2, invocation_target, journal_entry, outbox_message, promise,
-            response_result, source, span_relation, submit_notification_sink, timer,
-            virtual_object_status,
         };
         use crate::invocation_status_table::{
             PreFlightInvocationArgument, PreFlightInvocationInput, PreFlightInvocationJournal,
@@ -3154,16 +3153,16 @@ pub mod v1 {
                             header,
                             journal_v2::raw::RawCommand::new(ct, value.content)
                                 .with_command_specific_metadata(
-                                journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(Box::new(
-                                    journal_v2::raw::CallOrSendMetadata::try_from(
-                                        value.call_or_send_command_metadata.ok_or(
-                                            ConversionError::missing_field(
+                                    journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(
+                                        Box::new(journal_v2::raw::CallOrSendMetadata::try_from(
+                                            value
+                                                .call_or_send_command_metadata
+                                                .ok_or(ConversionError::missing_field(
                                                 "call_command_journal_entry_additional_metadata",
-                                            ),
-                                        )?,
-                                    )?,
-                                )),
-                            ),
+                                            ))?,
+                                        )?),
+                                    ),
+                                ),
                         ),
                         journal_v2::EntryType::Command(ct) => {
                             restate_types::storage::StoredRawEntry::new(
@@ -3761,29 +3760,6 @@ pub mod v1 {
             }
         }
 
-        impl From<crate::idempotency_table::IdempotencyMetadata> for IdempotencyMetadata {
-            fn from(value: crate::idempotency_table::IdempotencyMetadata) -> Self {
-                IdempotencyMetadata {
-                    invocation_id: Some(InvocationId::from(value.invocation_id)),
-                }
-            }
-        }
-
-        impl TryFrom<IdempotencyMetadata> for crate::idempotency_table::IdempotencyMetadata {
-            type Error = ConversionError;
-
-            fn try_from(value: IdempotencyMetadata) -> Result<Self, ConversionError> {
-                Ok(crate::idempotency_table::IdempotencyMetadata {
-                    invocation_id: restate_types::identifiers::InvocationId::try_from(
-                        value
-                            .invocation_id
-                            .ok_or(ConversionError::missing_field("invocation_id"))?,
-                    )
-                    .map_err(ConversionError::invalid_data)?,
-                })
-            }
-        }
-
         impl From<crate::promise_table::Promise> for Promise {
             fn from(value: crate::promise_table::Promise) -> Self {
                 match value.state {
@@ -3918,9 +3894,8 @@ pub mod v1 {
         };
 
         use crate::protobuf_types::v1::{
-            InvocationTarget, ResponseResult, Source, SpanContextLite,
             pb_conversion::{expect_or_fail, try_bytes_into_trace_id},
-            response_result, source,
+            response_result, source, InvocationTarget, ResponseResult, Source, SpanContextLite,
         };
 
         fn merge_bytes_zerocopy<'a>(

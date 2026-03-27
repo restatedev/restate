@@ -17,7 +17,6 @@ use strum::VariantArray;
 
 use restate_partition_store::deduplication_table::DeduplicationKey;
 use restate_partition_store::fsm_table::PartitionStateMachineKey;
-use restate_partition_store::idempotency_table::IdempotencyKey;
 use restate_partition_store::inbox_table::InboxKey;
 use restate_partition_store::invocation_status_table::InvocationStatusKey;
 use restate_partition_store::journal_events::JournalEventKey;
@@ -367,9 +366,10 @@ fn decode_key(key: &[u8]) -> (String, Option<String>, Option<KeyKind>) {
         KeyKind::Fsm => PartitionStateMachineKey::deserialize_from(&mut cursor)
             .ok()
             .map(|k| format!("{k:?}")),
-        KeyKind::Idempotency => IdempotencyKey::deserialize_from(&mut cursor)
-            .ok()
-            .map(|k| format!("{k:?}")),
+        KeyKind::Idempotency => {
+            // Idempotency table was removed in v1.7 - no longer used
+            None
+        }
         KeyKind::Inbox => InboxKey::deserialize_from(&mut cursor)
             .ok()
             .map(|k| format!("{k:?}")),

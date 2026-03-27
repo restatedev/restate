@@ -338,12 +338,7 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
             );
         }
         KeyKind::Idempotency => {
-            // service_name (var) + service_key (var) + service_handler (var) + idempotency_key (var)
-            parse_variable_fields(
-                &key[10..],
-                &mut segments,
-                &["service_name", "service_key", "handler", "idempotency_key"],
-            );
+            // Idempotency table was removed in v1.7 - no longer used
         }
         KeyKind::Deduplication => {
             // producer_id - discriminant byte + payload
