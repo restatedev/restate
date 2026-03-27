@@ -30,10 +30,13 @@ impl ValueEnum for RemotePort {
     }
 
     fn to_possible_value(&self) -> Option<builder::PossibleValue> {
-        Some(builder::PossibleValue::new(match self {
-            Self::Ingress => HttpIngressPort::default_port_str(),
-            Self::Admin => AdminPort::default_port_str(),
-        }))
+        Some(match self {
+            Self::Ingress => builder::PossibleValue::new(HttpIngressPort::default_port_str())
+                .help("Ingress HTTP port"),
+            Self::Admin => {
+                builder::PossibleValue::new(AdminPort::default_port_str()).help("Admin API port")
+            }
+        })
     }
 }
 

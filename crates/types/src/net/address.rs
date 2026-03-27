@@ -26,9 +26,7 @@ pub trait ListenerPort: Clone + PartialEq + Eq {
     /// Whether this port allows binding on an anonymous unix-socket or not.
     const IS_ANONYMOUS_UDS_ALLOWED: bool;
 
-    fn default_port_str() -> &'static str {
-        stringify!(Self::DEFAULT_PORT)
-    }
+    fn default_port_str() -> &'static str;
 }
 
 /// Implemented on ports that support gRPC protocol
@@ -48,6 +46,9 @@ impl ListenerPort for HttpIngressPort {
     const DEFAULT_PORT: u16 = 8080;
     const UDS_NAME: &'static str = "ingress.sock";
     const IS_ANONYMOUS_UDS_ALLOWED: bool = true;
+    fn default_port_str() -> &'static str {
+        "8080"
+    }
 }
 
 /// Admin HTTP Service 9070
@@ -60,6 +61,9 @@ impl ListenerPort for AdminPort {
     const DEFAULT_PORT: u16 = 9070;
     const UDS_NAME: &'static str = "admin.sock";
     const IS_ANONYMOUS_UDS_ALLOWED: bool = true;
+    fn default_port_str() -> &'static str {
+        "9070"
+    }
 }
 
 /// gRPC port for control and introspection
@@ -72,6 +76,9 @@ impl ListenerPort for ControlPort {
     const DEFAULT_PORT: u16 = 5122;
     const UDS_NAME: &'static str = "control.sock";
     const IS_ANONYMOUS_UDS_ALLOWED: bool = true;
+    fn default_port_str() -> &'static str {
+        "5122"
+    }
 }
 impl GrpcPort for ControlPort {}
 
@@ -86,6 +93,9 @@ impl ListenerPort for FabricPort {
     // this is disallowed for the message fabric since we must be able to acquire a
     // non-anonymous socket address to allow server-to-server communication.
     const IS_ANONYMOUS_UDS_ALLOWED: bool = false;
+    fn default_port_str() -> &'static str {
+        "5122"
+    }
 }
 impl GrpcPort for FabricPort {}
 
@@ -97,6 +107,9 @@ impl ListenerPort for TokioConsolePort {
     const DEFAULT_PORT: u16 = 6669;
     const UDS_NAME: &'static str = "tokio.sock";
     const IS_ANONYMOUS_UDS_ALLOWED: bool = false;
+    fn default_port_str() -> &'static str {
+        "6669"
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, derive_more::Display)]
