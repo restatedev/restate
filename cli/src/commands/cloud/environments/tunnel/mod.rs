@@ -39,8 +39,12 @@ pub struct Tunnel {
 
     /// Remote port on the Environment to expose on localhost
     /// This argument can be repeated to specify multiple remote ports
-    #[clap(short = 'r', long, action = clap::ArgAction::Append)]
+    #[clap(short = 'r', long, action = clap::ArgAction::Append, conflicts_with = "no_remote_ports")]
     remote_port: Vec<remote::RemotePort>,
+
+    /// Disable proxying remote Environment ports to localhost
+    #[clap(long)]
+    no_remote_ports: bool,
 
     /// A name for the tunnel; a random name will be generated if not provided
     #[clap(long = "tunnel-name")]
@@ -82,7 +86,7 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
     };
 
     let mut opts = opts.clone();
-    if opts.remote_port.is_empty() {
+    if !opts.no_remote_ports && opts.remote_port.is_empty() {
         opts.remote_port = vec![RemotePort::Ingress, RemotePort::Admin];
     }
 

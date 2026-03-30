@@ -35,6 +35,7 @@ use rocksdb::statistics::HistogramData;
 use rocksdb::statistics::Ticker;
 
 use restate_core::ShutdownError;
+use restate_types::protobuf::common::DatabaseKind;
 
 // re-exports
 pub use self::db_manager::RocksDbManager;
@@ -110,6 +111,10 @@ static_assertions::assert_impl_all!(RocksDb: Send, Sync);
 impl RocksDb {
     pub fn name(&self) -> &DbName {
         &self.db.spec().name
+    }
+
+    pub fn kind(&self) -> DatabaseKind {
+        self.db.spec().kind
     }
 
     pub(crate) async fn open(
@@ -456,7 +461,7 @@ impl RocksDb {
     }
 
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
-    pub async fn compact_all(self: Arc<Self>) {
+    pub async fn compact_all(self: Arc<Self>) -> Result<(), RocksError> {
         let manager = self.manager;
         let task = StorageTask::default()
             .kind(StorageTaskKind::Compaction)
@@ -467,7 +472,8 @@ impl RocksDb {
             .build()
             .unwrap();
 
-        let _ = manager.async_spawn_unchecked(task).await;
+        manager.async_spawn_unchecked(task).await?;
+        Ok(())
     }
 
     pub fn get_histogram_data(&self, histogram: Histogram) -> HistogramData {

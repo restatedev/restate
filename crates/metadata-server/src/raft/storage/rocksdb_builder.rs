@@ -18,19 +18,21 @@ use restate_rocksdb::{
     RocksError,
 };
 use restate_types::config::{Configuration, MetadataServerOptions, data_dir};
+use restate_types::protobuf::common::DatabaseKind;
 
-use crate::raft::storage::{DATA_CF, DATA_DIR, DB_NAME, METADATA_CF};
+use crate::raft::storage::{DATA_CF, DATA_DIR, METADATA_CF};
 
 const DATA_CF_BUDGET_RATIO: f64 = 0.85;
 const_assert!(DATA_CF_BUDGET_RATIO < 1.0);
 
 pub async fn build_rocksdb() -> Result<Arc<RocksDb>, RocksError> {
+    let kind = DatabaseKind::MetadataServer;
     let data_dir = data_dir(DATA_DIR);
-    let db_name = DbName::new(DB_NAME);
+    let db_name = DbName::new(kind.db_name());
     let db_manager = RocksDbManager::get();
     let cfs = vec![CfName::new(DATA_CF), CfName::new(METADATA_CF)];
 
-    let db_spec = DbSpecBuilder::new(db_name, data_dir, RocksConfigurator)
+    let db_spec = DbSpecBuilder::new(db_name, kind, data_dir, RocksConfigurator)
         .add_cf_pattern(CfPrefixPattern::new(DATA_CF), RocksConfigurator)
         .add_cf_pattern(CfPrefixPattern::new(METADATA_CF), RocksConfigurator)
         // not very important but it's to reduce the number of merges by flushing.

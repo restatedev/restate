@@ -22,6 +22,7 @@ use restate_types::config::Configuration;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::partitions::Partition;
+use restate_types::protobuf::common::DatabaseKind;
 
 use crate::SnapshotError;
 use crate::memory::MemoryController;
@@ -164,6 +165,7 @@ impl PartitionStoreManager {
 
         let db_spec = DbSpecBuilder::new(
             db_name.clone(),
+            DatabaseKind::PartitionStore,
             Configuration::pinned().worker.storage.data_dir(&db_name),
             configurator.clone(),
         )

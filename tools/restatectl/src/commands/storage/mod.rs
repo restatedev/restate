@@ -8,12 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod keys;
-mod rocksdb;
-mod rocksdb_builder;
+mod compact;
 
-pub use rocksdb::{BuildError, Error, RocksDbStorage};
+use cling::prelude::*;
 
-const DATA_DIR: &str = "replicated-metadata-server";
-const DATA_CF: &str = "data";
-const METADATA_CF: &str = "metadata";
+#[derive(Run, Subcommand, Clone)]
+pub enum Storage {
+    /// Trigger RocksDB compaction on cluster nodes
+    Compact(compact::CompactOpts),
+}

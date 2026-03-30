@@ -21,3 +21,4 @@ pub mod replicated_loglet;
 pub mod snapshot;
 pub mod sql;
 pub mod status;
+pub mod storage;

@@ -19,14 +19,12 @@ use restate_rocksdb::{
 use restate_types::config::{Configuration, LocalLogletOptions};
 use restate_types::errors::MaybeRetryableError;
 use restate_types::live::LiveLoad;
+use restate_types::protobuf::common::DatabaseKind;
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 
 use super::keys::{DATA_KEY_PREFIX_LENGTH, MetadataKey, MetadataKind};
 use super::log_state::{LogState, log_state_full_merge, log_state_partial_merge};
 use super::log_store_writer::LogStoreWriter;
-
-// matches the default directory name
-pub(crate) const DB_NAME: &str = "local-loglet";
 
 pub(crate) const DATA_CF: &str = "logstore_data";
 pub(crate) const METADATA_CF: &str = "logstore_metadata";
@@ -74,15 +72,21 @@ impl RocksDbLogStore {
         let opts = options.live_load();
         let data_dir = opts.data_dir();
 
-        let db_spec = DbSpecBuilder::new(DbName::new(DB_NAME), data_dir, RocksConfigurator)
-            .add_cf_pattern(CfExactPattern::new(DATA_CF), RocksConfigurator)
-            .add_cf_pattern(CfExactPattern::new(METADATA_CF), RocksConfigurator)
-            // not very important but it's to reduce the number of merges by flushing.
-            // it's also a small cf so it should be quick.
-            .add_to_flush_on_shutdown(CfExactPattern::new(METADATA_CF))
-            .ensure_column_families(cfs)
-            .build()
-            .expect("valid spec");
+        let kind = DatabaseKind::LocalLoglet;
+        let db_spec = DbSpecBuilder::new(
+            DbName::new(kind.db_name()),
+            kind,
+            data_dir,
+            RocksConfigurator,
+        )
+        .add_cf_pattern(CfExactPattern::new(DATA_CF), RocksConfigurator)
+        .add_cf_pattern(CfExactPattern::new(METADATA_CF), RocksConfigurator)
+        // not very important but it's to reduce the number of merges by flushing.
+        // it's also a small cf so it should be quick.
+        .add_to_flush_on_shutdown(CfExactPattern::new(METADATA_CF))
+        .ensure_column_families(cfs)
+        .build()
+        .expect("valid spec");
         let rocksdb = db_manager.open_db(db_spec).await?;
         Ok(Self { rocksdb })
     }

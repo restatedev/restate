@@ -29,13 +29,14 @@ use restate_types::GenerationalNodeId;
 use restate_types::logs::{KeyFilter, LogletId, LogletOffset, Record, SequenceNumber};
 use restate_types::net::log_server::*;
 
+use restate_types::protobuf::common::DatabaseKind;
+
 use crate::payload::{PayloadPool, PayloadSpec};
 use crate::report::{
     BenchCounters, IntervalReporter, RunSummary, SystemSnapshot, print_read_summary, print_summary,
 };
 
 const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
-const DB_NAME: &str = "log-server";
 const POOL_BATCHES: usize = 1024;
 
 #[derive(Debug, Clone, clap::Parser)]
@@ -133,8 +134,11 @@ pub async fn run<S: LogStore + Sync>(
 
     // Set up reporting
     let counters = BenchCounters::new();
-    let (reporter, latency_collector) =
-        IntervalReporter::new(report_interval, DB_NAME, counters.clone());
+    let (reporter, latency_collector) = IntervalReporter::new(
+        report_interval,
+        DatabaseKind::LogServer.db_name(),
+        counters.clone(),
+    );
     let latency_collector = Arc::new(latency_collector);
     let reporter_handle = tokio::spawn(reporter.run());
 
@@ -300,7 +304,7 @@ pub async fn run<S: LogStore + Sync>(
         }
     }
 
-    let start_snapshot = SystemSnapshot::capture(DB_NAME);
+    let start_snapshot = SystemSnapshot::capture(DatabaseKind::LogServer.db_name());
 
     // Start all tasks
     barrier.wait().await;
@@ -319,7 +323,7 @@ pub async fn run<S: LogStore + Sync>(
         Err(_) => Histogram::<u64>::new(3)?,
     };
 
-    let end_snapshot = SystemSnapshot::capture(DB_NAME);
+    let end_snapshot = SystemSnapshot::capture(DatabaseKind::LogServer.db_name());
 
     // Collect writer results
     let mut total_write_records: u64 = 0;
@@ -341,7 +345,7 @@ pub async fn run<S: LogStore + Sync>(
         latencies: &combined,
         start_snapshot: &start_snapshot,
         end_snapshot: &end_snapshot,
-        db_name: DB_NAME,
+        db_name: DatabaseKind::LogServer.db_name(),
         raw_rocksdb_stats,
     });
 
