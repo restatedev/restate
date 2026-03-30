@@ -9,6 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use std::ops::RangeInclusive;
+use std::pin::Pin;
+use std::task::{Context, Poll, ready};
 
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -16,7 +18,9 @@ use futures::Stream;
 use futures_util::stream;
 use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 
-use restate_memory::{LocalMemoryLease, LocalMemoryPool};
+use restate_memory::{
+    AvailabilityNotified, LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream,
+};
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::state_table::{ReadStateTable, ScanStateTable, WriteStateTable};
 use restate_storage_api::{BudgetedReadError, Result, StorageError};
@@ -191,8 +195,9 @@ impl ReadStateTable for PartitionStore {
         service_id: &ServiceId,
         budget: &'a mut LocalMemoryPool,
     ) -> Result<
-        impl Stream<Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>>
-        + Send
+        impl PinnableMemoryStream<
+            Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>,
+        > + Send
         + 'a,
     > {
         self.assert_partition_key(service_id)?;
@@ -251,8 +256,9 @@ impl ReadStateTable for PartitionStoreTransaction<'_> {
         service_id: &ServiceId,
         budget: &'a mut LocalMemoryPool,
     ) -> Result<
-        impl Stream<Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>>
-        + Send
+        impl PinnableMemoryStream<
+            Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>,
+        > + Send
         + 'a,
     > {
         self.assert_partition_key(service_id)?;
@@ -287,65 +293,167 @@ impl WriteStateTable for PartitionStoreTransaction<'_> {
     }
 }
 
-/// Wraps a [`StateEntryIter`] into an async [`Stream`] that acquires a memory
-/// lease from `budget` **before** decoding each entry.
+/// A budget-gated state stream that acquires a [`LocalMemoryLease`] from
+/// `budget` **before** decoding each entry.
 ///
-/// Each entry is produced via a unified reserve-read-adjust loop: peek the raw
-/// byte size, attempt synchronous [`LocalMemoryPool::try_reserve`], and decode
-/// from the same iterator slices on success (fast path — no `.await`). When
-/// `try_reserve` fails the borrow is dropped and the deficit is awaited via
-/// [`LocalMemoryPool::reserve`], then the loop re-peeks the (unchanged)
-/// iterator position.
+/// Implements [`PinnableMemoryStream`] so that callers that accumulate
+/// (merge) per-entry leases (e.g. `collect_eager_state`) can signal
+/// pinned (non-reclaimable) memory. The `pinned` counter is a plain
+/// `usize` — no atomics or shared state needed.
+///
+/// The poll loop is a unified reserve-read-adjust cycle: peek the raw byte
+/// size, attempt synchronous [`LocalMemoryPool::try_reserve`], and decode
+/// on success (fast path — no waking). When `try_reserve` fails the deficit
+/// is stashed and the stream waits for an [`AvailabilityNotified`] signal,
+/// then retries.
+#[pin_project::pin_project]
+struct BudgetedStateStream<'a, DB: DBAccess> {
+    iter: StateEntryIter<'a, DB>,
+    budget: &'a mut LocalMemoryPool,
+    /// Memory the caller has accumulated (merged) that won't be released
+    /// until the caller's operation completes.
+    pinned: usize,
+    /// Per-entry lease being built for the current item.
+    lease: LocalMemoryLease,
+    /// Non-zero when try_reserve failed and we're waiting for budget.
+    pending_deficit: usize,
+    /// Notification future while waiting for budget availability.
+    #[pin]
+    notified: Option<AvailabilityNotified>,
+}
+
+/// Result of a synchronous attempt to produce the next state entry.
+enum TryProduce {
+    /// Entry decoded and lease split off. Ready to yield.
+    Ready(std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>),
+    /// Iterator exhausted — stream is done.
+    Exhausted,
+    /// `try_reserve` failed with this deficit; caller should await budget.
+    NeedsBudget(usize),
+}
+
+impl<DB: DBAccess + Send> BudgetedStateStream<'_, DB> {
+    /// Try to peek, reserve, decode, and split a lease for the next entry.
+    ///
+    /// On success the entry's lease is split from `lease`, which retains any
+    /// leftover capacity for the next iteration (avoiding a round-trip to the
+    /// global pool).
+    fn try_produce_next(
+        iter: &mut StateEntryIter<'_, DB>,
+        budget: &mut LocalMemoryPool,
+        lease: &mut LocalMemoryLease,
+    ) -> TryProduce {
+        let (k, v) = match iter.peek_item() {
+            Some(Ok(item)) => item,
+            Some(Err(e)) => return TryProduce::Ready(Err(e.into())),
+            None => return TryProduce::Exhausted,
+        };
+
+        let raw_size = k.len() + v.len();
+
+        // Fast path 1: existing lease already covers the entry.
+        if raw_size <= lease.size() {
+            // Decode copies data out of the iterator, releasing the borrow.
+            let result = decode_user_state_key_value(k, v);
+            iter.advance();
+            return TryProduce::Ready(
+                result
+                    .map(|(key, value)| (key, value, lease.split(raw_size)))
+                    .map_err(BudgetedReadError::from),
+            );
+        }
+
+        // Fast path 2: synchronous try_reserve for the deficit.
+        let deficit = raw_size - lease.size();
+        if let Some(extra) = budget.try_reserve(deficit) {
+            lease.merge(extra);
+            let result = decode_user_state_key_value(k, v);
+            iter.advance();
+            return TryProduce::Ready(
+                result
+                    .map(|(key, value)| (key, value, lease.split(raw_size)))
+                    .map_err(BudgetedReadError::from),
+            );
+        }
+
+        TryProduce::NeedsBudget(deficit)
+    }
+}
+
+impl<DB: DBAccess + Send> Stream for BudgetedStateStream<'_, DB> {
+    type Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        loop {
+            // If we're waiting for a notification, poll it first.
+            if let Some(notified) = this.notified.as_mut().as_pin_mut() {
+                ready!(notified.poll(cx));
+                this.notified.set(None);
+                // Notification fired — retry the reserve below.
+            }
+
+            // If we have a pending deficit from a previous failed try_reserve,
+            // attempt to resolve it.
+            if *this.pending_deficit > 0 {
+                let deficit = *this.pending_deficit;
+                if let Some(extra) = this.budget.try_reserve(deficit) {
+                    this.lease.merge(extra);
+                    *this.pending_deficit = 0;
+                    // Fall through to try_produce_next below.
+                } else if this.budget.is_out_of_memory(deficit, *this.pinned) {
+                    *this.pending_deficit = 0;
+                    return Poll::Ready(Some(Err(restate_memory::OutOfMemory {
+                        needed: deficit.saturating_add(*this.pinned),
+                    }
+                    .into())));
+                } else {
+                    // Transient failure — register for notification and wait.
+                    this.notified.set(Some(this.budget.availability_notified()));
+                    // Poll the newly created notification future to register waker.
+                    let _ = this.notified.as_mut().as_pin_mut().unwrap().poll(cx);
+                    return Poll::Pending;
+                }
+            }
+
+            // Try the synchronous fast path.
+            match Self::try_produce_next(this.iter, this.budget, this.lease) {
+                TryProduce::Exhausted => return Poll::Ready(None),
+                TryProduce::Ready(result) => return Poll::Ready(Some(result)),
+                TryProduce::NeedsBudget(deficit) => {
+                    *this.pending_deficit = deficit;
+                    // Loop back to the deficit-resolution logic above.
+                }
+            }
+        }
+    }
+}
+
+impl<DB: DBAccess + Send> PinnableMemoryStream for BudgetedStateStream<'_, DB> {
+    fn pin_memory(self: Pin<&mut Self>, amount: usize) {
+        let this = self.project();
+        *this.pinned = this.pinned.saturating_add(amount);
+    }
+
+    fn unpin_memory(self: Pin<&mut Self>, amount: usize) {
+        let pinned = self.project().pinned;
+        *pinned = pinned.saturating_sub(amount);
+    }
+}
+
 fn budgeted_state_stream<'a, DB: DBAccess + Send>(
     iter: StateEntryIter<'a, DB>,
     budget: &'a mut LocalMemoryPool,
-) -> impl Stream<Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>>
-+ Send
-+ 'a {
-    futures::stream::unfold((iter, budget), |(mut iter, budget)| async move {
-        let mut lease = budget.empty_lease();
-        loop {
-            let deficit = {
-                let (k, v) = match iter.peek_item() {
-                    Some(Ok(item)) => item,
-                    Some(Err(e)) => return Some((Err(e.into()), (iter, budget))),
-                    None => return None,
-                };
-
-                let raw_size = k.len() + v.len();
-                if raw_size <= lease.size() {
-                    lease.shrink(lease.size() - raw_size);
-                    match decode_user_state_key_value(k, v) {
-                        Ok((key, value)) => {
-                            iter.advance();
-                            return Some((Ok((key, value, lease)), (iter, budget)));
-                        }
-                        Err(e) => return Some((Err(e.into()), (iter, budget))),
-                    }
-                }
-
-                let deficit = raw_size - lease.size();
-                if let Some(extra) = budget.try_reserve(deficit) {
-                    lease.merge(extra);
-                    match decode_user_state_key_value(k, v) {
-                        Ok((key, value)) => {
-                            iter.advance();
-                            return Some((Ok((key, value, lease)), (iter, budget)));
-                        }
-                        Err(e) => return Some((Err(e.into()), (iter, budget))),
-                    }
-                }
-
-                deficit
-            };
-
-            let extra = match budget.reserve(deficit).await {
-                Ok(l) => l,
-                Err(e) => return Some((Err(e.into()), (iter, budget))),
-            };
-            lease.merge(extra);
-        }
-    })
+) -> BudgetedStateStream<'a, DB> {
+    let lease = budget.empty_lease();
+    BudgetedStateStream {
+        iter,
+        budget,
+        pinned: 0,
+        lease,
+        pending_deficit: 0,
+        notified: None,
+    }
 }
 
 fn decode_user_state_key_value(k: &[u8], v: &[u8]) -> Result<(Bytes, Bytes)> {

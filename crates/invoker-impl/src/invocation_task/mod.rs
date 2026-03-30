@@ -102,7 +102,7 @@ async fn collect_eager_state<S, E, T>(
     mut mapper: impl FnMut((Bytes, Bytes)) -> T,
 ) -> Result<(bool, Vec<T>, Option<LocalMemoryLease>), InvokerError>
 where
-    S: Stream<Item = Result<((Bytes, Bytes), LocalMemoryLease), E>> + Send,
+    S: Stream<Item = Result<(Bytes, Bytes, LocalMemoryLease), E>> + Send,
     E: InvocationReaderError,
 {
     let Some(state) = state else {
@@ -115,8 +115,8 @@ where
     let mut total_size: usize = 0;
 
     let mut stream = std::pin::pin!(state.into_inner());
-    while let Some(result) = stream.next().await {
-        let ((key, value), lease) = result.map_err(|e| InvokerError::StateReader(e.into()))?;
+    while let Some(result) = stream.as_mut().next().await {
+        let (key, value, lease) = result.map_err(InvokerError::from_state_reader)?;
         let entry_size = key.len() + value.len();
 
         // Check if adding this entry would exceed the limit
@@ -721,17 +721,15 @@ mod tests {
         }
     }
 
-    type StateResult = Result<((Bytes, Bytes), LocalMemoryLease), TestError>;
+    type StateResult = Result<(Bytes, Bytes, LocalMemoryLease), TestError>;
 
     static MEMORY_POOL: LazyLock<LocalMemoryPool> = LazyLock::new(LocalMemoryPool::unlimited);
 
     // Helper to create a (Bytes, Bytes) pair of known sizes
     fn entry(key_size: usize, value_size: usize) -> StateResult {
         Ok((
-            (
-                Bytes::from(vec![b'k'; key_size]),
-                Bytes::from(vec![b'v'; value_size]),
-            ),
+            Bytes::from(vec![b'k'; key_size]),
+            Bytes::from(vec![b'v'; value_size]),
             MEMORY_POOL.empty_lease(),
         ))
     }
@@ -739,7 +737,7 @@ mod tests {
     #[tokio::test]
     async fn collect_eager_state_no_state_returns_partial() {
         let (is_partial, entries, _memory_lease) = collect_eager_state::<
-            stream::Empty<Result<((Bytes, Bytes), LocalMemoryLease), Infallible>>,
+            stream::Empty<Result<(Bytes, Bytes, LocalMemoryLease), Infallible>>,
             _,
             _,
         >(None, 1024, std::convert::identity)

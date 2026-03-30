@@ -235,7 +235,7 @@ async fn get_journal_entry_budgeted<S: StorageAccess>(
         };
 
         // Pinned slice dropped — safe to .await now.
-        let extra = budget.reserve(deficit).await?;
+        let extra = budget.reserve(deficit, lease.size()).await?;
         lease.merge(extra);
     }
 }
@@ -753,7 +753,7 @@ fn budgeted_journal_v2_stream<'a, DB: DBAccess + Send>(
                 deficit
             };
 
-            let extra = match budget.reserve(deficit).await {
+            let extra = match budget.reserve(deficit, lease.size()).await {
                 Ok(l) => l,
                 Err(e) => return Some((Err(e.into()), (iter, budget))),
             };

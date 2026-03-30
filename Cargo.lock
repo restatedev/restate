@@ -7494,6 +7494,7 @@ name = "restate-memory"
 version = "1.6.3-dev"
 dependencies = [
  "bytes",
+ "futures",
  "hashbrown 0.16.1",
  "metrics",
  "parking_lot",
@@ -7729,6 +7730,7 @@ dependencies = [
  "object_store 0.13.1",
  "parking_lot",
  "paste",
+ "pin-project",
  "prost",
  "rand 0.9.2",
  "restate-clock",

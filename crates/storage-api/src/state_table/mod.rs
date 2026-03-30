@@ -13,7 +13,7 @@ use std::ops::RangeInclusive;
 use bytes::Bytes;
 use futures::Stream;
 
-use restate_memory::{LocalMemoryLease, LocalMemoryPool};
+use restate_memory::{LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream};
 use restate_types::identifiers::{PartitionKey, ServiceId};
 
 use crate::{BudgetedReadError, Result};
@@ -42,8 +42,9 @@ pub trait ReadStateTable {
         service_id: &ServiceId,
         budget: &'a mut LocalMemoryPool,
     ) -> Result<
-        impl Stream<Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>>
-        + Send
+        impl PinnableMemoryStream<
+            Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>,
+        > + Send
         + 'a,
     >;
 }

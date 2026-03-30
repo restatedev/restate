@@ -33,7 +33,9 @@ pub mod test_util {
 
     use restate_errors::NotRunningError;
     use restate_futures_util::concurrency::Permit;
-    use restate_memory::{LocalMemoryLease, LocalMemoryPool, MemoryLease};
+    use restate_memory::{
+        IgnorePinnableMemoryStream, LocalMemoryLease, LocalMemoryPool, MemoryLease,
+    };
     use restate_types::identifiers::{
         EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch, ServiceId,
     };
@@ -83,8 +85,9 @@ pub mod test_util {
         type StateStream<'a> = futures::stream::Empty<Result<(Bytes, Bytes), Self::Error>>;
         type LocalMemoryPooledJournalStream<'a> =
             futures::stream::Empty<Result<(JournalEntry, LocalMemoryLease), Self::Error>>;
-        type LocalMemoryPooledStateStream<'a> =
-            futures::stream::Empty<Result<((Bytes, Bytes), LocalMemoryLease), Self::Error>>;
+        type LocalMemoryPooledStateStream<'a> = IgnorePinnableMemoryStream<
+            futures::stream::Empty<Result<(Bytes, Bytes, LocalMemoryLease), Self::Error>>,
+        >;
         type Error = Infallible;
 
         async fn read_journal_metadata(
@@ -132,7 +135,9 @@ pub mod test_util {
             _service_id: &ServiceId,
             _budget: &'a mut LocalMemoryPool,
         ) -> Result<EagerState<Self::LocalMemoryPooledStateStream<'a>>, Self::Error> {
-            Ok(EagerState::new_complete(futures::stream::empty()))
+            Ok(EagerState::new_complete(IgnorePinnableMemoryStream::new(
+                futures::stream::empty(),
+            )))
         }
     }
 
