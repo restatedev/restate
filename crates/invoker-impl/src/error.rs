@@ -193,16 +193,12 @@ pub(crate) enum InvokerError {
 
 /// Describes a memory budget exhaustion that occurred during invocation
 /// processing. Carried through the invoker pipeline from the origin site
-/// (journal reader, state reader, response stream) all the way to the
-/// invoker main loop where it either triggers a yield or an error effect.
+/// (journal reader, state reader) all the way to the invoker main loop
+/// where it either triggers a yield or an error effect.
 #[derive(Debug, Clone)]
 pub(crate) struct InvocationMemoryExhausted {
-    /// Bytes needed for the inbound (deployment → Restate) direction.
-    /// `0` when the exhaustion originated on the outbound side.
-    pub inbound_needed: usize,
-    /// Bytes needed for the outbound (Restate → deployment) direction.
-    /// `0` when the exhaustion originated on the inbound side.
-    pub outbound_needed: usize,
+    /// Bytes needed to satisfy the failed allocation.
+    pub needed: usize,
     /// Why the allocation failed.
     pub kind: OutOfMemoryKind,
     /// Human-readable description of what was being done when the OOM occurred.
@@ -213,12 +209,10 @@ impl fmt::Display for InvocationMemoryExhausted {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "memory budget exhausted ({}) while {}: \
-             needed {} inbound and {} outbound",
+            "memory budget exhausted ({}) while {}: needed {}",
             self.kind,
             self.context,
-            ByteCount::from(self.inbound_needed),
-            ByteCount::from(self.outbound_needed),
+            ByteCount::from(self.needed),
         )
     }
 }
@@ -273,8 +267,7 @@ impl InvokerError {
     pub(crate) fn from_journal_reader<E: InvocationReaderError>(e: E) -> Self {
         if let Some(oom) = e.budget_exhaustion() {
             InvokerError::OutOfMemory(InvocationMemoryExhausted {
-                inbound_needed: 0,
-                outbound_needed: oom.needed,
+                needed: oom.needed,
                 kind: oom.kind,
                 context: "reading journal entries",
             })
@@ -288,8 +281,7 @@ impl InvokerError {
     pub(crate) fn from_state_reader<E: InvocationReaderError>(e: E) -> Self {
         if let Some(oom) = e.budget_exhaustion() {
             InvokerError::OutOfMemory(InvocationMemoryExhausted {
-                inbound_needed: 0,
-                outbound_needed: oom.needed,
+                needed: oom.needed,
                 kind: oom.kind,
                 context: "reading service state",
             })

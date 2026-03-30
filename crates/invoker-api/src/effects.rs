@@ -113,11 +113,8 @@ impl EffectKind {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "reason"))]
 pub enum YieldReason {
-    /// The invocation exhausted its memory budget.
-    OutOfMemory {
-        inbound_needed_memory: usize,
-        outbound_needed_memory: usize,
-    },
+    /// The invocation exhausted its outbound memory budget.
+    OutOfMemory { needed_memory: usize },
     /// A yield reason not recognized by this node version. The partition
     /// processor applies the default strategy (re-schedule immediately).
     #[cfg_attr(feature = "serde", serde(other))]

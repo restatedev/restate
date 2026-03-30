@@ -667,9 +667,6 @@ impl LeaderState {
                         (Permit::new_empty(), memory_pool.empty_lease())
                     }
                 };
-                // Full lease goes to outbound; inbound gets an empty lease
-                // (inbound budgeting is not yet wired).
-                let inbound_seed = memory_pool.empty_lease();
                 invoker_tx
                     .vqueue_invoke(
                         partition_leader_epoch,
@@ -677,7 +674,6 @@ impl LeaderState {
                         permit,
                         invocation_id,
                         invocation_target,
-                        inbound_seed,
                         memory_lease,
                     )
                     .map_err(Error::Invoker)?

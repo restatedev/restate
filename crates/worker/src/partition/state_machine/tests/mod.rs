@@ -1257,8 +1257,7 @@ async fn yield_effect_resumes_invocation() {
         .apply(Command::InvokerEffect(Box::new(Effect {
             invocation_id,
             kind: EffectKind::Yield(restate_invoker_api::YieldReason::OutOfMemory {
-                inbound_needed_memory: 65536,
-                outbound_needed_memory: 32768,
+                needed_memory: 32768,
             }),
         })))
         .await;

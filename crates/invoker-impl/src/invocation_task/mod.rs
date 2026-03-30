@@ -29,7 +29,7 @@ use http::{HeaderName, HeaderValue, Response};
 use http_body::{Body, Frame};
 use http_body_util::StreamBody;
 use metrics::{counter, histogram};
-use restate_memory::{InvocationMemory, LocalMemoryLease};
+use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::task::AbortOnDropHandle;
@@ -180,12 +180,12 @@ pub(super) enum InvocationTaskOutputInner {
     Closed,
     Suspended(HashSet<EntryIndex>),
     SuspendedV2(HashSet<NotificationId>),
-    Failed(InvokerError, InvocationMemory),
+    Failed(InvokerError, LocalMemoryPool),
     /// The invocation task yielded due to memory pressure.
     /// The budget was dropped, returning memory to the global pool.
     ShouldYield {
         oom: InvocationMemoryExhausted,
-        budget: InvocationMemory,
+        budget: LocalMemoryPool,
     },
 }
 
@@ -366,7 +366,7 @@ where
         ),
         skip_all,
     )]
-    pub async fn run<IR>(mut self, mut invocation_reader: IR, mut budget: InvocationMemory)
+    pub async fn run<IR>(mut self, mut invocation_reader: IR, mut budget: LocalMemoryPool)
     where
         IR: InvocationReader + Clone,
     {
@@ -396,10 +396,9 @@ where
                 InvocationTaskOutputInner::Failed(e, budget)
             }
             TerminalLoopState::ShouldYield(mut oom) => {
-                // Always request at least as much memory as the minimum for
-                // each direction so that re-scheduling can satisfy both sides.
-                oom.inbound_needed = oom.inbound_needed.max(budget.inbound.min_reserved());
-                oom.outbound_needed = oom.outbound_needed.max(budget.outbound.min_reserved());
+                // Request at least as much memory as the minimum reserved floor
+                // so that re-scheduling can satisfy the outbound budget.
+                oom.needed = oom.needed.max(budget.min_reserved());
                 InvocationTaskOutputInner::ShouldYield { oom, budget }
             }
         };
@@ -412,7 +411,7 @@ where
     async fn select_protocol_version_and_run<IR>(
         &mut self,
         invocation_reader: &mut IR,
-        invocation_budget: &mut InvocationMemory,
+        invocation_budget: &mut LocalMemoryPool,
     ) -> TerminalLoopState<()>
     where
         IR: InvocationReader + Clone,
@@ -549,7 +548,7 @@ where
                     keyed_service_id,
                     deployment,
                     reader_for_bidi,
-                    &mut invocation_budget.outbound,
+                    invocation_budget,
                 )
                 .await
         } else {
@@ -565,7 +564,7 @@ where
                     keyed_service_id,
                     deployment,
                     reader_for_bidi,
-                    &mut invocation_budget.outbound,
+                    invocation_budget,
                 )
                 .await
         }

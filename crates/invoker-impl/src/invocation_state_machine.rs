@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 
 use restate_futures_util::concurrency::Permit;
-use restate_memory::InvocationMemory;
+use restate_memory::LocalMemoryPool;
 use restate_types::identifiers::EntryIndex;
 use restate_types::retries;
 use restate_types::schema::invocation_target::OnMaxAttempts;
@@ -37,7 +37,7 @@ impl<T: Copy + PartialEq + Eq + fmt::Debug + Send + 'static> TimerKey for T {}
 /// The type parameter `K` represents the timer key type used for retry timers.
 /// In production, this is `tokio_util::time::delay_queue::Key`.
 /// In tests, this can be a simple mock type to avoid needing a real `DelayQueue`.
-#[derive(Debug)]
+#[derive(derive_more::Debug)]
 pub(super) struct InvocationStateMachine<K: TimerKey = tokio_util::time::delay_queue::Key> {
     #[allow(dead_code)]
     pub(super) qid: Option<VQueueId>,
@@ -55,7 +55,8 @@ pub(super) struct InvocationStateMachine<K: TimerKey = tokio_util::time::delay_q
     /// Per-invocation memory budget, preserved across retries to avoid
     /// re-acquiring from the global pool. `None` before the first task
     /// starts and after the ISM is finally cleaned up.
-    pub(super) budget: Option<InvocationMemory>,
+    #[debug(skip)]
+    pub(super) budget: Option<LocalMemoryPool>,
 }
 
 /// This struct tracks which commands the invocation task generates,

@@ -8,11 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Per-invocation memory budget with inbound/outbound directional isolation.
-//!
-//! Each active invocation gets an [`InvocationMemory`] with two [`LocalMemoryPool`]s:
-//! one for the outbound path (RocksDB → invoker → hyper → deployment) and one for the
-//! inbound path (deployment → hyper → decoder → invoker → Bifrost).
+//! Per-invocation memory budget for the outbound path (RocksDB → invoker → hyper → deployment).
 //!
 //! # Memory model
 //!
@@ -75,59 +71,6 @@ pub struct OutOfMemory {
     pub needed: usize,
     /// Why the allocation failed.
     pub kind: OutOfMemoryKind,
-}
-
-/// Per-invocation budget grouping inbound and outbound directional budgets.
-pub struct InvocationMemory {
-    pub inbound: LocalMemoryPool,
-    pub outbound: LocalMemoryPool,
-}
-
-impl fmt::Debug for InvocationMemory {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("InvocationMemory").finish_non_exhaustive()
-    }
-}
-
-impl InvocationMemory {
-    /// Creates a new invocation budget with per-direction initial memory and upper bounds.
-    ///
-    /// Each initial memory's size defines the `min_reserved` floor for that direction's budget
-    /// (i.e. [`release_excess`](LocalMemoryPool::release_excess) will never shrink below it).
-    ///
-    /// Both seeds must originate from the same [`MemoryPool`].
-    pub fn new(
-        inbound_initial_memory: MemoryLease,
-        inbound_upper_bound: usize,
-        outbound_initial_memory: MemoryLease,
-        outbound_upper_bound: usize,
-    ) -> Self {
-        let inbound_min = inbound_initial_memory.size().as_usize();
-        let outbound_min = outbound_initial_memory.size().as_usize();
-
-        Self {
-            inbound: LocalMemoryPool::new(
-                inbound_initial_memory.budget().clone(),
-                inbound_initial_memory,
-                inbound_min,
-                inbound_upper_bound,
-            ),
-            outbound: LocalMemoryPool::new(
-                outbound_initial_memory.budget().clone(),
-                outbound_initial_memory,
-                outbound_min,
-                outbound_upper_bound,
-            ),
-        }
-    }
-
-    /// Returns surplus local capacity of inbound and outbound (above `min_reserved`) to the global pool.
-    ///
-    /// Will not shrink below `min_reserved` or below current `in_flight` of each budget.
-    pub fn release_excess(&mut self) {
-        self.inbound.release_excess();
-        self.outbound.release_excess();
-    }
 }
 
 /// A directional memory budget backed by a local [`MemoryLease`] from the global pool.
@@ -594,7 +537,6 @@ impl Future for AvailabilityNotified {
 const _: () = {
     const fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<LocalMemoryPool>();
-    assert_send_sync::<InvocationMemory>();
     assert_send_sync::<LocalMemoryLease>();
     assert_send_sync::<AvailabilityNotified>();
 };
@@ -764,25 +706,6 @@ mod tests {
         assert!(budget.check_out_of_memory(200, 0).is_ok());
         let err = budget.check_out_of_memory(201, 0).unwrap_err();
         assert_eq!(err.kind, OutOfMemoryKind::UpperBoundExceeded);
-    }
-
-    #[test]
-    fn invocation_budget_creation() {
-        let global = pool(10000);
-        let inbound_seed = global.try_reserve(64).unwrap();
-        let outbound_seed = global.try_reserve(32).unwrap();
-        let ib = InvocationMemory::new(inbound_seed, 1024, outbound_seed, 512);
-
-        assert_eq!(ib.inbound.local_capacity(), 64);
-        assert_eq!(ib.inbound.available(), 64);
-        assert_eq!(ib.inbound.min_reserved(), 64);
-        assert_eq!(ib.outbound.local_capacity(), 32);
-        assert_eq!(ib.outbound.available(), 32);
-        assert_eq!(ib.outbound.min_reserved(), 32);
-        assert_eq!(global.used().as_usize(), 96);
-
-        drop(ib);
-        assert_eq!(global.used().as_usize(), 0);
     }
 
     #[tokio::test]

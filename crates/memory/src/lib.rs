@@ -25,8 +25,7 @@ mod pool;
 
 pub use controller::MemoryController;
 pub use local_pool::{
-    AvailabilityNotified, InvocationMemory, LocalMemoryLease, LocalMemoryPool, OutOfMemory,
-    OutOfMemoryKind,
+    AvailabilityNotified, LocalMemoryLease, LocalMemoryPool, OutOfMemory, OutOfMemoryKind,
 };
 pub use pinned_memory_stream::{IgnorePinnableMemoryStream, PinnableMapErr, PinnableMemoryStream};
 pub use pool::{MemoryLease, MemoryPool, PollMemoryPool};

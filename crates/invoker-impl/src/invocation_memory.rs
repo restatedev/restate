@@ -13,5 +13,5 @@
 // Re-exports for use by other modules within invoker-impl.
 #[allow(unused_imports)]
 pub use restate_memory::local_pool::{
-    InvocationMemory, LocalMemoryLease, LocalMemoryPool, OutOfMemory, OutOfMemoryKind,
+    LocalMemoryLease, LocalMemoryPool, OutOfMemory, OutOfMemoryKind,
 };

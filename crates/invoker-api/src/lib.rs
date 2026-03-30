@@ -171,7 +171,6 @@ pub mod test_util {
             _permit: Permit,
             _invocation_id: InvocationId,
             _invocation_target: InvocationTarget,
-            _inbound_seed: MemoryLease,
             _outbound_seed: MemoryLease,
         ) -> Result<(), NotRunningError> {
             Ok(())

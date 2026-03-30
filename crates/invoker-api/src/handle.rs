@@ -30,7 +30,6 @@ pub trait InvokerHandle<SR> {
         invocation_target: InvocationTarget,
     ) -> Result<(), NotRunningError>;
 
-    #[allow(clippy::too_many_arguments)]
     fn vqueue_invoke(
         &mut self,
         partition: PartitionLeaderEpoch,
@@ -38,7 +37,6 @@ pub trait InvokerHandle<SR> {
         permit: Permit,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
-        inbound_seed: MemoryLease,
         outbound_seed: MemoryLease,
     ) -> Result<(), NotRunningError>;
 
