@@ -7497,6 +7497,7 @@ dependencies = [
  "hashbrown 0.16.1",
  "metrics",
  "parking_lot",
+ "pin-project-lite",
  "restate-serde-util",
  "restate-workspace-hack",
  "tokio",
