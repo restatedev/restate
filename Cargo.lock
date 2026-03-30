@@ -8205,9 +8205,11 @@ dependencies = [
 name = "restate-util-string"
 version = "1.6.3-dev"
 dependencies = [
+ "ahash",
  "bilrost",
  "bytes",
  "compact_str",
+ "hashbrown 0.16.1",
  "restate-util-string",
  "restate-workspace-hack",
  "serde",
