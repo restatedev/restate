@@ -18,7 +18,7 @@ use crate::deployment::{
     DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
 };
 use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision};
-use crate::schema::info::Info;
+use crate::schema::info::SchemaInfo;
 use crate::schema::service::ServiceMetadata;
 use crate::time::MillisSinceEpoch;
 use bytestring::ByteString;
@@ -53,7 +53,7 @@ pub struct Deployment {
     /// # Info
     ///
     /// List of configuration/deprecation information related to this deployment.
-    pub info: Vec<Info>,
+    pub info: Vec<SchemaInfo>,
 }
 
 impl Deployment {

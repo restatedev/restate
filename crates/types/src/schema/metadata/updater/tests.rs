@@ -14,7 +14,7 @@ use std::convert::Infallible;
 use crate::Versioned;
 use crate::schema::deployment::DeploymentResolver;
 use crate::schema::deployment::ProtocolType;
-use crate::schema::info::Info;
+use crate::schema::info::SchemaInfo;
 use crate::schema::invocation_target::InvocationTargetResolver;
 use crate::schema::service::ServiceMetadataResolver;
 use crate::service_protocol::{
@@ -1830,7 +1830,7 @@ mod endpoint_manifest_options_propagation {
         let service_metadata = schema.assert_service(GREETER_SERVICE_NAME);
         assert_that!(
             service_metadata.info,
-            contains(predicate(|info: &Info| info
+            contains(predicate(|info: &SchemaInfo| info
                 .message()
                 .contains("journal_retention is clamped")))
         );
@@ -1911,7 +1911,7 @@ mod endpoint_manifest_options_propagation {
         let service_metadata = schema.assert_service(GREETER_SERVICE_NAME);
         assert_that!(
             service_metadata.info,
-            contains(predicate(|info: &Info| info
+            contains(predicate(|info: &SchemaInfo| info
                 .message()
                 .contains("journal_retention is clamped")))
         );
@@ -1920,7 +1920,7 @@ mod endpoint_manifest_options_propagation {
         let handler_metadata = schema.assert_handler(GREETER_SERVICE_NAME, GREET_HANDLER_NAME);
         assert_that!(
             handler_metadata.info,
-            contains(predicate(|info: &Info| info
+            contains(predicate(|info: &SchemaInfo| info
                 .message()
                 .contains("journal_retention is clamped")))
         );

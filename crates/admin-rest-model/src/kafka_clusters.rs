@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::subscriptions::SubscriptionResponse;
-use restate_types::schema::info::Info;
+use restate_types::schema::info::SchemaInfo;
 use restate_types::schema::kafka::{KafkaCluster, KafkaClusterName};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -70,7 +70,7 @@ pub struct SimpleKafkaClusterResponse {
     ///
     /// List of configuration/deprecation information related to this deployment.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub info: Vec<Info>,
+    pub info: Vec<SchemaInfo>,
 }
 
 impl From<KafkaCluster> for SimpleKafkaClusterResponse {
@@ -113,7 +113,7 @@ pub struct KafkaClusterResponse {
     ///
     /// List of configuration/deprecation information related to this deployment.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub info: Vec<Info>,
+    pub info: Vec<SchemaInfo>,
 }
 
 /// List of all Kafka clusters.

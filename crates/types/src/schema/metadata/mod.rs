@@ -39,7 +39,7 @@ use crate::net::address::{AdvertisedAddress, HttpIngressPort};
 use crate::net::metadata::{MetadataContainer, MetadataKind};
 use crate::retries::{RetryIter, RetryPolicy};
 use crate::schema::deployment::{DeploymentResolver, DeploymentType, ProtocolType};
-use crate::schema::info::Info;
+use crate::schema::info::SchemaInfo;
 use crate::schema::invocation_target::{
     DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION, DeploymentStatus,
     InputRules, InvocationAttemptOptions, InvocationTargetMetadata, InvocationTargetResolver,
@@ -373,7 +373,7 @@ impl ServiceRevision {
             && served_using_protocol_type == Some(ProtocolType::RequestResponse)
         {
             info.push(
-                Info::new_with_code(
+                SchemaInfo::new_with_code(
                     &restate_errors::RT0021,
                     format!("The configured inactivity_timeout {} will not be applied because the service is exposed in Request/Response mode.", FriendlyDuration::new(inactivity_timeout))
                 )
@@ -388,7 +388,7 @@ impl ServiceRevision {
                     .to_non_zero_std()),
             );
         if got_journal_retention_clamped {
-            info.push(Info::new_with_code(
+            info.push(SchemaInfo::new_with_code(
                 &restate_errors::RT0022,
                 "The configured journal_retention is clamped to the maximum server limit."
                     .to_string(),
@@ -545,7 +545,7 @@ impl Handler {
             && served_using_protocol_type == Some(ProtocolType::RequestResponse)
         {
             info.push(
-                Info::new_with_code(
+                SchemaInfo::new_with_code(
                     &restate_errors::RT0021,
                     format!("The configured inactivity_timeout {} will not be applied because the handler is exposed in Request/Response mode.", FriendlyDuration::new(inactivity_timeout))
                 )
@@ -555,7 +555,7 @@ impl Handler {
         let (journal_retention, got_journal_retention_clamped) =
             configuration.clamp_journal_retention(self.journal_retention);
         if got_journal_retention_clamped {
-            info.push(Info::new_with_code(
+            info.push(SchemaInfo::new_with_code(
                 &restate_errors::RT0022,
                 "The configured journal_retention is clamped to the maximum server limit."
                     .to_string(),
@@ -924,7 +924,7 @@ impl KafkaClusterResolver for Schema {
                 let mut cluster = c.clone();
                 cluster
                     .info_mut()
-                    .push(Info::new(DUPLICATED_KAFKA_CLUSTER_INFO_MESSAGE));
+                    .push(SchemaInfo::new(DUPLICATED_KAFKA_CLUSTER_INFO_MESSAGE));
                 Some(cluster)
             }
             _ => None,
@@ -961,7 +961,7 @@ impl KafkaClusterResolver for Schema {
             if config_clusters.iter().any(|c| c.name == cluster.name()) {
                 cluster
                     .info_mut()
-                    .push(Info::new(DUPLICATED_KAFKA_CLUSTER_INFO_MESSAGE));
+                    .push(SchemaInfo::new(DUPLICATED_KAFKA_CLUSTER_INFO_MESSAGE));
             }
             cluster
         });

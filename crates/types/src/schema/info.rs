@@ -13,13 +13,13 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 #[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
-pub struct Info {
+pub struct SchemaInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     code: Option<String>,
     message: String,
 }
 
-impl Info {
+impl SchemaInfo {
     pub fn new(message: impl ToString) -> Self {
         Self {
             code: None,

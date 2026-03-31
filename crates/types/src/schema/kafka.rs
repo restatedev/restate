@@ -10,7 +10,7 @@
 
 use crate::config::KafkaClusterOptions;
 use crate::schema::Redaction;
-use crate::schema::info::Info;
+use crate::schema::info::SchemaInfo;
 use crate::schema::subscriptions::Subscription;
 use crate::time::MillisSinceEpoch;
 use http::uri::Authority;
@@ -71,7 +71,7 @@ pub struct KafkaCluster {
     ///
     /// List of configuration/deprecation information related to this cluster.
     #[serde(skip, default)] // Serde skip because we generate this at runtime
-    pub info: Vec<Info>,
+    pub info: Vec<SchemaInfo>,
 }
 
 impl KafkaCluster {
@@ -100,7 +100,7 @@ impl KafkaCluster {
         &mut self.properties
     }
 
-    pub(in crate::schema) fn info_mut(&mut self) -> &mut Vec<Info> {
+    pub(in crate::schema) fn info_mut(&mut self) -> &mut Vec<SchemaInfo> {
         &mut self.info
     }
 }
@@ -136,7 +136,7 @@ impl From<KafkaClusterOptions> for KafkaCluster {
             name: KafkaClusterName(name),
             properties,
             created_at: MillisSinceEpoch::UNIX_EPOCH,
-            info: vec![Info::new(DEPRECATED_KAFKA_CLUSTER_INFO_MESSAGE)],
+            info: vec![SchemaInfo::new(DEPRECATED_KAFKA_CLUSTER_INFO_MESSAGE)],
         }
     }
 }
