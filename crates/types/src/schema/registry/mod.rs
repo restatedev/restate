@@ -57,10 +57,7 @@ impl SchemaRegistryError {
         match &self.0 {
             SchemaRegistryErrorInner::Schema(schema_error) => match schema_error {
                 SchemaError::NotFound(_) => StatusCode::NOT_FOUND,
-                SchemaError::Service(ServiceError::DifferentType { .. })
-                | SchemaError::Service(ServiceError::RemovedHandlers { .. }) => {
-                    StatusCode::CONFLICT
-                }
+                SchemaError::Service(ServiceError::DifferentType { .. }) => StatusCode::CONFLICT,
                 SchemaError::Service(_) => StatusCode::BAD_REQUEST,
                 _ => StatusCode::BAD_REQUEST,
             },
