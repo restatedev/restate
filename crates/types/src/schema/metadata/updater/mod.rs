@@ -90,9 +90,6 @@ pub(in crate::schema) enum ServiceError {
     )]
     #[code(restate_errors::META0006)]
     DifferentType(String),
-    #[error("the service '{0}' already exists but the new revision removed the handlers {1:?}")]
-    #[code(restate_errors::META0006)]
-    RemovedHandlers(String, Vec<String>),
     #[error("the handler '{0}' input content-type is not valid: {1}")]
     #[code(unknown)]
     BadInputContentType(String, BadInputContentType),
@@ -171,15 +168,6 @@ pub(in crate::schema) enum DeploymentError {
     )]
     #[code(restate_errors::META0016)]
     DifferentSupportedProtocolVersions(RangeInclusive<i32>, RangeInclusive<i32>),
-}
-
-/// Behavior when a handler is removed during service update
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum RemovedHandlerBehavior {
-    /// Fail with an error when a handler is removed
-    Fail,
-    /// Log a warning but allow the removal
-    Warn,
 }
 
 /// Behavior when service type changes during update
@@ -380,11 +368,6 @@ impl SchemaUpdater {
                     &new_service,
                     previous_service_revision,
                     if allow_breaking_changes == AllowBreakingChanges::Yes {
-                        RemovedHandlerBehavior::Warn
-                    } else {
-                        RemovedHandlerBehavior::Fail
-                    },
-                    if allow_breaking_changes == AllowBreakingChanges::Yes {
                         ServiceTypeMismatchBehavior::Warn
                     } else {
                         ServiceTypeMismatchBehavior::Fail
@@ -457,7 +440,6 @@ impl SchemaUpdater {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn validate_existing_service_revision_constraints(
         &self,
         deployment_id: DeploymentId,
@@ -465,7 +447,6 @@ impl SchemaUpdater {
         service_name: &String,
         new_service_manifest: &endpoint_manifest::Service,
         existing_service: &ServiceRevision,
-        removed_handler_behavior: RemovedHandlerBehavior,
         service_type_mismatch_behavior: ServiceTypeMismatchBehavior,
     ) -> Result<(), SchemaError> {
         let service_type = ServiceType::from(new_service_manifest.ty);
@@ -483,35 +464,6 @@ impl SchemaUpdater {
                     service_name,
                     existing_service.ty,
                     service_type
-                );
-            }
-        }
-
-        let removed_handlers: Vec<String> = existing_service
-            .handlers
-            .keys()
-            .filter(|name| {
-                !new_service_manifest
-                    .handlers
-                    .iter()
-                    .any(|new_handler| (*new_handler.name).eq(*name))
-            })
-            .map(|name| name.to_string())
-            .collect();
-
-        if !removed_handlers.is_empty() {
-            if removed_handler_behavior == RemovedHandlerBehavior::Fail {
-                return Err(SchemaError::Service(ServiceError::RemovedHandlers(
-                    service_name.clone(),
-                    removed_handlers,
-                )));
-            } else {
-                warn!(
-                    restate.deployment.id = %deployment_id,
-                    restate.deployment.address = %deployment_address,
-                    "Going to remove the following methods from service type {} due to an update: {:?}.",
-                    new_service_manifest.name.as_str(),
-                    removed_handlers
                 );
             }
         }
@@ -737,7 +689,6 @@ impl SchemaUpdater {
                         &service_name,
                         &new_service,
                         previous_service_revision,
-                        RemovedHandlerBehavior::Warn,
                         ServiceTypeMismatchBehavior::Warn,
                     )?;
                 }

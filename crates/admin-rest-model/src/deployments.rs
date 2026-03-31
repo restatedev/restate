@@ -61,7 +61,7 @@ pub enum RegisterDeploymentRequest {
         /// # Breaking
         ///
         /// If `true`, it allows registering new service revisions with
-        /// schemas incompatible with previous service revisions, such as changing service type, removing a handler, etc.
+        /// schemas incompatible with previous service revisions, such as changing the service type.
         ///
         /// See the [versioning documentation](https://docs.restate.dev/operate/versioning) for more information.
         #[serde(default = "restate_serde_util::default::bool::<false>")]
@@ -113,7 +113,7 @@ pub enum RegisterDeploymentRequest {
         /// # Breaking
         ///
         /// If `true`, it allows registering new service revisions with
-        /// schemas incompatible with previous service revisions, such as changing service type, removing a handler, etc.
+        /// schemas incompatible with previous service revisions, such as changing the service type.
         ///
         /// See the [versioning documentation](https://docs.restate.dev/operate/versioning) for more information.
         #[serde(default = "restate_serde_util::default::bool::<false>")]
