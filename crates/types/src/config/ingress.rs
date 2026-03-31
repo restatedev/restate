@@ -38,7 +38,7 @@ pub struct IngressOptions {
 
     /// # Kafka clusters
     ///
-    /// **Deprecated**: Kafka clusters should now be configured through the UI/Admin API
+    /// **Deprecated in 1.7**: Kafka clusters should now be configured through the UI/Admin API
     pub kafka_clusters: Vec<KafkaClusterOptions>,
 
     /// # Ingress endpoint

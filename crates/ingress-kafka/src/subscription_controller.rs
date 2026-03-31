@@ -105,7 +105,7 @@ where
 
         let Source::Kafka { topic, .. } = subscription.source();
 
-        // Copy cluster options and subscription metadata into client_config
+        // Subscription metadata takes precedence over cluster properties
         let cluster_properties = kafka_cluster.properties.clone();
 
         for (k, v) in cluster_properties.clone() {

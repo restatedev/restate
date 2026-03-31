@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -52,7 +52,7 @@ pub struct SimpleKafkaClusterResponse {
     /// # Cluster Name
     ///
     /// Name for the Kafka cluster, used to identify this Kafka cluster configuration in subscriptions. Must be a valid hostname format.
-    pub name: String,
+    pub name: KafkaClusterName,
     /// # Properties
     ///
     /// Properties for connecting to the kafka cluster.
@@ -76,7 +76,7 @@ pub struct SimpleKafkaClusterResponse {
 impl From<KafkaCluster> for SimpleKafkaClusterResponse {
     fn from(cluster: KafkaCluster) -> Self {
         Self {
-            name: cluster.name.to_string(),
+            name: cluster.name,
             properties: cluster.properties,
             created_at: SystemTime::from(cluster.created_at).into(),
             info: cluster.info,
@@ -91,7 +91,7 @@ pub struct KafkaClusterResponse {
     /// # Cluster Name
     ///
     /// Name for the Kafka cluster, used to identify this Kafka cluster configuration in subscriptions. Must be a valid hostname format.
-    pub name: String,
+    pub name: KafkaClusterName,
     /// # Properties
     ///
     /// Properties for connecting to the kafka cluster.

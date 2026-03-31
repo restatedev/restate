@@ -1,11 +1,12 @@
-// Copyright (c) 2024 - Restate Software, Inc., Restate GmbH
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
+// All rights reserved.
 //
-// This file is part of the Restate service protocol, which is
-// released under the MIT license.
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
 //
-// You can find a copy of the license in file LICENSE in the root
-// directory of this repository or package, or at
-// https://github.com/restatedev/restate/blob/main/LICENSE
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
 
 use crate::config::KafkaClusterOptions;
 use crate::schema::Redaction;
@@ -27,6 +28,9 @@ use std::str::FromStr;
     serde_with::DeserializeFromStr,
     derive_more::Debug,
     derive_more::Display,
+    Eq,
+    PartialEq,
+    Hash,
 )]
 #[cfg_attr(feature = "utoipa-schema", derive(::utoipa::ToSchema))]
 #[cfg_attr(feature = "utoipa-schema", schema(value_type = String, format = Hostname))]

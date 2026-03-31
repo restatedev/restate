@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 /// # Kafka cluster options
 ///
 /// Configuration options to connect to a Kafka cluster.
-/// **Deprecated**: Kafka clusters should now be configured through the UI/Admin API
+/// **Deprecated in 1.7**: Kafka clusters should now be configured through the UI/Admin API
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]

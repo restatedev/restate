@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -105,7 +105,7 @@ where
             .ok_or_else(|| MetaApiError::KafkaClusterNotFound(cluster_name.clone()))?;
 
         KafkaClusterResponse {
-            name: cluster.name.to_string(),
+            name: cluster.name,
             properties: cluster.properties,
             created_at: SystemTime::from(cluster.created_at).into(),
             subscriptions: subscriptions
@@ -121,7 +121,7 @@ where
             .ok_or_else(|| MetaApiError::KafkaClusterNotFound(cluster_name.clone()))?;
 
         KafkaClusterResponse {
-            name: cluster.name.to_string(),
+            name: cluster.name,
             properties: cluster.properties,
             created_at: SystemTime::from(cluster.created_at).into(),
             subscriptions: vec![],

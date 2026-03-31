@@ -661,11 +661,11 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
             })
             .await?;
 
-        let subscription = schema
+        let kafka_cluster = schema
             .get_kafka_cluster(kafka_cluster_name.as_str(), Redaction::Yes)
-            .expect("subscription was just added");
+            .expect("kafka cluster was just added");
 
-        Ok(subscription)
+        Ok(kafka_cluster)
     }
 
     pub async fn update_kafka_cluster(
@@ -687,7 +687,7 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
 
         Ok(schema
             .get_kafka_cluster(name.as_str(), Redaction::Yes)
-            .expect("cluster was just added"))
+            .expect("kafka cluster was just added"))
     }
 
     pub async fn delete_kafka_cluster(

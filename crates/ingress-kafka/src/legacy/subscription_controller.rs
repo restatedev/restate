@@ -8,21 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{HashMap, HashSet};
-
 use anyhow::Context;
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::partitions::PartitionRouting;
+use std::collections::HashSet;
 
-use crate::legacy::consumer_task::{self, MessageSender};
-use crate::legacy::dispatcher::KafkaIngressDispatcher;
-use crate::legacy::metric_definitions;
-use crate::legacy::subscription_controller::task_orchestrator::TaskOrchestrator;
-use crate::{Command, SubscriptionCommandReceiver, SubscriptionCommandSender};
 use restate_bifrost::Bifrost;
 use restate_core::cancellation_watcher;
+use restate_types::config::IngressOptions;
 use restate_types::identifiers::SubscriptionId;
-use restate_types::live::Live;
+use restate_types::live::{Live, LiveLoad};
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::Schema;
 use restate_types::schema::kafka::KafkaCluster;
@@ -30,6 +25,12 @@ use restate_types::schema::subscriptions::{Source, Subscription};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::warn;
+
+use crate::legacy::consumer_task::{self, MessageSender};
+use crate::legacy::dispatcher::KafkaIngressDispatcher;
+use crate::legacy::metric_definitions;
+use crate::legacy::subscription_controller::task_orchestrator::TaskOrchestrator;
+use crate::{Command, SubscriptionCommandReceiver, SubscriptionCommandSender};
 
 // For simplicity of the current implementation, this currently lives in this module
 // In future versions, we should either pull this out in a separate process, or generify it and move it to the worker, or an ad-hoc module
@@ -115,7 +116,7 @@ where
 
         let Source::Kafka { topic, .. } = subscription.source();
 
-        // Copy first the cluster properties, then the metadata properties (one might override the other)
+        // Subscription metadata takes precedence over cluster properties
         for (k, v) in &kafka_cluster.properties {
             client_config.set(k, v);
         }
