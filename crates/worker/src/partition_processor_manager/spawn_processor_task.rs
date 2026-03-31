@@ -10,10 +10,10 @@
 
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
 use tokio::sync::watch;
-use tracing::info;
-use tracing::{error, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::network::{ShardSender, TransportConnect};
@@ -175,7 +175,79 @@ where
                         return Ok(());
                     };
 
-                    let partition_store = partition_store?;
+                    let mut partition_store = partition_store?;
+
+                    // One-time background cleanup of orphaned jc index entries left behind
+                    // by a bug in delete_journal that used the wrong scan prefix.
+                    // Runs on a blocking thread so it doesn't starve the tokio runtime.
+                    // The child task is bound to the partition processor's lifecycle and
+                    // will be cancelled if the processor shuts down (e.g. due to trim gap).
+                    if partition_store.needs_jc_orphan_cleanup()? {
+                        let mut cleanup_store = partition_store.clone();
+                        let cleanup_partition_id = partition_store.partition_id();
+                        let cancel = cancellation_token();
+                        TaskCenter::spawn_child(
+                            TaskKind::Background,
+                            "jc-orphan-cleanup",
+                            async move {
+                                let result = tokio::task::spawn_blocking(move || {
+                                    let start = Instant::now();
+                                    let result = restate_partition_store::cleanup_orphaned_completion_id_index_entries(
+                                        &mut cleanup_store,
+                                        || cancel.is_cancelled(),
+                                    );
+                                    (result, cleanup_store, start.elapsed())
+                                }).await.expect("cleanup blocking task must not panic");
+
+                                let (result, mut cleanup_store, elapsed) = result;
+                                match result {
+                                    Ok(outcome) => {
+                                        if outcome.cancelled {
+                                            info!(
+                                                partition_id = %cleanup_partition_id,
+                                                deleted_entries = outcome.deleted_entries,
+                                                affected_invocations = outcome.affected_invocations,
+                                                ?elapsed,
+                                                "Orphaned jc index cleanup cancelled, \
+                                                 will retry on next startup"
+                                            );
+                                        } else if outcome.deleted_entries > 0 {
+                                            info!(
+                                                partition_id = %cleanup_partition_id,
+                                                deleted_entries = outcome.deleted_entries,
+                                                affected_invocations = outcome.affected_invocations,
+                                                ?elapsed,
+                                                "Cleaned up orphaned journal completion-id index entries"
+                                            );
+                                        } else {
+                                            debug!(
+                                                partition_id = %cleanup_partition_id,
+                                                ?elapsed,
+                                                "No orphaned journal completion-id index entries found"
+                                            );
+                                        }
+                                        if !outcome.cancelled && let Err(err) = cleanup_store.mark_jc_orphan_cleanup_done()
+                                            {
+                                                warn!(
+                                                    partition_id = %cleanup_partition_id,
+                                                    "Failed to mark jc orphan cleanup as done, \
+                                                     will retry on next startup: {err}"
+                                                );
+                                            }
+                                    }
+                                    Err(err) => {
+                                        warn!(
+                                            partition_id = %cleanup_partition_id,
+                                            ?elapsed,
+                                            "Failed to clean up orphaned journal completion-id \
+                                             index entries, will retry on next startup: {err}"
+                                        );
+                                    }
+                                }
+                                Ok(())
+                            },
+                        )?;
+                    }
 
                     let pp = pp_builder
                         .build(

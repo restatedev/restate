@@ -224,10 +224,10 @@ fn delete_journal<S: StorageAccess>(
     let completion_id_to_command_index = JournalCompletionIdToCommandIndexKey::builder()
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid());
-    let notification_id_index =
+    let completion_id_index =
         OwnedIterator::new(storage.iterator_from(TableScan::SinglePartitionKeyPrefix(
             invocation_id.partition_key(),
-            notification_id_to_notification_index.clone(),
+            completion_id_to_command_index.clone(),
         ))?)
         .map(|(mut key, _)| {
             let journal_key = JournalCompletionIdToCommandIndexKey::deserialize_from(&mut key)?;
@@ -235,17 +235,106 @@ fn delete_journal<S: StorageAccess>(
             Ok(completion_id)
         })
         .collect::<Result<Vec<_>>>()?;
-    for notification_id in notification_id_index {
+    for completion_id in completion_id_index {
         storage.delete_key(
             &completion_id_to_command_index
                 .clone()
-                .completion_id(notification_id)
+                .completion_id(completion_id)
                 .into_complete()
                 .unwrap(),
         )?;
     }
 
     Ok(())
+}
+
+/// Scans for and removes orphaned `JournalCompletionIdToCommandIndex` (`jc`) entries.
+///
+/// A `jc` entry is orphaned if no corresponding `JournalKey` (`j2`) entries exist for that
+/// invocation, meaning the journal has already been deleted. These orphans were caused by a
+/// bug in `delete_journal` that used the wrong scan prefix when cleaning up `jc` entries.
+///
+/// Only the keys for a single invocation are held in memory at any time to avoid unbounded
+/// memory usage on large stores.
+///
+/// The `is_cancelled` predicate is checked when moving to a new invocation. If it returns
+/// `true`, the scan stops early and the returned `cancelled` flag is set to `true`.
+pub fn cleanup_orphaned_completion_id_index_entries(
+    storage: &mut PartitionStore,
+    is_cancelled: impl Fn() -> bool,
+) -> Result<OrphanCleanupResult> {
+    let _x = RocksDbPerfGuard::new("cleanup-orphaned-jc-entries");
+
+    let mut deleted_entries: usize = 0;
+    let mut affected_invocations: usize = 0;
+    let mut cancelled = false;
+
+    let scan_store = storage.clone();
+    let partition_key_range = scan_store.partition_key_range().clone();
+    let scan = TableScan::FullScanPartitionKeyRange::<JournalCompletionIdToCommandIndexKeyBuilder>(
+        partition_key_range,
+    );
+    let iter = OwnedIterator::new(scan_store.iterator_from(scan)?);
+
+    let mut current_invocation: Option<(PartitionKey, InvocationUuid, bool)> = None;
+
+    for (mut key_bytes, _) in iter {
+        let jc_key = JournalCompletionIdToCommandIndexKey::deserialize_from(&mut key_bytes)?;
+
+        let is_orphan = match &current_invocation {
+            Some((pk, uuid, orphan))
+                if *pk == jc_key.partition_key && *uuid == jc_key.invocation_uuid =>
+            {
+                // Same invocation as before -- reuse the cached result.
+                *orphan
+            }
+            _ => {
+                // Check cancellation at invocation boundaries.
+                if is_cancelled() {
+                    cancelled = true;
+                    break;
+                }
+                // New invocation -- check if its journal still exists.
+                let orphan =
+                    !has_journal_entries(storage, jc_key.partition_key, jc_key.invocation_uuid)?;
+                if orphan {
+                    affected_invocations += 1;
+                }
+                current_invocation = Some((jc_key.partition_key, jc_key.invocation_uuid, orphan));
+                orphan
+            }
+        };
+
+        if is_orphan {
+            storage.delete_key(&jc_key)?;
+            deleted_entries += 1;
+        }
+    }
+
+    Ok(OrphanCleanupResult {
+        deleted_entries,
+        affected_invocations,
+        cancelled,
+    })
+}
+
+pub struct OrphanCleanupResult {
+    pub deleted_entries: usize,
+    pub affected_invocations: usize,
+    pub cancelled: bool,
+}
+
+/// Returns true if any `j2` journal entries exist for the given invocation.
+fn has_journal_entries(
+    storage: &mut PartitionStore,
+    partition_key: PartitionKey,
+    invocation_uuid: InvocationUuid,
+) -> Result<bool> {
+    let prefix = JournalKey::builder()
+        .partition_key(partition_key)
+        .invocation_uuid(invocation_uuid);
+    let iter = storage.iterator_from(TableScan::SinglePartitionKeyPrefix(partition_key, prefix))?;
+    Ok(iter.item().is_some())
 }
 
 fn get_notifications_index<S: StorageAccess>(

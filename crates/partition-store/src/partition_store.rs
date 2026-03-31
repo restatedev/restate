@@ -41,7 +41,10 @@ use restate_types::storage::StorageCodec;
 use restate_types::storage::StorageDecode;
 use restate_types::storage::StorageEncode;
 
-use crate::fsm_table::{get_locally_durable_lsn, get_storage_version, put_storage_version};
+use crate::fsm_table::{
+    get_locally_durable_lsn, get_storage_version, is_jc_orphan_cleanup_done,
+    put_jc_orphan_cleanup_done, put_storage_version,
+};
 use crate::keys::KeyKind;
 use crate::keys::TableKey;
 use crate::keys::TableKeyPrefix;
@@ -687,6 +690,17 @@ impl PartitionStore {
         self.db.partition()
     }
 
+    /// Returns `true` if the one-time cleanup of orphaned `jc` index entries has not yet been
+    /// performed on this partition store.
+    pub fn needs_jc_orphan_cleanup(&mut self) -> Result<bool> {
+        is_jc_orphan_cleanup_done(self, self.partition_id()).map(|done| !done)
+    }
+
+    /// Marks the one-time `jc` orphan cleanup as complete so it won't run again.
+    pub fn mark_jc_orphan_cleanup_done(&mut self) -> Result<()> {
+        put_jc_orphan_cleanup_done(self, self.partition_id())
+    }
+
     pub async fn verify_and_run_migrations(&mut self) -> Result<()> {
         // We assume the partition store to be empty if it does not contain any applied lsn. The
         // reason is that we always commit changes to the partition store via a transaction which
@@ -694,6 +708,9 @@ impl PartitionStore {
         let is_empty = self.get_applied_lsn().await?.is_none();
         if is_empty {
             put_storage_version(self, self.partition_id(), LATEST_VERSION as u16).await?;
+            // A fresh partition store cannot have orphaned jc index entries, so mark the
+            // cleanup as already done to avoid a needless scan on first startup.
+            put_jc_orphan_cleanup_done(self, self.partition_id())?;
             return Ok(());
         }
 

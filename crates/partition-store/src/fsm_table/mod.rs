@@ -57,6 +57,15 @@ pub(crate) mod fsm_variable {
     /// Stores the current and next partition configuration from the latest AnnounceLeader.
     /// *Since v1.6*
     pub(crate) const PARTITION_CONFIG_STATE: u64 = 7;
+
+    /// Set to 1 once the one-time cleanup of orphaned `jc` index entries has completed.
+    /// These orphans were caused by a bug in `delete_journal` that used the wrong scan
+    /// prefix when deleting `JournalCompletionIdToCommandIndex` entries.
+    ///
+    /// Can be removed in v1.8 once we are confident this cleanup has been executed on all
+    /// deployments.
+    /// *Since v1.6.3*
+    pub(crate) const JC_ORPHAN_CLEANUP_DONE: u64 = 8;
 }
 
 fn get<T: PartitionStoreProtobufValue, S: StorageAccess>(
@@ -122,6 +131,26 @@ pub(crate) async fn put_storage_version<S: StorageAccess>(
         partition_id,
         fsm_variable::STORAGE_VERSION,
         &SequenceNumber::from(last_executed_migration as u64),
+    )
+}
+
+pub(crate) fn is_jc_orphan_cleanup_done<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+) -> Result<bool> {
+    get::<SequenceNumber, _>(storage, partition_id, fsm_variable::JC_ORPHAN_CLEANUP_DONE)
+        .map(|opt| opt.is_some())
+}
+
+pub(crate) fn put_jc_orphan_cleanup_done<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+) -> Result<()> {
+    put(
+        storage,
+        partition_id,
+        fsm_variable::JC_ORPHAN_CLEANUP_DONE,
+        &SequenceNumber::from(1u64),
     )
 }
 

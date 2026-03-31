@@ -39,6 +39,7 @@ pub mod vqueue_table;
 mod tests;
 
 pub use error::*;
+pub use journal_table_v2::{OrphanCleanupResult, cleanup_orphaned_completion_id_index_entries};
 pub use partition_db::PartitionDb;
 pub use partition_store::*;
 pub use partition_store_manager::*;
