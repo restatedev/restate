@@ -24,7 +24,7 @@ use restate_types::schema::kafka::KafkaCluster;
 use restate_types::schema::subscriptions::{Source, Subscription};
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::warn;
+use tracing::{error, warn};
 
 use crate::legacy::consumer_task::{self, MessageSender};
 use crate::legacy::dispatcher::KafkaIngressDispatcher;
@@ -109,7 +109,7 @@ where
         kafka_cluster: KafkaCluster,
         subscription: Subscription,
         task_orchestrator: &mut TaskOrchestrator<T>,
-    ) -> anyhow::Result<()> {
+    ) {
         let mut client_config = rdkafka::ClientConfig::new();
         // enabling probing for the ca certificates if the user does not specify anything else
         client_config.set("https.ca.location", "probe");
@@ -145,8 +145,6 @@ where
         );
 
         task_orchestrator.start(subscription_id, consumer_task, kafka_cluster, subscription);
-
-        Ok(())
     }
 
     fn handle_stop_subscription(
@@ -178,12 +176,15 @@ where
 
             // Find the KafkaCluster for this subscription
             let Source::Kafka { cluster, .. } = subscription.source();
-            let kafka_cluster = cluster_map.get(cluster.as_str()).cloned().with_context(|| {
-                format!(
+            let Ok(kafka_cluster) = cluster_map.get(cluster.as_str()).cloned() else {
+                error!(
                     "KafkaCluster '{}' not found for subscription {}. This might happen if you registered a subscription with a cluster name, but this cluster is not available anymore in the configuration. Configured Kafka clusters: {:?}",
-                    cluster, subscription_id, cluster_map.keys().collect::<Vec<_>>()
-                )
-            })?;
+                    cluster,
+                    subscription_id,
+                    cluster_map.keys().collect::<Vec<_>>()
+                );
+                continue;
+            };
 
             if let Some((running_cluster, running_subscription)) =
                 task_orchestrator.get_running_config(&subscription_id)
@@ -199,7 +200,7 @@ where
                         kafka_cluster.clone(),
                         subscription,
                         task_orchestrator,
-                    )?;
+                    );
                 }
                 // We're good with this subscription
                 running_subscriptions.remove(&subscription_id);
@@ -209,7 +210,7 @@ where
                     kafka_cluster.clone(),
                     subscription,
                     task_orchestrator,
-                )?;
+                );
             }
         }
 
