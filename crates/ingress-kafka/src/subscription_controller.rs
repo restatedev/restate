@@ -11,7 +11,6 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use anyhow::Context;
 use restate_wal_protocol::Envelope;
 use tokio::sync::mpsc;
 use tracing::{error, warn};
@@ -162,7 +161,7 @@ where
 
             // Find the KafkaCluster for this subscription
             let Source::Kafka { cluster, .. } = subscription.source();
-            let Ok(kafka_cluster) = cluster_map.get(cluster.as_str()).cloned() else {
+            let Some(kafka_cluster) = cluster_map.get(cluster.as_str()).cloned() else {
                 error!(
                     "KafkaCluster '{}' not found for subscription {}. This might happen if you registered a subscription with a cluster name, but this cluster is not available anymore in the configuration. Configured Kafka clusters: {:?}",
                     cluster,

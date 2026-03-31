@@ -8,16 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use anyhow::Context;
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::partitions::PartitionRouting;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use restate_bifrost::Bifrost;
 use restate_core::cancellation_watcher;
-use restate_types::config::IngressOptions;
 use restate_types::identifiers::SubscriptionId;
-use restate_types::live::{Live, LiveLoad};
+use restate_types::live::Live;
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::Schema;
 use restate_types::schema::kafka::KafkaCluster;
@@ -176,7 +174,7 @@ where
 
             // Find the KafkaCluster for this subscription
             let Source::Kafka { cluster, .. } = subscription.source();
-            let Ok(kafka_cluster) = cluster_map.get(cluster.as_str()).cloned() else {
+            let Some(kafka_cluster) = cluster_map.get(cluster.as_str()).cloned() else {
                 error!(
                     "KafkaCluster '{}' not found for subscription {}. This might happen if you registered a subscription with a cluster name, but this cluster is not available anymore in the configuration. Configured Kafka clusters: {:?}",
                     cluster,
