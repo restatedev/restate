@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod builder;
+mod dial9;
 mod extensions;
 mod handle;
 mod monitoring;
@@ -75,6 +76,8 @@ struct GlobalOverrides {
 pub enum RuntimeError {
     #[error("Runtime with name {0} already exists")]
     AlreadyExists(ReString),
+    #[error("Failed to build runtime: {0}")]
+    Build(#[from] std::io::Error),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
 }
@@ -336,6 +339,8 @@ struct TaskCenterInner {
     /// tokio's runtime after dropping the task center.
     #[allow(dead_code)]
     default_runtime: Option<tokio::runtime::Runtime>,
+    // Declared after the owned runtimes so Dial9 flushes after their worker threads stop.
+    dial9: dial9::Dial9State,
     global_cancel_token: CancellationToken,
     shutdown_requested: AtomicBool,
     current_exit_code: AtomicI32,
@@ -354,6 +359,7 @@ impl TaskCenterInner {
     fn new(
         default_runtime_handle: tokio::runtime::Handle,
         default_runtime: Option<tokio::runtime::Runtime>,
+        dial9: dial9::Dial9State,
         // used in tests to start all runtimes with clock paused. Note that this only impacts
         // partition processor runtimes
         #[cfg(any(test, feature = "test-util"))] pause_time: bool,
@@ -371,6 +377,7 @@ impl TaskCenterInner {
             start_time: Instant::now(),
             default_runtime_handle,
             default_runtime,
+            dial9,
             global_cancel_token: CancellationToken::new(),
             shutdown_requested: AtomicBool::new(false),
             current_exit_code: AtomicI32::new(0),
@@ -729,26 +736,8 @@ impl TaskCenterInner {
 
         // todo: configure the runtime according to a new runtime kind perhaps?
         let thread_builder = std::thread::Builder::new().name(format!("rt:{runtime_name}"));
-        let mut builder = tokio::runtime::Builder::new_current_thread();
-
-        #[cfg(any(test, feature = "test-util"))]
-        builder.start_paused(self.pause_time);
-
-        let rt = builder
-            .enable_all()
-            .build()
-            .expect("runtime builder succeeds");
         let tc = self.clone();
-
-        let rt_handle = Arc::new(rt);
-
-        runtimes_guard.insert(
-            runtime_name.clone(),
-            OwnedRuntimeHandle::new(cancel.clone(), rt_handle.clone()),
-        );
-
-        // release the lock.
-        drop(runtimes_guard);
+        let dial9_handle = self.dial9.handle();
 
         let id = TaskId::default();
         let context = TaskContext {
@@ -760,43 +749,80 @@ impl TaskCenterInner {
         };
 
         let (result_tx, result_rx) = oneshot::channel();
+        let (runtime_tx, runtime_rx) = std::sync::mpsc::sync_channel(0);
+        let (registered_tx, registered_rx) = std::sync::mpsc::sync_channel(0);
 
-        // start the work on the runtime
-        let _ = thread_builder
-            .spawn({
-                let runtime_name = runtime_name.clone();
-                move || {
-                    let local_set = LocalSet::new();
-                    let result = rt_handle.block_on(local_set.run_until(unmanaged_wrapper(
-                        tc.clone(),
-                        context,
-                        root_future(),
-                    )));
-
-                    drop(rt_handle);
-                    tc.drop_runtime(runtime_name);
-
-                    // need to use an oneshot here since we cannot await a thread::JoinHandle :-(
-                    let _ = result_tx.send(result);
+        // Build current-thread runtimes on the OS thread that drives them. Dial9 installs
+        // thread-local state while attaching the runtime.
+        let thread_runtime_name = runtime_name.clone();
+        thread_builder.spawn(move || {
+            let runtime_builder = || {
+                let mut builder = tokio::runtime::Builder::new_current_thread();
+                #[cfg(any(test, feature = "test-util"))]
+                builder.start_paused(tc.pause_time);
+                builder.enable_all();
+                builder
+            };
+            let runtime = match dial9::build_runtime(
+                &dial9_handle,
+                &thread_runtime_name,
+                runtime_builder(),
+                runtime_builder,
+            ) {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    let _ = runtime_tx.send(Err(error));
+                    return;
                 }
-            })
-            .unwrap();
+            };
+            if runtime_tx.send(Ok(runtime.handle().clone())).is_err() {
+                return;
+            }
+            if registered_rx.recv().is_err() {
+                return;
+            }
+
+            let local_set = LocalSet::new();
+            let result = runtime.block_on(local_set.run_until(unmanaged_wrapper(
+                tc.clone(),
+                context,
+                root_future(),
+            )));
+
+            tc.drop_runtime(&thread_runtime_name);
+            runtime.shutdown_timeout(Duration::from_secs(2));
+            trace!(runtime = %thread_runtime_name, "Runtime shutdown completed");
+
+            // need to use an oneshot here since we cannot await a thread::JoinHandle :-(
+            let _ = result_tx.send(result);
+        })?;
+
+        let runtime_handle = runtime_rx.recv().map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "runtime thread stopped during initialization",
+            )
+        })??;
+        runtimes_guard.insert(
+            runtime_name.clone(),
+            OwnedRuntimeHandle::new(cancel.clone(), runtime_handle),
+        );
+        if registered_tx.send(()).is_err() {
+            runtimes_guard.remove(&runtime_name);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "runtime thread stopped during registration",
+            )
+            .into());
+        }
+        drop(runtimes_guard);
 
         Ok(RuntimeTaskHandle::new(runtime_name, cancel, result_rx))
     }
 
-    /// Runs **only** after the inner main thread has completed work and no other owner exists for
-    /// the runtime handle.
-    fn drop_runtime(self: &Arc<Self>, name: ReString) {
-        let mut runtimes_guard = self.managed_runtimes.lock();
-        if let Some(runtime) = runtimes_guard.remove(&name) {
-            // We must be the only owner of runtime at this point.
+    fn drop_runtime(self: &Arc<Self>, name: &ReString) {
+        if self.managed_runtimes.lock().remove(name).is_some() {
             debug!("Runtime {} completed", name);
-            let owner = Arc::into_inner(runtime.into_inner());
-            if let Some(runtime) = owner {
-                runtime.shutdown_timeout(Duration::from_secs(2));
-                trace!("Runtime {} shutdown completed", name);
-            }
         }
     }
 
@@ -940,9 +966,7 @@ impl TaskCenterInner {
             crate::AsyncRuntime::Inherit => &tokio::runtime::Handle::current(),
             crate::AsyncRuntime::Default => &self.default_runtime_handle,
         };
-        let inner_handle = tokio_task
-            .spawn_on(fut, runtime)
-            .expect("runtime can spawn tasks");
+        let inner_handle = dial9::spawn(tokio_task, fut, runtime);
 
         TaskHandle {
             cancellation_token,
@@ -1213,16 +1237,7 @@ impl TaskCenterInner {
     }
 
     fn shutdown_managed_runtimes(self: &Arc<Self>) {
-        let mut runtimes = self.managed_runtimes.lock();
-        for (_, runtime) in runtimes.drain() {
-            if let Some(runtime) = Arc::into_inner(runtime.into_inner()) {
-                // This really isn't doing much, but it's left here for completion.
-                // The reason is: If the runtime is still running, then it'll hold the Arc until it
-                // finishes gracefully, yielding None here. If the runtime completed, it'll
-                // self-shutdown prior to reaching this point.
-                runtime.shutdown_background();
-            }
-        }
+        self.managed_runtimes.lock().clear();
     }
 }
 
@@ -1357,6 +1372,21 @@ mod tests {
         assert!(logs_contain("Hello async"));
         assert!(logs_contain("Bye async"));
         assert!(start.elapsed() >= Duration::from_secs(10));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn managed_runtime_lifecycle() -> Result<()> {
+        let tc = TaskCenterBuilder::default()
+            .default_runtime_handle(tokio::runtime::Handle::current())
+            .build()?
+            .into_handle();
+
+        let runtime =
+            tc.start_runtime(TaskKind::RoleRunner, "test-runtime", None, || async { 42 })?;
+
+        assert_that!(runtime.await, eq(42));
+        assert_that!(tc.inner.managed_runtimes.lock().len(), eq(0));
         Ok(())
     }
 }

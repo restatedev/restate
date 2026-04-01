@@ -675,6 +675,15 @@ pub struct CommonOptions {
     #[serde(flatten)]
     pub experimental: Experimental,
 
+    /// # Dial9 Tokio runtime telemetry
+    ///
+    /// Configuration for Dial9 runtime telemetry. Only effective when the server
+    /// is compiled with the `dial9` feature flag.
+    ///
+    /// Since v1.8.0
+    #[serde(default)]
+    pub dial9: Dial9Options,
+
     /// # Explicitly disable the `controlled-idempotent-sharding`
     ///
     /// TODO: Removed in Restate v1.8. This is a stopgap solution to
@@ -684,6 +693,55 @@ pub struct CommonOptions {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[cfg_attr(feature = "schemars", schemars(skip))]
     pub disable_controlled_idempotent_sharding: bool,
+}
+
+/// # Dial9 Tokio runtime telemetry options
+///
+/// Configuration for the shared Dial9 trace written by all Restate Tokio runtimes.
+/// Only effective when the server is compiled with the `dial9` feature flag.
+///
+/// Since v1.8.0
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(default))]
+#[serde(rename_all = "kebab-case")]
+pub struct Dial9Options {
+    /// Directory for the shared trace files.
+    /// Defaults to `{data-dir}/dial9-traces/`.
+    ///
+    /// Since v1.8.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_dir: Option<PathBuf>,
+
+    /// Maximum size per trace file before rotation.
+    /// Default: 10 MiB.
+    ///
+    /// Since v1.8.0
+    pub max_file_size: NonZeroByteCount,
+
+    /// Maximum total disk budget for the shared trace.
+    /// Default: 100 MiB.
+    ///
+    /// Since v1.8.0
+    pub max_total_size: NonZeroByteCount,
+}
+
+impl Dial9Options {
+    pub fn trace_dir(&self) -> PathBuf {
+        self.trace_dir
+            .clone()
+            .unwrap_or_else(|| super::node_filepath("dial9-traces"))
+    }
+}
+
+impl Default for Dial9Options {
+    fn default() -> Self {
+        Self {
+            trace_dir: None,
+            max_file_size: NonZeroByteCount::try_from(10 * 1024 * 1024).unwrap(),
+            max_total_size: NonZeroByteCount::try_from(100 * 1024 * 1024).unwrap(),
+        }
+    }
 }
 
 /// Declares the [`Experimental`] feature-flag struct from a list of feature names.
@@ -1068,6 +1126,7 @@ impl Default for CommonOptions {
             gossip: GossipOptions::default(),
             hlc_max_drift: FriendlyDuration::from_millis(5000),
             experimental: Experimental::default(),
+            dial9: Dial9Options::default(),
             disable_controlled_idempotent_sharding: false,
         }
     }
