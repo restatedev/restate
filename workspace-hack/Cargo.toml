@@ -284,9 +284,11 @@ bitflags = { version = "2", default-features = false, features = ["std"] }
 clap = { version = "4" }
 crossterm = { version = "0.29" }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std"] }
+gimli = { version = "0.32" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
 jemalloc_pprof = { version = "0.8", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
+metrics-util = { version = "0.20" }
 miniz_oxide = { version = "0.8", default-features = false, features = ["simd", "with-alloc"] }
 mio = { version = "1", features = ["net", "os-ext"] }
 num = { version = "0.4" }
@@ -303,9 +305,11 @@ bitflags = { version = "2", default-features = false, features = ["std"] }
 clap = { version = "4" }
 crossterm = { version = "0.29" }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std"] }
+gimli = { version = "0.32" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
 jemalloc_pprof = { version = "0.8", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
+metrics-util = { version = "0.20" }
 miniz_oxide = { version = "0.8", default-features = false, features = ["simd", "with-alloc"] }
 mio = { version = "1", features = ["net", "os-ext"] }
 num = { version = "0.4" }
@@ -326,6 +330,7 @@ getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-f
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
 jemalloc_pprof = { version = "0.8", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
+metrics-util = { version = "0.20" }
 miniz_oxide = { version = "0.8", default-features = false, features = ["simd", "with-alloc"] }
 num = { version = "0.4" }
 object = { version = "0.37", default-features = false, features = ["read", "std"] }
@@ -345,6 +350,7 @@ getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-f
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
 jemalloc_pprof = { version = "0.8", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
+metrics-util = { version = "0.20" }
 miniz_oxide = { version = "0.8", default-features = false, features = ["simd", "with-alloc"] }
 num = { version = "0.4" }
 object = { version = "0.37", default-features = false, features = ["read", "std"] }

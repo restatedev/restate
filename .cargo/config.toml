@@ -18,6 +18,7 @@ rustflags = [
     "-C", "force-unwind-tables", # Include full unwind tables when aborting on panic
     "--cfg", "uuid_unstable", # Enable unstable Uuid
     "--cfg", "tokio_unstable", # Enable unstable tokio
+    "-C", "force-frame-pointers=yes", # Enable frame pointers for profiling (dial9, perf)
 ]
 
 [target.aarch64-unknown-linux-gnu]
@@ -33,6 +34,7 @@ rustflags = [
     "-C", "force-unwind-tables", # Include full unwind tables when aborting on panic
     "--cfg", "uuid_unstable", # Enable unstable Uuid
     "--cfg", "tokio_unstable", # Enable unstable tokio
+    "-C", "force-frame-pointers=yes", # Enable frame pointers for profiling (dial9, perf)
     "-C", "link-self-contained=yes", # Link statically
 ]
 

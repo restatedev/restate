@@ -139,6 +139,7 @@ const_format = "0.2.35"
 criterion = "0.5"
 crossterm = { version = "0.29.0" }
 dashmap = { version = "6" }
+dial9-tokio-telemetry = { version = "0.2.1", default-features = false }
 datafusion = { version = "52.1.0", default-features = false, features = [
     "crypto_expressions",
     "encoding_expressions",
