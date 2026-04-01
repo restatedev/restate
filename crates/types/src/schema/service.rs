@@ -24,7 +24,7 @@ use crate::invocation::{
 };
 use crate::net::address::AdvertisedAddress;
 use crate::net::address::HttpIngressPort;
-use crate::schema::info::Info;
+use crate::schema::info::SchemaInfo;
 use crate::schema::invocation_target::{DEFAULT_IDEMPOTENCY_RETENTION, OnMaxAttempts};
 
 /// This API returns service metadata, as shown in the Admin API.
@@ -189,7 +189,7 @@ pub struct ServiceMetadata {
     ///
     /// List of configuration/deprecation information related to this service.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub info: Vec<Info>,
+    pub info: Vec<SchemaInfo>,
 }
 
 fn default_idempotency_retention() -> Duration {
@@ -435,7 +435,7 @@ pub struct HandlerMetadata {
     ///
     /// List of configuration/deprecation information related to this handler.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub info: Vec<Info>,
+    pub info: Vec<SchemaInfo>,
 }
 
 impl restate_serde_util::MapAsVecItem for HandlerMetadata {

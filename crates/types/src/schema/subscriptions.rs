@@ -16,6 +16,7 @@ use serde::Serialize;
 
 use crate::identifiers::SubscriptionId;
 use crate::invocation::{VirtualObjectHandlerType, WorkflowHandlerType};
+use crate::schema::Redaction;
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -151,9 +152,13 @@ impl ListSubscriptionFilter {
 }
 
 pub trait SubscriptionResolver {
-    fn get_subscription(&self, id: SubscriptionId) -> Option<Subscription>;
+    fn get_subscription(&self, id: SubscriptionId, redaction: Redaction) -> Option<Subscription>;
 
-    fn list_subscriptions(&self, filters: &[ListSubscriptionFilter]) -> Vec<Subscription>;
+    fn list_subscriptions(
+        &self,
+        filters: &[ListSubscriptionFilter],
+        redaction: Redaction,
+    ) -> Vec<Subscription>;
 }
 
 mod serde_hacks {

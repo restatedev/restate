@@ -39,18 +39,23 @@ use crate::net::address::{AdvertisedAddress, HttpIngressPort};
 use crate::net::metadata::{MetadataContainer, MetadataKind};
 use crate::retries::{RetryIter, RetryPolicy};
 use crate::schema::deployment::{DeploymentResolver, DeploymentType, ProtocolType};
-use crate::schema::info::Info;
+use crate::schema::info::SchemaInfo;
 use crate::schema::invocation_target::{
     DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION, DeploymentStatus,
     InputRules, InvocationAttemptOptions, InvocationTargetMetadata, InvocationTargetResolver,
     OnMaxAttempts, OutputRules,
 };
+use crate::schema::kafka::{
+    DUPLICATED_KAFKA_CLUSTER_INFO_MESSAGE, KafkaCluster, KafkaClusterResolver,
+};
 use crate::schema::metadata::openapi::ServiceOpenAPI;
 use crate::schema::service::{
     HandlerRetryPolicyMetadata, ServiceMetadataResolver, ServiceRetryPolicyMetadata,
 };
-use crate::schema::subscriptions::{ListSubscriptionFilter, Subscription, SubscriptionResolver};
-use crate::schema::{deployment, service};
+use crate::schema::subscriptions::{
+    ListSubscriptionFilter, Source, Subscription, SubscriptionResolver,
+};
+use crate::schema::{Redaction, deployment, service};
 use crate::service_protocol::ServiceProtocolVersion;
 use crate::time::MillisSinceEpoch;
 use crate::{Version, Versioned, identifiers};
@@ -68,6 +73,7 @@ pub struct Schema {
     deployments: HashMap<DeploymentId, Deployment>,
     active_service_revisions: HashMap<String, ActiveServiceRevision>,
     subscriptions: HashMap<SubscriptionId, Subscription>,
+    kafka_clusters: HashMap<String, KafkaCluster>,
 }
 
 impl Default for Schema {
@@ -77,6 +83,7 @@ impl Default for Schema {
             active_service_revisions: HashMap::default(),
             deployments: HashMap::default(),
             subscriptions: HashMap::default(),
+            kafka_clusters: HashMap::default(),
         }
     }
 }
@@ -366,7 +373,7 @@ impl ServiceRevision {
             && served_using_protocol_type == Some(ProtocolType::RequestResponse)
         {
             info.push(
-                Info::new_with_code(
+                SchemaInfo::new_with_code(
                     &restate_errors::RT0021,
                     format!("The configured inactivity_timeout {} will not be applied because the service is exposed in Request/Response mode.", FriendlyDuration::new(inactivity_timeout))
                 )
@@ -381,7 +388,7 @@ impl ServiceRevision {
                     .to_non_zero_std()),
             );
         if got_journal_retention_clamped {
-            info.push(Info::new_with_code(
+            info.push(SchemaInfo::new_with_code(
                 &restate_errors::RT0022,
                 "The configured journal_retention is clamped to the maximum server limit."
                     .to_string(),
@@ -538,7 +545,7 @@ impl Handler {
             && served_using_protocol_type == Some(ProtocolType::RequestResponse)
         {
             info.push(
-                Info::new_with_code(
+                SchemaInfo::new_with_code(
                     &restate_errors::RT0021,
                     format!("The configured inactivity_timeout {} will not be applied because the handler is exposed in Request/Response mode.", FriendlyDuration::new(inactivity_timeout))
                 )
@@ -548,7 +555,7 @@ impl Handler {
         let (journal_retention, got_journal_retention_clamped) =
             configuration.clamp_journal_retention(self.journal_retention);
         if got_journal_retention_clamped {
-            info.push(Info::new_with_code(
+            info.push(SchemaInfo::new_with_code(
                 &restate_errors::RT0022,
                 "The configured journal_retention is clamped to the maximum server limit."
                     .to_string(),
@@ -867,11 +874,22 @@ impl ServiceMetadataResolver for Schema {
 }
 
 impl SubscriptionResolver for Schema {
-    fn get_subscription(&self, id: SubscriptionId) -> Option<Subscription> {
-        self.subscriptions.get(&id).cloned()
+    fn get_subscription(
+        &self,
+        id: SubscriptionId,
+        redact_secrets: Redaction,
+    ) -> Option<Subscription> {
+        self.subscriptions
+            .get(&id)
+            .cloned()
+            .map(|sub| sub.redact(redact_secrets))
     }
 
-    fn list_subscriptions(&self, filters: &[ListSubscriptionFilter]) -> Vec<Subscription> {
+    fn list_subscriptions(
+        &self,
+        filters: &[ListSubscriptionFilter],
+        redact_secrets: Redaction,
+    ) -> Vec<Subscription> {
         self.subscriptions
             .values()
             .filter(|sub| {
@@ -883,8 +901,172 @@ impl SubscriptionResolver for Schema {
                 true
             })
             .cloned()
+            .map(|sub| sub.redact(redact_secrets))
             .collect()
     }
+}
+
+impl KafkaClusterResolver for Schema {
+    fn get_kafka_cluster(
+        &self,
+        cluster_name: &str,
+        redact_secrets: Redaction,
+    ) -> Option<KafkaCluster> {
+        let cluster_from_schema_registry = self.kafka_clusters.get(cluster_name);
+
+        let config = Configuration::pinned();
+        let cluster_from_configuration = config.ingress.get_kafka_cluster(cluster_name);
+
+        match (cluster_from_schema_registry, cluster_from_configuration) {
+            (Some(c), None) => Some(c.clone()),
+            (None, Some(c)) => Some(c.clone().into()),
+            (Some(c), Some(_)) => {
+                let mut cluster = c.clone();
+                cluster
+                    .info_mut()
+                    .push(SchemaInfo::new(DUPLICATED_KAFKA_CLUSTER_INFO_MESSAGE));
+                Some(cluster)
+            }
+            _ => None,
+        }
+        .map(|cluster| cluster.redact(redact_secrets))
+    }
+
+    fn get_kafka_cluster_and_subscriptions(
+        &self,
+        cluster_name: &str,
+        redact_secrets: Redaction,
+    ) -> Option<(KafkaCluster, Vec<Subscription>)> {
+        let cluster = KafkaClusterResolver::get_kafka_cluster(self, cluster_name, redact_secrets)?;
+
+        let subscriptions = self
+            .subscriptions
+            .values()
+            .filter(|sub| {
+                let Source::Kafka { cluster, .. } = sub.source();
+                cluster == cluster_name
+            })
+            .map(|sub| sub.clone().redact(redact_secrets))
+            .collect();
+        Some((cluster, subscriptions))
+    }
+
+    fn list_kafka_clusters(&self, redact_secrets: Redaction) -> Vec<KafkaCluster> {
+        let config = Configuration::pinned();
+        let config_clusters = &config.ingress.kafka_clusters;
+
+        let schema_clusters = self.kafka_clusters.values().map(|cluster| {
+            let mut cluster = cluster.clone();
+            // Add duplicated info if there's any match with a cluster from the schema cluster
+            if config_clusters.iter().any(|c| c.name == cluster.name()) {
+                cluster
+                    .info_mut()
+                    .push(SchemaInfo::new(DUPLICATED_KAFKA_CLUSTER_INFO_MESSAGE));
+            }
+            cluster
+        });
+
+        let extra_config_clusters = config_clusters.iter().filter_map(|c| {
+            if self.kafka_clusters.contains_key(&c.name) {
+                // Filter out clusters with duplicate names: schema clusters take precedence over config clusters
+                None
+            } else {
+                Some(KafkaCluster::from(c.clone()))
+            }
+        });
+
+        schema_clusters
+            .chain(extra_config_clusters)
+            .map(|cluster| cluster.redact(redact_secrets))
+            .collect()
+    }
+}
+
+const REDACTION_VALUE: &str = "***";
+
+impl KafkaCluster {
+    fn redact(mut self, redact_secrets: Redaction) -> KafkaCluster {
+        match redact_secrets {
+            Redaction::Yes => {
+                let redacted_properties = self.properties_mut();
+                for (key, value) in redacted_properties.iter_mut() {
+                    if is_sensitive_kafka_property(key) {
+                        *value = REDACTION_VALUE.to_string();
+                    }
+                }
+            }
+            Redaction::No => {}
+        };
+        self
+    }
+}
+
+impl Subscription {
+    fn redact(mut self, redact_secrets: Redaction) -> Subscription {
+        match redact_secrets {
+            Redaction::Yes => {
+                let redacted_properties = self.metadata_mut();
+                for (key, value) in redacted_properties.iter_mut() {
+                    if is_sensitive_kafka_property(key) {
+                        *value = REDACTION_VALUE.to_string();
+                    }
+                }
+            }
+            Redaction::No => {}
+        };
+        self
+    }
+}
+
+/// Checks if a Kafka property key is sensitive and should be redacted
+/// Based on librdkafka CONFIGURATION.md
+fn is_sensitive_kafka_property(key: &str) -> bool {
+    let key_lower = key.to_lowercase();
+
+    // Redact anything with password, secret, passphrase, or token in the name
+    if key_lower.contains("password")
+        || key_lower.contains("secret")
+        || key_lower.contains("passphrase")
+    {
+        return true;
+    }
+
+    // Redact SASL credentials
+    if key_lower.contains("sasl.username") {
+        return true;
+    }
+
+    // Redact SASL JAAS config (contains credentials)
+    if key_lower.contains("sasl.jaas.config") {
+        return true;
+    }
+
+    // Redact OAuth/OIDC configs (may contain credentials)
+    if key_lower.contains("sasl.oauthbearer.config") {
+        return true;
+    }
+
+    // Redact OAuth token endpoints (may contain secrets in URL params)
+    if key_lower.contains("token.endpoint.url") {
+        return true;
+    }
+
+    // Redact SSL/TLS private keys (PEM format or file locations)
+    if key_lower.contains("ssl.key.location") || key_lower.contains("ssl.key.pem") {
+        return true;
+    }
+
+    // Redact keystore and truststore locations (can reveal filesystem structure)
+    if key_lower.contains("keystore.location") || key_lower.contains("truststore.location") {
+        return true;
+    }
+
+    // Redact OAuth assertion private keys (JWT signing)
+    if key_lower.contains("sasl.oauthbearer.assertion.private.key") {
+        return true;
+    }
+
+    false
 }
 
 impl Configuration {
