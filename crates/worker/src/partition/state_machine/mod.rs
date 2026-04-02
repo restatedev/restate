@@ -42,7 +42,7 @@ use restate_storage_api::invocation_status_table::{
     WriteInvocationStatusTable,
 };
 use restate_storage_api::invocation_status_table::{InvocationStatus, ScheduledInvocation};
-use restate_storage_api::journal_events::WriteJournalEventsTable;
+use restate_storage_api::journal_events::{EventView, WriteJournalEventsTable};
 use restate_storage_api::journal_table::ReadJournalTable;
 use restate_storage_api::journal_table::{JournalEntry, WriteJournalTable};
 use restate_storage_api::journal_table_v2;
@@ -95,6 +95,8 @@ use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader,
 };
 use restate_types::journal::raw::{EntryHeader, RawEntryCodec, RawEntryCodecError};
+use restate_types::journal_events::raw::RawEvent;
+use restate_types::journal_events::{Event, KilledEvent};
 use restate_types::journal_v2::command::{OutputCommand, OutputResult};
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::journal_v2::{
@@ -1983,6 +1985,21 @@ impl<S> StateMachineApplyContext<'_, S> {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
 
+        let after_journal_entry_index = metadata
+            .journal_metadata
+            .length
+            .checked_sub(1)
+            .unwrap_or_default();
+        self.storage.put_journal_event(
+            invocation_id,
+            EventView {
+                append_time: self.record_created_at,
+                after_journal_entry_index,
+                event: RawEvent::from(Event::Killed(KilledEvent { last_failure: None })),
+            },
+            self.record_lsn.as_u64(),
+        )?;
+
         self.end_invocation(
             invocation_id,
             metadata,
@@ -2018,6 +2035,21 @@ impl<S> StateMachineApplyContext<'_, S> {
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
+
+        let after_journal_entry_index = metadata
+            .journal_metadata
+            .length
+            .checked_sub(1)
+            .unwrap_or_default();
+        self.storage.put_journal_event(
+            invocation_id,
+            EventView {
+                append_time: self.record_created_at,
+                after_journal_entry_index,
+                event: RawEvent::from(Event::Killed(KilledEvent { last_failure: None })),
+            },
+            self.record_lsn.as_u64(),
+        )?;
 
         self.end_invocation(
             invocation_id,
@@ -2553,6 +2585,31 @@ impl<S> StateMachineApplyContext<'_, S> {
                         .into_invocation_metadata()
                         .expect("Must be present if status is invoked"),
                     Some(ResponseResult::Failure(e)),
+                )
+                .await?;
+            }
+            InvokerEffectKind::KilledAfterMaxAttempts { killed_event } => {
+                let metadata = invocation_status
+                    .into_invocation_metadata()
+                    .expect("Must be present if status is invoked");
+                let after_journal_entry_index = metadata
+                    .journal_metadata
+                    .length
+                    .checked_sub(1)
+                    .unwrap_or_default();
+                self.storage.put_journal_event(
+                    effect.invocation_id,
+                    EventView {
+                        append_time: self.record_created_at,
+                        after_journal_entry_index,
+                        event: killed_event,
+                    },
+                    self.record_lsn.as_u64(),
+                )?;
+                self.end_invocation(
+                    effect.invocation_id,
+                    metadata,
+                    Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
                 )
                 .await?;
             }

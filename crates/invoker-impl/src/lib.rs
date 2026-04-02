@@ -53,7 +53,7 @@ use restate_types::invocation::InvocationTarget;
 use restate_types::journal::EntryIndex;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal_events::raw::RawEvent;
-use restate_types::journal_events::{Event, PausedEvent, TransientErrorEvent};
+use restate_types::journal_events::{Event, KilledEvent, PausedEvent, TransientErrorEvent};
 use restate_types::journal_v2::raw::{RawCommand, RawNotification};
 use restate_types::journal_v2::{CommandIndex, EntryMetadata, NotificationId};
 use restate_types::live::{Live, LiveLoad};
@@ -1535,13 +1535,45 @@ where
                     "Error when executing the invocation, not going to retry.");
                 self.status_store.on_end(&partition, &invocation_id);
 
+                let journal_v2_related_command_type =
+                    if let InvokerError::SdkV2(SdkInvocationErrorV2 {
+                        related_command: Some(ref related_entry),
+                        ..
+                    }) = error
+                    {
+                        related_entry
+                            .related_entry_type
+                            .and_then(|e| e.try_as_command_ref().copied())
+                    } else {
+                        None
+                    };
+                let invocation_error_report = error.into_invocation_error_report();
+                let killed_event = KilledEvent {
+                    last_failure: Some(TransientErrorEvent {
+                        error_code: invocation_error_report.err.code(),
+                        error_message: invocation_error_report.err.message().to_owned(),
+                        error_stacktrace: invocation_error_report
+                            .err
+                            .stacktrace()
+                            .map(|s| s.to_owned()),
+                        restate_doc_error_code: invocation_error_report
+                            .doc_error_code
+                            .map(|c| c.code().to_owned()),
+                        related_command_index: invocation_error_report.related_entry_index,
+                        related_command_name: invocation_error_report.related_entry_name.clone(),
+                        related_command_type: journal_v2_related_command_type,
+                    }),
+                };
+
                 let _ = self
                     .invocation_state_machine_manager
                     .resolve_partition_sender(partition)
                     .expect("Partition should be registered")
                     .send(Box::new(Effect {
                         invocation_id,
-                        kind: EffectKind::Failed(error.into_invocation_error()),
+                        kind: EffectKind::KilledAfterMaxAttempts {
+                            killed_event: RawEvent::from(Event::Killed(killed_event)),
+                        },
                     }))
                     .await;
             }
