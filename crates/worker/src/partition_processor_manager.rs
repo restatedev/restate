@@ -277,11 +277,7 @@ where
             config.worker.invoker.invocation_throttling.as_ref(),
             config.worker.invoker.action_throttling.as_ref(),
             invoker_memory_pool,
-            config
-                .worker
-                .invoker
-                .per_invocation_initial_memory
-                .as_usize(),
+            config.worker.invoker.per_invocation_initial_memory,
         );
 
         let (tx, rx) = mpsc::channel(updateable_config.pinned().worker.internal_queue_length());

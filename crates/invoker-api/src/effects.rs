@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_memory::NonZeroByteCount;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::InvocationId;
@@ -114,7 +115,7 @@ impl EffectKind {
 #[cfg_attr(feature = "serde", serde(tag = "reason"))]
 pub enum YieldReason {
     /// The invocation exhausted its outbound memory budget.
-    OutOfMemory { needed_memory: usize },
+    ExhaustedMemoryBudget { needed_memory: NonZeroByteCount },
     /// A yield reason not recognized by this node version. The partition
     /// processor applies the default strategy (re-schedule immediately).
     #[cfg_attr(feature = "serde", serde(other))]

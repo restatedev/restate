@@ -39,7 +39,7 @@ use restate_invoker_api::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderTransaction, JournalKind,
 };
 use restate_invoker_api::{EntryEnricher, InvocationReaderError};
-use restate_serde_util::ByteCount;
+use restate_serde_util::{ByteCount, NonZeroByteCount};
 use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClientError};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{InvocationId, PartitionLeaderEpoch};
@@ -398,7 +398,12 @@ where
             TerminalLoopState::ShouldYield(mut oom) => {
                 // Request at least as much memory as the minimum reserved floor
                 // so that re-scheduling can satisfy the outbound budget.
-                oom.needed = oom.needed.max(budget.min_reserved());
+                if budget.min_reserved() > oom.needed {
+                    oom.needed = NonZeroByteCount::new(
+                        NonZeroUsize::new(budget.min_reserved().as_usize())
+                            .expect("min_reserved > needed > 0"),
+                    );
+                }
                 InvocationTaskOutputInner::ShouldYield { oom, budget }
             }
         };

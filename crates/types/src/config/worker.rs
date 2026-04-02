@@ -255,7 +255,8 @@ pub const DEFAULT_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(60);
 // Changed from 60s to 10min in response to issue #3961
 pub const DEFAULT_ABORT_TIMEOUT: Duration = Duration::from_secs(600);
 /// Default per-invocation initial memory for the outbound budget.
-pub const DEFAULT_PER_INVOCATION_INITIAL_MEMORY: usize = 32 * 1024;
+pub const DEFAULT_PER_INVOCATION_INITIAL_MEMORY: NonZeroByteCount =
+    NonZeroByteCount::new(NonZeroUsize::new(32 * 1024).unwrap());
 
 /// # Invoker options
 #[serde_as]
@@ -400,7 +401,7 @@ pub struct InvokerOptions {
     /// maximum concurrency.
     ///
     /// Since v1.6.3
-    pub per_invocation_initial_memory: ByteCount,
+    pub per_invocation_initial_memory: NonZeroByteCount,
 }
 
 impl InvokerOptions {
@@ -435,10 +436,11 @@ impl InvokerOptions {
 
     /// Resolved per-invocation per-direction memory upper bound.
     /// Falls back to `message_size_limit()` when unset.
-    pub fn per_invocation_memory_limit(&self) -> usize {
+    pub fn per_invocation_memory_limit(&self) -> NonZeroByteCount {
         self.per_invocation_memory_limit
-            .map(|v| v.as_usize())
-            .unwrap_or(self.message_size_limit().get())
+            .and_then(|v| NonZeroUsize::new(v.as_usize()))
+            .map(NonZeroByteCount::new)
+            .unwrap_or(NonZeroByteCount::new(self.message_size_limit()))
     }
 
     /// Resolved eager state size limit in bytes. After `merge()`, this is guaranteed
@@ -511,7 +513,7 @@ impl Default for InvokerOptions {
                 NonZeroUsize::new(256 * 1024 * 1024).unwrap(), // 256 MiB
             ),
             per_invocation_memory_limit: None,
-            per_invocation_initial_memory: ByteCount::from(DEFAULT_PER_INVOCATION_INITIAL_MEMORY),
+            per_invocation_initial_memory: DEFAULT_PER_INVOCATION_INITIAL_MEMORY,
         }
     }
 }

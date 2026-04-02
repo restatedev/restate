@@ -8251,6 +8251,7 @@ dependencies = [
  "restate-memory",
  "restate-partition-store",
  "restate-rocksdb",
+ "restate-serde-util",
  "restate-storage-api",
  "restate-types",
  "restate-workspace-hack",

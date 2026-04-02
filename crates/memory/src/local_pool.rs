@@ -30,12 +30,14 @@
 
 use std::fmt;
 use std::future::Future;
+use std::num::NonZeroUsize;
+use std::ops::Add;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 
-use restate_serde_util::ByteCount;
+use restate_serde_util::{ByteCount, NonZeroByteCount};
 use tokio::sync::Notify;
 use tokio::sync::futures::OwnedNotified;
 
@@ -65,10 +67,10 @@ impl fmt::Display for OutOfMemoryKind {
 /// [`LocalMemoryPool::check_out_of_memory`] when the requested memory cannot
 /// be satisfied.
 #[derive(Debug, thiserror::Error)]
-#[error("out of memory ({kind}): requested {} but the budget cannot satisfy the request", ByteCount::from(*.needed))]
+#[error("out of memory ({kind}): requested {needed} but the budget cannot satisfy the request")]
 pub struct OutOfMemory {
     /// The number of bytes that were requested but could not be allocated.
-    pub needed: usize,
+    pub needed: NonZeroByteCount,
     /// Why the allocation failed.
     pub kind: OutOfMemoryKind,
 }
@@ -99,9 +101,9 @@ pub struct LocalMemoryPool {
     /// Local capacity held from the global pool.
     local_capacity: MemoryLease,
     /// Floor: [`release_excess`](Self::release_excess) never shrinks below this.
-    min_reserved: usize,
+    min_reserved: ByteCount,
     /// Ceiling: max local capacity size.
-    upper_bound: usize,
+    upper_bound: NonZeroByteCount,
 }
 
 /// Shared state between the budget and its outstanding leases.
@@ -165,7 +167,12 @@ impl LocalMemoryPool {
     pub fn unlimited() -> Self {
         let pool = MemoryPool::unlimited();
         let local_capacity = pool.empty_lease();
-        Self::new(pool, local_capacity, 0, usize::MAX)
+        Self::new(
+            pool,
+            local_capacity,
+            ByteCount::ZERO,
+            NonZeroByteCount::new(NonZeroUsize::MAX),
+        )
     }
 
     /// Creates a new directional budget.
@@ -178,8 +185,8 @@ impl LocalMemoryPool {
     pub fn new(
         pool: MemoryPool,
         local_capacity: MemoryLease,
-        min_reserved: usize,
-        upper_bound: usize,
+        min_reserved: ByteCount,
+        upper_bound: NonZeroByteCount,
     ) -> Self {
         Self {
             shared: Arc::new(SharedState {
@@ -211,8 +218,8 @@ impl LocalMemoryPool {
         if available < size {
             // Need additional memory from the global pool.
             let deficit = size - available;
-            let capacity = self.local_capacity.size().as_usize();
-            if capacity.saturating_add(deficit) > self.upper_bound {
+            let capacity = self.local_capacity.size();
+            if capacity.add(ByteCount::from(size)) > self.upper_bound {
                 return None;
             }
             if !self.local_capacity.try_grow(deficit) {
@@ -300,7 +307,7 @@ impl LocalMemoryPool {
     /// Will not shrink below `min_reserved` or below current `in_flight`.
     pub fn release_excess(&mut self) {
         let capacity = self.local_capacity.size().as_usize();
-        let floor = self.min_reserved.max(self.in_flight());
+        let floor = self.min_reserved.as_usize().max(self.in_flight());
         if capacity > floor {
             self.local_capacity.shrink(capacity - floor);
         }
@@ -327,9 +334,12 @@ impl LocalMemoryPool {
     /// - Plus `min(global_available, upper_bound - capacity)`: how much we can
     ///   still grow from the global pool without exceeding the per-direction cap.
     pub fn check_out_of_memory(&self, needed: usize, pinned: usize) -> Result<(), OutOfMemory> {
-        if needed > self.upper_bound.saturating_sub(pinned) {
+        if needed > self.upper_bound.as_usize().saturating_sub(pinned) {
             return Err(OutOfMemory {
-                needed: needed.saturating_add(pinned),
+                needed: NonZeroByteCount::new(
+                    NonZeroUsize::new(needed.saturating_add(pinned))
+                        .expect("needed > 0 in OOM path"),
+                ),
                 kind: OutOfMemoryKind::UpperBoundExceeded,
             });
         }
@@ -338,6 +348,7 @@ impl LocalMemoryPool {
         let global_available = self.shared.pool.available();
         let growth_possible = self
             .upper_bound
+            .as_usize()
             .saturating_sub(capacity)
             .min(global_available);
         let reclaimable = capacity
@@ -346,7 +357,10 @@ impl LocalMemoryPool {
 
         if needed > reclaimable {
             Err(OutOfMemory {
-                needed: needed.saturating_add(pinned),
+                needed: NonZeroByteCount::new(
+                    NonZeroUsize::new(needed.saturating_add(pinned))
+                        .expect("needed > 0 in OOM path"),
+                ),
                 kind: OutOfMemoryKind::PoolExhausted,
             })
         } else {
@@ -373,7 +387,7 @@ impl LocalMemoryPool {
     /// Returns the minimum reserved capacity for this budget.
     ///
     /// [`release_excess`](Self::release_excess) never shrinks below this value.
-    pub fn min_reserved(&self) -> usize {
+    pub fn min_reserved(&self) -> ByteCount {
         self.min_reserved
     }
 
@@ -553,10 +567,19 @@ mod tests {
         MemoryPool::with_capacity(NonZeroByteCount::new(NonZeroUsize::new(capacity).unwrap()))
     }
 
+    fn nzb(v: usize) -> NonZeroByteCount {
+        NonZeroByteCount::new(NonZeroUsize::new(v).unwrap())
+    }
+
+    fn bc(v: usize) -> ByteCount {
+        ByteCount::from(v)
+    }
+
     #[test]
     fn basic_reserve_and_release() {
         let global = pool(1000);
-        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget =
+            LocalMemoryPool::new(global.clone(), global.empty_lease(), bc(0), nzb(500));
 
         let lease1 = budget.try_reserve(100).unwrap();
         assert_eq!(lease1.size(), 100);
@@ -583,8 +606,8 @@ mod tests {
     #[test]
     fn partial_local_partial_global() {
         let global = pool(1000);
-        let seed = global.try_reserve(60).unwrap();
-        let mut budget = LocalMemoryPool::new(global.clone(), seed, 0, 500);
+        let initial_lease = global.try_reserve(60).unwrap();
+        let mut budget = LocalMemoryPool::new(global.clone(), initial_lease, bc(0), nzb(500));
         assert_eq!(budget.local_capacity(), 60);
 
         let lease = budget.try_reserve(100).unwrap();
@@ -604,7 +627,8 @@ mod tests {
     #[test]
     fn upper_bound_enforced() {
         let global = pool(10000);
-        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 200);
+        let mut budget =
+            LocalMemoryPool::new(global.clone(), global.empty_lease(), bc(0), nzb(200));
 
         let lease1 = budget.try_reserve(150).unwrap();
         assert!(budget.try_reserve(100).is_none());
@@ -616,10 +640,10 @@ mod tests {
     }
 
     #[test]
-    fn seeded_local_capacity() {
+    fn initial_local_capacity() {
         let global = pool(1000);
-        let seed = global.try_reserve(64).unwrap();
-        let mut budget = LocalMemoryPool::new(global.clone(), seed, 64, 500);
+        let initial_lease = global.try_reserve(64).unwrap();
+        let mut budget = LocalMemoryPool::new(global.clone(), initial_lease, bc(64), nzb(500));
 
         assert_eq!(budget.local_capacity(), 64);
         assert_eq!(budget.available(), 64);
@@ -640,8 +664,8 @@ mod tests {
     #[test]
     fn release_excess_returns_to_global() {
         let global = pool(1000);
-        let seed = global.try_reserve(64).unwrap();
-        let mut budget = LocalMemoryPool::new(global.clone(), seed, 64, 500);
+        let initial_lease = global.try_reserve(64).unwrap();
+        let mut budget = LocalMemoryPool::new(global.clone(), initial_lease, bc(64), nzb(500));
 
         let lease = budget.try_reserve(200).unwrap();
         drop(lease);
@@ -659,8 +683,8 @@ mod tests {
     #[test]
     fn release_excess_respects_in_flight() {
         let global = pool(1000);
-        let seed = global.try_reserve(64).unwrap();
-        let mut budget = LocalMemoryPool::new(global.clone(), seed, 0, 500);
+        let initial_lease = global.try_reserve(64).unwrap();
+        let mut budget = LocalMemoryPool::new(global.clone(), initial_lease, bc(0), nzb(500));
 
         let lease = budget.try_reserve(200).unwrap();
         assert_eq!(budget.local_capacity(), 200);
@@ -676,7 +700,8 @@ mod tests {
     #[test]
     fn global_pool_exhaustion() {
         let global = pool(100);
-        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget =
+            LocalMemoryPool::new(global.clone(), global.empty_lease(), bc(0), nzb(500));
 
         let lease1 = budget.try_reserve(80).unwrap();
         assert!(budget.try_reserve(30).is_none());
@@ -691,7 +716,7 @@ mod tests {
     #[test]
     fn check_out_of_memory_checks_theoretical_max() {
         let global = pool(100);
-        let budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
+        let budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), bc(0), nzb(500));
 
         assert!(budget.check_out_of_memory(100, 0).is_ok());
         let err = budget.check_out_of_memory(101, 0).unwrap_err();
@@ -701,7 +726,7 @@ mod tests {
     #[test]
     fn check_out_of_memory_respects_upper_bound() {
         let global = pool(10000);
-        let budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 200);
+        let budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), bc(0), nzb(200));
 
         assert!(budget.check_out_of_memory(200, 0).is_ok());
         let err = budget.check_out_of_memory(201, 0).unwrap_err();
@@ -711,8 +736,8 @@ mod tests {
     #[tokio::test]
     async fn reserve_waits_for_reclaim() {
         let global = pool(100);
-        let seed = global.try_reserve(100).unwrap();
-        let mut budget = LocalMemoryPool::new(global.clone(), seed, 0, 500);
+        let initial_lease = global.try_reserve(100).unwrap();
+        let mut budget = LocalMemoryPool::new(global.clone(), initial_lease, bc(0), nzb(500));
 
         let lease1 = budget.try_reserve(100).unwrap();
         assert!(budget.try_reserve(50).is_none());
@@ -737,7 +762,8 @@ mod tests {
         let global = pool(100);
         let external = global.try_reserve(40).unwrap();
 
-        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget =
+            LocalMemoryPool::new(global.clone(), global.empty_lease(), bc(0), nzb(500));
 
         let lease1 = budget.try_reserve(60).unwrap();
         assert_eq!(global.available(), 0);
@@ -760,8 +786,8 @@ mod tests {
     #[tokio::test]
     async fn reserve_waits_for_global_pool_release() {
         let global = pool(100);
-        let seed = global.try_reserve(50).unwrap();
-        let mut budget = LocalMemoryPool::new(global.clone(), seed, 0, 500);
+        let initial_lease = global.try_reserve(50).unwrap();
+        let mut budget = LocalMemoryPool::new(global.clone(), initial_lease, bc(0), nzb(500));
 
         let external = global.try_reserve(50).unwrap();
         assert_eq!(global.available(), 0);
@@ -788,7 +814,8 @@ mod tests {
     #[tokio::test]
     async fn reserve_yields_when_exceeds_upper_bound() {
         let global = pool(10000);
-        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 200);
+        let mut budget =
+            LocalMemoryPool::new(global.clone(), global.empty_lease(), bc(0), nzb(200));
 
         assert!(budget.reserve(201, 0).await.is_err());
 
@@ -802,7 +829,8 @@ mod tests {
         let global = pool(100);
         let external = global.try_reserve(90).unwrap();
 
-        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget =
+            LocalMemoryPool::new(global.clone(), global.empty_lease(), bc(0), nzb(500));
 
         assert!(budget.reserve(200, 0).await.is_err());
 
@@ -822,8 +850,8 @@ mod tests {
     #[tokio::test]
     async fn reserve_wakes_on_global_pool_return() {
         let global = pool(200);
-        let seed = global.try_reserve(100).unwrap();
-        let mut budget = LocalMemoryPool::new(global.clone(), seed, 0, 500);
+        let initial_lease = global.try_reserve(100).unwrap();
+        let mut budget = LocalMemoryPool::new(global.clone(), initial_lease, bc(0), nzb(500));
 
         // Exhaust local capacity with an in-flight lease.
         let local_lease = budget.try_reserve(100).unwrap();
@@ -863,7 +891,8 @@ mod tests {
     #[test]
     fn zero_size_reserve() {
         let global = pool(100);
-        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget =
+            LocalMemoryPool::new(global.clone(), global.empty_lease(), bc(0), nzb(500));
 
         let lease = budget.try_reserve(0).unwrap();
         assert_eq!(lease.size(), 0);
@@ -874,8 +903,8 @@ mod tests {
     #[test]
     fn unlimited_global_pool() {
         let global = MemoryPool::unlimited();
-        let seed = global.try_reserve(64).unwrap();
-        let mut budget = LocalMemoryPool::new(global, seed, 64, 1024);
+        let initial_lease = global.try_reserve(64).unwrap();
+        let mut budget = LocalMemoryPool::new(global, initial_lease, bc(64), nzb(1024));
 
         assert_eq!(budget.local_capacity(), 64);
 
@@ -891,8 +920,8 @@ mod tests {
     #[test]
     fn orphaned_lease_returns_to_global_pool() {
         let global = pool(1000);
-        let seed = global.try_reserve(100).unwrap();
-        let mut budget = LocalMemoryPool::new(global.clone(), seed, 0, 500);
+        let initial_lease = global.try_reserve(100).unwrap();
+        let mut budget = LocalMemoryPool::new(global.clone(), initial_lease, bc(0), nzb(500));
 
         let lease = budget.try_reserve(60).unwrap();
         assert_eq!(global.used().as_usize(), 100);
@@ -907,8 +936,8 @@ mod tests {
     #[test]
     fn multiple_orphaned_leases() {
         let global = pool(1000);
-        let seed = global.try_reserve(200).unwrap();
-        let mut budget = LocalMemoryPool::new(global.clone(), seed, 0, 500);
+        let initial_lease = global.try_reserve(200).unwrap();
+        let mut budget = LocalMemoryPool::new(global.clone(), initial_lease, bc(0), nzb(500));
 
         let l1 = budget.try_reserve(80).unwrap();
         let l2 = budget.try_reserve(50).unwrap();
@@ -928,7 +957,8 @@ mod tests {
     #[test]
     fn multiple_reserves_grow_incrementally() {
         let global = pool(1000);
-        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget =
+            LocalMemoryPool::new(global.clone(), global.empty_lease(), bc(0), nzb(500));
 
         let l1 = budget.try_reserve(100).unwrap();
         assert_eq!(budget.local_capacity(), 100);
@@ -951,7 +981,8 @@ mod tests {
     #[test]
     fn empty_lease_and_merge() {
         let global = pool(1000);
-        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget =
+            LocalMemoryPool::new(global.clone(), global.empty_lease(), bc(0), nzb(500));
 
         let empty = budget.empty_lease();
         assert_eq!(empty.size(), 0);
@@ -983,7 +1014,8 @@ mod tests {
     #[test]
     fn merge_leases_combines_sizes() {
         let global = pool(1000);
-        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget =
+            LocalMemoryPool::new(global.clone(), global.empty_lease(), bc(0), nzb(500));
 
         let mut l1 = budget.try_reserve(100).unwrap();
         let l2 = budget.try_reserve(50).unwrap();
@@ -1003,7 +1035,8 @@ mod tests {
     #[test]
     fn split_and_drop_independently() {
         let global = pool(1000);
-        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget =
+            LocalMemoryPool::new(global.clone(), global.empty_lease(), bc(0), nzb(500));
 
         let mut lease = budget.try_reserve(100).unwrap();
         assert_eq!(budget.in_flight(), 100);
@@ -1027,7 +1060,8 @@ mod tests {
     #[test]
     fn split_to_zero() {
         let global = pool(1000);
-        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget =
+            LocalMemoryPool::new(global.clone(), global.empty_lease(), bc(0), nzb(500));
 
         let mut lease = budget.try_reserve(100).unwrap();
         let zero = lease.split(0);
@@ -1042,7 +1076,8 @@ mod tests {
     #[test]
     fn split_entire_lease() {
         let global = pool(1000);
-        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget =
+            LocalMemoryPool::new(global.clone(), global.empty_lease(), bc(0), nzb(500));
 
         let mut lease = budget.try_reserve(100).unwrap();
         let all = lease.split(100);
@@ -1062,7 +1097,8 @@ mod tests {
     #[should_panic(expected = "cannot split more than lease size")]
     fn split_panics_on_overflow() {
         let global = pool(1000);
-        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget =
+            LocalMemoryPool::new(global.clone(), global.empty_lease(), bc(0), nzb(500));
 
         let mut lease = budget.try_reserve(50).unwrap();
         let _ = lease.split(51);
@@ -1071,7 +1107,8 @@ mod tests {
     #[test]
     fn shrink_returns_to_budget() {
         let global = pool(1000);
-        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget =
+            LocalMemoryPool::new(global.clone(), global.empty_lease(), bc(0), nzb(500));
 
         let mut lease = budget.try_reserve(100).unwrap();
         assert_eq!(budget.in_flight(), 100);
@@ -1090,7 +1127,8 @@ mod tests {
     #[test]
     fn shrink_clamped_to_size() {
         let global = pool(1000);
-        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget =
+            LocalMemoryPool::new(global.clone(), global.empty_lease(), bc(0), nzb(500));
 
         let mut lease = budget.try_reserve(50).unwrap();
         // Shrink by more than the lease size — clamped to 50.
@@ -1106,7 +1144,8 @@ mod tests {
     #[test]
     fn shrink_zero_is_noop() {
         let global = pool(1000);
-        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget =
+            LocalMemoryPool::new(global.clone(), global.empty_lease(), bc(0), nzb(500));
 
         let mut lease = budget.try_reserve(100).unwrap();
         lease.shrink(0);
@@ -1125,7 +1164,8 @@ mod tests {
         // - With pinned=200, check_out_of_memory(50, 200) returns Err
         //   because pinned exhausts the upper_bound (200 - 200 = 0 < 50)
         let global = pool(200);
-        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 200);
+        let mut budget =
+            LocalMemoryPool::new(global.clone(), global.empty_lease(), bc(0), nzb(200));
 
         let lease = budget.try_reserve(200).unwrap();
         assert_eq!(budget.in_flight(), 200);
@@ -1145,8 +1185,8 @@ mod tests {
     fn check_out_of_memory_pinned_partial_accumulation() {
         // Partial accumulation: some in-flight is pinned, some is reclaimable
         let global = pool(200);
-        let seed = global.try_reserve(100).unwrap();
-        let mut budget = LocalMemoryPool::new(global.clone(), seed, 0, 300);
+        let initial_lease = global.try_reserve(100).unwrap();
+        let mut budget = LocalMemoryPool::new(global.clone(), initial_lease, bc(0), nzb(300));
 
         // Reserve 100 bytes (in-flight)
         let _lease1 = budget.try_reserve(50).unwrap();
@@ -1165,7 +1205,8 @@ mod tests {
         // When all in-flight is pinned, reserve should immediately return OOM
         // instead of waiting forever.
         let global = pool(100);
-        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 100);
+        let mut budget =
+            LocalMemoryPool::new(global.clone(), global.empty_lease(), bc(0), nzb(100));
 
         let _accumulated = budget.try_reserve(100).unwrap();
 
@@ -1176,7 +1217,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         // needed should include pinned (50 + 100 = 150)
-        assert_eq!(err.needed, 150);
+        assert_eq!(err.needed, nzb(150));
         assert_eq!(err.kind, OutOfMemoryKind::UpperBoundExceeded);
     }
 }

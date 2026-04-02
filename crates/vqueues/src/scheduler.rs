@@ -19,6 +19,7 @@ use smallvec::SmallVec;
 
 use restate_futures_util::concurrency::Concurrency;
 use restate_memory::MemoryPool;
+use restate_serde_util::NonZeroByteCount;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{ScanVQueueTable, VQueueEntry, VQueueStore, WaitStats};
 use restate_types::time::MillisSinceEpoch;
@@ -348,7 +349,7 @@ impl<S: VQueueStore> SchedulerService<S> {
         concurrency: Concurrency,
         global_throttling: Option<GlobalTokenBucket>,
         memory_pool: MemoryPool,
-        initial_invocation_memory: usize,
+        initial_invocation_memory: NonZeroByteCount,
         storage: S,
         vqueues_cache: &mut VQueuesMetaMut,
     ) -> Result<Self, StorageError>

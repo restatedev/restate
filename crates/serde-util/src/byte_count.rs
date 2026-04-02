@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::cmp::Ordering;
 use std::fmt::{self, Display};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::ops::{Add, Mul};
@@ -168,6 +169,32 @@ impl Mul for ByteCount<false> {
 
     fn mul(self, rhs: Self) -> Self::Output {
         ByteCount(self.0 * rhs.0)
+    }
+}
+
+// Comparisons between ByteCount<false> and ByteCount<true>
+
+impl PartialEq<ByteCount<false>> for ByteCount<true> {
+    fn eq(&self, other: &ByteCount<false>) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl PartialOrd<ByteCount<false>> for ByteCount<true> {
+    fn partial_cmp(&self, other: &ByteCount<false>) -> Option<Ordering> {
+        Some(self.0.cmp(&other.0))
+    }
+}
+
+impl PartialEq<ByteCount<true>> for ByteCount<false> {
+    fn eq(&self, other: &ByteCount<true>) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl PartialOrd<ByteCount<true>> for ByteCount<false> {
+    fn partial_cmp(&self, other: &ByteCount<true>) -> Option<Ordering> {
+        Some(self.0.cmp(&other.0))
     }
 }
 
@@ -408,7 +435,7 @@ mod tests {
         fn check_str(s: &str) {
             assert_eq!(
                 serde_json::from_str::<Config>(&format!("{s:?}")).unwrap().0,
-                s.parse().unwrap()
+                s.parse::<ByteCount>().unwrap()
             );
         }
 
@@ -416,7 +443,7 @@ mod tests {
         fn check(s: &str) {
             assert_eq!(
                 serde_json::from_str::<Config>(s).unwrap().0,
-                s.parse().unwrap()
+                s.parse::<ByteCount>().unwrap()
             );
         }
 

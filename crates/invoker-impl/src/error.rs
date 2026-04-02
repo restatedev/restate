@@ -18,7 +18,8 @@ use http::{HeaderName, HeaderValue};
 use tokio::task::JoinError;
 
 use restate_invoker_api::{InvocationErrorReport, InvocationReaderError};
-use restate_memory::{ByteCount, OutOfMemoryKind};
+use restate_memory::OutOfMemoryKind;
+use restate_serde_util::NonZeroByteCount;
 use restate_service_client::ServiceClientError;
 use restate_service_protocol::message::{EncodingError, MessageType};
 use restate_time_util::FriendlyDuration;
@@ -198,7 +199,7 @@ pub(crate) enum InvokerError {
 #[derive(Debug, Clone)]
 pub(crate) struct InvocationMemoryExhausted {
     /// Bytes needed to satisfy the failed allocation.
-    pub needed: usize,
+    pub needed: NonZeroByteCount,
     /// Why the allocation failed.
     pub kind: OutOfMemoryKind,
     /// Human-readable description of what was being done when the OOM occurred.
@@ -210,9 +211,7 @@ impl fmt::Display for InvocationMemoryExhausted {
         write!(
             f,
             "memory budget exhausted ({}) while {}: needed {}",
-            self.kind,
-            self.context,
-            ByteCount::from(self.needed),
+            self.kind, self.context, self.needed,
         )
     }
 }

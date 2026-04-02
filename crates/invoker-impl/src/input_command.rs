@@ -41,7 +41,7 @@ pub(crate) struct VQueueInvokeCommand {
     pub(super) invocation_id: InvocationId,
     pub(super) invocation_target: InvocationTarget,
     #[debug(skip)]
-    pub(super) outbound_seed: MemoryLease,
+    pub(super) initial_memory_lease: MemoryLease,
 }
 
 #[derive(Debug)]
@@ -129,7 +129,7 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
         permit: Permit,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
-        outbound_seed: MemoryLease,
+        initial_memory_lease: MemoryLease,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::VQInvoke(Box::new(VQueueInvokeCommand {
@@ -138,7 +138,7 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
                 partition,
                 invocation_id,
                 invocation_target,
-                outbound_seed,
+                initial_memory_lease,
             })))
             .map_err(|_| NotRunningError)
     }

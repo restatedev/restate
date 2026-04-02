@@ -19,8 +19,8 @@ use restate_invoker_api::invocation_reader::{
     JournalKind,
 };
 use restate_memory::{
-    LocalMemoryLease, LocalMemoryPool, OutOfMemory, OutOfMemoryKind, PinnableMapErr,
-    PinnableMemoryStream,
+    LocalMemoryLease, LocalMemoryPool, NonZeroByteCount, OutOfMemory, OutOfMemoryKind,
+    PinnableMapErr, PinnableMemoryStream,
 };
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
 use restate_storage_api::state_table::ReadStateTable;
@@ -33,9 +33,9 @@ use restate_types::identifiers::{InvocationId, ServiceId};
 pub enum InvokerStorageReaderError {
     #[error(transparent)]
     Storage(#[from] restate_storage_api::StorageError),
-    #[error("outbound memory budget exhausted ({kind}): needed {}", restate_memory::ByteCount::from(*.needed))]
+    #[error("outbound memory budget exhausted ({kind}): needed {needed}")]
     OutOfMemory {
-        needed: usize,
+        needed: NonZeroByteCount,
         kind: OutOfMemoryKind,
     },
 }

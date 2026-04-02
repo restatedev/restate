@@ -37,7 +37,7 @@ pub trait InvokerHandle<SR> {
         permit: Permit,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
-        outbound_seed: MemoryLease,
+        initial_memory_lease: MemoryLease,
     ) -> Result<(), NotRunningError>;
 
     fn notify_completion(

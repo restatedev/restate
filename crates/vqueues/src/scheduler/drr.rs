@@ -23,6 +23,7 @@ use tracing::{info, trace, warn};
 
 use restate_futures_util::concurrency::Concurrency;
 use restate_memory::{MemoryPool, PollMemoryPool};
+use restate_serde_util::NonZeroByteCount;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::VQueueEntry;
 use restate_storage_api::vqueue_table::VQueueStore;
@@ -67,7 +68,7 @@ pub struct DRRScheduler<S: VQueueStore> {
     max_items_per_decision: NonZeroU16,
     /// Memory to reserve per invocation from the memory pool
     // todo make dynamically configurable via configuration
-    initial_invocation_memory: usize,
+    initial_invocation_memory: NonZeroByteCount,
 
     // SAFETY NOTE: **must** Keep this at the end since it needs to outlive all readers.
     storage: S,
@@ -81,7 +82,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
         concurrency_limiter: Concurrency,
         global_throttling: Option<GlobalTokenBucket>,
         memory_pool: MemoryPool,
-        initial_invocation_memory: usize,
+        initial_invocation_memory: NonZeroByteCount,
         storage: S,
         vqueues: VQueuesMeta<'_>,
     ) -> Self {
@@ -534,7 +535,7 @@ mod tests {
             Concurrency::new_unlimited(),
             None, // no global throttling
             MemoryPool::unlimited(),
-            0, // seed_size: no memory tracking in tests
+            NonZeroByteCount::new(NonZeroUsize::MIN), // no memory tracking in tests
             db.clone(),
             cache.view(),
         )
@@ -551,7 +552,7 @@ mod tests {
             Concurrency::new(Some(NonZeroUsize::new(concurrency_limit).unwrap())),
             None,
             MemoryPool::unlimited(),
-            0, // seed_size: no memory tracking in tests
+            NonZeroByteCount::new(NonZeroUsize::MIN), // no memory tracking in tests
             db.clone(),
             cache.view(),
         )
@@ -647,7 +648,7 @@ mod tests {
             Concurrency::new_unlimited(),
             None,
             MemoryPool::unlimited(),
-            0,
+            NonZeroByteCount::new(NonZeroUsize::MIN), // no memory tracking in tests
             db.clone(),
             cache.view(),
         );
@@ -816,7 +817,7 @@ mod tests {
             Concurrency::new_unlimited(),
             None,
             MemoryPool::unlimited(),
-            0,
+            NonZeroByteCount::new(NonZeroUsize::MIN), // no memory tracking in tests
             db.clone(),
             cache.view(),
         );
@@ -869,7 +870,7 @@ mod tests {
             Concurrency::new_unlimited(),
             None, // no global throttling
             MemoryPool::unlimited(),
-            0,
+            NonZeroByteCount::new(NonZeroUsize::MIN), // no memory tracking in tests
             db.clone(),
             cache.view(),
         );
@@ -1123,7 +1124,7 @@ mod tests {
             Concurrency::new(Some(NonZeroUsize::new(1).unwrap())),
             None,
             MemoryPool::unlimited(),
-            0,
+            NonZeroByteCount::new(NonZeroUsize::MIN), // no memory tracking in tests
             db.clone(),
             cache.view(),
         );

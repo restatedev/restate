@@ -19,6 +19,7 @@ use tracing::trace;
 
 use restate_futures_util::concurrency::{Concurrency, Permit};
 use restate_memory::{MemoryLease, PollMemoryPool};
+use restate_serde_util::NonZeroByteCount;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::metadata::VQueueMeta;
 use restate_storage_api::vqueue_table::{
@@ -277,7 +278,7 @@ impl<S: VQueueStore> VQueueState<S> {
         storage: &S,
         concurrency_limiter: &mut Concurrency,
         memory_limiter: &mut PollMemoryPool,
-        initial_invocation_memory: usize,
+        initial_invocation_memory: NonZeroByteCount,
         global_throttling: Option<&GlobalTokenBucket>,
     ) -> Result<Pop<S::Item>, StorageError> {
         let (inbox_head, is_running) = match self.queue.head() {
@@ -354,7 +355,7 @@ impl<S: VQueueStore> VQueueState<S> {
                 // drop the concurrency permit (it will be re-acquired on the
                 // next poll) and signal blocked-on-memory.
                 let Poll::Ready(memory_lease) =
-                    memory_limiter.poll_reserve(cx, initial_invocation_memory)
+                    memory_limiter.poll_reserve(cx, initial_invocation_memory.as_usize())
                 else {
                     if has_tb_token && let Some(ref start_tb) = self.start_tb {
                         start_tb.add_tokens(1.0);

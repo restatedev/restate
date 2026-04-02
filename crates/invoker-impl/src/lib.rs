@@ -264,7 +264,7 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
                 status_store: Default::default(),
                 invocation_state_machine_manager: Default::default(),
                 memory_pool,
-                pending_seed_lease: None,
+                pending_memory_lease: None,
             },
             invocation_token_bucket,
         }
@@ -412,10 +412,10 @@ struct ServiceInner<InvocationTaskRunner, Schemas, StorageReader> {
 
     // Global memory budget shared across all invocations on this node.
     memory_pool: MemoryPool,
-    /// Pre-acquired seed lease for the next invocation from the segment queue.
+    /// Pre-acquired memory lease for the next invocation from the segment queue.
     /// Acquired at the top of `step()` when the queue is non-empty, and consumed
     /// when the segment queue arm fires.
-    pending_seed_lease: Option<MemoryLease>,
+    pending_memory_lease: Option<MemoryLease>,
 }
 
 impl<ITR, Schemas, IR> ServiceInner<ITR, Schemas, IR>
@@ -436,15 +436,15 @@ where
             >,
         >,
     ) {
-        // Pre-acquire a seed lease from the memory pool so the segment queue arm
+        // Pre-acquire a memory lease from the memory pool so the segment queue arm
         // can create a budget without blocking inside select!.
         let initial_invocation_memory = options.per_invocation_initial_memory.as_usize();
         if segmented_input_queue.inner().is_empty() {
-            // Release the seed if the queue drained since we acquired it, so the
+            // Release the lease if the queue drained since we acquired it, so the
             // memory is returned to the global pool instead of being held idle.
-            self.pending_seed_lease = None;
-        } else if self.pending_seed_lease.is_none() {
-            self.pending_seed_lease = self.memory_pool.try_reserve(initial_invocation_memory);
+            self.pending_memory_lease = None;
+        } else if self.pending_memory_lease.is_none() {
+            self.pending_memory_lease = self.memory_pool.try_reserve(initial_invocation_memory);
         }
 
         tokio::select! {
@@ -499,13 +499,13 @@ where
                     }
                 }
             },
-            Some(invoke_input_command) = segmented_input_queue.next(), if !segmented_input_queue.inner().is_empty() && self.quota.is_slot_available() && self.pending_seed_lease.is_some() => {
-                let outbound_seed = self.pending_seed_lease.take().unwrap();
-                let budget = self.create_outbound_budget(options, outbound_seed);
+            Some(invoke_input_command) = segmented_input_queue.next(), if !segmented_input_queue.inner().is_empty() && self.quota.is_slot_available() && self.pending_memory_lease.is_some() => {
+                let initial_memory_lease = self.pending_memory_lease.take().unwrap();
+                let budget = self.create_outbound_budget(options, initial_memory_lease);
                 self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.invocation_id, invoke_input_command.invocation_target, budget);
             },
-            memory_lease = self.memory_pool.reserve(initial_invocation_memory), if !segmented_input_queue.inner().is_empty() && self.pending_seed_lease.is_none() => {
-                self.pending_seed_lease = Some(memory_lease);
+            memory_lease = self.memory_pool.reserve(initial_invocation_memory), if !segmented_input_queue.inner().is_empty() && self.pending_memory_lease.is_none() => {
+                self.pending_memory_lease = Some(memory_lease);
             }
             Some(invocation_task_msg) = self.invocation_tasks_rx.recv() => {
                 let InvocationTaskOutput {
@@ -648,9 +648,9 @@ where
                 .expect("partition is registered");
             let concurrency_slot = self.quota.acquire_slot();
 
-            // VQueue path: use an empty-seeded budget for now. A follow-up will
-            // have the vqueue scheduler supply a pre-acquired MemoryLease.
-            let budget = self.create_outbound_budget(options, command.outbound_seed);
+            // VQueue path: the vqueue scheduler supplies a pre-acquired MemoryLease
+            // used as the initial memory for the outbound budget.
+            let budget = self.create_outbound_budget(options, command.initial_memory_lease);
             self.start_invocation_task(
                 options,
                 command.partition,
@@ -1283,7 +1283,7 @@ where
                     {
                         debug!(
                             restate.invocation.target = %ism.invocation_target,
-                            needed = %ByteCount::from(oom.needed),
+                            needed = %oom.needed,
                             "Invocation yielding due to global memory pool exhaustion while {}",
                             oom.context,
                         );
@@ -1292,7 +1292,7 @@ where
                         let _ = sender
                             .send(Box::new(Effect {
                                 invocation_id,
-                                kind: EffectKind::Yield(YieldReason::OutOfMemory {
+                                kind: EffectKind::Yield(YieldReason::ExhaustedMemoryBudget {
                                     needed_memory: oom.needed,
                                 }),
                             }))
@@ -1684,13 +1684,13 @@ where
     fn create_outbound_budget(
         &self,
         options: &InvokerOptions,
-        outbound_seed: MemoryLease,
+        initial_memory_lease: MemoryLease,
     ) -> LocalMemoryPool {
         let upper_bound = options.per_invocation_memory_limit();
-        let min_reserved = outbound_seed.size().as_usize();
+        let min_reserved = ByteCount::from(initial_memory_lease.size().as_usize());
         LocalMemoryPool::new(
-            outbound_seed.budget().clone(),
-            outbound_seed,
+            initial_memory_lease.budget().clone(),
+            initial_memory_lease,
             min_reserved,
             upper_bound,
         )
@@ -1802,6 +1802,7 @@ mod tests {
     use restate_invoker_api::InvokerHandle;
     use restate_invoker_api::entry_enricher;
     use restate_invoker_api::test_util::EmptyStorageReader;
+    use restate_serde_util::NonZeroByteCount;
     use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
     use restate_test_util::check;
     use restate_time_util::FriendlyDuration;
@@ -1874,7 +1875,7 @@ mod tests {
                 status_store: Default::default(),
                 invocation_state_machine_manager: Default::default(),
                 memory_pool: MemoryPool::unlimited(),
-                pending_seed_lease: None,
+                pending_memory_lease: None,
             };
             (input_tx, status_tx, service_inner)
         }
@@ -1895,12 +1896,17 @@ mod tests {
 
         /// Helper for tests: Create an outbound budget from the mock's unlimited pool.
         fn test_budget(&self) -> LocalMemoryPool {
-            let upper_bound = match self.memory_pool.capacity().as_usize() {
-                0 => usize::MAX,
-                cap => cap,
+            let upper_bound = match NonZeroUsize::new(self.memory_pool.capacity().as_usize()) {
+                None => NonZeroByteCount::new(NonZeroUsize::MAX),
+                Some(cap) => NonZeroByteCount::new(cap),
             };
-            let seed = self.memory_pool.empty_lease();
-            LocalMemoryPool::new(self.memory_pool.clone(), seed, 0, upper_bound)
+            let initial_lease = self.memory_pool.empty_lease();
+            LocalMemoryPool::new(
+                self.memory_pool.clone(),
+                initial_lease,
+                ByteCount::ZERO,
+                upper_bound,
+            )
         }
 
         /// Helper for tests: Process the registered retry timers until all timers have fired.
@@ -3157,7 +3163,7 @@ mod tests {
                 MOCK_PARTITION,
                 invocation_id,
                 InvocationMemoryExhausted {
-                    needed: 32768,
+                    needed: NonZeroByteCount::new(NonZeroUsize::new(32768).unwrap()),
                     kind: OutOfMemoryKind::PoolExhausted,
                     context: "test",
                 },
@@ -3228,7 +3234,7 @@ mod tests {
                 MOCK_PARTITION,
                 invocation_id,
                 InvocationMemoryExhausted {
-                    needed: 32768,
+                    needed: NonZeroByteCount::new(NonZeroUsize::new(32768).unwrap()),
                     kind: OutOfMemoryKind::PoolExhausted,
                     context: "test",
                 },
@@ -3244,9 +3250,11 @@ mod tests {
             *effect,
             pat!(Effect {
                 invocation_id: eq(invocation_id),
-                kind: pat!(EffectKind::Yield(pat!(YieldReason::OutOfMemory {
-                    needed_memory: eq(32768),
-                })))
+                kind: pat!(EffectKind::Yield(pat!(
+                    YieldReason::ExhaustedMemoryBudget {
+                        needed_memory: eq(NonZeroByteCount::new(NonZeroUsize::new(32768).unwrap())),
+                    }
+                )))
             })
         );
 
