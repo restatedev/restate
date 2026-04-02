@@ -328,52 +328,12 @@ pub struct LambdaDeploymentResponse {
     pub info: Vec<SchemaInfo>,
 }
 
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(tag = "type", rename_all = "lowercase")]
 pub enum DeploymentResponse {
     Http(HttpDeploymentResponse),
     Lambda(LambdaDeploymentResponse),
-}
-
-#[cfg(feature = "schema")]
-impl utoipa::__dev::ComposeSchema for DeploymentResponse {
-    fn compose(
-        _: Vec<utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>>,
-    ) -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        utoipa::openapi::schema::AnyOfBuilder::new()
-            .item(utoipa::openapi::Ref::from_schema_name(
-                <HttpDeploymentResponse as utoipa::ToSchema>::name().to_string(),
-            ))
-            .item(utoipa::openapi::Ref::from_schema_name(
-                <LambdaDeploymentResponse as utoipa::ToSchema>::name().to_string(),
-            ))
-            .into()
-    }
-}
-
-#[cfg(feature = "schema")]
-impl utoipa::ToSchema for DeploymentResponse {
-    fn name() -> std::borrow::Cow<'static, str> {
-        std::borrow::Cow::Borrowed("DeploymentResponse")
-    }
-
-    fn schemas(
-        schemas: &mut Vec<(
-            String,
-            utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
-        )>,
-    ) {
-        schemas.push((
-            <HttpDeploymentResponse as utoipa::ToSchema>::name().to_string(),
-            <HttpDeploymentResponse as utoipa::PartialSchema>::schema(),
-        ));
-        <HttpDeploymentResponse as utoipa::ToSchema>::schemas(schemas);
-        schemas.push((
-            <LambdaDeploymentResponse as utoipa::ToSchema>::name().to_string(),
-            <LambdaDeploymentResponse as utoipa::PartialSchema>::schema(),
-        ));
-        <LambdaDeploymentResponse as utoipa::ToSchema>::schemas(schemas);
-    }
 }
 
 impl DeploymentResponse {
@@ -526,52 +486,12 @@ pub struct LambdaDetailedDeploymentResponse {
 }
 
 /// Detailed information about Restate deployments
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(tag = "type", rename_all = "lowercase")]
 pub enum DetailedDeploymentResponse {
     Http(HttpDetailedDeploymentResponse),
     Lambda(LambdaDetailedDeploymentResponse),
-}
-
-#[cfg(feature = "schema")]
-impl utoipa::__dev::ComposeSchema for DetailedDeploymentResponse {
-    fn compose(
-        _: Vec<utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>>,
-    ) -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        utoipa::openapi::schema::AnyOfBuilder::new()
-            .item(utoipa::openapi::Ref::from_schema_name(
-                <HttpDetailedDeploymentResponse as utoipa::ToSchema>::name().to_string(),
-            ))
-            .item(utoipa::openapi::Ref::from_schema_name(
-                <LambdaDetailedDeploymentResponse as utoipa::ToSchema>::name().to_string(),
-            ))
-            .into()
-    }
-}
-
-#[cfg(feature = "schema")]
-impl utoipa::ToSchema for DetailedDeploymentResponse {
-    fn name() -> std::borrow::Cow<'static, str> {
-        std::borrow::Cow::Borrowed("DetailedDeploymentResponse")
-    }
-
-    fn schemas(
-        schemas: &mut Vec<(
-            String,
-            utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
-        )>,
-    ) {
-        schemas.push((
-            <HttpDetailedDeploymentResponse as utoipa::ToSchema>::name().to_string(),
-            <HttpDetailedDeploymentResponse as utoipa::PartialSchema>::schema(),
-        ));
-        <HttpDetailedDeploymentResponse as utoipa::ToSchema>::schemas(schemas);
-        schemas.push((
-            <LambdaDetailedDeploymentResponse as utoipa::ToSchema>::name().to_string(),
-            <LambdaDetailedDeploymentResponse as utoipa::PartialSchema>::schema(),
-        ));
-        <LambdaDetailedDeploymentResponse as utoipa::ToSchema>::schemas(schemas);
-    }
 }
 
 impl DetailedDeploymentResponse {
