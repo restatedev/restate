@@ -1982,14 +1982,23 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteVQueueTable
             + WriteJournalEventsTable,
     {
-        self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
-            .await?;
-
         let after_journal_entry_index = metadata
             .journal_metadata
             .length
             .checked_sub(1)
             .unwrap_or_default();
+
+        self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
+            .await?;
+
+        self.end_invocation(
+            invocation_id,
+            metadata,
+            Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
+        )
+        .await?;
+
+        // Write after end_invocation so journal cleanup (do_drop_journal) doesn't delete it
         self.storage.put_journal_event(
             invocation_id,
             EventView {
@@ -2000,12 +2009,6 @@ impl<S> StateMachineApplyContext<'_, S> {
             self.record_lsn.as_u64(),
         )?;
 
-        self.end_invocation(
-            invocation_id,
-            metadata,
-            Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
-        )
-        .await?;
         self.do_send_abort_invocation_to_invoker(invocation_id);
         Ok(())
     }
@@ -2033,14 +2036,23 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteVQueueTable
             + WriteJournalEventsTable,
     {
-        self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
-            .await?;
-
         let after_journal_entry_index = metadata
             .journal_metadata
             .length
             .checked_sub(1)
             .unwrap_or_default();
+
+        self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
+            .await?;
+
+        self.end_invocation(
+            invocation_id,
+            metadata,
+            Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
+        )
+        .await?;
+
+        // Write after end_invocation so journal cleanup (do_drop_journal) doesn't delete it
         self.storage.put_journal_event(
             invocation_id,
             EventView {
@@ -2051,12 +2063,6 @@ impl<S> StateMachineApplyContext<'_, S> {
             self.record_lsn.as_u64(),
         )?;
 
-        self.end_invocation(
-            invocation_id,
-            metadata,
-            Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
-        )
-        .await?;
         self.do_send_abort_invocation_to_invoker(invocation_id);
         Ok(())
     }
@@ -2597,6 +2603,13 @@ impl<S> StateMachineApplyContext<'_, S> {
                     .length
                     .checked_sub(1)
                     .unwrap_or_default();
+                self.end_invocation(
+                    effect.invocation_id,
+                    metadata,
+                    Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
+                )
+                .await?;
+                // Write after end_invocation so journal cleanup (do_drop_journal) doesn't delete it
                 self.storage.put_journal_event(
                     effect.invocation_id,
                     EventView {
@@ -2606,12 +2619,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                     },
                     self.record_lsn.as_u64(),
                 )?;
-                self.end_invocation(
-                    effect.invocation_id,
-                    metadata,
-                    Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
-                )
-                .await?;
             }
         }
 
