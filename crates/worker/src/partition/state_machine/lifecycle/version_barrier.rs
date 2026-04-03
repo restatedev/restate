@@ -54,8 +54,8 @@ mod tests {
     use restate_wal_protocol::Command;
     use restate_wal_protocol::control::VersionBarrier;
 
+    use crate::partition::state_machine::StateMachine;
     use crate::partition::state_machine::tests::TestEnv;
-    use crate::partition::state_machine::{Action, StateMachine};
 
     #[restate_core::test]
     async fn stop_at_version_barrier() {
@@ -121,7 +121,7 @@ mod tests {
             }))
             .await;
 
-        assert_that!(result, ok(eq(Vec::<Action>::new())));
+        assert_that!(result, ok(empty()));
 
         {
             let applied = test_env.storage().get_min_restate_version().await.unwrap();
@@ -136,7 +136,7 @@ mod tests {
             }))
             .await;
 
-        assert_that!(result, ok(eq(Vec::<Action>::new())));
+        assert_that!(result, ok(empty()));
         {
             let applied = test_env.storage().get_min_restate_version().await.unwrap();
             assert_that!(&applied, eq(SemanticRestateVersion::current()));
@@ -151,7 +151,7 @@ mod tests {
             }))
             .await;
 
-        assert_that!(result, ok(eq(Vec::<Action>::new())));
+        assert_that!(result, ok(empty()));
 
         {
             let applied = test_env.storage().get_min_restate_version().await.unwrap();
