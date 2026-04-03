@@ -26,20 +26,26 @@ pub enum Limit<V> {
 
 /// The concrete limits that apply for after matching a limit key to the set of
 /// rules from the rule store.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StructuredLimits<V> {
     scope: Limit<V>,
     l1: Limit<V>,
     l2: Limit<V>,
 }
 
-impl<V> Default for StructuredLimits<V> {
-    fn default() -> Self {
+impl<V> StructuredLimits<V> {
+    pub const fn new() -> Self {
         Self {
             scope: Limit::Undefined,
             l1: Limit::Undefined,
             l2: Limit::Undefined,
         }
+    }
+}
+
+impl<V> Default for StructuredLimits<V> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -124,7 +130,7 @@ impl<S: OwnedStringLike, V> Rules<S, V> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Rules<S: StringLike, V> {
     rules: SlotMap<RuleHandle, RulePattern<S>>,
     limits: SecondaryMap<RuleHandle, V>,
