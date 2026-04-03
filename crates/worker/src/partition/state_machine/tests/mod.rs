@@ -47,7 +47,7 @@ use restate_storage_api::service_status_table::{
 use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_test_util::matchers::*;
 use restate_types::config::StorageOptions;
-use restate_types::errors::{InvocationError, KILLED_INVOCATION_ERROR, codes};
+use restate_types::errors::{InvocationError, codes};
 use restate_types::identifiers::{
     AwakeableIdentifier, InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId,
     ServiceId,

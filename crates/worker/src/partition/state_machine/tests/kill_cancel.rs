@@ -15,7 +15,6 @@ use assert2::let_assert;
 use googletest::any;
 use prost::Message;
 use restate_invoker_api::EffectKind as InvokerEffectKind;
-use restate_storage_api::invocation_status_table::CompletedInvocation;
 use restate_storage_api::journal_table;
 use restate_storage_api::journal_table::WriteJournalTable;
 use restate_storage_api::timer_table::{
