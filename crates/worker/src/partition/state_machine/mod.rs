@@ -2619,6 +2619,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     },
                     self.record_lsn.as_u64(),
                 )?;
+            }
             InvokerEffectKind::Yield(ref reason) => {
                 let invocation_metadata = invocation_status
                     .into_invocation_metadata()
