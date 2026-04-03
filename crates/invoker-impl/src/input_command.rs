@@ -8,15 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::RangeInclusive;
+
+use tokio::sync::mpsc;
+
 use restate_errors::NotRunningError;
 use restate_futures_util::concurrency::Permit;
-use restate_invoker_api::{Effect, InvocationStatusReport, StatusHandle};
+use restate_memory::MemoryLease;
 use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::vqueue::VQueueId;
-use std::ops::RangeInclusive;
-use tokio::sync::mpsc;
+
+use restate_invoker_api::{Effect, InvocationStatusReport, StatusHandle};
 // -- Input messages
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -36,6 +40,8 @@ pub(crate) struct VQueueInvokeCommand {
     pub(super) partition: PartitionLeaderEpoch,
     pub(super) invocation_id: InvocationId,
     pub(super) invocation_target: InvocationTarget,
+    #[debug(skip)]
+    pub(super) initial_memory_lease: MemoryLease,
 }
 
 #[derive(Debug)]
@@ -123,6 +129,7 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
         permit: Permit,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
+        initial_memory_lease: MemoryLease,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::VQInvoke(Box::new(VQueueInvokeCommand {
@@ -131,6 +138,7 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
                 partition,
                 invocation_id,
                 invocation_target,
+                initial_memory_lease,
             })))
             .map_err(|_| NotRunningError)
     }

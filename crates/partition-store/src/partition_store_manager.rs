@@ -268,8 +268,6 @@ impl PartitionStoreManager {
             }
 
             (Some(snapshot), None) => {
-                // Based on the assumptions for calling this method, we should only reach this point if
-                // there is no existing store - we can import without first dropping the column family.
                 info!("Found partition snapshot, restoring it");
                 let db = cell
                     .import_cf(&mut state_guard, snapshot, rocksdb.clone())

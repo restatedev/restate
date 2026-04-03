@@ -380,14 +380,16 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::collections::{HashMap, HashSet};
+    use std::future::ready;
 
-    use crate::partition::rpc::MockActuator;
     use assert2::let_assert;
     use bytes::Bytes;
-    use futures::{FutureExt, Stream, stream};
+    use futures::{FutureExt, Stream, StreamExt, stream};
     use googletest::prelude::*;
-    use journal_v2::{InputCommand, SleepCommand};
+    use rstest::rstest;
+    use test_log::test;
+
     use restate_storage_api::invocation_status_table::{
         CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, JournalMetadata,
         PreFlightInvocationMetadata, ScheduledInvocation,
@@ -404,10 +406,12 @@ mod tests {
     use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry;
     use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
     use restate_types::time::MillisSinceEpoch;
-    use rstest::rstest;
-    use std::collections::{HashMap, HashSet};
-    use std::future::ready;
-    use test_log::test;
+
+    use super::*;
+
+    use crate::partition::rpc::MockActuator;
+    use journal_v2::{InputCommand, SleepCommand};
+    use restate_storage_api::BudgetedReadError;
 
     struct MockStorage {
         expected_invocation_id: InvocationId,
@@ -537,6 +541,51 @@ mod tests {
             assert_eq!(self.expected_invocation_id, invocation_id);
             ready(Ok(self.has_completion))
         }
+
+        fn get_journal_entry_budgeted(
+            &mut self,
+            invocation_id: InvocationId,
+            journal_index: u32,
+            budget: &mut restate_memory::LocalMemoryPool,
+        ) -> impl Future<
+            Output = std::result::Result<
+                Option<(StoredRawEntry, restate_memory::LocalMemoryLease)>,
+                BudgetedReadError,
+            >,
+        > + Send {
+            assert_eq!(self.expected_invocation_id, invocation_id);
+            let res = self
+                .entries
+                .get(journal_index as usize)
+                .cloned()
+                .map(|e| (e, budget.empty_lease()));
+            ready(Ok(res))
+        }
+
+        fn get_journal_budgeted<'a>(
+            &'a self,
+            invocation_id: InvocationId,
+            entry_index: EntryIndex,
+            budget: &'a mut restate_memory::LocalMemoryPool,
+        ) -> restate_storage_api::Result<
+            impl Stream<
+                Item = std::result::Result<
+                    (EntryIndex, StoredRawEntry, restate_memory::LocalMemoryLease),
+                    restate_storage_api::BudgetedReadError,
+                >,
+            > + Send
+            + 'a,
+        > {
+            journal_table_v2::ReadJournalTable::get_journal(self, invocation_id, entry_index).map(
+                |stream| {
+                    stream.map(|result| {
+                        result
+                            .map(|(index, entry)| (index, entry, budget.empty_lease()))
+                            .map_err(BudgetedReadError::from)
+                    })
+                },
+            )
+        }
     }
 
     // Implement journal v1 table as workaround source for tests
@@ -583,6 +632,64 @@ mod tests {
                 vec![]
             };
             Ok(stream::iter(items.into_iter().map(Ok)))
+        }
+
+        fn get_journal_entry_budgeted(
+            &mut self,
+            _invocation_id: &InvocationId,
+            journal_index: u32,
+            budget: &mut restate_memory::LocalMemoryPool,
+        ) -> impl Future<
+            Output = std::result::Result<
+                Option<(
+                    journal_table_v1::JournalEntry,
+                    restate_memory::LocalMemoryLease,
+                )>,
+                BudgetedReadError,
+            >,
+        > + Send {
+            let entry = if journal_index == 0
+                && let (Some(payload), Some(headers)) =
+                    (self.v1_input_payload.clone(), self.v1_input_headers.clone())
+            {
+                let enr = OldProtocolEntryCodec::serialize_as_input_entry(headers, payload);
+                Some((
+                    journal_table_v1::JournalEntry::Entry(enr),
+                    budget.empty_lease(),
+                ))
+            } else {
+                None
+            };
+            ready(Ok(entry))
+        }
+
+        fn get_journal_budgeted<'a>(
+            &'a self,
+            invocation_id: &InvocationId,
+            entry_index: EntryIndex,
+            budget: &'a mut restate_memory::LocalMemoryPool,
+        ) -> restate_storage_api::Result<
+            impl Stream<
+                Item = std::result::Result<
+                    (
+                        EntryIndex,
+                        journal_table_v1::JournalEntry,
+                        restate_memory::LocalMemoryLease,
+                    ),
+                    restate_storage_api::BudgetedReadError,
+                >,
+            > + Send
+            + 'a,
+        > {
+            journal_table_v1::ReadJournalTable::get_journal(self, invocation_id, entry_index).map(
+                |stream| {
+                    stream.map(|result| {
+                        result
+                            .map(|(index, entry)| (index, entry, budget.empty_lease()))
+                            .map_err(BudgetedReadError::from)
+                    })
+                },
+            )
         }
     }
 

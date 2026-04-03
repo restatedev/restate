@@ -7304,6 +7304,7 @@ dependencies = [
  "gardal",
  "restate-errors",
  "restate-futures-util",
+ "restate-memory",
  "restate-types",
  "restate-workspace-hack",
  "serde",
@@ -7336,6 +7337,7 @@ dependencies = [
  "restate-errors",
  "restate-futures-util",
  "restate-invoker-api",
+ "restate-memory",
  "restate-queue",
  "restate-serde-util",
  "restate-service-client",
@@ -7492,11 +7494,14 @@ name = "restate-memory"
 version = "1.6.3-dev"
 dependencies = [
  "bytes",
+ "futures",
  "hashbrown 0.16.1",
  "metrics",
  "parking_lot",
+ "pin-project-lite",
  "restate-serde-util",
  "restate-workspace-hack",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
@@ -7726,11 +7731,13 @@ dependencies = [
  "object_store 0.13.1",
  "parking_lot",
  "paste",
+ "pin-project",
  "prost",
  "rand 0.9.2",
  "restate-clock",
  "restate-core",
  "restate-errors",
+ "restate-memory",
  "restate-object-store-util",
  "restate-rocksdb",
  "restate-serde-util",
@@ -7975,6 +7982,7 @@ dependencies = [
  "prost",
  "prost-build",
  "restate-clock",
+ "restate-memory",
  "restate-types",
  "restate-workspace-hack",
  "serde",
@@ -8240,8 +8248,10 @@ dependencies = [
  "restate-clock",
  "restate-core",
  "restate-futures-util",
+ "restate-memory",
  "restate-partition-store",
  "restate-rocksdb",
+ "restate-serde-util",
  "restate-storage-api",
  "restate-types",
  "restate-workspace-hack",
@@ -8270,8 +8280,8 @@ dependencies = [
 
 [[package]]
 name = "restate-web-ui"
-version = "0.1.51"
-source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v0.1.51#2a4e47a4d981bbad8de82cb2beb79c117e972c45"
+version = "0.1.52"
+source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v0.1.52#043447ed597e8907d507878ef1cda0ab6d389855"
 dependencies = [
  "anyhow",
  "include_dir",
@@ -8310,6 +8320,7 @@ dependencies = [
  "restate-ingress-kafka",
  "restate-invoker-api",
  "restate-invoker-impl",
+ "restate-memory",
  "restate-metadata-server",
  "restate-metadata-store",
  "restate-partition-store",

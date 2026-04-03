@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroUsize;
+
 use super::*;
 
 mod delayed_send;
@@ -1244,4 +1246,43 @@ async fn deduplicate_requests_with_same_pp_rpc_request_id() -> TestResult {
 
     test_env.shutdown().await;
     Ok(())
+}
+
+#[restate_core::test]
+async fn yield_effect_resumes_invocation() {
+    let mut test_env = TestEnv::create().await;
+    let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+    fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
+
+    // Apply a Yield effect — the invocation should be immediately re-invoked
+    let actions = test_env
+        .apply(Command::InvokerEffect(Box::new(Effect {
+            invocation_id,
+            kind: EffectKind::Yield(restate_invoker_api::YieldReason::ExhaustedMemoryBudget {
+                needed_memory: restate_memory::NonZeroByteCount::new(
+                    NonZeroUsize::new(32768).unwrap(),
+                ),
+            }),
+        })))
+        .await;
+
+    // Yield should produce an Action::Invoke to re-schedule the invocation
+    assert_that!(
+        actions,
+        contains(matchers::actions::invoke_for_id(invocation_id))
+    );
+
+    // The invocation should still be in Invoked status (not ended or suspended)
+    assert_that!(
+        test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap(),
+        matchers::storage::is_variant(
+            restate_storage_api::invocation_status_table::InvocationStatusDiscriminants::Invoked
+        )
+    );
+
+    test_env.shutdown().await;
 }

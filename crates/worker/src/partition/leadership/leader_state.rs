@@ -26,6 +26,7 @@ use restate_bifrost::CommitToken;
 use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{Metadata, MetadataKind, TaskCenter, TaskHandle, TaskId};
 use restate_futures_util::concurrency::Permit;
+use restate_memory::MemoryPool;
 use restate_partition_store::{PartitionDb, PartitionStore};
 use restate_storage_api::vqueue_table::EntryCard;
 use restate_types::identifiers::{
@@ -473,6 +474,7 @@ impl LeaderState {
         invoker_tx: &mut impl restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
         actions: impl Iterator<Item = Action>,
         vqueues: VQueuesMeta<'_>,
+        memory_pool: &MemoryPool,
     ) -> Result<(), Error> {
         for action in actions {
             let action_name = action.name();
@@ -487,7 +489,7 @@ impl LeaderState {
             )
             .increment(1);
 
-            self.handle_action(action, invoker_tx, vqueues)?;
+            self.handle_action(action, invoker_tx, vqueues, memory_pool)?;
         }
 
         Ok(())
@@ -498,6 +500,7 @@ impl LeaderState {
         action: Action,
         invoker_tx: &mut impl restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
         vqueues: VQueuesMeta<'_>,
+        memory_pool: &MemoryPool,
     ) -> Result<(), Error> {
         let partition_leader_epoch = (self.partition_id, self.leader_epoch);
         match action {
@@ -655,12 +658,15 @@ impl LeaderState {
                 invocation_id,
                 invocation_target,
             } => {
-                let permit = self.scheduler.pop_permit(item_hash).unwrap_or_else(|| {
-                    tracing::warn!(
-                        "Cannot find a permit for item hash {item_hash} in scheduler. Will not respect the invoker limit for this invocation"
-                    );
-                    Permit::new_empty()
-                });
+                let (permit, memory_lease) = match self.scheduler.pop_resources(item_hash) {
+                    Some(resources) => (resources.permit, resources.memory_lease),
+                    None => {
+                        tracing::warn!(
+                            "Cannot find resources for item hash {item_hash} in scheduler. Will not respect the invoker limit for this invocation"
+                        );
+                        (Permit::new_empty(), memory_pool.empty_lease())
+                    }
+                };
                 invoker_tx
                     .vqueue_invoke(
                         partition_leader_epoch,
@@ -668,6 +674,7 @@ impl LeaderState {
                         permit,
                         invocation_id,
                         invocation_target,
+                        memory_lease,
                     )
                     .map_err(Error::Invoker)?
             }

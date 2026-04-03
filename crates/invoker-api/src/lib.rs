@@ -18,29 +18,34 @@ pub mod status_handle;
 pub use effects::*;
 pub use entry_enricher::EntryEnricher;
 pub use handle::*;
-pub use invocation_reader::{JournalKind, JournalMetadata};
+pub use invocation_reader::{InvocationReaderError, JournalKind, JournalMetadata};
 pub use status_handle::{InvocationErrorReport, InvocationStatusReport, StatusHandle};
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util {
     use super::*;
-    use crate::invocation_reader::{
-        EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry, JournalKind,
-    };
+    use std::convert::Infallible;
+    use std::marker::PhantomData;
+    use std::ops::RangeInclusive;
+
     use bytes::Bytes;
+    use tokio::sync::mpsc::Sender;
+
     use restate_errors::NotRunningError;
     use restate_futures_util::concurrency::Permit;
+    use restate_memory::{
+        IgnorePinnableMemoryStream, LocalMemoryLease, LocalMemoryPool, MemoryLease,
+    };
     use restate_types::identifiers::{
         EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch, ServiceId,
     };
     use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
-
     use restate_types::time::MillisSinceEpoch;
     use restate_types::vqueue::VQueueId;
-    use std::convert::Infallible;
-    use std::marker::PhantomData;
-    use std::ops::RangeInclusive;
-    use tokio::sync::mpsc::Sender;
+
+    use crate::invocation_reader::{
+        EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry, JournalKind,
+    };
 
     #[derive(Debug, Clone)]
     pub struct EmptyStorageReader;
@@ -61,6 +66,16 @@ pub mod test_util {
         ) -> Result<Option<JournalEntry>, Infallible> {
             Ok(None)
         }
+
+        async fn read_journal_entry_budgeted(
+            &mut self,
+            _invocation_id: &InvocationId,
+            _entry_index: EntryIndex,
+            _journal_kind: JournalKind,
+            _budget: &mut LocalMemoryPool,
+        ) -> Result<Option<(JournalEntry, LocalMemoryLease)>, Infallible> {
+            Ok(None)
+        }
     }
 
     pub struct EmptyStorageReaderTransaction;
@@ -68,6 +83,11 @@ pub mod test_util {
     impl InvocationReaderTransaction for EmptyStorageReaderTransaction {
         type JournalStream<'a> = futures::stream::Empty<Result<JournalEntry, Self::Error>>;
         type StateStream<'a> = futures::stream::Empty<Result<(Bytes, Bytes), Self::Error>>;
+        type LocalMemoryPooledJournalStream<'a> =
+            futures::stream::Empty<Result<(JournalEntry, LocalMemoryLease), Self::Error>>;
+        type LocalMemoryPooledStateStream<'a> = IgnorePinnableMemoryStream<
+            futures::stream::Empty<Result<(Bytes, Bytes, LocalMemoryLease), Self::Error>>,
+        >;
         type Error = Infallible;
 
         async fn read_journal_metadata(
@@ -98,6 +118,26 @@ pub mod test_util {
             _service_id: &ServiceId,
         ) -> Result<EagerState<Self::StateStream<'_>>, Self::Error> {
             Ok(EagerState::new_complete(futures::stream::empty()))
+        }
+
+        fn read_journal_budgeted<'a>(
+            &'a self,
+            _invocation_id: &InvocationId,
+            _length: EntryIndex,
+            _journal_kind: JournalKind,
+            _budget: &'a mut LocalMemoryPool,
+        ) -> Result<Self::LocalMemoryPooledJournalStream<'a>, Self::Error> {
+            Ok(futures::stream::empty())
+        }
+
+        fn read_state_budgeted<'a>(
+            &'a self,
+            _service_id: &ServiceId,
+            _budget: &'a mut LocalMemoryPool,
+        ) -> Result<EagerState<Self::LocalMemoryPooledStateStream<'a>>, Self::Error> {
+            Ok(EagerState::new_complete(IgnorePinnableMemoryStream::new(
+                futures::stream::empty(),
+            )))
         }
     }
 
@@ -131,6 +171,7 @@ pub mod test_util {
             _permit: Permit,
             _invocation_id: InvocationId,
             _invocation_target: InvocationTarget,
+            _initial_memory_lease: MemoryLease,
         ) -> Result<(), NotRunningError> {
             Ok(())
         }

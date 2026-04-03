@@ -17,7 +17,9 @@ use std::time::Duration;
 use http::{HeaderName, HeaderValue};
 use tokio::task::JoinError;
 
-use restate_invoker_api::InvocationErrorReport;
+use restate_invoker_api::{InvocationErrorReport, InvocationReaderError};
+use restate_memory::OutOfMemoryKind;
+use restate_serde_util::NonZeroByteCount;
 use restate_service_client::ServiceClientError;
 use restate_service_protocol::message::{EncodingError, MessageType};
 use restate_time_util::FriendlyDuration;
@@ -184,6 +186,34 @@ pub(crate) enum InvokerError {
     )]
     #[code(restate_errors::RT0020)]
     DeploymentDeprecated(String, DeploymentId),
+
+    #[error("{0}")]
+    #[code(restate_errors::RT0001)]
+    OutOfMemory(InvocationMemoryExhausted),
+}
+
+/// Describes a memory budget exhaustion that occurred during invocation
+/// processing. Carried through the invoker pipeline from the origin site
+/// (journal reader, state reader) all the way to the invoker main loop
+/// where it either triggers a yield or an error effect.
+#[derive(Debug, Clone)]
+pub(crate) struct InvocationMemoryExhausted {
+    /// Bytes needed to satisfy the failed allocation.
+    pub needed: NonZeroByteCount,
+    /// Why the allocation failed.
+    pub kind: OutOfMemoryKind,
+    /// Human-readable description of what was being done when the OOM occurred.
+    pub context: &'static str,
+}
+
+impl fmt::Display for InvocationMemoryExhausted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "memory budget exhausted ({}) while {}: needed {}",
+            self.kind, self.context, self.needed,
+        )
+    }
 }
 
 fn retry_after_display(after: &Option<Duration>) -> String {
@@ -209,7 +239,11 @@ impl InvokerError {
     }
 
     pub(crate) fn is_transient(&self) -> bool {
-        !matches!(self, InvokerError::NotInvoked)
+        match self {
+            InvokerError::NotInvoked => false,
+            InvokerError::OutOfMemory(oom) => oom.kind != OutOfMemoryKind::UpperBoundExceeded,
+            _ => true,
+        }
     }
 
     pub(crate) fn should_bump_start_message_retry_count_since_last_stored_entry(&self) -> bool {
@@ -223,7 +257,36 @@ impl InvokerError {
                 | InvokerError::UnknownDeployment(_)
                 | InvokerError::ResumeWithWrongServiceProtocolVersion(_)
                 | InvokerError::IncompatibleServiceEndpoint(_, _)
+                | InvokerError::OutOfMemory(_)
         )
+    }
+
+    /// Converts a journal reader error, preserving budget exhaustion as
+    /// [`InvokerError::OutOfMemory`].
+    pub(crate) fn from_journal_reader<E: InvocationReaderError>(e: E) -> Self {
+        if let Some(oom) = e.budget_exhaustion() {
+            InvokerError::OutOfMemory(InvocationMemoryExhausted {
+                needed: oom.needed,
+                kind: oom.kind,
+                context: "reading journal entries",
+            })
+        } else {
+            InvokerError::JournalReader(e.into())
+        }
+    }
+
+    /// Converts a state reader error, preserving budget exhaustion as
+    /// [`InvokerError::OutOfMemory`].
+    pub(crate) fn from_state_reader<E: InvocationReaderError>(e: E) -> Self {
+        if let Some(oom) = e.budget_exhaustion() {
+            InvokerError::OutOfMemory(InvocationMemoryExhausted {
+                needed: oom.needed,
+                kind: oom.kind,
+                context: "reading service state",
+            })
+        } else {
+            InvokerError::StateReader(e.into())
+        }
     }
 
     pub(crate) fn next_retry_interval_override(&self) -> Option<Duration> {

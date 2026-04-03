@@ -17,7 +17,9 @@ use std::task::Poll;
 use hashbrown::HashMap;
 use smallvec::SmallVec;
 
-use restate_futures_util::concurrency::{Concurrency, Permit};
+use restate_futures_util::concurrency::Concurrency;
+use restate_memory::MemoryPool;
+use restate_serde_util::NonZeroByteCount;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{ScanVQueueTable, VQueueEntry, VQueueStore, WaitStats};
 use restate_types::time::MillisSinceEpoch;
@@ -29,6 +31,8 @@ use crate::{VQueuesMeta, VQueuesMetaMut};
 
 use self::drr::DRRScheduler;
 use self::vqueue_state::DetailedEligibility;
+
+pub use self::vqueue_state::ReservedResources;
 
 mod clock;
 mod drr;
@@ -344,6 +348,8 @@ impl<S: VQueueStore> SchedulerService<S> {
     pub async fn create(
         concurrency: Concurrency,
         global_throttling: Option<GlobalTokenBucket>,
+        memory_pool: MemoryPool,
+        initial_invocation_memory: NonZeroByteCount,
         storage: S,
         vqueues_cache: &mut VQueuesMetaMut,
     ) -> Result<Self, StorageError>
@@ -368,6 +374,8 @@ impl<S: VQueueStore> SchedulerService<S> {
             NonZeroU16::new(1000).unwrap(),
             concurrency,
             global_throttling,
+            memory_pool,
+            initial_invocation_memory,
             storage,
             vqueues_cache.view(),
         )));
@@ -385,12 +393,13 @@ impl<S: VQueueStore> SchedulerService<S> {
         Ok(())
     }
 
-    /// Return a run permit for a given item hash if it was assigned by the scheduler.
+    /// Return reserved resources (concurrency permit + memory lease) for a given
+    /// item hash if it was assigned by the scheduler.
     ///
-    /// The permit will not be returned if the unconfirmed assignment was rejected or removed.
-    pub fn pop_permit(&mut self, item_hash: u64) -> Option<Permit> {
+    /// Resources will not be returned if the unconfirmed assignment was rejected or removed.
+    pub fn pop_resources(&mut self, item_hash: u64) -> Option<ReservedResources> {
         if let State::Active(ref mut drr_scheduler) = self.state {
-            drr_scheduler.as_mut().pop_permit(item_hash)
+            drr_scheduler.as_mut().pop_resources(item_hash)
         } else {
             None
         }

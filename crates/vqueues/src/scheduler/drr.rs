@@ -22,7 +22,8 @@ use tokio::time::Instant;
 use tracing::{info, trace, warn};
 
 use restate_futures_util::concurrency::Concurrency;
-use restate_futures_util::concurrency::Permit;
+use restate_memory::{MemoryPool, PollMemoryPool};
+use restate_serde_util::NonZeroByteCount;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::VQueueEntry;
 use restate_storage_api::vqueue_table::VQueueStore;
@@ -36,6 +37,7 @@ use crate::metric_definitions::VQUEUE_RUN_CONFIRMED;
 use crate::metric_definitions::VQUEUE_RUN_REJECTED;
 use crate::scheduler::eligible::EligibilityTracker;
 use crate::scheduler::vqueue_state::Pop;
+use crate::scheduler::vqueue_state::ReservedResources;
 
 use super::Decision;
 use super::GlobalTokenBucket;
@@ -46,9 +48,10 @@ use super::vqueue_state::VQueueState;
 #[pin_project]
 pub struct DRRScheduler<S: VQueueStore> {
     concurrency_limiter: Concurrency,
+    memory_limiter: PollMemoryPool,
     global_throttling: Option<GlobalTokenBucket>,
-    /// Permits waiting for confirmation, rejection, or removal from the leader.
-    pending_permits: HashMap<u64, Permit>,
+    /// Resources waiting for confirmation, rejection, or removal from the leader.
+    pending_resources: HashMap<u64, ReservedResources>,
     // sorted by queue_id
     eligible: EligibilityTracker,
     /// Mapping of vqueue_id -> handle for active vqueues
@@ -63,17 +66,23 @@ pub struct DRRScheduler<S: VQueueStore> {
     limit_qid_per_poll: NonZeroU16,
     /// Limits the number of items included in a single decision across all queues
     max_items_per_decision: NonZeroU16,
+    /// Memory to reserve per invocation from the memory pool
+    // todo make dynamically configurable via configuration
+    initial_invocation_memory: NonZeroByteCount,
 
     // SAFETY NOTE: **must** Keep this at the end since it needs to outlive all readers.
     storage: S,
 }
 
 impl<S: VQueueStore> DRRScheduler<S> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         limit_qid_per_poll: NonZeroU16,
         max_items_per_decision: NonZeroU16,
         concurrency_limiter: Concurrency,
         global_throttling: Option<GlobalTokenBucket>,
+        memory_pool: MemoryPool,
+        initial_invocation_memory: NonZeroByteCount,
         storage: S,
         vqueues: VQueuesMeta<'_>,
     ) -> Self {
@@ -102,6 +111,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
 
         Self {
             concurrency_limiter,
+            memory_limiter: PollMemoryPool::new(memory_pool),
             global_throttling,
             id_lookup,
             q,
@@ -111,7 +121,8 @@ impl<S: VQueueStore> DRRScheduler<S> {
             storage,
             limit_qid_per_poll,
             max_items_per_decision,
-            pending_permits: Default::default(),
+            initial_invocation_memory,
+            pending_resources: Default::default(),
         }
     }
 
@@ -174,6 +185,8 @@ impl<S: VQueueStore> DRRScheduler<S> {
                 cx,
                 this.storage,
                 this.concurrency_limiter,
+                this.memory_limiter,
+                *this.initial_invocation_memory,
                 this.global_throttling.as_ref(),
             )? {
                 Pop::DeficitExhausted => {
@@ -182,15 +195,15 @@ impl<S: VQueueStore> DRRScheduler<S> {
                 }
                 Pop::Item {
                     action,
-                    permit,
+                    resources,
                     entry,
                     updated_zt,
                 } => {
                     coop.made_progress();
                     items_collected += 1;
-                    if let Some(permit) = permit {
-                        this.pending_permits
-                            .insert(entry.item.unique_hash(), permit);
+                    if let Some(resources) = resources {
+                        this.pending_resources
+                            .insert(entry.item.unique_hash(), resources);
                     }
                     decision.push(&qstate.qid, action, entry, updated_zt);
                     // We need to set the state so we check eligibility and setup
@@ -201,7 +214,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
                     this.eligible.front_throttled(delay, scope);
                     continue;
                 }
-                Pop::BlockedOnCapacity => {
+                Pop::BlockedOnCapacity | Pop::BlockedOnMemory => {
                     if first_blocked.is_none() {
                         first_blocked = Some(handle);
                     }
@@ -230,8 +243,8 @@ impl<S: VQueueStore> DRRScheduler<S> {
         }
     }
 
-    pub fn pop_permit(mut self: Pin<&mut Self>, item_hash: u64) -> Option<Permit> {
-        self.pending_permits.remove(&item_hash)
+    pub fn pop_resources(mut self: Pin<&mut Self>, item_hash: u64) -> Option<ReservedResources> {
+        self.pending_resources.remove(&item_hash)
     }
 
     #[tracing::instrument(skip_all)]
@@ -306,7 +319,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
                 let config = vqueues.config_pool().find(&qid.parent);
                 let meta = vqueues.get_vqueue(&qid).unwrap();
 
-                self.pending_permits.remove(&item_hash);
+                self.pending_resources.remove(&item_hash);
                 if qstate.remove_from_unconfirmed_assignments(item_hash) {
                     counter!(VQUEUE_RUN_REJECTED).increment(1);
 
@@ -330,8 +343,8 @@ impl<S: VQueueStore> DRRScheduler<S> {
                 let config = vqueues.config_pool().find(&qid.parent);
                 let meta = vqueues.get_vqueue(&qid).unwrap();
 
-                // If we have been holding a concurrency permit for this item, we release it.
-                self.pending_permits.remove(&item_hash);
+                // If we have been holding resources for this item, we release them.
+                self.pending_resources.remove(&item_hash);
 
                 if qstate.notify_removed(item_hash) {
                     // if removal invalidates the head, we remove the item from eligibility tracker
@@ -418,6 +431,7 @@ mod tests {
 
     use restate_core::TaskCenter;
     use restate_futures_util::concurrency::Concurrency;
+    use restate_memory::MemoryPool;
     use restate_partition_store::{
         PartitionDb, PartitionStore, PartitionStoreManager, PartitionStoreTransaction,
     };
@@ -520,6 +534,8 @@ mod tests {
             NonZeroU16::new(100).unwrap(), // max_items_per_decision
             Concurrency::new_unlimited(),
             None, // no global throttling
+            MemoryPool::unlimited(),
+            NonZeroByteCount::new(NonZeroUsize::MIN), // no memory tracking in tests
             db.clone(),
             cache.view(),
         )
@@ -535,6 +551,8 @@ mod tests {
             NonZeroU16::new(100).unwrap(),
             Concurrency::new(Some(NonZeroUsize::new(concurrency_limit).unwrap())),
             None,
+            MemoryPool::unlimited(),
+            NonZeroByteCount::new(NonZeroUsize::MIN), // no memory tracking in tests
             db.clone(),
             cache.view(),
         )
@@ -629,6 +647,8 @@ mod tests {
             NonZeroU16::new(3).unwrap(), // max 3 items per decision
             Concurrency::new_unlimited(),
             None,
+            MemoryPool::unlimited(),
+            NonZeroByteCount::new(NonZeroUsize::MIN), // no memory tracking in tests
             db.clone(),
             cache.view(),
         );
@@ -731,8 +751,8 @@ mod tests {
             scheduler.get_status(&qids[0], cache.view()).unwrap().status,
             SchedulingStatus::BlockedOnCapacity,
         );
-        // Pop the permit from the scheduler to release the concurrency token.
-        // In production, the leader calls pop_permit() when it actually runs the item.
+        // Pop the resources from the scheduler to release the concurrency token.
+        // In production, the leader calls pop_resources() when it actually runs the item.
         let item_hash = result
             .into_iter()
             .flat_map(|(_, a)| a.into_iter_per_action())
@@ -742,9 +762,9 @@ mod tests {
             .item
             .unique_hash();
         let mut scheduler = pin!(scheduler);
-        let permit = scheduler.as_mut().pop_permit(item_hash);
-        assert!(permit.is_some());
-        drop(permit);
+        let resources = scheduler.as_mut().pop_resources(item_hash);
+        assert!(resources.is_some());
+        drop(resources);
         // Now we should be able to get another item
         let result2 = poll_scheduler(scheduler.as_mut(), &cache);
         let Poll::Ready(Ok(result2)) = result2 else {
@@ -796,6 +816,8 @@ mod tests {
             NonZeroU16::new(2).unwrap(), // max 2 items per decision
             Concurrency::new_unlimited(),
             None,
+            MemoryPool::unlimited(),
+            NonZeroByteCount::new(NonZeroUsize::MIN), // no memory tracking in tests
             db.clone(),
             cache.view(),
         );
@@ -847,6 +869,8 @@ mod tests {
             NonZeroU16::new(2).unwrap(), // max_items_per_decision
             Concurrency::new_unlimited(),
             None, // no global throttling
+            MemoryPool::unlimited(),
+            NonZeroByteCount::new(NonZeroUsize::MIN), // no memory tracking in tests
             db.clone(),
             cache.view(),
         );
@@ -1099,6 +1123,8 @@ mod tests {
             // only one concurrency token
             Concurrency::new(Some(NonZeroUsize::new(1).unwrap())),
             None,
+            MemoryPool::unlimited(),
+            NonZeroByteCount::new(NonZeroUsize::MIN), // no memory tracking in tests
             db.clone(),
             cache.view(),
         );
@@ -1154,9 +1180,9 @@ mod tests {
             .item
             .unique_hash();
         let mut scheduler = pin!(scheduler);
-        let permit = scheduler.as_mut().pop_permit(inbox_item_hash);
-        assert!(permit.is_some());
-        drop(permit);
+        let resources = scheduler.as_mut().pop_resources(inbox_item_hash);
+        assert!(resources.is_some());
+        drop(resources);
 
         let result = poll_scheduler(scheduler.as_mut(), &cache);
         let Poll::Ready(Ok(decision)) = result else {

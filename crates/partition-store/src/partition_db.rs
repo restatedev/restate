@@ -240,14 +240,18 @@ impl PartitionCell {
     }
 
     // low-level opening of a column famili(es) for the partition.
-    //
-    // Note: This doesn't check whether the column family exists or not
     #[instrument(level = "error", skip_all, fields(partition_id = %self.meta.partition_id, cf_name = %self.meta.cf_name()))]
     pub async fn provision(
         &self,
         guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
         rocksdb: Arc<RocksDb>,
     ) -> Result<PartitionDb, RocksError> {
+        // Defensive: drop any stale CF that might exist in RocksDB despite the
+        // PartitionCell state being CfMissing. The exact sequence of events that leads
+        // to this inconsistency hasn't been fully established yet, but we suspect that it
+        // might happen if a previous provision/import created the CF and then failed
+        // before the cell state was updated. See https://github.com/restatedev/restate/issues/4534
+        Self::drop_cf_from_rocksdb(&self.meta, &rocksdb).await?;
         let cf_name = self.meta.cf_name();
         debug!("Creating new column family {}", cf_name);
         rocksdb.clone().open_cf(self.meta.cf_name().into()).await?;
@@ -266,8 +270,6 @@ impl PartitionCell {
     }
 
     // low-level importing a column family from a locally downloaded a snapshot
-    //
-    // Note: This doesn't check whether the column family exists or not
     #[instrument(level = "error", skip_all, fields(partition_id = %self.meta.partition_id, cf_name = %self.meta.cf_name(), path = %snapshot.base_dir.display()))]
     pub async fn import_cf(
         &self,
@@ -297,6 +299,10 @@ impl PartitionCell {
             "Importing partition store snapshot"
         );
 
+        // Defensive: see the comment in provision() and
+        // https://github.com/restatedev/restate/issues/4534
+        Self::drop_cf_from_rocksdb(&self.meta, &rocksdb).await?;
+
         rocksdb
             .clone()
             .import_cf(self.meta.cf_name().into(), import_metadata)
@@ -325,6 +331,24 @@ impl PartitionCell {
         Ok(db)
     }
 
+    /// Drops the column family from RocksDB if it exists. This is a no-op if the CF
+    /// is not present.
+    async fn drop_cf_from_rocksdb(
+        meta: &Partition,
+        rocksdb: &Arc<RocksDb>,
+    ) -> Result<(), RocksError> {
+        let cf_name = meta.cf_name();
+        if rocksdb.inner().cf_handle(cf_name.as_ref()).is_some() {
+            let db = Arc::clone(rocksdb);
+            let cf_name = cf_name.clone();
+            tokio::task::spawn_blocking(move || db.inner().as_raw_db().drop_cf(cf_name.as_ref()))
+                .await
+                .map_err(|_| RocksError::Shutdown(ShutdownError))??;
+            debug!("Column family {} dropped", meta.cf_name());
+        }
+        Ok(())
+    }
+
     /// Deletes the underlying column famil(ies) and closes the [`PartitionDb`].
     pub async fn drop_cf(
         &self,
@@ -333,19 +357,9 @@ impl PartitionCell {
         // We set the state to Unknown in case we returned an error during the drop process.
         let state = std::mem::replace(guard.deref_mut(), State::Unknown);
         match state {
-            State::Unknown => return Ok(()),
-            State::CfMissing => { /* nothing to do.*/ }
+            State::Unknown | State::CfMissing => { /* nothing to do */ }
             State::Open { db } | State::Closed { db, .. } => {
-                let db = Arc::clone(&db.rocksdb);
-                let cf_name = self.meta.cf_name().clone();
-
-                // if dropping failed. We leave the column family closed marked as "unknown"
-                tokio::task::spawn_blocking(move || {
-                    db.inner().as_raw_db().drop_cf(cf_name.as_ref())
-                })
-                .await
-                .map_err(|_| RocksError::Shutdown(ShutdownError))??;
-                debug!("Column family {} dropped", self.meta.cf_name());
+                Self::drop_cf_from_rocksdb(&self.meta, &db.rocksdb).await?;
             }
         }
         self.set_cf_missing(guard);

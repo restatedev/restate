@@ -8,8 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::future::Future;
+
 use bytes::Bytes;
 use futures::Stream;
+
+use restate_memory::{LocalMemoryLease, LocalMemoryPool, OutOfMemory, PinnableMemoryStream};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId};
 use restate_types::invocation::ServiceInvocationSpanContext;
@@ -17,7 +21,6 @@ use restate_types::journal::CompletionResult;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::storage::StoredRawEntry;
 use restate_types::time::MillisSinceEpoch;
-use std::future::Future;
 
 /// Which journal storage table an invocation's entries are stored in.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -71,12 +74,29 @@ pub enum JournalEntry {
     JournalV2(StoredRawEntry),
 }
 
+/// Error trait for invocation reader operations.
+///
+/// Implementations should indicate when a failure is due to memory budget
+/// exhaustion so that callers can yield the invocation instead of treating
+/// it as a transient storage error.
+pub trait InvocationReaderError: std::error::Error + Send + Sync + 'static {
+    /// If this error represents a memory budget exhaustion, returns the
+    /// [`OutOfMemory`] describing what was requested and why it failed.
+    fn budget_exhaustion(&self) -> Option<OutOfMemory>;
+}
+
+impl InvocationReaderError for std::convert::Infallible {
+    fn budget_exhaustion(&self) -> Option<OutOfMemory> {
+        match *self {}
+    }
+}
+
 /// Read information about invocations from the underlying storage.
 pub trait InvocationReader {
     type Transaction<'a>: InvocationReaderTransaction + Send
     where
         Self: 'a;
-    type Error: std::error::Error + Send + Sync + 'static;
+    type Error: InvocationReaderError;
 
     /// Create a read transaction to read information about invocations from the underlying storage.
     fn transaction(&mut self) -> Self::Transaction<'_>;
@@ -92,6 +112,20 @@ pub trait InvocationReader {
         entry_index: EntryIndex,
         journal_kind: JournalKind,
     ) -> impl Future<Output = Result<Option<JournalEntry>, Self::Error>> + Send;
+
+    /// Budget-gated point read of a single journal entry.
+    ///
+    /// Delegates to the storage-api `get_journal_entry_budgeted` trait method
+    /// which peeks the raw byte size from RocksDB, acquires a
+    /// [`LocalMemoryLease`] from `budget` for that size *before* the entry is
+    /// decoded, then decodes and returns the entry together with its lease.
+    fn read_journal_entry_budgeted(
+        &mut self,
+        invocation_id: &InvocationId,
+        entry_index: EntryIndex,
+        journal_kind: JournalKind,
+        budget: &mut LocalMemoryPool,
+    ) -> impl Future<Output = Result<Option<(JournalEntry, LocalMemoryLease)>, Self::Error>> + Send;
 }
 
 /// Read transaction to read information about invocations from the underlying storage.
@@ -104,7 +138,16 @@ pub trait InvocationReaderTransaction {
     type StateStream<'a>: Stream<Item = Result<(Bytes, Bytes), Self::Error>> + Send
     where
         Self: 'a;
-    type Error: std::error::Error + Send + Sync + 'static;
+    type LocalMemoryPooledJournalStream<'a>: Stream<Item = Result<(JournalEntry, LocalMemoryLease), Self::Error>>
+        + Unpin
+        + Send
+    where
+        Self: 'a;
+    type LocalMemoryPooledStateStream<'a>: PinnableMemoryStream<Item = Result<(Bytes, Bytes, LocalMemoryLease), Self::Error>>
+        + Send
+    where
+        Self: 'a;
+    type Error: InvocationReaderError;
 
     /// Read only the journal metadata for the given invocation id.
     ///
@@ -132,6 +175,32 @@ pub trait InvocationReaderTransaction {
         &self,
         service_id: &ServiceId,
     ) -> Result<EagerState<Self::StateStream<'_>>, Self::Error>;
+
+    /// Budget-gated journal replay stream.
+    ///
+    /// Delegates to the storage-api `get_journal_budgeted` trait method which
+    /// peeks each entry's raw byte size from RocksDB, acquires a
+    /// [`LocalMemoryLease`] from `budget` for that size *before* the entry is
+    /// decoded, then decodes and yields the entry together with its lease.
+    fn read_journal_budgeted<'a>(
+        &'a self,
+        invocation_id: &InvocationId,
+        length: EntryIndex,
+        journal_kind: JournalKind,
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<Self::LocalMemoryPooledJournalStream<'a>, Self::Error>;
+
+    /// Budget-gated state loading stream.
+    ///
+    /// Delegates to the storage-api `get_all_user_states_budgeted` trait method
+    /// which peeks each state entry's raw byte size from RocksDB, acquires a
+    /// [`LocalMemoryLease`] from `budget` for that size *before* the entry is
+    /// decoded, then decodes and yields the key-value pair together with its lease.
+    fn read_state_budgeted<'a>(
+        &'a self,
+        service_id: &ServiceId,
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<EagerState<Self::LocalMemoryPooledStateStream<'a>>, Self::Error>;
 }
 
 /// Container for the state returned by [`InvocationReaderTransaction::read_state`].

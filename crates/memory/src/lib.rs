@@ -18,11 +18,17 @@
 
 mod controller;
 mod footprint;
+pub mod local_pool;
 mod metric_definitions;
+mod pinned_memory_stream;
 mod pool;
 
 pub use controller::MemoryController;
-pub use pool::{MemoryLease, MemoryPool};
-pub use restate_serde_util::NonZeroByteCount;
+pub use local_pool::{
+    AvailabilityNotified, LocalMemoryLease, LocalMemoryPool, OutOfMemory, OutOfMemoryKind,
+};
+pub use pinned_memory_stream::{IgnorePinnableMemoryStream, PinnableMapErr, PinnableMemoryStream};
+pub use pool::{MemoryLease, MemoryPool, PollMemoryPool};
+pub use restate_serde_util::{ByteCount, NonZeroByteCount};
 
 pub use footprint::*;
