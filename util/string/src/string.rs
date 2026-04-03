@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 use std::sync::Arc;
 
 use compact_str::{CompactString, ToCompactString};
@@ -198,6 +198,12 @@ impl std::ops::Deref for ReString {
     type Target = str;
 
     fn deref(&self) -> &Self::Target {
+        self.as_str()
+    }
+}
+
+impl Borrow<str> for ReString {
+    fn borrow(&self) -> &str {
         self.as_str()
     }
 }
