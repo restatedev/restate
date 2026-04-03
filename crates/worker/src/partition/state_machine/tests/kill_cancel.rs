@@ -14,15 +14,20 @@ use assert2::assert;
 use assert2::let_assert;
 use googletest::any;
 use prost::Message;
+use restate_invoker_api::EffectKind as InvokerEffectKind;
+use restate_storage_api::invocation_status_table::CompletedInvocation;
 use restate_storage_api::journal_table;
 use restate_storage_api::journal_table::WriteJournalTable;
 use restate_storage_api::timer_table::{
     ReadTimerTable, Timer, TimerKey, TimerKeyKind, WriteTimerTable,
 };
 use restate_types::deployment::PinnedDeployment;
+use restate_types::errors::KILLED_INVOCATION_ERROR;
 use restate_types::identifiers::EntryIndex;
 use restate_types::invocation::{IngressInvocationResponseSink, TerminationFlavor};
 use restate_types::journal::enriched::EnrichedEntryHeader;
+use restate_types::journal_events::raw::RawEvent;
+use restate_types::journal_events::{Event, KilledEvent, TransientErrorEvent};
 use restate_types::journal_v2::NotificationId;
 use restate_types::service_protocol;
 use rstest::rstest;
@@ -770,4 +775,82 @@ fn create_termination_journal(
             .into(),
         )),
     ]
+}
+
+/// Admin API kill should write a KilledEvent with no last_failure.
+#[restate_core::test]
+async fn kill_invoked_writes_killed_journal_event() -> anyhow::Result<()> {
+    let mut test_env = TestEnv::create().await;
+    let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+    fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
+
+    let _ = test_env
+        .apply(Command::TerminateInvocation(InvocationTermination {
+            invocation_id,
+            flavor: TerminationFlavor::Kill,
+            response_sink: None,
+        }))
+        .await;
+
+    assert_that!(
+        test_env.read_journal_events(invocation_id).await,
+        elements_are![eq(Event::Killed(KilledEvent { last_failure: None }))]
+    );
+
+    test_env.shutdown().await;
+    Ok(())
+}
+
+/// Invoker kill-after-max-attempts should write a KilledEvent with the last error
+/// and complete the invocation with KILLED_INVOCATION_ERROR (not the raw service error).
+#[restate_core::test]
+async fn killed_after_max_attempts_writes_killed_event_with_last_failure() -> anyhow::Result<()> {
+    let mut test_env = TestEnv::create().await;
+    let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+    fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
+
+    let last_error = TransientErrorEvent {
+        error_code: 500u16.into(),
+        error_message: "service blew up".to_string(),
+        error_stacktrace: None,
+        restate_doc_error_code: None,
+        related_command_index: None,
+        related_command_name: None,
+        related_command_type: None,
+    };
+
+    let _ = test_env
+        .apply(Command::InvokerEffect(Box::new(
+            restate_invoker_api::Effect {
+                invocation_id,
+                kind: InvokerEffectKind::KilledAfterMaxAttempts {
+                    killed_event: RawEvent::from(Event::Killed(KilledEvent {
+                        last_failure: Some(last_error.clone()),
+                    })),
+                },
+            },
+        )))
+        .await;
+
+    // Journal event must carry the last_failure
+    assert_that!(
+        test_env.read_journal_events(invocation_id).await,
+        elements_are![eq(Event::Killed(KilledEvent {
+            last_failure: Some(last_error)
+        }))]
+    );
+
+    // Final invocation error must be KILLED_INVOCATION_ERROR, not the raw service error
+    assert_that!(
+        test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await?,
+        pat!(InvocationStatus::Completed(pat!(CompletedInvocation {
+            response_result: eq(ResponseResult::Failure(KILLED_INVOCATION_ERROR))
+        })))
+    );
+
+    test_env.shutdown().await;
+    Ok(())
 }

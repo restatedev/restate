@@ -2648,7 +2648,7 @@ mod tests {
             *effect,
             pat!(Effect {
                 invocation_id: eq(invocation_id),
-                kind: pat!(EffectKind::Failed(_))
+                kind: pat!(EffectKind::KilledAfterMaxAttempts { .. })
             })
         );
     }
