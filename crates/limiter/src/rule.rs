@@ -54,7 +54,7 @@ pub enum ParseError {
 ///
 /// The wildcard character is `*`. Component values must be valid restricted values
 /// (only `[a-zA-Z0-9_.-]`, non-empty, max 36 bytes).
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub enum RulePattern<S: StringLike> {
     /// A rule that defines a limit for the scope level
     Scope(Pattern<S>),
