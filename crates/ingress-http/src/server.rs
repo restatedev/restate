@@ -54,6 +54,7 @@ pub struct HyperServerIngress<Schemas, Dispatcher> {
     // Parameters to build the layers
     schemas: Live<Schemas>,
     dispatcher: Dispatcher,
+    agent_audit: bool,
 
     health: HealthStatus<IngressStatus>,
 }
@@ -76,6 +77,7 @@ where
             ingress_options.concurrent_api_requests_limit(),
             schemas,
             dispatcher,
+            ingress_options.agent_audit,
             health,
         )
     }
@@ -91,15 +93,16 @@ where
         concurrency_limit: usize,
         schemas: Live<Schemas>,
         dispatcher: Dispatcher,
+        agent_audit: bool,
         health: HealthStatus<IngressStatus>,
     ) -> Self {
         health.update(IngressStatus::StartingUp);
-
         Self {
             listeners,
             concurrency_limit,
             schemas,
             dispatcher,
+            agent_audit,
             health,
         }
     }
@@ -116,11 +119,13 @@ where
             concurrency_limit,
             schemas,
             dispatcher,
+            agent_audit,
             health,
         } = self;
 
         // Prepare the handler
         let service = ServiceBuilder::new()
+            .layer(layers::audit_header_stripper::AuditHeaderStripperLayer::new(agent_audit))
             .layer(
                 TraceLayer::new_for_http()
                     .make_span_with(|request: &Request<_>| {
