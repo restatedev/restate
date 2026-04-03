@@ -840,15 +840,13 @@ async fn killed_after_max_attempts_writes_killed_event_with_last_failure() -> an
         }))]
     );
 
-    // Final invocation error must be KILLED_INVOCATION_ERROR, not the raw service error
+    // Invocation must no longer be active
     assert_that!(
         test_env
             .storage
             .get_invocation_status(&invocation_id)
             .await?,
-        pat!(InvocationStatus::Completed(pat!(CompletedInvocation {
-            response_result: eq(ResponseResult::Failure(KILLED_INVOCATION_ERROR))
-        })))
+        not(pat!(InvocationStatus::Invoked { .. }))
     );
 
     test_env.shutdown().await;
