@@ -21,6 +21,7 @@ mod invocation_status;
 mod journal;
 mod journal_events;
 mod keyed_service_status;
+mod locks;
 mod log;
 pub mod loglet_worker;
 mod node;

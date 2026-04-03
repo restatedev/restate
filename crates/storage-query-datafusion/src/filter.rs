@@ -53,6 +53,19 @@ impl Default for FirstMatchingPartitionKeyExtractor {
 }
 
 impl FirstMatchingPartitionKeyExtractor {
+    pub fn with_scope(self, column_name: impl Into<String>) -> Self {
+        // we only use the scope value if it's not empty, otherwise we cannot
+        // rely on it to get the partition key.
+        let e = MatchingColumnExtractor::new(column_name, |value: &ScalarValue| {
+            let value = value
+                .try_as_str()
+                .context("expected scope")?
+                .context("null scopes cannot be used for partition-key matching")?;
+            Ok(HashPartitioner::compute_partition_key(value))
+        });
+        self.append(e)
+    }
+
     pub fn with_service_key(self, column_name: impl Into<String>) -> Self {
         let e = MatchingColumnExtractor::new(column_name, |value: &ScalarValue| {
             let value = value
