@@ -10,6 +10,7 @@
 
 //! Restate uses many identifiers to uniquely identify its services and entities.
 
+use std::cell::RefCell;
 use std::fmt::{self, Display, Formatter};
 use std::hash::Hash;
 use std::mem::size_of;
@@ -33,6 +34,12 @@ use crate::id_util::{IdDecoder, IdEncoder};
 use crate::invocation::{InvocationTarget, InvocationTargetType, WorkflowHandlerType};
 use crate::journal_v2::SignalId;
 use crate::time::MillisSinceEpoch;
+
+thread_local! {
+    // a thread-local xxh3 hashing state to reuse its allocation since its internal buffer is quite
+    // large (~500 bytes)
+    static PARTITION_KEY_HASHER: RefCell<xxhash_rust::xxh3::Xxh3> = const { RefCell::new(xxhash_rust::xxh3::Xxh3::new()) };
+}
 
 /// Identifying the leader epoch of a partition processor
 #[derive(
@@ -711,7 +718,7 @@ impl WithPartitionKey for IdempotencyId {
 pub type ServiceRevision = u32;
 
 pub mod partitioner {
-    use super::PartitionKey;
+    use super::{PARTITION_KEY_HASHER, PartitionKey};
 
     use std::hash::{Hash, Hasher};
 
@@ -720,9 +727,12 @@ pub mod partitioner {
 
     impl HashPartitioner {
         pub fn compute_partition_key(value: impl Hash) -> PartitionKey {
-            let mut hasher = xxhash_rust::xxh3::Xxh3::default();
-            value.hash(&mut hasher);
-            hasher.finish()
+            PARTITION_KEY_HASHER.with_borrow_mut(|hasher| {
+                value.hash(hasher);
+                let key = hasher.finish();
+                hasher.reset();
+                key
+            })
         }
     }
 }
