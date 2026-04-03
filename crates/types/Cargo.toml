@@ -30,6 +30,7 @@ restate-memory = { workspace = true }
 restate-serde-util = { workspace = true }
 restate-test-util = { workspace = true, optional = true }
 restate-time-util = { workspace = true, features = ["serde", "serde_with"] }
+restate-util-string = { workspace = true, features = ["serde", "bilrost"] }
 restate-utoipa = { workspace = true }
 
 adaptive-timeout = { workspace = true, features = ["serde"] }
@@ -89,7 +90,6 @@ serde_path_to_error = { version = "0.1" }
 serde_with = { workspace = true, features = ["json"] }
 sha2 = { workspace = true }
 smallvec = { workspace = true }
-restate-util-string = { workspace = true, features = ["serde"] }
 static_assertions = { workspace = true }
 strum = { workspace = true }
 tempfile = { workspace = true, optional = true }

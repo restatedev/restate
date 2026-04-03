@@ -12,6 +12,7 @@
 
 mod base62_util;
 mod id_util;
+mod locking;
 mod macros;
 mod node_id;
 mod restate_version;
@@ -58,6 +59,7 @@ pub mod timer;
 pub mod vqueue;
 
 pub use id_util::IdResourceType;
+pub use locking::*;
 pub use node_id::*;
 pub use restate_version::*;
 pub use version::*;
@@ -75,6 +77,15 @@ pub mod memory {
 
 // Re-export metrics' SharedString (Space-efficient Cow + RefCounted variant)
 pub type SharedString = metrics::SharedString;
+
+/// An interned service name
+pub type ServiceName = restate_util_string::InternedReString;
+
+/// An interned scope
+///
+/// A scope defines the partitioning boundary for sets of service instances and
+/// invocations.
+pub type Scope = restate_util_string::InternedReString;
 
 /// Trait for merging two attributes
 pub trait Merge {
