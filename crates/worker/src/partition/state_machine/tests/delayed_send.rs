@@ -51,10 +51,10 @@ async fn run_send_with_delay(min_restate_version: SemanticRestateVersion) {
         all!(
             not(contains(matchers::actions::invoke_for_id(invocation_id))),
             contains(pat!(Action::RegisterTimer { .. })),
-            contains(eq(Action::IngressSubmitNotification {
-                request_id,
-                execution_time: Some(wake_up_time),
-                is_new_invocation: true
+            contains(pat!(Action::IngressSubmitNotification {
+                request_id: eq(request_id),
+                execution_time: some(eq(wake_up_time)),
+                is_new_invocation: eq(true)
             }))
         )
     );
@@ -71,10 +71,10 @@ async fn run_send_with_delay(min_restate_version: SemanticRestateVersion) {
         actions,
         all!(
             contains(matchers::actions::invoke_for_id(invocation_id)),
-            not(contains(eq(Action::IngressSubmitNotification {
-                request_id,
-                execution_time: Some(wake_up_time),
-                is_new_invocation: true,
+            not(contains(pat!(Action::IngressSubmitNotification {
+                request_id: eq(request_id),
+                execution_time: some(eq(wake_up_time)),
+                is_new_invocation: eq(true),
             })))
         )
     );
@@ -114,10 +114,10 @@ async fn send_with_delay_where_experimental_feature_journal_table_v2_is_enabled_
         all!(
             not(contains(matchers::actions::invoke_for_id(invocation_id))),
             contains(pat!(Action::RegisterTimer { .. })),
-            contains(eq(Action::IngressSubmitNotification {
-                request_id,
-                execution_time: Some(wake_up_time),
-                is_new_invocation: true
+            contains(pat!(Action::IngressSubmitNotification {
+                request_id: eq(request_id),
+                execution_time: some(eq(wake_up_time)),
+                is_new_invocation: eq(true)
             }))
         )
     );
@@ -137,10 +137,10 @@ async fn send_with_delay_where_experimental_feature_journal_table_v2_is_enabled_
         actions,
         all!(
             contains(matchers::actions::invoke_for_id(invocation_id)),
-            not(contains(eq(Action::IngressSubmitNotification {
-                request_id,
-                execution_time: Some(wake_up_time),
-                is_new_invocation: true,
+            not(contains(pat!(Action::IngressSubmitNotification {
+                request_id: eq(request_id),
+                execution_time: some(eq(wake_up_time)),
+                is_new_invocation: eq(true),
             })))
         )
     );
@@ -186,10 +186,10 @@ async fn send_with_delay_to_locked_virtual_object() {
         all!(
             not(contains(matchers::actions::invoke_for_id(invocation_id))),
             contains(pat!(Action::RegisterTimer { .. })),
-            contains(eq(Action::IngressSubmitNotification {
-                request_id,
-                execution_time: Some(wake_up_time),
-                is_new_invocation: true,
+            contains(pat!(Action::IngressSubmitNotification {
+                request_id: eq(request_id),
+                execution_time: some(eq(wake_up_time)),
+                is_new_invocation: eq(true),
             }))
         )
     );
@@ -215,10 +215,10 @@ async fn send_with_delay_to_locked_virtual_object() {
         actions,
         all!(
             not(contains(matchers::actions::invoke_for_id(invocation_id))),
-            not(contains(eq(Action::IngressSubmitNotification {
-                request_id,
-                execution_time: Some(wake_up_time),
-                is_new_invocation: true,
+            not(contains(pat!(Action::IngressSubmitNotification {
+                request_id: eq(request_id),
+                execution_time: some(eq(wake_up_time)),
+                is_new_invocation: eq(true),
             })))
         )
     );
@@ -275,10 +275,10 @@ async fn send_with_delay_and_idempotency_key() {
         all!(
             not(contains(matchers::actions::invoke_for_id(invocation_id))),
             contains(pat!(Action::RegisterTimer { .. })),
-            contains(eq(Action::IngressSubmitNotification {
-                request_id: request_id_1,
-                execution_time,
-                is_new_invocation: true,
+            contains(pat!(Action::IngressSubmitNotification {
+                request_id: eq(request_id_1),
+                execution_time: eq(execution_time),
+                is_new_invocation: eq(true),
             }))
         )
     );
@@ -304,10 +304,10 @@ async fn send_with_delay_and_idempotency_key() {
         actions,
         all!(
             not(contains(matchers::actions::invoke_for_id(invocation_id))),
-            contains(eq(Action::IngressSubmitNotification {
-                request_id: request_id_2,
-                execution_time,
-                is_new_invocation: false,
+            contains(pat!(Action::IngressSubmitNotification {
+                request_id: eq(request_id_2),
+                execution_time: eq(execution_time),
+                is_new_invocation: eq(false),
             }))
         )
     );
