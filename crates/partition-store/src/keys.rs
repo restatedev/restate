@@ -52,7 +52,7 @@ pub enum KeyKind {
     State,
     Timers,
     Promise,
-    // VQueues --> owned by restate-vqueues
+    // # VQueues --> owned by restate-vqueues
     //
     // todo: split this into empty and non-empty, or add the status in the key prefix
     // for instance, make this VQueueStatus (S | VQueueId)
@@ -65,6 +65,9 @@ pub enum KeyKind {
     VQueueEntryState,
     // Items stored in vqueues (e.g. state mutations, invocations, etc.)
     VQueueItems,
+    // # Locks
+    // locks for scoped and unscoped virtual objects and workflows
+    Lock,
 }
 
 impl KeyKind {
@@ -104,6 +107,9 @@ impl KeyKind {
             KeyKind::JournalV2CompletionIdToCommandIndex => b"jc",
             KeyKind::JournalV2 => b"j2",
             KeyKind::JournalEvent => b"je",
+            // ** Locks ** //
+            KeyKind::Lock => b"lo",
+
             KeyKind::Outbox => b"ob",
             KeyKind::ServiceStatus => b"ss",
             KeyKind::State => b"st",
@@ -141,6 +147,7 @@ impl KeyKind {
             b"je" => Some(KeyKind::JournalEvent),
             b"jn" => Some(KeyKind::JournalV2NotificationIdToNotificationIndex),
             b"jc" => Some(KeyKind::JournalV2CompletionIdToCommandIndex),
+            b"lo" => Some(KeyKind::Lock),
             b"ob" => Some(KeyKind::Outbox),
             b"ss" => Some(KeyKind::ServiceStatus),
             b"st" => Some(KeyKind::State),

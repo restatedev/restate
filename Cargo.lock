@@ -7094,6 +7094,7 @@ name = "restate-doctor"
 version = "1.6.3-dev"
 dependencies = [
  "anyhow",
+ "bilrost",
  "bytes",
  "clap",
  "clap_complete",
@@ -7984,6 +7985,7 @@ dependencies = [
  "restate-clock",
  "restate-memory",
  "restate-types",
+ "restate-util-string",
  "restate-workspace-hack",
  "serde",
  "smallvec",
