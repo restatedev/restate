@@ -16,6 +16,7 @@ restate-workspace-hack = { workspace = true }
 restate-clock = { workspace = true }
 restate-memory = { workspace = true }
 restate-types = { workspace = true }
+restate-util-string = { workspace = true, features = ["bilrost", "bytes"] }
 
 ahash = { workspace = true }
 anyhow = { workspace = true }
