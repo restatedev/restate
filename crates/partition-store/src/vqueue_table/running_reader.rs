@@ -43,7 +43,7 @@ impl VQueueRunningReader {
             .serialize_to(&mut key_buf.as_mut());
 
         readopts.set_iterate_lower_bound(key_buf);
-        let success = super::convert_to_upper_bound(&mut key_buf);
+        let success = crate::convert_to_upper_bound(&mut key_buf);
         debug_assert!(success);
         readopts.set_iterate_upper_bound(key_buf);
 
