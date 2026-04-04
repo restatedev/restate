@@ -45,9 +45,7 @@ use crate::fsm_table::{
     get_locally_durable_lsn, get_storage_version, is_jc_orphan_cleanup_done,
     put_jc_orphan_cleanup_done, put_storage_version,
 };
-use crate::keys::KeyKind;
-use crate::keys::TableKey;
-use crate::keys::TableKeyPrefix;
+use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
 use crate::migrations::{LATEST_VERSION, SchemaVersion};
 use crate::partition_db::PartitionDb;
 use crate::scan::PhysicalScan;
@@ -284,7 +282,7 @@ impl PartitionStore {
     }
 
     #[track_caller]
-    fn iterator_from<K: TableKeyPrefix>(
+    fn iterator_from<K: EncodeTableKeyPrefix>(
         &self,
         scan: TableScan<K>,
     ) -> Result<DBRawIteratorWithThreadMode<'_, DB>> {
@@ -454,7 +452,7 @@ impl PartitionStore {
         }
     }
 
-    pub fn iterator_for_each<K: TableKeyPrefix>(
+    pub fn iterator_for_each<K: EncodeTableKeyPrefix>(
         &self,
         name: &'static str,
         priority: Priority,
@@ -475,7 +473,7 @@ impl PartitionStore {
         })
     }
 
-    pub fn run_iterator<K: TableKey, O: Send + 'static>(
+    pub fn run_iterator<K: EncodeTableKey, O: Send + 'static>(
         &self,
         name: &'static str,
         priority: Priority,
@@ -488,7 +486,7 @@ impl PartitionStore {
         Ok(ReceiverStream::new(rx))
     }
 
-    pub fn iterator_filter_map<K: TableKey, O: Send + 'static>(
+    pub fn iterator_filter_map<K: EncodeTableKey, O: Send + 'static>(
         &self,
         name: &'static str,
         priority: Priority,
@@ -501,7 +499,7 @@ impl PartitionStore {
         Ok(ReceiverStream::new(rx))
     }
 
-    fn run_iterator_internal<K: TableKeyPrefix>(
+    fn run_iterator_internal<K: EncodeTableKeyPrefix>(
         &self,
         name: &'static str,
         priority: Priority,
@@ -747,7 +745,7 @@ impl StorageAccess for PartitionStore {
     where
         Self: 'a;
 
-    fn iterator_from<K: TableKeyPrefix>(
+    fn iterator_from<K: EncodeTableKeyPrefix>(
         &self,
         scan: TableScan<K>,
     ) -> Result<DBRawIteratorWithThreadMode<'_, Self::DBAccess<'_>>> {
@@ -999,7 +997,7 @@ impl StorageAccess for PartitionStoreTransaction<'_> {
     where
         Self: 'b;
 
-    fn iterator_from<K: TableKeyPrefix>(
+    fn iterator_from<K: EncodeTableKeyPrefix>(
         &self,
         scan: TableScan<K>,
     ) -> Result<DBRawIteratorWithThreadMode<'_, Self::DBAccess<'_>>> {
@@ -1096,7 +1094,7 @@ pub(crate) trait StorageAccess {
     where
         Self: 'a;
 
-    fn iterator_from<K: TableKeyPrefix>(
+    fn iterator_from<K: EncodeTableKeyPrefix>(
         &self,
         scan: TableScan<K>,
     ) -> Result<DBRawIteratorWithThreadMode<'_, Self::DBAccess<'_>>>;
@@ -1127,7 +1125,7 @@ pub(crate) trait StorageAccess {
     fn delete_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>) -> Result<()>;
 
     #[inline]
-    fn put_kv_raw<K: TableKey, V: AsRef<[u8]>>(&mut self, key: K, value: V) -> Result<()> {
+    fn put_kv_raw<K: EncodeTableKey, V: AsRef<[u8]>>(&mut self, key: K, value: V) -> Result<()> {
         let key_buffer = self.cleared_key_buffer_mut(key.serialized_length());
         key.serialize_to(key_buffer);
         let key_buffer = key_buffer.split();
@@ -1136,7 +1134,7 @@ pub(crate) trait StorageAccess {
     }
 
     #[inline]
-    fn put_kv_proto<K: TableKey, V: PartitionStoreProtobufValue + Clone + 'static>(
+    fn put_kv_proto<K: EncodeTableKey, V: PartitionStoreProtobufValue + Clone + 'static>(
         &mut self,
         key: K,
         value: &V,
@@ -1148,7 +1146,7 @@ pub(crate) trait StorageAccess {
     }
 
     #[inline]
-    fn put_kv_storage_codec<K: TableKey, V: StorageEncode + 'static>(
+    fn put_kv_storage_codec<K: EncodeTableKey, V: StorageEncode + 'static>(
         &mut self,
         key: K,
         value: &V,
@@ -1165,7 +1163,7 @@ pub(crate) trait StorageAccess {
     }
 
     #[inline]
-    fn delete_key<K: TableKey>(&mut self, key: &K) -> Result<()> {
+    fn delete_key<K: EncodeTableKey>(&mut self, key: &K) -> Result<()> {
         let buffer = self.cleared_key_buffer_mut(key.serialized_length());
         key.serialize_to(buffer);
         let buffer = buffer.split();
@@ -1176,7 +1174,7 @@ pub(crate) trait StorageAccess {
     #[inline]
     fn get_value_proto<K, V>(&mut self, key: K) -> Result<Option<V>>
     where
-        K: TableKey,
+        K: EncodeTableKey,
         V: PartitionStoreProtobufValue,
         <<V as PartitionStoreProtobufValue>::ProtobufType as TryInto<V>>::Error:
             Into<anyhow::Error>,
@@ -1193,7 +1191,7 @@ pub(crate) trait StorageAccess {
     #[inline]
     fn get_value_storage_codec<K, V>(&mut self, key: K) -> Result<Option<V>>
     where
-        K: TableKey,
+        K: EncodeTableKey,
         V: StorageDecode,
     {
         let mut buf = self.cleared_key_buffer_mut(key.serialized_length());
@@ -1215,7 +1213,7 @@ pub(crate) trait StorageAccess {
     #[inline]
     fn get_durable_value<K, V>(&mut self, key: K) -> Result<Option<V>>
     where
-        K: TableKey,
+        K: EncodeTableKey,
         V: PartitionStoreProtobufValue,
         <<V as PartitionStoreProtobufValue>::ProtobufType as TryInto<V>>::Error:
             Into<anyhow::Error>,
@@ -1241,7 +1239,7 @@ pub(crate) trait StorageAccess {
     #[inline]
     fn get_first_blocking<K, F, R>(&mut self, scan: TableScan<K>, f: F) -> Result<R>
     where
-        K: TableKeyPrefix,
+        K: EncodeTableKeyPrefix,
         F: FnOnce(Option<(&[u8], &[u8])>) -> Result<R>,
     {
         let iterator = self.iterator_from(scan)?;
@@ -1251,7 +1249,7 @@ pub(crate) trait StorageAccess {
     #[inline]
     fn get_kv_raw<K, F, R>(&mut self, key: K, f: F) -> Result<R>
     where
-        K: TableKey,
+        K: EncodeTableKey,
         F: FnOnce(&[u8], Option<&[u8]>) -> Result<R>,
     {
         let mut buf = self.cleared_key_buffer_mut(key.serialized_length());
@@ -1274,7 +1272,7 @@ pub(crate) trait StorageAccess {
         mut op: F,
     ) -> Result<Vec<Result<R>>>
     where
-        K: TableKeyPrefix,
+        K: EncodeTableKeyPrefix,
         F: FnMut(&[u8], &[u8]) -> TableScanIterationDecision<R>,
     {
         let mut res = Vec::new(); // TODO: this should be passed in.
@@ -1312,7 +1310,7 @@ pub(crate) trait StorageAccess {
 
 #[cfg(test)]
 mod tests {
-    use crate::keys::{KeyKind, TableKey};
+    use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind};
     use crate::partition_store::StorageAccess;
     use crate::{PartitionStoreManager, TableKind};
     use bytes::{Buf, BufMut};
@@ -1321,7 +1319,7 @@ mod tests {
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::partitions::Partition;
 
-    impl TableKey for String {
+    impl EncodeTableKey for String {
         const TABLE: TableKind = TableKind::State;
         const KEY_KIND: KeyKind = KeyKind::State;
 
@@ -1331,6 +1329,12 @@ mod tests {
             bytes.put_slice(self.as_bytes());
         }
 
+        fn serialized_length(&self) -> usize {
+            KeyKind::SERIALIZED_LENGTH + self.len()
+        }
+    }
+
+    impl DecodeTableKey for String {
         fn deserialize_from<B: Buf>(bytes: &mut B) -> crate::partition_store::Result<Self> {
             let key_kind = KeyKind::deserialize(bytes)?;
             assert_eq!(key_kind, Self::KEY_KIND);
@@ -1339,10 +1343,6 @@ mod tests {
             let mut string_bytes = Vec::with_capacity(len);
             bytes.copy_to_slice(&mut string_bytes);
             Ok(String::from_utf8(string_bytes).expect("valid key"))
-        }
-
-        fn serialized_length(&self) -> usize {
-            KeyKind::SERIALIZED_LENGTH + self.len()
         }
     }
 

@@ -31,7 +31,7 @@ use restate_types::journal_v2::{CompletionId, EntryMetadata, NotificationId};
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 
 use crate::TableKind::Journal;
-use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
 use crate::owned_iter::OwnedIterator;
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, break_on_err};
 
@@ -791,7 +791,7 @@ mod tests {
 
     use super::write_journal_entry_key;
 
-    use crate::keys::TableKeyPrefix;
+    use crate::keys::EncodeTableKeyPrefix;
     use bytes::Bytes;
     use restate_types::identifiers::{InvocationId, InvocationUuid};
 

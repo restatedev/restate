@@ -16,7 +16,7 @@ use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey as
 use restate_types::vqueue::{EffectivePriority, VQueueId, VQueueInstance, VQueueParent};
 
 use crate::TableKind;
-use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::keys::{EncodeTableKey, KeyKind, define_table_key};
 
 // `qe` | PKEY | KIND | ENTRY_ID
 define_table_key!(

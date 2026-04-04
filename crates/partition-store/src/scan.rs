@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::{KeyCodec, KeyKind, TableKey, TableKeyPrefix};
+use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, KeyEncode, KeyKind};
 use crate::scan::TableScan::{
     FullScanPartitionKeyRange, KeyRangeInclusiveInSinglePartition, SinglePartition,
     SinglePartitionKeyPrefix,
@@ -41,7 +41,7 @@ pub(crate) enum PhysicalScan {
     RangeOpen(TableKind, KeyKind, BytesMut),
 }
 
-impl<K: TableKeyPrefix> From<TableScan<K>> for PhysicalScan {
+impl<K: EncodeTableKeyPrefix> From<TableScan<K>> for PhysicalScan {
     fn from(scan: TableScan<K>) -> Self {
         match scan {
             SinglePartitionKeyPrefix(_partition_key, key) => {
@@ -101,7 +101,7 @@ impl<K: TableKeyPrefix> From<TableScan<K>> for PhysicalScan {
     }
 }
 
-impl<K: TableKey> TableScan<K> {
+impl<K: EncodeTableKey> TableScan<K> {
     pub fn table(&self) -> TableKind {
         K::TABLE
     }
