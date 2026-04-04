@@ -14,7 +14,6 @@ mod lifecycle;
 mod utils;
 
 pub use actions::{Action, ActionCollector};
-use restate_limiter::LimitKey;
 
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -31,6 +30,7 @@ use futures::{StreamExt, TryStreamExt};
 use metrics::{counter, histogram};
 use tracing::{Instrument, Span, debug, error, info, trace, warn};
 
+use restate_limiter::LimitKey;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::WriteFsmTable;
@@ -47,6 +47,7 @@ use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table::ReadJournalTable;
 use restate_storage_api::journal_table::{JournalEntry, WriteJournalTable};
 use restate_storage_api::journal_table_v2;
+use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::outbox_table::{OutboxMessage, WriteOutboxTable};
 use restate_storage_api::promise_table::{
     Promise, PromiseState, ReadPromiseTable, WritePromiseTable,
@@ -454,6 +455,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteStateTable
             + WriteVQueueTable
             + ReadVQueueTable
+            + WriteLockTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
             + WriteJournalEventsTable,
@@ -703,6 +705,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteVQueueTable
             + ReadVQueueTable
             + WriteJournalTable
+            + WriteLockTable
             + journal_table_v2::WriteJournalTable,
     {
         let invocation_id = service_invocation.invocation_id;
@@ -764,6 +767,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteVQueueTable
             + ReadVQueueTable
             + WriteJournalTable
+            + WriteLockTable
             + journal_table_v2::WriteJournalTable,
     {
         // A pre-flight invocation has been already deduplicated
@@ -905,6 +909,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteFsmTable
             + WriteVQueueTable
             + ReadVQueueTable
+            + WriteLockTable
             + WriteJournalTable,
     {
         // todo(asoli): temporary until we move this to the invocation id creation site.
@@ -913,13 +918,13 @@ impl<S> StateMachineApplyContext<'_, S> {
         let record_unique_ts = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
         let visible_at = VisibleAt::new(metadata.execution_time.unwrap_or(self.record_created_at));
 
-        VQueue::get_or_create_vqueue(
+        VQueue::vqueue_from_invocation_target(
             &qid,
             self.storage,
             self.vqueues_cache,
             self.is_leader.then_some(self.action_collector),
-            None, /* Scope */
-            LimitKey::None,
+            &metadata.invocation_target, // None, /* Scope */
+            &LimitKey::None,
         )
         .await?
         .enqueue_new(
@@ -1445,6 +1450,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + ReadVirtualObjectStatusTable
             + WriteVirtualObjectStatusTable
             + WriteVQueueTable
+            + WriteLockTable
             + ReadVQueueTable,
     {
         if Configuration::pinned().common.experimental_enable_vqueues {
@@ -1493,6 +1499,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WritePromiseTable
             + ReadVQueueTable
             + WriteVQueueTable
+            + WriteLockTable
             + WriteJournalEventsTable,
     {
         match termination_flavor {
@@ -1526,6 +1533,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + journal_table_v2::ReadJournalTable
             + ReadVQueueTable
             + WriteVQueueTable
+            + WriteLockTable
             + WriteJournalEventsTable,
     {
         let status = self.get_invocation_status(&invocation_id).await?;
@@ -1600,6 +1608,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WritePromiseTable
             + ReadVQueueTable
             + WriteVQueueTable
+            + WriteLockTable
             + WriteTimerTable,
     {
         let mut status = self.get_invocation_status(&invocation_id).await?;
@@ -1756,7 +1765,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + journal_table_v2::WriteJournalTable
             + ReadVQueueTable
             + WriteVQueueTable
-            + WriteJournalEventsTable,
+            + WriteJournalEventsTable
+            + WriteLockTable,
     {
         let error = match termination_flavor {
             TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
@@ -1863,6 +1873,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteJournalTable
             + ReadVQueueTable
             + WriteVQueueTable
+            + WriteLockTable
             + journal_table_v2::WriteJournalTable
             + WriteJournalEventsTable,
     {
@@ -1983,6 +1994,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + journal_table_v2::ReadJournalTable
             + ReadVQueueTable
             + WriteVQueueTable
+            + WriteLockTable
             + WriteJournalEventsTable,
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
@@ -2019,6 +2031,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + journal_table_v2::ReadJournalTable
             + ReadVQueueTable
             + WriteVQueueTable
+            + WriteLockTable
             + WriteJournalEventsTable,
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
@@ -2249,6 +2262,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteStateTable
             + WriteVQueueTable
             + ReadVQueueTable
+            + WriteLockTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
             + WriteJournalEventsTable,
@@ -2379,6 +2393,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + journal_table_v2::ReadJournalTable
             + ReadVQueueTable
             + WriteVQueueTable
+            + WriteLockTable
             + WriteJournalEventsTable,
     {
         let status = self
@@ -2412,7 +2427,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + journal_table_v2::ReadJournalTable
             + WriteJournalEventsTable
             + ReadVQueueTable
-            + WriteVQueueTable,
+            + WriteVQueueTable
+            + WriteLockTable,
     {
         let is_status_invoked = matches!(invocation_status, InvocationStatus::Invoked(_));
 
@@ -2598,6 +2614,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + ReadStateTable
             + WriteStateTable
             + WriteVQueueTable
+            + WriteLockTable
             + ReadVQueueTable,
     {
         entries::OnJournalEntryCommand::from_raw_entry(invocation_id, invocation_status, raw_entry)
@@ -2636,6 +2653,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + journal_table_v2::ReadJournalTable
             + ReadVQueueTable
             + WriteVQueueTable
+            + WriteLockTable
             + WriteJournalEventsTable,
     {
         let invocation_target = invocation_metadata.invocation_target.clone();
@@ -2825,6 +2843,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteJournalTable
             + ReadVQueueTable
             + WriteVQueueTable
+            + WriteLockTable
             + ReadStateTable
             + WriteStateTable
             + journal_table_v2::WriteJournalTable,
@@ -2908,6 +2927,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteJournalTable
             + ReadVQueueTable
             + WriteVQueueTable
+            + WriteLockTable
             + journal_table_v2::WriteJournalTable,
     {
         let status = self.get_invocation_status(&invocation_id).await?;
@@ -3943,6 +3963,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteFsmTable
             + WriteOutboxTable
             + WriteVQueueTable
+            + WriteLockTable
             + ReadVQueueTable,
     {
         match status {
@@ -4398,7 +4419,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         mut metadata: InFlightInvocationMetadata,
     ) -> Result<(), Error>
     where
-        S: WriteInvocationStatusTable + WriteVQueueTable + ReadVQueueTable,
+        S: WriteInvocationStatusTable + WriteVQueueTable + WriteLockTable + ReadVQueueTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -4442,7 +4463,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         waiting_for_completed_entries: HashSet<EntryIndex>,
     ) -> Result<(), Error>
     where
-        S: WriteInvocationStatusTable + WriteVQueueTable + ReadVQueueTable,
+        S: WriteInvocationStatusTable + WriteVQueueTable + WriteLockTable + ReadVQueueTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -5097,7 +5118,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         cause: ParkCause,
     ) -> Result<(), Error>
     where
-        S: WriteVQueueTable + ReadVQueueTable,
+        S: WriteVQueueTable + WriteLockTable + ReadVQueueTable,
     {
         let qid = Self::vqueue_id_from_invocation(invocation_id, invocation_target);
 
@@ -5171,7 +5192,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         invocation_id: &InvocationId,
     ) -> Result<(), Error>
     where
-        S: WriteVQueueTable + ReadVQueueTable,
+        S: WriteVQueueTable + WriteLockTable + ReadVQueueTable,
     {
         // Not great that we have to look up the entry card here.
         // todo remove once the reworked InvocationStatus can hold the required information
@@ -5280,7 +5301,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         state_mutation: ExternalStateMutation,
     ) -> Result<(), Error>
     where
-        S: WriteVQueueTable + ReadVQueueTable + WriteFsmTable,
+        S: WriteVQueueTable + WriteLockTable + ReadVQueueTable + WriteFsmTable,
     {
         let now = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
         let visible_at = VisibleAt::Now;
@@ -5331,7 +5352,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         now: UniqueTimestamp,
     ) -> Result<(), Error>
     where
-        S: WriteVQueueTable + ReadVQueueTable + ReadStateTable + WriteStateTable,
+        S: WriteVQueueTable + WriteLockTable + ReadVQueueTable + ReadStateTable + WriteStateTable,
     {
         if let Some(state_mutation) = self
             .storage

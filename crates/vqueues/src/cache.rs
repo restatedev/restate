@@ -10,14 +10,13 @@
 
 use hashbrown::{HashMap, hash_map};
 use slotmap::SlotMap;
+use tokio::task::JoinHandle;
 use tracing::{debug, trace};
 
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::metadata::{self, VQueueMeta};
 use restate_storage_api::vqueue_table::{ReadVQueueTable, ScanVQueueTable};
 use restate_types::vqueue::VQueueId;
-
-use crate::vqueue_config::ConfigPool;
 
 type Result<T> = std::result::Result<T, StorageError>;
 
@@ -33,10 +32,6 @@ impl<'a> VQueuesMeta<'a> {
     #[inline]
     fn new(cache: &'a VQueuesMetaCache) -> VQueuesMeta<'a> {
         Self { inner: cache }
-    }
-
-    pub(crate) fn config_pool(&'a self) -> &'a ConfigPool {
-        &self.inner.config
     }
 
     pub fn get(&self, key: VQueueCacheKey) -> Option<&Slot> {
@@ -102,7 +97,6 @@ impl Slot {
 // Needs rewriting after the workload pattern becomes more clear.
 #[derive(Clone)]
 pub struct VQueuesMetaCache {
-    config: ConfigPool,
     queues: HashMap<VQueueId, VQueueCacheKey>,
     slab: SlotMap<VQueueCacheKey, Slot>,
 }
@@ -121,7 +115,6 @@ impl VQueuesMetaCache {
         Self {
             slab: Default::default(),
             queues: Default::default(),
-            config: ConfigPool::default(),
         }
     }
 
@@ -129,23 +122,29 @@ impl VQueuesMetaCache {
     ///
     /// From this point on, the cache remains in-sync with the storage state by
     /// using the "apply_updates" method.
-    pub async fn create<S: ScanVQueueTable>(storage: &S) -> Result<Self> {
-        let mut cache = Self {
-            slab: Default::default(),
-            queues: Default::default(),
-            config: ConfigPool::default(),
-        };
-        // find and load all active vqueues.
-        storage.scan_active_vqueues(|qid, meta| {
-            let key = cache.slab.insert(Slot {
-                qid: qid.clone(),
-                meta,
-            });
-            // SAFETY: at batch load time we are guaranteed to observe every vqueue id only once.
-            unsafe { cache.queues.insert_unique_unchecked(qid, key) };
-        })?;
+    pub async fn create<S: ScanVQueueTable + Send + Sync + 'static>(storage: S) -> Result<Self> {
+        let handle: JoinHandle<Result<_>> = tokio::task::spawn_blocking({
+            move || {
+                let mut slab = SlotMap::default();
+                let mut queues = HashMap::default();
+                // find and load all active vqueues.
+                storage.scan_active_vqueues(|qid, meta| {
+                    let key = slab.insert(Slot {
+                        qid: qid.clone(),
+                        meta,
+                    });
+                    // SAFETY: at batch load time we are guaranteed to observe every vqueue id only once.
+                    unsafe { queues.insert_unique_unchecked(qid, key) };
+                })?;
+                Ok((slab, queues))
+            }
+        });
 
-        Ok(cache)
+        let (slab, queues) = handle
+            .await
+            .map_err(|e| StorageError::Generic(e.into()))??;
+
+        Ok(Self { slab, queues })
     }
 
     pub async fn load<S: ReadVQueueTable>(
