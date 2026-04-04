@@ -12,6 +12,7 @@
 
 mod base62_util;
 mod id_util;
+mod locking;
 mod macros;
 mod node_id;
 mod restate_version;
@@ -58,12 +59,18 @@ pub mod timer;
 pub mod vqueue;
 
 pub use id_util::IdResourceType;
+pub use locking::*;
 pub use node_id::*;
+use restate_encoding::BilrostNewType;
+use restate_util_string::InternedReString;
 pub use restate_version::*;
 pub use version::*;
 
 // Re-export of the old time module by delegating to the restate-clock crate.
 pub use restate_clock::time;
+
+use self::identifiers::partitioner::HashPartitioner;
+use self::identifiers::{PartitionKey, WithPartitionKey};
 pub mod clock {
     pub use restate_clock::*;
 }
@@ -75,6 +82,151 @@ pub mod memory {
 
 // Re-export metrics' SharedString (Space-efficient Cow + RefCounted variant)
 pub type SharedString = metrics::SharedString;
+
+/// An interned service name
+#[derive(
+    derive_more::Display,
+    derive_more::Debug,
+    derive_more::AsRef,
+    derive_more::From,
+    Clone,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Hash,
+    BilrostNewType,
+)]
+#[debug("{}", _0)]
+#[display("{}", _0)]
+#[repr(transparent)]
+pub struct ServiceName(InternedReString);
+
+impl ServiceName {
+    #[inline]
+    pub fn new(value: &str) -> Self {
+        assert!(!value.is_empty());
+        Self(InternedReString::new(value))
+    }
+
+    #[inline]
+    pub const fn from_static(value: &'static str) -> Self {
+        assert!(!value.is_empty());
+        Self(InternedReString::from_static(value))
+    }
+
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl AsRef<str> for ServiceName {
+    #[inline]
+    fn as_ref(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
+impl std::borrow::Borrow<str> for ServiceName {
+    #[inline]
+    fn borrow(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
+/// An interned scope
+///
+/// A scope defines the partitioning boundary for sets of service instances and
+/// invocations.
+#[derive(
+    derive_more::Display,
+    derive_more::Debug,
+    derive_more::AsRef,
+    derive_more::From,
+    Clone,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Hash,
+    BilrostNewType,
+)]
+#[debug("{}", _0)]
+#[display("{}", _0)]
+#[repr(transparent)]
+pub struct Scope(InternedReString);
+
+impl Scope {
+    #[inline]
+    pub fn new(value: &str) -> Self {
+        assert!(!value.is_empty());
+        Self(InternedReString::new(value))
+    }
+
+    #[inline]
+    pub const fn from_static(value: &'static str) -> Self {
+        assert!(!value.is_empty());
+        Self(InternedReString::from_static(value))
+    }
+
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl AsRef<str> for Scope {
+    #[inline]
+    fn as_ref(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
+impl std::borrow::Borrow<str> for Scope {
+    #[inline]
+    fn borrow(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
+impl WithPartitionKey for Scope {
+    #[inline]
+    fn partition_key(&self) -> PartitionKey {
+        // the partition key is calculated directly from the scope value
+        HashPartitioner::compute_partition_key(&self.0)
+    }
+}
 
 /// Trait for merging two attributes
 pub trait Merge {
