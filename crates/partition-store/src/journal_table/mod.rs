@@ -24,7 +24,7 @@ use restate_types::identifiers::{
 };
 
 use crate::TableKind::Journal;
-use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, break_on_err};
 
 define_table_key!(
@@ -473,7 +473,7 @@ impl WriteJournalTable for PartitionStoreTransaction<'_> {
 #[cfg(test)]
 mod tests {
     use crate::journal_table::write_journal_entry_key;
-    use crate::keys::TableKeyPrefix;
+    use crate::keys::EncodeTableKeyPrefix;
     use bytes::Bytes;
     use restate_types::identifiers::{InvocationId, InvocationUuid};
 

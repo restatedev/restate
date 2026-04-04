@@ -26,7 +26,7 @@ use restate_types::time::MillisSinceEpoch;
 
 use crate::TableKind::{JournalEvent, State};
 use crate::error::break_on_err;
-use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
 use crate::{
     PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, TableScanIterationDecision,
 };

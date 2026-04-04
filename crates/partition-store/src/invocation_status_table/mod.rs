@@ -24,7 +24,7 @@ use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
 
 use crate::TableScan::FullScanPartitionKeyRange;
-use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
 use crate::scan::TableScan;
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind, break_on_err};
 
@@ -289,7 +289,7 @@ impl WriteInvocationStatusTable for PartitionStoreTransaction<'_> {
 
 #[cfg(test)]
 mod tests {
-    use crate::keys::TableKeyPrefix;
+    use crate::keys::EncodeTableKeyPrefix;
 
     use super::*;
 
