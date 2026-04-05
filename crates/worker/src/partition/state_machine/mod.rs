@@ -5164,7 +5164,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         let qid = entry_state_header.vqueue_id();
 
         let mut vqueue = VQueue::get(
-            &qid,
+            qid,
             self.storage,
             self.vqueues_cache,
             self.is_leader.then_some(self.action_collector),
