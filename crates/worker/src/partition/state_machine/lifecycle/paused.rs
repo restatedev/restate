@@ -10,7 +10,7 @@
 
 use crate::debug_if_leader;
 use crate::partition::state_machine::lifecycle::event::ApplyEventCommand;
-use crate::partition::state_machine::{CommandHandler, Error, ParkCause, StateMachineApplyContext};
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
@@ -58,12 +58,8 @@ where
         debug_if_leader!(ctx.is_leader, "Paused the invocation");
 
         if Configuration::pinned().common.experimental_enable_vqueues {
-            ctx.vqueue_park_invocation(
-                &self.invocation_id,
-                &invoked_meta.invocation_target,
-                ParkCause::Pause,
-            )
-            .await?;
+            ctx.vqueue_park_invocation(&self.invocation_id, &invoked_meta.invocation_target)
+                .await?;
         }
 
         let mut invocation_status = InvocationStatus::Paused(invoked_meta);
