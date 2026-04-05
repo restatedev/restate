@@ -1823,7 +1823,7 @@ mod tests {
     };
     use restate_types::schema::service::ServiceMetadata;
     use restate_types::service_protocol::ServiceProtocolVersion;
-    use restate_types::vqueue::{VQueueId, VQueueInstance, VQueueParent};
+    use restate_types::vqueue::VQueueId;
     use tempfile::tempdir;
     use test_log::test;
     use tokio::sync::mpsc;
@@ -2385,10 +2385,9 @@ mod tests {
 
         // Create an invocation state machine and register it with an in-flight notification proposal
         let mut ism = InvocationStateMachine::create(
-            Some(VQueueId::new(
-                VQueueParent::default_unlimited(),
+            Some(VQueueId::custom(
                 invocation_id.partition_key(),
-                VQueueInstance::Default,
+                invocation_id.to_string(),
             )),
             Permit::new_empty(),
             invocation_target.clone(),
