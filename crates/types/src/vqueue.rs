@@ -8,145 +8,89 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::hash::{Hash, Hasher};
-use std::num::NonZero;
+use std::hash::Hash;
+use std::str::FromStr;
 
-use crate::identifiers::{PartitionKey, WithPartitionKey};
+use bytes::{Buf, BufMut};
+use sha2::{Digest, Sha256};
 
-/// Queue parent identifies which configuration to use for a particular vqueue.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[repr(transparent)]
-pub struct VQueueParent(u32);
+use crate::IdResourceType;
+use crate::base62_util::base62_max_length_for_type;
+use crate::errors::IdDecodeError;
+use crate::id_util::{IdDecoder, IdEncoder, IdSchemeVersion};
+use crate::identifiers::{PartitionKey, ResourceId, WithPartitionKey};
 
-impl VQueueParent {
-    const USER_MASK: u32 = 0x8000_0000;
+const DIGEST_LEN: usize = 16;
+// We rely on this fact to encode the base62 using u128 representation
+static_assertions::const_assert_eq!(DIGEST_LEN, size_of::<u128>());
 
-    /// User-defined vqueues have the most significant bit set
-    pub const MIN_USER: VQueueParent = VQueueParent(Self::USER_MASK);
-    pub const MAX_USER: VQueueParent = VQueueParent(u32::MAX);
+const RAW_VQUEUE_ID_LEN: usize = const { size_of::<PartitionKey>() + 1 + DIGEST_LEN };
 
-    // Note: this is chosen such that parent=0 is the most common case (unlimited service)
-    pub const MIN_SYSTEM: VQueueParent = VQueueParent(0);
-
-    #[allow(clippy::identity_op)]
-    pub const MAX_SYSTEM: VQueueParent = VQueueParent(u32::MAX & (!Self::USER_MASK));
-
-    /// Used for unlimited vqueues (concurrency unlimited, unlimited capacity)
-    pub const SYSTEM_UNLIMITED: VQueueParent = VQueueParent::MIN_SYSTEM;
-
-    /// Used for singleton vqueues (concurrency 1, unlimited capacity)
-    pub const SYSTEM_SINGLETON: VQueueParent =
-        const { VQueueParent(VQueueParent::MIN_SYSTEM.0 + 1) };
-
-    /// Used for unlimited vqueues (concurrency unlimited, unlimited capacity)
-    pub const fn default_unlimited() -> Self {
-        Self::SYSTEM_UNLIMITED
-    }
-
-    /// Used for singleton vqueues (concurrency 1, unlimited capacity)
-    pub const fn default_singleton() -> Self {
-        Self::SYSTEM_SINGLETON
-    }
-
-    #[inline]
-    pub const fn from_raw(raw: u32) -> Self {
-        Self(raw)
-    }
-
-    #[inline]
-    pub const fn as_u32(self) -> u32 {
-        self.0
-    }
-
-    #[inline]
-    pub const fn is_user_defined(self) -> bool {
-        // the highest bit is set if this is a system/internal queue parent
-        self.0 & Self::USER_MASK != 0
-    }
-}
-
-static_assertions::const_assert!(!VQueueParent::MIN_SYSTEM.is_user_defined());
-static_assertions::const_assert!(!VQueueParent::MAX_SYSTEM.is_user_defined());
-
-static_assertions::const_assert!(VQueueParent::MIN_USER.is_user_defined());
-static_assertions::const_assert!(VQueueParent::MAX_USER.is_user_defined());
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum VQueueInstance {
-    /// The default instance is used when the queue is not sharded or when the shard
-    /// is not defined.
-    #[default]
-    Default,
-    Specific(NonZero<u32>),
-}
-
-impl VQueueInstance {
-    // cannot be const because map_or is not const in stable rust yet.
-    #[inline]
-    pub fn from_raw(raw: u32) -> Self {
-        NonZero::new(raw).map_or(VQueueInstance::Default, VQueueInstance::Specific)
-    }
-
-    #[inline]
-    pub fn infer_from(name: impl AsRef<[u8]>, key: impl AsRef<[u8]>) -> Self {
-        // todo consider using the same hasher we use for partition key (xxh3)
-        // Important to never change the seed!
-        let mut hasher = rustc_hash::FxHasher::with_seed(67);
-
-        name.as_ref().hash(&mut hasher);
-        // separator
-        b'/'.hash(&mut hasher);
-        key.as_ref().hash(&mut hasher);
-
-        let hash = hasher.finish();
-        // XOR upper and lower bits for better collision resistance. xxh3 might give better
-        // collision tolerance when generating an u32 hash, but we assume that the partition key spreads
-        // VOs sparsely enough to make collisions unlikely enough.
-        Self::from_raw((hash ^ (hash >> 32)) as u32)
-    }
-
-    #[inline]
-    pub const fn as_u32(self) -> u32 {
-        match self {
-            Self::Default => 0,
-            Self::Specific(n) => n.get(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct VQueueId {
-    // Key+Instance identify the individual queue.
-    partition_key: PartitionKey,
-    // Identifies the configuration/parent of the vqueue
-    pub parent: VQueueParent,
-    pub instance: VQueueInstance,
-}
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, bilrost::Message)]
+pub struct VQueueId(#[bilrost(encoding(plainbytes))] [u8; RAW_VQUEUE_ID_LEN]);
 
 impl VQueueId {
-    #[inline]
-    pub fn new(
-        parent: VQueueParent,
-        partition_key: PartitionKey,
-        instance: VQueueInstance,
-    ) -> Self {
-        Self {
-            parent,
-            partition_key,
-            instance,
+    /// Creates the vqueue id by providing the raw digest bytes
+    ///
+    /// Panics if the digest is shorter than the constant [`DIGEST_LEN`]
+    pub fn new(partition_key: PartitionKey, digest: &[u8]) -> Self {
+        let mut buf = [0u8; RAW_VQUEUE_ID_LEN];
+        {
+            assert!(digest.len() >= DIGEST_LEN);
+            let mut buf = &mut buf[..];
+            buf.put_u64(partition_key);
+            buf.put_u8(DIGEST_LEN as u8);
+            buf.put_slice(&digest[0..DIGEST_LEN]);
         }
+
+        Self(buf)
+    }
+
+    /// Creates the vqueue id by hashing the input slice
+    /// Used for testing only
+    pub fn custom(partition_key: PartitionKey, input: impl AsRef<[u8]>) -> Self {
+        let result = Sha256::digest(input.as_ref());
+
+        let mut buf = [0u8; RAW_VQUEUE_ID_LEN];
+        {
+            let mut buf = &mut buf[..];
+            buf.put_u64(partition_key);
+            buf.put_u8(DIGEST_LEN as u8);
+            buf.put_slice(&result[0..DIGEST_LEN]);
+        }
+
+        Self(buf)
     }
 
     #[inline]
     pub fn partition_key(&self) -> PartitionKey {
-        self.partition_key
+        u64::from_be_bytes(self.0[0..size_of::<PartitionKey>()].try_into().unwrap())
+    }
+
+    /// The key is encoded as follows:
+    /// - PartitionKey (u64) (big-endian)
+    /// - u8 For the size of the rest of the bytes (to support future evolution) with max 255
+    ///   bytes. and 0 being a special marker to indicate format change.
+    /// - [u6; SIZE]
+    pub fn encode_raw_bytes<B: BufMut>(&self, target: &mut B) {
+        target.put_slice(&self.0);
+    }
+
+    pub fn from_raw_bytes<B: Buf>(source: &mut B) -> Self {
+        let mut raw = [0u8; RAW_VQUEUE_ID_LEN];
+        source.copy_to_slice(&mut raw);
+        Self(raw)
+    }
+
+    pub const fn serialized_length_fixed() -> usize {
+        std::mem::size_of::<PartitionKey>() + 1 + DIGEST_LEN
     }
 }
 
 impl WithPartitionKey for VQueueId {
     #[inline]
     fn partition_key(&self) -> PartitionKey {
-        self.partition_key
+        self.partition_key()
     }
 }
 
@@ -155,6 +99,84 @@ impl WithPartitionKey for VQueueId {
 impl From<&VQueueId> for VQueueId {
     fn from(value: &VQueueId) -> Self {
         value.clone()
+    }
+}
+
+impl ResourceId for VQueueId {
+    const RAW_BYTES_LEN: usize = RAW_VQUEUE_ID_LEN;
+    const RESOURCE_TYPE: IdResourceType = IdResourceType::VQueue;
+
+    type StrEncodedLen = generic_array::ConstArrayLength<
+        // prefix + separator + version + suffix
+        {
+            Self::RESOURCE_TYPE.as_str().len()
+                // separator + version
+                + 2
+                + base62_max_length_for_type::<PartitionKey>()
+                + base62_max_length_for_type::<u8>()
+                + base62_max_length_for_type::<u128>()
+        },
+    >;
+
+    fn push_to_encoder(&self, encoder: &mut IdEncoder<Self>) {
+        // v1 vqueue ID is 37c long
+        encoder.push_u64(self.partition_key());
+        let rest_bytes: [u8; DIGEST_LEN] =
+            self.0[size_of::<PartitionKey>() + 1..].try_into().unwrap();
+        encoder.push_u128(u128::from_be_bytes(rest_bytes));
+    }
+}
+
+impl FromStr for VQueueId {
+    type Err = IdDecodeError;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let mut decoder = IdDecoder::new(input)?;
+        // Ensure we are decoding the right type
+        if decoder.resource_type != Self::RESOURCE_TYPE {
+            return Err(IdDecodeError::TypeMismatch);
+        }
+        if decoder.version != IdSchemeVersion::V1 {
+            return Err(IdDecodeError::Version);
+        }
+        // VQueueID is 37c long, 33c without vq_1 prefix
+        if decoder.cursor.remaining() != 33 {
+            return Err(IdDecodeError::Length);
+        }
+
+        let mut buf = [0u8; RAW_VQUEUE_ID_LEN];
+        {
+            // so we can advance the slice as we decode
+            let mut buf = &mut buf[..];
+            // partition key (u64)
+            let partition_key: PartitionKey = decoder.cursor.decode_next()?;
+            // big-endian
+            buf.put_u64(partition_key);
+            buf.put_u8(DIGEST_LEN as u8);
+
+            // what if we change the number of bytes?
+            let rest: u128 = decoder.cursor.decode_next()?;
+            buf.put_u128(rest);
+        }
+
+        Ok(Self(buf))
+    }
+}
+
+impl std::fmt::Debug for VQueueId {
+    #[inline]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
+impl std::fmt::Display for VQueueId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // encode the id such that it is possible to do a string prefix search for a
+        // partition key using the first 17 characters.
+        let mut encoder = IdEncoder::new();
+        self.push_to_encoder(&mut encoder);
+        f.write_str(encoder.as_str())
     }
 }
 
@@ -227,5 +249,37 @@ impl From<NewEntryPriority> for EffectivePriority {
             NewEntryPriority::UserHigh => EffectivePriority::UserHigh,
             NewEntryPriority::UserDefault => EffectivePriority::UserDefault,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_vqueue_id_roundtrip() {
+        let id = VQueueId::custom(2, "test");
+        let mut buf: Vec<u8> = Vec::with_capacity(100);
+        id.encode_raw_bytes(&mut buf);
+        let encoded = id.to_string();
+        let decoded = VQueueId::from_str(&encoded).unwrap();
+        assert_eq!(id, decoded);
+        // just to be absolutely sure
+        assert_eq!(id.0, decoded.0);
+    }
+
+    #[test]
+    fn test_vqueue_id_partition_key() {
+        let id = VQueueId::custom(88891122323, "test");
+        assert_eq!(id.partition_key(), 88891122323);
+    }
+
+    #[test]
+    fn test_vqueue_id_encode_decode() {
+        let id = VQueueId::custom(2247781, "some_test_value");
+        let mut buf = Vec::new();
+        id.encode_raw_bytes(&mut buf);
+        let decoded = VQueueId::from_raw_bytes(&mut buf.as_slice());
+        assert_eq!(id, decoded);
     }
 }
