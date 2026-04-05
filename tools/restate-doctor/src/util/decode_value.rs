@@ -563,7 +563,7 @@ mod tests {
     use restate_storage_api::lock_table::AcquiredBy;
     use restate_storage_api::vqueue_table::EntryId;
     use restate_types::identifiers::{PartitionKey, ServiceId};
-    use restate_types::vqueue::{VQueueInstance, VQueueParent};
+    use restate_types::vqueue::VQueueId;
 
     use super::*;
 
@@ -618,10 +618,9 @@ mod tests {
 
     #[test]
     fn decodes_vqueue_item_state_mutation_bilrost_value() {
+        let qid = VQueueId::custom(1, "1");
         let key = ItemsKey {
-            partition_key: PartitionKey::from(1u64),
-            parent: VQueueParent::from_raw(1),
-            instance: VQueueInstance::from_raw(1),
+            qid,
             created_at: 1u64.try_into().expect("valid timestamp"),
             kind: EntryKind::StateMutation,
             id: EntryId::from_bytes([9; 16]),
