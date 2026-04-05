@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::state_machine::{CommandHandler, Error, ParkCause, StateMachineApplyContext};
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::invocation_status_table::{InvocationStatus, WriteInvocationStatusTable};
 use restate_storage_api::journal_table_v2::ReadJournalTable;
 use restate_storage_api::lock_table::WriteLockTable;
@@ -85,12 +85,7 @@ where
                 .update(ctx.record_created_at);
 
             if Configuration::pinned().common.experimental_enable_vqueues {
-                ctx.vqueue_park_invocation(
-                    &self.invocation_id,
-                    &in_flight_invocation_metadata.invocation_target,
-                    ParkCause::Suspend,
-                )
-                .await?;
+                ctx.vqueue_park_invocation(&self.invocation_id).await?;
             }
 
             invocation_status = InvocationStatus::Suspended {

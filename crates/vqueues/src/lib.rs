@@ -11,6 +11,7 @@
 mod cache;
 mod metric_definitions;
 pub mod scheduler;
+mod util;
 
 // Re-exports
 pub use cache::{VQueuesMeta, VQueuesMetaCache};
@@ -18,6 +19,7 @@ pub use metric_definitions::describe_metrics;
 pub use scheduler::{
     ResourceManager, SchedulerService, SchedulingStatus, ThrottleScope, VQueueSchedulerStatus,
 };
+pub use util::*;
 
 use restate_limiter::LimitKey;
 use restate_storage_api::StorageError;
@@ -100,6 +102,15 @@ where
     A: From<VQueueEvent<EntryCard>> + 'static,
     S: WriteVQueueTable + ReadVQueueTable + WriteLockTable,
 {
+    /// Determines the vqueue id from the invocation id, invocation target, and limit key.
+    #[inline]
+    pub fn infer_vqueue_id_from_invocation(
+        invocation_id: &InvocationId,
+        invocation_target: &InvocationTarget,
+        limit_key: &LimitKey<ReString>,
+    ) -> VQueueId {
+        util::infer_vqueue_id_from_invocation(invocation_id, invocation_target, limit_key)
+    }
     /// The entry has completed execution and it needs to be removed from the vqueue.
     ///
     /// Does nothing if the entry was not found in the previous stage.
@@ -150,14 +161,16 @@ where
     }
 
     pub async fn vqueue_from_invocation_target(
-        qid: &VQueueId,
+        invocation_id: &InvocationId,
         storage: &'a mut S,
         cache: &'a mut VQueuesMetaCache,
         action_collector: Option<&'a mut Vec<A>>,
         invocation_target: &InvocationTarget,
         limit_key: &LimitKey<ReString>,
     ) -> Result<Self, StorageError> {
-        let cache_key = match cache.load(storage, qid).await? {
+        let qid =
+            Self::infer_vqueue_id_from_invocation(invocation_id, invocation_target, limit_key);
+        let cache_key = match cache.load(storage, &qid).await? {
             Some(key) => key,
             None => {
                 let meta = VQueueMeta::new(
@@ -165,7 +178,7 @@ where
                     limit_key.clone(),
                     invocation_target.lock_name(),
                 );
-                storage.create_vqueue(qid, &meta);
+                storage.create_vqueue(&qid, &meta);
                 cache.insert(qid.clone(), meta)
             }
         };
@@ -435,15 +448,12 @@ where
 
     /// Park an entry
     ///
-    /// If `should_release_concurrency_token` is true, the parked entry will release its token
-    ///
     /// Returns `true` if the entry was found in inbox and parked correctly, `false` otherwise.
     pub fn park(
         &mut self,
         at: UniqueTimestamp,
         card: &EntryCard,
         previous_stage: Stage,
-        should_release_concurrency_token: bool,
     ) -> Result<bool, StorageError> {
         let meta = self.cache.get_mut(self.cache_key).unwrap();
 
@@ -459,7 +469,6 @@ where
         let update = metadata::Update::new(
             at,
             metadata::Action::Park {
-                should_release_concurrency_token,
                 priority: card.priority,
                 previous_stage,
             },
@@ -487,16 +496,10 @@ where
             unreachable!("Cannot remove an item from a dormant vqueue");
         }
 
-        let mut modified_card = card.clone();
-        if should_release_concurrency_token && card.priority.token_held() {
-            // adjust the priority to reflect releasing the token
-            modified_card.priority = EffectivePriority::Started;
-        }
-
         self.storage
-            .put_inbox_entry(meta.vqueue_id(), Stage::Park, &modified_card);
+            .put_inbox_entry(meta.vqueue_id(), Stage::Park, card);
         self.storage
-            .put_vqueue_entry_state(meta.vqueue_id(), &modified_card, Stage::Park, ());
+            .put_vqueue_entry_state(meta.vqueue_id(), card, Stage::Park, ());
 
         if let Some(collector) = self.action_collector.as_deref_mut() {
             collector.push(A::from(event));
