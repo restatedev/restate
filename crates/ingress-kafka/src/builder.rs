@@ -221,6 +221,9 @@ impl InvocationBuilder {
         };
 
         let invocation_id = InvocationId::generate_or_else(&invocation_target, None, || {
+            // todo: reconcile this with the world of scopes+limit keys.
+            // In particular, the scatter-width of partition keys and how scopes can be assigned to
+            // ingested items from kafka.
             partitioner::HashPartitioner::compute_partition_key(seed)
         });
 

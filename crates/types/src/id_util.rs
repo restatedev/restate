@@ -55,6 +55,8 @@ prefixed_ids! {
         Awakeable("prom"),
         Signal("sign"),
         Snapshot("snap"),
+        // VQueue
+        VQueue("vq"),
     }
 }
 
