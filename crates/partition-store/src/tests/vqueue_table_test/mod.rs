@@ -27,11 +27,11 @@ use restate_types::vqueue::{EffectivePriority, VQueueId, VQueueInstance, VQueueP
 use crate::PartitionStore;
 
 fn test_qid() -> VQueueId {
-    VQueueId {
-        partition_key: PartitionKey::from(1000u64),
-        parent: VQueueParent::from_raw(1),
-        instance: VQueueInstance::from_raw(1),
-    }
+    VQueueId::new(
+        VQueueParent::from_raw(1),
+        PartitionKey::from(1000u64),
+        VQueueInstance::from_raw(1),
+    )
 }
 
 fn entry_card(id: u8) -> EntryCard {
@@ -120,11 +120,11 @@ fn verify_priority_ordering(db: &crate::PartitionDb) {
 
 /// Test: Within the same priority, items are ordered by visible_at then created_at.
 async fn ordering_within_same_priority<W: WriteVQueueTable>(txn: &mut W) {
-    let qid = VQueueId {
-        partition_key: PartitionKey::from(2000u64),
-        parent: VQueueParent::from_raw(1),
-        instance: VQueueInstance::from_raw(1),
-    };
+    let qid = VQueueId::new(
+        VQueueParent::from_raw(1),
+        PartitionKey::from(2000u64),
+        VQueueInstance::from_raw(1),
+    );
 
     // All entries have UserDefault priority, but different visible_at and created_at
     // visible_at ordering: Now (0) < At(ts)
@@ -155,11 +155,11 @@ async fn ordering_within_same_priority<W: WriteVQueueTable>(txn: &mut W) {
 }
 
 fn verify_ordering_within_same_priority(db: &crate::PartitionDb) {
-    let qid = VQueueId {
-        partition_key: PartitionKey::from(2000u64),
-        parent: VQueueParent::from_raw(1),
-        instance: VQueueInstance::from_raw(1),
-    };
+    let qid = VQueueId::new(
+        VQueueParent::from_raw(1),
+        PartitionKey::from(2000u64),
+        VQueueInstance::from_raw(1),
+    );
     let mut reader = db.new_inbox_reader(&qid);
     let items = collect_cursor(&mut reader);
 
@@ -173,11 +173,11 @@ fn verify_ordering_within_same_priority(db: &crate::PartitionDb) {
 
 /// Test: Running and inbox stages are separate namespaces.
 async fn running_and_inbox_are_separate<W: WriteVQueueTable>(txn: &mut W) {
-    let qid = VQueueId {
-        partition_key: PartitionKey::from(3000u64),
-        parent: VQueueParent::from_raw(1),
-        instance: VQueueInstance::from_raw(1),
-    };
+    let qid = VQueueId::new(
+        VQueueParent::from_raw(1),
+        PartitionKey::from(3000u64),
+        VQueueInstance::from_raw(1),
+    );
 
     // Put one entry in Run stage
     let run_entry = entry_card(10);
@@ -191,11 +191,11 @@ async fn running_and_inbox_are_separate<W: WriteVQueueTable>(txn: &mut W) {
 }
 
 fn verify_running_and_inbox_are_separate(db: &crate::PartitionDb) {
-    let qid = VQueueId {
-        partition_key: PartitionKey::from(3000u64),
-        parent: VQueueParent::from_raw(1),
-        instance: VQueueInstance::from_raw(1),
-    };
+    let qid = VQueueId::new(
+        VQueueParent::from_raw(1),
+        PartitionKey::from(3000u64),
+        VQueueInstance::from_raw(1),
+    );
 
     // Running reader should only see the Run stage entry
     let mut run_reader = db.new_run_reader(&qid);
@@ -217,11 +217,11 @@ fn verify_running_and_inbox_are_separate(db: &crate::PartitionDb) {
 
 /// Test: seek_after positions cursor strictly after the given item.
 async fn seek_after_works<W: WriteVQueueTable>(txn: &mut W) {
-    let qid = VQueueId {
-        partition_key: PartitionKey::from(4000u64),
-        parent: VQueueParent::from_raw(1),
-        instance: VQueueInstance::from_raw(1),
-    };
+    let qid = VQueueId::new(
+        VQueueParent::from_raw(1),
+        PartitionKey::from(4000u64),
+        VQueueInstance::from_raw(1),
+    );
 
     // Insert entries in order
     let entries: Vec<_> = (1..=5).map(entry_card).collect();
@@ -231,11 +231,11 @@ async fn seek_after_works<W: WriteVQueueTable>(txn: &mut W) {
 }
 
 fn verify_seek_after_works(db: &crate::PartitionDb) {
-    let qid = VQueueId {
-        partition_key: PartitionKey::from(4000u64),
-        parent: VQueueParent::from_raw(1),
-        instance: VQueueInstance::from_raw(1),
-    };
+    let qid = VQueueId::new(
+        VQueueParent::from_raw(1),
+        PartitionKey::from(4000u64),
+        VQueueInstance::from_raw(1),
+    );
 
     let entries: Vec<_> = (1..=5).map(entry_card).collect();
 
@@ -255,11 +255,11 @@ fn verify_seek_after_works(db: &crate::PartitionDb) {
 
 /// Test: Empty queue returns None from peek.
 fn verify_empty_queue_returns_none(db: &crate::PartitionDb) {
-    let qid = VQueueId {
-        partition_key: PartitionKey::from(9999u64), // unused partition key
-        parent: VQueueParent::from_raw(99),
-        instance: VQueueInstance::from_raw(99),
-    };
+    let qid = VQueueId::new(
+        VQueueParent::from_raw(99),
+        PartitionKey::from(9999u64), // unused partition key
+        VQueueInstance::from_raw(99),
+    );
 
     let mut run_reader = db.new_run_reader(&qid);
     run_reader.seek_to_first();
@@ -280,21 +280,17 @@ fn verify_empty_queue_returns_none(db: &crate::PartitionDb) {
 async fn vqueue_isolation<W: WriteVQueueTable>(txn: &mut W) {
     let pkey = PartitionKey::from(5000u64);
 
-    let qid1 = VQueueId {
-        partition_key: pkey,
-        parent: VQueueParent::from_raw(1),
-        instance: VQueueInstance::from_raw(1),
-    };
-    let qid2 = VQueueId {
-        partition_key: pkey,
-        parent: VQueueParent::from_raw(1),
-        instance: VQueueInstance::from_raw(2), // different instance
-    };
-    let qid3 = VQueueId {
-        partition_key: pkey,
-        parent: VQueueParent::from_raw(2), // different parent
-        instance: VQueueInstance::from_raw(1),
-    };
+    let qid1 = VQueueId::new(VQueueParent::from_raw(1), pkey, VQueueInstance::from_raw(1));
+    let qid2 = VQueueId::new(
+        VQueueParent::from_raw(1),
+        pkey,
+        VQueueInstance::from_raw(2), // different instance
+    );
+    let qid3 = VQueueId::new(
+        VQueueParent::from_raw(2), // different parent
+        pkey,
+        VQueueInstance::from_raw(1),
+    );
 
     txn.put_inbox_entry(&qid1, Stage::Inbox, &entry_card(1));
     txn.put_inbox_entry(&qid2, Stage::Inbox, &entry_card(2));
@@ -304,21 +300,9 @@ async fn vqueue_isolation<W: WriteVQueueTable>(txn: &mut W) {
 fn verify_vqueue_isolation(db: &crate::PartitionDb) {
     let pkey = PartitionKey::from(5000u64);
 
-    let qid1 = VQueueId {
-        partition_key: pkey,
-        parent: VQueueParent::from_raw(1),
-        instance: VQueueInstance::from_raw(1),
-    };
-    let qid2 = VQueueId {
-        partition_key: pkey,
-        parent: VQueueParent::from_raw(1),
-        instance: VQueueInstance::from_raw(2),
-    };
-    let qid3 = VQueueId {
-        partition_key: pkey,
-        parent: VQueueParent::from_raw(2),
-        instance: VQueueInstance::from_raw(1),
-    };
+    let qid1 = VQueueId::new(VQueueParent::from_raw(1), pkey, VQueueInstance::from_raw(1));
+    let qid2 = VQueueId::new(VQueueParent::from_raw(1), pkey, VQueueInstance::from_raw(2));
+    let qid3 = VQueueId::new(VQueueParent::from_raw(2), pkey, VQueueInstance::from_raw(1));
 
     // Each queue should only see its own entry
     let mut reader1 = db.new_inbox_reader(&qid1);
@@ -342,11 +326,11 @@ fn verify_vqueue_isolation(db: &crate::PartitionDb) {
 /// This verifies that the inbox reader (which uses a tailing iterator) can see
 /// items that were added after the reader was created, when re-seeking.
 async fn tailing_iterator_sees_new_items_on_reseek(rocksdb: &mut PartitionStore) {
-    let qid = VQueueId {
-        partition_key: PartitionKey::from(6000u64),
-        parent: VQueueParent::from_raw(1),
-        instance: VQueueInstance::from_raw(1),
-    };
+    let qid = VQueueId::new(
+        VQueueParent::from_raw(1),
+        PartitionKey::from(6000u64),
+        VQueueInstance::from_raw(1),
+    );
 
     // Insert initial entries
     let entry1 = entry_card(1);
@@ -404,11 +388,11 @@ async fn tailing_iterator_sees_new_items_on_reseek(rocksdb: &mut PartitionStore)
 /// This verifies that when using seek_after to resume iteration, newly added
 /// items that sort after the seek position are visible.
 async fn tailing_iterator_sees_new_items_on_seek_after(rocksdb: &mut PartitionStore) {
-    let qid = VQueueId {
-        partition_key: PartitionKey::from(7000u64),
-        parent: VQueueParent::from_raw(1),
-        instance: VQueueInstance::from_raw(1),
-    };
+    let qid = VQueueId::new(
+        VQueueParent::from_raw(1),
+        PartitionKey::from(7000u64),
+        VQueueInstance::from_raw(1),
+    );
 
     // Insert initial entries with different priorities
     let entry_high = entry_card_with_priority(1, EffectivePriority::System);
@@ -456,11 +440,11 @@ async fn tailing_iterator_sees_new_items_on_seek_after(rocksdb: &mut PartitionSt
 /// This verifies that when an item is deleted while the reader is open,
 /// re-seeking will not return the deleted item.
 async fn deleted_items_not_visible_after_reseek(rocksdb: &mut PartitionStore) {
-    let qid = VQueueId {
-        partition_key: PartitionKey::from(8000u64),
-        parent: VQueueParent::from_raw(1),
-        instance: VQueueInstance::from_raw(1),
-    };
+    let qid = VQueueId::new(
+        VQueueParent::from_raw(1),
+        PartitionKey::from(8000u64),
+        VQueueInstance::from_raw(1),
+    );
 
     // Insert initial entries
     let entry1 = entry_card(1);
@@ -508,11 +492,11 @@ async fn deleted_items_not_visible_after_reseek(rocksdb: &mut PartitionStore) {
 /// This verifies that deleted items are not returned when using seek_after
 /// to resume iteration past a certain point.
 async fn deleted_items_not_visible_after_seek_after(rocksdb: &mut PartitionStore) {
-    let qid = VQueueId {
-        partition_key: PartitionKey::from(8500u64),
-        parent: VQueueParent::from_raw(1),
-        instance: VQueueInstance::from_raw(1),
-    };
+    let qid = VQueueId::new(
+        VQueueParent::from_raw(1),
+        PartitionKey::from(8500u64),
+        VQueueInstance::from_raw(1),
+    );
 
     // Insert entries
     let entry1 = entry_card(1);
@@ -556,11 +540,11 @@ async fn deleted_items_not_visible_after_seek_after(rocksdb: &mut PartitionStore
 /// This tests a more complex scenario where items are both added and removed
 /// while the reader is open.
 async fn concurrent_enqueue_and_delete(rocksdb: &mut PartitionStore) {
-    let qid = VQueueId {
-        partition_key: PartitionKey::from(9000u64),
-        parent: VQueueParent::from_raw(1),
-        instance: VQueueInstance::from_raw(1),
-    };
+    let qid = VQueueId::new(
+        VQueueParent::from_raw(1),
+        PartitionKey::from(9000u64),
+        VQueueInstance::from_raw(1),
+    );
 
     // Insert initial entries with different priorities
     let entry_high = entry_card_with_priority(10, EffectivePriority::System);

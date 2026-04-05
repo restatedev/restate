@@ -17,54 +17,30 @@ use std::task::Poll;
 use hashbrown::HashMap;
 use smallvec::SmallVec;
 
-use restate_futures_util::concurrency::Concurrency;
-use restate_memory::MemoryPool;
-use restate_serde_util::NonZeroByteCount;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{ScanVQueueTable, VQueueEntry, VQueueStore, WaitStats};
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueue::VQueueId;
 
 use crate::VQueueEvent;
+use crate::VQueuesMetaCache;
 use crate::metric_definitions::publish_scheduler_decision_metrics;
-use crate::{VQueuesMeta, VQueuesMetaMut};
 
 use self::drr::DRRScheduler;
+use self::resource_manager::{ReservedResources, ResourceKind};
 use self::vqueue_state::DetailedEligibility;
-
-pub use self::vqueue_state::ReservedResources;
 
 mod clock;
 mod drr;
 mod eligible;
 mod queue;
+mod resource_manager;
 mod vqueue_state;
+pub use resource_manager::ResourceManager;
 
 const INLINED_SIZE: usize = 4;
 
-slotmap::new_key_type! { struct VQueueHandle; }
-
-// Token bucket used for throttling over all vqueues
-type GlobalTokenBucket<C = gardal::TokioClock> =
-    gardal::TokenBucket<gardal::PaddedAtomicSharedStorage, C>;
-
-/// Indicates the pause state of a vqueue.
-#[derive(Debug, Clone, Default)]
-pub enum IsPaused {
-    #[default]
-    /// The vqueue is enabled
-    No,
-    /// The vqueue is paused directly by the user
-    Directly,
-    /// The vqueue is paused because its parent is paused
-    ViaParent,
-}
-
-impl IsPaused {
-    pub fn yes(&self) -> bool {
-        matches!(self, IsPaused::Directly | IsPaused::ViaParent)
-    }
-}
+slotmap::new_key_type! { pub(crate) struct VQueueHandle; }
 
 /// A public view of the scheduler's status of a single vqueue.
 ///
@@ -72,8 +48,6 @@ impl IsPaused {
 /// wait statistics for a vqueue.
 #[derive(Debug, Clone, Default)]
 pub struct VQueueSchedulerStatus {
-    /// Whether the vqueue is paused or not.
-    pub is_paused: IsPaused,
     /// Statistics about the wait time experienced by the head item in the vqueue.
     pub wait_stats: WaitStats,
     /// Number of items remaining in the running stage.
@@ -113,7 +87,9 @@ pub enum SchedulingStatus {
         at: MillisSinceEpoch,
     },
     /// The vqueue is blocked on invoker global capacity.
-    BlockedOnCapacity,
+    BlockedOn(ResourceKind),
+    /// The vqueue is waiting to acquire a lock of a VO.
+    BlockedOnLock,
     /// The vqueue is waiting for concurrency tokens. Concurrency tokens are released
     /// when currently running items are completed or (in some cases) when running items
     /// are parked.
@@ -127,9 +103,6 @@ impl From<DetailedEligibility> for SchedulingStatus {
                 SchedulingStatus::Ready
             }
             DetailedEligibility::Scheduled(ts) => SchedulingStatus::Scheduled { at: ts },
-            DetailedEligibility::WaitingConcurrencyTokens => {
-                SchedulingStatus::WaitingConcurrencyTokens
-            }
             DetailedEligibility::Empty => SchedulingStatus::Empty,
         }
     }
@@ -157,8 +130,6 @@ impl<Item> Entry<Item> {
 
 #[derive(Debug)]
 pub struct Assignments<Item> {
-    latest_run_tb_zero_time: Option<f64>,
-
     // In the overwhelming majority of cases, we will have only one segment (inbox or running)
     // and in rare cases we may have both. If we (in the future) support sending the three actions
     // on the same scheduler's poll, we'll accept to allocated in those rare cases where the three actions
@@ -169,7 +140,6 @@ pub struct Assignments<Item> {
 impl<Item> Default for Assignments<Item> {
     fn default() -> Self {
         Self {
-            latest_run_tb_zero_time: None,
             segments: smallvec::smallvec![],
         }
     }
@@ -208,17 +178,8 @@ impl<Item> Assignments<Item> {
         }
     }
 
-    /// Allows us to track the token bucket's zero time across scheduler runs.
-    pub fn set_latest_run_tb_zero_time(&mut self, zero_time: Option<f64>) {
-        self.latest_run_tb_zero_time = zero_time;
-    }
-
     pub fn is_empty(&self) -> bool {
         self.segments.is_empty()
-    }
-
-    pub fn updated_tb_zero_time(&self) -> Option<f64> {
-        self.latest_run_tb_zero_time
     }
 }
 
@@ -270,15 +231,8 @@ impl<Item> Default for Decision<Item> {
 }
 
 impl<Item: VQueueEntry> Decision<Item> {
-    pub fn push(
-        &mut self,
-        qid: &VQueueId,
-        action: Action,
-        entry: Entry<Item>,
-        updated_zt: Option<f64>,
-    ) {
+    pub fn push(&mut self, qid: &VQueueId, action: Action, entry: Entry<Item>) {
         let assignments = self.q.entry_ref(qid).or_default();
-        assignments.set_latest_run_tb_zero_time(updated_zt);
         match action {
             Action::Yield => self.num_yield += 1,
             Action::MoveToRun if entry.item.priority().is_new() => self.num_start += 1,
@@ -346,23 +300,16 @@ impl<S: VQueueStore> SchedulerService<S> {
     }
 
     pub async fn create(
-        concurrency: Concurrency,
-        global_throttling: Option<GlobalTokenBucket>,
-        memory_pool: MemoryPool,
-        initial_invocation_memory: NonZeroByteCount,
+        resource_manager: ResourceManager,
         storage: S,
-        vqueues_cache: &mut VQueuesMetaMut,
+        vqueues_cache: &VQueuesMetaCache,
     ) -> Result<Self, StorageError>
     where
         S: ScanVQueueTable,
     {
-        // We need to load all active vqueues (non-empty) and in particular vqueues
-        // that have already running entries.
-
-        // We do not want to discard the state of the cache. We want to respect whatever
-        // was there before becoming a leader since we know it's up-to-date.
-        vqueues_cache.load_all_active_vqueues(&storage).await?;
-
+        // We maintain a clone of the vqueue cache that's snapshotted at the time of creation
+        // of the scheduler. The clone is then kept in-sync by applying the events emitted
+        // by the partition processor.
         let state = State::Active(Box::pin(DRRScheduler::new(
             // this assumes a worst case of 2 assignment segments per queue.
             // This limits the total number of commands we send via propose_many to bifrost.
@@ -372,25 +319,17 @@ impl<S: VQueueStore> SchedulerService<S> {
             NonZeroU16::new(25).unwrap(),
             // currently constant but we can make it configurable if needed
             NonZeroU16::new(1000).unwrap(),
-            concurrency,
-            global_throttling,
-            memory_pool,
-            initial_invocation_memory,
+            resource_manager,
             storage,
             vqueues_cache.view(),
         )));
         Ok(Self { state })
     }
 
-    pub fn on_inbox_event(
-        &mut self,
-        vqueues: VQueuesMeta<'_>,
-        event: &VQueueEvent<S::Item>,
-    ) -> Result<(), StorageError> {
+    pub fn on_inbox_event(&mut self, event: VQueueEvent<S::Item>) {
         if let State::Active(ref mut drr_scheduler) = self.state {
-            drr_scheduler.as_mut().on_inbox_event(vqueues, event)?;
+            drr_scheduler.as_mut().on_inbox_event(event);
         }
-        Ok(())
     }
 
     /// Return reserved resources (concurrency permit + memory lease) for a given
@@ -405,51 +344,38 @@ impl<S: VQueueStore> SchedulerService<S> {
         }
     }
 
-    pub async fn schedule_next(
-        &mut self,
-        vqueues: VQueuesMeta<'_>,
-    ) -> Result<Decision<S::Item>, StorageError> {
-        poll_fn(|cx| self.poll_schedule_next(cx, vqueues)).await
+    pub async fn schedule_next(&mut self) -> Result<Decision<S::Item>, StorageError> {
+        poll_fn(|cx| self.poll_schedule_next(cx)).await
     }
 
     pub fn poll_schedule_next(
         &mut self,
         cx: &mut std::task::Context<'_>,
-        vqueues: VQueuesMeta<'_>,
     ) -> Poll<Result<Decision<S::Item>, StorageError>> {
         match self.state {
             // if scheduler is disabled, we always return pending.
             State::Disabled => Poll::Pending,
-            State::Active(ref mut drr_scheduler) => {
-                drr_scheduler.as_mut().poll_schedule_next(cx, vqueues)
-            }
+            State::Active(ref mut drr_scheduler) => drr_scheduler.as_mut().poll_schedule_next(cx),
         }
     }
 
     /// Returns the scheduling status for a specific vqueue.
     ///
     /// Returns `None` if the scheduler is disabled or the vqueue is not tracked.
-    pub fn get_status(
-        &self,
-        qid: &VQueueId,
-        vqueues: VQueuesMeta<'_>,
-    ) -> Option<VQueueSchedulerStatus> {
+    pub fn get_status(&self, qid: &VQueueId) -> Option<VQueueSchedulerStatus> {
         match self.state {
             State::Disabled => None,
-            State::Active(ref drr_scheduler) => drr_scheduler.get_status(qid, vqueues),
+            State::Active(ref drr_scheduler) => drr_scheduler.get_status(qid),
         }
     }
 
     /// Returns an iterator over the scheduling status of all tracked vqueues.
     ///
     /// Returns `None` if the scheduler is disabled.
-    pub fn iter_status(
-        &self,
-        vqueues: VQueuesMeta<'_>,
-    ) -> Option<impl Iterator<Item = (VQueueId, VQueueSchedulerStatus)>> {
+    pub fn iter_status(&self) -> Option<impl Iterator<Item = (VQueueId, VQueueSchedulerStatus)>> {
         match self.state {
             State::Disabled => None,
-            State::Active(ref drr_scheduler) => Some(drr_scheduler.iter_status(vqueues)),
+            State::Active(ref drr_scheduler) => Some(drr_scheduler.iter_status()),
         }
     }
 }

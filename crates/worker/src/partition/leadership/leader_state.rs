@@ -25,8 +25,6 @@ use tracing::{debug, trace};
 use restate_bifrost::CommitToken;
 use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{Metadata, MetadataKind, TaskCenter, TaskHandle, TaskId};
-use restate_futures_util::concurrency::Permit;
-use restate_memory::MemoryPool;
 use restate_partition_store::{PartitionDb, PartitionStore};
 use restate_storage_api::vqueue_table::EntryCard;
 use restate_types::identifiers::{
@@ -41,7 +39,7 @@ use restate_types::net::partition_processor::{
 };
 use restate_types::{RESTATE_VERSION_1_7_0, SemanticRestateVersion, Version, Versioned};
 use restate_vqueues::VQueueEvent;
-use restate_vqueues::{SchedulerService, VQueuesMeta, scheduler};
+use restate_vqueues::{SchedulerService, scheduler};
 use restate_wal_protocol::control::UpsertSchema;
 use restate_wal_protocol::vqueues::Assignment;
 use restate_wal_protocol::{Command, vqueues};
@@ -132,11 +130,7 @@ impl LeaderState {
     ///
     /// Important: The future needs to be cancellation safe since it is polled as a tokio::select
     /// arm!
-    pub async fn run(
-        &mut self,
-        state_machine: &StateMachine,
-        vqueues: VQueuesMeta<'_>,
-    ) -> Result<Vec<ActionEffect>, Error> {
+    pub async fn run(&mut self, state_machine: &StateMachine) -> Result<Vec<ActionEffect>, Error> {
         let timer_stream = std::pin::pin!(stream::unfold(
             &mut self.timer_service,
             |timer_service| async {
@@ -149,7 +143,7 @@ impl LeaderState {
         // if we have problems with latency
         let scheduler_stream =
             std::pin::pin!(stream::unfold(&mut self.scheduler, |scheduler| async {
-                let assignment = scheduler.schedule_next(vqueues).await;
+                let assignment = scheduler.schedule_next().await;
                 Some((ActionEffect::Scheduler(assignment), scheduler))
             }));
 
@@ -277,7 +271,6 @@ impl LeaderState {
                     // (yields/resume, and starts) each action generates its own command.
                     let mut commands = Vec::with_capacity(decisions.num_queues() * 2);
                     for (qid, decision) in decisions.into_iter() {
-                        let updated_token_bucket_zero_time = decision.updated_tb_zero_time();
                         for (action, items) in decision.into_iter_per_action() {
                             let mut assignment = Assignment::with_capacity(&qid, items.len());
                             for entry in items.into_iter() {
@@ -288,13 +281,11 @@ impl LeaderState {
                                 scheduler::Action::MoveToRun => {
                                     let command = vqueues::VQWaitingToRunning {
                                         assignment,
-                                        meta_updates: vqueues::MetaUpdates {
-                                            updated_token_bucket_zero_time,
-                                        },
+                                        meta_updates: vqueues::MetaUpdates {},
                                     }
                                     .encode_to_bytes();
                                     commands.push((
-                                        qid.partition_key,
+                                        qid.partition_key(),
                                         Command::VQWaitingToRunning(command),
                                     ));
                                 }
@@ -302,7 +293,7 @@ impl LeaderState {
                                     let command =
                                         vqueues::VQYieldRunning { assignment }.encode_to_bytes();
                                     commands.push((
-                                        qid.partition_key,
+                                        qid.partition_key(),
                                         Command::VQYieldRunning(command),
                                     ));
                                 }
@@ -473,8 +464,6 @@ impl LeaderState {
         &mut self,
         invoker_tx: &mut impl restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
         actions: impl Iterator<Item = Action>,
-        vqueues: VQueuesMeta<'_>,
-        memory_pool: &MemoryPool,
     ) -> Result<(), Error> {
         for action in actions {
             let action_name = action.name();
@@ -489,7 +478,7 @@ impl LeaderState {
             )
             .increment(1);
 
-            self.handle_action(action, invoker_tx, vqueues, memory_pool)?;
+            self.handle_action(action, invoker_tx)?;
         }
 
         Ok(())
@@ -499,8 +488,6 @@ impl LeaderState {
         &mut self,
         action: Action,
         invoker_tx: &mut impl restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
-        vqueues: VQueuesMeta<'_>,
-        memory_pool: &MemoryPool,
     ) -> Result<(), Error> {
         let partition_leader_epoch = (self.partition_id, self.leader_epoch);
         match action {
@@ -650,7 +637,7 @@ impl LeaderState {
                 }
             }
             Action::VQEvent(inbox_event) => {
-                self.handle_vqueue_inbox_event(inbox_event, vqueues)?;
+                self.handle_vqueue_inbox_event(inbox_event);
             }
             Action::VQInvoke {
                 qid,
@@ -658,15 +645,16 @@ impl LeaderState {
                 invocation_id,
                 invocation_target,
             } => {
-                let (permit, memory_lease) = match self.scheduler.pop_resources(item_hash) {
-                    Some(resources) => (resources.permit, resources.memory_lease),
-                    None => {
-                        tracing::warn!(
-                            "Cannot find resources for item hash {item_hash} in scheduler. Will not respect the invoker limit for this invocation"
-                        );
-                        (Permit::new_empty(), memory_pool.empty_lease())
-                    }
-                };
+                let mut run_permit = self.scheduler.pop_resources(item_hash).unwrap_or_else(|| {
+                    tracing::error!(
+                        "Cannot find a permit for item hash {item_hash} in scheduler. Will not respect the invoker limit for this invocation"
+                    );
+                    unimplemented!()
+                    // todo: RunPermit::new_empty()
+                });
+                // todo: This is temporary until we wrap the returned permit into an InvokePermit
+                // that invoker permit will carry the inner permit as opaque type.
+                let (permit, memory_lease) = run_permit.take_invoker_permit();
                 invoker_tx
                     .vqueue_invoke(
                         partition_leader_epoch,
@@ -683,16 +671,8 @@ impl LeaderState {
         Ok(())
     }
 
-    fn handle_vqueue_inbox_event(
-        &mut self,
-        event: VQueueEvent<EntryCard>,
-        vqueues: VQueuesMeta<'_>,
-    ) -> Result<(), Error> {
-        self.scheduler
-            .on_inbox_event(vqueues, &event)
-            .map_err(Error::Storage)?;
-
-        Ok(())
+    fn handle_vqueue_inbox_event(&mut self, event: VQueueEvent<EntryCard>) {
+        self.scheduler.on_inbox_event(event);
     }
 }
 

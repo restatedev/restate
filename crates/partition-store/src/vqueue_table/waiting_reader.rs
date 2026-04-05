@@ -37,7 +37,7 @@ impl VQueueWaitingReader {
         // we know how big the prefix is
         let mut key_buf = [0u8; InboxKey::by_stage_prefix_len()];
         InboxKey::builder()
-            .partition_key(qid.partition_key)
+            .partition_key(qid.partition_key())
             .parent(qid.parent)
             .instance(qid.instance)
             .stage(Stage::Inbox)
@@ -74,7 +74,7 @@ impl VQueueCursor for VQueueWaitingReader {
         let mut key_buf = [0u8; InboxKey::serialized_length_fixed()];
         let mut buf = key_buf.as_mut();
         let key = InboxKey::builder()
-            .partition_key(qid.partition_key)
+            .partition_key(qid.partition_key())
             .parent(qid.parent)
             .instance(qid.instance)
             .stage(Stage::Inbox)
