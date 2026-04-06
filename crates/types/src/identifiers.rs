@@ -270,6 +270,8 @@ impl InvocationUuid {
         const HASH_SEPARATOR: u8 = 0x2c;
 
         // --- Rules for deterministic ID
+        // * If the target is _scoped_, use the scope name as part of the hash to avoid collision
+        // with unscoped requests with the same idempotency key.
         // * If the target IS a workflow run, use workflow name + key
         // * If the target IS an idempotent request, use the idempotency scope + key
         // * If the target IS NEITHER an idempotent request or a workflow run, then just generate a random ulid
@@ -279,6 +281,10 @@ impl InvocationUuid {
                 // Workflow run
                 let mut hasher = Sha256::new();
                 hasher.update(b"wf");
+                if let Some(scope) = invocation_target.scope() {
+                    hasher.update([HASH_SEPARATOR]);
+                    hasher.update(scope.as_bytes());
+                }
                 hasher.update([HASH_SEPARATOR]);
                 hasher.update(invocation_target.service_name());
                 hasher.update([HASH_SEPARATOR]);
@@ -299,6 +305,10 @@ impl InvocationUuid {
                 // Invocations with Idempotency key
                 let mut hasher = Sha256::new();
                 hasher.update(b"ik");
+                if let Some(scope) = invocation_target.scope() {
+                    hasher.update([HASH_SEPARATOR]);
+                    hasher.update(scope.as_bytes());
+                }
                 hasher.update([HASH_SEPARATOR]);
                 hasher.update(invocation_target.service_name());
                 if let Some(key) = invocation_target.key() {
@@ -1518,7 +1528,7 @@ mod tests {
 
     #[test]
     fn deterministic_invocation_id_for_idempotent_request() {
-        let invocation_target = InvocationTarget::mock_service();
+        let mut invocation_target = InvocationTarget::mock_service();
         let idempotent_key = Alphanumeric.sample_string(&mut rand::rng(), 16);
 
         assert_eq!(
