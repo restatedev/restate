@@ -8,8 +8,9 @@ The default `bind-ip` has changed from `0.0.0.0` (IPv4 only) to `::` (IPv6
 unspecified), which on most systems creates a dual-stack socket that accepts
 both IPv4 and IPv6 connections.
 
-Additionally, the automatic routable IP detection now tries IPv6 as a fallback
-when IPv4 detection fails, improving support for IPv6-only environments.
+Additionally, the automatic routable IP detection now prefers IPv6, falling
+back to IPv4 when IPv6 is not available, improving support for IPv6-only and
+dual-stack environments.
 
 ### Why This Matters
 
