@@ -409,6 +409,7 @@ mod tests {
             Semaphore::MAX_PERMITS,
             Live::from_value(mock_schemas()),
             Arc::new(mock_request_dispatcher),
+            false,
             health.ingress_status(),
         );
         TaskCenter::spawn(TaskKind::SystemService, "ingress", ingress.run()).unwrap();
