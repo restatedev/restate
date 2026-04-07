@@ -126,7 +126,7 @@ toml_edit = { version = "0.22", features = ["serde"] }
 toml_parser = { version = "1" }
 tonic = { version = "0.14", features = ["gzip", "tls-native-roots", "tls-ring", "zstd"] }
 tower = { version = "0.5", default-features = false, features = ["balance", "buffer", "limit", "load-shed", "retry", "timeout"] }
-tower-http = { version = "0.6", features = ["cors", "follow-redirect", "map-response-body", "normalize-path", "trace"] }
+tower-http = { version = "0.6", features = ["compression-br", "compression-gzip", "compression-zstd", "cors", "follow-redirect", "map-response-body", "normalize-path", "trace"] }
 tracing = { version = "0.1", features = ["log", "max_level_trace", "release_max_level_debug"] }
 tracing-core = { version = "0.1" }
 tracing-log = { version = "0.2" }
@@ -258,7 +258,7 @@ toml_edit = { version = "0.22", features = ["serde"] }
 toml_parser = { version = "1" }
 tonic = { version = "0.14", features = ["gzip", "tls-native-roots", "tls-ring", "zstd"] }
 tower = { version = "0.5", default-features = false, features = ["balance", "buffer", "limit", "load-shed", "retry", "timeout"] }
-tower-http = { version = "0.6", features = ["cors", "follow-redirect", "map-response-body", "normalize-path", "trace"] }
+tower-http = { version = "0.6", features = ["compression-br", "compression-gzip", "compression-zstd", "cors", "follow-redirect", "map-response-body", "normalize-path", "trace"] }
 tracing = { version = "0.1", features = ["log", "max_level_trace", "release_max_level_debug"] }
 tracing-core = { version = "0.1" }
 tracing-log = { version = "0.2" }

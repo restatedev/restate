@@ -16,6 +16,7 @@ use restate_ingestion_client::IngestionClient;
 use restate_wal_protocol::Envelope;
 use tower::ServiceBuilder;
 use tower_http::classify::ServerErrorsFailureClass;
+use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{Span, debug, info, info_span};
 
@@ -183,6 +184,7 @@ where
                 "/v3",
                 with_api_version_middleware(router, AdminApiVersion::V3),
             )
+            .layer(CompressionLayer::new())
             .layer(
                 ServiceBuilder::new()
                     .layer(HandleErrorLayer::new(|_| async {

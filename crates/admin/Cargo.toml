@@ -66,7 +66,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true, features = ["transport", "codegen", "gzip", "zstd"] }
 tower = { workspace = true, features = ["load-shed", "limit"] }
-tower-http = { workspace = true, features = ["trace"] }
+tower-http = { workspace = true, features = ["compression-br", "compression-gzip", "compression-zstd", "trace"] }
 tracing = { workspace = true }
 urlencoding = { workspace = true }
 utoipa = { workspace = true, features = ["axum_extras"] }
