@@ -28,7 +28,6 @@ use http::response::Parts as ResponseParts;
 use http::{HeaderName, HeaderValue, Response};
 use http_body::{Body, Frame};
 use http_body_util::StreamBody;
-use metrics::{counter, histogram};
 use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -57,7 +56,10 @@ use restate_types::service_protocol::ServiceProtocolVersion;
 use crate::TokenBucket;
 use crate::error::{InvocationMemoryExhausted, InvokerError};
 use crate::invocation_task::service_protocol_runner::ServiceProtocolRunner;
-use crate::metric_definitions::{ID_LOOKUP, INVOKER_EAGER_STATE_TRUNCATED, INVOKER_TASK_DURATION};
+use crate::metric_definitions::{
+    INVOKER_EAGER_STATE_TRUNCATED, INVOKER_HTTP_REQUEST_DURATION, INVOKER_HTTP_TOTAL_DURATION,
+    INVOKER_TASK_DURATION, ServiceMetrics, UUID_LOOKUP,
+};
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256
@@ -99,6 +101,7 @@ const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server")
 async fn collect_eager_state<S, E, T>(
     state: Option<EagerState<S>>,
     size_limit: usize,
+    labels: ServiceMetrics,
     mut mapper: impl FnMut((Bytes, Bytes)) -> T,
 ) -> Result<(bool, Vec<T>, Option<LocalMemoryLease>), InvokerError>
 where
@@ -128,7 +131,7 @@ where
                 ByteCount::from(size_limit),
                 entries.len()
             );
-            counter!(INVOKER_EAGER_STATE_TRUNCATED).increment(1);
+            labels.counter(INVOKER_EAGER_STATE_TRUNCATED).increment(1);
             is_partial = true;
             break;
         }
@@ -258,6 +261,13 @@ pub(super) struct InvocationTask<EE, DMR> {
 
     // throttling
     action_token_bucket: Option<TokenBucket>,
+
+    /// Resolved deployment id for the current attempt. Set once the deployment is pinned.
+    /// Used for metric labels on task duration and eager state truncation.
+    pinned_deployment_id: Option<restate_types::identifiers::DeploymentId>,
+
+    /// Cached interned metric labels for zero-allocation metric emissions.
+    metric: ServiceMetrics,
 }
 
 /// This is needed to split the run_internal in multiple loop functions and have shortcircuiting.
@@ -333,6 +343,7 @@ where
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         action_token_bucket: Option<TokenBucket>,
+        labels: ServiceMetrics,
     ) -> Self {
         Self {
             client,
@@ -350,6 +361,8 @@ where
             message_size_warning,
             retry_count_since_last_stored_entry,
             action_token_bucket,
+            pinned_deployment_id: None,
+            metric: labels,
         }
     }
 
@@ -409,7 +422,8 @@ where
         };
 
         self.send_invoker_tx(inner);
-        histogram!(INVOKER_TASK_DURATION, "partition_id" => ID_LOOKUP.get(self.partition.0))
+        self.metric
+            .histogram(INVOKER_TASK_DURATION)
             .record(start.elapsed());
     }
 
@@ -537,6 +551,9 @@ where
             None
         };
 
+        // Store deployment id for metric labels (INVOKER_TASK_DURATION, INVOKER_EAGER_STATE_TRUNCATED)
+        self.pinned_deployment_id = Some(deployment.id);
+        self.metric.deployment_id = UUID_LOOKUP.get(&deployment.id);
         self.send_invoker_tx(InvocationTaskOutputInner::PinnedDeployment(
             PinnedDeployment::new(deployment.id, chosen_service_protocol_version),
             deployment_changed,
@@ -610,14 +627,14 @@ fn invocation_id_to_header_value(invocation_id: &InvocationId) -> HeaderValue {
         .unwrap_or_else(|_| unreachable!("invocation id should be always valid"))
 }
 
-enum ResponseChunk {
+pub(super) enum ResponseChunk {
     Parts(ResponseParts),
     Data(Bytes),
 }
 
 pin_project_lite::pin_project! {
     #[project = ResponseStreamProj]
-    enum ResponseStream {
+    pub(super) enum ResponseStream {
         WaitingHeaders {
             join_handle: AbortOnDropHandle<Result<Response<ResponseBody>, ServiceClientError>>,
         },
@@ -640,6 +657,69 @@ impl ResponseStream {
         Self::WaitingHeaders {
             join_handle: AbortOnDropHandle::new(tokio::task::spawn(client.call(req))),
         }
+    }
+}
+
+/// Wraps a [`ResponseStream`] to record HTTP timing and status metrics.
+///
+/// Records:
+/// - TTFB (`INVOKER_HTTP_REQUEST_DURATION`) when the first response headers arrive
+/// - Total duration (`INVOKER_HTTP_TOTAL_DURATION`) when the stream terminates
+/// - Non-200 status codes (`INVOKER_HTTP_STATUS_CODE`) at header receipt
+pub(super) struct InstrumentedResponseStream {
+    inner: ResponseStream,
+    started_at: Instant,
+    metric: ServiceMetrics,
+    ttfb_recorded: bool,
+}
+
+impl ResponseStream {
+    pub(super) fn instrument(self, metric: ServiceMetrics) -> InstrumentedResponseStream {
+        InstrumentedResponseStream {
+            inner: self,
+            started_at: Instant::now(),
+            metric,
+            ttfb_recorded: false,
+        }
+    }
+}
+
+impl Stream for InstrumentedResponseStream {
+    type Item = Result<ResponseChunk, InvokerError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        // SAFETY: InstrumentedResponseStream is Unpin (all fields are Unpin)
+        let this = self.get_mut();
+        let result = this.inner.poll_next_unpin(cx);
+
+        if let Poll::Ready(Some(Ok(ResponseChunk::Parts(parts)))) = &result {
+            // WaitingHeaders -> ReadingBody transition: record TTFB and status code
+            if !this.ttfb_recorded {
+                this.ttfb_recorded = true;
+                this.metric
+                    .histogram(INVOKER_HTTP_REQUEST_DURATION)
+                    .record(this.started_at.elapsed());
+
+                let status = parts.status;
+                if !status.is_success() {
+                    this.metric
+                        .http_status_counter(status.as_u16())
+                        .increment(1);
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl Drop for InstrumentedResponseStream {
+    fn drop(&mut self) {
+        // Note: on the v4 protocol path, this includes the response stream drain period
+        // (up to 5s for deployments that don't cleanly close the stream).
+        self.metric
+            .histogram(INVOKER_HTTP_TOTAL_DURATION)
+            .record(self.started_at.elapsed());
     }
 }
 
@@ -698,6 +778,7 @@ mod tests {
     use std::sync::LazyLock;
 
     use super::collect_eager_state;
+    use crate::metric_definitions::ServiceMetrics;
     use restate_invoker_api::InvocationReaderError;
     use restate_invoker_api::invocation_reader::EagerState;
     use restate_memory::{LocalMemoryLease, LocalMemoryPool};
@@ -727,13 +808,14 @@ mod tests {
 
     #[tokio::test]
     async fn collect_eager_state_no_state_returns_partial() {
-        let (is_partial, entries, _memory_lease) = collect_eager_state::<
-            stream::Empty<Result<(Bytes, Bytes, LocalMemoryLease), Infallible>>,
-            _,
-            _,
-        >(None, 1024, std::convert::identity)
-        .await
-        .unwrap();
+        let (is_partial, entries, _memory_lease) =
+            collect_eager_state::<
+                stream::Empty<Result<(Bytes, Bytes, LocalMemoryLease), Infallible>>,
+                _,
+                _,
+            >(None, 1024, ServiceMetrics::EMPTY, std::convert::identity)
+            .await
+            .unwrap();
 
         assert!(is_partial, "no state should be reported as partial");
         assert!(entries.is_empty());
@@ -744,10 +826,14 @@ mod tests {
         let items = vec![entry(10, 20), entry(5, 15)];
         let state = EagerState::new_complete(stream::iter(items));
 
-        let (is_partial, entries, _memory_lease) =
-            collect_eager_state(Some(state), 1024, std::convert::identity)
-                .await
-                .unwrap();
+        let (is_partial, entries, _memory_lease) = collect_eager_state(
+            Some(state),
+            1024,
+            ServiceMetrics::EMPTY,
+            std::convert::identity,
+        )
+        .await
+        .unwrap();
 
         assert!(!is_partial, "all entries fit within limit");
         assert_eq!(entries.len(), 2);
@@ -759,10 +845,14 @@ mod tests {
         let items = vec![entry(10, 10)];
         let state = EagerState::new_partial(stream::iter(items));
 
-        let (is_partial, entries, _memory_lease) =
-            collect_eager_state(Some(state), 1024, std::convert::identity)
-                .await
-                .unwrap();
+        let (is_partial, entries, _memory_lease) = collect_eager_state(
+            Some(state),
+            1024,
+            ServiceMetrics::EMPTY,
+            std::convert::identity,
+        )
+        .await
+        .unwrap();
 
         assert!(is_partial, "partial flag should be preserved from source");
         assert_eq!(entries.len(), 1);
@@ -774,10 +864,14 @@ mod tests {
         let items = vec![entry(25, 25), entry(25, 25), entry(25, 25)];
         let state = EagerState::new_complete(stream::iter(items));
 
-        let (is_partial, entries, _memory_lease) =
-            collect_eager_state(Some(state), 120, std::convert::identity)
-                .await
-                .unwrap();
+        let (is_partial, entries, _memory_lease) = collect_eager_state(
+            Some(state),
+            120,
+            ServiceMetrics::EMPTY,
+            std::convert::identity,
+        )
+        .await
+        .unwrap();
 
         assert!(is_partial, "should be partial after truncation");
         assert_eq!(entries.len(), 2, "only 2 entries should fit (100 bytes)");
@@ -789,10 +883,14 @@ mod tests {
         let items = vec![entry(100, 101)];
         let state = EagerState::new_complete(stream::iter(items));
 
-        let (is_partial, entries, _memory_lease) =
-            collect_eager_state(Some(state), 200, std::convert::identity)
-                .await
-                .unwrap();
+        let (is_partial, entries, _memory_lease) = collect_eager_state(
+            Some(state),
+            200,
+            ServiceMetrics::EMPTY,
+            std::convert::identity,
+        )
+        .await
+        .unwrap();
 
         assert!(is_partial, "first entry exceeded limit so partial state");
         assert!(
@@ -806,7 +904,13 @@ mod tests {
         let items: Vec<StateResult> = vec![Err(TestError)];
         let state = EagerState::new_complete(stream::iter(items));
 
-        let result = collect_eager_state(Some(state), 1024, std::convert::identity).await;
+        let result = collect_eager_state(
+            Some(state),
+            1024,
+            ServiceMetrics::EMPTY,
+            std::convert::identity,
+        )
+        .await;
         assert!(result.is_err(), "stream error should be propagated");
     }
 
@@ -816,10 +920,14 @@ mod tests {
         let items = vec![entry(25, 25), entry(25, 25)];
         let state = EagerState::new_complete(stream::iter(items));
 
-        let (is_partial, entries, _memory_lease) =
-            collect_eager_state(Some(state), 100, std::convert::identity)
-                .await
-                .unwrap();
+        let (is_partial, entries, _memory_lease) = collect_eager_state(
+            Some(state),
+            100,
+            ServiceMetrics::EMPTY,
+            std::convert::identity,
+        )
+        .await
+        .unwrap();
 
         assert!(!is_partial, "entries exactly at limit should fit");
         assert_eq!(entries.len(), 2);
@@ -831,10 +939,14 @@ mod tests {
         let items = vec![entry(25, 25), entry(25, 25)];
         let state = EagerState::new_complete(stream::iter(items));
 
-        let (is_partial, entries, _memory_lease) =
-            collect_eager_state(Some(state), 99, std::convert::identity)
-                .await
-                .unwrap();
+        let (is_partial, entries, _memory_lease) = collect_eager_state(
+            Some(state),
+            99,
+            ServiceMetrics::EMPTY,
+            std::convert::identity,
+        )
+        .await
+        .unwrap();
 
         assert!(is_partial, "should be partial when 1 byte over");
         assert_eq!(entries.len(), 1, "only first entry should fit");

@@ -74,8 +74,9 @@ use crate::invocation_state_machine::OnTaskError;
 use crate::invocation_task::InvocationTask;
 use crate::invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 use crate::metric_definitions::{
-    ID_LOOKUP, INVOKER_ENQUEUE, INVOKER_INVOCATION_TASKS, TASK_OP_COMPLETED, TASK_OP_FAILED,
-    TASK_OP_STARTED, TASK_OP_SUSPENDED,
+    ID_LOOKUP, INVOKER_ACTIVE_INVOCATIONS, INVOKER_ENQUEUE, INVOKER_QUEUE_DURATION,
+    INVOKER_THROTTLE_BALANCE, STR_LOOKUP, ServiceMetrics, TASK_OP_COMPLETED, TASK_OP_FAILED,
+    TASK_OP_STARTED, TASK_OP_SUSPENDED, UUID_LOOKUP,
 };
 use crate::status_store::InvocationStatusStore;
 
@@ -110,6 +111,7 @@ trait InvocationTaskRunner<SR> {
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         task_pool: &mut JoinSet<()>,
         budget: LocalMemoryPool,
+        metric: ServiceMetrics,
     ) -> AbortHandle;
 }
 
@@ -138,6 +140,7 @@ where
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         task_pool: &mut JoinSet<()>,
         budget: LocalMemoryPool,
+        metric: ServiceMetrics,
     ) -> AbortHandle {
         task_pool
             .build_task()
@@ -159,6 +162,7 @@ where
                     invoker_tx,
                     invoker_rx,
                     self.action_token_bucket.clone(),
+                    metric,
                 )
                 .run(storage_reader, budget),
             )
@@ -265,6 +269,7 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
                 invocation_state_machine_manager: Default::default(),
                 memory_pool,
                 pending_memory_lease: None,
+                invocation_token_bucket: invocation_token_bucket.clone(),
             },
             invocation_token_bucket,
         }
@@ -416,6 +421,10 @@ struct ServiceInner<InvocationTaskRunner, Schemas, StorageReader> {
     /// Acquired at the top of `step()` when the queue is non-empty, and consumed
     /// when the segment queue arm fires.
     pending_memory_lease: Option<MemoryLease>,
+
+    /// Clone of the invocation token bucket for reading throttle balance.
+    /// `None` if throttling is not configured.
+    invocation_token_bucket: Option<TokenBucket>,
 }
 
 impl<ITR, Schemas, IR> ServiceInner<ITR, Schemas, IR>
@@ -464,11 +473,21 @@ where
                 match input_message {
                     // --- Spillable queue loading/offloading
                     InputCommand::Invoke(invoke_command) => {
-                        counter!(INVOKER_ENQUEUE, "partition_id" => invoke_command.partition.0.to_string()).increment(1);
+                        ServiceMetrics::new(
+                            ID_LOOKUP.get(invoke_command.partition.0),
+                            STR_LOOKUP.get(invoke_command.invocation_target.service_name()),
+                        ).counter(INVOKER_ENQUEUE).increment(1);
                         segmented_input_queue.inner_pin_mut().enqueue(invoke_command).await;
                     },
                     InputCommand::VQInvoke(command) => {
-                        counter!(INVOKER_ENQUEUE, "status" => TASK_OP_COMPLETED, "partition_id" => ID_LOOKUP.get(command.partition.0)).increment(1);
+                        // Note: VQInvoke path has a legacy "status" label that Invoke path lacks.
+                        // Kept for backwards compatibility — clean up in a future PR.
+                        counter!(
+                            INVOKER_ENQUEUE,
+                            "status" => TASK_OP_COMPLETED,
+                            "partition_id" => ID_LOOKUP.get(command.partition.0),
+                            "service_name" => STR_LOOKUP.get(command.invocation_target.service_name()),
+                        ).increment(1);
                         self.handle_vqueue_invoke(options, *command);
                     },
                     // --- Other commands (they don't go through the segment queue)
@@ -502,7 +521,7 @@ where
             Some(invoke_input_command) = segmented_input_queue.next(), if !segmented_input_queue.inner().is_empty() && self.quota.is_slot_available() && self.pending_memory_lease.is_some() => {
                 let initial_memory_lease = self.pending_memory_lease.take().unwrap();
                 let budget = self.create_outbound_budget(options, initial_memory_lease);
-                self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.invocation_id, invoke_input_command.invocation_target, budget);
+                self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.invocation_id, invoke_input_command.invocation_target, invoke_input_command.enqueued_at, budget);
             },
             memory_lease = self.memory_pool.reserve(initial_invocation_memory), if !segmented_input_queue.inner().is_empty() && self.pending_memory_lease.is_none() => {
                 self.pending_memory_lease = Some(memory_lease);
@@ -647,6 +666,11 @@ where
                 .partition_storage_reader(command.partition)
                 .expect("partition is registered");
             let concurrency_slot = self.quota.acquire_slot();
+            let labels = ServiceMetrics::new(
+                ID_LOOKUP.get(command.partition.0),
+                STR_LOOKUP.get(command.invocation_target.service_name()),
+            );
+            self.record_throttle_balance(&labels);
 
             // VQueue path: the vqueue scheduler supplies a pre-acquired MemoryLease
             // used as the initial memory for the outbound budget.
@@ -660,6 +684,7 @@ where
                     Some(command.qid),
                     command.permit,
                     command.invocation_target,
+                    labels,
                     retry_iter,
                     on_max_attempts,
                     concurrency_slot,
@@ -691,8 +716,19 @@ where
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
+        enqueued_at: Instant,
         budget: LocalMemoryPool,
     ) {
+        let labels = ServiceMetrics::new(
+            ID_LOOKUP.get(partition.0),
+            STR_LOOKUP.get(invocation_target.service_name()),
+        );
+
+        // Record time spent waiting in the segment queue
+        labels
+            .histogram(INVOKER_QUEUE_DURATION)
+            .record(enqueued_at.elapsed());
+
         if self
             .invocation_state_machine_manager
             .has_partition(partition)
@@ -709,6 +745,7 @@ where
                 .partition_storage_reader(partition)
                 .expect("partition is registered");
             let concurrency_slot = self.quota.acquire_slot();
+            self.record_throttle_balance(&labels);
             self.start_invocation_task(
                 options,
                 partition,
@@ -718,6 +755,7 @@ where
                     None,
                     Permit::new_empty(),
                     invocation_target,
+                    labels,
                     retry_iter,
                     on_max_attempts,
                     concurrency_slot,
@@ -812,6 +850,10 @@ where
                     pinned_deployment.deployment_id,
                     self.schemas.live_load(),
                 );
+
+                // Set deployment_id now that it's known, and track active invocations
+                ism.metric.deployment_id = UUID_LOOKUP.get(&pinned_deployment.deployment_id);
+                ism.metric.gauge(INVOKER_ACTIVE_INVOCATIONS).increment(1.0);
 
                 ism.notify_pinned_deployment(pinned_deployment, has_changed);
             },
@@ -1072,7 +1114,8 @@ where
             .invocation_state_machine_manager
             .remove_invocation(partition, &invocation_id)
         {
-            counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_COMPLETED, "partition_id" => ID_LOOKUP.get(partition.0)).increment(1);
+            decrement_active_invocations(&ism);
+            ism.metric.task(TASK_OP_COMPLETED).counter().increment(1);
             trace!(
                 restate.invocation.target = %ism.invocation_target,
                 "Invocation task closed correctly");
@@ -1108,7 +1151,8 @@ where
             .invocation_state_machine_manager
             .remove_invocation(partition, &invocation_id)
         {
-            counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_SUSPENDED, "partition_id" => ID_LOOKUP.get(partition.0)).increment(1);
+            decrement_active_invocations(&ism);
+            ism.metric.task(TASK_OP_SUSPENDED).counter().increment(1);
             self.status_store.on_end(&partition, &invocation_id);
 
             if ism.requested_pause {
@@ -1167,8 +1211,8 @@ where
             .invocation_state_machine_manager
             .remove_invocation(partition, &invocation_id)
         {
-            counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_SUSPENDED, "partition_id" => ID_LOOKUP.get(partition.0))
-                .increment(1);
+            decrement_active_invocations(&ism);
+            ism.metric.task(TASK_OP_SUSPENDED).counter().increment(1);
             self.status_store.on_end(&partition, &invocation_id);
 
             if ism.requested_pause {
@@ -1287,6 +1331,7 @@ where
                             "Invocation yielding due to global memory pool exhaustion while {}",
                             oom.context,
                         );
+                        decrement_active_invocations(&ism);
                         ism.abort();
                         self.status_store.on_end(&partition, &invocation_id);
                         let _ = sender
@@ -1343,6 +1388,7 @@ where
                 restate.invocation.target = %ism.invocation_target,
                 "Aborting invocation"
             );
+            decrement_active_invocations(&ism);
             ism.abort();
             self.status_store.on_end(&partition, &invocation_id);
         } else {
@@ -1405,6 +1451,7 @@ where
 
             if ism.notify_pause() {
                 // If returns true, we need to pause now
+                decrement_active_invocations(&ism);
                 let _ = sender
                     .send(Box::new(Effect {
                         invocation_id,
@@ -1452,6 +1499,7 @@ where
                     restate.invocation.target = %ism.invocation_target,
                     "Aborting invocation"
                 );
+                decrement_active_invocations(&ism);
                 ism.abort();
                 self.status_store.on_end(&partition, &fid);
             }
@@ -1479,6 +1527,8 @@ where
         error: InvokerError,
         mut ism: InvocationStateMachine,
     ) {
+        let metric = ism.metric;
+        decrement_active_invocations(&ism);
         let attempt_deployment_id = ism.attempt_deployment_id();
 
         // Call handle_task_error with a closure that registers the timer.
@@ -1495,12 +1545,10 @@ where
 
         match result {
             OnTaskError::Retrying(next_retry_timer_duration) => {
-                counter!(INVOKER_INVOCATION_TASKS,
-                    "status" => TASK_OP_FAILED,
-                    "transient" => "true",
-                    "partition_id" => ID_LOOKUP.get(partition.0)
-                )
-                .increment(1);
+                metric
+                    .task(TASK_OP_FAILED)
+                    .failed_counter(true)
+                    .increment(1);
                 if let Some(error_stacktrace) = error.error_stacktrace() {
                     // The error details is treated differently from the pretty printer,
                     // makes sure it prints at the end of the log the spammy exception
@@ -1586,12 +1634,10 @@ where
                 );
             }
             OnTaskError::Pause => {
-                counter!(INVOKER_INVOCATION_TASKS,
-                    "status" => TASK_OP_FAILED,
-                    "transient" => "false",
-                    "partition_id" => ID_LOOKUP.get(partition.0)
-                )
-                .increment(1);
+                metric
+                    .task(TASK_OP_FAILED)
+                    .failed_counter(false)
+                    .increment(1);
                 warn_it!(
                     error,
                     restate.invocation.id = %invocation_id,
@@ -1647,12 +1693,10 @@ where
                     .await;
             }
             OnTaskError::Kill => {
-                counter!(INVOKER_INVOCATION_TASKS,
-                    "status" => TASK_OP_FAILED,
-                    "transient" => "false",
-                    "partition_id" => ID_LOOKUP.get(partition.0)
-                )
-                .increment(1);
+                metric
+                    .task(TASK_OP_FAILED)
+                    .failed_counter(false)
+                    .increment(1);
                 warn_it!(
                     error,
                     restate.invocation.id = %invocation_id,
@@ -1696,6 +1740,14 @@ where
         )
     }
 
+    /// Record the invocation token bucket balance as a throttle gauge.
+    /// No-op if throttling is not configured.
+    fn record_throttle_balance(&self, labels: &ServiceMetrics) {
+        if let Some(bucket) = &self.invocation_token_bucket {
+            labels.gauge(INVOKER_THROTTLE_BALANCE).set(bucket.balance());
+        }
+    }
+
     fn start_invocation_task(
         &mut self,
         options: &InvokerOptions,
@@ -1718,6 +1770,7 @@ where
             completions_rx,
             &mut self.invocation_tasks,
             budget,
+            ism.metric,
         );
 
         // Transition the state machine, and store it
@@ -1728,7 +1781,7 @@ where
             "Invocation task started state. Invocation state: {:?}",
             ism.invocation_state_debug()
         );
-        counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_STARTED, "partition_id" => ID_LOOKUP.get(partition.0)).increment(1);
+        ism.metric.task(TASK_OP_STARTED).counter().increment(1);
         self.invocation_state_machine_manager
             .register_invocation(partition, invocation_id, ism);
     }
@@ -1782,6 +1835,13 @@ where
             // If no state machine is registered, the PP will send a new invoke
             trace!("No state machine found for given retry event");
         }
+    }
+}
+
+/// Decrement the active invocations gauge if deployment has been pinned.
+fn decrement_active_invocations(ism: &InvocationStateMachine) {
+    if !ism.metric.deployment_id.is_empty() {
+        ism.metric.gauge(INVOKER_ACTIVE_INVOCATIONS).decrement(1.0);
     }
 }
 
@@ -1876,6 +1936,7 @@ mod tests {
                 invocation_state_machine_manager: Default::default(),
                 memory_pool: MemoryPool::unlimited(),
                 pending_memory_lease: None,
+                invocation_token_bucket: None,
             };
             (input_tx, status_tx, service_inner)
         }
@@ -1958,6 +2019,7 @@ mod tests {
             invoker_rx: mpsc::UnboundedReceiver<Notification>,
             task_pool: &mut JoinSet<()>,
             _budget: LocalMemoryPool,
+            _metric: ServiceMetrics,
         ) -> AbortHandle {
             task_pool
                 .build_task()
@@ -1991,6 +2053,7 @@ mod tests {
             _invoker_rx: mpsc::UnboundedReceiver<Notification>,
             task_pool: &mut JoinSet<()>,
             _budget: LocalMemoryPool,
+            _metric: ServiceMetrics,
         ) -> AbortHandle {
             task_pool.spawn(pending())
         }
@@ -2012,6 +2075,7 @@ mod tests {
             _invoker_rx: mpsc::UnboundedReceiver<Notification>,
             task_pool: &mut JoinSet<()>,
             _budget: LocalMemoryPool,
+            _metric: ServiceMetrics,
         ) -> AbortHandle {
             self.fetch_add(1, Ordering::SeqCst);
             task_pool.spawn(pending())
@@ -2192,6 +2256,7 @@ mod tests {
                 partition: MOCK_PARTITION,
                 invocation_id: invocation_id_1,
                 invocation_target: InvocationTarget::mock_virtual_object(),
+                enqueued_at: Instant::now(),
             }))
             .await;
         segment_queue
@@ -2201,6 +2266,7 @@ mod tests {
                 partition: MOCK_PARTITION,
                 invocation_id: invocation_id_2,
                 invocation_target: InvocationTarget::mock_virtual_object(),
+                enqueued_at: Instant::now(),
             }))
             .await;
 
@@ -2308,6 +2374,7 @@ mod tests {
             MOCK_PARTITION,
             invocation_id,
             InvocationTarget::mock_virtual_object(),
+            Instant::now(),
             budget,
         );
 
@@ -2392,6 +2459,7 @@ mod tests {
             )),
             Permit::new_empty(),
             invocation_target.clone(),
+            ServiceMetrics::EMPTY,
             RetryPolicy::fixed_delay(Duration::from_millis(100), None).into_iter(),
             OnMaxAttempts::Kill,
             ConcurrencySlot::empty(),
@@ -2449,6 +2517,7 @@ mod tests {
             MOCK_PARTITION,
             invocation_id,
             InvocationTarget::mock_virtual_object(),
+            Instant::now(),
             budget,
         );
 
@@ -2536,6 +2605,7 @@ mod tests {
             MOCK_PARTITION,
             invocation_id,
             InvocationTarget::mock_virtual_object(),
+            Instant::now(),
             budget,
         );
 
@@ -2642,6 +2712,7 @@ mod tests {
             MOCK_PARTITION,
             invocation_id,
             InvocationTarget::mock_virtual_object(),
+            Instant::now(),
             budget,
         );
 
@@ -2696,6 +2767,7 @@ mod tests {
             MOCK_PARTITION,
             invocation_id,
             InvocationTarget::mock_virtual_object(),
+            Instant::now(),
             budget,
         );
 
@@ -2802,6 +2874,7 @@ mod tests {
             MOCK_PARTITION,
             invocation_id,
             InvocationTarget::mock_virtual_object(),
+            Instant::now(),
             budget,
         );
 
@@ -2885,6 +2958,7 @@ mod tests {
             MOCK_PARTITION,
             invocation_id,
             InvocationTarget::mock_virtual_object(),
+            Instant::now(),
             budget,
         );
 
@@ -2953,6 +3027,7 @@ mod tests {
             MOCK_PARTITION,
             invocation_id,
             InvocationTarget::mock_virtual_object(),
+            Instant::now(),
             budget,
         );
 
@@ -3014,6 +3089,7 @@ mod tests {
             MOCK_PARTITION,
             invocation_id,
             InvocationTarget::mock_virtual_object(),
+            Instant::now(),
             budget,
         );
 
@@ -3081,6 +3157,7 @@ mod tests {
             MOCK_PARTITION,
             invocation_id,
             InvocationTarget::mock_virtual_object(),
+            Instant::now(),
             budget,
         );
 
@@ -3154,6 +3231,7 @@ mod tests {
             MOCK_PARTITION,
             invocation_id,
             InvocationTarget::mock_virtual_object(),
+            Instant::now(),
             budget,
         );
 
@@ -3225,6 +3303,7 @@ mod tests {
             MOCK_PARTITION,
             invocation_id,
             InvocationTarget::mock_virtual_object(),
+            Instant::now(),
             budget,
         );
 

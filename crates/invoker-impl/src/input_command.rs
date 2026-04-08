@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::ops::RangeInclusive;
+use std::time::Instant;
 
 use tokio::sync::mpsc;
 
@@ -30,6 +31,11 @@ pub(crate) struct InvokeCommand {
     // removed in v1.6
     // pub(super) invocation_epoch: InvocationEpoch,
     pub(super) invocation_target: InvocationTarget,
+    /// Timestamp when this command was enqueued. Used to compute queue duration.
+    /// Skipped in serde — deserialized commands get a fresh Instant, so queue
+    /// duration may be slightly under-reported for spilled entries. Acceptable.
+    #[serde(skip, default = "Instant::now")]
+    pub(super) enqueued_at: Instant,
 }
 
 #[derive(derive_more::Debug)]
@@ -118,6 +124,7 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
                 partition,
                 invocation_id,
                 invocation_target,
+                enqueued_at: Instant::now(),
             })))
             .map_err(|_| NotRunningError)
     }

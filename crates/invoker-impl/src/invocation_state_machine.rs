@@ -21,6 +21,7 @@ use restate_types::retries;
 use restate_types::schema::invocation_target::OnMaxAttempts;
 use restate_types::vqueue::VQueueId;
 
+use crate::metric_definitions::ServiceMetrics;
 use crate::quota::ConcurrencySlot;
 
 use super::*;
@@ -57,6 +58,9 @@ pub(super) struct InvocationStateMachine<K: TimerKey = tokio_util::time::delay_q
     /// starts and after the ISM is finally cleaned up.
     #[debug(skip)]
     pub(super) budget: Option<LocalMemoryPool>,
+
+    /// Cached interned metric labels. `deployment_id` is empty until `PinnedDeployment`.
+    pub(super) metric: ServiceMetrics,
 }
 
 /// This struct tracks which commands the invocation task generates,
@@ -205,6 +209,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         qid: Option<VQueueId>,
         permit: Permit,
         invocation_target: InvocationTarget,
+        metric: ServiceMetrics,
         retry_iter: retries::RetryIter<'static>,
         on_max_attempts: OnMaxAttempts,
         concurrency_slot: ConcurrencySlot,
@@ -224,6 +229,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             requested_pause: false,
             _concurrency_slot: concurrency_slot,
             budget: None,
+            metric,
         }
     }
 
@@ -625,6 +631,7 @@ mod tests {
             None,
             Permit::new_empty(),
             InvocationTarget::mock_virtual_object(),
+            ServiceMetrics::EMPTY,
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
             OnMaxAttempts::Kill,
             ConcurrencySlot::empty(),
