@@ -17,9 +17,9 @@ restate-workspace-hack = { workspace = true }
 
 restate-util-string = { workspace = true }
 
+bilrost = { workspace = true, optional = true }
 slotmap = { workspace = true }
 thiserror = { workspace = true }
-bilrost = { workspace = true, optional = true }
 
 [dev-dependencies]
 restate-limiter = { path = ".", default-features = false, features = ["bilrost"] }
