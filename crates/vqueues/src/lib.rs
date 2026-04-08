@@ -433,15 +433,12 @@ where
 
     /// Park an entry
     ///
-    /// If `should_release_concurrency_token` is true, the parked entry will release its token
-    ///
     /// Returns `true` if the entry was found in inbox and parked correctly, `false` otherwise.
     pub fn park(
         &mut self,
         at: UniqueTimestamp,
         card: &EntryCard,
         previous_stage: Stage,
-        should_release_concurrency_token: bool,
     ) -> Result<bool, StorageError> {
         let meta = self.cache.get_mut(self.cache_key).unwrap();
 
@@ -457,7 +454,6 @@ where
         let update = metadata::Update::new(
             at,
             metadata::Action::Park {
-                should_release_concurrency_token,
                 priority: card.priority,
                 previous_stage,
             },
@@ -485,16 +481,10 @@ where
             unreachable!("Cannot remove an item from a dormant vqueue");
         }
 
-        let mut modified_card = card.clone();
-        if should_release_concurrency_token && card.priority.token_held() {
-            // adjust the priority to reflect releasing the token
-            modified_card.priority = EffectivePriority::Started;
-        }
-
         self.storage
-            .put_inbox_entry(meta.vqueue_id(), Stage::Park, &modified_card);
+            .put_inbox_entry(meta.vqueue_id(), Stage::Park, card);
         self.storage
-            .put_vqueue_entry_state(meta.vqueue_id(), &modified_card, Stage::Park, ());
+            .put_vqueue_entry_state(meta.vqueue_id(), card, Stage::Park, ());
 
         if let Some(collector) = self.action_collector.as_deref_mut() {
             collector.push(A::from(event));
