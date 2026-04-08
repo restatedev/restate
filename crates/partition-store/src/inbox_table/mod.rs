@@ -24,7 +24,7 @@ use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::message::MessageIndex;
 
 use crate::TableKind::Inbox;
-use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
 use crate::{
     PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
     TableScanIterationDecision, break_on_err,
@@ -211,7 +211,7 @@ fn decode_inbox_key_value(mut k: &[u8], mut v: &[u8]) -> Result<SequenceNumberIn
 #[cfg(test)]
 mod tests {
     use crate::inbox_table::InboxKey;
-    use crate::keys::TableKeyPrefix;
+    use crate::keys::EncodeTableKeyPrefix;
     use bytes::Bytes;
     use restate_types::identifiers::{ServiceId, WithPartitionKey};
 

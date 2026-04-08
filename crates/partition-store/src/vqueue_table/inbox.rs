@@ -14,7 +14,7 @@ use restate_types::identifiers::PartitionKey;
 use restate_types::vqueue::{EffectivePriority, VQueueInstance, VQueueParent};
 
 use crate::TableKind::VQueue;
-use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::keys::{EncodeTableKey, KeyKind, define_table_key};
 
 // 'qi' | PKEY | QID | STAGE | PRIORITY | VISIBLE_AT | CREATED_AT | ENTRY_KIND | ENTRY_ID
 define_table_key!(
