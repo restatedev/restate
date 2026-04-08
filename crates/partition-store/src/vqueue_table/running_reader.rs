@@ -36,7 +36,7 @@ impl VQueueRunningReader {
         // we know how big the prefix is
         let mut key_buf = [0u8; InboxKey::by_stage_prefix_len()];
         InboxKey::builder()
-            .partition_key(qid.partition_key)
+            .partition_key(qid.partition_key())
             .parent(qid.parent)
             .instance(qid.instance)
             .stage(Stage::Run)
