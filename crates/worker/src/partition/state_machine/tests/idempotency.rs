@@ -425,10 +425,10 @@ async fn attach_with_send_service_invocation(#[case] use_same_request_id: bool) 
         actions,
         all!(
             not(contains(pat!(Action::IngressResponse { .. }))),
-            contains(eq(Action::IngressSubmitNotification {
-                request_id: request_id_2,
-                execution_time: None,
-                is_new_invocation: use_same_request_id,
+            contains(pat!(Action::IngressSubmitNotification {
+                request_id: eq(request_id_2),
+                execution_time: none(),
+                is_new_invocation: eq(use_same_request_id),
             }))
         )
     );
@@ -528,10 +528,10 @@ async fn attach_inboxed_with_send_service_invocation() {
             not(contains(pat!(Action::Invoke {
                 invocation_id: eq(invocation_id),
             }))),
-            contains(eq(Action::IngressSubmitNotification {
-                request_id: request_id_1,
-                execution_time: None,
-                is_new_invocation: true,
+            contains(pat!(Action::IngressSubmitNotification {
+                request_id: eq(request_id_1),
+                execution_time: none(),
+                is_new_invocation: eq(true),
             }))
         )
     );
@@ -572,10 +572,10 @@ async fn attach_inboxed_with_send_service_invocation() {
                 invocation_id: eq(invocation_id),
             }))),
             not(contains(pat!(Action::IngressResponse { .. }))),
-            contains(eq(Action::IngressSubmitNotification {
-                request_id: request_id_2,
-                execution_time: None,
-                is_new_invocation: false,
+            contains(pat!(Action::IngressSubmitNotification {
+                request_id: eq(request_id_2),
+                execution_time: none(),
+                is_new_invocation: eq(false),
             }))
         )
     );
