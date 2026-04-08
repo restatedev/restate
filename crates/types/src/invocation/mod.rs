@@ -12,19 +12,6 @@
 
 pub mod client;
 
-use crate::errors::InvocationError;
-use crate::identifiers::{
-    DeploymentId, EntryIndex, IdempotencyId, InvocationId, PartitionKey,
-    PartitionProcessorRpcRequestId, ServiceId, SubscriptionId, WithInvocationId, WithPartitionKey,
-};
-use crate::journal_v2::{CompletionId, GetInvocationOutputResult, Signal};
-use crate::time::MillisSinceEpoch;
-use crate::{GenerationalNodeId, RestateVersion};
-
-use bytes::Bytes;
-use bytestring::ByteString;
-use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceState};
-use serde_with::{DisplayFromStr, FromInto, serde_as};
 use std::borrow::Cow;
 use std::hash::Hash;
 use std::ops::Deref;
@@ -32,8 +19,24 @@ use std::str::FromStr;
 use std::time::Duration;
 use std::{cmp, fmt};
 
+use bytes::Bytes;
+use bytestring::ByteString;
+use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceState};
 // Re-exporting opentelemetry [`TraceId`] to avoid having to import opentelemetry in all crates.
 pub use opentelemetry::trace::TraceId;
+use serde_with::{DisplayFromStr, FromInto, serde_as};
+
+use restate_util_string::ReString;
+
+use crate::Scope;
+use crate::errors::InvocationError;
+use crate::identifiers::{
+    DeploymentId, EntryIndex, IdempotencyId, InvocationId, PartitionKey,
+    PartitionProcessorRpcRequestId, ServiceId, SubscriptionId, WithInvocationId, WithPartitionKey,
+};
+use crate::journal_v2::{CompletionId, GetInvocationOutputResult, Signal};
+use crate::time::MillisSinceEpoch;
+use crate::{GenerationalNodeId, LockName, RestateVersion, ServiceName};
 
 #[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -217,6 +220,21 @@ impl InvocationTarget {
             InvocationTarget::Service { name, .. } => name,
             InvocationTarget::VirtualObject { name, .. } => name,
             InvocationTarget::Workflow { name, .. } => name,
+        }
+    }
+
+    pub fn scope(&self) -> Option<Scope> {
+        // todo: This needs to be filled
+        None
+    }
+
+    pub fn lock_name(&self) -> Option<LockName> {
+        match self {
+            InvocationTarget::VirtualObject { name, key, .. } => Some(LockName::new(
+                ServiceName::new(name.as_ref()),
+                ReString::from(key.as_ref()),
+            )),
+            InvocationTarget::Service { .. } | InvocationTarget::Workflow { .. } => None,
         }
     }
 
