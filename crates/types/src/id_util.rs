@@ -57,6 +57,11 @@ prefixed_ids! {
         Snapshot("snap"),
         // VQueue
         VQueue("vq"),
+        StateMutation("mut"),
+        // used for testing
+        #[cfg(test)]
+        Test("tst"),
+
     }
 }
 
