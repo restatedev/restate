@@ -11,6 +11,7 @@
 mod cache;
 mod metric_definitions;
 pub mod scheduler;
+mod util;
 
 // Re-exports
 pub use cache::{VQueuesMeta, VQueuesMetaCache};
@@ -18,6 +19,7 @@ pub use metric_definitions::describe_metrics;
 pub use scheduler::{
     ResourceManager, SchedulerService, SchedulingStatus, ThrottleScope, VQueueSchedulerStatus,
 };
+pub use util::*;
 
 use restate_limiter::LimitKey;
 use restate_storage_api::StorageError;
@@ -100,6 +102,15 @@ where
     A: From<VQueueEvent<EntryCard>> + 'static,
     S: WriteVQueueTable + ReadVQueueTable + WriteLockTable,
 {
+    /// Determines the vqueue id from the invocation id, invocation target, and limit key.
+    #[inline]
+    pub fn infer_vqueue_id_from_invocation(
+        partition_key: PartitionKey,
+        invocation_target: &InvocationTarget,
+        limit_key: &LimitKey<ReString>,
+    ) -> VQueueId {
+        util::infer_vqueue_id_from_invocation(partition_key, invocation_target, limit_key)
+    }
     /// The entry has completed execution and it needs to be removed from the vqueue.
     ///
     /// Does nothing if the entry was not found in the previous stage.
@@ -123,7 +134,7 @@ where
             return Ok(false);
         };
 
-        let inbox = Self::get(&entry_state.vqueue_id(), storage, cache, action_collector).await?;
+        let inbox = Self::get(entry_state.vqueue_id(), storage, cache, action_collector).await?;
         let Some(mut inbox) = inbox else {
             return Ok(false);
         };
@@ -150,14 +161,16 @@ where
     }
 
     pub async fn vqueue_from_invocation_target(
-        qid: &VQueueId,
+        partition_key: PartitionKey,
+        invocation_target: &InvocationTarget,
         storage: &'a mut S,
         cache: &'a mut VQueuesMetaCache,
         action_collector: Option<&'a mut Vec<A>>,
-        invocation_target: &InvocationTarget,
         limit_key: &LimitKey<ReString>,
     ) -> Result<Self, StorageError> {
-        let cache_key = match cache.load(storage, qid).await? {
+        let qid =
+            Self::infer_vqueue_id_from_invocation(partition_key, invocation_target, limit_key);
+        let cache_key = match cache.load(storage, &qid).await? {
             Some(key) => key,
             None => {
                 let meta = VQueueMeta::new(
@@ -165,7 +178,7 @@ where
                     limit_key.clone(),
                     invocation_target.lock_name(),
                 );
-                storage.create_vqueue(qid, &meta);
+                storage.create_vqueue(&qid, &meta);
                 cache.insert(qid.clone(), meta)
             }
         };
