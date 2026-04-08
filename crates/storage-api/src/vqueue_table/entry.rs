@@ -96,6 +96,7 @@ impl From<Lsn> for EntryId {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EntryCard {
+    // pub has_lock: bool,
     pub priority: EffectivePriority,
     pub visible_at: VisibleAt,
     /// The unique timestamp of the initial creation of the entry.
@@ -118,6 +119,11 @@ impl EntryCard {
         + std::mem::size_of::<EntryKind>()
         // entry id
         + std::mem::size_of::<EntryId>()
+    }
+
+    pub fn has_lock(&self) -> bool {
+        // todo: change
+        self.priority.token_held()
     }
 
     /// A unique hash of the entry card.
