@@ -317,11 +317,11 @@ mod tests {
 
     /// Helper to create a test VQueueId with a unique partition key for test isolation.
     fn test_qid(partition_key: u64) -> VQueueId {
-        VQueueId {
-            partition_key: PartitionKey::from(partition_key),
-            parent: VQueueParent::from_raw(1),
-            instance: VQueueInstance::from_raw(1),
-        }
+        VQueueId::new(
+            VQueueParent::from_raw(1),
+            PartitionKey::from(partition_key),
+            VQueueInstance::from_raw(1),
+        )
     }
 
     /// Creates a test PartitionStore environment.

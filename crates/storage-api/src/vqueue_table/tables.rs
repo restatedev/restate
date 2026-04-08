@@ -12,6 +12,7 @@ use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::PartitionKey;
 use restate_types::vqueue::VQueueId;
 
+use super::metadata::VQueueMeta;
 use super::{AsEntryState, AsEntryStateHeader, EntryCard, EntryId, EntryKind, EntryStateKind};
 use crate::Result;
 
@@ -46,8 +47,10 @@ pub enum Stage {
 }
 
 pub trait WriteVQueueTable {
+    /// Initializes a new vqueue
+    fn create_vqueue(&mut self, qid: &VQueueId, meta: &VQueueMeta);
     /// Update VQueueMeta with a set of differential updates.
-    fn update_vqueue(&mut self, qid: &VQueueId, updates: &super::metadata::VQueueMetaUpdates);
+    fn update_vqueue(&mut self, qid: &VQueueId, update: &super::metadata::Update);
 
     /// Places an entry onto an inbox stage
     fn put_inbox_entry(&mut self, qid: &VQueueId, stage: Stage, card: &EntryCard);

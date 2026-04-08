@@ -69,7 +69,7 @@ use restate_types::schema::Schema;
 use restate_types::storage::StorageDecodeError;
 use restate_types::time::{MillisSinceEpoch, NanosSinceEpoch};
 use restate_types::{GenerationalNodeId, SemanticRestateVersion, Version};
-use restate_vqueues::VQueuesMetaMut;
+use restate_vqueues::VQueuesMetaCache;
 use restate_wal_protocol::control::{
     AnnounceLeader, CurrentReplicaSetConfiguration, NextReplicaSetConfiguration,
 };
@@ -501,10 +501,7 @@ where
             tokio::time::interval(with_jitter(Duration::from_millis(500), 0.5));
         status_update_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-        let mut vqueues = VQueuesMetaMut::default();
-        vqueues
-            .load_all_active_vqueues(partition_store.partition_db())
-            .await?;
+        let mut vqueues = VQueuesMetaCache::create(partition_store.partition_db()).await?;
 
         let mut action_collector = ActionCollector::default();
         let mut command_buffer =
@@ -676,9 +673,9 @@ where
                     if let Some(lsn) = &self.status.last_applied_log_lsn {
                         self.last_applied_log_lsn_watch.send_replace(*lsn);
                     }
-                    self.leadership_state.handle_actions(action_collector.drain(..), vqueues.view())?;
+                    self.leadership_state.handle_actions(action_collector.drain(..))?;
                 },
-                result = self.leadership_state.run(&self.state_machine, vqueues.view()) => {
+                result = self.leadership_state.run(&self.state_machine) => {
                     let action_effects = result?;
                     // We process the action_effects not directly in the run future because it
                     // requires the run future to be cancellation safe. In the future this could be
@@ -947,7 +944,7 @@ where
         record: LsnEnvelope,
         transaction: &mut PartitionStoreTransaction<'_>,
         action_collector: &mut ActionCollector,
-        vqueues_cache: &mut VQueuesMetaMut,
+        vqueues_cache: &mut VQueuesMetaCache,
     ) -> Result<Option<Box<AnnounceLeader>>, state_machine::Error> {
         trace!(lsn = %record.lsn, "Processing bifrost record for '{}': {:?}", record.envelope.command.name(), record.envelope.header);
 
