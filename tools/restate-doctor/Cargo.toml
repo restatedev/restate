@@ -29,6 +29,7 @@ restate-types = { workspace = true }
 restate-wal-protocol = { workspace = true }
 
 anyhow = { workspace = true }
+bilrost = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true, features = ["derive", "env", "wrap_help", "color", "std", "suggestions", "usage"] }
 clap_complete = { workspace = true }
