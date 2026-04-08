@@ -62,7 +62,7 @@ use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use restate_types::{
     GenerationalNodeId, RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, SemanticRestateVersion,
 };
-use restate_vqueues::{SchedulerService, VQueuesMetaCache};
+use restate_vqueues::{ResourceManager, SchedulerService, VQueuesMetaCache};
 use restate_wal_protocol::control::{AnnounceLeader, PartitionDurability, VersionBarrier};
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::{Command, Envelope};
@@ -404,10 +404,14 @@ where
 
             let scheduler_service = if config.common.experimental_enable_vqueues {
                 SchedulerService::create(
-                    self.invoker_capacity.concurrency.clone(),
-                    self.invoker_capacity.invocation_token_bucket.clone(),
-                    self.invoker_capacity.memory_pool.clone(),
-                    self.invoker_capacity.initial_invocation_memory,
+                    ResourceManager::create(
+                        partition_store.partition_db().clone(),
+                        self.invoker_capacity.concurrency.clone(),
+                        self.invoker_capacity.invocation_token_bucket.clone(),
+                        self.invoker_capacity.memory_pool.clone(),
+                        self.invoker_capacity.initial_invocation_memory,
+                    )
+                    .await?,
                     partition_store.partition_db().clone(),
                     vqueues_cache,
                 )
@@ -599,11 +603,7 @@ where
                 // nothing to do :-)
             }
             State::Leader(leader_state) => {
-                leader_state.handle_actions(
-                    &mut self.invoker_tx,
-                    actions,
-                    &self.invoker_capacity.memory_pool,
-                )?;
+                leader_state.handle_actions(&mut self.invoker_tx, actions)?;
             }
         }
 

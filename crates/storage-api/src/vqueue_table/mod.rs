@@ -101,7 +101,7 @@ pub struct WaitStats {
     pub vqueue_start_throttling_ms: u32,
     /// Total milliseconds the item was throttled on global "run" token bucket
     #[bilrost(tag(3))]
-    pub global_throttling_ms: u32,
+    pub global_invoker_throttling_ms: u32,
     /// Total milliseconds the item spent waiting on invoker memory pool
     #[bilrost(tag(4))]
     pub blocked_on_invoker_memory_ms: u32,
