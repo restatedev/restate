@@ -25,7 +25,7 @@ use restate_partition_store::journal_table::JournalKey as JournalKeyV1;
 use restate_partition_store::journal_table_v2::{
     JournalCompletionIdToCommandIndexKey, JournalKey, JournalNotificationIdToNotificationIndexKey,
 };
-use restate_partition_store::keys::{KeyKind, TableKey};
+use restate_partition_store::keys::{DecodeTableKey, KeyKind};
 use restate_partition_store::outbox_table::OutboxKey;
 use restate_partition_store::promise_table::PromiseKey;
 use restate_partition_store::service_status_table::ServiceStatusKey;

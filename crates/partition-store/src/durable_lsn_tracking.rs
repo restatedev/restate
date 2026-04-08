@@ -26,7 +26,9 @@ use restate_types::{identifiers::PartitionId, logs::Lsn};
 
 use crate::SharedState;
 use crate::fsm_table::{PartitionStateMachineKey, fsm_variable};
-use crate::keys::{KeyKind, TableKey};
+#[cfg(test)]
+use crate::keys::EncodeTableKey;
+use crate::keys::{DecodeTableKey, KeyKind};
 
 const APPLIED_LSNS_PROPERTY_PREFIX: &str = "p:";
 

@@ -21,7 +21,7 @@ use restate_types::identifiers::{InvocationUuid, PartitionId};
 
 use crate::TableKind::Timers;
 use crate::TableScanIterationDecision::Emit;
-use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
 use crate::{
     PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
     TableScanIterationDecision,
@@ -217,7 +217,7 @@ impl WriteTimerTable for PartitionStoreTransaction<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keys::TableKeyPrefix;
+    use crate::keys::EncodeTableKeyPrefix;
     use crate::timer_table::TimerKey;
     use rand::Rng;
     use restate_storage_api::timer_table::TimerKeyKindDiscriminants;

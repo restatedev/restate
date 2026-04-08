@@ -38,47 +38,44 @@ use restate_types::identifiers::PartitionKey;
 use restate_types::vqueue::{EffectivePriority, VQueueId, VQueueInstance, VQueueParent};
 
 use self::entry::{EntryStateHeader, OwnedEntryState, OwnedHeader};
-use crate::keys::{KeyCodec, KeyKind, TableKey};
+use crate::keys::{DecodeTableKey, EncodeTableKey, KeyDecode, KeyEncode, KeyKind};
 use crate::{PartitionDb, PartitionStoreTransaction, Result, StorageAccess};
 
-impl KeyCodec for VQueueParent {
+impl KeyEncode for VQueueParent {
     fn encode<B: BufMut>(&self, target: &mut B) {
         target.put_u32(self.as_u32());
     }
 
+    fn serialized_length(&self) -> usize {
+        std::mem::size_of::<u32>()
+    }
+}
+
+impl KeyDecode for VQueueParent {
     fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
         Ok(VQueueParent::from_raw(source.get_u32()))
     }
-
-    fn serialized_length(&self) -> usize {
-        std::mem::size_of::<Self>()
-    }
 }
 
-impl KeyCodec for VQueueInstance {
+impl KeyEncode for VQueueInstance {
     fn encode<B: BufMut>(&self, target: &mut B) {
         target.put_u32(self.as_u32());
     }
 
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
-        Ok(VQueueInstance::from_raw(source.get_u32()))
-    }
-
     fn serialized_length(&self) -> usize {
-        std::mem::size_of::<Self>()
+        std::mem::size_of::<u32>()
     }
 }
 
-impl KeyCodec for EffectivePriority {
+impl KeyDecode for VQueueInstance {
+    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+        Ok(VQueueInstance::from_raw(source.get_u32()))
+    }
+}
+
+impl KeyEncode for EffectivePriority {
     fn encode<B: BufMut>(&self, target: &mut B) {
         target.put_u8(*self as u8);
-    }
-
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
-        let i: u8 = source.get_u8();
-        Self::from_repr(i).ok_or_else(|| {
-            StorageError::Generic(anyhow::anyhow!("Wrong value for EffectivePriority: {}", i))
-        })
     }
 
     fn serialized_length(&self) -> usize {
@@ -86,13 +83,18 @@ impl KeyCodec for EffectivePriority {
     }
 }
 
-impl KeyCodec for VisibleAt {
+impl KeyDecode for EffectivePriority {
+    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+        let i: u8 = source.get_u8();
+        Self::from_repr(i).ok_or_else(|| {
+            StorageError::Generic(anyhow::anyhow!("Wrong value for EffectivePriority: {}", i))
+        })
+    }
+}
+
+impl KeyEncode for VisibleAt {
     fn encode<B: BufMut>(&self, target: &mut B) {
         target.put_u64(self.as_u64());
-    }
-
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
-        Ok(Self::from_raw(source.get_u64()))
     }
 
     fn serialized_length(&self) -> usize {
@@ -100,15 +102,15 @@ impl KeyCodec for VisibleAt {
     }
 }
 
-impl KeyCodec for EntryId {
+impl KeyDecode for VisibleAt {
+    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+        Ok(Self::from_raw(source.get_u64()))
+    }
+}
+
+impl KeyEncode for EntryId {
     fn encode<B: BufMut>(&self, target: &mut B) {
         target.put_slice(self.as_bytes());
-    }
-
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
-        let mut buf = [0u8; 16];
-        source.copy_to_slice(&mut buf);
-        Ok(Self::from_bytes(buf))
     }
 
     fn serialized_length(&self) -> usize {
@@ -116,36 +118,48 @@ impl KeyCodec for EntryId {
     }
 }
 
-impl KeyCodec for EntryKind {
+impl KeyDecode for EntryId {
+    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+        let mut buf = [0u8; 16];
+        source.copy_to_slice(&mut buf);
+        Ok(Self::from_bytes(buf))
+    }
+}
+
+impl KeyEncode for EntryKind {
     fn encode<B: BufMut>(&self, target: &mut B) {
         target.put_u8(*self as u8);
     }
 
+    fn serialized_length(&self) -> usize {
+        std::mem::size_of::<u8>()
+    }
+}
+
+impl KeyDecode for EntryKind {
     fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
         let i: u8 = source.get_u8();
         Self::from_repr(i).ok_or_else(|| {
             StorageError::Generic(anyhow::anyhow!("Wrong value for EntryKind: {}", i))
         })
     }
-
-    fn serialized_length(&self) -> usize {
-        std::mem::size_of::<Self>()
-    }
 }
 
-impl KeyCodec for Stage {
+impl KeyEncode for Stage {
     fn encode<B: BufMut>(&self, target: &mut B) {
         target.put_u8(*self as u8);
     }
 
+    fn serialized_length(&self) -> usize {
+        std::mem::size_of::<u8>()
+    }
+}
+
+impl KeyDecode for Stage {
     fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
         let i: u8 = source.get_u8();
         Self::from_repr(i)
             .ok_or_else(|| StorageError::Generic(anyhow::anyhow!("Wrong value for Stage: {}", i)))
-    }
-
-    fn serialized_length(&self) -> usize {
-        std::mem::size_of::<Self>()
     }
 }
 
@@ -170,7 +184,7 @@ impl ScanVQueueTable for PartitionDb {
         // We know how big the prefix is
         let mut key_buf = [0u8; ActiveKey::by_partition_prefix_len()];
         // serialize prefix bytes
-        crate::keys::TableKeyPrefix::serialize_to(
+        crate::keys::EncodeTableKeyPrefix::serialize_to(
             &ActiveKey::builder().partition_key(*self.partition().key_range.start()),
             &mut key_buf.as_mut(),
         );
@@ -179,7 +193,7 @@ impl ScanVQueueTable for PartitionDb {
         iterator_opts.set_iterate_lower_bound(key_buf);
 
         // the end prefix is one byte beyond the max partition key on this key kind prefix.
-        crate::keys::TableKeyPrefix::serialize_to(
+        crate::keys::EncodeTableKeyPrefix::serialize_to(
             &ActiveKey::builder().partition_key(*self.partition().key_range.end()),
             &mut key_buf.as_mut(),
         );
@@ -208,7 +222,7 @@ impl ScanVQueueTable for PartitionDb {
                 Some(mut key) => {
                     let meta_key_bytes = {
                         let meta_key = MetaKey::from(ActiveKey::deserialize_from(&mut key)?);
-                        TableKey::serialize_to(&meta_key, &mut meta_keys_bytes_buf);
+                        EncodeTableKey::serialize_to(&meta_key, &mut meta_keys_bytes_buf);
                         queue_ids.push(VQueueId::from(meta_key));
                         meta_keys_bytes_buf.split()
                     };

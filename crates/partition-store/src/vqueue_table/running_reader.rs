@@ -16,7 +16,7 @@ use restate_storage_api::vqueue_table::{EntryCard, Stage, VQueueCursor};
 use restate_types::vqueue::VQueueId;
 
 use crate::PartitionDb;
-use crate::keys::{TableKey, TableKeyPrefix};
+use crate::keys::{DecodeTableKey, EncodeTableKeyPrefix};
 use crate::vqueue_table::InboxKey;
 
 pub struct VQueueRunningReader {
