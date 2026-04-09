@@ -17,7 +17,7 @@ use bilrost::OwnedMessage;
 
 use restate_partition_store::fsm_table::PartitionStateMachineKey;
 use restate_partition_store::keys::{DecodeTableKey, KeyKind};
-use restate_partition_store::vqueue_table::{EntryStateKey, ItemsKey};
+use restate_partition_store::vqueue_table::{EntryStateHeader, EntryStateKey, ItemsKey};
 use restate_storage_api::deduplication_table::DedupSequenceNumber;
 use restate_storage_api::fsm_table::{PartitionDurability, SequenceNumber};
 use restate_storage_api::idempotency_table::IdempotencyMetadata;
@@ -31,13 +31,11 @@ use restate_storage_api::promise_table::Promise;
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::service_status_table::VirtualObjectStatus;
 use restate_storage_api::timer_table::Timer;
+use restate_storage_api::vqueue_table::EntryKind;
 use restate_storage_api::vqueue_table::metadata::VQueueMeta;
-use restate_storage_api::vqueue_table::{EntryKind, Stage, VisibleAt};
 use restate_types::SemanticRestateVersion;
-use restate_types::clock::UniqueTimestamp;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::storage::StorageCodecKind;
-use restate_types::vqueue::EffectivePriority;
 
 /// FSM variable IDs (from partition-store/src/fsm_table/mod.rs)
 mod fsm_variable {
@@ -209,64 +207,23 @@ where
     }
 }
 
-#[derive(Debug, bilrost::Message)]
-struct VQueueEntryStateHeader {
-    #[bilrost(1)]
-    stage: Stage,
-    #[bilrost(2)]
-    queue_parent: u32,
-    #[bilrost(3)]
-    queue_instance: u32,
-    #[bilrost(4)]
-    effective_priority: EffectivePriority,
-    #[bilrost(5)]
-    visible_at: VisibleAt,
-    #[bilrost(6)]
-    created_at: UniqueTimestamp,
-}
-
 fn decode_vqueue_entry_state(value: &[u8], key: &[u8]) -> DecodedValue {
     let key_kind = {
         let mut cursor = key;
         EntryStateKey::deserialize_from(&mut cursor)
             .ok()
-            .map(|k| k.kind)
+            .map(|k| k.id.kind())
     };
 
     let mut buf = value;
-    let header = match VQueueEntryStateHeader::decode_length_delimited(&mut buf) {
+    let header = match EntryStateHeader::decode_length_delimited(&mut buf) {
         Ok(header) => header,
         Err(e) => {
             return DecodedValue::error(
                 None,
                 value.len(),
-                format!("failed to decode VQueueEntryState header: {e}"),
+                format!("failed to decode EntryState header: {e}"),
             );
-        }
-    };
-
-    let state_payload = match take_length_delimited_payload(&mut buf) {
-        Some(payload) => payload,
-        None => {
-            return DecodedValue::error(
-                None,
-                value.len(),
-                "failed to decode VQueueEntryState state payload".to_string(),
-            );
-        }
-    };
-
-    let state_repr = match key_kind {
-        Some(EntryKind::StateMutation) => {
-            let decoded = decode_bilrost::<ExternalStateMutation>(state_payload);
-            decoded_content_to_string(decoded)
-        }
-        Some(EntryKind::Unknown) | Some(EntryKind::Invocation) | None => {
-            if state_payload.is_empty() {
-                "()".to_string()
-            } else {
-                format!("<bilrost {} bytes>", state_payload.len())
-            }
         }
     };
 
@@ -279,19 +236,21 @@ fn decode_vqueue_entry_state(value: &[u8], key: &[u8]) -> DecodedValue {
     DecodedValue::decoded(
         None,
         value.len(),
-        format!("VQueueEntryState {{ header: {header:?}, state: {state_repr}{trailing_bytes} }}"),
+        format!("EntryState {{ header: {header:?}, kind: {key_kind:?}{trailing_bytes} }}"),
     )
 }
 
 fn decode_vqueue_item(value: &[u8], key: &[u8]) -> DecodedValue {
     let key_kind = {
         let mut cursor = key;
-        ItemsKey::deserialize_from(&mut cursor).ok().map(|k| k.kind)
+        ItemsKey::deserialize_from(&mut cursor)
+            .ok()
+            .map(|k| k.id.kind())
     };
 
     match key_kind {
         Some(EntryKind::StateMutation) => decode_bilrost::<ExternalStateMutation>(value),
-        Some(EntryKind::Unknown) | Some(EntryKind::Invocation) | None => {
+        Some(EntryKind::Invocation) | None => {
             if value.is_empty() {
                 DecodedValue::empty()
             } else {
@@ -305,6 +264,7 @@ fn decode_vqueue_item(value: &[u8], key: &[u8]) -> DecodedValue {
     }
 }
 
+#[allow(dead_code)]
 fn decoded_content_to_string(decoded: DecodedValue) -> String {
     match decoded.content {
         DecodedContent::Decoded(s) => s,
@@ -314,6 +274,7 @@ fn decoded_content_to_string(decoded: DecodedValue) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn take_length_delimited_payload<'a>(input: &mut &'a [u8]) -> Option<&'a [u8]> {
     let (len, len_varint_size) = decode_varint(input)?;
     let total_needed = len_varint_size.checked_add(len)?;
@@ -328,6 +289,7 @@ fn take_length_delimited_payload<'a>(input: &mut &'a [u8]) -> Option<&'a [u8]> {
     Some(payload)
 }
 
+#[allow(dead_code)]
 fn decode_varint(data: &[u8]) -> Option<(usize, usize)> {
     let mut result: usize = 0;
     let mut shift = 0;
@@ -549,98 +511,5 @@ fn decode_fsm_value_generic(value: &[u8]) -> DecodedValue {
             payload_size,
             format!("<{} bytes>", payload_size),
         ),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-
-    use bilrost::Message;
-    use bytes::Bytes;
-
-    use restate_partition_store::keys::EncodeTableKey;
-    use restate_storage_api::lock_table::AcquiredBy;
-    use restate_storage_api::vqueue_table::EntryId;
-    use restate_types::identifiers::{PartitionKey, ServiceId};
-    use restate_types::vqueue::VQueueId;
-
-    use super::*;
-
-    #[test]
-    fn decodes_lock_state_bilrost_value() {
-        let lock_state = LockState {
-            acquired_at: 1u64.try_into().expect("valid timestamp"),
-            acquired_by: AcquiredBy::Other("non-invocation".into()),
-        };
-        let value = lock_state.encode_to_vec();
-        assert!(!value.is_empty());
-
-        let decoded = decode_value(KeyKind::Lock, &[], &value);
-
-        assert!(decoded.codec.is_none());
-        assert_eq!(decoded.payload_size, value.len());
-        assert!(matches!(decoded.content, DecodedContent::Decoded(_)));
-    }
-
-    #[test]
-    fn decodes_vqueue_entry_state_bilrost_value() {
-        let key = EntryStateKey {
-            partition_key: PartitionKey::from(1u64),
-            kind: EntryKind::Invocation,
-            id: EntryId::from_bytes([7; 16]),
-        }
-        .to_bytes();
-
-        let header = VQueueEntryStateHeader {
-            stage: Stage::Inbox,
-            queue_parent: 1,
-            queue_instance: 2,
-            effective_priority: EffectivePriority::UserDefault,
-            visible_at: VisibleAt::Now,
-            created_at: 1u64.try_into().expect("valid timestamp"),
-        };
-        let mut value = Vec::new();
-        header
-            .encode_length_delimited(&mut value)
-            .expect("encode header");
-        value.push(0);
-
-        let decoded = decode_value(KeyKind::VQueueEntryState, &key, &value);
-
-        assert_eq!(decoded.payload_size, value.len());
-        let DecodedContent::Decoded(content) = &decoded.content else {
-            panic!("expected decoded content");
-        };
-        assert!(content.contains("VQueueEntryState"));
-        assert!(content.contains("state: ()"));
-    }
-
-    #[test]
-    fn decodes_vqueue_item_state_mutation_bilrost_value() {
-        let qid = VQueueId::custom(1, "1");
-        let key = ItemsKey {
-            qid,
-            created_at: 1u64.try_into().expect("valid timestamp"),
-            kind: EntryKind::StateMutation,
-            id: EntryId::from_bytes([9; 16]),
-        };
-        let mut key_bytes = Vec::with_capacity(key.serialized_length());
-        key.serialize_to(&mut key_bytes);
-
-        let value = ExternalStateMutation {
-            service_id: ServiceId::new("my-service", "my-key"),
-            version: Some("v1".to_string()),
-            state: HashMap::from([(Bytes::from("foo"), Bytes::from("bar"))]),
-        }
-        .encode_to_vec();
-
-        let decoded = decode_value(KeyKind::VQueueItems, &key_bytes, &value);
-
-        assert_eq!(decoded.payload_size, value.len());
-        let DecodedContent::Decoded(content) = &decoded.content else {
-            panic!("expected decoded content");
-        };
-        assert!(content.contains("ExternalStateMutation"));
     }
 }

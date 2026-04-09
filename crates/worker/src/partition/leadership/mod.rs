@@ -32,7 +32,7 @@ use restate_ingestion_client::IngestionClient;
 
 use restate_invoker_api::capacity::InvokerCapacity;
 use restate_partition_store::PartitionStore;
-use restate_storage_api::{StorageError, vqueue_table};
+use restate_storage_api::StorageError;
 use restate_vqueues::scheduler::{self};
 
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
@@ -132,7 +132,7 @@ pub(crate) enum TaskTermination {
 
 #[derive(Debug)]
 pub(crate) enum ActionEffect {
-    Scheduler(Result<scheduler::Decision<vqueue_table::EntryCard>, StorageError>),
+    Scheduler(scheduler::Decisions),
     Invoker(Box<restate_invoker_api::Effect>),
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerKeyValue),

@@ -24,13 +24,14 @@ use std::task::Poll;
 
 use smallvec::SmallVec;
 use tokio::sync::mpsc;
+use tracing::trace;
 
 use restate_futures_util::concurrency::Concurrency;
 use restate_memory::{MemoryPool, NonZeroByteCount};
 use restate_storage_api::StorageError;
 use restate_storage_api::lock_table::LoadLocks;
 use restate_storage_api::vqueue_table::metadata::VQueueMeta;
-use restate_storage_api::vqueue_table::{EntryKind, VQueueEntry};
+use restate_storage_api::vqueue_table::{EntryKey, EntryKind, EntryValue};
 use restate_types::{LockName, Scope};
 
 use self::invoker::InvokerConcurrencyLimiter;
@@ -139,6 +140,8 @@ impl ResourceManager {
         scope: &Option<Scope>,
         lock_name: &LockName,
     ) -> bool {
+        trace!("[release_lock] scope: {scope:?}, lock_name: {lock_name}");
+
         let Some(queues) = self.locks.release_lock(scope, lock_name) else {
             return false;
         };
@@ -151,12 +154,13 @@ impl ResourceManager {
         wake_up
     }
 
-    pub(super) fn poll_acquire_permit<E: VQueueEntry>(
+    pub(super) fn poll_acquire_permit(
         &mut self,
         cx: &mut std::task::Context<'_>,
         vqueue: VQueueHandle,
         meta: &VQueueMeta,
-        entry: &E,
+        key: &EntryKey,
+        value: &EntryValue,
         current_permit: &mut PermitBuilder,
     ) -> AcquireOutcome {
         if !current_permit.has_user_permit() {
@@ -172,7 +176,7 @@ impl ResourceManager {
 
             // if the entry holds a lock already, we don't need to acquire a new one.
             if let Some(lock_name) = meta.lock_name()
-                && !entry.has_lock()
+                && !key.has_lock()
             {
                 // needs to acquire a lock
                 if !self.locks.is_locked(meta.scope(), lock_name) {
@@ -191,7 +195,7 @@ impl ResourceManager {
         }
 
         // System permit
-        match entry.kind() {
+        match value.kind() {
             EntryKind::Invocation => {
                 // this is invocation. It needs an invoker permit + invoker throttling token
                 // Do we have one?
@@ -214,7 +218,7 @@ impl ResourceManager {
                     current_permit.set_throttling_permit(throttling_token);
                 }
             }
-            EntryKind::StateMutation | EntryKind::Unknown => {
+            EntryKind::StateMutation => {
                 // I don't need a system permit here.
             }
         }
