@@ -12,6 +12,7 @@
 mod hlc;
 #[cfg(feature = "test-util")]
 mod mock_clock;
+pub mod rough_ts;
 #[cfg(feature = "hlc")]
 pub mod storage;
 pub mod time;
