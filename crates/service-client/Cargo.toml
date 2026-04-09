@@ -26,6 +26,7 @@ base64 = { workspace = true }
 bs58 = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
+dashmap = { workspace = true }
 derive_builder = { workspace = true }
 futures = { workspace = true }
 h2 = "0.4.12"
@@ -40,6 +41,7 @@ jsonwebtoken = { workspace = true }
 parking_lot = { workspace = true }
 pem = { version = "3.0.6" }
 pin-project = { workspace = true }
+rand = { workspace = true }
 ring = { version = "0.17.14" }
 rustls = { workspace = true }
 serde = { workspace = true }
@@ -54,6 +56,14 @@ tracing = { workspace = true }
 zstd = { workspace = true }
 
 [dev-dependencies]
+restate-service-client = { path = ".", features = ["test_util"] }
+criterion = { workspace = true, features = ["async_tokio"] }
 googletest = { workspace = true }
+pprof = { version = "0.15", features = ["criterion", "flamegraph"] }
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["tracing"] }
 tokio-stream = {workspace = true}
+
+[[bench]]
+name = "h2_pool_benchmark"
+harness = false
