@@ -8,8 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_types::identifiers::PartitionKey;
-use restate_types::vqueue::{VQueueId, VQueueInstance, VQueueParent};
+use restate_types::vqueue::VQueueId;
 
 use crate::TableKind::VQueue;
 use crate::keys::{EncodeTableKey, KeyKind, define_table_key};
@@ -21,18 +20,13 @@ define_table_key!(
     VQueue,
     KeyKind::VQueueMeta,
     MetaKey(
-        partition_key: PartitionKey,
-        parent: VQueueParent,
-        instance: VQueueInstance,
+        qid: VQueueId,
     )
 );
 
 impl MetaKey {
     pub const fn serialized_length_fixed() -> usize {
-        KeyKind::SERIALIZED_LENGTH
-            + std::mem::size_of::<PartitionKey>()
-            + std::mem::size_of::<VQueueParent>()
-            + std::mem::size_of::<VQueueInstance>()
+        KeyKind::SERIALIZED_LENGTH + VQueueId::serialized_length_fixed()
     }
 
     #[inline]
@@ -43,32 +37,25 @@ impl MetaKey {
     }
 }
 
+// todo: check if this is still needed
 impl From<&VQueueId> for MetaKey {
     #[inline]
     fn from(qid: &VQueueId) -> Self {
-        MetaKey {
-            partition_key: qid.partition_key(),
-            parent: qid.parent,
-            instance: qid.instance,
-        }
+        MetaKey { qid: qid.clone() }
     }
 }
 
 impl From<MetaKey> for VQueueId {
     #[inline]
     fn from(key: MetaKey) -> Self {
-        VQueueId::new(key.parent, key.partition_key, key.instance)
+        key.qid
     }
 }
 
 impl From<ActiveKey> for MetaKey {
     #[inline]
-    fn from(qid: ActiveKey) -> Self {
-        MetaKey {
-            partition_key: qid.partition_key,
-            parent: qid.parent,
-            instance: qid.instance,
-        }
+    fn from(key: ActiveKey) -> Self {
+        MetaKey { qid: key.qid }
     }
 }
 

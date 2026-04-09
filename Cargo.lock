@@ -8331,6 +8331,7 @@ dependencies = [
  "restate-types",
  "restate-util-string",
  "restate-workspace-hack",
+ "sha2",
  "slotmap",
  "smallvec",
  "tokio",
