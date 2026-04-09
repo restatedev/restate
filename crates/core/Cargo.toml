@@ -20,7 +20,7 @@ test-util = [
   "restate-types/test-util",
   "tokio/test-util"
 ]
-taskdump = ["tokio/taskdump"]
+taskdump = []
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
@@ -83,3 +83,6 @@ googletest = { workspace = true }
 test-log = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }
+
+[target.'cfg(all(target_os = "linux", any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")))'.dependencies]
+tokio = { workspace = true, features = ["taskdump"] }
