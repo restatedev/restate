@@ -338,7 +338,10 @@ mod tests {
         let value = EntryValue {
             id: EntryId::Invocation([id; 16]),
             original_run_at: run_at.into(),
-            stats: EntryStatistics::new(UniqueTimestamp::try_from(1000u64 + id as u64).unwrap()),
+            stats: EntryStatistics::new(
+                UniqueTimestamp::try_from(1000u64 + id as u64).unwrap(),
+                run_at.into(),
+            ),
             metadata: EntryMetadata::Empty,
         };
 
