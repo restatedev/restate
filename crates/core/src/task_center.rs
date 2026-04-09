@@ -802,12 +802,20 @@ impl TaskCenterInner {
         }
     }
 
-    #[cfg(not(feature = "taskdump"))]
+    #[cfg(not(all(
+        feature = "taskdump",
+        target_os = "linux",
+        any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")
+    )))]
     async fn dump_tasks(self: &Arc<Self>, _: impl std::io::Write) {
         warn!("Cannot dump tokio tasks; taskdump feature was not enabled at compile time")
     }
 
-    #[cfg(feature = "taskdump")]
+    #[cfg(all(
+        feature = "taskdump",
+        target_os = "linux",
+        any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")
+    ))]
     async fn dump_tasks(self: &Arc<Self>, mut writer: impl std::io::Write) {
         let managed_tasks: HashMap<_, _> = self
             .managed_tasks
