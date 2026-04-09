@@ -13,7 +13,7 @@ use restate_types::identifiers::PartitionKey;
 use restate_types::vqueue::VQueueId;
 
 use super::metadata::VQueueMeta;
-use super::{AsEntryState, AsEntryStateHeader, EntryCard, EntryId, EntryKind, EntryStateKind};
+use super::{AsEntryState, AsEntryStateHeader, EntryId, EntryKey, EntryValue};
 use crate::Result;
 
 /// Stages in the inbox/vqueue
@@ -49,18 +49,24 @@ pub enum Stage {
 pub trait WriteVQueueTable {
     /// Initializes a new vqueue
     fn create_vqueue(&mut self, qid: &VQueueId, meta: &VQueueMeta);
+
     /// Update VQueueMeta with a set of differential updates.
     fn update_vqueue(&mut self, qid: &VQueueId, update: &super::metadata::Update);
 
     /// Places an entry onto an inbox stage
-    fn put_inbox_entry(&mut self, qid: &VQueueId, stage: Stage, card: &EntryCard);
+    fn put_inbox_entry(&mut self, qid: &VQueueId, stage: Stage, key: &EntryKey, value: &EntryValue);
 
     /// Deletes entry from inbox if it was found and the returned boolean indicates whether it was
     /// successful or not.
-    fn pop_inbox_entry(&mut self, qid: &VQueueId, stage: Stage, card: &EntryCard) -> Result<bool>;
+    fn pop_inbox_entry(
+        &mut self,
+        qid: &VQueueId,
+        stage: Stage,
+        key: &EntryKey,
+    ) -> Result<Option<EntryValue>>;
 
     /// Deletes entry from inbox unconditionally
-    fn delete_inbox_entry(&mut self, qid: &VQueueId, stage: Stage, card: &EntryCard);
+    fn delete_inbox_entry(&mut self, qid: &VQueueId, stage: Stage, key: &EntryKey);
 
     /// Adds a vqueue to the list of active vqueues
     ///
@@ -89,34 +95,23 @@ pub trait WriteVQueueTable {
     fn put_vqueue_entry_state<E>(
         &mut self,
         qid: &VQueueId,
-        card: &EntryCard,
+        entry_id: &EntryId,
         stage: Stage,
+        entry_key: &EntryKey,
         state: E,
     ) where
-        E: EntryStateKind + bilrost::Message + bilrost::encoding::RawMessage,
+        E: bilrost::Message + bilrost::encoding::RawMessage,
         (): bilrost::encoding::EmptyState<(), E>;
 
-    fn delete_vqueue_entry_state(&mut self, qid: &VQueueId, kind: EntryKind, id: &EntryId);
+    fn delete_vqueue_entry_state(&mut self, partition_key: PartitionKey, id: &EntryId);
 
     /// Stores a vqueue item for later use.
-    fn put_item<E>(
-        &mut self,
-        qid: &VQueueId,
-        created_at: UniqueTimestamp,
-        kind: EntryKind,
-        id: &EntryId,
-        item: E,
-    ) where
+    fn put_item<E>(&mut self, qid: &VQueueId, created_at: UniqueTimestamp, id: &EntryId, item: E)
+    where
         E: bilrost::Message;
 
     /// Deletes a vqueue item.
-    fn delete_item(
-        &mut self,
-        qid: &VQueueId,
-        created_at: UniqueTimestamp,
-        kind: EntryKind,
-        id: &EntryId,
-    );
+    fn delete_item(&mut self, qid: &VQueueId, created_at: UniqueTimestamp, id: &EntryId);
 }
 
 pub trait ReadVQueueTable {
@@ -129,7 +124,6 @@ pub trait ReadVQueueTable {
     /// Get the entry state (header information only) for a vqueue entry by id
     fn get_entry_state_header(
         &mut self,
-        kind: EntryKind,
         partition_key: PartitionKey,
         id: &EntryId,
     ) -> impl Future<Output = Result<Option<impl AsEntryStateHeader + 'static + Send>>>;
@@ -137,16 +131,11 @@ pub trait ReadVQueueTable {
     /// Get the entry state for a vqueue entry by id
     fn get_entry_state<E>(
         &mut self,
-        kind: EntryKind,
         partition_key: PartitionKey,
         id: &EntryId,
     ) -> impl Future<Output = Result<Option<impl AsEntryState<State = E> + 'static + Send>>>
     where
-        E: EntryStateKind
-            + bilrost::OwnedMessage
-            + bilrost::encoding::RawMessageDecoder
-            + Sized
-            + 'static,
+        E: bilrost::OwnedMessage + bilrost::encoding::RawMessageDecoder + Sized + Send + 'static,
         (): bilrost::encoding::EmptyState<(), E>;
 
     /// Gets a vqueue item identified by its qid, the entry id, its kind and the creation timestamp.
@@ -154,7 +143,6 @@ pub trait ReadVQueueTable {
         &mut self,
         qid: &VQueueId,
         created_at: UniqueTimestamp,
-        kind: EntryKind,
         id: &EntryId,
     ) -> impl Future<Output = Result<Option<E>>>
     where

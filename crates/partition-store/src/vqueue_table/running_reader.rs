@@ -9,14 +9,15 @@
 // by the Apache License, Version 2.0.
 
 use anyhow::Context;
+use bilrost::OwnedMessage;
 use rocksdb::DBRawIteratorWithThreadMode;
 
 use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::{EntryCard, Stage, VQueueCursor};
+use restate_storage_api::vqueue_table::{EntryKey, EntryValue, Stage, VQueueCursor};
 use restate_types::vqueue::VQueueId;
 
 use crate::PartitionDb;
-use crate::keys::{DecodeTableKey, EncodeTableKeyPrefix};
+use crate::keys::EncodeTableKeyPrefix;
 use crate::vqueue_table::InboxKey;
 
 pub struct VQueueRunningReader {
@@ -30,8 +31,8 @@ impl VQueueRunningReader {
         // this is not the place to be concerned about corruption, we favor speed
         // over safety for this particular use-case.
         readopts.set_verify_checksums(false);
-        // Do not remove this!
-        readopts.set_total_order_seek(true);
+        // use prefix extractors for efficient filtering.
+        readopts.set_prefix_same_as_start(true);
 
         // we know how big the prefix is
         let mut key_buf = [0u8; InboxKey::by_stage_prefix_len()];
@@ -61,13 +62,11 @@ impl VQueueRunningReader {
 }
 
 impl VQueueCursor for VQueueRunningReader {
-    type Item = EntryCard;
-
     fn seek_to_first(&mut self) {
         self.it.seek_to_first();
     }
 
-    fn seek_after(&mut self, _qid: &VQueueId, _item: &Self::Item) {
+    fn seek_after(&mut self, _qid: &VQueueId, _key: &EntryKey) {
         panic!("seek_after is not supported for running snapshot reader");
     }
 
@@ -75,11 +74,61 @@ impl VQueueCursor for VQueueRunningReader {
         self.it.next();
     }
 
-    fn peek(&mut self) -> Result<Option<EntryCard>, StorageError> {
-        if let Some((mut key, _value)) = self.it.item() {
-            let key = InboxKey::deserialize_from(&mut key)?;
-            assert_eq!(*key.stage(), Stage::Run);
-            Ok(Some(EntryCard::from(key)))
+    /// Returns the current key under cursor
+    fn current_key(&mut self) -> Result<Option<EntryKey>, StorageError> {
+        if let Some(key) = self.it.key() {
+            assert_eq!(key.len(), 44);
+            debug_assert_eq!(
+                Stage::Run,
+                Stage::from_repr(key[InboxKey::offset_of_entry_key() - 1])
+                    .unwrap_or(Stage::Unknown),
+            );
+
+            // The portion we are interested in is everything after the Stage
+            let entry_key = EntryKey::decode(&mut &key[InboxKey::offset_of_entry_key()..])?;
+            Ok(Some(entry_key))
+        } else {
+            // we reached the end (or an error). We cannot recover from this without seek.
+            // todo: add support for iterator refresh().
+            self.it
+                .status()
+                .context("peek into vqueue snapshot iterator")
+                .map_err(StorageError::Generic)?;
+            // iterator is beyond the end, we can't peek
+            Ok(None)
+        }
+    }
+    /// Returns the current value under cursor
+    fn current_value(&mut self) -> Result<Option<EntryValue>, StorageError> {
+        if let Some(mut value) = self.it.value() {
+            let value = EntryValue::decode(&mut value)?;
+            Ok(Some(value))
+        } else {
+            // we reached the end (or an error). We cannot recover from this without seek.
+            // todo: add support for iterator refresh().
+            self.it
+                .status()
+                .context("peek into vqueue snapshot iterator")
+                .map_err(StorageError::Generic)?;
+            // iterator is beyond the end, we can't peek
+            Ok(None)
+        }
+    }
+
+    fn peek(&mut self) -> Result<Option<(EntryKey, EntryValue)>, StorageError> {
+        if let Some((key, mut value)) = self.it.item() {
+            assert_eq!(key.len(), 44);
+            debug_assert_eq!(
+                Stage::Run,
+                Stage::from_repr(key[InboxKey::offset_of_entry_key() - 1])
+                    .unwrap_or(Stage::Unknown),
+            );
+
+            // The portion we are interested in is everything after the Stage
+            let entry_key = EntryKey::decode(&mut &key[InboxKey::offset_of_entry_key()..])?;
+            let value = EntryValue::decode(&mut value)?;
+
+            Ok(Some((entry_key, value)))
         } else {
             // we reached the end (or an error). We cannot recover from this without seek.
             // todo: add support for iterator refresh().
