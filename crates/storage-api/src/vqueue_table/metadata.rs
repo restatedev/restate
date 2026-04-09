@@ -14,11 +14,10 @@ use restate_clock::WallClock;
 use restate_clock::time::MillisSinceEpoch;
 use restate_limiter::LimitKey;
 use restate_types::clock::UniqueTimestamp;
-use restate_types::vqueue::EffectivePriority;
 use restate_types::{LockName, Scope};
 use restate_util_string::ReString;
 
-use super::{Stage, VisibleAt};
+use super::{EntryStatistics, Stage};
 
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct VQueueStatistics {
@@ -38,7 +37,17 @@ pub struct VQueueStatistics {
     pub(crate) last_completion_at: Option<MillisSinceEpoch>,
     /// The timestamp of the last run attempt of a previously started entry.
     #[bilrost(tag(6))]
-    pub(crate) last_resume_at: Option<MillisSinceEpoch>,
+    pub(crate) last_attempt_at: Option<MillisSinceEpoch>,
+    //
+    // # Counters
+    //
+    /// The number of entries waiting to be dequeued. The vector index implies the priority
+    #[bilrost(tag(7))]
+    pub(crate) num_inbox: u64,
+    #[bilrost(tag(8))]
+    pub(crate) num_parked: u64,
+    #[bilrost(tag(9))]
+    pub(crate) num_running: u64,
 }
 
 impl VQueueStatistics {
@@ -49,10 +58,14 @@ impl VQueueStatistics {
             last_enqueued_at: None,
             last_start_at: None,
             last_completion_at: None,
-            last_resume_at: None,
+            last_attempt_at: None,
+            num_inbox: 0,
+            num_parked: 0,
+            num_running: 0,
         }
     }
 
+    #[allow(dead_code)]
     fn update_avg_queue_duration(&mut self, latency_ms: u64) {
         let new_avg: u64 = if self.avg_queue_duration_ms == 0 {
             latency_ms
@@ -69,23 +82,14 @@ pub struct VQueueMeta {
     /// if true, the vqueue is paused, we don't pop entries from it until it's resumed.
     #[bilrost(tag(1))]
     is_paused: bool,
-    /// Total number of entries (ready + paused + running + suspended + scheduled), but it doesn't
-    /// include completed or failed entries. This is the length that is used to reject new invocations
-    /// being added to the vqueue. The capacity configuration will limit this value.
+
     #[bilrost(tag(2))]
-    pub(crate) length: u32,
-    /// The number of entries waiting to be dequeued. The vector index implies the priority
-    #[bilrost(tag(3), encoding(packed))]
-    pub(crate) num_waiting: [u32; EffectivePriority::NUM_PRIORITIES],
-    #[bilrost(tag(4))]
-    pub(crate) num_running: u32,
-    #[bilrost(tag(5))]
     pub(crate) stats: VQueueStatistics,
-    #[bilrost(tag(6))]
+    #[bilrost(tag(3))]
     pub(crate) scope: Option<Scope>,
-    #[bilrost(tag(7))]
+    #[bilrost(tag(4))]
     pub(crate) limit_key: LimitKey<ReString>,
-    #[bilrost(tag(8))]
+    #[bilrost(tag(5))]
     lock_name: Option<LockName>,
 }
 
@@ -97,9 +101,6 @@ impl VQueueMeta {
     ) -> Self {
         Self {
             is_paused: false,
-            length: 0,
-            num_waiting: [0; EffectivePriority::NUM_PRIORITIES],
-            num_running: 0,
             stats: VQueueStatistics::new(WallClock::recent_ms()),
             scope,
             limit_key,
@@ -127,24 +128,37 @@ impl VQueueMeta {
         &self.limit_key
     }
 
-    pub fn len(&self) -> u32 {
-        self.length
+    /// Total number of entries (ready + paused + running + suspended + scheduled), but it doesn't
+    /// include completed or failed entries. This is the length that is used to reject new invocations
+    /// being added to the vqueue. The capacity configuration will limit this value.
+    pub fn len(&self) -> u64 {
+        self.stats.num_inbox + self.stats.num_running + self.stats.num_parked
     }
 
     pub fn is_empty(&self) -> bool {
-        self.length == 0
+        self.len() == 0
     }
 
-    pub fn total_waiting(&self) -> u32 {
-        self.num_waiting.iter().sum()
+    pub fn total_waiting(&self) -> u64 {
+        self.stats.num_inbox
     }
 
-    fn increment_running(&mut self) {
-        self.num_running += 1;
+    fn increment_stage(&mut self, stage: Stage) {
+        match stage {
+            Stage::Inbox => self.stats.num_inbox += 1,
+            Stage::Park => self.stats.num_parked += 1,
+            Stage::Run => self.stats.num_running += 1,
+            _ => {}
+        }
     }
 
-    fn decrement_running(&mut self) {
-        self.num_running -= 1;
+    fn decrement_stage(&mut self, stage: Stage) {
+        match stage {
+            Stage::Inbox => self.stats.num_inbox -= 1,
+            Stage::Park => self.stats.num_parked -= 1,
+            Stage::Run => self.stats.num_running -= 1,
+            _ => {}
+        }
     }
 
     /// A vqueue is considered active when it's of interest to the scheduler.
@@ -156,15 +170,14 @@ impl VQueueMeta {
     /// entries. Once running entries are moved to waiting or completed, the vqueue is be
     /// considered dormant until it's unpaused.
     pub fn is_active(&self) -> bool {
-        self.num_running > 0 || (self.total_waiting() > 0 && !self.is_paused())
-    }
-
-    pub fn num_waiting(&self, priority: EffectivePriority) -> u32 {
-        self.num_waiting[priority as usize]
+        self.stats.num_running > 0 || (self.stats.num_inbox > 0 && !self.is_paused())
     }
 
     pub fn num_running(&self) -> u32 {
-        self.num_running
+        self.stats
+            .num_running
+            .try_into()
+            .expect("cannot run more than u32::MAX items concurrently")
     }
 
     pub fn stats(&self) -> &VQueueStatistics {
@@ -183,16 +196,7 @@ impl VQueueMeta {
         self.is_paused
     }
 
-    fn add_to_waiting(&mut self, priority: EffectivePriority) {
-        self.num_waiting[priority as usize] += 1;
-    }
-
-    fn remove_from_waiting(&mut self, priority: EffectivePriority) {
-        self.num_waiting[priority as usize] -= 1;
-    }
-
     pub fn apply_update(&mut self, update: &Update) -> anyhow::Result<()> {
-        debug_assert!(self.length >= self.total_waiting());
         let now = update.ts;
         // Note to future authors: This match needs to continue to work even when
         // processing old/deprecated/removed actions. Therefore, removed actions should
@@ -201,84 +205,47 @@ impl VQueueMeta {
             Action::Unknown => {
                 anyhow::bail!("Unrecognized vqueue action: {update:?}")
             }
-            Action::EnqueueNew { priority } => {
-                debug_assert!(priority.is_new());
-                self.length += 1;
-                self.add_to_waiting(priority);
-                self.stats.last_enqueued_at = Some(now.to_unix_millis());
+            Action::PauseVQueue {} => {
+                self.is_paused = true;
             }
-            Action::StartAttempt {
-                visible_at,
-                priority,
+            Action::ResumeVQueue {} => {
+                self.is_paused = false;
+            }
+            Action::Move {
+                prev_stage: previous_stage,
+                next_stage: new_stage,
+                ref entry_stats,
             } => {
-                if priority.is_new() {
-                    self.stats.last_start_at = Some(now.to_unix_millis());
+                if let Some(previous_stage) = previous_stage {
+                    self.decrement_stage(previous_stage);
+                }
+                if let Some(new_stage) = new_stage {
+                    self.increment_stage(new_stage);
+                    // todo: update EMAs and aggregated stats based on entry_stats;
+                    match new_stage {
+                        Stage::Unknown => {}
+                        Stage::Inbox => self.stats.last_enqueued_at = Some(now.to_unix_millis()),
+                        Stage::Run if entry_stats.num_attempts == 0 => {
+                            let ts = Some(now.to_unix_millis());
+                            self.stats.last_start_at = ts;
+                            self.stats.last_attempt_at = ts;
+                        }
+                        Stage::Run => self.stats.last_attempt_at = Some(now.to_unix_millis()),
+                        Stage::Park => {
+                            self.stats.last_start_at = Some(now.to_unix_millis());
+                        }
+                    }
                 } else {
-                    self.stats.last_resume_at = Some(now.to_unix_millis());
+                    self.stats.last_completion_at = Some(now.to_unix_millis());
                 }
 
-                self.increment_running();
-                self.remove_from_waiting(priority);
-
-                if priority.is_new()
-                    && let VisibleAt::At(visible_since) = visible_at
-                {
-                    // Only measure queue latency for new items and only consider the item
-                    // queuing from the moment it became visible, not the creation ts.
-                    let latency_ms = now.to_unix_millis().saturating_sub_ms(visible_since);
-                    self.stats.update_avg_queue_duration(latency_ms);
-                }
-            }
-            Action::Park {
-                priority,
-                previous_stage,
-            } => {
-                debug_assert!(self.length > 0);
-                match previous_stage {
-                    Stage::Unknown => {
-                        anyhow::bail!("Unknown stage for vqueue entry park action: {update:?}");
-                    }
-                    Stage::Inbox => {
-                        self.remove_from_waiting(priority);
-                    }
-                    Stage::Run => {
-                        self.decrement_running();
-                    }
-                    Stage::Park => {
-                        // do nothing.
-                    }
-                }
-            }
-            Action::WakeUp { priority } => {
-                debug_assert!(self.length > 0);
-                self.add_to_waiting(priority);
-            }
-            Action::YieldRunning => {
-                debug_assert!(self.length > 0);
-                self.decrement_running();
-                self.add_to_waiting(EffectivePriority::TokenHeld);
-            }
-            Action::Complete {
-                previous_stage,
-                priority,
-            } => {
-                debug_assert!(self.length > 0);
-                self.length -= 1;
-                self.stats.last_completion_at = Some(now.to_unix_millis());
-                match previous_stage {
-                    Stage::Unknown => {
-                        anyhow::bail!("Unknown stage for vqueue entry complete action: {update:?}")
-                    }
-                    Stage::Inbox => {
-                        self.remove_from_waiting(priority);
-                    }
-                    Stage::Run => {
-                        self.decrement_running();
-                    }
-                    Stage::Park => {
-                        // do nothing.
-                    }
-                }
+                // disabled until later commit to implement stats aggregation
+                // if is_new && let VisibleAt::At(visible_since) = visible_at {
+                //     // Only measure queue latency for new items and only consider the item
+                //     // queuing from the moment it became visible, not the creation ts.
+                //     let latency_ms = now.to_unix_millis().saturating_sub_ms(visible_since);
+                //     self.stats.update_avg_queue_duration(latency_ms);
+                // }
             }
         }
         Ok(())
@@ -336,40 +303,27 @@ pub enum Action {
     #[default]
     #[bilrost(empty)]
     Unknown,
-    /// Entry is being enqueued for the first time
+    /// An item has moved from one stage to another
+    ///
+    /// if previous_stage is Some, the item is new.
+    /// if new_stage is None, the item is being removed
     #[bilrost(tag(2), message)]
-    EnqueueNew { priority: EffectivePriority },
-    /// An entry from inbox stage is being moved to Run
+    Move {
+        prev_stage: Option<Stage>,
+        next_stage: Option<Stage>,
+        entry_stats: EntryStatistics,
+    },
     #[bilrost(tag(3), message)]
-    StartAttempt {
-        visible_at: VisibleAt,
-        priority: EffectivePriority,
-    },
+    PauseVQueue {},
     #[bilrost(tag(4), message)]
-    Park {
-        priority: EffectivePriority,
-        previous_stage: Stage,
-    },
-    // Wake up after pause or suspend.
-    #[bilrost(tag(5), message)]
-    WakeUp { priority: EffectivePriority },
-    // Item moved from running back to waiting
-    #[bilrost(tag(6), message)]
-    YieldRunning,
-    // Execution has ended (failed, succeeded, killed, etc.)
-    #[bilrost(tag(7), message)]
-    Complete {
-        // Must be the latest priority assigned to the entry (effective priority)
-        priority: EffectivePriority,
-        previous_stage: Stage,
-    },
+    ResumeVQueue {},
 }
 
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct Update {
     #[bilrost(tag(1))]
     pub(super) ts: UniqueTimestamp,
-    #[bilrost(oneof(2, 3, 4, 5, 6, 7))]
+    #[bilrost(oneof(2, 3, 4))]
     pub(super) action: Action,
 }
 

@@ -10,82 +10,76 @@
 
 mod entry;
 pub mod metadata;
+pub mod scheduler;
 mod store;
 mod tables;
 
+use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 
+use restate_clock::rough_ts::RoughTimestamp;
 use restate_clock::time::MillisSinceEpoch;
 
 pub use entry::*;
 pub use store::*;
 pub use tables::*;
 
+pub type Seq = u64;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum VisibleAt {
-    Now,
-    At(MillisSinceEpoch),
-}
+#[repr(transparent)]
+pub struct RunAt(RoughTimestamp);
 
 const _: () = {
     assert!(
-        size_of::<MillisSinceEpoch>() == size_of::<VisibleAt>(),
-        "VisibleAt should be the same size as MilliSinceEpoch"
+        size_of::<u32>() == size_of::<RunAt>(),
+        "RunAt should be the same size as RoughTimestamp"
     );
 };
 
-impl VisibleAt {
+impl RunAt {
     pub const fn new(millis: MillisSinceEpoch) -> Self {
-        if millis.is_zero() {
-            Self::Now
-        } else {
-            Self::At(millis)
-        }
+        Self(RoughTimestamp::from_unix_millis_clamped(millis))
     }
 
     pub const fn from_raw(raw: u64) -> Self {
-        if raw == 0 {
-            return Self::Now;
-        }
-        Self::At(MillisSinceEpoch::new(raw))
+        Self::new(MillisSinceEpoch::new(raw))
     }
 
     pub const fn as_u64(&self) -> u64 {
-        match self {
-            Self::Now => 0,
-            Self::At(ts) => ts.as_u64(),
-        }
+        self.as_millis().as_u64()
     }
 
-    pub fn is_visible(&self, now: MillisSinceEpoch) -> bool {
-        match self {
-            Self::Now => true,
-            Self::At(ts) => *ts <= now,
-        }
+    pub const fn as_millis(&self) -> MillisSinceEpoch {
+        self.0.as_unix_millis()
+    }
+
+    pub fn can_run(&self, now: MillisSinceEpoch) -> bool {
+        self.as_millis() <= now
     }
 }
 
-impl From<Option<MillisSinceEpoch>> for VisibleAt {
-    fn from(value: Option<MillisSinceEpoch>) -> Self {
-        value.map_or(Self::Now, Self::new)
+impl From<MillisSinceEpoch> for RunAt {
+    fn from(value: MillisSinceEpoch) -> Self {
+        Self::new(value)
     }
 }
 
-impl PartialEq<MillisSinceEpoch> for VisibleAt {
+impl PartialEq<MillisSinceEpoch> for RunAt {
     fn eq(&self, other: &MillisSinceEpoch) -> bool {
-        match self {
-            Self::Now => false,
-            Self::At(ts) => ts == other,
-        }
+        self.as_millis() == *other
     }
 }
 
-impl PartialOrd<MillisSinceEpoch> for VisibleAt {
+impl PartialOrd<MillisSinceEpoch> for RunAt {
     fn partial_cmp(&self, other: &MillisSinceEpoch) -> Option<std::cmp::Ordering> {
-        match self {
-            Self::Now => None,
-            Self::At(ts) => ts.partial_cmp(other),
-        }
+        self.as_millis().partial_cmp(other)
+    }
+}
+
+impl Display for RunAt {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.as_millis(), f)
     }
 }
 
@@ -114,7 +108,7 @@ mod bilrost_encoding {
     use bilrost::encoding::{DistinguishedProxiable, ForOverwrite, Proxiable};
     use bilrost::{Canonicity, DecodeErrorKind};
 
-    impl Proxiable for VisibleAt {
+    impl Proxiable for RunAt {
         type Proxy = u64;
 
         fn encode_proxy(&self) -> Self::Proxy {
@@ -127,7 +121,7 @@ mod bilrost_encoding {
         }
     }
 
-    impl DistinguishedProxiable for VisibleAt {
+    impl DistinguishedProxiable for RunAt {
         fn decode_proxy_distinguished(
             &mut self,
             proxy: Self::Proxy,
@@ -137,17 +131,17 @@ mod bilrost_encoding {
         }
     }
 
-    impl ForOverwrite<(), VisibleAt> for () {
-        fn for_overwrite() -> VisibleAt {
-            VisibleAt::Now
+    impl ForOverwrite<(), RunAt> for () {
+        fn for_overwrite() -> RunAt {
+            RunAt(RoughTimestamp::RESTATE_EPOCH)
         }
     }
 
-    bilrost::empty_state_via_for_overwrite!(VisibleAt);
+    bilrost::empty_state_via_for_overwrite!(RunAt);
 
     bilrost::delegate_proxied_encoding!(
         use encoding (bilrost::encoding::Varint)
-        to encode proxied type (VisibleAt)
+        to encode proxied type (RunAt)
         with general encodings including distinguished
     );
 }
