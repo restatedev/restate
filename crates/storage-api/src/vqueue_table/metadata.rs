@@ -14,7 +14,7 @@ use restate_clock::WallClock;
 use restate_clock::time::MillisSinceEpoch;
 use restate_limiter::LimitKey;
 use restate_types::clock::UniqueTimestamp;
-use restate_types::{LockName, Scope};
+use restate_types::{LockName, LockNameBorrowed, Scope};
 use restate_util_string::ReString;
 
 use super::Stage;
@@ -24,7 +24,7 @@ pub struct VQueueStatistics {
     /// Creation time of this vqueue metadata record.
     #[bilrost(tag(1))]
     pub(crate) created_at: MillisSinceEpoch,
-    /// EMA of first-attempt wait time.
+    /// Exponential moving average (EMA) of first-attempt wait time.
     ///
     /// For an entry's first transition to `Run`, this tracks
     /// `run_started_at - first_runnable_at`, where
@@ -66,16 +66,16 @@ pub struct VQueueStatistics {
     /// obsolete when it's completely empty (all counters are zero).
     #[bilrost(tag(10))]
     pub(crate) num_finished: u64,
-    /// EMA of how long entries stay in `Inbox` before transitioning out of it.
+    /// Exponential moving average (EMA) of how long entries stay in `Inbox` before transitioning out of it.
     #[bilrost(tag(11))]
     pub(crate) avg_inbox_duration_ms: u64,
-    /// EMA of how long entries stay in `Run` before transitioning out of it.
+    /// Exponential moving average (EMA) of how long entries stay in `Run` before transitioning out of it.
     #[bilrost(tag(12))]
     pub(crate) avg_run_duration_ms: u64,
-    /// EMA of how long entries stay in `Park` before transitioning out of it.
+    /// Exponential moving average (EMA) of how long entries stay in `Park` before transitioning out of it.
     #[bilrost(tag(13))]
     pub(crate) avg_park_duration_ms: u64,
-    /// EMA of end-to-end entry lifetime from first-runnable time to completion.
+    /// Exponential moving average (EMA) of end-to-end entry lifetime from first-runnable time to completion.
     #[bilrost(tag(14))]
     pub(crate) avg_end_to_end_duration_ms: u64,
 }
@@ -190,8 +190,41 @@ impl VQueueStatistics {
         self.num_running
     }
 
-    pub const fn num_archived(&self) -> u64 {
+    pub const fn num_finished(&self) -> u64 {
         self.num_finished
+    }
+}
+
+/// Borrowing version of VQueueMeta.
+///
+/// NOTE: keep in-sync with [`VQueueMeta`]
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct VQueueMetaBorrowed<'a> {
+    /// if true, the vqueue is paused, we don't pop entries from it until it's resumed.
+    #[bilrost(tag(1))]
+    pub is_paused: bool,
+
+    #[bilrost(tag(2))]
+    pub stats: VQueueStatistics,
+    #[bilrost(tag(3))]
+    pub scope: Option<&'a str>,
+    #[bilrost(tag(4))]
+    pub limit_key: LimitKey<&'a str>,
+    #[bilrost(tag(5))]
+    pub lock_name: Option<LockNameBorrowed<'a>>,
+}
+
+impl<'a> VQueueMetaBorrowed<'a> {
+    /// A vqueue is considered active when it's of interest to the scheduler.
+    ///
+    /// The scheduler cares about vqueues that have entries that are already running or that are waiting
+    /// to run. With some special rules to consider when the queue is paused. When the vqueue is
+    /// paused, the scheduler will only be interested in its "running" entries and not in its
+    /// waiting entries. Therefore, it will remain to be "active" as long as it has running
+    /// entries. Once running entries are moved to waiting or completed, the vqueue is be
+    /// considered dormant until it's unpaused.
+    pub fn is_active(&self) -> bool {
+        self.stats.num_running > 0 || (self.stats.num_inbox > 0 && !self.is_paused)
     }
 }
 
@@ -637,5 +670,61 @@ mod tests {
             meta.stats.last_completion_at,
             Some(MillisSinceEpoch::new(BASE_TS_MS + 15_000))
         );
+    }
+
+    #[test]
+    fn vqueue_meta_borrowed_decode_is_correct() {
+        use bilrost::{BorrowedMessage, Message};
+
+        let owned = VQueueMeta {
+            is_paused: true,
+            stats: VQueueStatistics {
+                created_at: MillisSinceEpoch::new(BASE_TS_MS + 1),
+                avg_queue_duration_ms: 2,
+                last_enqueued_at: Some(MillisSinceEpoch::new(BASE_TS_MS + 3)),
+                last_start_at: Some(MillisSinceEpoch::new(BASE_TS_MS + 4)),
+                last_completion_at: Some(MillisSinceEpoch::new(BASE_TS_MS + 5)),
+                last_attempt_at: Some(MillisSinceEpoch::new(BASE_TS_MS + 6)),
+                num_inbox: 7,
+                num_parked: 8,
+                num_running: 9,
+                num_finished: 10,
+                avg_inbox_duration_ms: 11,
+                avg_run_duration_ms: 12,
+                avg_park_duration_ms: 13,
+                avg_end_to_end_duration_ms: 14,
+            },
+            scope: Some(Scope::new("scope-a")),
+            limit_key: "tenant-1/user-1".parse::<LimitKey<ReString>>().unwrap(),
+            lock_name: Some(LockName::parse("service-a/key-a").unwrap()),
+        };
+
+        let encoded = owned.encode_to_bytes();
+        let borrowed = VQueueMetaBorrowed::decode_borrowed(&encoded).unwrap();
+
+        assert_eq!(borrowed.is_paused, owned.is_paused);
+
+        assert_eq!(borrowed.scope, Some("scope-a"));
+        assert_eq!(borrowed.limit_key.to_string(), "tenant-1/user-1");
+        assert_eq!(
+            borrowed.limit_key.level1().map(|value| value.as_str()),
+            Some("tenant-1")
+        );
+        assert_eq!(
+            borrowed.limit_key.level2().map(|value| value.as_str()),
+            Some("user-1")
+        );
+        let lock_name = borrowed.lock_name.as_ref().expect("lock_name should exist");
+        assert_eq!(lock_name.service_name(), "service-a");
+        assert_eq!(lock_name.key(), "key-a");
+
+        // just a few sanity checks for stats. Those are owned anyway.
+        assert_eq!(borrowed.stats.created_at(), owned.stats.created_at());
+        assert_eq!(
+            borrowed.stats.avg_queue_duration_ms(),
+            owned.stats.avg_queue_duration_ms()
+        );
+        assert_eq!(borrowed.stats.num_inbox(), owned.stats.num_inbox());
+        assert_eq!(borrowed.is_active(), owned.is_active());
     }
 }
