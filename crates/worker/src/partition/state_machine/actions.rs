@@ -26,7 +26,7 @@ use restate_wal_protocol::timer::TimerKeyValue;
 
 pub type ActionCollector = Vec<Action>;
 
-#[derive(derive_more::Debug, Eq, PartialEq, strum::IntoStaticStr)]
+#[derive(derive_more::Debug, strum::IntoStaticStr)]
 pub enum Action {
     /// Notifies the scheduler about a vqueue inbox event (e.g, enqueue, run permitted, etc.)
     VQEvent(VQueueEvent<EntryCard>),
