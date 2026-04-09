@@ -55,6 +55,11 @@ prefixed_ids! {
         Awakeable("prom"),
         Signal("sign"),
         Snapshot("snap"),
+        StateMutation("mut"),
+        VQueue("vq"),
+        // used for testing
+        #[cfg(test)]
+        Test("tst"),
     }
 }
 

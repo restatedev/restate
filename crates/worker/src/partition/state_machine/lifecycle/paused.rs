@@ -10,11 +10,12 @@
 
 use crate::debug_if_leader;
 use crate::partition::state_machine::lifecycle::event::ApplyEventCommand;
-use crate::partition::state_machine::{CommandHandler, Error, ParkCause, StateMachineApplyContext};
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_events::WriteJournalEventsTable;
+use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_types::config::Configuration;
 use restate_types::identifiers::InvocationId;
@@ -32,6 +33,7 @@ where
         + WriteInvocationStatusTable
         + WriteJournalEventsTable
         + WriteVQueueTable
+        + WriteLockTable
         + ReadVQueueTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
@@ -56,12 +58,7 @@ where
         debug_if_leader!(ctx.is_leader, "Paused the invocation");
 
         if Configuration::pinned().common.experimental_enable_vqueues {
-            ctx.vqueue_park_invocation(
-                &self.invocation_id,
-                &invoked_meta.invocation_target,
-                ParkCause::Pause,
-            )
-            .await?;
+            ctx.vqueue_park_invocation(&self.invocation_id).await?;
         }
 
         let mut invocation_status = InvocationStatus::Paused(invoked_meta);

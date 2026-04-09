@@ -12,22 +12,20 @@ use std::collections::VecDeque;
 use std::task::Poll;
 use std::time::Duration;
 
+use slotmap::secondary::Entry;
 use slotmap::{SecondaryMap, SlotMap};
 use tokio_util::time::{DelayQueue, delay_queue};
 use tracing::trace;
 
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::VQueueStore;
-use restate_storage_api::vqueue_table::metadata::VQueueMeta;
 use restate_types::time::MillisSinceEpoch;
 
-use crate::VQueuesMeta;
-use crate::scheduler::vqueue_state::Eligibility;
-use crate::vqueue_config::VQueueConfig;
-
 use super::clock::SchedulerClock;
+use super::resource_manager::ResourceKind;
 use super::vqueue_state::VQueueState;
 use super::{SchedulingStatus, ThrottleScope, VQueueHandle};
+use crate::scheduler::vqueue_state::Eligibility;
 
 #[derive(Debug, Copy, Clone)]
 pub(super) struct WakeUp {
@@ -35,7 +33,7 @@ pub(super) struct WakeUp {
     timer_key: delay_queue::Key,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub(super) enum State {
     /// Needs a `poll_eligibility` to update the state.
     /// A vqueue in this state must be already added to the ready ring.
@@ -52,11 +50,12 @@ pub(super) enum State {
     Scheduled {
         wake_up: WakeUp,
     },
-    BlockedOnCapacity,
+    // Not in the ready ring.
+    BlockedOn(ResourceKind),
 }
 
 #[derive(derive_more::Debug)]
-pub struct EligibilityTracker {
+pub(crate) struct EligibilityTracker {
     #[debug(skip)]
     delayed_eligibility: DelayQueue<VQueueHandle>,
     ready_ring: VecDeque<VQueueHandle>,
@@ -78,22 +77,17 @@ impl EligibilityTracker {
         self.ready_ring.push_back(handle);
     }
 
-    pub fn get_status<S: VQueueStore>(
-        &self,
-        qstate: &VQueueState<S>,
-        meta: &VQueueMeta,
-        config: &VQueueConfig,
-    ) -> SchedulingStatus {
+    pub fn get_status<S: VQueueStore>(&self, qstate: &VQueueState<S>) -> SchedulingStatus {
         match self.states.get(qstate.handle) {
             None | Some(State::NeedsPoll) | Some(State::Ready) => {
-                SchedulingStatus::from(qstate.check_eligibility(meta, config))
+                SchedulingStatus::from(qstate.check_eligibility())
             }
             Some(State::Throttled { wake_up, scope }) => SchedulingStatus::Throttled {
                 until: wake_up.ts,
                 scope: *scope,
             },
             Some(State::Scheduled { wake_up }) => SchedulingStatus::Scheduled { at: wake_up.ts },
-            Some(State::BlockedOnCapacity) => SchedulingStatus::BlockedOnCapacity,
+            Some(State::BlockedOn(resource)) => SchedulingStatus::BlockedOn(resource.clone()),
         }
     }
 
@@ -123,7 +117,6 @@ impl EligibilityTracker {
         &mut self,
         storage: &S,
         vqueues: &mut SlotMap<VQueueHandle, VQueueState<S>>,
-        cache: VQueuesMeta<'_>,
     ) -> Result<Option<VQueueHandle>, StorageError> {
         loop {
             // what is my current status
@@ -146,12 +139,10 @@ impl EligibilityTracker {
                 continue;
             };
 
-            let meta = cache.get_vqueue(&qstate.qid).unwrap();
             match current_state {
                 State::NeedsPoll => {
-                    let config = cache.config_pool().find(&qstate.qid.parent);
                     // update the state based on eligibility.
-                    match qstate.poll_eligibility(storage, meta, config)?.as_compact() {
+                    match qstate.poll_eligibility(storage)?.as_compact() {
                         Eligibility::Eligible => {
                             *current_state = State::Ready;
                             return Ok(Some(handle));
@@ -172,12 +163,14 @@ impl EligibilityTracker {
                         }
                     }
                 }
-                State::Ready | State::BlockedOnCapacity => {
+                State::BlockedOn(_) => {
+                    self.ready_ring.pop_front();
+                }
+                State::Ready => {
                     return Ok(Some(handle));
                 }
                 State::Throttled { .. } | State::Scheduled { .. } => {
                     self.ready_ring.pop_front();
-                    continue;
                 }
             }
         }
@@ -196,134 +189,200 @@ impl EligibilityTracker {
         }
     }
 
+    // Places the vqueue back on the ready ring only if it was not already there.
+    // Sets the state to NeedsPoll
+    pub fn ensure_queue_needs_polling(&mut self, vqueue: VQueueHandle) -> bool {
+        if let Some(state) = self.states.entry(vqueue) {
+            match state {
+                Entry::Occupied(mut occupied_entry) => match occupied_entry.get() {
+                    State::BlockedOn(_resource) => {
+                        occupied_entry.insert(State::NeedsPoll);
+                        self.ready_ring.push_back(vqueue);
+                        true
+                    }
+                    State::NeedsPoll => false,
+                    State::Ready => {
+                        // it's already in the ready ring, but we need to adjust its state
+                        occupied_entry.insert(State::NeedsPoll);
+                        // It's already in the ready ring, we return false since we didn't add it
+                        false
+                    }
+                    State::Throttled { wake_up, .. } => {
+                        self.delayed_eligibility.remove(&wake_up.timer_key);
+                        occupied_entry.insert(State::NeedsPoll);
+                        self.ready_ring.push_back(vqueue);
+                        true
+                    }
+                    State::Scheduled { wake_up } => {
+                        self.delayed_eligibility.remove(&wake_up.timer_key);
+                        occupied_entry.insert(State::NeedsPoll);
+                        self.ready_ring.push_back(vqueue);
+                        true
+                    }
+                },
+                Entry::Vacant(vacant_entry) => {
+                    vacant_entry.insert(State::NeedsPoll);
+                    self.ready_ring.push_back(vqueue);
+                    true
+                }
+            }
+        } else {
+            // The vqueue handle was removed from cache. We are operating on stale
+            // information. Best to ignore it.
+            false
+        }
+    }
+
+    /// returns true if the scheduler should be woken up
+    pub fn wake_up_queue(&mut self, vqueue: VQueueHandle) -> bool {
+        if let Some(state) = self.states.entry(vqueue) {
+            match state {
+                Entry::Occupied(mut occupied_entry) => match occupied_entry.get() {
+                    State::BlockedOn(_resource) => {
+                        occupied_entry.insert(State::NeedsPoll);
+                        self.ready_ring.push_back(vqueue);
+                        true
+                    }
+                    _ => {
+                        // do nothing.
+                        false
+                    }
+                },
+                Entry::Vacant(vacant_entry) => {
+                    vacant_entry.insert(State::NeedsPoll);
+                    self.ready_ring.push_back(vqueue);
+                    true
+                }
+            }
+        } else {
+            // The vqueue handle was removed from cache. We are operating on stale
+            // information. Best to ignore it.
+            false
+        }
+    }
+
     /// Returns true if scheduler should be woken up
-    pub fn refresh_membership<S: VQueueStore>(
-        &mut self,
-        vqueue: &VQueueState<S>,
-        meta: &VQueueMeta,
-        config: &VQueueConfig,
-    ) -> bool {
-        let current_state = self.states.get(vqueue.handle).copied();
-        let eligibility = vqueue.check_eligibility(meta, config).as_compact();
+    ///
+    /// If the vqueue is blocked on a resource, this function will not touch it.
+    pub fn refresh_membership<S: VQueueStore>(&mut self, vqueue: &VQueueState<S>) -> bool {
+        let Some(current_state) = self.states.entry(vqueue.handle) else {
+            // the vqueue handle was removed from the original slot map.
+            return false;
+        };
 
-        match (current_state, eligibility) {
-            // --
-            // Cases where we have NO state, we set the state and register membership in
-            // ready_ring accordingly.
-            // --
-            //
-            // should make it eligible, add to ready ring.
-            (None, Eligibility::Eligible) => {
-                self.states.insert(vqueue.handle, State::NeedsPoll);
+        match current_state {
+            Entry::Vacant(vacant_entry) => {
+                vacant_entry.insert(State::NeedsPoll);
                 self.ready_ring.push_back(vqueue.handle);
-                // should wake up
                 true
             }
-            // add state, but not ready ring.
-            (None, Eligibility::EligibleAt(eligible_at)) => {
-                self.states.insert(
-                    vqueue.handle,
-                    State::Scheduled {
-                        wake_up: WakeUp {
-                            ts: eligible_at,
-                            timer_key: self.delayed_eligibility.insert(
-                                vqueue.handle,
-                                eligible_at.duration_since(SchedulerClock.now_millis()),
-                            ),
-                        },
-                    },
-                );
-                false
-            }
-            // it wasn't ready, and it's also not ready now, do nothing.
-            (None, Eligibility::NotEligible) => false,
-            // --
-            // Cases where we have state, we deduce the action from the state and eligibility
-            // and issue a corrective action
-            // --
-            (
-                // needs poll will configure the state anyway.
-                Some(State::NeedsPoll),
-                _,
-            ) => false,
-            (
-                Some(State::Ready | State::BlockedOnCapacity | State::Throttled { .. }),
-                Eligibility::Eligible,
-            ) => {
-                // we are already good. Note that if we were throttled, we continue to be throttled
-                // as throttling is only determined by the pop() operation and not calculated from
-                // eligibility. Additionally, we only throttle after we become eligible anyway.
-                false
-            }
-            // we were scheduled, but became available (now)
-            (Some(State::Scheduled { wake_up }), Eligibility::Eligible) => {
-                self.delayed_eligibility.remove(&wake_up.timer_key);
-                self.ready_ring.push_back(vqueue.handle);
-                self.states.insert(vqueue.handle, State::NeedsPoll);
-                true
-            }
+            Entry::Occupied(mut occupied_entry) => {
+                let eligibility = vqueue.check_eligibility().as_compact();
+                match (occupied_entry.get(), eligibility) {
+                    (State::NeedsPoll, _) => {
+                        // do nothing.
+                        false
+                    }
+                    (State::Ready, _) => {
+                        occupied_entry.insert(State::NeedsPoll);
+                        false
+                    }
+                    (State::Throttled { .. }, Eligibility::Eligible) => {
+                        // in throttling, we leave it as is. The new head would latch on.
+                        false
+                    }
+                    (State::Throttled { wake_up, .. }, Eligibility::EligibleAt(eligible_at_ts)) => {
+                        // We move away from throttled only if the new time point is _after_ the
+                        // end of the throttling period.
+                        if eligible_at_ts > wake_up.ts {
+                            // Reschedule the timer as the new eligibility is further in the future
+                            self.delayed_eligibility.reset(
+                                &wake_up.timer_key,
+                                eligible_at_ts.duration_since(SchedulerClock.now_millis()),
+                            );
+                            occupied_entry.insert(State::Scheduled {
+                                wake_up: WakeUp {
+                                    ts: eligible_at_ts,
+                                    timer_key: wake_up.timer_key,
+                                },
+                            });
+                        }
+                        // We didn't add it to the ready ring
+                        false
+                    }
+                    (State::Scheduled { wake_up }, Eligibility::NotEligible) => {
+                        // We should not really have a scenario where we land here. But if this
+                        // happens, we err on the safe side and switch to polling.
+                        self.delayed_eligibility.remove(&wake_up.timer_key);
+                        occupied_entry.insert(State::NeedsPoll);
+                        self.ready_ring.push_back(vqueue.handle);
+                        true
+                    }
+                    (State::Throttled { wake_up, .. }, Eligibility::NotEligible) => {
+                        // We should not really have a scenario where we land here. But if this
+                        // happens, we err on the safe side and switch to polling.
+                        self.delayed_eligibility.remove(&wake_up.timer_key);
+                        occupied_entry.insert(State::NeedsPoll);
+                        self.ready_ring.push_back(vqueue.handle);
+                        true
+                    }
+                    (State::Scheduled { wake_up }, Eligibility::Eligible) => {
+                        // wake up now
+                        self.delayed_eligibility.remove(&wake_up.timer_key);
+                        self.states.insert(vqueue.handle, State::NeedsPoll);
+                        self.ready_ring.push_back(vqueue.handle);
+                        true
+                    }
+                    (State::Scheduled { wake_up }, Eligibility::EligibleAt(eligible_at_ts)) => {
+                        // maybe change the wake up time
+                        if eligible_at_ts != wake_up.ts {
+                            self.delayed_eligibility.reset(
+                                &wake_up.timer_key,
+                                eligible_at_ts.duration_since(SchedulerClock.now_millis()),
+                            );
 
-            (
-                Some(State::Ready | State::BlockedOnCapacity),
-                Eligibility::EligibleAt(..) | Eligibility::NotEligible,
-            ) => {
-                // Switching to NeedsPoll to register the timer on the next poll
-                self.states.insert(vqueue.handle, State::NeedsPoll);
-                // no need to wake up because we were already ready
-                false
-            }
-            // We were scheduled as we should, but make sure that the time point is still the same
-            (Some(State::Scheduled { wake_up }), Eligibility::EligibleAt(eligible_at_ts)) => {
-                if eligible_at_ts != wake_up.ts {
-                    self.delayed_eligibility.reset(
-                        &wake_up.timer_key,
-                        eligible_at_ts.duration_since(SchedulerClock.now_millis()),
-                    );
-                    self.states.insert(
-                        vqueue.handle,
-                        State::Scheduled {
-                            wake_up: WakeUp {
-                                ts: eligible_at_ts,
-                                timer_key: wake_up.timer_key,
-                            },
-                        },
-                    );
+                            occupied_entry.insert(State::Scheduled {
+                                wake_up: WakeUp {
+                                    ts: eligible_at_ts,
+                                    timer_key: wake_up.timer_key,
+                                },
+                            });
+                        }
+                        false
+                    }
+                    (State::BlockedOn(_), _) => {
+                        // don't touch it.
+                        false
+                    }
                 }
-                false
             }
+        }
+    }
 
-            (Some(State::Throttled { wake_up, .. }), Eligibility::EligibleAt(eligible_at_ts)) => {
-                // We move away from throttled only if the new time point is _after_ the
-                // end of the throttling period.
-                if eligible_at_ts > wake_up.ts {
-                    // Reschedule the timer as the new eligibility is further in the future
-                    self.delayed_eligibility.reset(
-                        &wake_up.timer_key,
-                        eligible_at_ts.duration_since(SchedulerClock.now_millis()),
-                    );
-                    self.states.insert(
-                        vqueue.handle,
-                        State::Scheduled {
-                            wake_up: WakeUp {
-                                ts: eligible_at_ts,
-                                timer_key: wake_up.timer_key,
-                            },
-                        },
-                    );
-                }
-                false
-            }
+    pub fn find_blocking_resource(&self, handle: VQueueHandle) -> Option<&ResourceKind> {
+        let current_state = self.states.get(handle)?;
 
-            // If we were throttled/scheduled and we are confident that are no longer eligible,
-            // then we simply cancel the wake up timer
-            (
-                Some(State::Scheduled { wake_up } | State::Throttled { wake_up, .. }),
-                Eligibility::NotEligible,
-            ) => {
-                self.delayed_eligibility.remove(&wake_up.timer_key);
-                self.states.remove(vqueue.handle);
-                false
-            }
+        if let State::BlockedOn(resource) = current_state {
+            Some(resource)
+        } else {
+            None
+        }
+    }
+
+    /// Places the vqueue back on the ready ring only if it was blocked on resources
+    pub fn mark_queue_unblocked(&mut self, handle: VQueueHandle) -> Option<ResourceKind> {
+        let current_state = self.states.get_mut(handle)?;
+
+        if matches!(current_state, State::BlockedOn(_)) {
+            let blocked_on = std::mem::replace(current_state, State::NeedsPoll);
+            self.ready_ring.push_back(handle);
+            let State::BlockedOn(resource) = blocked_on else {
+                unreachable!();
+            };
+
+            Some(resource)
+        } else {
+            None
         }
     }
 
@@ -343,25 +402,25 @@ impl EligibilityTracker {
         }
     }
 
-    pub fn front_blocked(&mut self) {
+    pub fn front_blocked(&mut self, resource: ResourceKind) {
         if let Some(handle) = self.ready_ring.front()
             && let Some(state) = self.states.get_mut(*handle)
         {
-            *state = State::BlockedOnCapacity;
+            *state = State::BlockedOn(resource);
         }
     }
 
     pub fn front_throttled(&mut self, delay: Duration, scope: ThrottleScope) {
-        if let Some(handle) = self.ready_ring.front() {
+        if let Some(handle) = self.ready_ring.pop_front() {
             let wake_up_ts = SchedulerClock.now_millis() + delay;
 
             let old = self.states.insert(
-                *handle,
+                handle,
                 State::Throttled {
                     scope,
                     wake_up: WakeUp {
                         ts: wake_up_ts,
-                        timer_key: self.delayed_eligibility.insert(*handle, delay),
+                        timer_key: self.delayed_eligibility.insert(handle, delay),
                     },
                 },
             );

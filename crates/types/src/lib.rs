@@ -59,6 +59,7 @@ pub mod timer;
 pub mod vqueue;
 
 pub use id_util::IdResourceType;
+pub use identifiers::PartitionedResourceId;
 pub use locking::*;
 pub use node_id::*;
 use restate_encoding::BilrostNewType;

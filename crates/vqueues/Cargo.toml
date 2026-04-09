@@ -7,23 +7,31 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = []
+test-util = []
+
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
 restate-clock = { workspace = true }
 restate-futures-util = { workspace = true }
+restate-limiter = { workspace = true }
 restate-memory = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-serde-util = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-types = { workspace = true }
+restate-util-string = { workspace = true }
 
 bilrost = { workspace = true, features = ["smallvec"] }
-derive_more = { workspace = true, features = ["debug", "into_iterator", "is_variant"] }
+derive_more = { workspace = true, features = ["debug", "is_variant"] }
 gardal = { workspace = true, features = ["tokio"] }
 hashbrown = { workspace = true }
+itertools = { workspace = true }
 metrics = { workspace = true }
 pin-project = { workspace = true }
+sha2 = { workspace = true }
 slotmap = { workspace = true }
 smallvec = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
