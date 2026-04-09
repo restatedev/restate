@@ -141,6 +141,7 @@ pub enum TableKind {
     JournalEvent,
     Promise,
     VQueue,
+    Locks,
 }
 
 impl TableKind {
@@ -170,6 +171,7 @@ impl TableKind {
                 KeyKind::VQueueActive,
                 KeyKind::VQueueEntryState,
             ],
+            Self::Locks => &[KeyKind::Lock],
         }
     }
 
