@@ -245,7 +245,7 @@ where
         let value = EntryValue {
             id: entry_id.clone(),
             original_run_at: run_at,
-            stats: EntryStatistics::new(created_at),
+            stats: EntryStatistics::new(created_at, run_at),
             metadata: metadata.into(),
         };
 
@@ -255,8 +255,8 @@ where
             created_at,
             metadata::Action::Move {
                 prev_stage: None,
-                next_stage: Some(Stage::Inbox),
-                entry_stats: value.stats.clone(),
+                next_stage: Stage::Inbox,
+                metrics: Self::build_move_metrics(&value.stats),
             },
         );
 
@@ -332,24 +332,17 @@ where
             at,
             metadata::Action::Move {
                 prev_stage: Some(Stage::Inbox),
-                next_stage: Some(Stage::Run),
-                // use the stats _before_ updating it so that we can capture last_transitioned
-                // correctly.
-                entry_stats: value.stats.clone(),
+                next_stage: Stage::Run,
+                // Use the stats before updating the entry to measure stage exit durations and
+                // first-run wait correctly.
+                metrics: Self::build_move_metrics(&value.stats),
             },
         );
 
         let (was_active_before, is_active_now) = meta.apply_update(&update)?;
         self.storage.update_vqueue(meta.vqueue_id(), &update);
 
-        // Bump the number of attempts to record this run.
-        value.stats.num_attempts += 1;
-        // update the timestamps
-        value.stats.transitioned_at = Some(at);
-        if value.stats.first_attempt_at.is_none() {
-            value.stats.first_attempt_at = Some(at);
-        }
-        value.stats.latest_attempt_at = Some(at);
+        Self::mark_run_attempt(&mut value.stats, at);
 
         // Update entry metadata if we were asked so.
         // if let Some(new_metadata) = action.new_metadata {
@@ -430,7 +423,7 @@ where
     ) -> Result<bool, StorageError> {
         let meta = self.cache.get_mut(self.cache_key).unwrap();
 
-        let Some(value) = self
+        let Some(mut value) = self
             .storage
             .pop_inbox_entry(meta.vqueue_id(), Stage::Park, key)?
         else {
@@ -443,8 +436,8 @@ where
             at,
             metadata::Action::Move {
                 prev_stage: Some(Stage::Park),
-                next_stage: Some(Stage::Inbox),
-                entry_stats: value.stats.clone(),
+                next_stage: Stage::Inbox,
+                metrics: Self::build_move_metrics(&value.stats),
             },
         );
 
@@ -462,6 +455,8 @@ where
             // creation time and not their visible_at time.
             modified_key.set_run_at(value.original_run_at);
         }
+
+        Self::mark_transition(&mut value.stats, at);
 
         // We add the entry back into the waiting inbox
         self.storage
@@ -525,8 +520,8 @@ where
             at,
             metadata::Action::Move {
                 prev_stage: Some(prev_stage),
-                next_stage: Some(Stage::Park),
-                entry_stats: value.stats.clone(),
+                next_stage: Stage::Park,
+                metrics: Self::build_move_metrics(&value.stats),
             },
         );
 
@@ -548,8 +543,7 @@ where
             unreachable!("Cannot remove an item from a dormant vqueue");
         }
 
-        // todo: update the timestamps
-        value.stats.num_parks += 1;
+        Self::mark_park(&mut value.stats, at);
 
         self.storage
             .put_inbox_entry(meta.vqueue_id(), Stage::Park, key, &value);
@@ -586,8 +580,8 @@ where
             at,
             metadata::Action::Move {
                 prev_stage: Some(action.prev_stage),
-                next_stage: Some(Stage::Inbox),
-                entry_stats: value.stats.clone(),
+                next_stage: Stage::Inbox,
+                metrics: Self::build_move_metrics(&value.stats),
             },
         );
 
@@ -605,8 +599,10 @@ where
             modified_key.set_run_at(run_at);
         }
 
-        // todo: update the timestamps
-        value.stats.num_yields += 1;
+        Self::mark_transition(&mut value.stats, at);
+        if matches!(action.prev_stage, Stage::Run) {
+            value.stats.num_yields = value.stats.num_yields.saturating_add(1);
+        }
 
         // We add the entry back into the waiting inbox
         self.storage
@@ -651,10 +647,11 @@ where
         at: UniqueTimestamp,
         prev_stage: Stage,
         key: &EntryKey,
+        // todo: add a way to specify the "deletion time" for this item.
     ) -> Result<bool, StorageError> {
         let meta = self.cache.get_mut(self.cache_key).unwrap();
         // Remove from the current stage
-        let Some(value) = self
+        let Some(mut value) = self
             .storage
             .pop_inbox_entry(meta.vqueue_id(), prev_stage, key)?
         else {
@@ -672,20 +669,17 @@ where
             "[end] ending vqueue entry: {}", value.id.display(meta.vqueue_id().partition_key())
         );
 
-        // todo(asoli): Here we delete the item even if we never had it. This is currently needed
-        // only for state mutation, but we pay the tombstone cost for all types.
-        self.storage
-            .delete_item(meta.vqueue_id(), value.stats.created_at, &value.id);
-
         let mut event = VQueueEvent::new(meta.vqueue_id().clone());
         let update = metadata::Update::new(
             at,
             metadata::Action::Move {
                 prev_stage: Some(prev_stage),
-                next_stage: None,
-                entry_stats: value.stats.clone(),
+                next_stage: Stage::Finished,
+                metrics: Self::build_move_metrics(&value.stats),
             },
         );
+
+        let mut modified_key = *key;
 
         if key.has_lock()
             && let Some(lock_name) = meta.meta().lock_name()
@@ -695,12 +689,24 @@ where
                 scope: meta.meta().scope().clone(),
                 lock_name: lock_name.clone(),
             });
+            modified_key.release_lock();
         }
 
-        // todo(asoli): We need to discuss whether entry_state should outlive the item's
-        // lifecycle in the queue or not. For now, we'll remove it.
+        // Move the entry to Finished stage
+        // for future: Use this to set the deletion time.
+        modified_key.set_run_at(RunAt::MAX);
+
+        Self::mark_transition(&mut value.stats, at);
         self.storage
-            .delete_vqueue_entry_state(meta.vqueue_id().partition_key(), &value.id);
+            .put_inbox_entry(meta.vqueue_id(), Stage::Finished, &modified_key, &value);
+
+        self.storage.put_vqueue_entry_state(
+            meta.vqueue_id(),
+            &value.id,
+            Stage::Finished,
+            &modified_key,
+            (),
+        );
 
         // Update cache
         let (was_active_before, is_active_now) = meta.apply_update(&update)?;
@@ -722,6 +728,62 @@ where
             collector.push(A::from(event));
         }
 
+        // We currently fake the transition from finished -> deleted by emitting another transition
+        // immediately after moving to Stage::Finish. In future changes, this will be separated
+        // into separate step.
+        //
+        // The end result would be that a finished vqueue item would expire after some time
+        // and be deleted from the vqueue (or moved to archival key-prefix).
+        let update = metadata::Update::new(
+            at,
+            metadata::Action::RemoveEntries {
+                stage: Stage::Finished,
+                count: 1,
+            },
+        );
+
+        self.storage
+            .delete_vqueue_entry_state(meta.vqueue_id().partition_key(), &value.id);
+        // todo(asoli): Here we delete the item even if we never had it. This is currently needed
+        // only for state mutation, but we pay the tombstone cost for all types.
+        self.storage
+            .delete_item(meta.vqueue_id(), value.stats.created_at, &value.id);
+        self.storage
+            .delete_inbox_entry(meta.vqueue_id(), Stage::Finished, &modified_key);
+        // update cache
+        let _ = meta.apply_update(&update)?;
+        self.storage.update_vqueue(meta.vqueue_id(), &update);
+
         Ok(true)
+    }
+
+    #[inline]
+    fn build_move_metrics(stats: &EntryStatistics) -> metadata::MoveMetrics {
+        metadata::MoveMetrics {
+            last_transition_at: stats.transitioned_at,
+            has_started: stats.num_attempts > 0,
+            first_runnable_at: stats.first_runnable_at,
+        }
+    }
+
+    #[inline]
+    fn mark_transition(stats: &mut EntryStatistics, at: UniqueTimestamp) {
+        stats.transitioned_at = at;
+    }
+
+    #[inline]
+    fn mark_run_attempt(stats: &mut EntryStatistics, at: UniqueTimestamp) {
+        stats.num_attempts = stats.num_attempts.saturating_add(1);
+        if stats.first_attempt_at.is_none() {
+            stats.first_attempt_at = Some(at);
+        }
+        stats.latest_attempt_at = Some(at);
+        Self::mark_transition(stats, at);
+    }
+
+    #[inline]
+    fn mark_park(stats: &mut EntryStatistics, at: UniqueTimestamp) {
+        stats.num_parks = stats.num_parks.saturating_add(1);
+        Self::mark_transition(stats, at);
     }
 }

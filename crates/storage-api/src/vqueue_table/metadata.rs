@@ -17,37 +17,67 @@ use restate_types::clock::UniqueTimestamp;
 use restate_types::{LockName, Scope};
 use restate_util_string::ReString;
 
-use super::{EntryStatistics, Stage};
+use super::Stage;
 
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct VQueueStatistics {
+    /// Creation time of this vqueue metadata record.
     #[bilrost(tag(1))]
     pub(crate) created_at: MillisSinceEpoch,
-    /// The time spend in the queue before the first attempt to run. Measured by EMA of time
-    /// from initial scheduled run time to first "dequeue/start".
+    /// EMA of first-attempt wait time.
+    ///
+    /// For an entry's first transition to `Run`, this tracks
+    /// `run_started_at - first_runnable_at`, where
+    /// `first_runnable_at = max(created_at, original_run_at)`.
+    ///
+    /// This indicates how long brand new work waits before it gets its first execution slot.
     #[bilrost(tag(2))]
-    pub(crate) avg_queue_duration_ms: u32,
-    /// Timestamp of the last successful enqueue.
+    pub(crate) avg_queue_duration_ms: u64,
+    /// Last timestamp an entry was moved into `Inbox`.
+    ///
+    /// This includes initial enqueue as well as transitions that re-enqueue entries
+    /// (`Park -> Inbox` and `Run/Inbox -> Inbox`).
     #[bilrost(tag(3))]
     pub(crate) last_enqueued_at: Option<MillisSinceEpoch>,
-    /// The timestamp of the last start of a new entry.
+    /// Last timestamp an entry had its first transition to `Run`.
+    ///
+    /// This marks when a new entry starts for the first time.
     #[bilrost(tag(4))]
     pub(crate) last_start_at: Option<MillisSinceEpoch>,
+    /// Last timestamp an entry completed (`next_stage = Archive`).
     #[bilrost(tag(5))]
     pub(crate) last_completion_at: Option<MillisSinceEpoch>,
-    /// The timestamp of the last run attempt of a previously started entry.
+    /// Last timestamp an entry transitioned to `Run`.
+    ///
+    /// This includes both first starts and retries/resumes.
     #[bilrost(tag(6))]
     pub(crate) last_attempt_at: Option<MillisSinceEpoch>,
-    //
-    // # Counters
-    //
-    /// The number of entries waiting to be dequeued. The vector index implies the priority
+    /// Number of entries currently in `Inbox`.
     #[bilrost(tag(7))]
     pub(crate) num_inbox: u64,
+    /// Number of entries currently in `Park`.
     #[bilrost(tag(8))]
     pub(crate) num_parked: u64,
+    /// Number of entries currently in `Run`.
     #[bilrost(tag(9))]
     pub(crate) num_running: u64,
+    /// How many entries are in the `Finish` stage. When deleting entries from
+    /// the `Finish` stage, we should decrement this counter. The vqueue becomes
+    /// obsolete when it's completely empty (all counters are zero).
+    #[bilrost(tag(10))]
+    pub(crate) num_finished: u64,
+    /// EMA of how long entries stay in `Inbox` before transitioning out of it.
+    #[bilrost(tag(11))]
+    pub(crate) avg_inbox_duration_ms: u64,
+    /// EMA of how long entries stay in `Run` before transitioning out of it.
+    #[bilrost(tag(12))]
+    pub(crate) avg_run_duration_ms: u64,
+    /// EMA of how long entries stay in `Park` before transitioning out of it.
+    #[bilrost(tag(13))]
+    pub(crate) avg_park_duration_ms: u64,
+    /// EMA of end-to-end entry lifetime from first-runnable time to completion.
+    #[bilrost(tag(14))]
+    pub(crate) avg_end_to_end_duration_ms: u64,
 }
 
 impl VQueueStatistics {
@@ -62,18 +92,106 @@ impl VQueueStatistics {
             num_inbox: 0,
             num_parked: 0,
             num_running: 0,
+            num_finished: 0,
+            avg_inbox_duration_ms: 0,
+            avg_run_duration_ms: 0,
+            avg_park_duration_ms: 0,
+            avg_end_to_end_duration_ms: 0,
         }
     }
 
-    #[allow(dead_code)]
     fn update_avg_queue_duration(&mut self, latency_ms: u64) {
-        let new_avg: u64 = if self.avg_queue_duration_ms == 0 {
-            latency_ms
+        self.avg_queue_duration_ms = Self::ema(self.avg_queue_duration_ms, latency_ms);
+    }
+
+    fn update_avg_inbox_duration(&mut self, latency_ms: u64) {
+        self.avg_inbox_duration_ms = Self::ema(self.avg_inbox_duration_ms, latency_ms);
+    }
+
+    fn update_avg_run_duration(&mut self, latency_ms: u64) {
+        self.avg_run_duration_ms = Self::ema(self.avg_run_duration_ms, latency_ms);
+    }
+
+    fn update_avg_park_duration(&mut self, latency_ms: u64) {
+        self.avg_park_duration_ms = Self::ema(self.avg_park_duration_ms, latency_ms);
+    }
+
+    fn update_avg_end_to_end_duration(&mut self, latency_ms: u64) {
+        self.avg_end_to_end_duration_ms = Self::ema(self.avg_end_to_end_duration_ms, latency_ms);
+    }
+
+    fn ema(previous: u64, sample_ms: u64) -> u64 {
+        if previous == 0 {
+            sample_ms
         } else {
-            // exponential moving average
-            ((self.avg_queue_duration_ms as f64 * 0.95) + (latency_ms as f64 * 0.05)).ceil() as u64
-        };
-        self.avg_queue_duration_ms = u32::try_from(new_avg).unwrap_or(u32::MAX);
+            // Exponential moving average with alpha=0.05.
+            ((previous as f64 * 0.95) + (sample_ms as f64 * 0.05)).ceil() as u64
+        }
+    }
+
+    fn record_stage_exit(&mut self, stage: Stage, stage_dwell_ms: u64) {
+        match stage {
+            Stage::Unknown | Stage::Finished => {}
+            Stage::Inbox => self.update_avg_inbox_duration(stage_dwell_ms),
+            Stage::Run => self.update_avg_run_duration(stage_dwell_ms),
+            Stage::Park => self.update_avg_park_duration(stage_dwell_ms),
+        }
+    }
+
+    pub const fn created_at(&self) -> MillisSinceEpoch {
+        self.created_at
+    }
+
+    pub const fn avg_queue_duration_ms(&self) -> u64 {
+        self.avg_queue_duration_ms
+    }
+
+    pub const fn avg_inbox_duration_ms(&self) -> u64 {
+        self.avg_inbox_duration_ms
+    }
+
+    pub const fn avg_run_duration_ms(&self) -> u64 {
+        self.avg_run_duration_ms
+    }
+
+    pub const fn avg_park_duration_ms(&self) -> u64 {
+        self.avg_park_duration_ms
+    }
+
+    pub const fn avg_end_to_end_duration_ms(&self) -> u64 {
+        self.avg_end_to_end_duration_ms
+    }
+
+    pub const fn last_enqueued_at(&self) -> Option<MillisSinceEpoch> {
+        self.last_enqueued_at
+    }
+
+    pub const fn last_start_at(&self) -> Option<MillisSinceEpoch> {
+        self.last_start_at
+    }
+
+    pub const fn last_attempt_at(&self) -> Option<MillisSinceEpoch> {
+        self.last_attempt_at
+    }
+
+    pub const fn last_completion_at(&self) -> Option<MillisSinceEpoch> {
+        self.last_completion_at
+    }
+
+    pub const fn num_inbox(&self) -> u64 {
+        self.num_inbox
+    }
+
+    pub const fn num_parked(&self) -> u64 {
+        self.num_parked
+    }
+
+    pub const fn num_running(&self) -> u64 {
+        self.num_running
+    }
+
+    pub const fn num_archived(&self) -> u64 {
+        self.num_finished
     }
 }
 
@@ -143,20 +261,14 @@ impl VQueueMeta {
         self.stats.num_inbox
     }
 
-    fn increment_stage(&mut self, stage: Stage) {
+    fn decrement_stage(&mut self, stage: Stage, count: u64) {
         match stage {
-            Stage::Inbox => self.stats.num_inbox += 1,
-            Stage::Park => self.stats.num_parked += 1,
-            Stage::Run => self.stats.num_running += 1,
-            _ => {}
-        }
-    }
-
-    fn decrement_stage(&mut self, stage: Stage) {
-        match stage {
-            Stage::Inbox => self.stats.num_inbox -= 1,
-            Stage::Park => self.stats.num_parked -= 1,
-            Stage::Run => self.stats.num_running -= 1,
+            Stage::Inbox => self.stats.num_inbox = self.stats.num_inbox.saturating_sub(count),
+            Stage::Park => self.stats.num_parked = self.stats.num_parked.saturating_sub(count),
+            Stage::Run => self.stats.num_running = self.stats.num_running.saturating_sub(count),
+            Stage::Finished => {
+                self.stats.num_finished = self.stats.num_finished.saturating_sub(count)
+            }
             _ => {}
         }
     }
@@ -198,6 +310,7 @@ impl VQueueMeta {
 
     pub fn apply_update(&mut self, update: &Update) -> anyhow::Result<()> {
         let now = update.ts;
+        let now_ms = now.to_unix_millis();
         // Note to future authors: This match needs to continue to work even when
         // processing old/deprecated/removed actions. Therefore, removed actions should
         // not be removed from the enum to avoid falling into the Unknown case.
@@ -211,41 +324,49 @@ impl VQueueMeta {
             Action::ResumeVQueue {} => {
                 self.is_paused = false;
             }
+            Action::RemoveEntries { stage, count } => {
+                self.decrement_stage(stage, count);
+            }
             Action::Move {
-                prev_stage: previous_stage,
-                next_stage: new_stage,
-                ref entry_stats,
+                prev_stage,
+                next_stage,
+                ref metrics,
             } => {
-                if let Some(previous_stage) = previous_stage {
-                    self.decrement_stage(previous_stage);
-                }
-                if let Some(new_stage) = new_stage {
-                    self.increment_stage(new_stage);
-                    // todo: update EMAs and aggregated stats based on entry_stats;
-                    match new_stage {
-                        Stage::Unknown => {}
-                        Stage::Inbox => self.stats.last_enqueued_at = Some(now.to_unix_millis()),
-                        Stage::Run if entry_stats.num_attempts == 0 => {
-                            let ts = Some(now.to_unix_millis());
-                            self.stats.last_start_at = ts;
-                            self.stats.last_attempt_at = ts;
-                        }
-                        Stage::Run => self.stats.last_attempt_at = Some(now.to_unix_millis()),
-                        Stage::Park => {
-                            self.stats.last_start_at = Some(now.to_unix_millis());
-                        }
-                    }
-                } else {
-                    self.stats.last_completion_at = Some(now.to_unix_millis());
+                if let Some(previous_stage) = prev_stage {
+                    let stage_dwell_ms =
+                        now_ms.saturating_sub_ms(metrics.last_transition_at.to_unix_millis());
+                    self.stats.record_stage_exit(previous_stage, stage_dwell_ms);
+                    self.decrement_stage(previous_stage, 1);
                 }
 
-                // disabled until later commit to implement stats aggregation
-                // if is_new && let VisibleAt::At(visible_since) = visible_at {
-                //     // Only measure queue latency for new items and only consider the item
-                //     // queuing from the moment it became visible, not the creation ts.
-                //     let latency_ms = now.to_unix_millis().saturating_sub_ms(visible_since);
-                //     self.stats.update_avg_queue_duration(latency_ms);
-                // }
+                match next_stage {
+                    Stage::Unknown => {}
+                    Stage::Inbox => {
+                        self.stats.num_inbox += 1;
+                        self.stats.last_enqueued_at = Some(now_ms);
+                    }
+                    Stage::Run => {
+                        self.stats.num_running += 1;
+                        self.stats.last_attempt_at = Some(now_ms);
+
+                        if !metrics.has_started {
+                            let first_wait_ms = now_ms.saturating_sub_ms(metrics.first_runnable_at);
+                            self.stats.update_avg_queue_duration(first_wait_ms);
+
+                            let ts = Some(now_ms);
+                            self.stats.last_start_at = ts;
+                        }
+                    }
+                    Stage::Park => {
+                        self.stats.num_parked += 1;
+                    }
+                    Stage::Finished => {
+                        self.stats.num_finished += 1;
+                        self.stats.last_completion_at = Some(now_ms);
+                        let end_to_end_ms = now_ms.saturating_sub_ms(metrics.first_runnable_at);
+                        self.stats.update_avg_end_to_end_duration(end_to_end_ms);
+                    }
+                }
             }
         }
         Ok(())
@@ -260,6 +381,19 @@ impl VQueueMeta {
 pub struct VQueueMetaUpdates {
     #[bilrost(1)]
     pub updates: SmallVec<[Update; VQueueMetaUpdates::INLINED_UPDATES]>,
+}
+
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct MoveMetrics {
+    /// Timestamp of the entry's previous stage transition.
+    #[bilrost(tag(1))]
+    pub last_transition_at: UniqueTimestamp,
+    /// Whether the entry has started at least once before this transition.
+    #[bilrost(tag(2))]
+    pub has_started: bool,
+    /// Earliest timestamp at which the entry can realistically start.
+    #[bilrost(tag(3))]
+    pub first_runnable_at: MillisSinceEpoch,
 }
 
 impl VQueueMetaUpdates {
@@ -305,25 +439,29 @@ pub enum Action {
     Unknown,
     /// An item has moved from one stage to another
     ///
-    /// if previous_stage is Some, the item is new.
-    /// if new_stage is None, the item is being removed
+    /// if previous_stage is None, the item is new.
+    /// if new_stage is Archive, the item has completed.
     #[bilrost(tag(2), message)]
     Move {
         prev_stage: Option<Stage>,
-        next_stage: Option<Stage>,
-        entry_stats: EntryStatistics,
+        /// When next_stage is None, the item is removed from the vqueue.
+        next_stage: Stage,
+        metrics: MoveMetrics,
     },
     #[bilrost(tag(3), message)]
     PauseVQueue {},
     #[bilrost(tag(4), message)]
     ResumeVQueue {},
+    #[bilrost(tag(5), message)]
+    /// An item or (more) have been removed from the (stage)
+    RemoveEntries { stage: Stage, count: u64 },
 }
 
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct Update {
     #[bilrost(tag(1))]
     pub(super) ts: UniqueTimestamp,
-    #[bilrost(oneof(2, 3, 4))]
+    #[bilrost(oneof(2, 3, 4, 5))]
     pub(super) action: Action,
 }
 
@@ -331,5 +469,173 @@ impl Update {
     #[inline]
     pub fn new(ts: UniqueTimestamp, action: Action) -> Self {
         Self { ts, action }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BASE_TS_MS: u64 = 1_744_000_000_000;
+
+    fn ts(unix_ms: u64) -> UniqueTimestamp {
+        UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::new(unix_ms))
+    }
+
+    fn metrics(
+        last_transition_at_ms: u64,
+        first_runnable_at_ms: u64,
+        has_started: bool,
+    ) -> MoveMetrics {
+        MoveMetrics {
+            last_transition_at: ts(last_transition_at_ms),
+            has_started,
+            first_runnable_at: MillisSinceEpoch::new(first_runnable_at_ms),
+        }
+    }
+
+    #[test]
+    fn first_run_wait_uses_created_at_when_original_run_at_is_in_the_past() {
+        let mut meta = VQueueMeta::new(None, LimitKey::None, None);
+        let created_at = ts(BASE_TS_MS + 10_000);
+
+        meta.apply_update(&Update::new(
+            created_at,
+            Action::Move {
+                prev_stage: None,
+                next_stage: Stage::Inbox,
+                metrics: metrics(BASE_TS_MS + 10_000, BASE_TS_MS + 10_000, false),
+            },
+        ))
+        .unwrap();
+
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 12_000),
+            Action::Move {
+                prev_stage: Some(Stage::Inbox),
+                next_stage: Stage::Run,
+                metrics: metrics(BASE_TS_MS + 10_000, BASE_TS_MS + 10_000, false),
+            },
+        ))
+        .unwrap();
+
+        assert_eq!(meta.stats.avg_queue_duration_ms, 2_000);
+        assert_eq!(
+            meta.stats.last_start_at,
+            Some(MillisSinceEpoch::new(BASE_TS_MS + 12_000))
+        );
+        assert_eq!(
+            meta.stats.last_attempt_at,
+            Some(MillisSinceEpoch::new(BASE_TS_MS + 12_000))
+        );
+
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 13_000),
+            Action::Move {
+                prev_stage: Some(Stage::Run),
+                next_stage: Stage::Run,
+                metrics: metrics(BASE_TS_MS + 12_000, BASE_TS_MS + 10_000, true),
+            },
+        ))
+        .unwrap();
+
+        assert_eq!(meta.stats.avg_queue_duration_ms, 2_000);
+    }
+
+    #[test]
+    fn first_run_wait_uses_original_run_at_when_it_is_in_the_future() {
+        let mut meta = VQueueMeta::new(None, LimitKey::None, None);
+        let created_at = ts(BASE_TS_MS + 10_000);
+
+        meta.apply_update(&Update::new(
+            created_at,
+            Action::Move {
+                prev_stage: None,
+                next_stage: Stage::Inbox,
+                metrics: metrics(BASE_TS_MS + 10_000, BASE_TS_MS + 12_000, false),
+            },
+        ))
+        .unwrap();
+
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 14_000),
+            Action::Move {
+                prev_stage: Some(Stage::Inbox),
+                next_stage: Stage::Run,
+                metrics: metrics(BASE_TS_MS + 10_000, BASE_TS_MS + 12_000, false),
+            },
+        ))
+        .unwrap();
+
+        assert_eq!(meta.stats.avg_queue_duration_ms, 2_000);
+    }
+
+    #[test]
+    fn stage_and_end_to_end_emas_are_updated_on_stage_exits() {
+        let mut meta = VQueueMeta::new(None, LimitKey::None, None);
+        let created_at = ts(BASE_TS_MS + 1_000);
+
+        meta.apply_update(&Update::new(
+            created_at,
+            Action::Move {
+                prev_stage: None,
+                next_stage: Stage::Inbox,
+                metrics: metrics(BASE_TS_MS + 1_000, BASE_TS_MS + 2_000, false),
+            },
+        ))
+        .unwrap();
+
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 2_000),
+            Action::Move {
+                prev_stage: Some(Stage::Inbox),
+                next_stage: Stage::Run,
+                metrics: metrics(BASE_TS_MS + 1_000, BASE_TS_MS + 2_000, false),
+            },
+        ))
+        .unwrap();
+
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 5_000),
+            Action::Move {
+                prev_stage: Some(Stage::Run),
+                next_stage: Stage::Park,
+                metrics: metrics(BASE_TS_MS + 2_000, BASE_TS_MS + 2_000, true),
+            },
+        ))
+        .unwrap();
+
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 9_000),
+            Action::Move {
+                prev_stage: Some(Stage::Park),
+                next_stage: Stage::Inbox,
+                metrics: metrics(BASE_TS_MS + 5_000, BASE_TS_MS + 2_000, true),
+            },
+        ))
+        .unwrap();
+
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 15_000),
+            Action::Move {
+                prev_stage: Some(Stage::Inbox),
+                next_stage: Stage::Finished,
+                metrics: metrics(BASE_TS_MS + 9_000, BASE_TS_MS + 2_000, true),
+            },
+        ))
+        .unwrap();
+
+        assert_eq!(meta.stats.avg_inbox_duration_ms, 1_250);
+        assert_eq!(meta.stats.avg_run_duration_ms, 3_000);
+        assert_eq!(meta.stats.avg_park_duration_ms, 4_000);
+        assert_eq!(meta.stats.avg_end_to_end_duration_ms, 13_000);
+
+        assert_eq!(meta.stats.num_inbox, 0);
+        assert_eq!(meta.stats.num_running, 0);
+        assert_eq!(meta.stats.num_parked, 0);
+        assert_eq!(
+            meta.stats.last_completion_at,
+            Some(MillisSinceEpoch::new(BASE_TS_MS + 15_000))
+        );
     }
 }

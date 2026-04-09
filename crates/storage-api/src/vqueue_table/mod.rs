@@ -38,6 +38,8 @@ const _: () = {
 };
 
 impl RunAt {
+    pub const MAX: Self = Self(RoughTimestamp::MAX);
+
     pub const fn new(millis: MillisSinceEpoch) -> Self {
         Self(RoughTimestamp::from_unix_millis_clamped(millis))
     }

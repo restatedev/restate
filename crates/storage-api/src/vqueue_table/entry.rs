@@ -14,6 +14,7 @@ use std::num::NonZeroU16;
 use bytes::{Buf, BufMut};
 
 use restate_clock::UniqueTimestamp;
+use restate_clock::time::MillisSinceEpoch;
 use restate_types::ServiceName;
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, StateMutationId};
 use restate_types::vqueue::VQueueId;
@@ -245,11 +246,14 @@ impl std::fmt::Display for EntryKey {
 
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct EntryStatistics {
+    /// Creation timestamp of the entry.
     #[bilrost(tag(1))]
     pub created_at: UniqueTimestamp,
-    /// Timestamp of the last stage transition
+    /// Timestamp of the last stage transition.
+    ///
+    /// This is always initialized to `created_at` and updated on every stage move.
     #[bilrost(tag(2))]
-    pub transitioned_at: Option<UniqueTimestamp>,
+    pub transitioned_at: UniqueTimestamp,
     /// How many times did we move this entry to the run queue?
     /// '0` means that it's never been started.
     #[bilrost(tag(3))]
@@ -264,6 +268,15 @@ pub struct EntryStatistics {
     /// Timestamp of the last attempt to run this entry
     #[bilrost(tag(7))]
     pub latest_attempt_at: Option<UniqueTimestamp>,
+    /// Earliest timestamp at which the first run can realistically start.
+    ///
+    /// This is computed once at enqueue-time as
+    /// `max(created_at, original_run_at)`.
+    ///
+    /// We clamp to `created_at` when `original_run_at` is in the past to avoid
+    /// inflating the first-attempt wait time.
+    #[bilrost(tag(8))]
+    pub first_runnable_at: MillisSinceEpoch,
     // todo:
     // pub time_spent_running: u32,
     // pub time_spent_parked: u32,
@@ -273,15 +286,24 @@ pub struct EntryStatistics {
 }
 
 impl EntryStatistics {
-    pub fn new(created_at: UniqueTimestamp) -> Self {
+    pub fn new(created_at: UniqueTimestamp, original_run_at: RunAt) -> Self {
+        let created_at_ms = created_at.to_unix_millis();
+        let original_run_at_ms = original_run_at.as_millis();
+        let first_runnable_at = if original_run_at_ms < created_at_ms {
+            created_at_ms
+        } else {
+            original_run_at_ms
+        };
+
         Self {
             created_at,
-            transitioned_at: Some(created_at),
+            transitioned_at: created_at,
             num_attempts: 0,
             num_parks: 0,
             num_yields: 0,
             first_attempt_at: None,
             latest_attempt_at: None,
+            first_runnable_at,
         }
     }
 }
