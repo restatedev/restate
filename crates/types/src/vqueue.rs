@@ -82,6 +82,7 @@ impl VQueueId {
         Self(raw)
     }
 
+    // 25 bytes
     pub const fn serialized_length_fixed() -> usize {
         std::mem::size_of::<PartitionKey>() + 1 + DIGEST_LEN
     }
@@ -206,80 +207,12 @@ impl std::fmt::Display for VQueueId {
     }
 }
 
-#[derive(
-    Debug,
-    Default,
-    Clone,
-    Copy,
-    Ord,
-    PartialOrd,
-    PartialEq,
-    Eq,
-    Hash,
-    bilrost::Enumeration,
-    strum::FromRepr,
-)]
-#[repr(u8)]
-pub enum EffectivePriority {
-    /// Exclusively for wake-ups that hold tokens already. All other wake-ups will
-    /// continue to run with their original priority.
-    ///
-    /// This is crucial to ensure that when we release our token back to the pool that it gets
-    /// picked up again by the scheduler and we can re-acquire it.
-    TokenHeld = 0, // Resuming with held concurrency token
-    /// High priority
-    Started = 1, // Resuming (started before) with no concurrency token
-    /// System high priority (new)
-    System = 2,
-    /// User-defined high-priority
-    UserHigh = 3,
-    /// User-defined low priority
-    #[default]
-    UserDefault = 4,
-}
-
-impl EffectivePriority {
-    pub const NUM_PRIORITIES: usize = 5;
-
-    /// Whether this entry has never been started or not
-    pub fn is_new(&self) -> bool {
-        *self >= EffectivePriority::System
-    }
-
-    pub fn token_held(&self) -> bool {
-        *self == EffectivePriority::TokenHeld
-    }
-
-    pub fn has_started(&self) -> bool {
-        *self <= EffectivePriority::Started
-    }
-}
-
-/// Priorities for entries in the vqueue when inserting new entries
-#[derive(Debug, Default, Clone, Copy, Ord, PartialOrd, PartialEq, Eq)]
-#[repr(u8)]
-pub enum NewEntryPriority {
-    /// System high priority
-    System = 2,
-    /// Default priority
-    UserHigh = 3,
-    #[default]
-    UserDefault = 4,
-}
-
-impl From<NewEntryPriority> for EffectivePriority {
-    #[inline(always)]
-    fn from(value: NewEntryPriority) -> Self {
-        match value {
-            NewEntryPriority::System => EffectivePriority::System,
-            NewEntryPriority::UserHigh => EffectivePriority::UserHigh,
-            NewEntryPriority::UserDefault => EffectivePriority::UserDefault,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
+    use itertools::Itertools;
+
     use super::*;
 
     #[test]
@@ -307,5 +240,34 @@ mod tests {
         id.encode_raw_bytes(&mut buf);
         let decoded = VQueueId::from_raw_bytes(&mut buf.as_slice());
         assert_eq!(id, decoded);
+    }
+
+    #[test]
+    fn test_vqueue_ord_by_partition_key() {
+        // vqueue ids's ord implementation should allow them to be sorted by their partition key
+        // This means that if I collect a number of vqueue ids in a BtreeSet, I should be able to
+        // scan through them by grouping partition key.
+        let set: BTreeSet<_> = [
+            VQueueId::custom(2, "pk2_item1"),
+            VQueueId::custom(3, "pk3_item1"),
+            VQueueId::custom(1, "pk1_item1"),
+            VQueueId::custom(3, "pk3_item2"),
+            VQueueId::custom(1, "pk1_item2"),
+            VQueueId::custom(3, "pk3_item3"),
+            VQueueId::custom(1, "pk1_item3"),
+            VQueueId::custom(3, "pk3_item4"),
+        ]
+        .into_iter()
+        .collect();
+
+        // Example: batch iteration over a BTreeSet by partition key.
+        let batched_sizes: Vec<_> = set
+            .iter()
+            .chunk_by(|id| id.partition_key())
+            .into_iter()
+            .map(|(partition_key, ids)| (partition_key, ids.count()))
+            .collect();
+
+        assert_eq!(batched_sizes, vec![(1, 3), (2, 1), (3, 4)]);
     }
 }
