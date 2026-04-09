@@ -16,6 +16,7 @@ pub mod bifrost_read_stream;
 mod deployment;
 mod idempotency;
 mod inbox;
+mod invocation;
 mod invocation_state;
 mod invocation_status;
 mod journal;

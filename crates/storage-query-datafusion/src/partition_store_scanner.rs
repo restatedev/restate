@@ -165,17 +165,17 @@ where
     }
 }
 
-struct ElapsedCompute {
+pub(crate) struct ElapsedCompute {
     time: Time,
     start: Option<Instant>,
 }
 
 impl ElapsedCompute {
-    fn new(time: Time) -> Self {
+    pub(crate) fn new(time: Time) -> Self {
         Self { time, start: None }
     }
 
-    fn start(&mut self) {
+    pub(crate) fn start(&mut self) {
         self.start.get_or_insert_with(Instant::now);
     }
 }
