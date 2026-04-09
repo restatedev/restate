@@ -245,7 +245,7 @@ where
         let value = EntryValue {
             id: entry_id.clone(),
             original_run_at: run_at,
-            stats: EntryStatistics::new(created_at),
+            stats: EntryStatistics::new(created_at, run_at),
             metadata: metadata.into(),
         };
 
@@ -255,8 +255,8 @@ where
             created_at,
             metadata::Action::Move {
                 prev_stage: None,
-                next_stage: Some(Stage::Inbox),
-                entry_stats: value.stats.clone(),
+                next_stage: Stage::Inbox,
+                metrics: Self::build_move_metrics(&value.stats),
             },
         );
 
@@ -332,24 +332,17 @@ where
             at,
             metadata::Action::Move {
                 prev_stage: Some(Stage::Inbox),
-                next_stage: Some(Stage::Run),
-                // use the stats _before_ updating it so that we can capture last_transitioned
-                // correctly.
-                entry_stats: value.stats.clone(),
+                next_stage: Stage::Run,
+                // Use the stats before updating the entry to measure stage exit durations and
+                // first-run wait correctly.
+                metrics: Self::build_move_metrics(&value.stats),
             },
         );
 
         let (was_active_before, is_active_now) = meta.apply_update(&update)?;
         self.storage.update_vqueue(meta.vqueue_id(), &update);
 
-        // Bump the number of attempts to record this run.
-        value.stats.num_attempts += 1;
-        // update the timestamps
-        value.stats.transitioned_at = Some(at);
-        if value.stats.first_attempt_at.is_none() {
-            value.stats.first_attempt_at = Some(at);
-        }
-        value.stats.latest_attempt_at = Some(at);
+        Self::mark_run_attempt(&mut value.stats, at);
 
         // Update entry metadata if we were asked so.
         // if let Some(new_metadata) = action.new_metadata {
@@ -430,7 +423,7 @@ where
     ) -> Result<bool, StorageError> {
         let meta = self.cache.get_mut(self.cache_key).unwrap();
 
-        let Some(value) = self
+        let Some(mut value) = self
             .storage
             .pop_inbox_entry(meta.vqueue_id(), Stage::Park, key)?
         else {
@@ -443,8 +436,8 @@ where
             at,
             metadata::Action::Move {
                 prev_stage: Some(Stage::Park),
-                next_stage: Some(Stage::Inbox),
-                entry_stats: value.stats.clone(),
+                next_stage: Stage::Inbox,
+                metrics: Self::build_move_metrics(&value.stats),
             },
         );
 
@@ -462,6 +455,8 @@ where
             // creation time and not their visible_at time.
             modified_key.set_run_at(value.original_run_at);
         }
+
+        Self::mark_transition(&mut value.stats, at);
 
         // We add the entry back into the waiting inbox
         self.storage
@@ -525,8 +520,8 @@ where
             at,
             metadata::Action::Move {
                 prev_stage: Some(prev_stage),
-                next_stage: Some(Stage::Park),
-                entry_stats: value.stats.clone(),
+                next_stage: Stage::Park,
+                metrics: Self::build_move_metrics(&value.stats),
             },
         );
 
@@ -548,8 +543,7 @@ where
             unreachable!("Cannot remove an item from a dormant vqueue");
         }
 
-        // todo: update the timestamps
-        value.stats.num_parks += 1;
+        Self::mark_park(&mut value.stats, at);
 
         self.storage
             .put_inbox_entry(meta.vqueue_id(), Stage::Park, key, &value);
@@ -586,8 +580,8 @@ where
             at,
             metadata::Action::Move {
                 prev_stage: Some(action.prev_stage),
-                next_stage: Some(Stage::Inbox),
-                entry_stats: value.stats.clone(),
+                next_stage: Stage::Inbox,
+                metrics: Self::build_move_metrics(&value.stats),
             },
         );
 
@@ -605,8 +599,10 @@ where
             modified_key.set_run_at(run_at);
         }
 
-        // todo: update the timestamps
-        value.stats.num_yields += 1;
+        Self::mark_transition(&mut value.stats, at);
+        if matches!(action.prev_stage, Stage::Run) {
+            value.stats.num_yields = value.stats.num_yields.saturating_add(1);
+        }
 
         // We add the entry back into the waiting inbox
         self.storage
@@ -682,8 +678,8 @@ where
             at,
             metadata::Action::Move {
                 prev_stage: Some(prev_stage),
-                next_stage: None,
-                entry_stats: value.stats.clone(),
+                next_stage: Stage::Archive,
+                metrics: Self::build_move_metrics(&value.stats),
             },
         );
 
@@ -723,5 +719,35 @@ where
         }
 
         Ok(true)
+    }
+
+    #[inline]
+    fn build_move_metrics(stats: &EntryStatistics) -> metadata::MoveMetrics {
+        metadata::MoveMetrics {
+            last_transition_at: stats.transitioned_at,
+            has_started: stats.num_attempts > 0,
+            first_runnable_at: stats.first_runnable_at,
+        }
+    }
+
+    #[inline]
+    fn mark_transition(stats: &mut EntryStatistics, at: UniqueTimestamp) {
+        stats.transitioned_at = at;
+    }
+
+    #[inline]
+    fn mark_run_attempt(stats: &mut EntryStatistics, at: UniqueTimestamp) {
+        stats.num_attempts = stats.num_attempts.saturating_add(1);
+        if stats.first_attempt_at.is_none() {
+            stats.first_attempt_at = Some(at);
+        }
+        stats.latest_attempt_at = Some(at);
+        Self::mark_transition(stats, at);
+    }
+
+    #[inline]
+    fn mark_park(stats: &mut EntryStatistics, at: UniqueTimestamp) {
+        stats.num_parks = stats.num_parks.saturating_add(1);
+        Self::mark_transition(stats, at);
     }
 }

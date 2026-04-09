@@ -5193,6 +5193,9 @@ impl<S> StateMachineApplyContext<'_, S> {
             Stage::Unknown => {
                 panic!("Trying to move invocation from unknown stage to inbox is not supported.")
             }
+            Stage::Archive => {
+                panic!("Trying to move invocation from archive stage to inbox is not supported.")
+            }
         };
 
         Ok(())

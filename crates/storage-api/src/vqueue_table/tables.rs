@@ -44,6 +44,10 @@ pub enum Stage {
     /// woken up.
     #[bilrost(3)]
     Park = b'p',
+    /// Items that are completed/finished/archived. This is a terminal stage and
+    /// items in this stage are allowed to be deleted/purged.
+    #[bilrost(4)]
+    Archive = b'z',
 }
 
 pub trait WriteVQueueTable {
