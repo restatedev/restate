@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod gen_metadata;
+mod leader;
 pub mod list;
 mod reconfigure;
 
@@ -23,4 +24,7 @@ pub enum Partitions {
     GenerateMetadata(gen_metadata::GeneratePartitionTableOpts),
     /// Reconfigures the processors of the specified partition
     Reconfigure(reconfigure::ReconfigureOpts),
+    /// Control leader election policy for partitions
+    #[clap(subcommand)]
+    Leader(leader::Leader),
 }

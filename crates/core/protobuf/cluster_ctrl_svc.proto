@@ -43,6 +43,11 @@ service ClusterCtrlSvc {
   rpc Query(QueryRequest) returns (stream QueryResponse);
 
   rpc MigrateMetadata(MigrateMetadataRequest) returns (MigrateMetadataResponse);
+
+  // Signal the cluster controller to re-fetch epoch metadata for the given
+  // partitions. An empty list means all known partitions.
+  rpc SyncEpochMetadata(SyncEpochMetadataRequest)
+      returns (SyncEpochMetadataResponse);
 }
 
 message SetClusterConfigurationResponse {}
@@ -205,3 +210,10 @@ message MigrateMetadataRequest {
 }
 
 message MigrateMetadataResponse {}
+
+message SyncEpochMetadataRequest {
+  // Partitions to re-fetch. Empty = all known partitions.
+  repeated uint32 partition_ids = 1;
+}
+
+message SyncEpochMetadataResponse {}

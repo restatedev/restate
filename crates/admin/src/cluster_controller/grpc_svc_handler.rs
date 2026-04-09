@@ -30,7 +30,8 @@ use restate_core::protobuf::cluster_ctrl_svc::{
     ListLogsRequest, ListLogsResponse, MigrateMetadataRequest, MigrateMetadataResponse,
     QueryRequest, QueryResponse, QueryWarning, SealAndExtendChainRequest,
     SealAndExtendChainResponse, SealChainRequest, SealChainResponse, SealedSegment,
-    SetClusterConfigurationRequest, SetClusterConfigurationResponse, TailState, TrimLogRequest,
+    SetClusterConfigurationRequest, SetClusterConfigurationResponse, SyncEpochMetadataRequest,
+    SyncEpochMetadataResponse, TailState, TrimLogRequest,
     cluster_ctrl_svc_server::{ClusterCtrlSvc, ClusterCtrlSvcServer},
 };
 use restate_core::{Metadata, MetadataWriter};
@@ -550,6 +551,30 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         }
 
         Ok(Response::new(MigrateMetadataResponse {}))
+    }
+
+    async fn sync_epoch_metadata(
+        &self,
+        request: Request<SyncEpochMetadataRequest>,
+    ) -> Result<Response<SyncEpochMetadataResponse>, Status> {
+        let request = request.into_inner();
+        let partition_ids: Vec<PartitionId> = request
+            .partition_ids
+            .into_iter()
+            .map(|id| {
+                u16::try_from(id)
+                    .map(PartitionId::from)
+                    .map_err(|_| Status::invalid_argument(format!("invalid partition id: {id}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        self.controller_handle
+            .sync_epoch_metadata(partition_ids)
+            .await
+            .map_err(|_| Status::aborted("Node is shutting down"))?
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(Response::new(SyncEpochMetadataResponse {}))
     }
 }
 

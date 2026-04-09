@@ -9,11 +9,13 @@
 // by the Apache License, Version 2.0.
 
 mod configuration;
+pub mod leadership_policy;
 pub mod state;
 
 use crate::PlainNodeId;
 use crate::nodes_config::{NodeConfig, Role, WorkerState};
 pub use configuration::*;
+pub use leadership_policy::*;
 // re-exports of partition-related types in preparation for moving them under this module
 pub use super::epoch::*;
 pub use super::partition_table::*;

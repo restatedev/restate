@@ -96,7 +96,7 @@ pub struct LeadershipInfo {
 
 impl From<EpochMetadata> for LeadershipInfo {
     fn from(value: EpochMetadata) -> Self {
-        let (version, leader_epoch, current, next) = value.into_inner();
+        let (version, leader_epoch, current, next, _) = value.into_inner();
 
         Self {
             version,

@@ -12,6 +12,7 @@
 
 use crate::identifiers::{LeaderEpoch, PartitionId};
 use crate::partitions::PartitionConfiguration;
+use crate::partitions::leadership_policy::LeadershipPolicy;
 use crate::{GenerationalNodeId, Version, Versioned, flexbuffers_storage_encode_decode};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -22,6 +23,10 @@ pub struct EpochMetadata {
     epoch: LeaderEpoch,
     current: PartitionConfiguration,
     next: Option<PartitionConfiguration>,
+    /// Policy controlling leader election for this partition.
+    /// Since v1.7.0
+    #[serde(default, skip_serializing_if = "LeadershipPolicy::is_default")]
+    leadership_policy: LeadershipPolicy,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -44,6 +49,7 @@ impl EpochMetadata {
             current,
             next,
             epoch: LeaderEpoch::INITIAL,
+            leadership_policy: LeadershipPolicy::default(),
         }
     }
 
@@ -54,8 +60,15 @@ impl EpochMetadata {
         LeaderEpoch,
         PartitionConfiguration,
         Option<PartitionConfiguration>,
+        LeadershipPolicy,
     ) {
-        (self.version, self.epoch, self.current, self.next)
+        (
+            self.version,
+            self.epoch,
+            self.current,
+            self.next,
+            self.leadership_policy,
+        )
     }
 
     pub fn epoch(&self) -> LeaderEpoch {
@@ -69,9 +82,8 @@ impl EpochMetadata {
                 node_id,
                 partition_id,
             }),
-            current: self.current,
-            next: self.next,
             epoch: self.epoch.next(),
+            ..self
         }
     }
 
@@ -99,6 +111,7 @@ impl EpochMetadata {
             current: initial_current,
             next: self.next,
             epoch: self.epoch,
+            leadership_policy: self.leadership_policy,
         }
     }
 
@@ -111,10 +124,8 @@ impl EpochMetadata {
 
         Self {
             version: self.version.next(),
-            leader_metadata: self.leader_metadata,
-            current: self.current,
             next: Some(next),
-            epoch: self.epoch,
+            ..self
         }
     }
 
@@ -125,10 +136,9 @@ impl EpochMetadata {
 
         Self {
             version: self.version.next(),
-            leader_metadata: self.leader_metadata,
             current: next,
             next: None,
-            epoch: self.epoch,
+            ..self
         }
     }
 
@@ -139,6 +149,22 @@ impl EpochMetadata {
     pub fn next(&self) -> Option<&PartitionConfiguration> {
         self.next.as_ref()
     }
+
+    /// Returns the leadership policy for this partition.
+    /// Since v1.7.0
+    pub fn leadership_policy(&self) -> &LeadershipPolicy {
+        &self.leadership_policy
+    }
+
+    /// Sets the leadership policy for this partition.
+    /// Since v1.7.0
+    pub fn set_leadership_policy(self, policy: LeadershipPolicy) -> Self {
+        Self {
+            version: self.version.next(),
+            leadership_policy: policy,
+            ..self
+        }
+    }
 }
 
 flexbuffers_storage_encode_decode!(EpochMetadata);
@@ -148,6 +174,7 @@ mod compatibility {
     use crate::epoch::{EpochMetadata, LeaderMetadata};
     use crate::identifiers::LeaderEpoch;
     use crate::partitions::PartitionConfiguration;
+    use crate::partitions::leadership_policy::LeadershipPolicy;
 
     #[derive(Debug, serde::Deserialize)]
     pub struct EpochMetadataShadow {
@@ -159,6 +186,9 @@ mod compatibility {
         epoch: Option<LeaderEpoch>,
         current: Option<PartitionConfiguration>,
         next: Option<PartitionConfiguration>,
+
+        // added in v1.7.0
+        leadership_policy: Option<LeadershipPolicy>,
     }
 
     impl From<EpochMetadataShadow> for EpochMetadata {
@@ -174,6 +204,7 @@ mod compatibility {
                 }),
                 current: value.current.unwrap_or_default(),
                 next: value.next,
+                leadership_policy: value.leadership_policy.unwrap_or_default(),
             }
         }
     }

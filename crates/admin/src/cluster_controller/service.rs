@@ -215,6 +215,10 @@ enum ClusterControllerCommand {
         context: std::collections::HashMap<String, String>,
         response_tx: oneshot::Sender<anyhow::Result<Lsn>>,
     },
+    SyncEpochMetadata {
+        partition_ids: Vec<PartitionId>,
+        response_tx: oneshot::Sender<anyhow::Result<()>>,
+    },
 }
 
 pub struct ClusterControllerHandle {
@@ -352,6 +356,23 @@ impl ClusterControllerHandle {
 
         response_rx.await.map_err(|_| ShutdownError)
     }
+
+    pub async fn sync_epoch_metadata(
+        &self,
+        partition_ids: Vec<PartitionId>,
+    ) -> Result<anyhow::Result<()>, ShutdownError> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        let _ = self
+            .tx
+            .send(ClusterControllerCommand::SyncEpochMetadata {
+                partition_ids,
+                response_tx,
+            })
+            .await;
+
+        response_rx.await.map_err(|_| ShutdownError)
+    }
 }
 
 impl<T: TransportConnect> Service<T> {
@@ -400,7 +421,7 @@ impl<T: TransportConnect> Service<T> {
                 },
                 Some(cmd) = self.command_rx.recv() => {
                     // it is still safe to handle cluster commands as a follower
-                    self.on_cluster_cmd(cmd).await;
+                    self.on_cluster_cmd(cmd, &state);
                 }
                 _ = config_watcher.changed() => {
                     debug!("Updating the cluster controller settings.");
@@ -469,7 +490,7 @@ impl<T: TransportConnect> Service<T> {
         };
     }
 
-    async fn on_cluster_cmd(&self, command: ClusterControllerCommand) {
+    fn on_cluster_cmd(&self, command: ClusterControllerCommand, state: &ClusterControllerState) {
         match command {
             ClusterControllerCommand::GetClusterState(tx) => {
                 let _ = tx.send(self.cluster_state_refresher.get_cluster_state());
@@ -602,6 +623,22 @@ impl<T: TransportConnect> Service<T> {
                     Ok(())
                 });
             }
+            ClusterControllerCommand::SyncEpochMetadata {
+                partition_ids,
+                response_tx,
+            } => match state {
+                ClusterControllerState::Leader(leader) => {
+                    let result = leader
+                        .sync_epoch_metadata_tx()
+                        .try_send(partition_ids)
+                        .map(|_| ())
+                        .map_err(|_| anyhow!("Scheduler task is not running"));
+                    let _ = response_tx.send(result);
+                }
+                ClusterControllerState::Follower => {
+                    let _ = response_tx.send(Err(anyhow!("Not the cluster controller leader")));
+                }
+            },
         }
     }
 }
