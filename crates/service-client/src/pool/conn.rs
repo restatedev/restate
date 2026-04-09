@@ -383,7 +383,9 @@ where
                     let mut connection = std::pin::pin!(connection);
                     let mut keep_alive = std::pin::pin!(Self::keep_alive(ping_pong, shared.config));
 
-                    let shared = Arc::downgrade(&shared);
+                    let shared_weak = Arc::downgrade(&shared);
+                    drop(shared);
+
                     tokio::select! {
                         result = &mut connection => match result {
                             Ok(_) => {
@@ -402,7 +404,7 @@ where
                     };
 
                     // set state to closed
-                    if let Some(shared) = shared.upgrade() {
+                    if let Some(shared) = shared_weak.upgrade() {
                         shared.close();
                     }
                 })
