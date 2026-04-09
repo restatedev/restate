@@ -217,16 +217,22 @@ impl KeyKind {
     }
 }
 
-pub trait TableKey: Sized + std::fmt::Debug + Send + 'static {
+/// Types that can be encoded to a full table key in partition store.
+pub trait EncodeTableKey {
     const TABLE: TableKind;
     const KEY_KIND: KeyKind;
 
     fn serialize_to<B: BufMut>(&self, bytes: &mut B);
-    fn deserialize_from<B: Buf>(bytes: &mut B) -> crate::Result<Self>;
     fn serialized_length(&self) -> usize;
 }
 
-pub trait TableKeyPrefix: Sized + std::fmt::Debug + Send + 'static {
+/// Types that can be decoded to an owned table key.
+pub trait DecodeTableKey: Sized + std::fmt::Debug + Send + 'static {
+    fn deserialize_from<B: Buf>(bytes: &mut B) -> crate::Result<Self>;
+}
+
+/// Types that can be encoded to perform a scan prefix in partition store.
+pub trait EncodeTableKeyPrefix {
     const TABLE: TableKind;
     const KEY_KIND: KeyKind;
 
@@ -242,9 +248,10 @@ pub trait TableKeyPrefix: Sized + std::fmt::Debug + Send + 'static {
     fn serialized_length(&self) -> usize;
 }
 
-impl<T> TableKeyPrefix for T
+/// Types that can be encoded to full keys are safe to be used for prefix scans.
+impl<T> EncodeTableKeyPrefix for T
 where
-    T: TableKey,
+    T: EncodeTableKey,
 {
     const TABLE: TableKind = T::TABLE;
     const KEY_KIND: KeyKind = T::KEY_KIND;
@@ -256,12 +263,12 @@ where
 
     #[inline]
     fn serialize_to<B: bytes::BufMut>(&self, bytes: &mut B) {
-        TableKey::serialize_to(self, bytes);
+        EncodeTableKey::serialize_to(self, bytes);
     }
 
     #[inline]
     fn serialized_length(&self) -> usize {
-        TableKey::serialized_length(self)
+        EncodeTableKey::serialized_length(self)
     }
 }
 
@@ -293,6 +300,67 @@ where
 macro_rules! define_table_key {
 
     ($table_kind:expr, $key_kind:path, $key_name:ident ( $($element: ident: $ty: ty),+ $(,)? ) ) => (paste::paste! {
+        // key builder by holding references
+        #[derive(Default, Debug, Eq, PartialEq, Clone)]
+        pub struct [< $key_name BuilderRef >]<'a> { $(pub $element: Option<&'a $ty>),+ }
+
+        // prefix builder impl by references
+        #[allow(dead_code)]
+        impl<'a> [< $key_name BuilderRef >]<'a> {
+            $(pub fn $element(mut self, $element: &'a $ty) -> Self {
+                self.$element = Some($element);
+                self
+            })+
+
+            fn is_complete(&self) -> bool {
+                $(
+                if self.$element.is_none() {
+                    return false;
+                }
+                )+
+                return true;
+            }
+        }
+
+        impl<'a> crate::keys::EncodeTableKeyPrefix for [<$key_name BuilderRef>]<'a> {
+            const TABLE: crate::TableKind = $table_kind;
+            const KEY_KIND: $crate::keys::KeyKind = $key_kind;
+
+            #[inline]
+            fn serialize_key_kind<B: bytes::BufMut>(bytes: &mut B) {
+                $key_kind.serialize(bytes);
+            }
+
+            #[inline]
+            fn serialize_to<B: bytes::BufMut>(&self, bytes: &mut B) {
+                $key_kind.serialize(bytes);
+                $(
+                    if let Some(v) = &self.$element {
+                        $crate::keys::serialize(v, bytes);
+                    } else {
+                        // Stop at the first None since this is a prefix scan
+                        return;
+                    }
+                )+
+            }
+
+            #[inline]
+            fn serialized_length(&self) -> usize {
+                // we always need space for the key kind
+                let mut serialized_length = $crate::keys::KeyKind::SERIALIZED_LENGTH;
+                $(
+                    if let Some(v) = &self.$element {
+                        serialized_length += $crate::keys::KeyEncode::serialized_length(v);
+                    } else {
+                        // Stop at the first None since this is a prefix scan
+                        return serialized_length;
+                    }
+                )+
+                serialized_length
+            }
+
+        }
+
         // main key holder
         #[derive(Default, Debug, Eq, PartialEq, Clone)]
         pub struct [< $key_name Builder >] { $(pub $element: Option<$ty>),+ }
@@ -324,8 +392,6 @@ macro_rules! define_table_key {
                     $($element: self.$element.unwrap(),)+
                 })
             }
-
-
         }
 
         #[derive(Debug, Eq, PartialEq, Clone)]
@@ -335,6 +401,10 @@ macro_rules! define_table_key {
         impl $key_name {
             pub fn builder() -> [< $key_name Builder >] {
                 [< $key_name Builder >]::default()
+            }
+
+            pub fn builder_ref<'a>() -> [< $key_name BuilderRef >]<'a> {
+                [< $key_name BuilderRef >]::default()
             }
 
             $(pub fn $element(&self) -> &$ty {
@@ -355,7 +425,7 @@ macro_rules! define_table_key {
         }
 
 
-        impl crate::keys::TableKeyPrefix for [<$key_name Builder>] {
+        impl crate::keys::EncodeTableKeyPrefix for [<$key_name Builder>] {
             const TABLE: crate::TableKind = $table_kind;
             const KEY_KIND: $crate::keys::KeyKind = $key_kind;
 
@@ -363,6 +433,41 @@ macro_rules! define_table_key {
             fn serialize_key_kind<B: bytes::BufMut>(bytes: &mut B) {
                 $key_kind.serialize(bytes);
             }
+
+            #[inline]
+            fn serialize_to<B: bytes::BufMut>(&self, bytes: &mut B) {
+                $key_kind.serialize(bytes);
+                $(
+                    if let Some(v) = &self.$element {
+                        $crate::keys::serialize(v, bytes);
+                    } else {
+                        // Stop at the first None since this is a prefix scan
+                        return;
+                    }
+                )+
+            }
+
+            #[inline]
+            fn serialized_length(&self) -> usize {
+                // we always need space for the key kind
+                let mut serialized_length = $crate::keys::KeyKind::SERIALIZED_LENGTH;
+                $(
+                    if let Some(v) = &self.$element {
+                        serialized_length += $crate::keys::KeyEncode::serialized_length(v);
+                    } else {
+                        // Stop at the first None since this is a prefix scan
+                        return serialized_length;
+                    }
+                )+
+                serialized_length
+            }
+
+        }
+
+        // serde
+        impl crate::keys::EncodeTableKey for $key_name {
+            const TABLE: crate::TableKind = $table_kind;
+            const KEY_KIND: $crate::keys::KeyKind = $key_kind;
 
             #[inline]
             fn serialize_to<B: bytes::BufMut>(&self, bytes: &mut B) {
@@ -377,26 +482,13 @@ macro_rules! define_table_key {
                 // we always need space for the key kind
                 let mut serialized_length = $crate::keys::KeyKind::SERIALIZED_LENGTH;
                 $(
-                    serialized_length += $crate::keys::KeyCodec::serialized_length(&self.$element);
+                    serialized_length += $crate::keys::KeyEncode::serialized_length(&self.$element);
                 )+
                 serialized_length
             }
-
         }
 
-        // serde
-        impl crate::keys::TableKey for $key_name {
-            const TABLE: crate::TableKind = $table_kind;
-            const KEY_KIND: $crate::keys::KeyKind = $key_kind;
-
-            #[inline]
-            fn serialize_to<B: bytes::BufMut>(&self, bytes: &mut B) {
-                $key_kind.serialize(bytes);
-                $(
-                $crate::keys::serialize(&self.$element, bytes);
-                )+
-            }
-
+        impl crate::keys::DecodeTableKey for $key_name {
             #[inline]
             fn deserialize_from<B: bytes::Buf>(bytes: &mut B) -> crate::Result<Self> {
                 {
@@ -416,15 +508,7 @@ macro_rules! define_table_key {
                 })
             }
 
-            #[inline]
-            fn serialized_length(&self) -> usize {
-                // we always need space for the key kind
-                let mut serialized_length = $crate::keys::KeyKind::SERIALIZED_LENGTH;
-                $(
-                    serialized_length += $crate::keys::KeyCodec::serialized_length(&self.$element);
-                )+
-                serialized_length
-            }
+
         }
     })
 }
@@ -439,20 +523,29 @@ use restate_storage_api::timer_table::TimerKeyKind;
 use restate_types::identifiers::InvocationUuid;
 use restate_types::journal_v2::{CompletionId, NotificationId, SignalIndex};
 
-pub(crate) trait KeyCodec: Sized {
+pub(crate) trait KeyEncode {
     fn encode<B: BufMut>(&self, target: &mut B);
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self>;
 
     fn serialized_length(&self) -> usize;
 }
 
-impl KeyCodec for Bytes {
+impl<T: KeyEncode> KeyEncode for &T {
     fn encode<B: BufMut>(&self, target: &mut B) {
-        write_delimited(self, target);
+        (*self).encode(target);
     }
 
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
-        read_delimited(source)
+    fn serialized_length(&self) -> usize {
+        (*self).serialized_length()
+    }
+}
+
+pub(crate) trait KeyDecode: Sized {
+    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self>;
+}
+
+impl KeyEncode for Bytes {
+    fn encode<B: BufMut>(&self, target: &mut B) {
+        write_delimited(self, target);
     }
 
     fn serialized_length(&self) -> usize {
@@ -461,31 +554,35 @@ impl KeyCodec for Bytes {
     }
 }
 
-impl KeyCodec for ByteString {
+impl KeyDecode for Bytes {
+    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+        read_delimited(source)
+    }
+}
+
+impl KeyEncode for ByteString {
     fn encode<B: BufMut>(&self, target: &mut B) {
         write_delimited(self, target);
     }
 
+    fn serialized_length(&self) -> usize {
+        self.len()
+            + encoded_len_varint(u64::try_from(self.len()).expect("usize should fit into u64"))
+    }
+}
+
+impl KeyDecode for ByteString {
     fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
         let bs = read_delimited(source)?;
 
         unsafe { Ok(ByteString::from_bytes_unchecked(bs)) }
     }
-
-    fn serialized_length(&self) -> usize {
-        self.len()
-            + encoded_len_varint(u64::try_from(self.len()).expect("usize should fit into u64"))
-    }
 }
 
-impl KeyCodec for PaddedPartitionId {
+impl KeyEncode for PaddedPartitionId {
     fn encode<B: BufMut>(&self, target: &mut B) {
         // store u64 in big-endian order to support byte-wise increment operation. See `crate::scan::try_increment`.
         target.put_u64(**self);
-    }
-
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
-        Ok(PaddedPartitionId::from(source.get_u64()))
     }
 
     fn serialized_length(&self) -> usize {
@@ -493,14 +590,16 @@ impl KeyCodec for PaddedPartitionId {
     }
 }
 
-impl KeyCodec for u128 {
+impl KeyDecode for PaddedPartitionId {
+    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+        Ok(PaddedPartitionId::from(source.get_u64()))
+    }
+}
+
+impl KeyEncode for u128 {
     fn encode<B: BufMut>(&self, target: &mut B) {
         // store u128 in big-endian order to support byte-wise increment operation. See `crate::scan::try_increment`.
         target.put_u128(*self);
-    }
-
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
-        Ok(source.get_u128())
     }
 
     fn serialized_length(&self) -> usize {
@@ -508,14 +607,16 @@ impl KeyCodec for u128 {
     }
 }
 
-impl KeyCodec for UniqueTimestamp {
+impl KeyDecode for u128 {
+    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+        Ok(source.get_u128())
+    }
+}
+
+impl KeyEncode for UniqueTimestamp {
     fn encode<B: BufMut>(&self, target: &mut B) {
         // store u64 in big-endian order to support byte-wise increment operation. See `crate::scan::try_increment`.
         target.put_u64(self.as_u64());
-    }
-
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
-        UniqueTimestamp::try_from(source.get_u64()).map_err(|e| StorageError::Conversion(e.into()))
     }
 
     fn serialized_length(&self) -> usize {
@@ -523,12 +624,24 @@ impl KeyCodec for UniqueTimestamp {
     }
 }
 
-impl<const L: usize> KeyCodec for [u8; L] {
+impl KeyDecode for UniqueTimestamp {
+    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+        UniqueTimestamp::try_from(source.get_u64()).map_err(|e| StorageError::Conversion(e.into()))
+    }
+}
+
+impl<const L: usize> KeyEncode for [u8; L] {
     fn encode<B: BufMut>(&self, target: &mut B) {
         // stores the array as is.
         target.put_slice(self.as_ref());
     }
 
+    fn serialized_length(&self) -> usize {
+        L
+    }
+}
+
+impl<const L: usize> KeyDecode for [u8; L] {
     fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
         if source.remaining() < L {
             return Err(StorageError::DataIntegrityError);
@@ -537,20 +650,12 @@ impl<const L: usize> KeyCodec for [u8; L] {
         source.copy_to_slice(&mut buf);
         Ok(buf)
     }
-
-    fn serialized_length(&self) -> usize {
-        L
-    }
 }
 
-impl KeyCodec for u64 {
+impl KeyEncode for u64 {
     fn encode<B: BufMut>(&self, target: &mut B) {
         // store u64 in big-endian order to support byte-wise increment operation. See `crate::scan::try_increment`.
         target.put_u64(*self);
-    }
-
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
-        Ok(source.get_u64())
     }
 
     fn serialized_length(&self) -> usize {
@@ -558,14 +663,16 @@ impl KeyCodec for u64 {
     }
 }
 
-impl KeyCodec for u32 {
+impl KeyDecode for u64 {
+    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+        Ok(source.get_u64())
+    }
+}
+
+impl KeyEncode for u32 {
     fn encode<B: BufMut>(&self, target: &mut B) {
         // store u32 in big-endian order to support byte-wise increment operation. See `crate::scan::try_increment`.
         target.put_u32(*self);
-    }
-
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
-        Ok(source.get_u32())
     }
 
     fn serialized_length(&self) -> usize {
@@ -573,14 +680,16 @@ impl KeyCodec for u32 {
     }
 }
 
-impl KeyCodec for u8 {
+impl KeyDecode for u32 {
+    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+        Ok(source.get_u32())
+    }
+}
+
+impl KeyEncode for u8 {
     fn encode<B: BufMut>(&self, target: &mut B) {
         // store u8 in big-endian order to support byte-wise increment operation. See `crate::scan::try_increment`.
         target.put_u8(*self);
-    }
-
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
-        Ok(source.get_u8())
     }
 
     fn serialized_length(&self) -> usize {
@@ -588,36 +697,15 @@ impl KeyCodec for u8 {
     }
 }
 
-///
-/// Blanket implementation for Option.
-///
-impl<T: KeyCodec> KeyCodec for Option<T> {
-    fn encode<B: BufMut>(&self, target: &mut B) {
-        if let Some(t) = self {
-            t.encode(target);
-        }
-    }
-
+impl KeyDecode for u8 {
     fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
-        if !source.has_remaining() {
-            return Ok(None);
-        }
-        let res = T::decode(source)?;
-        Ok(Some(res))
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.as_ref().map(|v| v.serialized_length()).unwrap_or(0)
+        Ok(source.get_u8())
     }
 }
 
-impl KeyCodec for &[u8] {
+impl KeyEncode for &[u8] {
     fn encode<B: BufMut>(&self, target: &mut B) {
         target.put(*self);
-    }
-
-    fn decode<B: Buf>(_source: &mut B) -> crate::Result<Self> {
-        unimplemented!("could not decode into a slice u8");
     }
 
     fn serialized_length(&self) -> usize {
@@ -625,13 +713,25 @@ impl KeyCodec for &[u8] {
     }
 }
 
-impl KeyCodec for InvocationUuid {
+impl KeyDecode for &[u8] {
+    fn decode<B: Buf>(_source: &mut B) -> crate::Result<Self> {
+        unimplemented!("could not decode into a slice u8");
+    }
+}
+
+impl KeyEncode for InvocationUuid {
     fn encode<B: BufMut>(&self, target: &mut B) {
         let slice = self.to_bytes();
         debug_assert_eq!(slice.len(), self.serialized_length());
         target.put_slice(&slice);
     }
 
+    fn serialized_length(&self) -> usize {
+        InvocationUuid::RAW_BYTES_LEN
+    }
+}
+
+impl KeyDecode for InvocationUuid {
     fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
         // note: this is a zero-copy when the source is bytes::Bytes.
         if source.remaining() < InvocationUuid::RAW_BYTES_LEN {
@@ -643,38 +743,44 @@ impl KeyCodec for InvocationUuid {
         source.copy_to_slice(&mut buf);
         Ok(InvocationUuid::from_bytes(buf))
     }
-
-    fn serialized_length(&self) -> usize {
-        InvocationUuid::RAW_BYTES_LEN
-    }
 }
 
-impl KeyCodec for ProducerId {
+impl KeyEncode for ProducerId {
     fn encode<B: BufMut>(&self, target: &mut B) {
         match self {
             ProducerId::Partition(p) => {
                 let p = PaddedPartitionId::from(*p);
                 target.put_u8(0);
-                KeyCodec::encode(&p, target)
+                KeyEncode::encode(&p, target)
             }
             ProducerId::Other(i) => {
                 target.put_u8(1);
-                KeyCodec::encode(i, target)
+                KeyEncode::encode(i, target)
             }
             ProducerId::Producer(i) => {
                 target.put_u8(2);
-                KeyCodec::encode(&u128::from(*i), target)
+                KeyEncode::encode(&u128::from(*i), target)
             }
         }
     }
 
+    fn serialized_length(&self) -> usize {
+        1 + match self {
+            ProducerId::Partition(p) => KeyEncode::serialized_length(&PaddedPartitionId::from(*p)),
+            ProducerId::Other(i) => KeyEncode::serialized_length(i),
+            ProducerId::Producer(i) => KeyEncode::serialized_length(&u128::from(*i)),
+        }
+    }
+}
+
+impl KeyDecode for ProducerId {
     fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
         Ok(match source.get_u8() {
             0 => {
-                let padded: PaddedPartitionId = KeyCodec::decode(source)?;
+                let padded: PaddedPartitionId = KeyDecode::decode(source)?;
                 ProducerId::Partition(padded.into())
             }
-            1 => ProducerId::Other(KeyCodec::decode(source)?),
+            1 => ProducerId::Other(KeyDecode::decode(source)?),
             2 => ProducerId::Producer(u128::decode(source)?.into()),
             i => {
                 return Err(StorageError::Generic(anyhow!(
@@ -684,17 +790,9 @@ impl KeyCodec for ProducerId {
             }
         })
     }
-
-    fn serialized_length(&self) -> usize {
-        1 + match self {
-            ProducerId::Partition(p) => KeyCodec::serialized_length(&PaddedPartitionId::from(*p)),
-            ProducerId::Other(i) => KeyCodec::serialized_length(i),
-            ProducerId::Producer(i) => KeyCodec::serialized_length(&u128::from(*i)),
-        }
-    }
 }
 
-impl KeyCodec for TimerKeyKind {
+impl KeyEncode for TimerKeyKind {
     fn encode<B: BufMut>(&self, target: &mut B) {
         assert!(
             self.serialized_length() <= target.remaining_mut(),
@@ -725,6 +823,29 @@ impl KeyCodec for TimerKeyKind {
         }
     }
 
+    fn serialized_length(&self) -> usize {
+        1 + match self {
+            TimerKeyKind::Invoke { invocation_uuid } => {
+                KeyEncode::serialized_length(invocation_uuid)
+            }
+            TimerKeyKind::NeoInvoke { invocation_uuid } => {
+                KeyEncode::serialized_length(invocation_uuid)
+            }
+            TimerKeyKind::CompleteJournalEntry {
+                invocation_uuid,
+                journal_index,
+            } => {
+                KeyEncode::serialized_length(invocation_uuid)
+                    + KeyEncode::serialized_length(journal_index)
+            }
+            TimerKeyKind::CleanInvocationStatus { invocation_uuid } => {
+                KeyEncode::serialized_length(invocation_uuid)
+            }
+        }
+    }
+}
+
+impl KeyDecode for TimerKeyKind {
     fn decode<B: Buf>(source: &mut B) -> crate::partition_store::Result<Self> {
         if source.remaining() < mem::size_of::<u8>() {
             return Err(StorageError::Generic(anyhow!(
@@ -761,30 +882,9 @@ impl KeyCodec for TimerKeyKind {
             }
         })
     }
-
-    fn serialized_length(&self) -> usize {
-        1 + match self {
-            TimerKeyKind::Invoke { invocation_uuid } => {
-                KeyCodec::serialized_length(invocation_uuid)
-            }
-            TimerKeyKind::NeoInvoke { invocation_uuid } => {
-                KeyCodec::serialized_length(invocation_uuid)
-            }
-            TimerKeyKind::CompleteJournalEntry {
-                invocation_uuid,
-                journal_index,
-            } => {
-                KeyCodec::serialized_length(invocation_uuid)
-                    + KeyCodec::serialized_length(journal_index)
-            }
-            TimerKeyKind::CleanInvocationStatus { invocation_uuid } => {
-                KeyCodec::serialized_length(invocation_uuid)
-            }
-        }
-    }
 }
 
-impl KeyCodec for NotificationId {
+impl KeyEncode for NotificationId {
     fn encode<B: BufMut>(&self, target: &mut B) {
         assert!(
             self.serialized_length() <= target.remaining_mut(),
@@ -807,6 +907,16 @@ impl KeyCodec for NotificationId {
         }
     }
 
+    fn serialized_length(&self) -> usize {
+        1 + match self {
+            NotificationId::CompletionId(_) => size_of::<CompletionId>(),
+            NotificationId::SignalIndex(_) => size_of::<SignalIndex>(),
+            NotificationId::SignalName(n) => n.len(),
+        }
+    }
+}
+
+impl KeyDecode for NotificationId {
     fn decode<B: Buf>(source: &mut B) -> crate::partition_store::Result<Self> {
         if source.remaining() < mem::size_of::<u8>() {
             return Err(StorageError::Generic(anyhow!(
@@ -836,14 +946,6 @@ impl KeyCodec for NotificationId {
             }
         })
     }
-
-    fn serialized_length(&self) -> usize {
-        1 + match self {
-            NotificationId::CompletionId(_) => size_of::<CompletionId>(),
-            NotificationId::SignalIndex(_) => size_of::<SignalIndex>(),
-            NotificationId::SignalName(n) => n.len(),
-        }
-    }
 }
 
 #[inline]
@@ -862,12 +964,12 @@ fn read_delimited<B: Buf>(source: &mut B) -> crate::Result<Bytes> {
 }
 
 #[inline]
-pub(crate) fn serialize<T: KeyCodec, B: BufMut>(what: &T, target: &mut B) {
+pub(crate) fn serialize<T: KeyEncode, B: BufMut>(what: &T, target: &mut B) {
     what.encode(target);
 }
 
 #[inline]
-pub(crate) fn deserialize<T: KeyCodec, B: Buf>(source: &mut B) -> crate::Result<T> {
+pub(crate) fn deserialize<T: KeyDecode, B: Buf>(source: &mut B) -> crate::Result<T> {
     T::decode(source)
 }
 

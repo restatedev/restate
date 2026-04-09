@@ -12,7 +12,7 @@ use restate_types::identifiers::PartitionKey;
 use restate_types::vqueue::{VQueueId, VQueueInstance, VQueueParent};
 
 use crate::TableKind::VQueue;
-use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::keys::{EncodeTableKey, KeyKind, define_table_key};
 
 use super::inbox::ActiveKey;
 
@@ -84,7 +84,7 @@ pub(crate) mod vqueue_meta_merge {
 
     use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaUpdates};
 
-    use crate::keys::TableKey;
+    use crate::keys::DecodeTableKey;
 
     use super::MetaKey;
 

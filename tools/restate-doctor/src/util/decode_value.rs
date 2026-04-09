@@ -14,7 +14,7 @@
 //! using the appropriate decoder for each table type.
 
 use restate_partition_store::fsm_table::PartitionStateMachineKey;
-use restate_partition_store::keys::{KeyKind, TableKey};
+use restate_partition_store::keys::{DecodeTableKey, KeyKind};
 use restate_storage_api::deduplication_table::DedupSequenceNumber;
 use restate_storage_api::fsm_table::{PartitionDurability, SequenceNumber};
 use restate_storage_api::idempotency_table::IdempotencyMetadata;

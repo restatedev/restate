@@ -21,7 +21,7 @@ use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 
-use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
 use crate::scan::TableScan;
 use crate::{
     PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind,
