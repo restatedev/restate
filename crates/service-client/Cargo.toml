@@ -9,6 +9,7 @@ publish = false
 
 [features]
 default = []
+test_util = []
 options_schema = ["restate-types/schemars"]
 
 [dependencies]
@@ -25,26 +26,34 @@ base64 = { workspace = true }
 bs58 = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
+derive_builder = { workspace = true }
 futures = { workspace = true }
 h2 = "0.4.12"
 http = { workspace = true }
+http-body = { workspace = true }
 http-body-util = { workspace = true }
 http-serde = { workspace = true }
 hyper = { workspace = true, features = ["http1", "http2", "client"] }
 hyper-rustls = { workspace = true }
 hyper-util = { workspace = true, features = ["client-legacy"] }
 jsonwebtoken = { workspace = true }
+parking_lot = { workspace = true }
 pem = { version = "3.0.6" }
+pin-project = { workspace = true }
 ring = { version = "0.17.14" }
 rustls = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
 thiserror = { workspace = true }
-tower-service = { version = "0.3" }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tokio-rustls = "0.26"
+tower = { workspace = true }
 tracing = { workspace = true }
 zstd = { workspace = true }
 
 [dev-dependencies]
 googletest = { workspace = true }
 tempfile = { workspace = true }
+tokio-stream = {workspace = true}
