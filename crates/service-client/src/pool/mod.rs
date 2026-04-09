@@ -98,6 +98,7 @@ where
         B: Body<Data = Bytes> + Unpin + Send + Sync + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>> + Send,
     {
+        trace!("(h2 pool) requesting ({})", request.uri());
         let key = PoolKey::from_uri(request.uri());
 
         let mut authority_pool = self

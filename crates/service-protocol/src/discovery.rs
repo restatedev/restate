@@ -173,7 +173,7 @@ impl DiscoveryError {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ServiceDiscovery {
     retry_policy: RetryPolicy,
     client: ServiceClient,
