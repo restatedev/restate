@@ -14,6 +14,7 @@ use std::num::NonZeroU16;
 use bytes::{Buf, BufMut};
 
 use restate_clock::UniqueTimestamp;
+use restate_clock::time::MillisSinceEpoch;
 use restate_types::ServiceName;
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, StateMutationId};
 use restate_types::vqueue::VQueueId;
@@ -245,6 +246,7 @@ impl std::fmt::Display for EntryKey {
 
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct EntryStatistics {
+    /// Creation timestamp of the entry.
     #[bilrost(tag(1))]
     pub created_at: UniqueTimestamp,
     /// Timestamp of the last stage transition
@@ -264,6 +266,14 @@ pub struct EntryStatistics {
     /// Timestamp of the last attempt to run this entry
     #[bilrost(tag(7))]
     pub latest_attempt_at: Option<UniqueTimestamp>,
+    /// Anchor used to measure first-attempt queue wait.
+    ///
+    /// This is computed once at enqueue-time as
+    /// `min(created_at, original_run_at)` so that callers that intentionally place
+    /// `original_run_at` in the past can still preserve that priority signal,
+    /// while avoiding overcounting when `created_at` is earlier.
+    #[bilrost(tag(8))]
+    pub wait_anchor_at: MillisSinceEpoch,
     // todo:
     // pub time_spent_running: u32,
     // pub time_spent_parked: u32,
@@ -273,7 +283,15 @@ pub struct EntryStatistics {
 }
 
 impl EntryStatistics {
-    pub fn new(created_at: UniqueTimestamp) -> Self {
+    pub fn new(created_at: UniqueTimestamp, original_run_at: RunAt) -> Self {
+        let created_at_ms = created_at.to_unix_millis();
+        let original_run_at_ms = original_run_at.as_millis();
+        let wait_anchor_at = if created_at_ms <= original_run_at_ms {
+            created_at_ms
+        } else {
+            original_run_at_ms
+        };
+
         Self {
             created_at,
             transitioned_at: Some(created_at),
@@ -282,6 +300,7 @@ impl EntryStatistics {
             num_yields: 0,
             first_attempt_at: None,
             latest_attempt_at: None,
+            wait_anchor_at,
         }
     }
 }

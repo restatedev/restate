@@ -56,7 +56,10 @@ fn entry_key(has_lock: bool, run_at: u64, seq: u64) -> EntryKey {
 
 fn entry_value(id: u8, original_run_at: u64, num_attempts: u32) -> EntryValue {
     let created_at = UniqueTimestamp::try_from(1000u64 + id as u64).unwrap();
-    let mut stats = EntryStatistics::new(created_at);
+    let mut stats = EntryStatistics::new(
+        created_at,
+        RunAt::new(MillisSinceEpoch::new(original_run_at)),
+    );
     stats.num_attempts = num_attempts;
 
     EntryValue {

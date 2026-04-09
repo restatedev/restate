@@ -21,33 +21,57 @@ use super::{EntryStatistics, Stage};
 
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct VQueueStatistics {
+    /// Creation time of this vqueue metadata record.
     #[bilrost(tag(1))]
     pub(crate) created_at: MillisSinceEpoch,
-    /// The time spend in the queue before the first attempt to run. Measured by EMA of time
-    /// from initial scheduled run time to first "dequeue/start".
+    /// EMA of first-attempt wait time.
+    ///
+    /// For an entry's first transition to `Run`, this tracks
+    /// `run_started_at - min(created_at, original_run_at)`.
+    ///
+    /// This indicates how long brand new work waits before it gets its first execution slot.
     #[bilrost(tag(2))]
     pub(crate) avg_queue_duration_ms: u32,
-    /// Timestamp of the last successful enqueue.
+    /// Last timestamp an entry was moved into `Inbox`.
+    ///
+    /// This includes initial enqueue as well as transitions that re-enqueue entries
+    /// (`Park -> Inbox` and `Run/Inbox -> Inbox`).
     #[bilrost(tag(3))]
     pub(crate) last_enqueued_at: Option<MillisSinceEpoch>,
-    /// The timestamp of the last start of a new entry.
+    /// Last timestamp an entry had its first transition to `Run`.
+    ///
+    /// This marks when a new entry starts for the first time.
     #[bilrost(tag(4))]
     pub(crate) last_start_at: Option<MillisSinceEpoch>,
+    /// Last timestamp an entry completed (`next_stage = None`).
     #[bilrost(tag(5))]
     pub(crate) last_completion_at: Option<MillisSinceEpoch>,
-    /// The timestamp of the last run attempt of a previously started entry.
+    /// Last timestamp an entry transitioned to `Run`.
+    ///
+    /// This includes both first starts and retries/resumes.
     #[bilrost(tag(6))]
     pub(crate) last_attempt_at: Option<MillisSinceEpoch>,
-    //
-    // # Counters
-    //
-    /// The number of entries waiting to be dequeued. The vector index implies the priority
+    /// Number of entries currently in `Inbox`.
     #[bilrost(tag(7))]
     pub(crate) num_inbox: u64,
+    /// Number of entries currently in `Park`.
     #[bilrost(tag(8))]
     pub(crate) num_parked: u64,
+    /// Number of entries currently in `Run`.
     #[bilrost(tag(9))]
     pub(crate) num_running: u64,
+    /// EMA of how long entries stay in `Inbox` before transitioning out of it.
+    #[bilrost(tag(10))]
+    pub(crate) avg_inbox_duration_ms: u32,
+    /// EMA of how long entries stay in `Run` before transitioning out of it.
+    #[bilrost(tag(11))]
+    pub(crate) avg_run_duration_ms: u32,
+    /// EMA of how long entries stay in `Park` before transitioning out of it.
+    #[bilrost(tag(12))]
+    pub(crate) avg_park_duration_ms: u32,
+    /// EMA of end-to-end entry lifetime from creation to completion.
+    #[bilrost(tag(13))]
+    pub(crate) avg_end_to_end_duration_ms: u32,
 }
 
 impl VQueueStatistics {
@@ -62,18 +86,114 @@ impl VQueueStatistics {
             num_inbox: 0,
             num_parked: 0,
             num_running: 0,
+            avg_inbox_duration_ms: 0,
+            avg_run_duration_ms: 0,
+            avg_park_duration_ms: 0,
+            avg_end_to_end_duration_ms: 0,
         }
     }
 
-    #[allow(dead_code)]
     fn update_avg_queue_duration(&mut self, latency_ms: u64) {
-        let new_avg: u64 = if self.avg_queue_duration_ms == 0 {
-            latency_ms
+        self.avg_queue_duration_ms = Self::ema(self.avg_queue_duration_ms, latency_ms);
+    }
+
+    fn update_avg_inbox_duration(&mut self, latency_ms: u64) {
+        self.avg_inbox_duration_ms = Self::ema(self.avg_inbox_duration_ms, latency_ms);
+    }
+
+    fn update_avg_run_duration(&mut self, latency_ms: u64) {
+        self.avg_run_duration_ms = Self::ema(self.avg_run_duration_ms, latency_ms);
+    }
+
+    fn update_avg_park_duration(&mut self, latency_ms: u64) {
+        self.avg_park_duration_ms = Self::ema(self.avg_park_duration_ms, latency_ms);
+    }
+
+    fn update_avg_end_to_end_duration(&mut self, latency_ms: u64) {
+        self.avg_end_to_end_duration_ms = Self::ema(self.avg_end_to_end_duration_ms, latency_ms);
+    }
+
+    fn ema(previous: u32, sample_ms: u64) -> u32 {
+        let new_avg = if previous == 0 {
+            sample_ms
         } else {
-            // exponential moving average
-            ((self.avg_queue_duration_ms as f64 * 0.95) + (latency_ms as f64 * 0.05)).ceil() as u64
+            // Exponential moving average with alpha=0.05.
+            ((f64::from(previous) * 0.95) + (sample_ms as f64 * 0.05)).ceil() as u64
         };
-        self.avg_queue_duration_ms = u32::try_from(new_avg).unwrap_or(u32::MAX);
+
+        u32::try_from(new_avg).unwrap_or(u32::MAX)
+    }
+
+    fn record_stage_exit(
+        &mut self,
+        stage: Stage,
+        now: MillisSinceEpoch,
+        entry_stats: &EntryStatistics,
+    ) {
+        let transition_anchor = entry_stats
+            .transitioned_at
+            .unwrap_or(entry_stats.created_at)
+            .to_unix_millis();
+        let stage_dwell_ms = now.saturating_sub_ms(transition_anchor);
+
+        match stage {
+            Stage::Unknown => {}
+            Stage::Inbox => self.update_avg_inbox_duration(stage_dwell_ms),
+            Stage::Run => self.update_avg_run_duration(stage_dwell_ms),
+            Stage::Park => self.update_avg_park_duration(stage_dwell_ms),
+        }
+    }
+
+    pub const fn created_at(&self) -> MillisSinceEpoch {
+        self.created_at
+    }
+
+    pub const fn avg_queue_duration_ms(&self) -> u32 {
+        self.avg_queue_duration_ms
+    }
+
+    pub const fn avg_inbox_duration_ms(&self) -> u32 {
+        self.avg_inbox_duration_ms
+    }
+
+    pub const fn avg_run_duration_ms(&self) -> u32 {
+        self.avg_run_duration_ms
+    }
+
+    pub const fn avg_park_duration_ms(&self) -> u32 {
+        self.avg_park_duration_ms
+    }
+
+    pub const fn avg_end_to_end_duration_ms(&self) -> u32 {
+        self.avg_end_to_end_duration_ms
+    }
+
+    pub const fn last_enqueued_at(&self) -> Option<MillisSinceEpoch> {
+        self.last_enqueued_at
+    }
+
+    pub const fn last_start_at(&self) -> Option<MillisSinceEpoch> {
+        self.last_start_at
+    }
+
+    pub const fn last_attempt_at(&self) -> Option<MillisSinceEpoch> {
+        self.last_attempt_at
+    }
+
+    pub const fn last_completion_at(&self) -> Option<MillisSinceEpoch> {
+        self.last_completion_at
+    }
+
+    pub const fn num_inbox(&self) -> u64 {
+        self.num_inbox
+    }
+
+    pub const fn num_parked(&self) -> u64 {
+        self.num_parked
+    }
+
+    pub const fn num_running(&self) -> u64 {
+        self.num_running
     }
 }
 
@@ -198,6 +318,7 @@ impl VQueueMeta {
 
     pub fn apply_update(&mut self, update: &Update) -> anyhow::Result<()> {
         let now = update.ts;
+        let now_ms = now.to_unix_millis();
         // Note to future authors: This match needs to continue to work even when
         // processing old/deprecated/removed actions. Therefore, removed actions should
         // not be removed from the enum to avoid falling into the Unknown case.
@@ -217,35 +338,39 @@ impl VQueueMeta {
                 ref entry_stats,
             } => {
                 if let Some(previous_stage) = previous_stage {
+                    self.stats
+                        .record_stage_exit(previous_stage, now_ms, entry_stats);
                     self.decrement_stage(previous_stage);
                 }
+
                 if let Some(new_stage) = new_stage {
                     self.increment_stage(new_stage);
-                    // todo: update EMAs and aggregated stats based on entry_stats;
+
                     match new_stage {
                         Stage::Unknown => {}
-                        Stage::Inbox => self.stats.last_enqueued_at = Some(now.to_unix_millis()),
+                        Stage::Inbox => self.stats.last_enqueued_at = Some(now_ms),
                         Stage::Run if entry_stats.num_attempts == 0 => {
-                            let ts = Some(now.to_unix_millis());
+                            let wait_anchor_at = if entry_stats.wait_anchor_at.is_zero() {
+                                entry_stats.created_at.to_unix_millis()
+                            } else {
+                                entry_stats.wait_anchor_at
+                            };
+                            let first_wait_ms = now_ms.saturating_sub_ms(wait_anchor_at);
+                            self.stats.update_avg_queue_duration(first_wait_ms);
+
+                            let ts = Some(now_ms);
                             self.stats.last_start_at = ts;
                             self.stats.last_attempt_at = ts;
                         }
-                        Stage::Run => self.stats.last_attempt_at = Some(now.to_unix_millis()),
-                        Stage::Park => {
-                            self.stats.last_start_at = Some(now.to_unix_millis());
-                        }
+                        Stage::Run => self.stats.last_attempt_at = Some(now_ms),
+                        Stage::Park => {}
                     }
                 } else {
-                    self.stats.last_completion_at = Some(now.to_unix_millis());
+                    self.stats.last_completion_at = Some(now_ms);
+                    let end_to_end_ms =
+                        now_ms.saturating_sub_ms(entry_stats.created_at.to_unix_millis());
+                    self.stats.update_avg_end_to_end_duration(end_to_end_ms);
                 }
-
-                // disabled until later commit to implement stats aggregation
-                // if is_new && let VisibleAt::At(visible_since) = visible_at {
-                //     // Only measure queue latency for new items and only consider the item
-                //     // queuing from the moment it became visible, not the creation ts.
-                //     let latency_ms = now.to_unix_millis().saturating_sub_ms(visible_since);
-                //     self.stats.update_avg_queue_duration(latency_ms);
-                // }
             }
         }
         Ok(())
@@ -305,7 +430,7 @@ pub enum Action {
     Unknown,
     /// An item has moved from one stage to another
     ///
-    /// if previous_stage is Some, the item is new.
+    /// if previous_stage is None, the item is new.
     /// if new_stage is None, the item is being removed
     #[bilrost(tag(2), message)]
     Move {
@@ -331,5 +456,154 @@ impl Update {
     #[inline]
     pub fn new(ts: UniqueTimestamp, action: Action) -> Self {
         Self { ts, action }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BASE_TS_MS: u64 = 1_744_000_000_000;
+
+    fn ts(unix_ms: u64) -> UniqueTimestamp {
+        UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::new(unix_ms))
+    }
+
+    #[test]
+    fn first_run_wait_uses_min_created_at_and_original_run_at() {
+        let mut meta = VQueueMeta::new(None, LimitKey::None, None);
+        let created_at = ts(BASE_TS_MS + 10_000);
+        let mut stats = EntryStatistics::new(
+            created_at,
+            super::super::RunAt::new(MillisSinceEpoch::new(BASE_TS_MS + 5_000)),
+        );
+
+        meta.apply_update(&Update::new(
+            created_at,
+            Action::Move {
+                prev_stage: None,
+                next_stage: Some(Stage::Inbox),
+                entry_stats: stats.clone(),
+            },
+        ))
+        .unwrap();
+
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 12_000),
+            Action::Move {
+                prev_stage: Some(Stage::Inbox),
+                next_stage: Some(Stage::Run),
+                entry_stats: stats.clone(),
+            },
+        ))
+        .unwrap();
+
+        assert_eq!(meta.stats.avg_queue_duration_ms, 7_000);
+        assert_eq!(
+            meta.stats.last_start_at,
+            Some(MillisSinceEpoch::new(BASE_TS_MS + 12_000))
+        );
+        assert_eq!(
+            meta.stats.last_attempt_at,
+            Some(MillisSinceEpoch::new(BASE_TS_MS + 12_000))
+        );
+
+        stats.num_attempts = 1;
+        stats.transitioned_at = Some(ts(BASE_TS_MS + 12_000));
+
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 13_000),
+            Action::Move {
+                prev_stage: Some(Stage::Run),
+                next_stage: Some(Stage::Run),
+                entry_stats: stats,
+            },
+        ))
+        .unwrap();
+
+        assert_eq!(meta.stats.avg_queue_duration_ms, 7_000);
+    }
+
+    #[test]
+    fn stage_and_end_to_end_emas_are_updated_on_stage_exits() {
+        let mut meta = VQueueMeta::new(None, LimitKey::None, None);
+        let created_at = ts(BASE_TS_MS + 1_000);
+        let mut stats = EntryStatistics::new(
+            created_at,
+            super::super::RunAt::new(MillisSinceEpoch::new(BASE_TS_MS + 2_000)),
+        );
+
+        meta.apply_update(&Update::new(
+            created_at,
+            Action::Move {
+                prev_stage: None,
+                next_stage: Some(Stage::Inbox),
+                entry_stats: stats.clone(),
+            },
+        ))
+        .unwrap();
+
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 2_000),
+            Action::Move {
+                prev_stage: Some(Stage::Inbox),
+                next_stage: Some(Stage::Run),
+                entry_stats: stats.clone(),
+            },
+        ))
+        .unwrap();
+
+        stats.transitioned_at = Some(ts(BASE_TS_MS + 2_000));
+        stats.num_attempts = 1;
+        stats.first_attempt_at = Some(ts(BASE_TS_MS + 2_000));
+        stats.latest_attempt_at = Some(ts(BASE_TS_MS + 2_000));
+
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 5_000),
+            Action::Move {
+                prev_stage: Some(Stage::Run),
+                next_stage: Some(Stage::Park),
+                entry_stats: stats.clone(),
+            },
+        ))
+        .unwrap();
+
+        stats.transitioned_at = Some(ts(BASE_TS_MS + 5_000));
+        stats.num_parks = 1;
+
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 9_000),
+            Action::Move {
+                prev_stage: Some(Stage::Park),
+                next_stage: Some(Stage::Inbox),
+                entry_stats: stats.clone(),
+            },
+        ))
+        .unwrap();
+
+        stats.transitioned_at = Some(ts(BASE_TS_MS + 9_000));
+
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 15_000),
+            Action::Move {
+                prev_stage: Some(Stage::Inbox),
+                next_stage: None,
+                entry_stats: stats,
+            },
+        ))
+        .unwrap();
+
+        assert_eq!(meta.stats.avg_inbox_duration_ms, 1_250);
+        assert_eq!(meta.stats.avg_run_duration_ms, 3_000);
+        assert_eq!(meta.stats.avg_park_duration_ms, 4_000);
+        assert_eq!(meta.stats.avg_end_to_end_duration_ms, 14_000);
+
+        assert_eq!(meta.stats.num_inbox, 0);
+        assert_eq!(meta.stats.num_running, 0);
+        assert_eq!(meta.stats.num_parked, 0);
+        assert_eq!(
+            meta.stats.last_completion_at,
+            Some(MillisSinceEpoch::new(BASE_TS_MS + 15_000))
+        );
     }
 }
