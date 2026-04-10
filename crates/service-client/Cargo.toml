@@ -48,7 +48,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["tracing"] }
 tokio-util = { workspace = true }
 tokio-rustls = "0.26"
 tower = { workspace = true }
@@ -61,7 +61,6 @@ criterion = { workspace = true, features = ["async_tokio"] }
 googletest = { workspace = true }
 pprof = { version = "0.15", features = ["criterion", "flamegraph"] }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["tracing"] }
 tokio-stream = {workspace = true}
 
 [[bench]]
