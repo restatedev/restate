@@ -452,6 +452,10 @@ async fn register_v3_admin_api(
     progress.finish_and_clear();
     // print the result of the discovery
     c_success!("DEPLOYMENT:");
+    c_println!(
+        "Deployment ID:  {}",
+        Styled(Style::Info, &registration_result.id)
+    );
     let mut table = Table::new_styled();
     table.set_styled_header(vec!["SERVICE", "REV"]);
     for svc in registration_result.services {
@@ -555,6 +559,10 @@ async fn register_v2_admin_api(
     progress.finish_and_clear();
     // print the result of the discovery
     c_success!("DEPLOYMENT:");
+    c_println!(
+        "Deployment ID:  {}",
+        Styled(Style::Info, &registration_result.id)
+    );
     let mut table = Table::new_styled();
     table.set_styled_header(vec!["SERVICE", "REV"]);
     for svc in registration_result.services {
@@ -582,10 +590,6 @@ async fn print_registration_changes(
         .iter()
         .partition(|svc| svc.revision == 1);
 
-    c_println!(
-        "Deployment ID:  {}",
-        Styled(Style::Info, &dry_run_result.id)
-    );
     // The following services will be added:
     if !added.is_empty() {
         c_println!();
