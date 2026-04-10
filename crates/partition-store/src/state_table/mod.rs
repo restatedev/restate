@@ -10,7 +10,7 @@
 
 use std::ops::RangeInclusive;
 use std::pin::Pin;
-use std::task::{Context, Poll, ready};
+use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -386,30 +386,43 @@ impl<DB: DBAccess + Send> Stream for BudgetedStateStream<'_, DB> {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
         loop {
-            // If we're waiting for a notification, poll it first.
-            if let Some(notified) = this.notified.as_mut().as_pin_mut() {
-                ready!(notified.poll(cx));
-                this.notified.set(None);
-                // Notification fired — retry the reserve below.
-            }
-
             // If we have a pending deficit from a previous failed try_reserve,
             // attempt to resolve it.
             if *this.pending_deficit > 0 {
                 let deficit = *this.pending_deficit;
+
+                // Ensure a notification future exists BEFORE checking
+                // availability. `notify_waiters()` only wakes futures that
+                // have already been polled (registered as waiters), so we
+                // must create + poll the future before `try_reserve` to
+                // avoid losing concurrent return-memory notifications.
+                if this.notified.as_mut().as_pin_mut().is_none() {
+                    this.notified.set(Some(this.budget.availability_notified()));
+                }
+
                 if let Some(extra) = this.budget.try_reserve(deficit) {
                     this.lease.merge(extra);
                     *this.pending_deficit = 0;
+                    this.notified.set(None);
                     // Fall through to try_produce_next below.
                 } else if let Err(oom) = this.budget.check_out_of_memory(deficit, *this.pinned) {
                     *this.pending_deficit = 0;
+                    this.notified.set(None);
                     return Poll::Ready(Some(Err(oom.into())));
                 } else {
-                    // Transient failure — register for notification and wait.
-                    this.notified.set(Some(this.budget.availability_notified()));
-                    // Poll the newly created notification future to register waker.
-                    let _ = this.notified.as_mut().as_pin_mut().unwrap().poll(cx);
-                    return Poll::Pending;
+                    // Transient failure — poll the notification to register
+                    // the waker or consume a pending notification.
+                    match this.notified.as_mut().as_pin_mut().unwrap().poll(cx) {
+                        Poll::Ready(()) => {
+                            // Notification consumed — clear and retry.
+                            this.notified.set(None);
+                            continue;
+                        }
+                        Poll::Pending => {
+                            // Waker registered — wait for memory.
+                            return Poll::Pending;
+                        }
+                    }
                 }
             }
 
