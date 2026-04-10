@@ -45,6 +45,16 @@ where
         }: Request,
         replier: Replier<Self::Output>,
     ) -> Result<(), Self::Error> {
+        // Reading from a non-leader partition processor can return stale results
+        // (e.g. NotFound for an invocation that exists on the leader) because the
+        // follower's local store may not have replayed all log entries yet.
+        if !self.proposer.is_leader() {
+            replier.send_result(Err(PartitionProcessorRpcError::NotLeader(
+                self.proposer.partition_id(),
+            )));
+            return Ok(());
+        }
+
         // -- Figure out the invocation status
         match self.storage.get_invocation_status(&invocation_id).await {
             Ok(InvocationStatus::Invoked(_)) => {
@@ -193,6 +203,7 @@ mod tests {
         let invocation_id = InvocationId::mock_random();
 
         let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
         proposer
             .expect_notify_invoker_to_retry_now()
             .return_once_st(move |got_invocation_id| {
@@ -238,6 +249,7 @@ mod tests {
         let invocation_id = InvocationId::mock_random();
 
         let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
         proposer
             .expect_handle_rpc_proposal_command::<ResumeInvocationRpcResponse>()
             .return_once_st(move |_, cmd, request_id, replier| {
@@ -287,6 +299,7 @@ mod tests {
         let invocation_id = InvocationId::mock_random();
 
         let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
         proposer
             .expect_handle_rpc_proposal_command::<PartitionProcessorRpcResponse>()
             .never();
@@ -320,6 +333,7 @@ mod tests {
         let invocation_id = InvocationId::mock_random();
 
         let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
         proposer
             .expect_handle_rpc_proposal_command::<PartitionProcessorRpcResponse>()
             .never();
@@ -365,6 +379,7 @@ mod tests {
         let invocation_id = InvocationId::mock_random();
 
         let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
         proposer
             .expect_handle_rpc_proposal_command::<ResumeInvocationRpcResponse>()
             .never();
@@ -417,6 +432,7 @@ mod tests {
         }
 
         let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
         proposer
             .expect_handle_rpc_proposal_command::<ResumeInvocationRpcResponse>()
             .never();
@@ -492,6 +508,7 @@ mod tests {
         }
 
         let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
         proposer
             .expect_handle_rpc_proposal_command::<ResumeInvocationRpcResponse>()
             .return_once_st(move |_, cmd, request_id, replier| {
@@ -550,5 +567,42 @@ mod tests {
             rx.recv().await.unwrap(),
             PartitionProcessorRpcResponse::ResumeInvocation(ResumeInvocationRpcResponse::Ok)
         );
+    }
+
+    #[test(restate_core::test)]
+    async fn reply_not_leader_when_not_leader() {
+        let invocation_id = InvocationId::mock_random();
+
+        let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(false);
+        proposer
+            .expect_partition_id()
+            .return_const(PartitionId::from(0));
+        proposer
+            .expect_handle_rpc_proposal_command::<PartitionProcessorRpcResponse>()
+            .never();
+
+        let mut storage = MockStorage {
+            expected_invocation_id: invocation_id,
+            status: Default::default(),
+        };
+
+        let (tx, rx) = Reciprocal::mock();
+        RpcHandler::handle(
+            RpcContext::new(&mut proposer, &(), &mut storage),
+            Request {
+                request_id: Default::default(),
+                invocation_id,
+                update_deployment_id: Default::default(),
+            },
+            Replier::new(tx),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            rx.recv().await,
+            Err(PartitionProcessorRpcError::NotLeader(_))
+        ));
     }
 }
