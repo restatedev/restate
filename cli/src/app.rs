@@ -62,6 +62,12 @@ pub enum Command {
     /// Manages your service deployments
     #[clap(subcommand)]
     Deployments(deployments::Deployments),
+    /// Manage Kafka clusters
+    #[clap(subcommand)]
+    KafkaClusters(kafkaclusters::KafkaClusters),
+    /// Manage Kafka subscriptions
+    #[clap(subcommand)]
+    Subscriptions(subscriptions::Subscriptions),
     /// Manage active invocations
     #[clap(subcommand)]
     Invocations(invocations::Invocations),

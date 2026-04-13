@@ -16,7 +16,9 @@ use http::{Uri, Version};
 use indicatif::ProgressBar;
 use restate_admin_rest_model::deployments::*;
 use restate_admin_rest_model::invocations::RestartAsNewInvocationResponse;
+use restate_admin_rest_model::kafka_clusters::*;
 use restate_admin_rest_model::services::*;
+use restate_admin_rest_model::subscriptions::*;
 use restate_admin_rest_model::version::VersionInformation;
 use restate_futures_util::streams::StreamExt as RestateStreamExt;
 use restate_serde_util::SerdeableHeaderHashMap;
@@ -100,6 +102,58 @@ pub trait AdminClientInterface {
     fn version(
         &self,
     ) -> impl Future<Output = reqwest::Result<Envelope<VersionInformation>>> + Send + 'static;
+
+    // --- Kafka clusters ----------------------------------------------------
+
+    fn list_kafka_clusters(
+        &self,
+    ) -> impl Future<Output = reqwest::Result<Envelope<ListKafkaClustersResponse>>> + Send + 'static;
+
+    fn get_kafka_cluster(
+        &self,
+        name: &str,
+        include_subscriptions: bool,
+    ) -> impl Future<Output = reqwest::Result<Envelope<KafkaClusterResponse>>> + Send + 'static;
+
+    fn create_kafka_cluster(
+        &self,
+        body: CreateKafkaClusterRequest,
+    ) -> impl Future<Output = reqwest::Result<Envelope<SimpleKafkaClusterResponse>>> + Send + 'static;
+
+    fn update_kafka_cluster(
+        &self,
+        name: &str,
+        body: UpdateKafkaClusterRequest,
+    ) -> impl Future<Output = reqwest::Result<Envelope<SimpleKafkaClusterResponse>>> + Send + 'static;
+
+    fn delete_kafka_cluster(
+        &self,
+        name: &str,
+        force: bool,
+    ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static;
+
+    // --- Subscriptions -----------------------------------------------------
+
+    fn list_subscriptions(
+        &self,
+        sink: Option<&str>,
+        source: Option<&str>,
+    ) -> impl Future<Output = reqwest::Result<Envelope<ListSubscriptionsResponse>>> + Send + 'static;
+
+    fn get_subscription(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = reqwest::Result<Envelope<SubscriptionResponse>>> + Send + 'static;
+
+    fn create_subscription(
+        &self,
+        body: CreateSubscriptionRequest,
+    ) -> impl Future<Output = reqwest::Result<Envelope<SubscriptionResponse>>> + Send + 'static;
+
+    fn delete_subscription(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static;
 }
 
 impl AdminClientInterface for AdminClient {
@@ -243,6 +297,110 @@ impl AdminClientInterface for AdminClient {
     ) -> impl Future<Output = reqwest::Result<Envelope<VersionInformation>>> + Send + 'static {
         let url = self.versioned_url(["version"]);
         self.run(reqwest::Method::GET, url)
+    }
+
+    // --- Kafka clusters ----------------------------------------------------
+
+    fn list_kafka_clusters(
+        &self,
+    ) -> impl Future<Output = reqwest::Result<Envelope<ListKafkaClustersResponse>>> + Send + 'static
+    {
+        let url = self.versioned_url(["kafka-clusters"]);
+        self.run(reqwest::Method::GET, url)
+    }
+
+    fn get_kafka_cluster(
+        &self,
+        name: &str,
+        include_subscriptions: bool,
+    ) -> impl Future<Output = reqwest::Result<Envelope<KafkaClusterResponse>>> + Send + 'static
+    {
+        let mut url = self.versioned_url(["kafka-clusters", name]);
+        if include_subscriptions {
+            url.set_query(Some("include_subscriptions=true"));
+        }
+        self.run(reqwest::Method::GET, url)
+    }
+
+    fn create_kafka_cluster(
+        &self,
+        body: CreateKafkaClusterRequest,
+    ) -> impl Future<Output = reqwest::Result<Envelope<SimpleKafkaClusterResponse>>> + Send + 'static
+    {
+        let url = self.versioned_url(["kafka-clusters"]);
+        self.run_with_body(reqwest::Method::POST, url, body)
+    }
+
+    fn update_kafka_cluster(
+        &self,
+        name: &str,
+        body: UpdateKafkaClusterRequest,
+    ) -> impl Future<Output = reqwest::Result<Envelope<SimpleKafkaClusterResponse>>> + Send + 'static
+    {
+        let url = self.versioned_url(["kafka-clusters", name]);
+        self.run_with_body(reqwest::Method::PATCH, url, body)
+    }
+
+    fn delete_kafka_cluster(
+        &self,
+        name: &str,
+        force: bool,
+    ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static {
+        let mut url = self.versioned_url(["kafka-clusters", name]);
+        if force {
+            url.set_query(Some("force=true"));
+        }
+        self.run(reqwest::Method::DELETE, url)
+    }
+
+    // --- Subscriptions -----------------------------------------------------
+
+    fn list_subscriptions(
+        &self,
+        sink: Option<&str>,
+        source: Option<&str>,
+    ) -> impl Future<Output = reqwest::Result<Envelope<ListSubscriptionsResponse>>> + Send + 'static
+    {
+        let mut url = self.versioned_url(["subscriptions"]);
+        let mut q = url.query_pairs_mut();
+        if let Some(s) = sink {
+            q.append_pair("sink", s);
+        }
+        if let Some(s) = source {
+            q.append_pair("source", s);
+        }
+        drop(q);
+        // Avoid an empty `?` when no filters are set.
+        if url.query() == Some("") {
+            url.set_query(None);
+        }
+        self.run(reqwest::Method::GET, url)
+    }
+
+    fn get_subscription(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = reqwest::Result<Envelope<SubscriptionResponse>>> + Send + 'static
+    {
+        let url = self.versioned_url(["subscriptions", id]);
+        self.run(reqwest::Method::GET, url)
+    }
+
+    fn create_subscription(
+        &self,
+        body: CreateSubscriptionRequest,
+    ) -> impl Future<Output = reqwest::Result<Envelope<SubscriptionResponse>>> + Send + 'static
+    {
+        let url = self.versioned_url(["subscriptions"]);
+        self.run_with_body(reqwest::Method::POST, url, body)
+    }
+
+    fn delete_subscription(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static {
+        let url = self.versioned_url(["subscriptions", id]);
+        self.run(reqwest::Method::DELETE, url)
     }
 }
 
