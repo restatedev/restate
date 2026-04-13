@@ -11,8 +11,7 @@
 use bytes::{Buf, BufMut};
 
 use restate_types::clock::UniqueTimestamp;
-use restate_types::identifiers::InvocationId;
-use restate_types::logs::Lsn;
+use restate_types::identifiers::{InvocationId, StateMutationId};
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::vqueue::{
     EffectivePriority, NewEntryPriority, VQueueId, VQueueInstance, VQueueParent,
@@ -86,11 +85,10 @@ impl From<InvocationId> for EntryId {
     }
 }
 
-impl From<Lsn> for EntryId {
+impl From<StateMutationId> for EntryId {
     #[inline]
-    fn from(lsn: Lsn) -> Self {
-        // big endian because we want messages with higher message indices to appear later
-        Self::from_bytes(u128::from(lsn.as_u64()).to_be_bytes())
+    fn from(mutation_id: StateMutationId) -> Self {
+        Self::from_bytes(mutation_id.to_remainder_bytes())
     }
 }
 
