@@ -8,15 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::state_machine::{CommandHandler, Error, ParkCause, StateMachineApplyContext};
-use restate_storage_api::invocation_status_table::{InvocationStatus, WriteInvocationStatusTable};
-use restate_storage_api::journal_table_v2::ReadJournalTable;
-use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
-use restate_types::config::Configuration;
-use restate_types::identifiers::InvocationId;
-use restate_types::journal_v2::NotificationId;
+use restate_storage_api::invocation::{self, InvocationState};
 use std::collections::HashSet;
 use tracing::trace;
+
+use restate_clock::UniqueTimestamp;
+use restate_storage_api::invocation_status_table::{InvocationStatus, WriteInvocationStatusTable};
+use restate_storage_api::journal_table_v2::ReadJournalTable;
+use restate_storage_api::lock_table::WriteLockTable;
+use restate_storage_api::vqueue_table::{EntryStateHeader, ReadVQueueTable, WriteVQueueTable};
+use restate_types::config::Configuration;
+use restate_types::identifiers::{InvocationId, WithPartitionKey};
+use restate_types::journal_v2::NotificationId;
+use restate_types::vqueues::EntryId;
+use restate_vqueues::VQueue;
+
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub struct OnSuspendCommand {
     pub invocation_id: InvocationId,
@@ -27,7 +34,11 @@ pub struct OnSuspendCommand {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnSuspendCommand
 where
-    S: ReadJournalTable + WriteInvocationStatusTable + WriteVQueueTable + ReadVQueueTable,
+    S: ReadJournalTable
+        + WriteInvocationStatusTable
+        + WriteVQueueTable
+        + ReadVQueueTable
+        + WriteLockTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         debug_assert!(
@@ -35,6 +46,9 @@ where
             "Expecting at least one entry on which the invocation {} is waiting.",
             self.invocation_id
         );
+        // todo: Improve mechanical empathy by passing down the "waiting" set
+        // down to the rocksdb iterator so that we can stop iterating as soon as we find
+        // any match.
 
         // Notifications currently stored
         let available_notifications = ctx
@@ -80,12 +94,33 @@ where
                 .update(ctx.record_created_at);
 
             if Configuration::pinned().common.experimental_enable_vqueues {
-                ctx.vqueue_park_invocation(
-                    &self.invocation_id,
-                    &in_flight_invocation_metadata.invocation_target,
-                    ParkCause::Suspend,
+                let now = UniqueTimestamp::from_unix_millis_unchecked(ctx.record_created_at);
+                let entry_id = EntryId::from(&self.invocation_id);
+                let Some(header) = ctx
+                    .storage
+                    .get_entry_state_header(self.invocation_id.partition_key(), &entry_id)
+                    .await?
+                else {
+                    // todo resolve once we decided on the actual migration strategy
+                    panic!(
+                        "Trying to suspend invocation {} which does not exist as a vqueue entry. Have you forgotten to migrate from the old inbox to vqueues?",
+                        self.invocation_id
+                    );
+                };
+
+                VQueue::get(
+                    header.vqueue_id(),
+                    ctx.storage,
+                    ctx.vqueues_cache,
+                    ctx.is_leader.then_some(ctx.action_collector),
                 )
-                .await?;
+                .await?
+                .expect("suspending in a non-existent vqueue")
+                .suspend_entry(
+                    now,
+                    &header,
+                    &InvocationState::new(invocation::Status::Suspended),
+                );
             }
 
             invocation_status = InvocationStatus::Suspended {

@@ -21,6 +21,7 @@ mod invocation_status;
 mod journal;
 mod journal_events;
 mod keyed_service_status;
+mod locks;
 mod log;
 pub mod loglet_worker;
 mod node;
@@ -38,6 +39,8 @@ mod statistics;
 pub mod table_docs;
 mod table_macro;
 mod table_providers;
+mod vqueue;
+mod vqueue_stats;
 pub use table_providers::Scan;
 pub mod table_util;
 

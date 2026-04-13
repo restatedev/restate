@@ -15,20 +15,20 @@ use std::ops::RangeInclusive;
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 
+use bytes::BytesMut;
 use futures::future::OptionFuture;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt, stream};
+use itertools::Itertools;
 use metrics::counter;
 use tokio_stream::wrappers::{ReceiverStream, WatchStream};
-use tracing::{debug, trace};
+use tracing::{debug, error, trace};
 
 use restate_bifrost::CommitToken;
 use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{Metadata, MetadataKind, TaskCenter, TaskHandle, TaskId};
-use restate_futures_util::concurrency::Permit;
-use restate_memory::MemoryPool;
 use restate_partition_store::{PartitionDb, PartitionStore};
-use restate_storage_api::vqueue_table::EntryCard;
+use restate_storage_api::vqueue_table::scheduler::SchedulerDecisions;
 use restate_types::identifiers::{
     LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
@@ -39,12 +39,12 @@ use restate_types::net::ingest::IngestRecord;
 use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
-use restate_types::{RESTATE_VERSION_1_7_0, SemanticRestateVersion, Version, Versioned};
+use restate_types::{RESTATE_VERSION_1_7_0, SemanticRestateVersion, Version, Versioned, vqueues};
+use restate_vqueues::SchedulerService;
 use restate_vqueues::VQueueEvent;
-use restate_vqueues::{SchedulerService, VQueuesMeta, scheduler};
+use restate_vqueues::scheduler::Decisions;
+use restate_wal_protocol::Command;
 use restate_wal_protocol::control::UpsertSchema;
-use restate_wal_protocol::vqueues::Assignment;
-use restate_wal_protocol::{Command, vqueues};
 
 use crate::metric_definitions::{PARTITION_HANDLE_LEADER_ACTIONS, USAGE_LEADER_ACTION_COUNT};
 use crate::partition::cleaner::{CleanerEffect, CleanerHandle};
@@ -132,11 +132,7 @@ impl LeaderState {
     ///
     /// Important: The future needs to be cancellation safe since it is polled as a tokio::select
     /// arm!
-    pub async fn run(
-        &mut self,
-        state_machine: &StateMachine,
-        vqueues: VQueuesMeta<'_>,
-    ) -> Result<Vec<ActionEffect>, Error> {
+    pub async fn run(&mut self, state_machine: &StateMachine) -> Result<Vec<ActionEffect>, Error> {
         let timer_stream = std::pin::pin!(stream::unfold(
             &mut self.timer_service,
             |timer_service| async {
@@ -149,8 +145,13 @@ impl LeaderState {
         // if we have problems with latency
         let scheduler_stream =
             std::pin::pin!(stream::unfold(&mut self.scheduler, |scheduler| async {
-                let assignment = scheduler.schedule_next(vqueues).await;
-                Some((ActionEffect::Scheduler(assignment), scheduler))
+                match scheduler.schedule_next().await {
+                    Ok(decisions) => Some((ActionEffect::Scheduler(decisions), scheduler)),
+                    Err(e) => {
+                        error!("Fatal error when polling scheduler: {e}");
+                        None
+                    }
+                }
             }));
 
         let schema_stream = (&mut self.schema_stream).filter_map(|_| {
@@ -269,47 +270,43 @@ impl LeaderState {
         &mut self,
         action_effects: impl IntoIterator<Item = ActionEffect>,
     ) -> Result<(), Error> {
+        let mut arena = BytesMut::with_capacity(128 * 1024);
         for effect in action_effects {
             match effect {
                 ActionEffect::Scheduler(decisions) => {
-                    let decisions = decisions?;
-                    // `queues * 2` because we assume a worst case of two actions per queue
-                    // (yields/resume, and starts) each action generates its own command.
-                    let mut commands = Vec::with_capacity(decisions.num_queues() * 2);
-                    for (qid, decision) in decisions.into_iter() {
-                        let updated_token_bucket_zero_time = decision.updated_tb_zero_time();
-                        for (action, items) in decision.into_iter_per_action() {
-                            let mut assignment = Assignment::with_capacity(&qid, items.len());
-                            for entry in items.into_iter() {
-                                let (item, stats) = entry.split();
-                                assignment.push(item, stats);
-                            }
-                            match action {
-                                scheduler::Action::MoveToRun => {
-                                    let command = vqueues::VQWaitingToRunning {
-                                        assignment,
-                                        meta_updates: vqueues::MetaUpdates {
-                                            updated_token_bucket_zero_time,
-                                        },
-                                    }
-                                    .encode_to_bytes();
-                                    commands.push((
-                                        qid.partition_key,
-                                        Command::VQWaitingToRunning(command),
-                                    ));
-                                }
-                                scheduler::Action::Yield => {
-                                    let command =
-                                        vqueues::VQYieldRunning { assignment }.encode_to_bytes();
-                                    commands.push((
-                                        qid.partition_key,
-                                        Command::VQYieldRunning(command),
-                                    ));
-                                }
-                            }
-                        }
-                    }
+                    let Decisions {
+                        qids,
+                        num_run,
+                        num_yield,
+                    } = decisions;
+                    trace!(
+                        "Scheduler decided to run {num_run} entries and yield {num_yield} entries across {} vqueues",
+                        qids.len()
+                    );
 
+                    let commands: Vec<_> = qids
+                        .into_iter()
+                        .chunk_by(|(id, _)| id.partition_key())
+                        .into_iter()
+                        // one command per partition key
+                        .map(|(partition_key, group)| {
+                            let decisions = SchedulerDecisions {
+                                qids: group.collect(),
+                            };
+
+                            arena.reserve(decisions.encoded_len());
+                            // safe to unwrap because we reserved enough space
+                            decisions.bilrost_encode(&mut arena).unwrap();
+
+                            (
+                                partition_key,
+                                Command::VQSchedulerDecisions(arena.split().freeze()),
+                            )
+                            // an action goes into command, and resources are popped
+                        })
+                        // Unfortunately chunk_by cannot generate an ExactSizeIterator.
+                        // I'm hoping that this is a temporary measure until SelfProposer is redesigned.
+                        .collect();
                     self.self_proposer
                         .propose_many(commands.into_iter())
                         .await?;
@@ -473,8 +470,6 @@ impl LeaderState {
         &mut self,
         invoker_tx: &mut impl restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
         actions: impl Iterator<Item = Action>,
-        vqueues: VQueuesMeta<'_>,
-        memory_pool: &MemoryPool,
     ) -> Result<(), Error> {
         for action in actions {
             let action_name = action.name();
@@ -489,7 +484,7 @@ impl LeaderState {
             )
             .increment(1);
 
-            self.handle_action(action, invoker_tx, vqueues, memory_pool)?;
+            self.handle_action(action, invoker_tx)?;
         }
 
         Ok(())
@@ -499,8 +494,6 @@ impl LeaderState {
         &mut self,
         action: Action,
         invoker_tx: &mut impl restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
-        vqueues: VQueuesMeta<'_>,
-        memory_pool: &MemoryPool,
     ) -> Result<(), Error> {
         let partition_leader_epoch = (self.partition_id, self.leader_epoch);
         match action {
@@ -650,23 +643,32 @@ impl LeaderState {
                 }
             }
             Action::VQEvent(inbox_event) => {
-                self.handle_vqueue_inbox_event(inbox_event, vqueues)?;
+                self.handle_vqueue_inbox_event(inbox_event);
             }
             Action::VQInvoke {
                 qid,
-                item_hash,
-                invocation_id,
+                key,
                 invocation_target,
             } => {
-                let (permit, memory_lease) = match self.scheduler.pop_resources(item_hash) {
-                    Some(resources) => (resources.permit, resources.memory_lease),
-                    None => {
-                        tracing::warn!(
-                            "Cannot find resources for item hash {item_hash} in scheduler. Will not respect the invoker limit for this invocation"
-                        );
-                        (Permit::new_empty(), memory_pool.empty_lease())
-                    }
-                };
+                // state mutations should not create Invoke actions. At least for now.
+                assert!(matches!(key.kind(), vqueues::EntryKind::Invocation));
+                let invocation_id = key
+                    .entry_id()
+                    .to_invocation_id(qid.partition_key())
+                    .unwrap();
+
+                let mut run_permit = self.scheduler.pop_resources(&key).unwrap_or_else(|| {
+                    tracing::error!(
+                        vqueue = %qid,
+                        restate.invocation.id = %invocation_id,
+                        "Cannot find a permit for entry key {key:?} in scheduler. Will not respect the invoker limit for this invocation"
+                    );
+                    unimplemented!()
+                    // todo: RunPermit::new_empty()
+                });
+                // todo: This is temporary until we wrap the returned permit into an InvokePermit
+                // that invoker permit will carry the inner permit as opaque type.
+                let (permit, memory_lease) = run_permit.take_invoker_permit();
                 invoker_tx
                     .vqueue_invoke(
                         partition_leader_epoch,
@@ -683,16 +685,8 @@ impl LeaderState {
         Ok(())
     }
 
-    fn handle_vqueue_inbox_event(
-        &mut self,
-        event: VQueueEvent<EntryCard>,
-        vqueues: VQueuesMeta<'_>,
-    ) -> Result<(), Error> {
-        self.scheduler
-            .on_inbox_event(vqueues, &event)
-            .map_err(Error::Storage)?;
-
-        Ok(())
+    fn handle_vqueue_inbox_event(&mut self, event: VQueueEvent) {
+        self.scheduler.on_inbox_event(event);
     }
 }
 

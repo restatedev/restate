@@ -196,6 +196,12 @@ where
             self.partition_store_manager.clone(),
             &self.remote_scanner_manager,
         )?;
+        crate::locks::register_self(
+            ctx,
+            self.partition_selector.clone(),
+            self.partition_store_manager.clone(),
+            &self.remote_scanner_manager,
+        )?;
         crate::state::register_self(
             ctx,
             self.partition_selector.clone(),
@@ -227,6 +233,19 @@ where
             &self.remote_scanner_manager,
         )?;
         crate::promise::register_self(
+            ctx,
+            self.partition_selector.clone(),
+            self.partition_store_manager.clone(),
+            &self.remote_scanner_manager,
+        )?;
+        // VQueues Tables
+        crate::vqueue_stats::register_self(
+            ctx,
+            self.partition_selector.clone(),
+            self.partition_store_manager.clone(),
+            &self.remote_scanner_manager,
+        )?;
+        crate::vqueue::register_self(
             ctx,
             self.partition_selector.clone(),
             self.partition_store_manager.clone(),

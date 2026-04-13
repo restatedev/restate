@@ -8,17 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::debug_if_leader;
-use crate::partition::state_machine::lifecycle::event::ApplyEventCommand;
-use crate::partition::state_machine::{CommandHandler, Error, ParkCause, StateMachineApplyContext};
+use restate_clock::UniqueTimestamp;
+use restate_storage_api::invocation::{self, InvocationState};
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_events::WriteJournalEventsTable;
-use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
+use restate_storage_api::lock_table::WriteLockTable;
+use restate_storage_api::vqueue_table::{EntryStateHeader, ReadVQueueTable, WriteVQueueTable};
 use restate_types::config::Configuration;
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_events::raw::RawEvent;
+use restate_vqueues::VQueue;
+use tracing::debug;
+
+use crate::debug_if_leader;
+use crate::partition::state_machine::lifecycle::event::ApplyEventCommand;
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub struct OnPausedCommand {
     pub invocation_id: InvocationId,
@@ -32,9 +38,12 @@ where
         + WriteInvocationStatusTable
         + WriteJournalEventsTable
         + WriteVQueueTable
+        + WriteLockTable
         + ReadVQueueTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
+        // todo(asoli): This is overly conservative. With vqueues, it should be possible to pause a
+        // scheduled or suspended invocations.
         let OnPausedCommand {
             invocation_id,
             paused_event,
@@ -56,12 +65,29 @@ where
         debug_if_leader!(ctx.is_leader, "Paused the invocation");
 
         if Configuration::pinned().common.experimental_enable_vqueues {
-            ctx.vqueue_park_invocation(
-                &self.invocation_id,
-                &invoked_meta.invocation_target,
-                ParkCause::Pause,
+            // todo: use the new status
+            let Some((header, _state)) = ctx.storage.get_entry_state(&invocation_id).await? else {
+                // This is equivalent to InvocationStatus::Free.
+                debug!(
+                    "Trying to pause invocation {invocation_id} which does not exist as a vqueue entry, will ignore."
+                );
+                return Ok(());
+            };
+
+            let at = UniqueTimestamp::from_unix_millis_unchecked(ctx.record_created_at);
+            VQueue::get(
+                header.vqueue_id(),
+                ctx.storage,
+                ctx.vqueues_cache,
+                ctx.is_leader.then_some(ctx.action_collector),
             )
-            .await?;
+            .await?
+            .expect("pausing in a non-existent vqueue")
+            .pause_entry(
+                at,
+                &header,
+                &InvocationState::new(invocation::Status::Paused),
+            );
         }
 
         let mut invocation_status = InvocationStatus::Paused(invoked_meta);

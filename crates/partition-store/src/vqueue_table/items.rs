@@ -8,40 +8,30 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_storage_api::vqueue_table::{EntryId, EntryKind};
 use restate_types::clock::UniqueTimestamp;
-use restate_types::identifiers::PartitionKey;
-use restate_types::vqueue::{VQueueInstance, VQueueParent};
+use restate_types::vqueues::{EntryId, VQueueId};
 
 use crate::TableKind::VQueue;
 use crate::keys::{KeyKind, define_table_key};
 
 // Vqueue items are stored under the qid they belong to and their creation timestamp to maintain
 // the order in which they were inserted into the vqueue.
-// 'qI' | PKEY | VQUEUE_PARENT | VQUEUE_INSTANCE | CREATED_AT | ENTRY_KIND | ENTRY_ID
+// 'qI' | QID | CREATED_AT | ENTRY_ID
 define_table_key!(
     VQueue,
     KeyKind::VQueueItems,
     ItemsKey (
-        partition_key: PartitionKey,
-        parent: VQueueParent,
-        instance: VQueueInstance,
+        qid: VQueueId,
         created_at: UniqueTimestamp,
-        kind: EntryKind,
         id: EntryId,
     )
 );
 
-static_assertions::const_assert_eq!(ItemsKey::serialized_length_fixed(), 43);
-
 impl ItemsKey {
     pub const fn serialized_length_fixed() -> usize {
         KeyKind::SERIALIZED_LENGTH
-            + size_of::<PartitionKey>()
-            + size_of::<VQueueParent>()
-            + size_of::<VQueueInstance>()
-            + size_of::<UniqueTimestamp>()
-            + size_of::<EntryKind>()
-            + size_of::<EntryId>()
+            + VQueueId::serialized_length_fixed()
+            + std::mem::size_of::<UniqueTimestamp>()
+            + EntryId::serialized_length_fixed()
     }
 }

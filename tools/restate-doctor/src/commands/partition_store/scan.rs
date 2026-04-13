@@ -12,6 +12,7 @@
 
 use anyhow::{Result, bail};
 use cling::prelude::*;
+use comfy_table::Table;
 use rocksdb::{IteratorMode, ReadOptions};
 use strum::VariantArray;
 
@@ -26,6 +27,7 @@ use restate_partition_store::journal_table_v2::{
     JournalCompletionIdToCommandIndexKey, JournalKey, JournalNotificationIdToNotificationIndexKey,
 };
 use restate_partition_store::keys::{DecodeTableKey, KeyKind};
+use restate_partition_store::locks_table::LockKey;
 use restate_partition_store::outbox_table::OutboxKey;
 use restate_partition_store::promise_table::PromiseKey;
 use restate_partition_store::service_status_table::ServiceStatusKey;
@@ -35,7 +37,6 @@ use restate_partition_store::vqueue_table::{
     ActiveKey, EntryStateKey, InboxKey as VQueueInboxKey, ItemsKey, MetaKey,
 };
 
-use comfy_table::Table;
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::{c_println, c_title};
 use restate_serde_util::ByteCount;
@@ -44,7 +45,7 @@ use crate::app::GlobalOpts;
 use crate::util::colorize::{color_legend, colorize_key_hex};
 use crate::util::decode_value::decode_value;
 use crate::util::hex_encode;
-use crate::util::rocksdb::{open_db, resolve_partition_store_path};
+use crate::util::rocksdb::{open_partition_store_db, resolve_partition_store_path};
 
 use super::PartitionStoreOpts;
 
@@ -239,7 +240,7 @@ pub async fn run_scan(
     }: &Scan,
 ) -> Result<()> {
     let path = resolve_partition_store_path(global_opts.data_dir.as_deref(), opts.path.as_deref())?;
-    let db_info = open_db(&path, opts.open_mode(), global_opts.limit_open_files)?;
+    let db_info = open_partition_store_db(&path, opts.open_mode(), global_opts.limit_open_files)?;
 
     // Parse table filter if provided
     let table_filter = table.as_ref().map(|t| parse_table_filter(t)).transpose()?;
@@ -430,6 +431,9 @@ fn decode_key(key: &[u8]) -> (String, Option<String>, Option<KeyKind>) {
             .ok()
             .map(|k| format!("{k:?}")),
         KeyKind::VQueueItems => ItemsKey::deserialize_from(&mut cursor)
+            .ok()
+            .map(|k| format!("{k:?}")),
+        KeyKind::Lock => LockKey::deserialize_from(&mut cursor)
             .ok()
             .map(|k| format!("{k:?}")),
     };

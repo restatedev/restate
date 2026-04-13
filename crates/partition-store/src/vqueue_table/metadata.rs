@@ -8,8 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_types::identifiers::PartitionKey;
-use restate_types::vqueue::{VQueueId, VQueueInstance, VQueueParent};
+use restate_types::vqueues::VQueueId;
 
 use crate::TableKind::VQueue;
 use crate::keys::{EncodeTableKey, KeyKind, define_table_key};
@@ -21,18 +20,13 @@ define_table_key!(
     VQueue,
     KeyKind::VQueueMeta,
     MetaKey(
-        partition_key: PartitionKey,
-        parent: VQueueParent,
-        instance: VQueueInstance,
+        qid: VQueueId,
     )
 );
 
 impl MetaKey {
     pub const fn serialized_length_fixed() -> usize {
-        KeyKind::SERIALIZED_LENGTH
-            + std::mem::size_of::<PartitionKey>()
-            + std::mem::size_of::<VQueueParent>()
-            + std::mem::size_of::<VQueueInstance>()
+        KeyKind::SERIALIZED_LENGTH + VQueueId::serialized_length_fixed()
     }
 
     #[inline]
@@ -43,36 +37,25 @@ impl MetaKey {
     }
 }
 
-impl From<VQueueId> for MetaKey {
+// todo: check if this is still needed
+impl From<&VQueueId> for MetaKey {
     #[inline]
-    fn from(qid: VQueueId) -> Self {
-        MetaKey {
-            partition_key: qid.partition_key,
-            parent: qid.parent,
-            instance: qid.instance,
-        }
+    fn from(qid: &VQueueId) -> Self {
+        MetaKey { qid: qid.clone() }
     }
 }
 
 impl From<MetaKey> for VQueueId {
     #[inline]
     fn from(key: MetaKey) -> Self {
-        VQueueId {
-            partition_key: key.partition_key,
-            parent: key.parent,
-            instance: key.instance,
-        }
+        key.qid
     }
 }
 
 impl From<ActiveKey> for MetaKey {
     #[inline]
-    fn from(qid: ActiveKey) -> Self {
-        MetaKey {
-            partition_key: qid.partition_key,
-            parent: qid.parent,
-            instance: qid.instance,
-        }
+    fn from(key: ActiveKey) -> Self {
+        MetaKey { qid: key.qid }
     }
 }
 
@@ -93,22 +76,29 @@ pub(crate) mod vqueue_meta_merge {
         existing_val: Option<&[u8]>,
         operands: &MergeOperands,
     ) -> Option<Vec<u8>> {
-        let mut vqueue_meta = VQueueMeta::default();
-        if let Some(existing_val) = existing_val
-            && let Err(e) = vqueue_meta.replace_from_slice(existing_val)
-        {
+        let Some(mut existing_val) = existing_val else {
             let key = MetaKey::deserialize_from(&mut key);
             error!(
                 key = ?key,
-                "[full merge] Failed to decode ({} bytes) VQueueMeta: {}",
-                existing_val.len(),
-                e
+                "[full merge] Failed to merge vqueue metadata updates with a non-existent vqueue",
             );
             return None;
-        }
+        };
+
+        let mut vqueue_meta = match VQueueMeta::decode(&mut existing_val) {
+            Ok(m) => m,
+            Err(e) => {
+                error!(
+                    key = ?key,
+                    "[full merge] Failed to decode existing VQueueMeta ({} bytes): {e}",
+                    existing_val.len(),
+                );
+                return None;
+            }
+        };
 
         for op in operands {
-            let updates = match VQueueMetaUpdates::decode(op) {
+            let batch = match VQueueMetaUpdates::decode(op) {
                 Err(err) => {
                     let key = MetaKey::deserialize_from(&mut key);
                     error!(
@@ -119,16 +109,10 @@ pub(crate) mod vqueue_meta_merge {
                     );
                     return None;
                 }
-                Ok(updates) => updates,
+                Ok(batch) => batch,
             };
-            if let Err(err) = vqueue_meta.apply_updates(&updates) {
-                let key = MetaKey::deserialize_from(&mut key);
-                error!(
-                    ?key,
-                    ?err,
-                    "[full merge] Failed to apply vqueue meta update"
-                );
-                return None;
+            for update in batch.updates.iter() {
+                vqueue_meta.apply_update(update);
             }
         }
         Some(vqueue_meta.encode_to_vec())

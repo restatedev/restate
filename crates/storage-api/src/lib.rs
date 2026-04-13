@@ -63,10 +63,12 @@ pub mod deduplication_table;
 pub mod fsm_table;
 pub mod idempotency_table;
 pub mod inbox_table;
+pub mod invocation;
 pub mod invocation_status_table;
 pub mod journal_events;
 pub mod journal_table;
 pub mod journal_table_v2;
+pub mod lock_table;
 pub mod outbox_table;
 pub mod promise_table;
 pub mod protobuf_types;
@@ -131,6 +133,7 @@ pub trait Transaction:
     + journal_events::WriteJournalEventsTable
     + vqueue_table::ReadVQueueTable
     + vqueue_table::WriteVQueueTable
+    + lock_table::WriteLockTable
     + Send
 {
     fn commit(self) -> impl Future<Output = Result<()>> + Send;
