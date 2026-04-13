@@ -36,8 +36,8 @@ use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaRef, VQueueMetaUpdates};
 use restate_storage_api::vqueue_table::{
     EntryKey, EntryMetadata, EntryState, EntryStateHeader, EntryStatistics, EntryValue,
-    IdentifiesEntry, LazyEntryState, ReadVQueueTable, ScanVQueueMetaTable, ScanVQueueTable, Stage,
-    WriteVQueueTable,
+    IdentifiesEntry, LazyEntryState, ReadVQueueTable, ScanVQueueEntriesTable, ScanVQueueMetaTable,
+    ScanVQueueTable, Stage, WriteVQueueTable,
 };
 use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::PartitionKey;
@@ -498,6 +498,43 @@ impl ScanVQueueMetaTable for PartitionStore {
 
                 let (vqueue_id,) = meta_key.split();
                 f((&vqueue_id, &meta)).map_break(Ok)
+            },
+        )
+        .map_err(|_| StorageError::OperationalError)
+    }
+}
+
+impl ScanVQueueEntriesTable for PartitionStore {
+    fn for_each_vqueue_entry<
+        F: for<'a> FnMut(
+                (&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue),
+            ) -> std::ops::ControlFlow<()>
+            + Send
+            + Sync
+            + 'static,
+    >(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+        mut f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        self.iterator_for_each(
+            "df-vqueue",
+            Priority::Low,
+            TableScan::FullScanPartitionKeyRange::<InboxKey>(range),
+            move |(key, mut value)| {
+                let mut inbox_key_slice = key;
+                let inbox_key = break_on_err(InboxKey::deserialize_from(&mut inbox_key_slice))?;
+                let entry_key = EntryKey::new(
+                    **inbox_key.has_lock(),
+                    *inbox_key.run_at(),
+                    *inbox_key.seq(),
+                    *inbox_key.entry_id(),
+                );
+                let entry = break_on_err(
+                    EntryValue::decode(&mut value).map_err(StorageError::BilrostDecode),
+                )?;
+
+                f((inbox_key.qid(), *inbox_key.stage(), &entry_key, &entry)).map_break(Ok)
             },
         )
         .map_err(|_| StorageError::OperationalError)

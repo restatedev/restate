@@ -22,8 +22,9 @@ use datafusion::physical_expr_common::physical_expr::snapshot_physical_expr;
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::expressions::{BinaryExpr, Column, InListExpr, Literal};
 
+use restate_types::PartitionedResourceId;
 use restate_types::identifiers::partitioner::HashPartitioner;
-use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey};
+use restate_types::identifiers::{InvocationId, PartitionKey, ResourceId, WithPartitionKey};
 
 use crate::partition_store_scanner::ScanLocalPartitionFilter;
 
@@ -62,6 +63,25 @@ impl FirstMatchingPartitionKeyExtractor {
                 .context("expected scope")?
                 .context("null scopes cannot be used for partition-key matching")?;
             Ok(HashPartitioner::compute_partition_key(value))
+        });
+        self.append(e)
+    }
+
+    pub fn with_partitioned_resource_id<T>(self, column_name: impl Into<String>) -> Self
+    where
+        T: PartitionedResourceId + ResourceId + FromStr,
+        <T as FromStr>::Err: std::error::Error + Send + Sync + 'static,
+    {
+        // we only use the scope value if it's not empty, otherwise we cannot
+        // rely on it to get the partition key.
+        let e = MatchingColumnExtractor::new(column_name, |value: &ScalarValue| {
+            let value = value
+                .try_as_str()
+                .with_context(|| format!("expected string {:?}", T::RESOURCE_TYPE))?
+                .context("null values cannot be used for partition-key matching")?;
+            let resource =
+                T::from_str(value).with_context(|| format!("non valid {:?}", T::RESOURCE_TYPE))?;
+            Ok(resource.partition_key())
         });
         self.append(e)
     }
