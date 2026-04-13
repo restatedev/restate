@@ -19,11 +19,12 @@ pub(crate) mod utils;
 use cling::prelude::*;
 
 #[derive(Run, Subcommand, Clone)]
-#[clap(visible_alias = "kc", alias = "kafkacluster")]
+#[clap(visible_alias = "kc", alias = "kafkaclusters", alias = "kafkacluster")]
 pub enum KafkaClusters {
     /// List the registered Kafka clusters
     List(list::List),
     /// Register a new Kafka cluster
+    #[clap(alias = "register")]
     Create(create::Create),
     /// Print detailed information about a Kafka cluster
     Describe(describe::Describe),

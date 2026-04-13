@@ -21,6 +21,7 @@ pub enum Subscriptions {
     /// List the registered subscriptions
     List(list::List),
     /// Register a new subscription
+    #[clap(alias = "register")]
     Create(create::Create),
     /// Print detailed information about a subscription
     Describe(describe::Describe),

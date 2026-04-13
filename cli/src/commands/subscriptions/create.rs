@@ -140,10 +140,12 @@ fn print_summary(
     {
         table.add_kv_row("Kafka brokers:", brokers);
     }
-    table.add_kv_row("Options:", options.len());
     c_println!("{table}");
 
-    if !options.is_empty() {
+    if options.is_empty() {
+        c_println!("Options: (none)");
+    } else {
+        c_println!("Options:");
         c_println!("{}", kc_shared::render_properties_table(options));
     }
 }
