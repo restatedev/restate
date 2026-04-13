@@ -22,7 +22,7 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::TaskContext;
 use datafusion::execution::context::SQLOptions;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-use datafusion::physical_plan::SendableRecordBatchStream;
+use datafusion::physical_plan::{ExecutionPlan, SendableRecordBatchStream, execute_stream};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion::sql::TableReference;
 
@@ -40,6 +40,7 @@ use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 
+use crate::node_fan_out::NodeWarnings;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 
 const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
@@ -437,16 +438,25 @@ impl QueryContext {
         })
     }
 
-    pub async fn execute(
-        &self,
-        sql: &str,
-    ) -> datafusion::common::Result<SendableRecordBatchStream> {
+    pub async fn execute(&self, sql: &str) -> datafusion::common::Result<QueryResult> {
         let state = self.datafusion_context.state();
         let statement = state.sql_to_statement(sql, &datafusion::config::Dialect::PostgreSQL)?;
         let plan = state.statement_to_plan(statement).await?;
         self.sql_options.verify_plan(&plan)?;
         let df = self.datafusion_context.execute_logical_plan(plan).await?;
-        df.execute_stream().await
+
+        let task_ctx = Arc::new(df.task_ctx());
+        let physical_plan = df.create_physical_plan().await?;
+
+        // Collect NodeWarnings handles from any NodeFanOutExecutionPlan nodes
+        // in the plan tree before execution begins.
+        let node_warnings = collect_node_warnings(&physical_plan);
+
+        let stream = execute_stream(physical_plan, task_ctx)?;
+        Ok(QueryResult {
+            stream,
+            node_warnings,
+        })
     }
 
     pub fn task_ctx(&self) -> Arc<TaskContext> {
@@ -458,6 +468,31 @@ impl AsRef<SessionContext> for QueryContext {
     fn as_ref(&self) -> &SessionContext {
         &self.datafusion_context
     }
+}
+
+/// Result of a SQL query execution, containing the record batch stream
+/// and any per-node warning collectors from fan-out execution plans.
+pub struct QueryResult {
+    pub stream: SendableRecordBatchStream,
+    pub node_warnings: Vec<NodeWarnings>,
+}
+
+/// Walks the physical plan tree and collects [`NodeWarnings`] handles from
+/// any [`NodeFanOutExecutionPlan`] nodes found.
+fn collect_node_warnings(plan: &Arc<dyn ExecutionPlan>) -> Vec<NodeWarnings> {
+    use crate::node_fan_out::NodeFanOutExecutionPlan;
+
+    let mut warnings = Vec::new();
+    let mut stack = vec![Arc::clone(plan)];
+    while let Some(node) = stack.pop() {
+        if let Some(fan_out) = node.as_any().downcast_ref::<NodeFanOutExecutionPlan>() {
+            warnings.push(fan_out.node_warnings().clone());
+        }
+        for child in node.children() {
+            stack.push(Arc::clone(child));
+        }
+    }
+    warnings
 }
 
 /// Newtype to add debug implementation which is required for [`SelectPartitions`].

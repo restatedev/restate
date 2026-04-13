@@ -25,7 +25,7 @@ mod locks;
 mod log;
 pub mod loglet_worker;
 mod node;
-mod node_fan_out;
+pub mod node_fan_out;
 mod partition;
 mod partition_replica_set;
 mod partition_state;
