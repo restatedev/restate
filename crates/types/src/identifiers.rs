@@ -10,6 +10,10 @@
 
 //! Restate uses many identifiers to uniquely identify its services and entities.
 
+mod partitioned;
+
+pub use partitioned::PartitionedResourceId;
+
 use std::cell::RefCell;
 use std::fmt::{self, Display, Formatter};
 use std::hash::Hash;
@@ -27,6 +31,7 @@ use ulid::Ulid;
 
 use restate_encoding::{BilrostNewType, NetSerde};
 
+use self::partitioned::partitioned_resource_id;
 use crate::base62_util::{base62_encode_fixed_width_u128, base62_max_length_for_type};
 use crate::errors::IdDecodeError;
 use crate::id_util::IdResourceType;
@@ -1088,6 +1093,11 @@ ulid_backed_id!(Deployment @with_resource_id);
 ulid_backed_id!(Subscription @with_resource_id);
 ulid_backed_id!(PartitionProcessorRpcRequest);
 ulid_backed_id!(Snapshot @with_resource_id);
+
+partitioned::partitioned_resource_id!(
+    /// StateMutation request identifier
+    StateMutation
+);
 
 impl SnapshotId {
     pub const INVALID: Self = Self::from_parts(0, 0);
