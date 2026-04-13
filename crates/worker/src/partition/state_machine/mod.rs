@@ -71,7 +71,7 @@ use restate_types::errors::{
 };
 use restate_types::identifiers::{
     AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId, InvocationUuid,
-    PartitionKey, PartitionProcessorRpcRequestId, ServiceId,
+    PartitionKey, PartitionProcessorRpcRequestId, ServiceId, StateMutationId,
 };
 use restate_types::identifiers::{IdempotencyId, WithPartitionKey};
 use restate_types::invocation::client::{
@@ -5295,6 +5295,9 @@ impl<S> StateMachineApplyContext<'_, S> {
             ),
         );
 
+        // todo: Make this a use-facing ID, generated at ingress.
+        let mutation_id = StateMutationId::generate(service_id.partition_key());
+
         let mut vqueue = VQueues::new(
             qid,
             self.storage,
@@ -5308,7 +5311,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 NewEntryPriority::UserDefault,
                 EntryKind::StateMutation,
                 // todo revisit entry id generation for state mutations
-                EntryId::from(self.record_lsn),
+                EntryId::from(mutation_id),
                 Some(state_mutation),
             )
             .await?;
