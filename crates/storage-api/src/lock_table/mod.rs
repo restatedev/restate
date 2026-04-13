@@ -12,6 +12,7 @@ use std::ops::RangeInclusive;
 
 use restate_clock::UniqueTimestamp;
 use restate_types::identifiers::{InvocationId, PartitionKey, StateMutationId};
+use restate_types::vqueues::{EntryId, EntryKind};
 use restate_types::{LockName, Scope};
 use restate_util_string::ReString;
 
@@ -36,6 +37,20 @@ pub enum AcquiredBy {
     InvocationId(InvocationId),
     #[bilrost(tag(3))]
     StateMutation(StateMutationId),
+}
+
+impl AcquiredBy {
+    pub fn from_entry_id(partition_key: PartitionKey, entry_id: &EntryId) -> Self {
+        match entry_id.kind() {
+            EntryKind::Unknown => Self::Empty,
+            EntryKind::Invocation => {
+                Self::InvocationId(entry_id.to_invocation_id(partition_key).unwrap())
+            }
+            EntryKind::StateMutation => {
+                Self::StateMutation(entry_id.to_state_mutation_id(partition_key).unwrap())
+            }
+        }
+    }
 }
 
 pub trait LoadLocks {

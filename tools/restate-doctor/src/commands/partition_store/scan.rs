@@ -45,7 +45,7 @@ use crate::app::GlobalOpts;
 use crate::util::colorize::{color_legend, colorize_key_hex};
 use crate::util::decode_value::decode_value;
 use crate::util::hex_encode;
-use crate::util::rocksdb::{open_db, resolve_partition_store_path};
+use crate::util::rocksdb::{open_partition_store_db, resolve_partition_store_path};
 
 use super::PartitionStoreOpts;
 
@@ -240,7 +240,7 @@ pub async fn run_scan(
     }: &Scan,
 ) -> Result<()> {
     let path = resolve_partition_store_path(global_opts.data_dir.as_deref(), opts.path.as_deref())?;
-    let db_info = open_db(&path, opts.open_mode(), global_opts.limit_open_files)?;
+    let db_info = open_partition_store_db(&path, opts.open_mode(), global_opts.limit_open_files)?;
 
     // Parse table filter if provided
     let table_filter = table.as_ref().map(|t| parse_table_filter(t)).transpose()?;

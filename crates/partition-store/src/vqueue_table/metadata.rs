@@ -112,15 +112,7 @@ pub(crate) mod vqueue_meta_merge {
                 Ok(batch) => batch,
             };
             for update in batch.updates.iter() {
-                if let Err(err) = vqueue_meta.apply_update(update) {
-                    let key = MetaKey::deserialize_from(&mut key);
-                    error!(
-                        ?key,
-                        ?err,
-                        "[full merge] Failed to apply vqueue meta update"
-                    );
-                    return None;
-                }
+                vqueue_meta.apply_update(update);
             }
         }
         Some(vqueue_meta.encode_to_vec())

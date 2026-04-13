@@ -8,17 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::BTreeMap;
 use std::num::NonZeroU16;
 use std::pin::Pin;
 
 use std::future::poll_fn;
 use std::task::Poll;
 
-use hashbrown::HashMap;
-use smallvec::SmallVec;
-
+use restate_clock::RoughTimestamp;
 use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::{ScanVQueueTable, VQueueEntry, VQueueStore, WaitStats};
+use restate_storage_api::vqueue_table::scheduler::{RunAction, SchedulerAction, YieldAction};
+use restate_storage_api::vqueue_table::{EntryKey, ScanVQueueTable, VQueueStore, WaitStats};
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::VQueueId;
 
@@ -38,8 +38,6 @@ mod resource_manager;
 mod vqueue_state;
 pub use resource_manager::ResourceManager;
 
-const INLINED_SIZE: usize = 4;
-
 slotmap::new_key_type! { pub(crate) struct VQueueHandle; }
 
 /// A public view of the scheduler's status of a single vqueue.
@@ -53,7 +51,7 @@ pub struct VQueueSchedulerStatus {
     /// Number of items remaining in the running stage.
     pub remaining_running: u32,
     /// Number of items waiting in the inbox stage.
-    pub waiting_inbox: u32,
+    pub waiting_inbox: u64,
     /// The current scheduling status of this vqueue.
     pub status: SchedulingStatus,
 }
@@ -82,7 +80,7 @@ pub enum SchedulingStatus {
     /// item is scheduled to run at that time.
     Scheduled {
         /// When the head item becomes visible.
-        at: MillisSinceEpoch,
+        at: RoughTimestamp,
     },
     /// The vqueue is blocked on invoker global capacity.
     BlockedOn(ResourceKind),
@@ -115,147 +113,41 @@ pub enum ThrottleScope {
     VQueue,
 }
 
-#[derive(Debug)]
-pub struct Entry<Item> {
-    pub item: Item,
-    pub stats: WaitStats,
-}
-impl<Item> Entry<Item> {
-    pub fn split(self) -> (Item, WaitStats) {
-        (self.item, self.stats)
-    }
-}
-
-#[derive(Debug)]
-pub struct Assignments<Item> {
-    // In the overwhelming majority of cases, we will have only one segment (inbox or running)
-    // and in rare cases we may have both. If we (in the future) support sending the three actions
-    // on the same scheduler's poll, we'll accept to allocated in those rare cases where the three actions
-    // are simulatenously picked.
-    segments: SmallVec<[AssignmentSegment<Item>; 2]>,
-}
-
-impl<Item> Default for Assignments<Item> {
-    fn default() -> Self {
-        Self {
-            segments: smallvec::smallvec![],
-        }
-    }
-}
-
-impl<Item> Assignments<Item> {
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = (Action, &[Entry<Item>])> {
-        self.segments
-            .iter()
-            .map(|segment| (segment.action, segment.items.as_slice()))
-    }
-
-    pub fn into_iter_per_action(
-        self,
-    ) -> impl ExactSizeIterator<Item = (Action, impl ExactSizeIterator<Item = Entry<Item>>)> {
-        self.segments
-            .into_iter()
-            .map(|segment| (segment.action, segment.items.into_iter()))
-    }
-
-    pub fn into_iter_all(self) -> impl IntoIterator {
-        self.segments.into_iter().flat_map(|segment| segment.items)
-    }
-
-    pub fn push(&mut self, action: Action, entry: Entry<Item>) {
-        // manipulate the last segment if the action is the same.
-        if let Some(last_segment) = self.segments.last_mut()
-            && last_segment.action == action
-        {
-            last_segment.items.push(entry);
-        } else {
-            self.segments.push(AssignmentSegment {
-                action,
-                items: smallvec::smallvec![entry],
-            });
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.segments.is_empty()
-    }
-}
-
-#[derive(Debug)]
-pub struct AssignmentSegment<Item> {
-    pub action: Action,
-    pub items: SmallVec<[Entry<Item>; INLINED_SIZE]>,
-}
-
-impl<Item> AssignmentSegment<Item> {
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.items.len()
-    }
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum Action {
-    /// Items are in inbox, let's move them to running queue.
-    MoveToRun,
-    /// Items was already in running queue and we want them to yield back to the inbox
-    Yield,
-}
-
-#[derive(derive_more::IntoIterator, derive_more::Debug)]
-pub struct Decision<Item> {
-    #[into_iterator]
-    q: HashMap<VQueueId, Assignments<Item>>,
-    /// items running for the first time
-    num_start: u16,
-    /// running items previously started
-    num_run: u16,
+#[derive(Default, Debug)]
+pub struct Decisions {
+    // Vqueue ids are ordered by partition key, this enables us to group
+    // vqueues within the same partition key together when scanning through
+    // the scheduler's decisions.
+    pub qids: BTreeMap<VQueueId, Vec<SchedulerAction>>,
+    /// running items
+    pub num_run: u32,
     /// Items in run queue that need to go back to waiting inbox
-    num_yield: u16,
+    pub num_yield: u32,
 }
 
-impl<Item> Default for Decision<Item> {
-    fn default() -> Self {
-        Self {
-            q: HashMap::default(),
-            num_start: 0,
-            num_run: 0,
-            num_yield: 0,
-        }
-    }
-}
-
-impl<Item: VQueueEntry> Decision<Item> {
-    pub fn push(&mut self, qid: &VQueueId, action: Action, entry: Entry<Item>) {
-        let assignments = self.q.entry_ref(qid).or_default();
+impl Decisions {
+    pub fn push(&mut self, qid: &VQueueId, action: impl Into<SchedulerAction>) {
+        let action = action.into();
         match action {
-            Action::Yield => self.num_yield += 1,
-            Action::MoveToRun if entry.item.priority().is_new() => self.num_start += 1,
-            Action::MoveToRun => self.num_run += 1,
+            SchedulerAction::Unknown => unreachable!(),
+            SchedulerAction::Yield(_) => self.num_yield += 1,
+            SchedulerAction::Run(_) => self.num_run += 1,
         }
-        assignments.push(action, entry);
+
+        if let Some(actions) = self.qids.get_mut(qid) {
+            actions.push(action);
+        } else {
+            self.qids.insert(qid.clone(), vec![action]);
+        }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.q.is_empty()
+        self.qids.is_empty()
     }
 
     /// The number of vqueues in this decision
     pub fn num_queues(&self) -> usize {
-        self.q.len()
-    }
-
-    /// Returns an iterator over the vqueue IDs in this decision.
-    pub fn iter_qids(&self) -> impl Iterator<Item = &VQueueId> {
-        self.q.keys()
-    }
-
-    #[cfg(test)]
-    pub fn num_start(&self) -> usize {
-        self.num_start as usize
+        self.qids.len()
     }
 
     #[cfg(test)]
@@ -270,11 +162,11 @@ impl<Item: VQueueEntry> Decision<Item> {
 
     /// Total number of items in all queues
     pub fn total_items(&self) -> usize {
-        self.num_start as usize + self.num_run as usize + self.num_yield as usize
+        self.num_run as usize + self.num_yield as usize
     }
 
     pub fn report_metrics(&self) {
-        publish_scheduler_decision_metrics(self.num_start, self.num_run, self.num_yield);
+        publish_scheduler_decision_metrics(self.num_run, self.num_yield);
     }
 }
 
@@ -324,7 +216,7 @@ impl<S: VQueueStore> SchedulerService<S> {
         Ok(Self { state })
     }
 
-    pub fn on_inbox_event(&mut self, event: VQueueEvent<S::Item>) {
+    pub fn on_inbox_event(&mut self, event: VQueueEvent) {
         if let State::Active(ref mut drr_scheduler) = self.state {
             drr_scheduler.as_mut().on_inbox_event(event);
         }
@@ -334,22 +226,22 @@ impl<S: VQueueStore> SchedulerService<S> {
     /// item hash if it was assigned by the scheduler.
     ///
     /// Resources will not be returned if the unconfirmed assignment was rejected or removed.
-    pub fn pop_resources(&mut self, item_hash: u64) -> Option<ReservedResources> {
+    pub fn pop_resources(&mut self, key: &EntryKey) -> Option<ReservedResources> {
         if let State::Active(ref mut drr_scheduler) = self.state {
-            drr_scheduler.as_mut().pop_resources(item_hash)
+            drr_scheduler.as_mut().pop_resources(key)
         } else {
             None
         }
     }
 
-    pub async fn schedule_next(&mut self) -> Result<Decision<S::Item>, StorageError> {
+    pub async fn schedule_next(&mut self) -> Result<Decisions, StorageError> {
         poll_fn(|cx| self.poll_schedule_next(cx)).await
     }
 
     pub fn poll_schedule_next(
         &mut self,
         cx: &mut std::task::Context<'_>,
-    ) -> Poll<Result<Decision<S::Item>, StorageError>> {
+    ) -> Poll<Result<Decisions, StorageError>> {
         match self.state {
             // if scheduler is disabled, we always return pending.
             State::Disabled => Poll::Pending,

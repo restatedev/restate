@@ -63,6 +63,7 @@ pub mod deduplication_table;
 pub mod fsm_table;
 pub mod idempotency_table;
 pub mod inbox_table;
+pub mod invocation;
 pub mod invocation_status_table;
 pub mod journal_events;
 pub mod journal_table;
