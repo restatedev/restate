@@ -15,6 +15,7 @@ mod cli_env;
 mod clients;
 mod commands;
 mod ui;
+mod util;
 
 pub use app::CliApp;
 pub(crate) use restate_cli_util::ui::console;
