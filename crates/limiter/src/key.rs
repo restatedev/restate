@@ -157,14 +157,21 @@ impl<S: OwnedStringLike> FromStr for LimitKey<S> {
 
 #[cfg(feature = "bilrost")]
 mod bilrost_encodings {
+    use std::borrow::Cow;
+
     use super::LimitKey;
 
     use bilrost::encoding::{General, Proxiable};
     use bilrost::{DecodeErrorKind, delegate_proxied_encoding, for_overwrite_via_default};
 
-    use restate_util_string::{OwnedStringLike, ReString, StringLike, ToReString};
+    use restate_util_string::{OwnedStringLike, ReString, RestrictedValue, StringLike, ToReString};
 
     struct ReStringTag;
+
+    trait OwnedLimitKeyComponent: OwnedStringLike + ToReString + Default {}
+
+    impl OwnedLimitKeyComponent for String {}
+    impl OwnedLimitKeyComponent for ReString {}
 
     for_overwrite_via_default!(LimitKey<S>,
         with generics (S),
@@ -181,7 +188,7 @@ mod bilrost_encodings {
         }
     }
 
-    impl<S: OwnedStringLike + ToReString + Default> Proxiable<ReStringTag> for LimitKey<S> {
+    impl<S: OwnedLimitKeyComponent> Proxiable<ReStringTag> for LimitKey<S> {
         type Proxy = ReString;
 
         fn encode_proxy(&self) -> ReString {
@@ -196,11 +203,66 @@ mod bilrost_encodings {
         }
     }
 
+    impl<'a> Proxiable<ReStringTag> for LimitKey<&'a str> {
+        type Proxy = Cow<'a, str>;
+
+        fn encode_proxy(&self) -> Cow<'a, str> {
+            match self {
+                Self::None => Cow::Borrowed(""),
+                Self::L1(level1) => Cow::Borrowed(*level1.as_ref()),
+                Self::L2(level1, level2) => Cow::Owned(format!("{level1}/{level2}")),
+            }
+        }
+
+        fn decode_proxy(&mut self, proxy: Cow<'a, str>) -> Result<(), DecodeErrorKind> {
+            let proxy = match proxy {
+                Cow::Borrowed(value) => value,
+                Cow::Owned(_) => return Err(DecodeErrorKind::InvalidValue),
+            };
+
+            let mut next_idx = 0;
+            let mut parts: [Option<RestrictedValue<&'a str>>; 2] = [None, None];
+
+            for part in proxy.split_terminator('/') {
+                if next_idx >= 2 {
+                    return Err(DecodeErrorKind::InvalidValue);
+                }
+
+                let part = RestrictedValue::new(part).map_err(|_| DecodeErrorKind::InvalidValue)?;
+                parts[next_idx] = Some(part);
+                next_idx += 1;
+            }
+
+            *self = match next_idx {
+                0 => LimitKey::None,
+                1 => LimitKey::L1(parts[0].take().expect("index 0 must be present")),
+                2 => LimitKey::L2(
+                    parts[0].take().expect("index 0 must be present"),
+                    parts[1].take().expect("index 1 must be present"),
+                ),
+                _ => return Err(DecodeErrorKind::InvalidValue),
+            };
+
+            Ok(())
+        }
+    }
+
+    // We use a specialized trait OwnedLimitKeyComponent to avoid trait impl conflicts
+    // with the borrowed version.
     delegate_proxied_encoding!(
         use encoding (General)
         to encode proxied type (LimitKey<S>)
         using proxy tag (ReStringTag)
-        with general encodings with generics (S: OwnedStringLike + ToReString + Default)
+        with general encodings with generics (S: OwnedLimitKeyComponent)
+    );
+
+    // specialized encoding to allow borrowed decoding of LimitKey<&'a str>
+    delegate_proxied_encoding!(
+        use encoding (General)
+        to encode proxied type (LimitKey<&'a str>)
+        using proxy tag (ReStringTag)
+        with encoding (bilrost::encoding::GeneralGeneric<P>)
+        with generics ('a, const P: u8)
     );
 
     #[cfg(test)]
@@ -220,6 +282,33 @@ mod bilrost_encodings {
             };
             let encoded = src.encode_to_bytes();
             let decoded = LimitKeyMessage::decode(encoded).unwrap();
+            assert_eq!(decoded.value.to_string(), input);
+        }
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn bilrost_limit_key_borrowed_decode() {
+        #[derive(bilrost::Message)]
+        struct OwnedLimitKeyMessage {
+            #[bilrost(1)]
+            value: LimitKey<ReString>,
+        }
+
+        #[derive(bilrost::Message)]
+        struct BorrowedLimitKeyMessage<'a> {
+            #[bilrost(1)]
+            value: LimitKey<&'a str>,
+        }
+
+        for input in ["", "hello", "hello/value"] {
+            use bilrost::{BorrowedMessage, Message};
+
+            let src = OwnedLimitKeyMessage {
+                value: input.parse().unwrap(),
+            };
+            let encoded = src.encode_to_bytes();
+            let decoded = BorrowedLimitKeyMessage::decode_borrowed(&encoded).unwrap();
             assert_eq!(decoded.value.to_string(), input);
         }
     }
