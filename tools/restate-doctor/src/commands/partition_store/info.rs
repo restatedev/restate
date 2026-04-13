@@ -458,6 +458,7 @@ fn key_kind_abbrev(kind: restate_partition_store::keys::KeyKind) -> &'static str
         KeyKind::VQueueMeta => "VQMet",
         KeyKind::VQueueEntryState => "VQEnt",
         KeyKind::VQueueItems => "VQItm",
+        KeyKind::Lock => "Locks",
     }
 }
 
