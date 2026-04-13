@@ -18,6 +18,7 @@ mod running_reader;
 mod waiting_reader;
 
 use std::io::Cursor;
+use std::ops::RangeInclusive;
 
 pub use entry::{EntryStateKey, StateHeaderRaw};
 pub use inbox::{ActiveKey, InboxKey};
@@ -25,16 +26,18 @@ pub use items::ItemsKey;
 pub use metadata::*;
 
 use anyhow::Context;
-use bilrost::{Message, OwnedMessage};
+use bilrost::{BorrowedMessage, Message, OwnedMessage};
 use bytes::BytesMut;
 use rocksdb::{DBRawIteratorWithThreadMode, ReadOptions};
 use tracing::error;
 
+use restate_rocksdb::Priority;
 use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaUpdates};
+use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaRef, VQueueMetaUpdates};
 use restate_storage_api::vqueue_table::{
     EntryKey, EntryMetadata, EntryState, EntryStateHeader, EntryStatistics, EntryValue,
-    IdentifiesEntry, LazyEntryState, ReadVQueueTable, ScanVQueueTable, Stage, WriteVQueueTable,
+    IdentifiesEntry, LazyEntryState, ReadVQueueTable, ScanVQueueMetaTable, ScanVQueueTable, Stage,
+    WriteVQueueTable,
 };
 use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::PartitionKey;
@@ -43,7 +46,11 @@ use restate_types::vqueues::{EntryId, VQueueId};
 use self::entry::{LazyEntryStateHolder, OwnedEntryStateHeader, StateHeaderRawRef};
 use self::key_codec::HasLock;
 use crate::keys::{DecodeTableKey, EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
-use crate::{PartitionDb, PartitionStoreTransaction, Result, StorageAccess, TableKind};
+use crate::scan::TableScan;
+use crate::{
+    PartitionDb, PartitionStore, PartitionStoreTransaction, Result, StorageAccess, TableKind,
+    break_on_err,
+};
 
 impl ScanVQueueTable for PartitionDb {
     fn scan_active_vqueues(
@@ -465,6 +472,35 @@ impl ReadVQueueTable for PartitionStoreTransaction<'_> {
         };
 
         Ok(Some(E::decode(&mut raw_value.as_ref())?))
+    }
+}
+
+impl ScanVQueueMetaTable for PartitionStore {
+    fn for_each_vqueue_meta<
+        F: for<'a> FnMut((&'a VQueueId, &'a VQueueMetaRef<'a>)) -> std::ops::ControlFlow<()>
+            + Send
+            + Sync
+            + 'static,
+    >(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+        mut f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        self.iterator_for_each(
+            "df-vqueue-meta",
+            Priority::Low,
+            TableScan::FullScanPartitionKeyRange::<MetaKey>(range),
+            move |(mut key, value)| {
+                let meta_key = break_on_err(MetaKey::deserialize_from(&mut key))?;
+                let meta = break_on_err(
+                    VQueueMetaRef::decode_borrowed(value).map_err(StorageError::BilrostDecode),
+                )?;
+
+                let (vqueue_id,) = meta_key.split();
+                f((&vqueue_id, &meta)).map_break(Ok)
+            },
+        )
+        .map_err(|_| StorageError::OperationalError)
     }
 }
 
