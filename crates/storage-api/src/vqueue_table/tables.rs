@@ -13,7 +13,10 @@ use restate_types::identifiers::PartitionKey;
 use restate_types::vqueues::VQueueId;
 
 use super::metadata::VQueueMeta;
-use super::{AsEntryState, AsEntryStateHeader, EntryCard, EntryId, EntryKind, EntryStateKind};
+use super::{
+    EntryId, EntryKey, EntryMetadata, EntryState, EntryStateHeader, EntryStatistics, EntryValue,
+    IdentifiesEntry, LazyEntryState,
+};
 use crate::Result;
 
 /// Stages in the inbox/vqueue
@@ -39,28 +42,52 @@ pub enum Stage {
     Inbox = b'i',
     /// Holds entries that are currently assumed to be running
     #[bilrost(2)]
-    Run = b'r',
-    /// Holds entries that are paused, suspended. Such entries move back to `Inbox` when
-    /// woken up.
+    Running = b'r',
+    /// Holds entries that are suspended and will be woken up upon receiving a signal.
     #[bilrost(3)]
-    Park = b'p',
+    Suspended = b's',
+    /// Holds entries that are paused, either manually or due to errors.
+    /// Paused entries can be resumed by moving them back to `Inbox`
+    #[bilrost(4)]
+    Paused = b'p',
+    /// Items that are completed/finished/terminated. This is a terminal stage and
+    /// items in this stage are allowed to be deleted/purged/archived either immediately
+    /// or delayed.
+    #[bilrost(5)]
+    Finished = b'f',
+}
+impl Stage {
+    pub const fn serialized_length_fixed() -> usize {
+        std::mem::size_of::<Self>()
+    }
 }
 
 pub trait WriteVQueueTable {
     /// Initializes a new vqueue
     fn create_vqueue(&mut self, qid: &VQueueId, meta: &VQueueMeta);
+
     /// Update VQueueMeta with a set of differential updates.
     fn update_vqueue(&mut self, qid: &VQueueId, update: &super::metadata::Update);
 
     /// Places an entry onto an inbox stage
-    fn put_inbox_entry(&mut self, qid: &VQueueId, stage: Stage, card: &EntryCard);
+    fn put_vqueue_entry(
+        &mut self,
+        qid: &VQueueId,
+        stage: Stage,
+        key: &EntryKey,
+        value: &EntryValue,
+    );
 
-    /// Deletes entry from inbox if it was found and the returned boolean indicates whether it was
-    /// successful or not.
-    fn pop_inbox_entry(&mut self, qid: &VQueueId, stage: Stage, card: &EntryCard) -> Result<bool>;
+    /// Returns and entry from the vqueue
+    fn get_vqueue_entry(
+        &mut self,
+        qid: &VQueueId,
+        stage: Stage,
+        key: &EntryKey,
+    ) -> Result<Option<EntryValue>>;
 
     /// Deletes entry from inbox unconditionally
-    fn delete_inbox_entry(&mut self, qid: &VQueueId, stage: Stage, card: &EntryCard);
+    fn delete_vqueue_entry(&mut self, qid: &VQueueId, stage: Stage, key: &EntryKey);
 
     /// Adds a vqueue to the list of active vqueues
     ///
@@ -89,92 +116,71 @@ pub trait WriteVQueueTable {
     fn put_vqueue_entry_state<E>(
         &mut self,
         qid: &VQueueId,
-        card: &EntryCard,
         stage: Stage,
-        state: E,
+        entry_key: &EntryKey,
+        metadata: &EntryMetadata,
+        stats: EntryStatistics,
+        state: &E,
     ) where
-        E: EntryStateKind + bilrost::Message + bilrost::encoding::RawMessage,
+        E: EntryState + bilrost::Message + bilrost::encoding::RawMessage,
         (): bilrost::encoding::EmptyState<(), E>;
 
-    fn delete_vqueue_entry_state(&mut self, qid: &VQueueId, kind: EntryKind, id: &EntryId);
+    fn delete_vqueue_entry_state(&mut self, partition_key: PartitionKey, id: &EntryId);
 
+    // todo: DELETT..
     /// Stores a vqueue item for later use.
-    fn put_item<E>(
-        &mut self,
-        qid: &VQueueId,
-        created_at: UniqueTimestamp,
-        kind: EntryKind,
-        id: &EntryId,
-        item: E,
-    ) where
+    fn put_item<E>(&mut self, qid: &VQueueId, created_at: UniqueTimestamp, id: &EntryId, item: E)
+    where
         E: bilrost::Message;
 
     /// Deletes a vqueue item.
-    fn delete_item(
-        &mut self,
-        qid: &VQueueId,
-        created_at: UniqueTimestamp,
-        kind: EntryKind,
-        id: &EntryId,
-    );
+    fn delete_item(&mut self, qid: &VQueueId, created_at: UniqueTimestamp, id: &EntryId);
 }
 
 pub trait ReadVQueueTable {
     /// Get vqueue's metadata
-    fn get_vqueue(
-        &mut self,
+    fn get_vqueue<'a>(
+        &'a self,
         qid: &VQueueId,
-    ) -> impl Future<Output = Result<Option<super::metadata::VQueueMeta>>> + Send;
+    ) -> impl Future<Output = Result<Option<super::metadata::VQueueMeta>>>;
 
     /// Get the entry state (header information only) for a vqueue entry by id
     fn get_entry_state_header(
-        &mut self,
-        kind: EntryKind,
+        &self,
         partition_key: PartitionKey,
         id: &EntryId,
-    ) -> impl Future<Output = Result<Option<impl AsEntryStateHeader + 'static + Send>>>;
+    ) -> impl Future<Output = Result<Option<impl EntryStateHeader + 'static>>>;
 
     /// Get the entry state for a vqueue entry by id
-    fn get_entry_state<E>(
-        &mut self,
-        kind: EntryKind,
+    fn get_entry_state_lazy<'a>(
+        &'a self,
         partition_key: PartitionKey,
-        id: &EntryId,
-    ) -> impl Future<Output = Result<Option<impl AsEntryState<State = E> + 'static + Send>>>
+        entry_id: &EntryId,
+    ) -> impl Future<Output = Result<Option<impl LazyEntryState + 'a>>>;
+
+    fn get_entry_state<I>(
+        &self,
+        id: I,
+    ) -> impl Future<Output = Result<Option<(impl EntryStateHeader + 'static, I::State)>>>
     where
-        E: EntryStateKind
+        I: IdentifiesEntry,
+        I::State: EntryState
             + bilrost::OwnedMessage
             + bilrost::encoding::RawMessageDecoder
             + Sized
+            + Send
             + 'static,
-        (): bilrost::encoding::EmptyState<(), E>;
+        (): bilrost::encoding::EmptyState<(), I::State>;
 
     /// Gets a vqueue item identified by its qid, the entry id, its kind and the creation timestamp.
     fn get_item<E>(
-        &mut self,
+        &self,
         qid: &VQueueId,
         created_at: UniqueTimestamp,
-        kind: EntryKind,
         id: &EntryId,
     ) -> impl Future<Output = Result<Option<E>>>
     where
         E: bilrost::OwnedMessage;
-
-    // Commented for future reference
-    // fn with_entry_state<'a, E, F, O>(
-    //     &mut self,
-    //     partition_key: PartitionKey,
-    //     id: &EntryId,
-    //     f: F,
-    // ) -> impl Future<Output = Result<Option<O>>>
-    // where
-    //     F: FnOnce(&'a (dyn AsEntryState<State = E> + 'a)) -> O,
-    //     O: 'static,
-    //     E: EntryStateKind
-    //         + bilrost::BorrowedMessage<'a>
-    //         + bilrost::encoding::RawMessageBorrowDecoder<'a>
-    //         + 'a,
-    //     (): bilrost::encoding::EmptyState<(), E>;
 }
 
 pub trait ScanVQueueTable {
