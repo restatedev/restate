@@ -19,7 +19,7 @@ use restate_memory::LocalMemoryPool;
 use restate_types::identifiers::EntryIndex;
 use restate_types::retries;
 use restate_types::schema::invocation_target::OnMaxAttempts;
-use restate_types::vqueue::VQueueId;
+use restate_types::vqueues::VQueueId;
 
 use crate::quota::ConcurrencySlot;
 

@@ -41,7 +41,7 @@ pub mod test_util {
     };
     use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
     use restate_types::time::MillisSinceEpoch;
-    use restate_types::vqueue::VQueueId;
+    use restate_types::vqueues::VQueueId;
 
     use crate::invocation_reader::{
         EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry, JournalKind,
