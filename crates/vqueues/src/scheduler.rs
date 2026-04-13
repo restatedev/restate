@@ -54,8 +54,6 @@ pub struct VQueueSchedulerStatus {
     pub remaining_running: u32,
     /// Number of items waiting in the inbox stage.
     pub waiting_inbox: u32,
-    /// Number of concurrency tokens currently in use by this vqueue.
-    pub tokens_used: u32,
     /// The current scheduling status of this vqueue.
     pub status: SchedulingStatus,
 }
