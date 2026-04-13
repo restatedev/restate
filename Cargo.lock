@@ -2220,7 +2220,7 @@ dependencies = [
  "log",
  "object_store 0.12.5",
  "parking_lot",
- "rand 0.9.3",
+ "rand",
  "regex",
  "sqlparser",
  "tempfile",
@@ -2330,7 +2330,7 @@ dependencies = [
  "itertools 0.14.0",
  "log",
  "object_store 0.12.5",
- "rand 0.9.3",
+ "rand",
  "tokio",
  "url",
 ]
@@ -2421,7 +2421,7 @@ dependencies = [
  "log",
  "object_store 0.12.5",
  "parking_lot",
- "rand 0.9.3",
+ "rand",
  "tempfile",
  "url",
 ]
@@ -2483,7 +2483,7 @@ dependencies = [
  "log",
  "md-5",
  "num-traits",
- "rand 0.9.3",
+ "rand",
  "regex",
  "sha2",
  "unicode-segmentation",
@@ -3750,7 +3750,7 @@ dependencies = [
  "idna",
  "ipnet",
  "once_cell",
- "rand 0.9.3",
+ "rand",
  "ring",
  "thiserror 2.0.18",
  "tinyvec",
@@ -3772,7 +3772,7 @@ dependencies = [
  "moka",
  "once_cell",
  "parking_lot",
- "rand 0.9.3",
+ "rand",
  "resolv-conf",
  "smallvec",
  "thiserror 2.0.18",
@@ -4800,7 +4800,7 @@ dependencies = [
  "libc",
  "metrics",
  "metrics-exporter-prometheus",
- "rand 0.9.3",
+ "rand",
  "restate-cli-util",
  "restate-core",
  "restate-errors",
@@ -4955,7 +4955,7 @@ dependencies = [
  "hashbrown 0.16.1",
  "metrics",
  "quanta",
- "rand 0.9.3",
+ "rand",
  "rand_xoshiro",
  "sketches-ddsketch",
 ]
@@ -5448,7 +5448,7 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "quick-xml 0.38.4",
- "rand 0.9.3",
+ "rand",
  "reqwest",
  "ring",
  "rustls-pki-types",
@@ -5659,7 +5659,7 @@ dependencies = [
  "futures-util",
  "opentelemetry",
  "percent-encoding",
- "rand 0.9.3",
+ "rand",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -6084,8 +6084,8 @@ checksum = "37566cb3fdacef14c0737f9546df7cfeadbfbc9fef10991038bf5015d0c80532"
 dependencies = [
  "bitflags 2.11.0",
  "num-traits",
- "rand 0.9.3",
- "rand_chacha 0.9.0",
+ "rand",
+ "rand_chacha",
  "rand_xorshift",
  "regex-syntax",
  "unarray",
@@ -6382,7 +6382,7 @@ dependencies = [
  "bytes",
  "getrandom 0.3.4",
  "lru-slab",
- "rand 0.9.3",
+ "rand",
  "ring",
  "rustc-hash",
  "rustls",
@@ -6438,14 +6438,13 @@ checksum = "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
 [[package]]
 name = "raft"
 version = "0.7.0"
-source = "git+https://github.com/tikv/raft-rs?rev=2fbeee5b89b22c392da39435b79be9896acedd1d#2fbeee5b89b22c392da39435b79be9896acedd1d"
+source = "git+https://github.com/restatedev/raft-rs?rev=9bab5c275ce25341f719c4f898bdca9577850a5d#9bab5c275ce25341f719c4f898bdca9577850a5d"
 dependencies = [
  "bytes",
  "fxhash",
  "getset",
- "protobuf",
  "raft-proto",
- "rand 0.8.5",
+ "rand",
  "slog",
  "slog-envlogger",
  "slog-stdlog",
@@ -6456,7 +6455,7 @@ dependencies = [
 [[package]]
 name = "raft-proto"
 version = "0.7.0"
-source = "git+https://github.com/tikv/raft-rs?rev=2fbeee5b89b22c392da39435b79be9896acedd1d#2fbeee5b89b22c392da39435b79be9896acedd1d"
+source = "git+https://github.com/restatedev/raft-rs?rev=9bab5c275ce25341f719c4f898bdca9577850a5d#9bab5c275ce25341f719c4f898bdca9577850a5d"
 dependencies = [
  "bytes",
  "protobuf",
@@ -6465,33 +6464,12 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.8.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34af8d1a0e25924bc5b7c43c079c942339d8f0a8b57c39049bef581b46327404"
-dependencies = [
- "libc",
- "rand_chacha 0.3.1",
- "rand_core 0.6.4",
-]
-
-[[package]]
-name = "rand"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ec095654a25171c2124e9e3393a930bddbffdc939556c914957a4c3e0a87166"
 dependencies = [
- "rand_chacha 0.9.0",
+ "rand_chacha",
  "rand_core 0.9.5",
-]
-
-[[package]]
-name = "rand_chacha"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88"
-dependencies = [
- "ppv-lite86",
- "rand_core 0.6.4",
 ]
 
 [[package]]
@@ -6814,7 +6792,7 @@ dependencies = [
  "mime_guess",
  "parking_lot",
  "prost-dto",
- "rand 0.9.3",
+ "rand",
  "restate-admin-rest-model",
  "restate-bifrost",
  "restate-core",
@@ -6881,7 +6859,7 @@ dependencies = [
  "http 1.4.0",
  "mock-service-endpoint",
  "pprof",
- "rand 0.9.3",
+ "rand",
  "reqwest",
  "restate-clock",
  "restate-core",
@@ -6922,7 +6900,7 @@ dependencies = [
  "pin-project",
  "pprof",
  "prost",
- "rand 0.9.3",
+ "rand",
  "restate-bifrost",
  "restate-clock",
  "restate-core",
@@ -6993,7 +6971,7 @@ dependencies = [
  "mock-service-endpoint",
  "octocrab",
  "open",
- "rand 0.9.3",
+ "rand",
  "reqwest",
  "restate-admin-rest-model",
  "restate-cli-util",
@@ -7061,7 +7039,7 @@ dependencies = [
  "jiff",
  "libc",
  "prost-types",
- "rand 0.9.3",
+ "rand",
  "restate-clock",
  "restate-encoding",
  "restate-workspace-hack",
@@ -7118,7 +7096,7 @@ dependencies = [
  "pin-project-lite",
  "prost",
  "prost-dto",
- "rand 0.9.3",
+ "rand",
  "restate-core",
  "restate-core-derive",
  "restate-futures-util",
@@ -7200,7 +7178,7 @@ dependencies = [
  "bilrost",
  "bytes",
  "bytestring",
- "rand 0.9.3",
+ "rand",
  "restate-encoding-derive",
  "restate-workspace-hack",
  "static_assertions",
@@ -7482,7 +7460,7 @@ dependencies = [
  "http 1.4.0",
  "itertools 0.14.0",
  "nix 0.30.1",
- "rand 0.9.3",
+ "rand",
  "regex",
  "reqwest",
  "restate-clock",
@@ -7593,7 +7571,7 @@ dependencies = [
  "indexmap 2.13.0",
  "object_store 0.13.1",
  "parking_lot",
- "rand 0.9.3",
+ "rand",
  "restate-core",
  "restate-metadata-server-grpc",
  "restate-metadata-store",
@@ -7631,7 +7609,7 @@ dependencies = [
  "protobuf",
  "raft",
  "raft-proto",
- "rand 0.9.3",
+ "rand",
  "restate-core",
  "restate-metadata-providers",
  "restate-metadata-server-grpc",
@@ -7722,7 +7700,7 @@ dependencies = [
  "metrics",
  "metrics-exporter-prometheus",
  "prost-dto",
- "rand 0.9.3",
+ "rand",
  "restate-admin",
  "restate-bifrost",
  "restate-core",
@@ -7802,7 +7780,7 @@ dependencies = [
  "paste",
  "pin-project",
  "prost",
- "rand 0.9.3",
+ "rand",
  "restate-clock",
  "restate-core",
  "restate-errors",
@@ -7910,7 +7888,7 @@ dependencies = [
  "http-body-util",
  "mock-service-endpoint",
  "octocrab",
- "rand 0.9.3",
+ "rand",
  "regex",
  "reqwest",
  "restate-admin",
@@ -7976,7 +7954,7 @@ dependencies = [
  "pem",
  "pin-project",
  "pprof",
- "rand 0.9.3",
+ "rand",
  "restate-service-client",
  "restate-types",
  "restate-workspace-hack",
@@ -8124,7 +8102,7 @@ dependencies = [
  "pretty_assertions",
  "prost",
  "prost-types",
- "rand 0.9.3",
+ "rand",
  "restate-workspace-hack",
 ]
 
@@ -8250,7 +8228,7 @@ dependencies = [
  "prost-build",
  "prost-dto",
  "prost-types",
- "rand 0.9.3",
+ "rand",
  "regex",
  "regress",
  "restate-base64-util",
@@ -8393,7 +8371,7 @@ dependencies = [
  "parking_lot",
  "pin-project",
  "prost",
- "rand 0.9.3",
+ "rand",
  "restate-bifrost",
  "restate-clock",
  "restate-core",
@@ -8487,7 +8465,6 @@ dependencies = [
  "futures-sink",
  "futures-util",
  "gardal",
- "getrandom 0.2.17",
  "getrandom 0.3.4",
  "getrandom 0.4.2",
  "half",
@@ -8612,7 +8589,7 @@ dependencies = [
  "itertools 0.14.0",
  "json-patch 2.0.0",
  "prost-types",
- "rand 0.9.3",
+ "rand",
  "restate-bifrost",
  "restate-cli-util",
  "restate-clock",
@@ -10437,7 +10414,7 @@ version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "470dbf6591da1b39d43c14523b2b469c86879a53e8b758c8e090a470fe7b1fbe"
 dependencies = [
- "rand 0.9.3",
+ "rand",
  "serde",
  "web-time",
 ]
