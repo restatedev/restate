@@ -197,7 +197,7 @@ impl ScanVQueueTable for PartitionDb {
             &ActiveKey::builder().partition_key(*self.partition().key_range.end()),
             &mut key_buf.as_mut(),
         );
-        let _success = convert_to_upper_bound(&mut key_buf);
+        let _success = crate::convert_to_upper_bound(&mut key_buf);
         debug_assert!(_success);
         iterator_opts.set_iterate_upper_bound(key_buf);
 
@@ -643,20 +643,6 @@ impl ReadVQueueTable for PartitionStoreTransaction<'_> {
     //
     //     Ok(Some(result))
     // }
-}
-
-// Optimized for modern CPU branch predictors
-#[inline]
-fn convert_to_upper_bound(bytes: &mut [u8]) -> bool {
-    for b in bytes.iter_mut().rev() {
-        let x = *b;
-        if x != 0xFF {
-            *b = x.wrapping_add(1); // safe: we just checked != 0xFF
-            return true;
-        }
-        *b = 0;
-    }
-    false
 }
 
 // ## Safety
