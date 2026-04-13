@@ -184,6 +184,17 @@ message QueryRequest {
 message QueryResponse {
   // arrow encoded record batch
   bytes encoded = 1;
+  // Per-node errors encountered during distributed query execution.
+  // Populated on the final response message when some nodes failed but
+  // partial results are still available.
+  repeated QueryWarning warnings = 2;
+}
+
+message QueryWarning {
+  // Node identifier (e.g. "N1", "N2") where the error originated
+  string node_id = 1;
+  // Human-readable error message
+  string message = 2;
 }
 
 message MigrateMetadataRequest {
