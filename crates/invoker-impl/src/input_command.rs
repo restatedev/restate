@@ -18,7 +18,7 @@ use restate_memory::MemoryLease;
 use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal_v2::{CommandIndex, NotificationId};
-use restate_types::vqueue::VQueueId;
+use restate_types::vqueues::VQueueId;
 
 use restate_invoker_api::{Effect, InvocationStatusReport, StatusHandle};
 // -- Input messages

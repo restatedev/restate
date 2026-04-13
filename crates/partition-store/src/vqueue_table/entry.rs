@@ -13,7 +13,7 @@ use restate_storage_api::vqueue_table::{
 };
 use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey as _};
-use restate_types::vqueue::{EffectivePriority, VQueueId, VQueueInstance, VQueueParent};
+use restate_types::vqueue::{EffectivePriority, VQueueId};
 
 use crate::TableKind;
 use crate::keys::{EncodeTableKey, KeyKind, define_table_key};
@@ -61,25 +61,22 @@ impl From<&InvocationId> for EntryStateKey {
 
 #[derive(Debug, Clone, PartialEq, bilrost::Message)]
 pub struct EntryStateHeader {
+    #[bilrost(1)]
+    pub qid: VQueueId,
     /// Unknown is an invalid state, this will be set to None when the invocation
     /// leaves the queue.
-    #[bilrost(1)]
-    pub stage: Stage,
     #[bilrost(2)]
-    pub queue_parent: u32,
-    #[bilrost(3)]
-    pub queue_instance: u32,
+    pub stage: Stage,
     // current entry card details
-    #[bilrost(4)]
+    #[bilrost(3)]
     pub effective_priority: EffectivePriority,
-    #[bilrost(5)]
+    #[bilrost(4)]
     pub visible_at: VisibleAt,
-    #[bilrost(6)]
+    #[bilrost(5)]
     pub created_at: UniqueTimestamp,
 }
 
 pub struct OwnedHeader {
-    pub(crate) partition_key: PartitionKey,
     pub(crate) kind: EntryKind,
     pub(crate) id: EntryId,
 
@@ -91,24 +88,12 @@ impl AsEntryStateHeader for OwnedHeader {
         self.kind
     }
 
+    fn vqueue_id(&self) -> &VQueueId {
+        &self.inner.qid
+    }
+
     fn stage(&self) -> Stage {
         self.inner.stage
-    }
-
-    fn queue_parent(&self) -> VQueueParent {
-        VQueueParent::from_raw(self.inner.queue_parent)
-    }
-
-    fn queue_instance(&self) -> VQueueInstance {
-        VQueueInstance::from_raw(self.inner.queue_instance)
-    }
-
-    fn vqueue_id(&self) -> VQueueId {
-        VQueueId::new(
-            self.queue_parent(),
-            self.partition_key,
-            self.queue_instance(),
-        )
     }
 
     fn current_entry_card(&self) -> EntryCard {
@@ -136,15 +121,7 @@ impl<E> AsEntryStateHeader for OwnedEntryState<E> {
         self.header.stage()
     }
 
-    fn queue_parent(&self) -> VQueueParent {
-        self.header.queue_parent()
-    }
-
-    fn queue_instance(&self) -> VQueueInstance {
-        self.header.queue_instance()
-    }
-
-    fn vqueue_id(&self) -> VQueueId {
+    fn vqueue_id(&self) -> &VQueueId {
         self.header.vqueue_id()
     }
 
@@ -180,20 +157,8 @@ impl<E> AsEntryState for OwnedEntryState<E> {
 //         self.inner.stage
 //     }
 //
-//     fn queue_parent(&self) -> VQueueParent {
-//         VQueueParent::from_raw(self.inner.queue_parent)
-//     }
-//
-//     fn queue_instance(&self) -> VQueueInstance {
-//         VQueueInstance::from_raw(self.inner.queue_instance)
-//     }
-//
-//     fn vqueue_id(&self) -> VQueueId {
-//         VQueueId::new(
-//             self.queue_parent(),
-//             self.partition_key,
-//             self.queue_instance(),
-//         )
+//     fn vqueue_id(&self) -> &VQueueId {
+//         self.vqueue_id
 //     }
 //
 //     fn current_entry_card(&self) -> EntryCard {
