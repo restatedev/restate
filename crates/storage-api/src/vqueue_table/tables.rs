@@ -8,11 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::RangeInclusive;
+
 use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::PartitionKey;
 use restate_types::vqueues::VQueueId;
 
-use super::metadata::VQueueMeta;
+use super::metadata::{VQueueMeta, VQueueMetaRef};
 use super::{
     EntryId, EntryKey, EntryMetadata, EntryState, EntryStateHeader, EntryStatistics, EntryValue,
     IdentifiesEntry, LazyEntryState,
@@ -188,4 +190,18 @@ pub trait ScanVQueueTable {
         &self,
         on_item: impl FnMut(VQueueId, super::metadata::VQueueMeta),
     ) -> Result<()>;
+}
+
+pub trait ScanVQueueMetaTable {
+    /// Used for data-fusion queries
+    fn for_each_vqueue_meta<
+        F: for<'a> FnMut((&'a VQueueId, &'a VQueueMetaRef<'a>)) -> std::ops::ControlFlow<()>
+            + Send
+            + Sync
+            + 'static,
+    >(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+        f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
