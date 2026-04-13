@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::Deref;
+
 use anyhow::Context;
 use bytes::{Buf, BufMut};
 
@@ -29,6 +31,14 @@ impl HasLock {
 
     pub const fn serialized_length_fixed() -> usize {
         1
+    }
+}
+
+impl Deref for HasLock {
+    type Target = bool;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 

@@ -268,7 +268,7 @@ pub struct EntryMetadata {
     // todo: maybe add "deployment_id?" or other metadata needed to identify the deployment
     // or maybe service revision.
     #[bilrost(tag(1))]
-    deployment: Option<String>,
+    pub deployment: Option<String>,
 }
 
 pub trait EntryStateHeader {
