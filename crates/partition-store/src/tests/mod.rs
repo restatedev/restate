@@ -36,6 +36,7 @@ mod invocation_status_table_test;
 mod journal_events_table_test;
 mod journal_table_test;
 mod journal_table_v2_test;
+mod locks_table_test;
 mod outbox_table_test;
 mod promise_table_test;
 mod snapshots_test;
@@ -83,6 +84,7 @@ async fn test_read_write() {
     virtual_object_status_table_test::run_tests(store.clone()).await;
     timer_table_test::run_tests(store.clone()).await;
     vqueue_table_test::run_tests(store.clone()).await;
+    locks_table_test::run_tests(store.clone()).await;
 
     snapshots_test::run_tests(manager.clone(), store.clone()).await;
     RocksDbManager::get().shutdown().await;
