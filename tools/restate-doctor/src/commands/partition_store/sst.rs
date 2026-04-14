@@ -23,7 +23,9 @@ use restate_serde_util::ByteCount;
 
 use crate::app::GlobalOpts;
 use crate::util::colorize::{color_legend, colorize_key_hex};
-use crate::util::rocksdb::{DbInfo, extract_file_number, open_db, resolve_partition_store_path};
+use crate::util::rocksdb::{
+    DbInfo, extract_file_number, open_partition_store_db, resolve_partition_store_path,
+};
 
 use super::PartitionStoreOpts;
 
@@ -58,7 +60,8 @@ pub struct Sst {
 pub async fn run_sst(global_opts: &GlobalOpts, cmd: &Sst) -> Result<()> {
     let path =
         resolve_partition_store_path(global_opts.data_dir.as_deref(), cmd.opts.path.as_deref())?;
-    let db_info = open_db(&path, cmd.opts.open_mode(), global_opts.limit_open_files)?;
+    let db_info =
+        open_partition_store_db(&path, cmd.opts.open_mode(), global_opts.limit_open_files)?;
 
     // Parse file identifiers into file numbers
     let file_nums: Vec<u64> = cmd

@@ -21,37 +21,33 @@ use slotmap::SlotMap;
 use tokio::time::Instant;
 use tracing::{info, trace, warn};
 
-use restate_futures_util::concurrency::Concurrency;
-use restate_memory::{MemoryPool, PollMemoryPool};
-use restate_serde_util::NonZeroByteCount;
 use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::VQueueEntry;
+use restate_storage_api::vqueue_table::EntryKey;
 use restate_storage_api::vqueue_table::VQueueStore;
-use restate_types::vqueue::VQueueId;
+use restate_storage_api::vqueue_table::metadata::VQueueMeta;
+use restate_types::vqueues::VQueueId;
+use restate_types::{LockName, Scope};
 
 use crate::EventDetails;
 use crate::VQueueEvent;
 use crate::VQueuesMeta;
+use crate::metric_definitions::VQUEUE_CONFIRMED;
 use crate::metric_definitions::VQUEUE_ENQUEUE;
-use crate::metric_definitions::VQUEUE_RUN_CONFIRMED;
-use crate::metric_definitions::VQUEUE_RUN_REJECTED;
 use crate::scheduler::eligible::EligibilityTracker;
 use crate::scheduler::vqueue_state::Pop;
-use crate::scheduler::vqueue_state::ReservedResources;
 
-use super::Decision;
-use super::GlobalTokenBucket;
+use super::Decisions;
+use super::ReservedResources;
+use super::ResourceManager;
 use super::VQueueHandle;
 use super::VQueueSchedulerStatus;
 use super::vqueue_state::VQueueState;
 
 #[pin_project]
 pub struct DRRScheduler<S: VQueueStore> {
-    concurrency_limiter: Concurrency,
-    memory_limiter: PollMemoryPool,
-    global_throttling: Option<GlobalTokenBucket>,
-    /// Resources waiting for confirmation, rejection, or removal from the leader.
-    pending_resources: HashMap<u64, ReservedResources>,
+    resource_manager: ResourceManager,
+    /// Permits waiting for confirmation, rejection, or removal from the leader.
+    pending_resources: HashMap<EntryKey, ReservedResources>,
     // sorted by queue_id
     eligible: EligibilityTracker,
     /// Mapping of vqueue_id -> handle for active vqueues
@@ -66,9 +62,6 @@ pub struct DRRScheduler<S: VQueueStore> {
     limit_qid_per_poll: NonZeroU16,
     /// Limits the number of items included in a single decision across all queues
     max_items_per_decision: NonZeroU16,
-    /// Memory to reserve per invocation from the memory pool
-    // todo make dynamically configurable via configuration
-    initial_invocation_memory: NonZeroByteCount,
 
     // SAFETY NOTE: **must** Keep this at the end since it needs to outlive all readers.
     storage: S,
@@ -79,10 +72,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
     pub fn new(
         limit_qid_per_poll: NonZeroU16,
         max_items_per_decision: NonZeroU16,
-        concurrency_limiter: Concurrency,
-        global_throttling: Option<GlobalTokenBucket>,
-        memory_pool: MemoryPool,
-        initial_invocation_memory: NonZeroByteCount,
+        resource_manager: ResourceManager,
         storage: S,
         vqueues: VQueuesMeta<'_>,
     ) -> Self {
@@ -95,11 +85,11 @@ impl<S: VQueueStore> DRRScheduler<S> {
         let mut eligible: EligibilityTracker = EligibilityTracker::with_capacity(num_active);
 
         for (qid, meta) in vqueues.iter_active_vqueues() {
-            let config = vqueues.config_pool().find(&qid.parent);
             total_running += meta.num_running();
             total_waiting += meta.total_waiting();
-            let handle = q.insert_with_key(|handle| VQueueState::new(*qid, handle, meta, config));
-            id_lookup.insert(*qid, handle);
+            let handle =
+                q.insert_with_key(|handle| VQueueState::new(qid.clone(), handle, meta.clone()));
+            id_lookup.insert(qid.clone(), handle);
             // We init all active vqueues as eligible first
             eligible.insert_eligible(handle);
         }
@@ -110,9 +100,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
         );
 
         Self {
-            concurrency_limiter,
-            memory_limiter: PollMemoryPool::new(memory_pool),
-            global_throttling,
+            resource_manager,
             id_lookup,
             q,
             eligible,
@@ -121,114 +109,86 @@ impl<S: VQueueStore> DRRScheduler<S> {
             storage,
             limit_qid_per_poll,
             max_items_per_decision,
-            initial_invocation_memory,
             pending_resources: Default::default(),
         }
     }
 
     fn report(&mut self) {
         trace!(
-            "DRR scheduler report: eligible={}, queue_states_len={}",
+            "DRR scheduler report: eligible={}, queue_states_len={}, pending_resources={}",
             self.eligible.len(),
             self.q.len(),
+            self.pending_resources.len(),
         );
     }
 
     pub fn poll_schedule_next(
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-        vqueues: VQueuesMeta<'_>,
-    ) -> Poll<Result<Decision<S::Item>, StorageError>> {
-        let mut decision = Decision::default();
-        let mut items_collected = 0;
-        let mut first_blocked = None;
+    ) -> Poll<Result<Decisions, StorageError>> {
+        let mut decisions = Decisions::default();
+
+        let this = self.as_mut().project();
+        // tbd if we'd want to poll resource manager inside the loop or not
+        this.eligible.poll_delayed(cx);
+        this.resource_manager.poll_resources(cx, this.eligible);
 
         loop {
-            self.eligible.poll_delayed(cx);
+            let this = self.as_mut().project();
             // bail if we exhausted coop budget.
             let coop = match tokio::task::coop::poll_proceed(cx) {
                 Poll::Ready(coop) => coop,
                 Poll::Pending => break,
             };
             // stop when we have enough queues picked
-            if decision.num_queues() >= self.limit_qid_per_poll.get() as usize
-                || items_collected >= self.max_items_per_decision.get() as usize
+            if decisions.num_queues() >= this.limit_qid_per_poll.get() as usize
+                || decisions.total_items() >= this.max_items_per_decision.get() as usize
             {
                 trace!(
                     "Reached limits of a single DRR decision. num_items={} qids_in_decision={}",
-                    decision.total_items(),
-                    decision.num_queues()
+                    decisions.total_items(),
+                    decisions.num_queues()
                 );
                 break;
             }
 
-            let this = self.as_mut().project();
-
-            let Some(handle) = this.eligible.next_eligible(this.storage, this.q, vqueues)? else {
-                trace!(
-                    "No more eligible vqueues, {:?}, states_len={}, states_capacity={}",
-                    this.eligible,
-                    this.q.len(),
-                    this.q.capacity()
-                );
+            let Some(handle) = this.eligible.next_eligible(this.storage, this.q)? else {
                 break;
             };
 
-            if first_blocked.is_some_and(|first| first == handle) {
-                // do not check the same vqueue twice for capacity in the same poll.
-                break;
-            }
-
             let qstate = this.q.get_mut(handle).unwrap();
 
-            match qstate.pop_unchecked(
-                cx,
-                this.storage,
-                this.concurrency_limiter,
-                this.memory_limiter,
-                *this.initial_invocation_memory,
-                this.global_throttling.as_ref(),
-            )? {
-                Pop::DeficitExhausted => {
+            match qstate.try_pop(cx, this.storage, this.resource_manager)? {
+                Pop::NeedsCredit => {
                     this.eligible.rotate_one();
-                    continue;
                 }
-                Pop::Item {
-                    action,
-                    resources,
-                    entry,
-                    updated_zt,
-                } => {
+                Pop::Run(action, resources) => {
                     coop.made_progress();
-                    items_collected += 1;
-                    if let Some(resources) = resources {
-                        this.pending_resources
-                            .insert(entry.item.unique_hash(), resources);
-                    }
-                    decision.push(&qstate.qid, action, entry, updated_zt);
+                    this.pending_resources.insert(action.key, resources);
+                    decisions.push(&qstate.qid, action);
+                    // We need to set the state so we check eligibility and setup
+                    // necessary schedules when we poll the queue again.
+                    this.eligible.front_needs_poll();
+                }
+                Pop::Yield(action) => {
+                    coop.made_progress();
+                    decisions.push(&qstate.qid, action);
                     // We need to set the state so we check eligibility and setup
                     // necessary schedules when we poll the queue again.
                     this.eligible.front_needs_poll();
                 }
                 Pop::Throttle { delay, scope } => {
                     this.eligible.front_throttled(delay, scope);
-                    continue;
                 }
-                Pop::BlockedOnCapacity | Pop::BlockedOnMemory => {
-                    if first_blocked.is_none() {
-                        first_blocked = Some(handle);
-                    }
-                    this.eligible.front_blocked();
-                    // stay in ready ring
-                    this.eligible.rotate_one();
-                    continue;
+                Pop::Blocked(resource) => {
+                    trace!("VQueue {:?} is blocked on {resource:?}", qstate.qid);
+                    this.eligible.front_blocked(resource);
                 }
             }
         }
 
-        if decision.is_empty() {
+        if decisions.is_empty() {
             if self.last_report.elapsed() >= Duration::from_secs(10) {
-                vqueues.report();
                 self.report();
                 // also report vqueues states
                 self.last_report = Instant::now();
@@ -238,180 +198,182 @@ impl<S: VQueueStore> DRRScheduler<S> {
             self.waker.clone_from(cx.waker());
             Poll::Pending
         } else {
-            decision.report_metrics();
-            Poll::Ready(Ok(decision))
+            decisions.report_metrics();
+            Poll::Ready(Ok(decisions))
         }
     }
 
-    pub fn pop_resources(mut self: Pin<&mut Self>, item_hash: u64) -> Option<ReservedResources> {
-        self.pending_resources.remove(&item_hash)
+    fn add_active_vqueue(&mut self, qid: &VQueueId, meta: VQueueMeta) {
+        let handle = self
+            .q
+            .insert_with_key(|handle| VQueueState::new_empty(qid.clone(), handle, meta));
+
+        assert!(
+            self.id_lookup.insert(qid.clone(), handle).is_none(),
+            "vqueue id lingering"
+        );
+    }
+
+    fn mark_vqueue_as_dormant(&mut self, qid: &VQueueId) {
+        let Some(handle) = self.id_lookup.remove(qid) else {
+            return;
+        };
+        // retire the vqueue state
+        self.q.remove(handle);
+        self.eligible.remove(handle);
+    }
+
+    pub fn pop_resources(mut self: Pin<&mut Self>, key: &EntryKey) -> Option<ReservedResources> {
+        self.pending_resources.remove(key)
     }
 
     #[tracing::instrument(skip_all)]
-    pub fn on_inbox_event(
-        &mut self,
-        vqueues: VQueuesMeta<'_>,
-        event: &VQueueEvent<S::Item>,
-    ) -> Result<(), StorageError> {
+    #[track_caller]
+    pub fn on_inbox_event(&mut self, event: VQueueEvent) {
         let qid = event.qid;
-        match event.details {
-            EventDetails::Enqueued(ref item) => {
-                let config = vqueues.config_pool().find(&qid.parent);
-                let meta = vqueues.get_vqueue(&qid).unwrap();
+        for update in event.updates {
+            match update {
+                EventDetails::MetadataUpdated(update) => {
+                    let qstate = self
+                        .id_lookup
+                        .get(&qid)
+                        .and_then(|handle| self.q.get_mut(*handle))
+                        .expect("vqueue must be active");
+                    qstate.apply_meta_update(&update);
+                }
+                EventDetails::VQueueBecameActive(meta) => {
+                    self.add_active_vqueue(&qid, meta);
+                }
+                EventDetails::VQueueBecameDormant => {
+                    self.mark_vqueue_as_dormant(&qid);
+                }
+                EventDetails::LockReleased { scope, lock_name } => {
+                    self.release_lock(&scope, &lock_name);
+                }
+                EventDetails::Enqueued { key, value } => {
+                    let handle = self
+                        .id_lookup
+                        .get(&qid)
+                        .copied()
+                        .expect("vqueue must be active");
+                    let qstate = self.q.get_mut(handle).expect("vqueue must be active");
 
-                let qstate = match self.id_lookup.get(&qid) {
-                    Some(handle) => match self.q.get_mut(*handle) {
-                        Some(qstate) => qstate,
-                        None => {
-                            let handle = self.q.insert_with_key(|handle| {
-                                VQueueState::new_empty(qid, handle, meta, config)
-                            });
-                            self.id_lookup.insert(qid, handle);
-                            self.q.get_mut(handle).unwrap()
+                    counter!(VQUEUE_ENQUEUE).increment(1);
+                    if qstate.notify_enqueued(&mut self.resource_manager, key, value) {
+                        // The newly enqueued item became the head of the queue.
+                        // If the vqueue was blocked we need to place it back
+                        // on the ready ring if it wasn't already there.
+                        if let Some(resource) = self.eligible.mark_queue_unblocked(handle) {
+                            self.resource_manager.remove_vqueue(handle, &resource);
+                            self.wake_up();
+                        } else if self.eligible.refresh_membership(qstate) {
+                            self.wake_up();
                         }
-                    },
-                    None => {
-                        let handle = self.q.insert_with_key(|handle| {
-                            VQueueState::new_empty(qid, handle, meta, config)
-                        });
-                        self.id_lookup.insert(qid, handle);
-                        self.q.get_mut(handle).unwrap()
                     }
-                };
-
-                counter!(VQUEUE_ENQUEUE).increment(1);
-                if qstate.notify_enqueued(item)
-                    && self.eligible.refresh_membership(qstate, meta, config)
-                {
-                    self.wake_up();
                 }
-            }
-            EventDetails::RunAttemptConfirmed { item_hash } => {
-                let Some(handle) = self.id_lookup.get(&qid) else {
-                    return Ok(());
-                };
-                let Some(qstate) = self.q.get_mut(*handle) else {
-                    return Ok(());
-                };
-                // Note: do not remove the permit here, we depend on the leader to pop it
-                // when it actually runs the item (e.g on VQInvoke action) which doesn't
-                // necessarily need to happen before we see this inbox event.
-                if qstate.remove_from_unconfirmed_assignments(item_hash) {
-                    counter!(VQUEUE_RUN_CONFIRMED).increment(1);
+                EventDetails::DecisionConfirmed {
+                    ref key,
+                    drop_pending_resources,
+                } => {
+                    let Some(handle) = self.id_lookup.get(&qid) else {
+                        continue;
+                    };
+                    let Some(qstate) = self.q.get_mut(*handle) else {
+                        continue;
+                    };
 
-                    let meta = vqueues.get_vqueue(&qid).unwrap();
-                    let config = vqueues.config_pool().find(&qid.parent);
-                    if qstate.is_dormant(meta, config) {
-                        // retire the vqueue state
-                        self.q.remove(*handle);
-                        self.eligible.remove(*handle);
+                    // In some scenarios (state mutation), we don't consume the resources permit
+                    // because it's not driven by the invoker. For that case, we remove the permit.
+                    //
+                    // For everything else, we do not remove the permit here, we depend on the
+                    // leader to pop it when it actually runs the item (e.g on VQInvoke action)
+                    // which doesn't necessarily need to happen before we see this inbox event.
+                    if drop_pending_resources {
+                        self.pending_resources.remove(key);
+                    }
+
+                    if qstate.remove_from_unconfirmed_assignments(key) {
+                        counter!(VQUEUE_CONFIRMED).increment(1);
+                    }
+                }
+                EventDetails::Removed { ref key } => {
+                    // If we have been holding a concurrency permit for this item, we release it.
+                    self.pending_resources.remove(key);
+
+                    let Some(handle) = self.id_lookup.get(&qid).copied() else {
+                        continue;
+                    };
+                    let Some(qstate) = self.q.get_mut(handle) else {
+                        continue;
+                    };
+
+                    // This means it might be the current head. Let's invalidate it if
+                    // that's the case.
+                    if qstate.notify_removed(&mut self.resource_manager, key) {
+                        // todo: We need to remove the queue state + id lookup when we detect
+                        // that the queue is dormant.
+                        // writing this code is proving to be difficult.
+                        //
+                        // The head was removed and the queue was blocked on a resource.
+                        if let Some(resource) = self.eligible.find_blocking_resource(handle) {
+                            self.resource_manager.remove_vqueue(handle, resource);
+                        }
+
+                        if qstate.is_dormant() {
+                            // queue is now dormant. Remove it from everything.
+                            self.eligible.remove(handle);
+                            self.id_lookup.remove(&qid);
+                            self.q.remove(handle);
+                        } else {
+                            // force the queue to be polled again since the head
+                            // will definitely be unknown at this point.
+                            self.eligible.ensure_queue_needs_polling(handle);
+                            self.wake_up();
+                        }
+                    } else if qstate.is_dormant() {
+                        // the removal makes the queue dormant. Remove it from everything
+                        self.eligible.remove(handle);
                         self.id_lookup.remove(&qid);
+                        self.q.remove(handle);
                     }
-                }
-            }
-            EventDetails::RunAttemptRejected { item_hash } => {
-                let Some(handle) = self.id_lookup.get(&qid) else {
-                    return Ok(());
-                };
-                let Some(qstate) = self.q.get_mut(*handle) else {
-                    return Ok(());
-                };
-                let config = vqueues.config_pool().find(&qid.parent);
-                let meta = vqueues.get_vqueue(&qid).unwrap();
-
-                self.pending_resources.remove(&item_hash);
-                if qstate.remove_from_unconfirmed_assignments(item_hash) {
-                    counter!(VQUEUE_RUN_REJECTED).increment(1);
-
-                    if qstate.is_dormant(meta, config) {
-                        // retire the vqueue state
-                        self.q.remove(*handle);
-                        self.eligible.remove(*handle);
-                        self.id_lookup.remove(&qid);
-                    } else if self.eligible.refresh_membership(qstate, meta, config) {
-                        self.wake_up();
-                    }
-                }
-            }
-            EventDetails::Removed { item_hash } => {
-                let Some(handle) = self.id_lookup.get(&qid) else {
-                    return Ok(());
-                };
-                let Some(qstate) = self.q.get_mut(*handle) else {
-                    return Ok(());
-                };
-                let config = vqueues.config_pool().find(&qid.parent);
-                let meta = vqueues.get_vqueue(&qid).unwrap();
-
-                // If we have been holding resources for this item, we release them.
-                self.pending_resources.remove(&item_hash);
-
-                if qstate.notify_removed(item_hash) {
-                    // if removal invalidates the head, we remove the item from eligibility tracker
-                    // this way we ensure that if it's (possibly) eligible, it will be forced
-                    // to be polled again (in refresh_membership)
-                    self.eligible.remove(*handle);
-                }
-
-                if qstate.is_dormant(meta, config) {
-                    // retire the vqueue state
-                    self.q.remove(*handle);
-                    self.eligible.remove(*handle);
-                    self.id_lookup.remove(&qid);
-                } else if self.eligible.refresh_membership(qstate, meta, config) {
-                    self.wake_up();
                 }
             }
         }
-        Ok(())
     }
 
-    pub fn iter_status(
-        &self,
-        cache: VQueuesMeta<'_>,
-    ) -> impl Iterator<Item = (VQueueId, VQueueSchedulerStatus)> {
-        self.q.iter().map(move |(_handle, qstate)| {
-            let Some(meta) = cache.get_vqueue(&qstate.qid) else {
-                return (qstate.qid, VQueueSchedulerStatus::default());
-            };
+    fn release_lock(&mut self, scope: &Option<Scope>, lock_name: &LockName) {
+        if self
+            .resource_manager
+            .release_lock(&mut self.eligible, scope, lock_name)
+        {
+            self.wake_up();
+        }
+    }
 
-            let config = cache.config_pool().find(&qstate.qid.parent);
+    pub fn iter_status(&self) -> impl Iterator<Item = (VQueueId, VQueueSchedulerStatus)> {
+        self.q.iter().map(move |(_handle, qstate)| {
             let status = VQueueSchedulerStatus {
-                is_paused: qstate.is_paused(meta, config),
                 wait_stats: qstate.get_head_wait_stats(),
                 remaining_running: qstate.num_remaining_in_running_stage(),
-                waiting_inbox: qstate.num_waiting_inbox(meta),
-                tokens_used: qstate.num_tokens_used(meta),
-                status: self.eligible.get_status(qstate, meta, config),
+                waiting_inbox: qstate.num_waiting_inbox(),
+                status: self.eligible.get_status(qstate),
             };
 
-            (qstate.qid, status)
+            (qstate.qid.clone(), status)
         })
     }
 
-    pub fn get_status(
-        &self,
-        qid: &VQueueId,
-        cache: VQueuesMeta<'_>,
-    ) -> Option<VQueueSchedulerStatus> {
+    pub fn get_status(&self, qid: &VQueueId) -> Option<VQueueSchedulerStatus> {
         let qstate = self
             .id_lookup
             .get(qid)
             .and_then(|handle| self.q.get(*handle))?;
 
-        let Some(meta) = cache.get_vqueue(qid) else {
-            return Some(VQueueSchedulerStatus::default());
-        };
-
-        let config = cache.config_pool().find(&qstate.qid.parent);
-
         Some(VQueueSchedulerStatus {
-            is_paused: qstate.is_paused(meta, config),
             wait_stats: qstate.get_head_wait_stats(),
             remaining_running: qstate.num_remaining_in_running_stage(),
-            waiting_inbox: qstate.num_waiting_inbox(meta),
-            tokens_used: qstate.num_tokens_used(meta),
-            status: self.eligible.get_status(qstate, meta, config),
+            waiting_inbox: qstate.num_waiting_inbox(),
+            status: self.eligible.get_status(qstate),
         })
     }
 
@@ -422,45 +384,44 @@ impl<S: VQueueStore> DRRScheduler<S> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use std::num::{NonZeroU16, NonZeroUsize};
     use std::ops::RangeInclusive;
     use std::pin::pin;
     use std::task::Poll;
 
+    use restate_clock::RoughTimestamp;
+    use restate_clock::time::MillisSinceEpoch;
     use restate_core::TaskCenter;
     use restate_futures_util::concurrency::Concurrency;
-    use restate_memory::MemoryPool;
+    use restate_limiter::LimitKey;
+    use restate_memory::{MemoryPool, NonZeroByteCount};
     use restate_partition_store::{
         PartitionDb, PartitionStore, PartitionStoreManager, PartitionStoreTransaction,
     };
     use restate_rocksdb::RocksDbManager;
     use restate_storage_api::Transaction;
-    use restate_storage_api::vqueue_table::{EntryCard, EntryId, EntryKind, VisibleAt};
+    use restate_storage_api::vqueue_table::scheduler::SchedulerAction;
+    use restate_storage_api::vqueue_table::stats::WaitStats;
+    use restate_storage_api::vqueue_table::{EntryKey, EntryMetadata, ReadVQueueTable};
+    use restate_types::ServiceName;
     use restate_types::clock::UniqueTimestamp;
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::partitions::Partition;
-    use restate_types::vqueue::{
-        EffectivePriority, NewEntryPriority, VQueueId, VQueueInstance, VQueueParent,
-    };
+    use restate_types::vqueues::VQueueId;
+    use restate_types::vqueues::{EntryId, EntryKind};
 
-    use crate::cache::VQueuesMetaMut;
-    use crate::scheduler::{Action, IsPaused};
-    use crate::{SchedulingStatus, VQueueEvent, VQueues};
+    use crate::cache::VQueuesMetaCache;
+    use crate::scheduler::resource_manager::ResourceKind;
+    use crate::{SchedulingStatus, VQueue, VQueueEvent};
 
-    // ==================== Test Helpers ====================
+    use super::*;
 
-    /// Helper to create a test VQueueId with a unique partition key for test isolation.
+    const BASE_RUN_AT_MS: u64 = 1_744_000_000_000;
+
     fn test_qid(partition_key: u64) -> VQueueId {
-        VQueueId {
-            partition_key: PartitionKey::from(partition_key),
-            parent: VQueueParent::SYSTEM_UNLIMITED,
-            instance: VQueueInstance::from_raw(1),
-        }
+        VQueueId::custom(partition_key, "1")
     }
 
-    /// Creates a test PartitionStore environment.
     async fn storage_test_environment() -> PartitionStore {
         let rocksdb_manager = RocksDbManager::init();
         TaskCenter::set_on_shutdown(Box::pin(async {
@@ -470,7 +431,6 @@ mod tests {
         let manager = PartitionStoreManager::create()
             .await
             .expect("DB storage creation succeeds");
-        // A single partition store that spans all keys.
         manager
             .open(
                 &Partition::new(
@@ -483,76 +443,123 @@ mod tests {
             .expect("DB storage creation succeeds")
     }
 
-    /// Enqueues an entry using the formalized VQueues state transitions.
-    /// Returns the emitted VQueueEvent and the EntryCard that was created.
     async fn enqueue_entry(
         txn: &mut PartitionStoreTransaction<'_>,
-        cache: &mut VQueuesMetaMut,
+        cache: &mut VQueuesMetaCache,
         qid: &VQueueId,
         id: u8,
-        priority: NewEntryPriority,
-        action_collector: Option<&mut Vec<VQueueEvent<EntryCard>>>,
-    ) -> EntryCard {
-        let created_at = UniqueTimestamp::try_from(1000u64 + id as u64).unwrap();
-        let entry_id = EntryId::new([id; 16]);
+        run_at_ms: u64,
+        action_collector: Option<&mut Vec<VQueueEvent>>,
+    ) -> EntryKey {
+        let run_at = RoughTimestamp::from_unix_millis_clamped(MillisSinceEpoch::new(
+            BASE_RUN_AT_MS + run_at_ms,
+        ));
+        enqueue_entry_with_run_at(txn, cache, qid, id, run_at, action_collector).await
+    }
 
-        let mut vqueues = VQueues::new(*qid, txn, cache, action_collector);
-        vqueues
-            .enqueue_new::<()>(
-                created_at,
-                VisibleAt::Now,
-                priority,
-                EntryKind::Invocation,
-                entry_id,
-                None,
-            )
-            .await
-            .expect("enqueue should succeed")
+    async fn enqueue_entry_with_run_at(
+        txn: &mut PartitionStoreTransaction<'_>,
+        cache: &mut VQueuesMetaCache,
+        qid: &VQueueId,
+        id: u8,
+        run_at: RoughTimestamp,
+        action_collector: Option<&mut Vec<VQueueEvent>>,
+    ) -> EntryKey {
+        let created_at = UniqueTimestamp::try_from(1000u64 + id as u64).unwrap();
+        let seq = id as u64;
+        let entry_id = EntryId::new(EntryKind::Invocation, [id; EntryId::REMAINDER_LEN]);
+
+        let mut vqueue = VQueue::get_or_create_vqueue(
+            created_at,
+            qid,
+            txn,
+            cache,
+            action_collector,
+            &ServiceName::new("test"),
+            &None,
+            &LimitKey::None,
+            &None,
+        )
+        .await
+        .expect("vqueue should be created");
+
+        vqueue.enqueue_new(created_at, seq, run_at, entry_id, EntryMetadata::default());
+
+        EntryKey::new(false, run_at, seq, entry_id)
     }
 
     async fn move_to_running(
         txn: &mut PartitionStoreTransaction<'_>,
-        cache: &mut VQueuesMetaMut,
+        cache: &mut VQueuesMetaCache,
         qid: &VQueueId,
-        card: &EntryCard,
-        action_collector: Option<&mut Vec<VQueueEvent<EntryCard>>>,
-    ) -> EntryCard {
+        key: &EntryKey,
+        action_collector: Option<&mut Vec<VQueueEvent>>,
+    ) -> EntryKey {
         let at = UniqueTimestamp::try_from(1100u64).unwrap();
-        let mut vqueues = VQueues::new(*qid, txn, cache, action_collector);
-
-        vqueues
-            .attempt_to_run(at, card, None)
+        let header = txn
+            .get_vqueue_entry_status(qid.partition_key(), key.entry_id())
             .await
-            .expect("attempt_to_run should succeed")
-            .expect("attempted to run an item that was not found in waiting inbox")
+            .expect("entry state header lookup should succeed")
+            .expect("entry state header should exist");
+
+        let mut vqueue = VQueue::get_or_create_vqueue(
+            at,
+            qid,
+            txn,
+            cache,
+            action_collector,
+            &ServiceName::new("test"),
+            &None,
+            &LimitKey::None,
+            &None,
+        )
+        .await
+        .expect("vqueue should be created");
+
+        vqueue.run_entry(at, &header, &WaitStats::default())
     }
 
-    /// Creates a scheduler using PartitionDb as the storage backend.
-    fn create_scheduler(db: &PartitionDb, cache: &VQueuesMetaMut) -> DRRScheduler<PartitionDb> {
-        DRRScheduler::new(
-            NonZeroU16::new(100).unwrap(), // limit_qid_per_poll
-            NonZeroU16::new(100).unwrap(), // max_items_per_decision
-            Concurrency::new_unlimited(),
-            None, // no global throttling
+    async fn create_resource_manager(
+        db: &PartitionDb,
+        concurrency: Concurrency,
+    ) -> ResourceManager {
+        ResourceManager::create(
+            db.clone(),
+            concurrency,
+            None,
             MemoryPool::unlimited(),
-            NonZeroByteCount::new(NonZeroUsize::MIN), // no memory tracking in tests
+            NonZeroByteCount::new(NonZeroUsize::MIN),
+        )
+        .await
+        .expect("resource manager creation should succeed")
+    }
+
+    async fn create_scheduler(
+        db: &PartitionDb,
+        cache: &VQueuesMetaCache,
+    ) -> DRRScheduler<PartitionDb> {
+        DRRScheduler::new(
+            NonZeroU16::new(100).unwrap(),
+            NonZeroU16::new(100).unwrap(),
+            create_resource_manager(db, Concurrency::new_unlimited()).await,
             db.clone(),
             cache.view(),
         )
     }
 
-    fn create_scheduler_with_concurrency(
+    async fn create_scheduler_with_concurrency(
         db: &PartitionDb,
-        cache: &VQueuesMetaMut,
+        cache: &VQueuesMetaCache,
         concurrency_limit: usize,
     ) -> DRRScheduler<PartitionDb> {
         DRRScheduler::new(
             NonZeroU16::new(100).unwrap(),
             NonZeroU16::new(100).unwrap(),
-            Concurrency::new(Some(NonZeroUsize::new(concurrency_limit).unwrap())),
-            None,
-            MemoryPool::unlimited(),
-            NonZeroByteCount::new(NonZeroUsize::MIN), // no memory tracking in tests
+            create_resource_manager(
+                db,
+                Concurrency::new(Some(NonZeroUsize::new(concurrency_limit).unwrap())),
+            )
+            .await,
             db.clone(),
             cache.view(),
         )
@@ -560,67 +567,112 @@ mod tests {
 
     fn poll_scheduler(
         mut scheduler: Pin<&mut DRRScheduler<PartitionDb>>,
-        cache: &VQueuesMetaMut,
-    ) -> Poll<Result<Decision<EntryCard>, restate_storage_api::StorageError>> {
+    ) -> Poll<Result<Decisions, restate_storage_api::StorageError>> {
         let waker = std::task::Waker::noop();
         let mut cx = std::task::Context::from_waker(waker);
-        scheduler.as_mut().poll_schedule_next(&mut cx, cache.view())
+        scheduler.as_mut().poll_schedule_next(&mut cx)
     }
 
-    // ==================== Tests ====================
+    fn run_keys(decision: &Decisions) -> Vec<EntryKey> {
+        decision
+            .qids
+            .values()
+            .flat_map(|actions| actions.iter())
+            .filter_map(|action| match action {
+                SchedulerAction::Run(run) => Some(run.key),
+                _ => None,
+            })
+            .collect()
+    }
 
-    /// Test: A newly created scheduler with no vqueues returns Pending.
     #[restate_core::test]
     async fn test_empty_scheduler_returns_pending() {
         let rocksdb = storage_test_environment().await;
         let db = rocksdb.partition_db();
-        let cache = VQueuesMetaMut::default();
+        let cache = VQueuesMetaCache::create(db.clone()).await.unwrap();
 
-        let mut scheduler = create_scheduler(db, &cache);
-
-        let result = poll_scheduler(pin!(&mut scheduler), &cache);
-        assert!(matches!(result, Poll::Pending));
+        let mut scheduler = create_scheduler(db, &cache).await;
+        assert!(matches!(
+            poll_scheduler(pin!(&mut scheduler)),
+            Poll::Pending
+        ));
     }
 
-    /// Test: Polling the scheduler after enqueue yields the item.
     #[restate_core::test]
     async fn test_poll_yields_enqueued_item() {
         let mut rocksdb = storage_test_environment().await;
-        let mut cache = VQueuesMetaMut::default();
+        let mut cache = VQueuesMetaCache::new_empty();
         let qid = test_qid(2000);
 
         let mut txn = rocksdb.transaction();
-        enqueue_entry(
+        enqueue_entry(&mut txn, &mut cache, &qid, 1, 0, None).await;
+        txn.commit().await.expect("commit should succeed");
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = create_scheduler(db, &cache).await;
+
+        let result = poll_scheduler(pin!(&mut scheduler));
+        assert!(matches!(result, Poll::Ready(Ok(ref decision)) if !decision.is_empty()));
+
+        let Poll::Ready(Ok(decision)) = result else {
+            panic!("expected decision");
+        };
+        assert_eq!(decision.num_run(), 1);
+        assert_eq!(decision.num_queues(), 1);
+        assert_eq!(decision.total_items(), 1);
+    }
+
+    #[restate_core::test]
+    async fn test_run_at_below_now_preempts_within_inbox() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty();
+        let qid = test_qid(2_100);
+        let now = MillisSinceEpoch::now().as_u64();
+
+        let mut txn = rocksdb.transaction();
+        let future_key = enqueue_entry_with_run_at(
             &mut txn,
             &mut cache,
             &qid,
             1,
-            NewEntryPriority::UserDefault,
+            RoughTimestamp::from_unix_millis_clamped(MillisSinceEpoch::new(
+                now.saturating_add(60_000),
+            )),
+            None,
+        )
+        .await;
+        let overdue_key = enqueue_entry_with_run_at(
+            &mut txn,
+            &mut cache,
+            &qid,
+            2,
+            RoughTimestamp::from_unix_millis_clamped(MillisSinceEpoch::new(
+                now.saturating_sub(1_000),
+            )),
             None,
         )
         .await;
         txn.commit().await.expect("commit should succeed");
 
         let db = rocksdb.partition_db();
-        let mut scheduler = create_scheduler(db, &cache);
+        let mut scheduler = create_scheduler(db, &cache).await;
 
-        let result = poll_scheduler(pin!(&mut scheduler), &cache);
-        assert!(matches!(result, Poll::Ready(Ok(ref decision)) if !decision.is_empty()));
+        let Poll::Ready(Ok(decision)) = poll_scheduler(pin!(&mut scheduler)) else {
+            panic!("expected decision");
+        };
 
-        if let Poll::Ready(Ok(decision)) = result {
-            assert_eq!(decision.num_start(), 1);
-            assert_eq!(decision.num_queues(), 1);
-            assert_eq!(decision.total_items(), 1);
-        }
+        assert_eq!(decision.num_run(), 1);
+        let keys = run_keys(&decision);
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0], overdue_key);
+        assert_ne!(keys[0], future_key);
     }
 
-    /// Test: Round-robin fairness - multiple vqueues get scheduled in rotation.
     #[restate_core::test]
     async fn test_round_robin_fairness() {
         let mut rocksdb = storage_test_environment().await;
-        let mut cache = VQueuesMetaMut::default();
+        let mut cache = VQueuesMetaCache::new_empty();
 
-        // Create 3 vqueues, each with 3 items
         let mut txn = rocksdb.transaction();
         for i in 1..=3u64 {
             let qid = test_qid(10 + i);
@@ -629,9 +681,8 @@ mod tests {
                     &mut txn,
                     &mut cache,
                     &qid,
-                    // items are offsetted by the queue ID
-                    (qid.partition_key + j) as u8,
-                    NewEntryPriority::UserDefault,
+                    (qid.partition_key() + j) as u8,
+                    0,
                     None,
                 )
                 .await;
@@ -640,568 +691,284 @@ mod tests {
         txn.commit().await.expect("commit should succeed");
 
         let db = rocksdb.partition_db();
-        // Create scheduler with max_items_per_decision = 3
-        // In this case, we should see an item per vqueue.
         let mut scheduler = DRRScheduler::new(
             NonZeroU16::new(100).unwrap(),
-            NonZeroU16::new(3).unwrap(), // max 3 items per decision
-            Concurrency::new_unlimited(),
-            None,
-            MemoryPool::unlimited(),
-            NonZeroByteCount::new(NonZeroUsize::MIN), // no memory tracking in tests
+            NonZeroU16::new(3).unwrap(),
+            create_resource_manager(db, Concurrency::new_unlimited()).await,
             db.clone(),
             cache.view(),
         );
 
-        // Poll and verify that a decision was made
-        let result = poll_scheduler(pin!(&mut scheduler), &cache);
-
-        // The decision should include items from all queues since we have high limits
-        let Poll::Ready(Ok(decision)) = result else {
-            panic!("expected Poll::Ready(Ok(decision))");
+        let Poll::Ready(Ok(decision)) = poll_scheduler(pin!(&mut scheduler)) else {
+            panic!("expected decision");
         };
-        // With unlimited concurrency and high limits, all items should be picked
-        assert_eq!(decision.num_queues(), 3);
-        assert_eq!(decision.num_start(), 3);
 
-        decision.into_iter().for_each(|(qid, assignments)| {
-            for (action, mut items) in assignments.into_iter_per_action() {
-                assert_eq!(action, Action::MoveToRun);
-                // for each vqueue, we should see the head item. The head item is the lowest
-                // ID, so we should expect the item ID to the same as the queue ID.
-                assert_eq!(items.len(), 1);
-                assert_eq!(
-                    items.next().unwrap().item.id,
-                    EntryId::new([qid.partition_key as u8; 16])
-                );
-            }
-        });
+        assert_eq!(decision.num_queues(), 3);
+        assert_eq!(decision.num_run(), 3);
+
+        for (qid, actions) in &decision.qids {
+            let runs: Vec<_> = actions
+                .iter()
+                .filter_map(|action| match action {
+                    SchedulerAction::Run(run) => Some(run),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(runs.len(), 1);
+            assert_eq!(runs[0].key.seq().as_u64(), qid.partition_key());
+        }
     }
 
-    /// Test: Concurrency limiting blocks scheduling when capacity is exhausted.
     #[restate_core::test]
     async fn test_concurrency_limiting() {
         let mut rocksdb = storage_test_environment().await;
-        let mut cache = VQueuesMetaMut::default();
+        let mut cache = VQueuesMetaCache::new_empty();
         let qid1 = test_qid(7000);
         let qid2 = test_qid(7001);
 
-        let mut qids = vec![qid1, qid2];
+        let mut qids = vec![qid1.clone(), qid2.clone()];
 
         let mut txn = rocksdb.transaction();
-        enqueue_entry(
-            &mut txn,
-            &mut cache,
-            &qid1,
-            1,
-            NewEntryPriority::UserDefault,
-            None,
-        )
-        .await;
-        enqueue_entry(
-            &mut txn,
-            &mut cache,
-            &qid2,
-            2,
-            NewEntryPriority::UserDefault,
-            None,
-        )
-        .await;
+        enqueue_entry(&mut txn, &mut cache, &qid1, 1, 0, None).await;
+        enqueue_entry(&mut txn, &mut cache, &qid2, 2, 0, None).await;
         txn.commit().await.expect("commit should succeed");
 
         let db = rocksdb.partition_db();
-        let mut scheduler = create_scheduler_with_concurrency(db, &cache, 1);
+        let mut scheduler = create_scheduler_with_concurrency(db, &cache, 1).await;
 
         assert_eq!(
-            scheduler.get_status(&qid1, cache.view()).unwrap().status,
+            scheduler.get_status(&qid1).unwrap().status,
             SchedulingStatus::Ready,
         );
         assert_eq!(
-            scheduler.get_status(&qid2, cache.view()).unwrap().status,
+            scheduler.get_status(&qid2).unwrap().status,
             SchedulingStatus::Ready,
         );
 
-        // First poll should succeed with one item (concurrency limit = 1)
-        let result = poll_scheduler(pin!(&mut scheduler), &cache);
+        let result = poll_scheduler(pin!(&mut scheduler));
         assert!(matches!(result, Poll::Ready(Ok(ref d)) if d.total_items() == 1));
         let Poll::Ready(Ok(result)) = result else {
-            panic!("expected Poll::Ready(Ok(decision))");
+            panic!("expected decision");
         };
-        assert_eq!(result.num_start(), 1);
+        assert_eq!(result.num_run(), 1);
 
-        let first_pop_qid = result.iter_qids().next().unwrap();
-        qids.retain(|qid| qid != first_pop_qid);
+        let first_pop_qid = result.qids.keys().next().unwrap().clone();
+        let first_pop_key = run_keys(&result)[0];
+        qids.retain(|qid| qid != &first_pop_qid);
 
-        // Second poll should return Pending since we're at capacity
         assert!(matches!(
-            poll_scheduler(pin!(&mut scheduler), &cache),
+            poll_scheduler(pin!(&mut scheduler)),
             Poll::Pending
         ));
-        // Inspect the status of the vqueues, we should see that some vqueues are blocked on
-        // capacity
         assert_eq!(
-            scheduler
-                .get_status(first_pop_qid, cache.view())
-                .unwrap()
-                .status,
-            // we drained this vqueue as it has a single item
+            scheduler.get_status(&first_pop_qid).unwrap().status,
             SchedulingStatus::Empty,
         );
         assert_eq!(
-            scheduler.get_status(&qids[0], cache.view()).unwrap().status,
-            SchedulingStatus::BlockedOnCapacity,
+            scheduler.get_status(&qids[0]).unwrap().status,
+            SchedulingStatus::BlockedOn(ResourceKind::InvokerConcurrency),
         );
-        // Pop the resources from the scheduler to release the concurrency token.
-        // In production, the leader calls pop_resources() when it actually runs the item.
-        let item_hash = result
-            .into_iter()
-            .flat_map(|(_, a)| a.into_iter_per_action())
-            .flat_map(|(_, items)| items)
-            .next()
-            .unwrap()
-            .item
-            .unique_hash();
+
         let mut scheduler = pin!(scheduler);
-        let resources = scheduler.as_mut().pop_resources(item_hash);
+        let resources = scheduler.as_mut().pop_resources(&first_pop_key);
         assert!(resources.is_some());
         drop(resources);
-        // Now we should be able to get another item
-        let result2 = poll_scheduler(scheduler.as_mut(), &cache);
-        let Poll::Ready(Ok(result2)) = result2 else {
-            panic!("expected Poll::Ready(Ok(decision))");
-        };
-        assert_eq!(result2.num_start(), 1);
 
-        let second_pop_qid = result2.iter_qids().next().unwrap();
-        qids.retain(|qid| qid != second_pop_qid);
+        let Poll::Ready(Ok(result2)) = poll_scheduler(scheduler.as_mut()) else {
+            panic!("expected decision");
+        };
+        assert_eq!(result2.num_run(), 1);
+
+        let second_pop_qid = result2.qids.keys().next().unwrap().clone();
+        qids.retain(|qid| qid != &second_pop_qid);
         assert!(qids.is_empty());
-        // both are empty
         assert_eq!(
-            scheduler.get_status(&qid1, cache.view()).unwrap().status,
+            scheduler.get_status(&qid1).unwrap().status,
             SchedulingStatus::Empty,
         );
         assert_eq!(
-            scheduler.get_status(&qid2, cache.view()).unwrap().status,
+            scheduler.get_status(&qid2).unwrap().status,
             SchedulingStatus::Empty,
         );
     }
 
-    /// Test: Scheduler respects max_items_per_decision limit.
     #[restate_core::test]
     async fn test_max_items_per_decision_limit() {
         let mut rocksdb = storage_test_environment().await;
-        let mut cache = VQueuesMetaMut::default();
+        let mut cache = VQueuesMetaCache::new_empty();
 
-        // Create 5 vqueues with 1 item each
         let mut txn = rocksdb.transaction();
         for i in 1..=5u64 {
             let qid = test_qid(9000 + i);
-            enqueue_entry(
-                &mut txn,
-                &mut cache,
-                &qid,
-                i as u8,
-                NewEntryPriority::UserDefault,
-                None,
-            )
-            .await;
+            enqueue_entry(&mut txn, &mut cache, &qid, i as u8, 0, None).await;
         }
         txn.commit().await.expect("commit should succeed");
 
         let db = rocksdb.partition_db();
-
-        // Create scheduler with max_items_per_decision = 2
         let mut scheduler = DRRScheduler::new(
             NonZeroU16::new(100).unwrap(),
-            NonZeroU16::new(2).unwrap(), // max 2 items per decision
-            Concurrency::new_unlimited(),
-            None,
-            MemoryPool::unlimited(),
-            NonZeroByteCount::new(NonZeroUsize::MIN), // no memory tracking in tests
+            NonZeroU16::new(2).unwrap(),
+            create_resource_manager(db, Concurrency::new_unlimited()).await,
             db.clone(),
             cache.view(),
         );
 
-        // First poll should yield at most 2 items
-        let result = poll_scheduler(pin!(&mut scheduler), &cache);
-        if let Poll::Ready(Ok(decision)) = result {
+        if let Poll::Ready(Ok(decision)) = poll_scheduler(pin!(&mut scheduler)) {
             assert!(!decision.is_empty());
             assert!(decision.total_items() <= 2);
         }
     }
 
-    /// Test: Higher priority item enqueued between polls preempts lower priority head.
-    ///
-    /// Scenario:
-    /// 1. Start with 7 low priority items already in inbox
-    /// 2. Pop a couple of items, not confirmed yet.
-    /// 3. Enqueue a new higher priority item
-    /// 4. Dequeuing should return the high priority item before continuing with the low priority items
-    /// 5. Confirm the assignments (move to running)
-    /// 6. Dequeue the rest.
     #[restate_core::test]
     async fn test_higher_priority_preempts_between_polls() {
         let mut rocksdb = storage_test_environment().await;
-        let mut cache = VQueuesMetaMut::default();
-        let test_qid = test_qid(14_000);
+        let mut cache = VQueuesMetaCache::new_empty();
+        let qid = test_qid(14_000);
         let mut events = Vec::new();
 
-        // Enqueue low priority item first
         let mut txn = rocksdb.transaction();
-        // 7 low priority items
         for i in 1..=7 {
-            enqueue_entry(
-                &mut txn,
-                &mut cache,
-                &test_qid,
-                i, // low priority item
-                NewEntryPriority::UserDefault,
-                None,
-            )
-            .await;
+            enqueue_entry(&mut txn, &mut cache, &qid, i, 10_000, None).await;
         }
         txn.commit().await.expect("commit should succeed");
 
         let db = rocksdb.partition_db();
         let mut scheduler = DRRScheduler::new(
-            NonZeroU16::new(100).unwrap(), // limit_qid_per_poll
-            // Important so we can slow down how the scheduler advances in each poll
-            NonZeroU16::new(2).unwrap(), // max_items_per_decision
-            Concurrency::new_unlimited(),
-            None, // no global throttling
-            MemoryPool::unlimited(),
-            NonZeroByteCount::new(NonZeroUsize::MIN), // no memory tracking in tests
+            NonZeroU16::new(100).unwrap(),
+            NonZeroU16::new(2).unwrap(),
+            create_resource_manager(db, Concurrency::new_unlimited()).await,
             db.clone(),
             cache.view(),
         );
 
-        let mut in_flight = Vec::new();
-
-        // Poll - should yield 2 low priority item first
-        let result = poll_scheduler(pin!(&mut scheduler), &cache);
-        let Poll::Ready(Ok(decision)) = result else {
-            panic!("expected Poll::Ready(Ok(decision))");
+        let Poll::Ready(Ok(decision)) = poll_scheduler(pin!(&mut scheduler)) else {
+            panic!("expected decision");
         };
+        let mut in_flight = run_keys(&decision);
+        assert_eq!(in_flight.len(), 2);
+        assert_eq!(in_flight[0].seq().as_u64(), 1);
+        assert_eq!(in_flight[1].seq().as_u64(), 2);
 
-        assert_eq!(decision.num_start(), 2);
-
-        for (qid, assignments) in decision {
-            assert_eq!(qid, test_qid);
-
-            // we expect the items to return in their natural ID order because the
-            // creation timestamp is identical (for the purpose of the test)
-            for (action, entries) in assignments.iter() {
-                assert_eq!(entries.len(), 2);
-                assert_eq!(action, Action::MoveToRun);
-                assert_eq!(entries[0].item.priority, EffectivePriority::UserDefault);
-                assert_eq!(entries[0].item.id, EntryId::new([1; 16]));
-                in_flight.push(entries[0].item.clone());
-
-                assert_eq!(entries[1].item.priority, EffectivePriority::UserDefault);
-                assert_eq!(entries[1].item.id, EntryId::new([2; 16]));
-                in_flight.push(entries[1].item.clone());
-            }
-        }
-
-        let status = scheduler.get_status(&test_qid, cache.view()).unwrap();
-        assert_eq!(status.status, SchedulingStatus::Ready);
-        // 5 left in inbox from scheduler's perspective
-        assert_eq!(status.waiting_inbox, 5);
-        assert_eq!(status.remaining_running, 0);
-        assert!(matches!(status.is_paused, IsPaused::No));
-        assert_eq!(status.tokens_used, 2);
-
-        // Now enqueue high priority item
         let mut txn = rocksdb.transaction();
         events.clear();
-        enqueue_entry(
-            &mut txn,
-            &mut cache,
-            &test_qid,
-            125, // high priority item but with high ID
-            NewEntryPriority::UserHigh,
-            Some(&mut events),
-        )
-        .await;
+        enqueue_entry(&mut txn, &mut cache, &qid, 125, 0, Some(&mut events)).await;
         txn.commit().await.expect("commit should succeed");
-
-        // Notify about the new items
         for event in events.drain(..) {
-            scheduler
-                .on_inbox_event(cache.view(), &event)
-                .expect("event should succeed");
+            scheduler.on_inbox_event(event);
         }
 
-        // Poll - should yield high priority item first
-        let result = poll_scheduler(pin!(&mut scheduler), &cache);
-        let Poll::Ready(Ok(decision)) = result else {
-            panic!("expected Poll::Ready(Ok(decision))");
+        let Poll::Ready(Ok(decision)) = poll_scheduler(pin!(&mut scheduler)) else {
+            panic!("expected decision");
         };
-        assert_eq!(decision.num_start(), 2);
+        let next_keys = run_keys(&decision);
+        assert_eq!(next_keys.len(), 2);
+        assert_eq!(next_keys[0].seq().as_u64(), 125);
+        assert_eq!(next_keys[1].seq().as_u64(), 3);
+        in_flight.extend(next_keys);
 
-        for (qid, assignments) in decision {
-            assert_eq!(qid, test_qid);
-
-            for (action, entries) in assignments.iter() {
-                assert_eq!(entries.len(), 2);
-                assert_eq!(action, Action::MoveToRun);
-                // Verify first item is high priority
-                assert_eq!(entries[0].item.priority, EffectivePriority::UserHigh);
-                assert_eq!(entries[0].item.id, EntryId::new([125; 16]));
-                in_flight.push(entries[0].item.clone());
-
-                // The second item is the default priority again
-                assert_eq!(entries[1].item.priority, EffectivePriority::UserDefault);
-                // the scheduler must skip (1, 2) by internal tracking of the unconfirmed
-                // assignments.
-                assert_eq!(entries[1].item.id, EntryId::new([3; 16]));
-                in_flight.push(entries[1].item.clone());
-            }
-        }
-
-        let status = scheduler.get_status(&test_qid, cache.view()).unwrap();
-        assert_eq!(status.status, SchedulingStatus::Ready);
-        // we added one, and took 2 (5 + 1 - 2 = 4)
-        assert_eq!(status.waiting_inbox, 4);
-        assert_eq!(status.remaining_running, 0);
-        assert!(matches!(status.is_paused, IsPaused::No));
-        assert_eq!(status.tokens_used, 4);
-        // let's confirm all the items
-        events.clear();
         let mut txn = rocksdb.transaction();
-        for item in in_flight.drain(..) {
-            let new_card =
-                move_to_running(&mut txn, &mut cache, &test_qid, &item, Some(&mut events)).await;
-            assert_eq!(new_card.priority, EffectivePriority::TokenHeld);
-        }
-        txn.commit().await.expect("commit should succeed");
-
-        assert_eq!(events.len(), 4);
-        for event in events.drain(..) {
-            assert!(matches!(
-                event.details,
-                EventDetails::RunAttemptConfirmed { .. }
-            ));
-            scheduler
-                .on_inbox_event(cache.view(), &event)
-                .expect("event should succeed");
-        }
-
-        // polling the rest of the items
-        let result = poll_scheduler(pin!(&mut scheduler), &cache);
-        let Poll::Ready(Ok(decision)) = result else {
-            panic!("expected Poll::Ready(Ok(decision))");
-        };
-        assert_eq!(decision.num_start(), 2);
-
-        for (_, assignments) in decision {
-            for (action, entries) in assignments.iter() {
-                assert_eq!(entries.len(), 2);
-                assert_eq!(action, Action::MoveToRun);
-                // Verify first item is high priority
-                assert_eq!(entries[0].item.priority, EffectivePriority::UserDefault);
-                assert_eq!(entries[0].item.id, EntryId::new([4; 16]));
-                in_flight.push(entries[0].item.clone());
-
-                assert_eq!(entries[1].item.priority, EffectivePriority::UserDefault);
-                assert_eq!(entries[1].item.id, EntryId::new([5; 16]));
-                in_flight.push(entries[1].item.clone());
-            }
-        }
-
-        let result = poll_scheduler(pin!(&mut scheduler), &cache);
-        let Poll::Ready(Ok(decision)) = result else {
-            panic!("expected Poll::Ready(Ok(decision))");
-        };
-        assert_eq!(decision.num_start(), 2);
-
-        for (_, assignments) in decision {
-            for (action, entries) in assignments.iter() {
-                assert_eq!(entries.len(), 2);
-                assert_eq!(action, Action::MoveToRun);
-                // Verify first item is high priority
-                assert_eq!(entries[0].item.priority, EffectivePriority::UserDefault);
-                assert_eq!(entries[0].item.id, EntryId::new([6; 16]));
-                in_flight.push(entries[0].item.clone());
-
-                assert_eq!(entries[1].item.priority, EffectivePriority::UserDefault);
-                assert_eq!(entries[1].item.id, EntryId::new([7; 16]));
-                in_flight.push(entries[1].item.clone());
-            }
-        }
-
-        // No more items
-        let result = poll_scheduler(pin!(&mut scheduler), &cache);
-        assert!(matches!(result, Poll::Pending));
-        // check status
-        let status: Vec<_> = scheduler.iter_status(cache.view()).collect();
-        // Why? because the schedule will hold on to this vqueue until we confirm all their
-        // pending assignments.
-        assert_eq!(status.len(), 1);
-        for (_, s) in status {
-            assert_eq!(s.status, SchedulingStatus::Empty);
-        }
-
-        // let's confirm everything
         events.clear();
-        let mut txn = rocksdb.transaction();
-        for item in in_flight.drain(..) {
-            let new_card =
-                move_to_running(&mut txn, &mut cache, &test_qid, &item, Some(&mut events)).await;
-            assert_eq!(new_card.priority, EffectivePriority::TokenHeld);
+        for key in in_flight.drain(..) {
+            move_to_running(&mut txn, &mut cache, &qid, &key, Some(&mut events)).await;
         }
         txn.commit().await.expect("commit should succeed");
-
-        assert_eq!(events.len(), 4);
         for event in events.drain(..) {
-            assert!(matches!(
-                event.details,
-                EventDetails::RunAttemptConfirmed { .. }
-            ));
-            scheduler
-                .on_inbox_event(cache.view(), &event)
-                .expect("event should succeed");
+            scheduler.on_inbox_event(event);
         }
 
-        // The scheduler should forget about those vqueues now.
-        let status: Vec<_> = scheduler.iter_status(cache.view()).collect();
-        assert_eq!(status.len(), 0);
+        let Poll::Ready(Ok(decision)) = poll_scheduler(pin!(&mut scheduler)) else {
+            panic!("expected decision");
+        };
+        let keys = run_keys(&decision);
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0].seq().as_u64(), 4);
+        assert_eq!(keys[1].seq().as_u64(), 5);
     }
 
-    /// Test: get_status returns different statuses based on queue state.
     #[restate_core::test]
     async fn test_get_status_reflects_scheduling_states() {
         let mut rocksdb = storage_test_environment().await;
-        let mut cache = VQueuesMetaMut::default();
+        let mut cache = VQueuesMetaCache::new_empty();
         let qid1 = test_qid(21_001);
         let qid2 = test_qid(21_002);
 
-        // Enqueue items in two queues
         let mut txn = rocksdb.transaction();
-        // QID1
-        // - 2 items in running stage
-        // - 1 items in inbox stage
-        for i in 1..=2u64 {
-            let card = enqueue_entry(
-                &mut txn,
-                &mut cache,
-                &qid1,
-                i as u8,
-                NewEntryPriority::UserDefault,
-                None,
-            )
-            .await;
-            move_to_running(&mut txn, &mut cache, &qid1, &card, None).await;
+        for i in 1..=2u8 {
+            let key = enqueue_entry(&mut txn, &mut cache, &qid1, i, 0, None).await;
+            move_to_running(&mut txn, &mut cache, &qid1, &key, None).await;
         }
-        enqueue_entry(
-            &mut txn,
-            &mut cache,
-            &qid1,
-            3u8,
-            NewEntryPriority::UserDefault,
-            None,
-        )
-        .await;
-        // QID2
-        // - 1 item in inbox
-        enqueue_entry(
-            &mut txn,
-            &mut cache,
-            &qid2,
-            10,
-            NewEntryPriority::UserDefault,
-            None,
-        )
-        .await;
+        enqueue_entry(&mut txn, &mut cache, &qid1, 3, 0, None).await;
+        enqueue_entry(&mut txn, &mut cache, &qid2, 10, 0, None).await;
         txn.commit().await.expect("commit should succeed");
 
         let db = rocksdb.partition_db();
-        // Create scheduler with concurrency limit of 1
         let mut scheduler = DRRScheduler::new(
-            NonZeroU16::new(100).unwrap(), // limit_qid_per_poll
-            NonZeroU16::new(10).unwrap(),  // max_items_per_decision
-            // only one concurrency token
-            Concurrency::new(Some(NonZeroUsize::new(1).unwrap())),
-            None,
-            MemoryPool::unlimited(),
-            NonZeroByteCount::new(NonZeroUsize::MIN), // no memory tracking in tests
+            NonZeroU16::new(100).unwrap(),
+            NonZeroU16::new(10).unwrap(),
+            create_resource_manager(db, Concurrency::new(Some(NonZeroUsize::new(1).unwrap())))
+                .await,
             db.clone(),
             cache.view(),
         );
 
-        // Both queues should be Ready initially
         assert_eq!(
-            scheduler.get_status(&qid1, cache.view()).unwrap().status,
+            scheduler.get_status(&qid1).unwrap().status,
             SchedulingStatus::Ready
         );
         assert_eq!(
-            scheduler.get_status(&qid2, cache.view()).unwrap().status,
+            scheduler.get_status(&qid2).unwrap().status,
             SchedulingStatus::Ready
         );
 
-        // Poll
-        let result = poll_scheduler(pin!(&mut scheduler), &cache);
-        let Poll::Ready(Ok(decision)) = result else {
+        let Poll::Ready(Ok(decision)) = poll_scheduler(pin!(&mut scheduler)) else {
             panic!("expected decision");
         };
-        // we expect 3 items because:
-        // - 2 are at the running stage does not require global concurrency token
-        // - only 1 item can be acquired from waiting inbox before we are blocked on capacity
-        // and we expect to see both queues. Due to load balancing, we expect the single waiting
-        // item of qid2 to be the first non-running item in the returned decision.
         assert_eq!(decision.total_items(), 3);
         assert_eq!(decision.num_queues(), 2);
 
-        // qid1 has 1 item left and it's blocked on capacity
-        let status = scheduler.get_status(&qid1, cache.view()).unwrap();
-        assert_eq!(status.status, SchedulingStatus::BlockedOnCapacity);
+        let status = scheduler.get_status(&qid1).unwrap();
+        assert_eq!(
+            status.status,
+            SchedulingStatus::BlockedOn(ResourceKind::InvokerConcurrency)
+        );
         assert_eq!(status.waiting_inbox, 1);
         assert_eq!(status.remaining_running, 0);
-        assert!(matches!(status.is_paused, IsPaused::No));
-        assert_eq!(status.tokens_used, 2);
 
-        // qid2 is exhausted
-        let status = scheduler.get_status(&qid2, cache.view()).unwrap();
+        let status = scheduler.get_status(&qid2).unwrap();
         assert_eq!(status.status, SchedulingStatus::Empty);
         assert_eq!(status.waiting_inbox, 0);
         assert_eq!(status.remaining_running, 0);
-        assert!(matches!(status.is_paused, IsPaused::No));
-        assert_eq!(status.tokens_used, 1);
 
-        // Pop the permit from the scheduler to release the concurrency token.
-        // Only inbox items acquire permits, running items yield without permits.
-        // The inbox item from qid2 is the only one that acquired a permit.
-        let inbox_item_hash = decision
-            .into_iter()
-            .flat_map(|(_, a)| a.into_iter_per_action())
-            .flat_map(|(_, items)| items)
-            .find(|e| e.item.priority.is_new())
-            .unwrap()
-            .item
-            .unique_hash();
+        let qid2_key = decision
+            .qids
+            .get(&qid2)
+            .and_then(|actions| {
+                actions.iter().find_map(|action| match action {
+                    SchedulerAction::Run(run) => Some(run.key),
+                    _ => None,
+                })
+            })
+            .expect("qid2 run action should exist");
+
         let mut scheduler = pin!(scheduler);
-        let resources = scheduler.as_mut().pop_resources(inbox_item_hash);
+        let resources = scheduler.as_mut().pop_resources(&qid2_key);
         assert!(resources.is_some());
         drop(resources);
 
-        let result = poll_scheduler(scheduler.as_mut(), &cache);
-        let Poll::Ready(Ok(decision)) = result else {
+        let Poll::Ready(Ok(decision)) = poll_scheduler(scheduler.as_mut()) else {
             panic!("expected decision");
         };
         assert_eq!(decision.total_items(), 1);
         assert_eq!(decision.num_queues(), 1);
 
         assert_eq!(
-            scheduler.get_status(&qid1, cache.view()).unwrap().status,
+            scheduler.get_status(&qid1).unwrap().status,
             SchedulingStatus::Empty
         );
         assert_eq!(
-            scheduler.get_status(&qid2, cache.view()).unwrap().status,
+            scheduler.get_status(&qid2).unwrap().status,
             SchedulingStatus::Empty
         );
-        assert!(matches!(
-            poll_scheduler(scheduler.as_mut(), &cache),
-            Poll::Pending
-        ));
+        assert!(matches!(poll_scheduler(scheduler.as_mut()), Poll::Pending));
     }
 }
