@@ -17,10 +17,9 @@ pub(super) struct Request {
     pub(super) invocation_id: InvocationId,
 }
 
-impl<'a, TActuator: Actuator, Schemas, TStorage> RpcHandler<Request>
-    for RpcContext<'a, TActuator, Schemas, TStorage>
+impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
+    for RpcContext<'a, TActuator, TSchemas, TStorage>
 where
-    TActuator: Actuator,
     TStorage: ReadInvocationStatusTable,
 {
     type Output = PauseInvocationRpcResponse;

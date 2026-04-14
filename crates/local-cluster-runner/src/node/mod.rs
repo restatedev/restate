@@ -94,6 +94,12 @@ pub struct NodeSpec {
     inherit_env: bool,
     #[builder(default)]
     env: Vec<(String, String)>,
+    /// If true, child processes are placed in their own process group,
+    /// isolating them from terminal signals (e.g. Ctrl+C). Default is false,
+    /// meaning children share the parent's process group and receive signals
+    /// like SIGINT directly.
+    #[builder(default = false)]
+    isolate_process_group: bool,
     #[builder(default)]
     #[serde(skip)]
     searcher: Searcher,
@@ -223,6 +229,7 @@ impl NodeSpec {
             args,
             inherit_env,
             env,
+            isolate_process_group,
             searcher,
         } = &self;
 
@@ -290,8 +297,11 @@ impl NodeSpec {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
-        .process_group(0) // avoid terminal control C being propagated
         .args(args);
+
+        if *isolate_process_group {
+            cmd.process_group(0);
+        }
 
         let mut child = cmd.spawn().map_err(NodeStartError::SpawnError)?;
         let pid = child.id().expect("child to have a pid");

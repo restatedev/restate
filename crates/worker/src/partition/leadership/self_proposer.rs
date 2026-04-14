@@ -68,11 +68,11 @@ impl SelfProposer {
         self.bifrost_appender.sender().forget_preference();
     }
 
-    /// Propose many commands to bifrost
+    /// Self-propose many commands to Bifrost, attaching ESN-based dedup information.
     ///
-    /// Note that propose_many will return an error if the number of commands is greater than the
-    /// internal channel's max capacity.
-    pub async fn propose_many(
+    /// Note that self_propose_many will return an error if the number of commands is greater than
+    /// the internal channel's max capacity.
+    pub async fn self_propose_many(
         &mut self,
         cmds: impl ExactSizeIterator<Item = (PartitionKey, Command)>,
     ) -> Result<(), Error> {
@@ -117,12 +117,13 @@ impl SelfProposer {
         Ok(())
     }
 
-    pub async fn propose(
+    /// Self-propose a single command to Bifrost, attaching ESN-based dedup information.
+    pub async fn self_propose(
         &mut self,
         partition_key: PartitionKey,
         cmd: Command,
     ) -> Result<(), Error> {
-        let envelope = Envelope::new(self.create_header(partition_key), cmd);
+        let envelope = Envelope::new(self.create_self_propose_header(partition_key), cmd);
 
         // Only blocks if background append is pushing back (queue full)
         self.bifrost_appender
@@ -134,12 +135,28 @@ impl SelfProposer {
         Ok(())
     }
 
-    pub async fn propose_with_notification(
+    /// Append a command to Bifrost **without** dedup information, returning a [`CommitToken`].
+    ///
+    /// Unlike [`Self::self_propose`], this does not attach an epoch sequence number. Records
+    /// appended this way are never filtered by the dedup mechanism during leadership transitions,
+    /// which makes them safe for fire-and-forget ingress commands (signals, invocation responses).
+    pub async fn append_with_notification(
         &mut self,
         partition_key: PartitionKey,
         cmd: Command,
     ) -> Result<CommitToken, Error> {
-        let envelope = Envelope::new(self.create_header(partition_key), cmd);
+        let header = Header {
+            dest: Destination::Processor {
+                partition_key,
+                dedup: None,
+            },
+            source: Source::Processor {
+                partition_id: None,
+                partition_key: Some(partition_key),
+                leader_epoch: self.epoch_sequence_number.leader_epoch,
+            },
+        };
+        let envelope = Envelope::new(header, cmd);
 
         let commit_token = self
             .bifrost_appender
@@ -151,7 +168,10 @@ impl SelfProposer {
         Ok(commit_token)
     }
 
-    pub async fn propose_many_with_notification(
+    /// Forward externally-created records to Bifrost, returning a [`CommitToken`].
+    ///
+    /// The records already carry their own dedup information in their headers; no ESN is attached.
+    pub async fn forward_many_with_notification(
         &mut self,
         records: impl ExactSizeIterator<Item = IngestRecord>,
     ) -> Result<CommitToken, Error> where {
@@ -193,7 +213,7 @@ impl SelfProposer {
             .map_err(|e| Error::SelfProposer(e.to_string()))
     }
 
-    fn create_header(&mut self, partition_key: PartitionKey) -> Header {
+    fn create_self_propose_header(&mut self, partition_key: PartitionKey) -> Header {
         let esn = self.epoch_sequence_number;
         self.epoch_sequence_number = self.epoch_sequence_number.next();
 

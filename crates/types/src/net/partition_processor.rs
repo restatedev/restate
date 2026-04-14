@@ -92,6 +92,9 @@ impl WireDecode for PartitionProcessorRpcRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AppendInvocationReplyOn {
     /// With this mode, the PP will reply as soon as the log append is done with [`PartitionProcessorRpcResponse::Appended`].
+    ///
+    /// The record is appended without dedup information so it is never filtered during leadership
+    /// transitions.
     Appended,
     /// With this mode, the PP will reply with the [`PartitionProcessorRpcResponse::Submitted`] when available.
     Submitted,

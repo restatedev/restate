@@ -44,20 +44,27 @@ use std::sync::Arc;
 
 #[cfg_attr(test, mockall::automock)]
 pub(super) trait Actuator {
-    fn self_propose_and_respond_asynchronously<O: 'static + Into<PartitionProcessorRpcResponse>>(
-        &mut self,
-        partition_key: PartitionKey,
-        cmd: Command,
-        replier: Replier<O>,
-        on_proposed_response: O,
-    ) -> impl Future<Output = ()>;
-
     fn handle_rpc_proposal_command<O: 'static>(
         &mut self,
         partition_key: PartitionKey,
         cmd: Command,
         request_id: PartitionProcessorRpcRequestId,
         replier: Replier<O>,
+    ) -> impl Future<Output = ()>;
+
+    /// Appends a command to Bifrost **without** dedup information, responding on Bifrost commit.
+    ///
+    /// Records appended this way are never filtered by the dedup mechanism during leadership
+    /// transitions, making this safe for fire-and-forget ingress commands (signals, invocation
+    /// responses).
+    fn append_and_respond_asynchronously<
+        O: 'static + Into<PartitionProcessorRpcResponse> + Send + Sync,
+    >(
+        &mut self,
+        partition_key: PartitionKey,
+        cmd: Command,
+        replier: Replier<O>,
+        success_response: O,
     ) -> impl Future<Output = ()>;
 
     fn notify_invoker_to_retry_now(&mut self, invocation_id: InvocationId);
@@ -78,14 +85,14 @@ where
         >,
     >,
 {
-    async fn self_propose_and_respond_asynchronously<O: Into<PartitionProcessorRpcResponse>>(
+    async fn append_and_respond_asynchronously<O: Into<PartitionProcessorRpcResponse>>(
         &mut self,
         partition_key: PartitionKey,
         cmd: Command,
         replier: Replier<O>,
         on_proposed_response: O,
     ) {
-        LeadershipState::self_propose_and_respond_asynchronously(
+        LeadershipState::append_and_respond_asynchronously(
             self,
             partition_key,
             cmd,

@@ -263,7 +263,7 @@ where
         )?;
 
         self_proposer
-            .propose(*self.partition.key_range.start(), announce_leader)
+            .self_propose(*self.partition.key_range.start(), announce_leader)
             .await?;
 
         self.state = State::Candidate {
@@ -479,7 +479,7 @@ where
                     })
             {
                 self_proposer
-                    .propose(
+                    .self_propose(
                         *self.partition.key_range.start(),
                         Command::VersionBarrier(VersionBarrier {
                             version: forced_min_restate_version.clone(),
@@ -499,7 +499,7 @@ where
                 && RESTATE_VERSION_1_6_0.is_newer_than(&min_restate_version)
             {
                 self_proposer
-                    .propose(
+                    .self_propose(
                         *self.partition.key_range.start(),
                         Command::VersionBarrier(VersionBarrier {
                             version: RESTATE_VERSION_1_6_0.clone(),
@@ -681,8 +681,8 @@ impl<T, I> LeadershipState<T, I> {
         }
     }
 
-    /// Self propose to this partition, and register the reciprocal to respond asynchronously.
-    pub async fn self_propose_and_respond_asynchronously(
+    /// Append a command to Bifrost without dedup information, responding on Bifrost commit.
+    pub async fn append_and_respond_asynchronously(
         &mut self,
         partition_key: PartitionKey,
         cmd: Command,
@@ -697,7 +697,7 @@ impl<T, I> LeadershipState<T, I> {
             )),
             State::Leader(leader_state) => {
                 leader_state
-                    .self_propose_and_respond_asynchronously(
+                    .append_and_respond_asynchronously(
                         partition_key,
                         cmd,
                         reciprocal,
@@ -708,8 +708,8 @@ impl<T, I> LeadershipState<T, I> {
         }
     }
 
-    /// propose to this partition
-    pub async fn propose_many_with_callback<F>(
+    /// Forward externally-created records to this partition.
+    pub async fn forward_many_with_callback<F>(
         &mut self,
         records: impl ExactSizeIterator<Item = IngestRecord>,
         callback: F,
@@ -722,7 +722,7 @@ impl<T, I> LeadershipState<T, I> {
             )),
             State::Leader(leader_state) => {
                 leader_state
-                    .propose_many_with_callback(records, callback)
+                    .forward_many_with_callback(records, callback)
                     .await;
             }
         }
