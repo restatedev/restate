@@ -352,7 +352,6 @@ impl<S: VQueueStore> DRRScheduler<S> {
                 wait_stats: qstate.get_head_wait_stats(),
                 remaining_running: qstate.num_remaining_in_running_stage(),
                 waiting_inbox: qstate.num_waiting_inbox(),
-                tokens_used: qstate.num_tokens_used(),
                 status: self.eligible.get_status(qstate),
             };
 
@@ -370,7 +369,6 @@ impl<S: VQueueStore> DRRScheduler<S> {
             wait_stats: qstate.get_head_wait_stats(),
             remaining_running: qstate.num_remaining_in_running_stage(),
             waiting_inbox: qstate.num_waiting_inbox(),
-            tokens_used: qstate.num_tokens_used(),
             status: self.eligible.get_status(qstate),
         })
     }
@@ -895,7 +893,6 @@ mod tests {
         // 5 left in inbox from scheduler's perspective
         assert_eq!(status.waiting_inbox, 5);
         assert_eq!(status.remaining_running, 0);
-        assert_eq!(status.tokens_used, 2);
 
         // Now enqueue high priority item
         let mut txn = rocksdb.transaction();
@@ -948,7 +945,6 @@ mod tests {
         // we added one, and took 2 (5 + 1 - 2 = 4)
         assert_eq!(status.waiting_inbox, 4);
         assert_eq!(status.remaining_running, 0);
-        assert_eq!(status.tokens_used, 4);
         // let's confirm all the items
         events.clear();
         let mut txn = rocksdb.transaction();
@@ -1144,14 +1140,12 @@ mod tests {
         );
         assert_eq!(status.waiting_inbox, 1);
         assert_eq!(status.remaining_running, 0);
-        assert_eq!(status.tokens_used, 2);
 
         // qid2 is exhausted
         let status = scheduler.get_status(&qid2).unwrap();
         assert_eq!(status.status, SchedulingStatus::Empty);
         assert_eq!(status.waiting_inbox, 0);
         assert_eq!(status.remaining_running, 0);
-        assert_eq!(status.tokens_used, 1);
 
         // Pop the permit from the scheduler to release the concurrency token.
         // Only inbox items acquire permits, running items yield without permits.
