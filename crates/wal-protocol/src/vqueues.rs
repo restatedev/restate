@@ -76,7 +76,7 @@ pub struct Entry {
 impl Assignment {
     pub fn with_capacity(qid: &VQueueId, capacity: usize) -> Self {
         Self {
-            partition_key: qid.partition_key,
+            partition_key: qid.partition_key(),
             parent: qid.parent.as_u32(),
             instance: qid.instance.as_u32(),
             entries: Vec::with_capacity(capacity),
@@ -90,5 +90,5 @@ impl Assignment {
 
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct MetaUpdates {
-    pub updated_token_bucket_zero_time: Option<f64>,
+    // todo: remove this if it's not needed for counters/lock tracking
 }

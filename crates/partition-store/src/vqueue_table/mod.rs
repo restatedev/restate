@@ -264,8 +264,25 @@ impl ScanVQueueTable for PartitionDb {
 }
 
 impl WriteVQueueTable for PartitionStoreTransaction<'_> {
-    fn update_vqueue(&mut self, qid: &VQueueId, updates: &VQueueMetaUpdates) {
-        let key_buffer = MetaKey::from(*qid).to_bytes();
+    fn create_vqueue(&mut self, qid: &VQueueId, meta: &VQueueMeta) {
+        let key_buffer = MetaKey::from(qid).to_bytes();
+        let value_buf = {
+            let value_buf = self.cleared_value_buffer_mut(meta.encoded_len());
+            // unwrap is safe because we know the buffer is big enough.
+            meta.encode(value_buf).unwrap();
+            value_buf.split()
+        };
+
+        self.raw_put_cf(KeyKind::VQueueMeta, key_buffer, value_buf);
+    }
+
+    fn update_vqueue(
+        &mut self,
+        qid: &VQueueId,
+        update: &restate_storage_api::vqueue_table::metadata::Update,
+    ) {
+        let key_buffer = MetaKey::from(qid).to_bytes();
+        let updates = VQueueMetaUpdates::new(update.clone());
         let value_buf = {
             let value_buf = self.cleared_value_buffer_mut(updates.encoded_len());
             // unwrap is safe because we know the buffer is big enough.
@@ -278,7 +295,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
 
     fn put_inbox_entry(&mut self, qid: &VQueueId, stage: Stage, card: &EntryCard) {
         let key_buffer = InboxKey {
-            partition_key: qid.partition_key,
+            partition_key: qid.partition_key(),
             parent: qid.parent,
             instance: qid.instance,
             stage,
@@ -295,7 +312,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
 
     fn pop_inbox_entry(&mut self, qid: &VQueueId, stage: Stage, card: &EntryCard) -> Result<bool> {
         let key_buffer = InboxKey {
-            partition_key: qid.partition_key,
+            partition_key: qid.partition_key(),
             parent: qid.parent,
             instance: qid.instance,
             stage,
@@ -318,7 +335,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
     fn mark_vqueue_as_active(&mut self, qid: &restate_types::vqueue::VQueueId) {
         let mut key_buffer = [0u8; ActiveKey::serialized_length_fixed()];
         ActiveKey {
-            partition_key: qid.partition_key,
+            partition_key: qid.partition_key(),
             parent: qid.parent,
             instance: qid.instance,
         }
@@ -329,7 +346,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
     fn mark_vqueue_as_dormant(&mut self, qid: &restate_types::vqueue::VQueueId) {
         let mut key_buffer = [0u8; ActiveKey::serialized_length_fixed()];
         ActiveKey {
-            partition_key: qid.partition_key,
+            partition_key: qid.partition_key(),
             parent: qid.parent,
             instance: qid.instance,
         }
@@ -347,7 +364,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         E: EntryStateKind + bilrost::Message + bilrost::encoding::RawMessage,
     {
         let key_buffer = EntryStateKey {
-            partition_key: qid.partition_key,
+            partition_key: qid.partition_key(),
             kind: card.kind,
             id: card.id,
         }
@@ -381,7 +398,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
 
     fn delete_vqueue_entry_state(&mut self, qid: &VQueueId, kind: EntryKind, id: &EntryId) {
         let key_buffer = EntryStateKey {
-            partition_key: qid.partition_key,
+            partition_key: qid.partition_key(),
             kind,
             id: *id,
         }
@@ -403,7 +420,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         let key_buffer = self.cleared_key_buffer_mut(ItemsKey::serialized_length_fixed());
 
         ItemsKey {
-            partition_key: qid.partition_key,
+            partition_key: qid.partition_key(),
             parent: qid.parent,
             instance: qid.instance,
             created_at,
@@ -433,7 +450,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         let key_buffer = self.cleared_key_buffer_mut(ItemsKey::serialized_length_fixed());
 
         ItemsKey {
-            partition_key: qid.partition_key,
+            partition_key: qid.partition_key(),
             parent: qid.parent,
             instance: qid.instance,
             created_at,
@@ -504,7 +521,7 @@ impl ReadVQueueTable for PartitionStoreTransaction<'_> {
     async fn get_vqueue(&mut self, qid: &VQueueId) -> Result<Option<VQueueMeta>, StorageError> {
         let mut key_buffer = [0u8; MetaKey::serialized_length_fixed()];
         // MetaKey is fixed size, every time we overwrite the same fixed key_buffer
-        MetaKey::from(*qid).serialize_to(&mut key_buffer.as_mut());
+        MetaKey::from(qid).serialize_to(&mut key_buffer.as_mut());
         let Some(raw_value) = self.get(MetaKey::TABLE, key_buffer)? else {
             return Ok(None);
         };
@@ -583,7 +600,7 @@ impl ReadVQueueTable for PartitionStoreTransaction<'_> {
         let key_buffer = self.cleared_value_buffer_mut(ItemsKey::serialized_length_fixed());
 
         ItemsKey {
-            partition_key: qid.partition_key,
+            partition_key: qid.partition_key(),
             parent: qid.parent,
             instance: qid.instance,
             created_at,
