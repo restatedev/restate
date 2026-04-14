@@ -859,7 +859,7 @@ where
         .record(request.records.iter().fold(0, |s, r| s + r.estimate_size()) as f64);
 
         self.leadership_state
-            .propose_many_with_callback(
+            .forward_many_with_callback(
                 request.records.into_iter(),
                 |result: Result<(), PartitionProcessorRpcError>| match result {
                     Ok(_) => reciprocal.send(ResponseStatus::Ack.into()),

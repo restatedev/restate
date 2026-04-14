@@ -311,14 +311,14 @@ impl LeaderState {
                     }
 
                     self.self_proposer
-                        .propose_many(commands.into_iter())
+                        .self_propose_many(commands.into_iter())
                         .await?;
                 }
                 ActionEffect::PartitionMaintenance(partition_durability) => {
                     // based on configuration, whether to consider partition-local durability in
                     // the replica-set as a sufficient source of durability, or only snapshots.
                     self.self_proposer
-                        .propose(
+                        .self_propose(
                             *self.partition_key_range.start(),
                             Command::UpdatePartitionDurability(partition_durability),
                         )
@@ -326,7 +326,7 @@ impl LeaderState {
                 }
                 ActionEffect::Invoker(invoker_effect) => {
                     self.self_proposer
-                        .propose(
+                        .self_propose(
                             invoker_effect.invocation_id.partition_key(),
                             Command::InvokerEffect(invoker_effect),
                         )
@@ -336,7 +336,7 @@ impl LeaderState {
                     // todo: Until we support partition splits we need to get rid of outboxes or introduce partition
                     //  specific destination messages that are identified by a partition_id
                     self.self_proposer
-                        .propose(
+                        .self_propose(
                             *self.partition_key_range.start(),
                             Command::TruncateOutbox(outbox_truncation.index()),
                         )
@@ -344,7 +344,7 @@ impl LeaderState {
                 }
                 ActionEffect::Timer(timer) => {
                     self.self_proposer
-                        .propose(timer.invocation_id().partition_key(), Command::Timer(timer))
+                        .self_propose(timer.invocation_id().partition_key(), Command::Timer(timer))
                         .await?;
                 }
                 ActionEffect::Cleaner(effect) => {
@@ -366,7 +366,7 @@ impl LeaderState {
                     };
 
                     self.self_proposer
-                        .propose(invocation_id.partition_key(), cmd)
+                        .self_propose(invocation_id.partition_key(), cmd)
                         .await?;
                 }
                 ActionEffect::UpsertSchema(schema) => {
@@ -374,7 +374,7 @@ impl LeaderState {
                         .is_equal_or_newer_than(&RESTATE_VERSION_1_7_0)
                     {
                         self.self_proposer
-                            .propose(
+                            .self_propose(
                                 *self.partition_key_range.start(),
                                 Command::UpsertSchema(UpsertSchema {
                                     partition_key_range: Keys::RangeInclusive(
@@ -416,7 +416,7 @@ impl LeaderState {
             }
             Entry::Vacant(v) => {
                 // In this case, no one proposed this command yet, let's try to propose it
-                if let Err(e) = self.self_proposer.propose(partition_key, cmd).await {
+                if let Err(e) = self.self_proposer.self_propose(partition_key, cmd).await {
                     reciprocal.send(Err(PartitionProcessorRpcError::Internal(e.to_string())));
                 } else {
                     v.insert(reciprocal);
@@ -425,7 +425,12 @@ impl LeaderState {
         }
     }
 
-    pub async fn self_propose_and_respond_asynchronously(
+    /// Append a command to Bifrost **without** dedup information and respond on Bifrost commit.
+    ///
+    /// Records appended this way are never filtered by the dedup mechanism during leadership
+    /// transitions, making this safe for fire-and-forget ingress commands (signals, invocation
+    /// responses).
+    pub async fn append_and_respond_asynchronously(
         &mut self,
         partition_key: PartitionKey,
         cmd: Command,
@@ -434,7 +439,7 @@ impl LeaderState {
     ) {
         match self
             .self_proposer
-            .propose_with_notification(partition_key, cmd)
+            .append_with_notification(partition_key, cmd)
             .await
         {
             Ok(commit_token) => {
@@ -449,7 +454,7 @@ impl LeaderState {
         }
     }
 
-    pub async fn propose_many_with_callback<F>(
+    pub async fn forward_many_with_callback<F>(
         &mut self,
         records: impl ExactSizeIterator<Item = IngestRecord>,
         callback: F,
@@ -458,7 +463,7 @@ impl LeaderState {
     {
         match self
             .self_proposer
-            .propose_many_with_notification(records)
+            .forward_many_with_notification(records)
             .await
         {
             Ok(commit_token) => {

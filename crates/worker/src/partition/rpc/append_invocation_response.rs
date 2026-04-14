@@ -32,7 +32,7 @@ impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
         replier: Replier<Self::Output>,
     ) -> Result<(), Self::Error> {
         self.proposer
-            .self_propose_and_respond_asynchronously(
+            .append_and_respond_asynchronously(
                 invocation_response.partition_key(),
                 Command::InvocationResponse(invocation_response),
                 replier,
