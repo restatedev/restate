@@ -132,6 +132,8 @@ pub(crate) struct ProvisionalPermit {
 
 // A compound permit holds a set of resources and provides remote termination access
 // and signaling.
+#[must_use]
+#[clippy::has_significant_drop]
 pub struct ReservedResources {
     user_permit: UserPermit,
     system_permit: SystemPermit,
@@ -145,6 +147,10 @@ impl ReservedResources {
             self.system_permit.invoker_permit.split(1).unwrap(),
             self.system_permit.memory_lease.take(),
         )
+    }
+
+    pub fn has_lock(&self) -> bool {
+        self.user_permit.lock.is_some()
     }
 
     pub fn is_empty(&self) -> bool {

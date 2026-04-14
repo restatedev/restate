@@ -85,12 +85,12 @@ impl Slot {
 
     /// Returns is_active of the vqueue before and after all the updates
     /// in the form of a tuple (before, after).
-    pub fn apply_update(&mut self, update: &metadata::Update) -> Result<(bool, bool)> {
+    pub fn apply_update(&mut self, update: &metadata::Update) -> (bool, bool) {
         let before = self.meta.is_active();
-        self.meta.apply_update(update)?;
+        self.meta.apply_update(update);
         let after = self.meta.is_active();
 
-        Ok((before, after))
+        (before, after)
     }
 }
 
