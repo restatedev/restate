@@ -516,6 +516,56 @@ pub struct CommonOptions {
     ///
     /// Defaults to `false` in v1.6.
     pub experimental_shuffler_batch_ingestion: bool,
+
+    /// # dial9 Tokio runtime telemetry
+    ///
+    /// Configuration for dial9 runtime telemetry. Only effective when the server
+    /// is compiled with the `dial9` feature flag.
+    /// Since v1.6.3
+    #[serde(default)]
+    pub dial9: Dial9Options,
+}
+
+/// # dial9 Tokio runtime telemetry options
+///
+/// Configuration for dial9 runtime telemetry trace files.
+/// Only effective when the server is compiled with the `dial9` feature flag.
+/// Since v1.6.3
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(default))]
+#[serde(rename_all = "kebab-case")]
+pub struct Dial9Options {
+    /// Base directory for trace files. Each runtime writes to a subdirectory.
+    /// Defaults to `{data-dir}/dial9-traces/`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_dir: Option<PathBuf>,
+
+    /// Maximum size per trace file before rotation.
+    /// Default: 10 MiB.
+    pub max_file_size: NonZeroByteCount,
+
+    /// Maximum total disk budget for trace files per runtime.
+    /// Default: 100 MiB.
+    pub max_total_size: NonZeroByteCount,
+}
+
+impl Dial9Options {
+    pub fn trace_dir(&self) -> PathBuf {
+        self.trace_dir
+            .clone()
+            .unwrap_or_else(|| super::node_filepath("dial9-traces"))
+    }
+}
+
+impl Default for Dial9Options {
+    fn default() -> Self {
+        Self {
+            trace_dir: None,
+            max_file_size: NonZeroByteCount::try_from(10 * 1024 * 1024).unwrap(),
+            max_total_size: NonZeroByteCount::try_from(100 * 1024 * 1024).unwrap(),
+        }
+    }
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
@@ -755,6 +805,7 @@ impl Default for CommonOptions {
             hlc_max_drift: FriendlyDuration::from_millis(5000),
             experimental_kafka_batch_ingestion: false,
             experimental_shuffler_batch_ingestion: false,
+            dial9: Dial9Options::default(),
         }
     }
 }

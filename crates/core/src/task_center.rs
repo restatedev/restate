@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod builder;
+mod dial9;
 mod extensions;
 mod handle;
 mod monitoring;
@@ -333,6 +334,9 @@ struct TaskCenterInner {
     default_runtime_handle: tokio::runtime::Handle,
     managed_runtimes: Mutex<HashMap<SharedString, OwnedRuntimeHandle>>,
     start_time: Instant,
+    /// dial9 telemetry state (guards for default + per-partition runtimes).
+    /// Declared before `default_runtime` to ensure guards are flushed first.
+    dial9: dial9::Dial9State,
     /// We hold on to the owned Runtime to ensure it's dropped when task center is dropped. If this
     /// is None, it means that it's the responsibility of the Handle owner to correctly drop
     /// tokio's runtime after dropping the task center.
@@ -359,6 +363,7 @@ impl TaskCenterInner {
         // used in tests to start all runtimes with clock paused. Note that this only impacts
         // partition processor runtimes
         #[cfg(any(test, feature = "test-util"))] pause_time: bool,
+        dial9: dial9::Dial9State,
     ) -> Self {
         crate::metric_definitions::describe_metrics();
         let root_task_context = TaskContext {
@@ -368,10 +373,12 @@ impl TaskCenterInner {
             cancellation_token: CancellationToken::new(),
             partition_id: None,
         };
+
         Self {
             id: rand::random(),
             start_time: Instant::now(),
             default_runtime_handle,
+            dial9,
             default_runtime,
             global_cancel_token: CancellationToken::new(),
             shutdown_requested: AtomicBool::new(false),
@@ -736,12 +743,22 @@ impl TaskCenterInner {
         #[cfg(any(test, feature = "test-util"))]
         builder.start_paused(self.pause_time);
 
-        let rt = builder
-            .enable_all()
-            .build()
-            .expect("runtime builder succeeds");
-        let tc = self.clone();
+        builder.enable_all();
 
+        // Build the runtime, optionally with dial9 instrumentation.
+        // The fallback closure recreates the builder if dial9 init fails.
+        #[cfg(any(test, feature = "test-util"))]
+        let pause_time = self.pause_time;
+        let (rt, dial9_thread_handle) =
+            dial9::build_child_runtime(&runtime_name, builder, &self.dial9, || {
+                let mut fallback = tokio::runtime::Builder::new_current_thread();
+                #[cfg(any(test, feature = "test-util"))]
+                fallback.start_paused(pause_time);
+                fallback.enable_all();
+                fallback
+            });
+
+        let tc = self.clone();
         let rt_handle = Arc::new(rt);
 
         runtimes_guard.insert(
@@ -768,6 +785,11 @@ impl TaskCenterInner {
             .spawn({
                 let runtime_name = runtime_name.clone();
                 move || {
+                    // Set the thread-local dial9 handle so that spawn_on_runtime()
+                    // can use it for wake-tracked spawning on this runtime's thread.
+                    // This only works because we are using a current thread tokio runtime.
+                    dial9::set_thread_local(dial9_thread_handle);
+
                     let local_set = LocalSet::new();
                     let result = rt_handle.block_on(local_set.run_until(unmanaged_wrapper(
                         tc.clone(),
@@ -790,6 +812,11 @@ impl TaskCenterInner {
     /// Runs **only** after the inner main thread has completed work and no other owner exists for
     /// the runtime handle.
     fn drop_runtime(self: &Arc<Self>, name: SharedString) {
+        // Note: we intentionally do NOT remove the dial9 guard here. This method
+        // runs on the partition runtime thread, and TelemetryGuard::drop() accesses
+        // a dial9-internal thread-local (BUFFER) that may already be destroyed at
+        // this point. Instead, the guards remain in Dial9State and are dropped
+        // with TaskCenterInner on the main thread.
         let mut runtimes_guard = self.managed_runtimes.lock();
         if let Some(runtime) = runtimes_guard.remove(&name) {
             // We must be the only owner of runtime at this point.
@@ -938,13 +965,23 @@ impl TaskCenterInner {
             let runtime_name: &'static str = kind.runtime().into();
             counter!(TC_SPAWN, "kind" => kind_str, "runtime" => runtime_name).increment(1);
         }
-        let runtime = match kind.runtime() {
-            crate::AsyncRuntime::Inherit => &tokio::runtime::Handle::current(),
-            crate::AsyncRuntime::Default => &self.default_runtime_handle,
+
+        // Select the dial9 handle based on which runtime the task targets:
+        // - Default runtime: use the handle from the guard in TaskCenterInner
+        // - Inherited runtime: prefer the thread-local handle set by
+        //   start_runtime(), fall back to the default handle (e.g. when
+        //   spawning on the default runtime with AsyncRuntime::Inherit)
+        let (runtime, dial9_handle) = match kind.runtime() {
+            crate::AsyncRuntime::Inherit => (
+                &tokio::runtime::Handle::current(),
+                dial9::thread_local_handle().or(self.dial9.default_handle()),
+            ),
+            crate::AsyncRuntime::Default => {
+                (&self.default_runtime_handle, self.dial9.default_handle())
+            }
         };
-        let inner_handle = tokio_task
-            .spawn_on(fut, runtime)
-            .expect("runtime can spawn tasks");
+
+        let inner_handle = dial9::spawn_or_fallback(dial9_handle, tokio_task, fut, runtime);
 
         TaskHandle {
             cancellation_token,

@@ -33,6 +33,7 @@ no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"
 metadata-api = ["restate-admin/metadata-api"]
 kafka-oidc = ["restate-node/kafka-oidc"]
 taskdump = ["restate-core/taskdump"]
+dial9 = ["restate-core/dial9"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }

@@ -66,12 +66,18 @@ impl TaskCenterBuilder {
 
     pub fn build(mut self) -> Result<OwnedHandle, TaskCenterBuildError> {
         let options = self.options.unwrap_or_default();
-        if self.default_runtime_handle.is_none() {
-            let mut default_runtime_builder = tokio_builder("worker", &options);
-            let default_runtime = default_runtime_builder.build()?;
+        let dial9_state = if self.default_runtime_handle.is_none() {
+            let (default_runtime, dial9_state) =
+                super::dial9::build_default_runtime(tokio_builder("worker", &options), || {
+                    tokio_builder("worker", &options)
+                })?;
+
             self.default_runtime_handle = Some(default_runtime.handle().clone());
             self.default_runtime = Some(default_runtime);
-        }
+            dial9_state
+        } else {
+            super::dial9::Dial9State::empty()
+        };
 
         if cfg!(any(test, feature = "test-util")) {
             eprintln!("!!!! Running with test-util enabled !!!!");
@@ -81,6 +87,7 @@ impl TaskCenterBuilder {
             self.default_runtime,
             #[cfg(any(test, feature = "test-util"))]
             self.pause_time,
+            dial9_state,
         )))
     }
 }
