@@ -27,6 +27,35 @@ pub enum ParseError {
     EmptyServiceName(ReString),
 }
 
+/// A borrowed view over a [`LockName`]. Used to for borrow-decoding of LockName with bilrost.
+///
+/// NOTE: keep in-sync with [`LockName`]
+#[derive(
+    Clone, derive_more::Debug, derive_more::Display, Hash, Eq, PartialEq, bilrost::Message,
+)]
+#[debug("{service_name}/{key}")]
+#[display("{service_name}/{key}")]
+pub struct LockNameRef<'a> {
+    #[bilrost(tag(1))]
+    service_name: &'a str,
+    #[bilrost(tag(2))]
+    key: &'a str,
+}
+
+impl LockNameRef<'_> {
+    /// Returns the key segment of this lock name.
+    #[inline]
+    pub const fn key(&self) -> &str {
+        self.key
+    }
+
+    /// Returns the service name segment of this lock name.
+    #[inline]
+    pub const fn service_name(&self) -> &str {
+        self.service_name
+    }
+}
+
 /// A type that represents a locking key for a virtual object or a workflow.
 #[derive(
     Clone, derive_more::Debug, derive_more::Display, Hash, Eq, PartialEq, bilrost::Message,
