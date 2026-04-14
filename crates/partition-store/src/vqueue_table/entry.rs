@@ -8,251 +8,286 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::io::Cursor;
+
+use rocksdb::DBPinnableSlice;
+
+use restate_clock::RoughTimestamp;
+use restate_storage_api::vqueue_table::Status;
 use restate_storage_api::vqueue_table::{
-    AsEntryState, AsEntryStateHeader, EntryCard, EntryId, EntryKind, Stage, VisibleAt,
+    EntryKey, EntryMetadata, EntryMetadataRef, EntryStatusHeader, LazyEntryStatus, Stage,
+    stats::EntryStatistics,
 };
-use restate_types::clock::UniqueTimestamp;
-use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey as _};
-use restate_types::vqueue::{EffectivePriority, VQueueId};
+use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey};
+use restate_types::vqueues::{EntryId, EntryKind, Seq, VQueueId, VQueueIdRef};
 
 use crate::TableKind;
-use crate::keys::{EncodeTableKey, KeyKind, define_table_key};
+use crate::keys::{KeyKind, define_table_key};
 
-// `qe` | PKEY | KIND | ENTRY_ID
+// `qs` | PKEY | ENTRY_ID
 define_table_key!(
     TableKind::VQueue,
-    KeyKind::VQueueEntryState,
-    EntryStateKey(
+    KeyKind::VQueueEntryStatus,
+    EntryStatusKey(
         partition_key: PartitionKey,
-        kind: EntryKind,
         id: EntryId,
     )
 );
 
-static_assertions::const_assert_eq!(EntryStateKey::serialized_length_fixed(), 27);
+static_assertions::const_assert_eq!(EntryKind::serialized_length_fixed(), 1);
 
-impl EntryStateKey {
+impl EntryStatusKey {
     pub const fn serialized_length_fixed() -> usize {
         KeyKind::SERIALIZED_LENGTH
             + std::mem::size_of::<PartitionKey>()
-            + std::mem::size_of::<EntryKind>()
-            // entry id (e.g. invocation uuid)
-            + std::mem::size_of::<EntryId>()
-    }
-
-    #[inline]
-    pub fn to_bytes(&self) -> [u8; Self::serialized_length_fixed()] {
-        let mut buf = [0u8; Self::serialized_length_fixed()];
-        self.serialize_to(&mut buf.as_mut());
-        buf
+            + EntryId::serialized_length_fixed()
     }
 }
 
-impl From<&InvocationId> for EntryStateKey {
+impl From<&InvocationId> for EntryStatusKey {
     #[inline]
     fn from(id: &InvocationId) -> Self {
-        EntryStateKey {
-            partition_key: id.partition_key(),
-            kind: EntryKind::Invocation,
+        EntryStatusKey {
+            partition_key: WithPartitionKey::partition_key(id),
             id: EntryId::from(id),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, bilrost::Message)]
-pub struct EntryStateHeader {
-    #[bilrost(1)]
-    pub qid: VQueueId,
+/// Borrowing version of [`StateHeaderRaw`].
+///
+/// NOTE: keep in-sync with [`StateHeaderRaw`]
+#[derive(Clone, bilrost::Message)]
+pub struct StateHeaderRawRef<'a> {
+    #[bilrost(tag(1))]
+    pub(super) qid: VQueueIdRef<'a>,
     /// Unknown is an invalid state, this will be set to None when the invocation
     /// leaves the queue.
-    #[bilrost(2)]
-    pub stage: Stage,
-    // current entry card details
-    #[bilrost(3)]
-    pub effective_priority: EffectivePriority,
-    #[bilrost(4)]
-    pub visible_at: VisibleAt,
-    #[bilrost(5)]
-    pub created_at: UniqueTimestamp,
+    #[bilrost(tag(2))]
+    pub(super) stage: Stage,
+    #[bilrost(tag(3))]
+    pub(super) has_lock: bool,
+    #[bilrost(tag(4))]
+    pub(super) next_run_at: RoughTimestamp,
+    #[bilrost(tag(5))]
+    pub(super) seq: Seq,
+    #[bilrost(tag(6))]
+    pub(super) metadata: EntryMetadataRef<'a>,
+    // Not borrowed because it's full of numeric values
+    #[bilrost(tag(7))]
+    pub(super) stats: EntryStatistics,
+    #[bilrost(tag(8))]
+    pub(super) status: Status,
 }
 
-pub struct OwnedHeader {
-    pub(crate) kind: EntryKind,
-    pub(crate) id: EntryId,
-
-    pub(crate) inner: EntryStateHeader,
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct StatusHeaderRaw {
+    #[bilrost(tag(1))]
+    qid: VQueueId,
+    #[bilrost(tag(2))]
+    stage: Stage,
+    #[bilrost(tag(3))]
+    has_lock: bool,
+    #[bilrost(tag(4))]
+    next_run_at: RoughTimestamp,
+    #[bilrost(tag(5))]
+    seq: Seq,
+    /// Entry metadata is lightweight metadata and/or resource information that
+    /// is copied from entry state to the vqueue's inbox entry on each transition.
+    #[bilrost(tag(6))]
+    metadata: EntryMetadata,
+    #[bilrost(tag(7))]
+    stats: EntryStatistics,
+    #[bilrost(tag(8))]
+    status: Status,
 }
 
-impl AsEntryStateHeader for OwnedHeader {
-    fn kind(&self) -> EntryKind {
-        self.kind
-    }
+pub struct OwnedEntryStatusHeader {
+    qid: VQueueId,
+    stage: Stage,
+    entry_key: EntryKey,
+    metadata: EntryMetadata,
+    status: Status,
+    stats: EntryStatistics,
+}
 
-    fn vqueue_id(&self) -> &VQueueId {
-        &self.inner.qid
-    }
-
-    fn stage(&self) -> Stage {
-        self.inner.stage
-    }
-
-    fn current_entry_card(&self) -> EntryCard {
-        EntryCard {
-            priority: self.inner.effective_priority,
-            visible_at: self.inner.visible_at,
-            created_at: self.inner.created_at,
-            kind: self.kind,
-            id: self.id,
+impl OwnedEntryStatusHeader {
+    pub(crate) fn new(entry_id: EntryId, header: StatusHeaderRaw) -> Self {
+        Self {
+            qid: header.qid,
+            stage: header.stage,
+            entry_key: EntryKey::new(header.has_lock, header.next_run_at, header.seq, entry_id),
+            metadata: header.metadata,
+            status: header.status,
+            stats: header.stats,
         }
     }
 }
 
-pub struct OwnedEntryState<E> {
-    pub(crate) header: OwnedHeader,
-    pub(crate) state: E,
+impl EntryStatusHeader for OwnedEntryStatusHeader {
+    #[inline]
+    fn vqueue_id(&self) -> &VQueueId {
+        &self.qid
+    }
+
+    #[inline]
+    fn entry_id(&self) -> &EntryId {
+        self.entry_key.entry_id()
+    }
+
+    #[inline]
+    fn entry_key(&self) -> &EntryKey {
+        &self.entry_key
+    }
+
+    #[inline]
+    fn kind(&self) -> EntryKind {
+        self.entry_key.kind()
+    }
+
+    #[inline]
+    fn stage(&self) -> Stage {
+        self.stage
+    }
+
+    #[inline]
+    fn seq(&self) -> Seq {
+        self.entry_key.seq()
+    }
+
+    #[inline]
+    fn has_lock(&self) -> bool {
+        self.entry_key.has_lock()
+    }
+
+    #[inline]
+    fn next_run_at(&self) -> RoughTimestamp {
+        self.entry_key.run_at()
+    }
+
+    #[inline]
+    fn stats(&self) -> &EntryStatistics {
+        &self.stats
+    }
+
+    #[inline]
+    fn metadata(&self) -> &EntryMetadata {
+        &self.metadata
+    }
+
+    #[inline]
+    fn display_entry_id(&self) -> impl std::fmt::Display + '_ {
+        self.entry_id().display(self.qid.partition_key())
+    }
+
+    #[inline]
+    fn status(&self) -> Status {
+        self.status
+    }
 }
 
-impl<E> AsEntryStateHeader for OwnedEntryState<E> {
-    fn kind(&self) -> EntryKind {
-        self.header.kind()
-    }
+pub struct LazyEntryStateHolder<'a> {
+    header: OwnedEntryStatusHeader,
+    state_bytes: Cursor<DBPinnableSlice<'a>>,
+}
 
-    fn stage(&self) -> Stage {
-        self.header.stage()
+impl<'a> LazyEntryStateHolder<'a> {
+    pub(crate) fn new(
+        entry_id: EntryId,
+        header: StatusHeaderRaw,
+        state_bytes: Cursor<DBPinnableSlice<'a>>,
+    ) -> Self {
+        Self {
+            header: OwnedEntryStatusHeader::new(entry_id, header),
+            state_bytes,
+        }
     }
+}
 
+impl<'a> EntryStatusHeader for LazyEntryStateHolder<'a> {
+    #[inline]
     fn vqueue_id(&self) -> &VQueueId {
         self.header.vqueue_id()
     }
 
-    fn current_entry_card(&self) -> EntryCard {
-        self.header.current_entry_card()
+    #[inline]
+    fn entry_id(&self) -> &EntryId {
+        self.header.entry_id()
+    }
+
+    #[inline]
+    fn entry_key(&self) -> &EntryKey {
+        self.header.entry_key()
+    }
+
+    #[inline]
+    fn kind(&self) -> EntryKind {
+        self.header.kind()
+    }
+
+    #[inline]
+    fn stage(&self) -> Stage {
+        self.header.stage()
+    }
+
+    #[inline]
+    fn seq(&self) -> Seq {
+        self.header.seq()
+    }
+
+    #[inline]
+    fn has_lock(&self) -> bool {
+        self.header.has_lock()
+    }
+
+    #[inline]
+    fn next_run_at(&self) -> RoughTimestamp {
+        self.header.next_run_at()
+    }
+
+    #[inline]
+    fn stats(&self) -> &EntryStatistics {
+        self.header.stats()
+    }
+
+    #[inline]
+    fn metadata(&self) -> &EntryMetadata {
+        self.header.metadata()
+    }
+
+    #[inline]
+    fn status(&self) -> Status {
+        self.header.status()
+    }
+
+    #[inline]
+    fn display_entry_id(&self) -> impl std::fmt::Display + '_ {
+        self.entry_id().display(self.header.qid.partition_key())
     }
 }
 
-impl<E> AsEntryState for OwnedEntryState<E> {
-    type State = E;
+impl<'a> LazyEntryStatus for LazyEntryStateHolder<'a> {
+    fn header(&self) -> &impl EntryStatusHeader {
+        &self.header
+    }
 
-    fn state(&self) -> &Self::State {
-        &self.state
+    fn into_header(self) -> impl EntryStatusHeader + Send + Sync + 'static {
+        self.header
+    }
+
+    fn decode_state_owned<E>(&self) -> Option<E>
+    where
+        E: bilrost::OwnedMessage + Send + Sized + 'static,
+    {
+        let buf = self.state_bytes.get_ref();
+        E::decode_length_delimited(&mut buf.as_ref()).ok()
+    }
+
+    fn decode_state_borrowed<'b, E>(&'b self) -> Option<E>
+    where
+        E: bilrost::BorrowedMessage<'b> + Send,
+    {
+        let buf = self.state_bytes.get_ref();
+        E::decode_borrowed_length_delimited(&mut buf.as_ref()).ok()
     }
 }
-
-// pub struct Borrowed<'a, E> {
-//     pub(crate) partition_key: PartitionKey,
-//     pub(crate) kind: EntryKind,
-//     pub(crate) id: EntryId,
-//
-//     pub(crate) inner: State<E>,
-//     // pins the underlying rocksdb slice as long as this struct is alive
-//     pub(crate) _pinned: DBPinnableSlice<'a>,
-// }
-//
-// impl<'a, E> AsEntryStateHeader for Borrowed<'a, E> {
-//     fn kind(&self) -> EntryKind {
-//         self.kind
-//     }
-//
-//     fn stage(&self) -> Stage {
-//         self.inner.stage
-//     }
-//
-//     fn vqueue_id(&self) -> &VQueueId {
-//         self.vqueue_id
-//     }
-//
-//     fn current_entry_card(&self) -> EntryCard {
-//         EntryCard {
-//             priority: self.inner.effective_priority,
-//             visible_at: self.inner.visible_at,
-//             created_at: self.inner.created_at,
-//             kind: self.kind,
-//             id: self.id,
-//         }
-//     }
-// }
-//
-//
-// impl<'a, E> AsEntryState for Borrowed<'a, E> {
-//     type State = E;
-//
-//     fn state(&self) -> &Self::State {
-//         &self.inner.extras
-//     }
-// }
-//
-// impl<'a> ReadVQueueEntryState for PartitionStoreTransaction<'a> {
-//
-//     async fn get_entry_state<E>(
-//         &mut self,
-//         partition_key: PartitionKey,
-//         id: &EntryId,
-//     ) -> Result<Option<impl AsEntryState + 'static>>
-//     where
-//         E: EntryStateKind + bilrost::OwnedMessage + Sized + 'static,
-//         State<E>: bilrost::OwnedMessage + Sized + Send,
-//     {
-//         use super::super::invocation_table::MetaKey;
-//         let mut key_buffer = [0u8; MetaKey::serialized_length_fixed()];
-//         MetaKey {
-//             partition_key,
-//             invocation_uuid: *id,
-//         }
-//         .serialize_to(&mut key_buffer.as_mut());
-//         let Some(raw_value) = self.get(MetaKey::TABLE, key_buffer)? else {
-//             return Ok(None);
-//         };
-//
-//         let slice = raw_value;
-//         let decoded = State::<E>::decode(&mut slice.as_ref())?;
-//         Ok(Some(Owned {
-//             partition_key,
-//             kind: EntryKind::Invocation,
-//             id: *id,
-//             inner: decoded,
-//         }))
-//     }
-// }
-//
-// impl WriteVQueueEntryState for PartitionStoreTransaction<'_> {
-//     fn create_vqueue_entry_state<E>(
-//         &mut self,
-//         at: UniqueTimestamp,
-//         qid: &VQueueId,
-//         card: &EntryCard,
-//         stage: Stage,
-//         // visible_at: VisibleAt,
-//         // priority: EffectivePriority,
-//         entry_state: E,
-//     ) where
-//         E: EntryStateKind + bilrost::Message + bilrost::encoding::RawMessage,
-//         State<E>: bilrost::Message + bilrost::encoding::RawMessage,
-//     {
-//         use super::super::invocation_table::MetaKey;
-//         let key_buffer = MetaKey {
-//             partition_key: qid.partition_key,
-//             invocation_uuid: card.id.clone(),
-//         }
-//         .to_bytes();
-//
-//         let entry = State {
-//             stage: 1,
-//             queue_parent: qid.parent.as_u16(),
-//             queue_instance: qid.instance.as_u32(),
-//             initial_visible_at: card.visible_at,
-//             latest_visible_at: card.visible_at,
-//             effective_priority: card.priority,
-//             created_at: at,
-//             entry_state,
-//         };
-//
-//         let value_buf = {
-//             let value_buf = self.cleared_value_buffer_mut(entry.encoded_len());
-//             // unwrap is safe because we know the buffer is big enough.
-//             entry.encode(value_buf).unwrap();
-//             value_buf.split()
-//         };
-//
-//         self.raw_put_cf(KeyKind::ResourceInvocation, key_buffer, value_buf);
-//     }
-// }

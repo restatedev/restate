@@ -167,9 +167,9 @@ impl TableKind {
             Self::Promise => &[KeyKind::Promise],
             Self::VQueue => &[
                 KeyKind::VQueueMeta,
-                KeyKind::VQueueInbox,
+                KeyKind::VQueueInboxStage,
                 KeyKind::VQueueActive,
-                KeyKind::VQueueEntryState,
+                KeyKind::VQueueEntryStatus,
             ],
             Self::Locks => &[KeyKind::Lock],
         }
