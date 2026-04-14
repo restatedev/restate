@@ -14,36 +14,33 @@ use hashbrown::HashSet;
 use metrics::counter;
 use tokio::time::Instant;
 
+use restate_clock::RoughTimestamp;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::metadata::{self, VQueueMeta};
-use restate_storage_api::vqueue_table::{VQueueEntry, VQueueStore, VisibleAt, WaitStats};
-use restate_types::time::MillisSinceEpoch;
+use restate_storage_api::vqueue_table::{EntryKey, EntryValue, VQueueStore, stats::WaitStats};
 use restate_types::vqueues::VQueueId;
 
 use crate::metric_definitions::{
     VQUEUE_GLOBAL_THROTTLE_WAIT_MS, VQUEUE_INVOKER_CONCURRENCY_WAIT_MS,
     VQUEUE_INVOKER_MEMORY_WAIT_MS, VQUEUE_LOCAL_THROTTLE_WAIT_MS,
 };
-use crate::scheduler::Action;
 use crate::scheduler::queue::QueueItem;
 
 use super::clock::SchedulerClock;
 use super::queue::Queue;
 use super::resource_manager::{AcquireOutcome, PermitBuilder, ReservedResources, ResourceKind};
-use super::{Entry, ResourceManager, ThrottleScope, VQueueHandle};
+use super::{ResourceManager, RunAction, ThrottleScope, VQueueHandle, YieldAction};
 
 const QUANTUM: i32 = 1;
 
-pub(super) enum Pop<Item> {
+pub(super) enum Pop {
     /// The queue needs to receive more credits to be driven.
     NeedsCredit,
-    Item {
-        action: Action,
-        /// Reserved resources for this item. `None` for actions that don't
-        /// require global resources (e.g. yield, state mutations).
-        resources: Option<ReservedResources>,
-        entry: Entry<Item>,
-    },
+    /// An action is ready to be executed.
+    Run(RunAction, ReservedResources),
+    /// Yielding can place back an item from the run queue to inbox, or from inbox to inbox
+    /// but with a different run_at time.
+    Yield(YieldAction),
     // may get used in the future if per-vqueue throttling is implemented through the
     // same delayed queue of eligibility tracker.
     #[allow(dead_code)]
@@ -60,7 +57,7 @@ pub(super) enum Pop<Item> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, derive_more::IsVariant)]
 pub(super) enum Eligibility {
     Eligible,
-    EligibleAt(MillisSinceEpoch),
+    EligibleAt(RoughTimestamp),
     NotEligible,
 }
 
@@ -68,7 +65,7 @@ pub(super) enum Eligibility {
 pub(super) enum DetailedEligibility {
     EligibleRunning,
     EligibleInbox,
-    Scheduled(MillisSinceEpoch),
+    Scheduled(RoughTimestamp),
     Empty,
 }
 
@@ -206,10 +203,9 @@ pub struct VQueueState<S: VQueueStore> {
     pub handle: VQueueHandle,
     pub qid: VQueueId,
     meta: VQueueMeta,
-    // contains hashes (unique_hash)
     deficit: i32,
     #[debug(skip)]
-    unconfirmed_assignments: HashSet<u64>,
+    unconfirmed_assignments: HashSet<EntryKey>,
     #[debug(skip)]
     queue: Queue<S>,
     head_stats: Stats,
@@ -233,9 +229,7 @@ impl<S: VQueueStore> VQueueState<S> {
     }
 
     pub fn apply_meta_update(&mut self, update: &metadata::Update) {
-        self.meta
-            .apply_update(update)
-            .expect("vqueue cache cannot be updated with invalid updates");
+        self.meta.apply_update(update)
     }
 
     pub fn new_empty(qid: VQueueId, handle: VQueueHandle, meta: VQueueMeta) -> Self {
@@ -256,10 +250,10 @@ impl<S: VQueueStore> VQueueState<S> {
         cx: &mut std::task::Context<'_>,
         storage: &S,
         resources: &mut ResourceManager,
-    ) -> Result<Pop<S::Item>, StorageError> {
-        let (inbox_head, is_running) = match self.queue.head() {
-            Some(QueueItem::Inbox(item)) => (item, false),
-            Some(QueueItem::Running(item)) => (item, true),
+    ) -> Result<Pop, StorageError> {
+        let (inbox_head_key, inbox_head_value, is_running) = match self.queue.head() {
+            Some(QueueItem::Inbox { key, value }) => (key, value, false),
+            Some(QueueItem::Running { key, value }) => (key, value, true),
             e @ Some(QueueItem::None) | e @ None => {
                 unreachable!(
                     "cannot pop from empty queue or attempted to pop before polling {:?}/{e:?}",
@@ -268,7 +262,7 @@ impl<S: VQueueStore> VQueueState<S> {
             }
         };
 
-        let item_weight = inbox_head.weight().get() as i32;
+        let item_weight = inbox_head_value.weight().get() as i32;
         if self.deficit < item_weight {
             // give credit.
             self.deficit += QUANTUM;
@@ -278,42 +272,34 @@ impl<S: VQueueStore> VQueueState<S> {
         }
 
         if is_running {
-            let result = Pop::Item {
-                action: Action::Yield,
-                resources: None,
-                entry: Entry {
-                    item: inbox_head.clone(),
-                    stats: self.head_stats.finalize(),
-                },
+            let action = YieldAction {
+                key: *inbox_head_key,
+                next_run_at: None,
             };
             self.queue
                 .advance(storage, &self.unconfirmed_assignments, &self.qid)?;
-            return Ok(result);
+            return Ok(Pop::Yield(action));
         }
 
         match resources.poll_acquire_permit(
             cx,
             self.handle,
             &self.meta,
-            inbox_head,
+            inbox_head_key,
+            &inbox_head_value.metadata,
             &mut self.current_permit,
         ) {
             AcquireOutcome::Acquired(resources) => {
-                self.unconfirmed_assignments
-                    .insert(inbox_head.unique_hash());
+                self.unconfirmed_assignments.insert(*inbox_head_key);
 
-                let entry = Entry {
-                    item: inbox_head.clone(),
-                    stats: self.head_stats.finalize(),
+                let action = RunAction {
+                    key: *inbox_head_key,
+                    wait_stats: self.head_stats.finalize(),
                 };
+
                 self.queue
                     .advance(storage, &self.unconfirmed_assignments, &self.qid)?;
-
-                Ok(Pop::Item {
-                    action: Action::MoveToRun,
-                    resources: Some(resources),
-                    entry,
-                })
+                Ok(Pop::Run(action, resources))
             }
             AcquireOutcome::BlockedOn(resource) => {
                 // based on the resource we are blocked on, we might collect some stats
@@ -335,7 +321,7 @@ impl<S: VQueueStore> VQueueState<S> {
         // We hold on to the vqueue until we confirm/reject all pending assignments. If we didn't
         // do so, we risk revisiting/redequeuing the unconfirmed items if the vqueue popped back to life
         // (i.e., on enqueue). This is the reason why we check for `unconfirmed_assignments`
-        (self.queue.is_empty() || self.meta.total_waiting() == 0 || self.meta.is_paused())
+        (self.queue.is_empty() || self.meta.total_waiting() == 0 || self.meta.queue_is_paused())
             && self.unconfirmed_assignments.is_empty()
     }
 
@@ -347,9 +333,9 @@ impl<S: VQueueStore> VQueueState<S> {
     }
 
     pub fn check_eligibility(&self) -> DetailedEligibility {
-        let inbox_head = match self.queue.head() {
-            Some(QueueItem::Running(_)) => return DetailedEligibility::EligibleRunning,
-            Some(QueueItem::Inbox(item)) => item,
+        let inbox_head_key = match self.queue.head() {
+            Some(QueueItem::Running { .. }) => return DetailedEligibility::EligibleRunning,
+            Some(QueueItem::Inbox { key, .. }) => key,
             Some(QueueItem::None) => return DetailedEligibility::Empty,
             None if self.queue.remaining_in_running_stage() > 0 => {
                 return DetailedEligibility::EligibleRunning;
@@ -359,10 +345,8 @@ impl<S: VQueueStore> VQueueState<S> {
         };
 
         // Only applies to inboxed items.
-        if let VisibleAt::At(ts) = inbox_head.visible_at()
-            && ts > SchedulerClock.now_millis()
-        {
-            return DetailedEligibility::Scheduled(ts);
+        if inbox_head_key.run_at() > SchedulerClock.now_millis() {
+            return DetailedEligibility::Scheduled(inbox_head_key.run_at());
         }
 
         DetailedEligibility::EligibleInbox
@@ -371,10 +355,10 @@ impl<S: VQueueStore> VQueueState<S> {
     pub fn notify_removed(
         &mut self,
         resource_manager: &mut ResourceManager,
-        item_hash: u64,
+        key: &EntryKey,
     ) -> bool {
-        self.remove_from_unconfirmed_assignments(item_hash);
-        if self.queue.remove(item_hash) {
+        self.remove_from_unconfirmed_assignments(key);
+        if self.queue.remove(key) {
             self.head_stats.reset();
             self.current_permit.revert(resource_manager);
 
@@ -384,17 +368,18 @@ impl<S: VQueueStore> VQueueState<S> {
         }
     }
 
-    pub fn remove_from_unconfirmed_assignments(&mut self, item_hash: u64) -> bool {
-        self.unconfirmed_assignments.remove(&item_hash)
+    pub fn remove_from_unconfirmed_assignments(&mut self, key: &EntryKey) -> bool {
+        self.unconfirmed_assignments.remove(key)
     }
 
     /// Returns true if the head was changed
     pub fn notify_enqueued(
         &mut self,
         resource_manager: &mut ResourceManager,
-        item: &S::Item,
+        key: EntryKey,
+        value: EntryValue,
     ) -> bool {
-        if self.queue.enqueue(item) {
+        if self.queue.enqueue(key, value) {
             self.head_stats.reset();
             self.current_permit.revert(resource_manager);
             true
@@ -412,9 +397,9 @@ impl<S: VQueueStore> VQueueState<S> {
         self.queue.remaining_in_running_stage()
     }
 
-    pub fn num_waiting_inbox(&self) -> u32 {
+    pub fn num_waiting_inbox(&self) -> u64 {
         self.meta
             .total_waiting()
-            .saturating_sub(self.unconfirmed_assignments.len() as u32)
+            .saturating_sub(self.unconfirmed_assignments.len() as u64)
     }
 }
