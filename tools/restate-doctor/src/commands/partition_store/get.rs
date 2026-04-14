@@ -19,7 +19,7 @@ use restate_partition_store::keys::KeyKind;
 
 use crate::app::GlobalOpts;
 use crate::util::decode_value::decode_value;
-use crate::util::rocksdb::{open_db, resolve_partition_store_path};
+use crate::util::rocksdb::{open_partition_store_db, resolve_partition_store_path};
 
 use super::PartitionStoreOpts;
 
@@ -51,7 +51,8 @@ pub struct Get {
 pub async fn run_get(global_opts: &GlobalOpts, cmd: &Get) -> Result<()> {
     let path =
         resolve_partition_store_path(global_opts.data_dir.as_deref(), cmd.opts.path.as_deref())?;
-    let db_info = open_db(&path, cmd.opts.open_mode(), global_opts.limit_open_files)?;
+    let db_info =
+        open_partition_store_db(&path, cmd.opts.open_mode(), global_opts.limit_open_files)?;
 
     // Parse the hex key
     let key_bytes = parse_hex_key(&cmd.key)?;
