@@ -10,7 +10,7 @@
 
 use std::ops::RangeInclusive;
 
-use restate_types::vqueue::VQueueId;
+use restate_types::vqueues::VQueueId;
 use tokio::sync::mpsc;
 
 use restate_errors::NotRunningError;

@@ -18,7 +18,7 @@ use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::metadata::{self, VQueueMeta};
 use restate_storage_api::vqueue_table::{VQueueEntry, VQueueStore, VisibleAt, WaitStats};
 use restate_types::time::MillisSinceEpoch;
-use restate_types::vqueue::VQueueId;
+use restate_types::vqueues::VQueueId;
 
 use crate::metric_definitions::{
     VQUEUE_GLOBAL_THROTTLE_WAIT_MS, VQUEUE_INVOKER_CONCURRENCY_WAIT_MS,

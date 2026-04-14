@@ -16,7 +16,7 @@ use tracing::{debug, trace};
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::metadata::{self, VQueueMeta};
 use restate_storage_api::vqueue_table::{ReadVQueueTable, ScanVQueueTable};
-use restate_types::vqueue::VQueueId;
+use restate_types::vqueues::VQueueId;
 
 type Result<T> = std::result::Result<T, StorageError>;
 
