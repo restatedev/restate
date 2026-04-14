@@ -10,32 +10,49 @@
 
 use smallvec::SmallVec;
 
+use restate_clock::WallClock;
 use restate_clock::time::MillisSinceEpoch;
+use restate_limiter::LimitKey;
+use restate_types::Scope;
 use restate_types::clock::UniqueTimestamp;
 use restate_types::vqueue::EffectivePriority;
+use restate_util_string::ReString;
 
 use super::{Stage, VisibleAt};
 
-#[derive(Debug, Default, Clone, bilrost::Message)]
+#[derive(Debug, Clone, bilrost::Message)]
 pub struct VQueueStatistics {
+    #[bilrost(tag(1))]
+    pub(crate) created_at: MillisSinceEpoch,
     /// The time spend in the queue before the first attempt to run. Measured by EMA of time
     /// from initial scheduled run time to first "dequeue/start".
-    #[bilrost(tag(1))]
+    #[bilrost(tag(2))]
     pub(crate) avg_queue_duration_ms: u32,
     /// Timestamp of the last successful enqueue.
-    #[bilrost(tag(2))]
+    #[bilrost(tag(3))]
     pub(crate) last_enqueued_at: Option<MillisSinceEpoch>,
     /// The timestamp of the last start of a new entry.
-    #[bilrost(tag(3))]
-    pub(crate) last_start_at: Option<MillisSinceEpoch>,
     #[bilrost(tag(4))]
+    pub(crate) last_start_at: Option<MillisSinceEpoch>,
+    #[bilrost(tag(5))]
     pub(crate) last_completion_at: Option<MillisSinceEpoch>,
     /// The timestamp of the last run attempt of a previously started entry.
-    #[bilrost(tag(5))]
+    #[bilrost(tag(6))]
     pub(crate) last_resume_at: Option<MillisSinceEpoch>,
 }
 
 impl VQueueStatistics {
+    fn new(created_at: MillisSinceEpoch) -> Self {
+        Self {
+            created_at,
+            avg_queue_duration_ms: 0,
+            last_enqueued_at: None,
+            last_start_at: None,
+            last_completion_at: None,
+            last_resume_at: None,
+        }
+    }
+
     fn update_avg_queue_duration(&mut self, latency_ms: u64) {
         let new_avg: u64 = if self.avg_queue_duration_ms == 0 {
             latency_ms
@@ -47,7 +64,7 @@ impl VQueueStatistics {
     }
 }
 
-#[derive(Debug, Default, Clone, bilrost::Message)]
+#[derive(Debug, Clone, bilrost::Message)]
 pub struct VQueueMeta {
     /// if true, the vqueue is paused, we don't pop entries from it until it's resumed.
     #[bilrost(tag(1))]
@@ -65,14 +82,36 @@ pub struct VQueueMeta {
     pub(crate) num_waiting: [u32; EffectivePriority::NUM_PRIORITIES],
     #[bilrost(tag(5))]
     pub(crate) num_running: u32,
-    /// The zero time point of the "starts" token bucket
     #[bilrost(tag(6))]
-    pub(crate) start_tb_zero_time: f64,
-    #[bilrost(tag(7))]
     pub(crate) stats: VQueueStatistics,
+    #[bilrost(tag(7))]
+    pub(crate) scope: Option<Scope>,
+    #[bilrost(tag(8))]
+    pub(crate) limit_key: LimitKey<ReString>,
 }
 
 impl VQueueMeta {
+    pub fn new(scope: Option<Scope>, limit_key: LimitKey<ReString>) -> Self {
+        Self {
+            is_paused: false,
+            length: 0,
+            num_tokens_used: 0,
+            num_waiting: [0; EffectivePriority::NUM_PRIORITIES],
+            num_running: 0,
+            stats: VQueueStatistics::new(WallClock::recent_ms()),
+            scope,
+            limit_key,
+        }
+    }
+
+    pub fn scope(&self) -> &Option<Scope> {
+        &self.scope
+    }
+
+    pub fn limit_key(&self) -> &LimitKey<ReString> {
+        &self.limit_key
+    }
+
     pub fn tokens_used(&self) -> u32 {
         self.num_tokens_used
     }
@@ -129,11 +168,6 @@ impl VQueueMeta {
         self.stats.last_start_at
     }
 
-    /// Used to rehydrate the run/start token bucket on schedulers
-    pub fn start_tb_zero_time(&self) -> f64 {
-        self.start_tb_zero_time
-    }
-
     pub fn is_paused(&self) -> bool {
         self.is_paused
     }
@@ -154,15 +188,7 @@ impl VQueueMeta {
         self.num_tokens_used = self.num_tokens_used.saturating_sub(1);
     }
 
-    pub fn apply_updates(&mut self, updates: &VQueueMetaUpdates) -> anyhow::Result<()> {
-        for update in updates.updates.iter() {
-            self.apply_update(update)?;
-        }
-        Ok(())
-    }
-
-    #[inline]
-    fn apply_update(&mut self, update: &Update) -> anyhow::Result<()> {
+    pub fn apply_update(&mut self, update: &Update) -> anyhow::Result<()> {
         debug_assert!(self.length >= self.total_waiting());
         let now = update.ts;
         // Note to future authors: This match needs to continue to work even when
@@ -181,7 +207,6 @@ impl VQueueMeta {
             Action::StartAttempt {
                 visible_at,
                 priority,
-                updated_start_tb_zero_time: updated_run_token_bucket_zero_time,
             } => {
                 if priority.is_new() {
                     self.stats.last_start_at = Some(now.to_unix_millis());
@@ -201,11 +226,6 @@ impl VQueueMeta {
                     self.stats.update_avg_queue_duration(latency_ms);
                 }
 
-                // Update the run token bucket's zero time if it was supplied
-                if let Some(updated_run_token_bucket_zero_time) = updated_run_token_bucket_zero_time
-                {
-                    self.start_tb_zero_time = updated_run_token_bucket_zero_time;
-                }
                 if !priority.token_held() {
                     self.acquire_token();
                 }
@@ -281,7 +301,7 @@ impl VQueueMeta {
 ///
 /// Those updates can be applied to the storage layer via a merge operator and at the same
 /// time they can be accepted by the vqueue's cache to keep them in sync.
-#[derive(Clone, Default, bilrost::Message)]
+#[derive(Clone, Default, Debug, bilrost::Message)]
 pub struct VQueueMetaUpdates {
     #[bilrost(1)]
     pub updates: SmallVec<[Update; VQueueMetaUpdates::INLINED_UPDATES]>,
@@ -289,6 +309,11 @@ pub struct VQueueMetaUpdates {
 
 impl VQueueMetaUpdates {
     pub const INLINED_UPDATES: usize = 1;
+
+    pub fn new(update: Update) -> Self {
+        let updates = smallvec::smallvec_inline![update];
+        Self { updates }
+    }
 
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
@@ -331,7 +356,6 @@ pub enum Action {
     StartAttempt {
         visible_at: VisibleAt,
         priority: EffectivePriority,
-        updated_start_tb_zero_time: Option<f64>,
     },
     #[bilrost(tag(4), message)]
     Park {
@@ -360,4 +384,11 @@ pub struct Update {
     pub(super) ts: UniqueTimestamp,
     #[bilrost(oneof(2, 3, 4, 5, 6, 7))]
     pub(super) action: Action,
+}
+
+impl Update {
+    #[inline]
+    pub fn new(ts: UniqueTimestamp, action: Action) -> Self {
+        Self { ts, action }
+    }
 }
