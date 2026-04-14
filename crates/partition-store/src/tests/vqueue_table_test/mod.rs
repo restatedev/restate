@@ -280,11 +280,7 @@ fn verify_empty_queue_returns_none(db: &crate::PartitionDb) {
 async fn vqueue_isolation<W: WriteVQueueTable>(txn: &mut W) {
     let pkey = PartitionKey::from(5000u64);
 
-    let qid1 = VQueueId::new(
-        VQueueParent::from_raw(1),
-        pkey,
-        VQueueInstance::from_raw(1),
-    );
+    let qid1 = VQueueId::new(VQueueParent::from_raw(1), pkey, VQueueInstance::from_raw(1));
     let qid2 = VQueueId::new(
         VQueueParent::from_raw(1),
         pkey,
@@ -304,21 +300,9 @@ async fn vqueue_isolation<W: WriteVQueueTable>(txn: &mut W) {
 fn verify_vqueue_isolation(db: &crate::PartitionDb) {
     let pkey = PartitionKey::from(5000u64);
 
-    let qid1 = VQueueId::new(
-        VQueueParent::from_raw(1),
-        pkey,
-        VQueueInstance::from_raw(1),
-    );
-    let qid2 = VQueueId::new(
-        VQueueParent::from_raw(1),
-        pkey,
-        VQueueInstance::from_raw(2),
-    );
-    let qid3 = VQueueId::new(
-        VQueueParent::from_raw(2),
-        pkey,
-        VQueueInstance::from_raw(1),
-    );
+    let qid1 = VQueueId::new(VQueueParent::from_raw(1), pkey, VQueueInstance::from_raw(1));
+    let qid2 = VQueueId::new(VQueueParent::from_raw(1), pkey, VQueueInstance::from_raw(2));
+    let qid3 = VQueueId::new(VQueueParent::from_raw(2), pkey, VQueueInstance::from_raw(1));
 
     // Each queue should only see its own entry
     let mut reader1 = db.new_inbox_reader(&qid1);
