@@ -32,7 +32,7 @@ use restate_ingestion_client::IngestionClient;
 
 use restate_invoker_api::capacity::InvokerCapacity;
 use restate_partition_store::PartitionStore;
-use restate_storage_api::{StorageError, vqueue_table};
+use restate_storage_api::StorageError;
 use restate_vqueues::scheduler::{self};
 
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
@@ -62,7 +62,7 @@ use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use restate_types::{
     GenerationalNodeId, RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, SemanticRestateVersion,
 };
-use restate_vqueues::{SchedulerService, VQueuesMeta, VQueuesMetaMut};
+use restate_vqueues::{ResourceManager, SchedulerService, VQueuesMetaCache};
 use restate_wal_protocol::control::{AnnounceLeader, PartitionDurability, VersionBarrier};
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::{Command, Envelope};
@@ -132,7 +132,7 @@ pub(crate) enum TaskTermination {
 
 #[derive(Debug)]
 pub(crate) enum ActionEffect {
-    Scheduler(Result<scheduler::Decision<vqueue_table::EntryCard>, StorageError>),
+    Scheduler(scheduler::Decisions),
     Invoker(Box<restate_invoker_api::Effect>),
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerKeyValue),
@@ -320,7 +320,7 @@ where
         partition_store: &mut PartitionStore,
         replica_set_states: &PartitionReplicaSetStates,
         config: &Configuration,
-        vqueues_cache: &mut VQueuesMetaMut,
+        vqueues_cache: &mut VQueuesMetaCache,
     ) -> Result<bool, Error> {
         self.last_seen_leader_epoch = Some(announce_leader.leader_epoch);
 
@@ -382,7 +382,7 @@ where
         &mut self,
         partition_store: &mut PartitionStore,
         replica_set_states: PartitionReplicaSetStates,
-        vqueues_cache: &mut VQueuesMetaMut,
+        vqueues_cache: &mut VQueuesMetaCache,
         config: &Configuration,
     ) -> Result<(), Error> {
         if let State::Candidate {
@@ -404,10 +404,14 @@ where
 
             let scheduler_service = if config.common.experimental_enable_vqueues {
                 SchedulerService::create(
-                    self.invoker_capacity.concurrency.clone(),
-                    self.invoker_capacity.invocation_token_bucket.clone(),
-                    self.invoker_capacity.memory_pool.clone(),
-                    self.invoker_capacity.initial_invocation_memory,
+                    ResourceManager::create(
+                        partition_store.partition_db().clone(),
+                        self.invoker_capacity.concurrency.clone(),
+                        self.invoker_capacity.invocation_token_bucket.clone(),
+                        self.invoker_capacity.memory_pool.clone(),
+                        self.invoker_capacity.initial_invocation_memory,
+                    )
+                    .await?,
                     partition_store.partition_db().clone(),
                     vqueues_cache,
                 )
@@ -593,22 +597,13 @@ where
         }
     }
 
-    pub fn handle_actions(
-        &mut self,
-        actions: impl Iterator<Item = Action>,
-        vqueues: VQueuesMeta<'_>,
-    ) -> Result<(), Error> {
+    pub fn handle_actions(&mut self, actions: impl Iterator<Item = Action>) -> Result<(), Error> {
         match &mut self.state {
             State::Follower | State::Candidate { .. } => {
                 // nothing to do :-)
             }
             State::Leader(leader_state) => {
-                leader_state.handle_actions(
-                    &mut self.invoker_tx,
-                    actions,
-                    vqueues,
-                    &self.invoker_capacity.memory_pool,
-                )?;
+                leader_state.handle_actions(&mut self.invoker_tx, actions)?;
             }
         }
 
@@ -620,11 +615,7 @@ where
     /// * Follower: Nothing to do
     /// * Candidate: Monitor appender task
     /// * Leader: Await action effects and monitor appender task
-    pub async fn run(
-        &mut self,
-        state_machine: &StateMachine,
-        vqueues: VQueuesMeta<'_>,
-    ) -> Result<Vec<ActionEffect>, Error> {
+    pub async fn run(&mut self, state_machine: &StateMachine) -> Result<Vec<ActionEffect>, Error> {
         match &mut self.state {
             State::Follower => Ok(futures::future::pending::<Vec<_>>().await),
             State::Candidate { self_proposer, .. } => Err(self_proposer
@@ -633,7 +624,7 @@ where
                 .join_on_err()
                 .await
                 .expect_err("never should never be returned")),
-            State::Leader(leader_state) => leader_state.run(state_machine, vqueues).await,
+            State::Leader(leader_state) => leader_state.run(state_machine).await,
         }
     }
 
@@ -799,7 +790,7 @@ mod tests {
     use restate_types::partitions::state::PartitionReplicaSetStates;
     use restate_types::partitions::{Partition, PartitionConfiguration};
     use restate_types::{GenerationalNodeId, Version};
-    use restate_vqueues::VQueuesMetaMut;
+    use restate_vqueues::VQueuesMetaCache;
     use restate_wal_protocol::Command;
     use restate_wal_protocol::Envelope;
     use std::num::NonZeroUsize;
@@ -879,7 +870,7 @@ mod tests {
                 &mut partition_store,
                 &replica_set_states,
                 &Configuration::pinned(),
-                &mut VQueuesMetaMut::default(),
+                &mut VQueuesMetaCache::new_empty(),
             )
             .await?;
 

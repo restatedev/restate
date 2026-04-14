@@ -12,12 +12,11 @@ use metrics::{Unit, counter, describe_counter};
 
 pub const VQUEUE_ENQUEUE: &str = "restate.vqueue.scheduler.enqueue.total";
 pub const VQUEUE_SCHEDULER_DECISION: &str = "restate.vqueue.scheduler.decision.total";
-pub const VQUEUE_RUN_CONFIRMED: &str = "restate.vqueue.scheduler.run_confirmed.total";
-pub const VQUEUE_RUN_REJECTED: &str = "restate.vqueue.scheduler.run_rejected.total";
-pub const VQUEUE_INVOKER_CAPACITY_WAIT_MS: &str =
-    "restate.vqueue.scheduler.invoker_capacity_wait_ms.total";
+pub const VQUEUE_CONFIRMED: &str = "restate.vqueue.scheduler.decision_confirmed.total";
 pub const VQUEUE_INVOKER_MEMORY_WAIT_MS: &str =
     "restate.vqueue.scheduler.invoker_memory_wait_ms.total";
+pub const VQUEUE_INVOKER_CONCURRENCY_WAIT_MS: &str =
+    "restate.vqueue.scheduler.invoker_concurrency_wait_ms.total";
 
 // Node-level scheduler throttling (affects resume/start)
 pub const VQUEUE_GLOBAL_THROTTLE_WAIT_MS: &str =
@@ -27,7 +26,6 @@ pub const VQUEUE_LOCAL_THROTTLE_WAIT_MS: &str = "restate.vqueue.scheduler.vqueue
 
 pub const ACTION_YIELD: &str = "yield";
 pub const ACTION_RUN: &str = "run";
-pub const ACTION_START: &str = "start";
 
 pub fn describe_metrics() {
     describe_counter!(
@@ -43,19 +41,13 @@ pub fn describe_metrics() {
     );
 
     describe_counter!(
-        VQUEUE_RUN_CONFIRMED,
+        VQUEUE_CONFIRMED,
         Unit::Count,
         "Number of entries/invocations in vqueues where the run request was confirmed"
     );
 
     describe_counter!(
-        VQUEUE_RUN_REJECTED,
-        Unit::Count,
-        "Number of entries/invocations in vqueues where the run request was rejected"
-    );
-
-    describe_counter!(
-        VQUEUE_INVOKER_CAPACITY_WAIT_MS,
+        VQUEUE_INVOKER_CONCURRENCY_WAIT_MS,
         Unit::Count,
         "Cumulative number of milliseconds spent waiting for global invoker capacity"
     );
@@ -79,8 +71,7 @@ pub fn describe_metrics() {
     );
 }
 
-pub fn publish_scheduler_decision_metrics(num_start: u16, num_run: u16, num_yield: u16) {
-    counter!(VQUEUE_SCHEDULER_DECISION, "action" => ACTION_START).increment(num_start as u64);
+pub fn publish_scheduler_decision_metrics(num_run: u32, num_yield: u32) {
     counter!(VQUEUE_SCHEDULER_DECISION, "action" => ACTION_RUN).increment(num_run as u64);
     counter!(VQUEUE_SCHEDULER_DECISION, "action" => ACTION_YIELD).increment(num_yield as u64);
 }

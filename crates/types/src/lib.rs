@@ -56,7 +56,7 @@ pub mod service_protocol;
 pub mod state_mut;
 pub mod storage;
 pub mod timer;
-pub mod vqueue;
+pub mod vqueues;
 
 pub use id_util::IdResourceType;
 pub use identifiers::PartitionedResourceId;
