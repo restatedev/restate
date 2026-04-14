@@ -63,7 +63,11 @@ impl KeyEncode for Option<Scope> {
     }
 
     fn serialized_length(&self) -> usize {
-        1 + std::mem::size_of::<u32>() + self.as_ref().map(|s| s.len()).unwrap_or_default()
+        if self.is_some() {
+            1 + std::mem::size_of::<u32>() + self.as_ref().map(|s| s.len()).unwrap_or_default()
+        } else {
+            1
+        }
     }
 }
 
