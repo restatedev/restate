@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_storage_api::invocation_status_table::InvocationStatus;
+use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_types::config::Configuration;
 use restate_types::identifiers::InvocationId;
@@ -24,7 +25,7 @@ pub struct ResumeInvocationCommand<'e> {
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for ResumeInvocationCommand<'e>
 where
-    S: WriteVQueueTable + ReadVQueueTable,
+    S: WriteVQueueTable + ReadVQueueTable + WriteLockTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let Some(metadata) = self.invocation_status.get_invocation_metadata_mut() else {

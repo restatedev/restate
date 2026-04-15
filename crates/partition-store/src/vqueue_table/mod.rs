@@ -332,6 +332,23 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         }
     }
 
+    fn delete_inbox_entry(&mut self, qid: &VQueueId, stage: Stage, card: &EntryCard) {
+        let key_buffer = InboxKey {
+            partition_key: qid.partition_key(),
+            parent: qid.parent,
+            instance: qid.instance,
+            stage,
+            visible_at: card.visible_at,
+            priority: card.priority,
+            created_at: card.created_at,
+            kind: card.kind,
+            id: card.id,
+        }
+        .to_bytes();
+
+        self.raw_delete_cf(KeyKind::VQueueInbox, key_buffer);
+    }
+
     fn mark_vqueue_as_active(&mut self, qid: &restate_types::vqueue::VQueueId) {
         let mut key_buffer = [0u8; ActiveKey::serialized_length_fixed()];
         ActiveKey {

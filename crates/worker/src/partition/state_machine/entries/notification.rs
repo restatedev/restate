@@ -1,3 +1,4 @@
+use restate_storage_api::lock_table::WriteLockTable;
 // Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
@@ -117,7 +118,7 @@ impl<'e> ApplyNotificationCommand<'e> {
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for ApplyNotificationCommand<'e>
 where
-    S: ReadJournalTable + WriteVQueueTable + ReadVQueueTable,
+    S: ReadJournalTable + WriteVQueueTable + WriteLockTable + ReadVQueueTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         if ctx.is_leader {
