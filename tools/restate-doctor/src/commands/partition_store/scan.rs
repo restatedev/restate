@@ -34,7 +34,7 @@ use restate_partition_store::service_status_table::ServiceStatusKey;
 use restate_partition_store::state_table::StateKey;
 use restate_partition_store::timer_table::TimersKey;
 use restate_partition_store::vqueue_table::{
-    ActiveKey, EntryStateKey, InboxKey as VQueueInboxKey, ItemsKey, MetaKey,
+    ActiveKey, EntryStatusKey, InboxKey as VQueueInboxKey, InputPayloadKey, MetaKey,
 };
 
 use restate_cli_util::ui::console::StyledTable;
@@ -45,7 +45,7 @@ use crate::app::GlobalOpts;
 use crate::util::colorize::{color_legend, colorize_key_hex};
 use crate::util::decode_value::decode_value;
 use crate::util::hex_encode;
-use crate::util::rocksdb::{open_db, resolve_partition_store_path};
+use crate::util::rocksdb::{open_partition_store_db, resolve_partition_store_path};
 
 use super::PartitionStoreOpts;
 
@@ -240,7 +240,7 @@ pub async fn run_scan(
     }: &Scan,
 ) -> Result<()> {
     let path = resolve_partition_store_path(global_opts.data_dir.as_deref(), opts.path.as_deref())?;
-    let db_info = open_db(&path, opts.open_mode(), global_opts.limit_open_files)?;
+    let db_info = open_partition_store_db(&path, opts.open_mode(), global_opts.limit_open_files)?;
 
     // Parse table filter if provided
     let table_filter = table.as_ref().map(|t| parse_table_filter(t)).transpose()?;
@@ -421,16 +421,18 @@ fn decode_key(key: &[u8]) -> (String, Option<String>, Option<KeyKind>) {
         KeyKind::VQueueActive => ActiveKey::deserialize_from(&mut cursor)
             .ok()
             .map(|k| format!("{k:?}")),
-        KeyKind::VQueueInbox => VQueueInboxKey::deserialize_from(&mut cursor)
-            .ok()
-            .map(|k| format!("{k:?}")),
+        KeyKind::VQueueInboxStage
+        | KeyKind::VQueueRunningStage
+        | KeyKind::VQueueSuspendedStage
+        | KeyKind::VQueuePausedStage
+        | KeyKind::VQueueFinishedStage => decode_vqueue_stage_key(key, key_kind),
         KeyKind::VQueueMeta => MetaKey::deserialize_from(&mut cursor)
             .ok()
             .map(|k| format!("{k:?}")),
-        KeyKind::VQueueEntryState => EntryStateKey::deserialize_from(&mut cursor)
+        KeyKind::VQueueEntryStatus => EntryStatusKey::deserialize_from(&mut cursor)
             .ok()
             .map(|k| format!("{k:?}")),
-        KeyKind::VQueueItems => ItemsKey::deserialize_from(&mut cursor)
+        KeyKind::VQueueInput => InputPayloadKey::deserialize_from(&mut cursor)
             .ok()
             .map(|k| format!("{k:?}")),
         KeyKind::Lock => LockKey::deserialize_from(&mut cursor)
@@ -439,4 +441,29 @@ fn decode_key(key: &[u8]) -> (String, Option<String>, Option<KeyKind>) {
     };
 
     (kind_name, decoded, Some(key_kind))
+}
+
+fn decode_vqueue_stage_key(key: &[u8], key_kind: KeyKind) -> Option<String> {
+    let stage = match key_kind {
+        KeyKind::VQueueInboxStage => "Inbox",
+        KeyKind::VQueueRunningStage => "Running",
+        KeyKind::VQueueSuspendedStage => "Suspended",
+        KeyKind::VQueuePausedStage => "Paused",
+        KeyKind::VQueueFinishedStage => "Finished",
+        _ => return None,
+    };
+
+    if key.len() < KeyKind::SERIALIZED_LENGTH {
+        return None;
+    }
+
+    // All vqueue stage keys share the same binary layout after the 2-byte key-kind prefix.
+    // Rebase to the Inbox key kind so we can decode with a single key struct.
+    let mut normalized = key.to_vec();
+    normalized[..KeyKind::SERIALIZED_LENGTH].copy_from_slice(KeyKind::VQueueInboxStage.as_bytes());
+    let mut cursor = normalized.as_slice();
+
+    VQueueInboxKey::deserialize_from(&mut cursor)
+        .ok()
+        .map(|k| format!("stage={stage}, {k:?}"))
 }
