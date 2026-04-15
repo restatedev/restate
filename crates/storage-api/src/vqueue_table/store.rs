@@ -30,7 +30,7 @@ pub trait VQueueEntry: PartialOrd + PartialEq + Eq + Clone + std::fmt::Debug {
     fn priority(&self) -> EffectivePriority;
     fn visible_at(&self) -> VisibleAt;
     fn kind(&self) -> EntryKind;
-    fn is_token_held(&self) -> bool;
+    fn has_lock(&self) -> bool;
     // Weight is as a proxy for _costing_ dequeueing an item. Lower weight means
     // lower cost and higher chances to be dequeued.
     fn weight(&self) -> NonZeroU16;
@@ -88,7 +88,8 @@ impl VQueueEntry for EntryCard {
     }
 
     #[inline(always)]
-    fn is_token_held(&self) -> bool {
+    fn has_lock(&self) -> bool {
+        // todo: change to use has_lock directly
         self.priority.token_held()
     }
 }
