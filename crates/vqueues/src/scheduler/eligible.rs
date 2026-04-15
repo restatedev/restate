@@ -86,7 +86,9 @@ impl EligibilityTracker {
                 until: wake_up.ts,
                 scope: *scope,
             },
-            Some(State::Scheduled { wake_up }) => SchedulingStatus::Scheduled { at: wake_up.ts },
+            Some(State::Scheduled { wake_up }) => SchedulingStatus::Scheduled {
+                at: wake_up.ts.into(),
+            },
             Some(State::BlockedOn(resource)) => SchedulingStatus::BlockedOn(resource.clone()),
         }
     }
@@ -148,6 +150,7 @@ impl EligibilityTracker {
                             return Ok(Some(handle));
                         }
                         Eligibility::EligibleAt(ts) => {
+                            let ts = ts.as_unix_millis();
                             let duration = ts.duration_since(SchedulerClock.now_millis());
                             let timer_key = self.delayed_eligibility.insert(handle, duration);
                             *current_state = State::Scheduled {
@@ -294,6 +297,7 @@ impl EligibilityTracker {
                     (State::Throttled { wake_up, .. }, Eligibility::EligibleAt(eligible_at_ts)) => {
                         // We move away from throttled only if the new time point is _after_ the
                         // end of the throttling period.
+                        let eligible_at_ts = eligible_at_ts.as_unix_millis();
                         if eligible_at_ts > wake_up.ts {
                             // Reschedule the timer as the new eligibility is further in the future
                             self.delayed_eligibility.reset(
@@ -334,6 +338,7 @@ impl EligibilityTracker {
                         true
                     }
                     (State::Scheduled { wake_up }, Eligibility::EligibleAt(eligible_at_ts)) => {
+                        let eligible_at_ts = eligible_at_ts.as_unix_millis();
                         // maybe change the wake up time
                         if eligible_at_ts != wake_up.ts {
                             self.delayed_eligibility.reset(

@@ -8,256 +8,247 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::{Debug, Formatter};
+use std::num::NonZeroU16;
 
-use bytes::{Buf, BufMut};
+use restate_clock::RoughTimestamp;
+use restate_types::vqueues::{EntryId, EntryKind, Seq};
 
-use restate_types::clock::UniqueTimestamp;
-use restate_types::identifiers::{InvocationId, StateMutationId};
-use restate_types::state_mut::ExternalStateMutation;
-use restate_types::vqueue::{EffectivePriority, NewEntryPriority, VQueueId};
+use super::Status;
+use super::stats::EntryStatistics;
 
-use crate::StorageError;
-
-use super::{Stage, VisibleAt};
-
-thread_local! {
-    // arbitrary seeds, safe to change since we don't use hashes in storage
-    static HASHER: ahash::RandomState = const { ahash::RandomState::with_seeds(1232134512, 14, 82334, 988889) };
+/// EntryKey uniquely identifies a vqueue entry within a vqueue stage.
+///
+/// The entry encodes the following information:
+/// - HasLock: whether the entry holds a lock or not (serialized as inverted)
+/// - RunAt: A rough timestamp for when the entry should be allowed to run
+/// - Seq: A secondary ordering key that's inherited from the original entry's canonical
+///   entry identity. The sequence number should be a monotonically increasing value unique
+///   within a vqueue. Uniqueness is not critical between entries arriving from different
+///   services but more critical for strands of entries where their relative ordering
+///   needs to be preserved (e.g. sequential invocations on the same virtual object key
+///   requested by the same caller/thread).
+/// - EntryId: The entry identifier bytes (kind + 16-byte identifier), stored after the
+///   ordering fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, bilrost::Message)]
+pub struct EntryKey {
+    #[bilrost(tag(1))]
+    has_lock: bool,
+    #[bilrost(tag(2))]
+    run_at: RoughTimestamp,
+    #[bilrost(tag(3))]
+    seq: Seq,
+    #[bilrost(tag(4))]
+    entry_id: EntryId,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, strum::FromRepr)]
-#[repr(u8)]
-pub enum EntryKind {
-    Unknown = 0,
-    Invocation = b'i',    // 0x69
-    StateMutation = b's', // 0x73
-}
-
-// Using u128 would have added an extra unnecessary 8 bytes due to alignment
-// requirements (u128 is 0x10 aligned and it forces the struct to be 0x10 aligned)
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct EntryId([u8; 16]);
-
-impl EntryId {
-    #[inline]
-    pub const fn new(id: [u8; 16]) -> Self {
-        Self(id)
-    }
-
-    #[inline]
-    pub const fn as_bytes(&self) -> &[u8; 16] {
-        &self.0
-    }
-
-    #[inline]
-    pub const fn to_bytes(self) -> [u8; 16] {
-        self.0
-    }
-
-    #[inline]
-    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
-        Self(bytes)
+// Custom implementation to match the ordering in storage. Entries with has_lock come
+// before those without.
+impl Ord for EntryKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.has_lock
+            .cmp(&other.has_lock)
+            // Reverse the ordering so that locks come first
+            .reverse()
+            .then_with(|| self.run_at.cmp(&other.run_at))
+            .then_with(|| self.seq.cmp(&other.seq))
+            .then_with(|| self.entry_id.cmp(&other.entry_id))
     }
 }
 
-impl Debug for EntryId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        // display inner field as u128 to make it a bit easier to read
-        f.debug_tuple("EntryId")
-            .field(&u128::from_be_bytes(self.0))
-            .finish()
+impl PartialOrd for EntryKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 
-impl From<&InvocationId> for EntryId {
-    #[inline]
-    fn from(id: &InvocationId) -> Self {
-        Self::from_bytes(id.invocation_uuid().to_bytes())
-    }
-}
-
-impl From<InvocationId> for EntryId {
-    #[inline]
-    fn from(id: InvocationId) -> Self {
-        Self::from_bytes(id.invocation_uuid().to_bytes())
-    }
-}
-
-impl From<StateMutationId> for EntryId {
-    #[inline]
-    fn from(mutation_id: StateMutationId) -> Self {
-        Self::from_bytes(mutation_id.to_remainder_bytes())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct EntryCard {
-    // pub has_lock: bool,
-    pub priority: EffectivePriority,
-    pub visible_at: VisibleAt,
-    /// The unique timestamp of the initial creation of the entry.
-    pub created_at: UniqueTimestamp,
-    pub kind: EntryKind,
-    pub id: EntryId,
-}
-
-static_assertions::const_assert_eq!(EntryCard::serialized_length(), 34);
-
-impl EntryCard {
-    pub const fn serialized_length() -> usize {
-        // priority
-        std::mem::size_of::<EffectivePriority>()
-        // visible at
-        + std::mem::size_of::<VisibleAt>()
-        // created_at
-        + std::mem::size_of::<UniqueTimestamp>()
-        // entry kind
-        + std::mem::size_of::<EntryKind>()
-        // entry id
-        + std::mem::size_of::<EntryId>()
-    }
-
-    pub fn has_lock(&self) -> bool {
-        // todo: change
-        self.priority.token_held()
-    }
-
-    /// A unique hash of the entry card.
+impl EntryKey {
+    ///  Creates a new entry key from the given components.
     ///
-    /// Do not use this for any stored data as it changes across version/restarts.
-    #[inline(always)]
-    pub fn unique_hash(&self) -> u64 {
-        HASHER.with(|hasher| hasher.hash_one(self))
-    }
-
+    /// The timestamp (run_at) is encoded in 63 bits.
+    ///
+    /// The sequence number is encoded in 7 bytes (56 bits).
+    ///
+    /// # Panics if `run_at` is larger than the maximum allowed value. Normal timestamps
+    /// are safe to use.
     pub fn new(
-        priority: NewEntryPriority,
-        visible_at: VisibleAt,
-        created_at: UniqueTimestamp,
-        kind: EntryKind,
-        id: EntryId,
+        has_lock: bool,
+        run_at: impl Into<RoughTimestamp>,
+        seq: impl Into<Seq>,
+        entry_id: impl Into<EntryId>,
     ) -> Self {
+        let entry_id = entry_id.into();
+        assert_ne!(
+            entry_id.kind(),
+            EntryKind::Unknown,
+            "entry id kind must be known"
+        );
         Self {
-            priority: EffectivePriority::from(priority),
-            visible_at,
-            created_at,
-            kind,
-            id,
+            has_lock,
+            run_at: run_at.into(),
+            seq: seq.into(),
+            entry_id,
         }
     }
 
-    pub fn encode<B: BufMut>(&self, target: &mut B) {
-        target.put_u8(self.priority as u8);
-        target.put_u64(self.visible_at.as_u64());
-        target.put_u64(self.created_at.as_u64());
-        target.put_u8(self.kind as u8);
-        target.put_slice(&self.id.0);
+    pub const fn serialized_length_fixed() -> usize {
+        // has-lock is 1 byte
+        1
+            // We encode the RoughTimestamp as u64 to support future higher-precision
+            + std::mem::size_of::<u64>()
+            + std::mem::size_of::<Seq>()
+            + EntryId::serialized_length_fixed()
     }
 
-    pub fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
-        if source.remaining() < Self::serialized_length() {
-            return Err(StorageError::Generic(anyhow::anyhow!(
-                "Not enough bytes to decode an EntryCard"
-            )));
-        }
-
-        let p = source.get_u8();
-        let priority = EffectivePriority::from_repr(p).ok_or_else(|| {
-            StorageError::Conversion(anyhow::anyhow!("Wrong value for EffectivePriority: {p}"))
-        })?;
-        let visible_at = VisibleAt::from_raw(source.get_u64());
-        let created_at = UniqueTimestamp::try_from(source.get_u64())
-            .map_err(|e| StorageError::Conversion(e.into()))?;
-        let k = source.get_u8();
-        let kind = EntryKind::from_repr(k).ok_or_else(|| {
-            StorageError::Generic(anyhow::anyhow!("Wrong value for EntryKind: {k}"))
-        })?;
-
-        let mut buf = [0u8; 16];
-        source.copy_to_slice(&mut buf);
-        let entry_id = EntryId::from_bytes(buf);
-
-        Ok(Self {
-            priority,
-            visible_at,
-            created_at,
-            kind,
-            id: entry_id,
-        })
+    #[inline]
+    pub const fn kind(&self) -> EntryKind {
+        self.entry_id.kind()
     }
-}
 
-pub trait AsEntryStateHeader {
-    fn kind(&self) -> EntryKind;
-    fn stage(&self) -> Stage;
-    fn vqueue_id(&self) -> &VQueueId;
-    fn current_entry_card(&self) -> EntryCard;
-}
+    #[inline]
+    pub const fn seq(&self) -> Seq {
+        self.seq
+    }
 
-pub trait AsEntryState: AsEntryStateHeader {
-    type State;
+    /// Returns the encoded run-at timestamp.
+    #[inline]
+    pub const fn run_at(&self) -> RoughTimestamp {
+        self.run_at
+    }
 
-    fn state(&self) -> &Self::State;
-}
+    #[inline]
+    pub const fn entry_id(&self) -> &EntryId {
+        &self.entry_id
+    }
 
-pub trait EntryStateKind: Send {
-    const KIND: EntryKind;
-}
+    /// Returns whether this key represents an entry that currently holds a lock.
+    #[inline]
+    pub fn has_lock(&self) -> bool {
+        self.has_lock
+    }
 
-impl EntryStateKind for () {
-    const KIND: EntryKind = EntryKind::Unknown;
-}
-
-impl EntryStateKind for ExternalStateMutation {
-    const KIND: EntryKind = EntryKind::StateMutation;
-}
-
-mod bilrost_encoding {
-    use bilrost::DecodeErrorKind;
-    use bilrost::encoding::{ForOverwrite, Proxiable};
-    use restate_types::clock::UniqueTimestamp;
-    use restate_types::vqueue::EffectivePriority;
-
-    use crate::vqueue_table::VisibleAt;
-
-    use super::{EntryCard, EntryId, EntryKind};
-
-    struct EntryCardTag;
-
-    impl Proxiable<EntryCardTag> for EntryCard {
-        type Proxy = [u8; EntryCard::serialized_length()];
-
-        fn encode_proxy(&self) -> Self::Proxy {
-            let mut buf = [0u8; Self::serialized_length()];
-            self.encode(&mut buf.as_mut());
-            buf
-        }
-
-        fn decode_proxy(&mut self, proxy: Self::Proxy) -> Result<(), DecodeErrorKind> {
-            *self = Self::decode(&mut proxy.as_ref()).map_err(|_| DecodeErrorKind::InvalidValue)?;
-            Ok(())
+    #[inline]
+    #[must_use]
+    pub fn acquire_lock(self) -> Self {
+        Self {
+            has_lock: true,
+            ..self
         }
     }
 
-    impl ForOverwrite<(), EntryCard> for () {
-        fn for_overwrite() -> EntryCard {
-            EntryCard {
-                priority: EffectivePriority::default(),
-                visible_at: VisibleAt::Now,
-                created_at: UniqueTimestamp::MIN,
-                kind: EntryKind::Unknown,
-                id: EntryId([0u8; 16]),
-            }
+    #[inline]
+    #[must_use]
+    pub fn release_lock(self) -> Self {
+        Self {
+            has_lock: false,
+            ..self
         }
     }
 
-    bilrost::empty_state_via_for_overwrite!(EntryCard);
+    /// If the input run_at is None, the current run_at remains unchanged
+    #[inline]
+    #[must_use]
+    pub fn set_run_at(self, run_at: Option<RoughTimestamp>) -> Self {
+        Self {
+            run_at: run_at.unwrap_or(self.run_at),
+            ..self
+        }
+    }
+}
 
-    bilrost::delegate_proxied_encoding!(
-        use encoding (::bilrost::encoding::PlainBytes)
-        to encode proxied type (EntryCard)
-        using proxy tag (EntryCardTag)
-        with general encodings
-    );
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct EntryValue {
+    /// Status is copied over from the entry's state when the last transition
+    /// happened.
+    #[bilrost(tag(1))]
+    pub status: Status,
+    #[bilrost(tag(2))]
+    pub metadata: EntryMetadata,
+    #[bilrost(tag(3))]
+    pub stats: EntryStatistics,
+}
+
+impl EntryValue {
+    pub const fn weight(&self) -> NonZeroU16 {
+        // The reasoning here is to give queues that need to resume invocations more
+        // priority than queues that need to start new ones.
+        // Those weights are provisional and can be changed any time, do not make any
+        // hard assumptions about them.
+        let weight = if matches!(self.status, Status::New | Status::Scheduled) {
+            2
+        } else {
+            1
+        };
+
+        // Safety: All values are positive numbers as shown in the match above.
+        unsafe { NonZeroU16::new_unchecked(weight) }
+    }
+}
+
+#[derive(Debug, Clone, Eq, Default, PartialEq, bilrost::Message)]
+pub struct EntryMetadataRef<'a> {
+    // todo: maybe add "deployment_id?" or other metadata needed to identify the deployment
+    // or maybe service revision.
+    #[bilrost(tag(1))]
+    deployment: Option<&'a str>,
+}
+
+impl<'a> From<&'a EntryMetadata> for EntryMetadataRef<'a> {
+    #[inline]
+    fn from(value: &'a EntryMetadata) -> Self {
+        Self {
+            deployment: value.deployment.as_deref(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, Default, PartialEq, bilrost::Message)]
+pub struct EntryMetadata {
+    // todo: This is temporary placeholder, type and name _will_ change.
+    #[bilrost(tag(1))]
+    deployment: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use restate_clock::time::MillisSinceEpoch;
+
+    #[test]
+    fn entry_key_ordering_is_has_lock_then_run_at_then_seq() {
+        use std::cmp::Ordering;
+
+        let a = EntryKey::new(
+            true,
+            MillisSinceEpoch::new(1_744_000_000_000),
+            1,
+            EntryId::new(EntryKind::StateMutation, [99; 16]),
+        );
+        let b = EntryKey::new(
+            true,
+            MillisSinceEpoch::new(1_744_000_000_000),
+            2,
+            EntryId::new(EntryKind::Invocation, [1; 16]),
+        );
+        let c = EntryKey::new(
+            true,
+            MillisSinceEpoch::new(1_744_000_001_000),
+            1,
+            EntryId::new(EntryKind::Invocation, [1; 16]),
+        );
+        let d = EntryKey::new(
+            false,
+            MillisSinceEpoch::new(0),
+            1,
+            EntryId::new(EntryKind::Invocation, [1; 16]),
+        );
+
+        assert_eq!(a.cmp(&b), Ordering::Less, "seq should break ties");
+        assert_eq!(b.cmp(&c), Ordering::Less, "run_at should sort before seq");
+        assert_eq!(
+            c.cmp(&d),
+            Ordering::Less,
+            "has_lock=true should sort before has_lock=false"
+        );
+    }
 }

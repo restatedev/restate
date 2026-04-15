@@ -28,7 +28,6 @@ use self::control::PartitionDurability;
 
 pub mod control;
 pub mod timer;
-pub mod vqueues;
 
 /// The primary envelope for all messages in the system.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -126,7 +125,7 @@ pub enum Destination {
 
 /// State machine input commands
 #[derive(
-    Debug,
+    derive_more::Debug,
     Clone,
     strum::EnumDiscriminants,
     strum::VariantNames,
@@ -196,11 +195,9 @@ pub enum Command {
     // # Commands for VQueues management
     // ----------------------------------
     /// A command to attempt a run an entry in the vqueue (invocation, or otherwise)
-    /// *Since v1.6.0
-    /// payload is vqueues::VQWaitingToRunning (bilrost encoded)
-    VQWaitingToRunning(Bytes),
-    /// payload is vqueues::VQYieldRunning (bilrost encoded)
-    VQYieldRunning(Bytes),
+    /// *Since v1.7.0
+    /// payload is a bilrost encoded [`restate_storage_api::vqueue_table::scheduler::SchedulerDecisions`]
+    VQSchedulerDecisions(#[debug(skip)] Bytes),
 }
 
 impl Command {
@@ -252,8 +249,7 @@ impl HasRecordKeys for Envelope {
             Command::NotifySignal(sig) => Keys::Single(sig.partition_key()),
             Command::NotifyGetInvocationOutputResponse(res) => Keys::Single(res.partition_key()),
             Command::UpsertSchema(schema) => schema.partition_key_range.clone(),
-            Command::VQWaitingToRunning(_) => Keys::Single(self.partition_key()),
-            Command::VQYieldRunning(_) => Keys::Single(self.partition_key()),
+            Command::VQSchedulerDecisions(_) => Keys::Single(self.partition_key()),
         }
     }
 }
