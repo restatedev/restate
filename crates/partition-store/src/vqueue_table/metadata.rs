@@ -43,11 +43,11 @@ impl MetaKey {
     }
 }
 
-impl From<VQueueId> for MetaKey {
+impl From<&VQueueId> for MetaKey {
     #[inline]
-    fn from(qid: VQueueId) -> Self {
+    fn from(qid: &VQueueId) -> Self {
         MetaKey {
-            partition_key: qid.partition_key,
+            partition_key: qid.partition_key(),
             parent: qid.parent,
             instance: qid.instance,
         }
@@ -57,11 +57,7 @@ impl From<VQueueId> for MetaKey {
 impl From<MetaKey> for VQueueId {
     #[inline]
     fn from(key: MetaKey) -> Self {
-        VQueueId {
-            partition_key: key.partition_key,
-            parent: key.parent,
-            instance: key.instance,
-        }
+        VQueueId::new(key.parent, key.partition_key, key.instance)
     }
 }
 
@@ -93,22 +89,29 @@ pub(crate) mod vqueue_meta_merge {
         existing_val: Option<&[u8]>,
         operands: &MergeOperands,
     ) -> Option<Vec<u8>> {
-        let mut vqueue_meta = VQueueMeta::default();
-        if let Some(existing_val) = existing_val
-            && let Err(e) = vqueue_meta.replace_from_slice(existing_val)
-        {
+        let Some(mut existing_val) = existing_val else {
             let key = MetaKey::deserialize_from(&mut key);
             error!(
                 key = ?key,
-                "[full merge] Failed to decode ({} bytes) VQueueMeta: {}",
-                existing_val.len(),
-                e
+                "[full merge] Failed to merge vqueue metadata updates with a non-existent vqueue",
             );
             return None;
-        }
+        };
+
+        let mut vqueue_meta = match VQueueMeta::decode(&mut existing_val) {
+            Ok(m) => m,
+            Err(e) => {
+                error!(
+                    key = ?key,
+                    "[full merge] Failed to decode existing VQueueMeta ({} bytes): {e}",
+                    existing_val.len(),
+                );
+                return None;
+            }
+        };
 
         for op in operands {
-            let updates = match VQueueMetaUpdates::decode(op) {
+            let batch = match VQueueMetaUpdates::decode(op) {
                 Err(err) => {
                     let key = MetaKey::deserialize_from(&mut key);
                     error!(
@@ -119,16 +122,18 @@ pub(crate) mod vqueue_meta_merge {
                     );
                     return None;
                 }
-                Ok(updates) => updates,
+                Ok(batch) => batch,
             };
-            if let Err(err) = vqueue_meta.apply_updates(&updates) {
-                let key = MetaKey::deserialize_from(&mut key);
-                error!(
-                    ?key,
-                    ?err,
-                    "[full merge] Failed to apply vqueue meta update"
-                );
-                return None;
+            for update in batch.updates.iter() {
+                if let Err(err) = vqueue_meta.apply_update(update) {
+                    let key = MetaKey::deserialize_from(&mut key);
+                    error!(
+                        ?key,
+                        ?err,
+                        "[full merge] Failed to apply vqueue meta update"
+                    );
+                    return None;
+                }
             }
         }
         Some(vqueue_meta.encode_to_vec())

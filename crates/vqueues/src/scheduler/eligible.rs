@@ -18,10 +18,8 @@ use tracing::trace;
 
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::VQueueStore;
-use restate_storage_api::vqueue_table::metadata::VQueueMeta;
 use restate_types::time::MillisSinceEpoch;
 
-use crate::VQueuesMeta;
 use crate::scheduler::vqueue_state::Eligibility;
 use crate::vqueue_config::VQueueConfig;
 
@@ -81,12 +79,11 @@ impl EligibilityTracker {
     pub fn get_status<S: VQueueStore>(
         &self,
         qstate: &VQueueState<S>,
-        meta: &VQueueMeta,
         config: &VQueueConfig,
     ) -> SchedulingStatus {
         match self.states.get(qstate.handle) {
             None | Some(State::NeedsPoll) | Some(State::Ready) => {
-                SchedulingStatus::from(qstate.check_eligibility(meta, config))
+                SchedulingStatus::from(qstate.check_eligibility(config))
             }
             Some(State::Throttled { wake_up, scope }) => SchedulingStatus::Throttled {
                 until: wake_up.ts,
@@ -123,7 +120,6 @@ impl EligibilityTracker {
         &mut self,
         storage: &S,
         vqueues: &mut SlotMap<VQueueHandle, VQueueState<S>>,
-        cache: VQueuesMeta<'_>,
     ) -> Result<Option<VQueueHandle>, StorageError> {
         loop {
             // what is my current status
@@ -146,12 +142,11 @@ impl EligibilityTracker {
                 continue;
             };
 
-            let meta = cache.get_vqueue(&qstate.qid).unwrap();
             match current_state {
                 State::NeedsPoll => {
-                    let config = cache.config_pool().find(&qstate.qid.parent);
+                    let config = &VQueueConfig::UNLIMITED;
                     // update the state based on eligibility.
-                    match qstate.poll_eligibility(storage, meta, config)?.as_compact() {
+                    match qstate.poll_eligibility(storage, config)?.as_compact() {
                         Eligibility::Eligible => {
                             *current_state = State::Ready;
                             return Ok(Some(handle));
@@ -200,11 +195,10 @@ impl EligibilityTracker {
     pub fn refresh_membership<S: VQueueStore>(
         &mut self,
         vqueue: &VQueueState<S>,
-        meta: &VQueueMeta,
         config: &VQueueConfig,
     ) -> bool {
         let current_state = self.states.get(vqueue.handle).copied();
-        let eligibility = vqueue.check_eligibility(meta, config).as_compact();
+        let eligibility = vqueue.check_eligibility(config).as_compact();
 
         match (current_state, eligibility) {
             // --
