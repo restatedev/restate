@@ -25,6 +25,7 @@
 
 use restate_clock::time::MillisSinceEpoch;
 use restate_storage_api::Transaction;
+use restate_storage_api::vqueue_table::ScanVQueueInboxStages;
 use restate_storage_api::vqueue_table::{
     EntryKey, EntryMetadata, EntryValue, Stage, Status, VQueueCursor, VQueueStore,
     WriteVQueueTable, stats::EntryStatistics,
@@ -837,6 +838,67 @@ async fn concurrent_enqueue_and_delete(rocksdb: &mut PartitionStore) {
     );
 }
 
+/// Test: Stage scan reads only the requested stage key kind.
+///
+/// This validates the datafusion-oriented scan API and ensures stage-specific
+/// scans do not leak rows from adjacent stage key kinds or partition keys.
+async fn stage_scan_is_filtered_by_stage(rocksdb: &mut PartitionStore) {
+    let target_partition_key = PartitionKey::from(9_300u64);
+    let other_partition_key = PartitionKey::from(9_301u64);
+    let target_qid = VQueueId::custom(target_partition_key, "scan-target");
+    let other_qid = VQueueId::custom(other_partition_key, "scan-target");
+
+    let stages = [
+        Stage::Inbox,
+        Stage::Running,
+        Stage::Suspended,
+        Stage::Paused,
+        Stage::Finished,
+    ];
+
+    {
+        let mut txn = rocksdb.transaction();
+        for (index, stage) in stages.into_iter().enumerate() {
+            let entry_id = 100 + index as u8;
+            let target_entry = default_entry(entry_id);
+            let other_entry = default_entry(entry_id + 10);
+
+            txn.put_vqueue_inbox(&target_qid, stage, &target_entry.0, &target_entry.1);
+            txn.put_vqueue_inbox(&other_qid, stage, &other_entry.0, &other_entry.1);
+        }
+        txn.commit().await.expect("commit should succeed");
+    }
+
+    let range = target_partition_key..=target_partition_key;
+
+    for (index, stage) in stages.into_iter().enumerate() {
+        let expected_key = default_entry(100 + index as u8).0;
+        let rows = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let rows_for_scan = rows.clone();
+
+        rocksdb
+            .for_each_vqueue_inbox_entry(range.clone(), stage, move |(qid, got_stage, key, _)| {
+                rows_for_scan
+                    .lock()
+                    .expect("stage scan lock should not be poisoned")
+                    .push((qid.clone(), got_stage, *key));
+                std::ops::ControlFlow::Continue(())
+            })
+            .expect("stage scan setup should succeed")
+            .await
+            .expect("stage scan should succeed");
+
+        let rows = rows
+            .lock()
+            .expect("stage scan lock should not be poisoned")
+            .clone();
+        assert_eq!(rows.len(), 1, "stage {stage} should return one row");
+        assert_eq!(rows[0].0, target_qid, "stage {stage} returned wrong qid");
+        assert_eq!(rows[0].1, stage, "stage {stage} returned wrong stage");
+        assert_eq!(rows[0].2, expected_key, "stage {stage} returned wrong key");
+    }
+}
+
 pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     let mut txn = rocksdb.transaction();
 
@@ -862,6 +924,8 @@ pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     verify_vqueue_isolation(db);
     verify_waiting_cursor_boundary_is_respected(db);
     verify_waiting_cursor_partition_prefix_boundary_is_respected(db);
+
+    stage_scan_is_filtered_by_stage(&mut rocksdb).await;
 
     // Tailing iterator tests - these need mutable access to rocksdb for writes
     tailing_iterator_sees_new_items_on_reseek(&mut rocksdb).await;
