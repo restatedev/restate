@@ -13,7 +13,7 @@ use rocksdb::DBRawIteratorWithThreadMode;
 
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{EntryCard, Stage, VQueueCursor};
-use restate_types::vqueue::VQueueId;
+use restate_types::vqueues::VQueueId;
 
 use crate::PartitionDb;
 use crate::keys::{DecodeTableKey, EncodeTableKeyPrefix};
@@ -35,11 +35,9 @@ impl VQueueRunningReader {
 
         // we know how big the prefix is
         let mut key_buf = [0u8; InboxKey::by_stage_prefix_len()];
-        InboxKey::builder()
-            .partition_key(qid.partition_key())
-            .parent(qid.parent)
-            .instance(qid.instance)
-            .stage(Stage::Run)
+        InboxKey::builder_ref()
+            .qid(qid)
+            .stage(&Stage::Run)
             .serialize_to(&mut key_buf.as_mut());
 
         readopts.set_iterate_lower_bound(key_buf);
