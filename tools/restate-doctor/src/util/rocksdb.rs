@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use restate_partition_store::keys::KeyKind;
 use rocksdb::{ColumnFamilyDescriptor, DB, LiveFile, Options};
 
 /// Mode for opening the database
@@ -105,12 +106,20 @@ pub fn extract_file_number(filename: &str) -> Option<u64> {
 ///
 /// If `max_open_files` is `Some`, limits the number of open file handles RocksDB will use.
 /// This is useful in environments where the file descriptor limit cannot be increased.
-pub fn open_db(
+pub fn open_partition_store_db(
     path: impl AsRef<Path>,
     mode: OpenMode,
     max_open_files: Option<i32>,
 ) -> Result<DbInfo> {
-    open_db_with_cf_options(path, mode, max_open_files, |_| Options::default())
+    open_db_with_cf_options(path, mode, max_open_files, |_| {
+        let mut opts = Options::default();
+        opts.set_merge_operator(
+            "PartitionMerge",
+            KeyKind::full_merge,
+            KeyKind::partial_merge,
+        );
+        opts
+    })
 }
 
 /// Open a RocksDB database for read-only analysis with per-CF options.
@@ -145,6 +154,8 @@ pub fn open_db_with_cf_options(
     if let Some(limit) = max_open_files {
         opts.set_max_open_files(limit);
     }
+
+    opts.set_disable_auto_compactions(true);
 
     let descriptors: Vec<ColumnFamilyDescriptor> = cf_names
         .iter()
