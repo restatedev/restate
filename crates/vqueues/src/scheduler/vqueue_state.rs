@@ -406,8 +406,4 @@ impl<S: VQueueStore> VQueueState<S> {
             .total_waiting()
             .saturating_sub(self.unconfirmed_assignments.len() as u32)
     }
-
-    pub fn num_tokens_used(&self) -> u32 {
-        self.meta.tokens_used() + self.unconfirmed_assignments.len() as u32
-    }
 }
