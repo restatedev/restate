@@ -57,7 +57,7 @@ use crate::TokenBucket;
 use crate::error::{InvocationMemoryExhausted, InvokerError};
 use crate::invocation_task::service_protocol_runner::ServiceProtocolRunner;
 use crate::metric_definitions::{
-    INVOKER_EAGER_STATE_TRUNCATED, INVOKER_HTTP_REQUEST_DURATION, INVOKER_HTTP_TOTAL_DURATION,
+    INVOKER_HTTP_REQUEST_DURATION, INVOKER_HTTP_ROUNDTRIP_DURATION, INVOKER_STATE_TRUNCATIONS,
     INVOKER_TASK_DURATION, ServiceMetrics, UUID_LOOKUP,
 };
 
@@ -131,7 +131,7 @@ where
                 ByteCount::from(size_limit),
                 entries.len()
             );
-            labels.counter(INVOKER_EAGER_STATE_TRUNCATED).increment(1);
+            labels.counter(INVOKER_STATE_TRUNCATIONS).increment(1);
             is_partial = true;
             break;
         }
@@ -551,7 +551,7 @@ where
             None
         };
 
-        // Store deployment id for metric labels (INVOKER_TASK_DURATION, INVOKER_EAGER_STATE_TRUNCATED)
+        // Store deployment id for metric labels (INVOKER_TASK_DURATION, INVOKER_STATE_TRUNCATIONS)
         self.pinned_deployment_id = Some(deployment.id);
         self.metric.deployment_id = UUID_LOOKUP.get(&deployment.id);
         self.send_invoker_tx(InvocationTaskOutputInner::PinnedDeployment(
@@ -664,8 +664,8 @@ impl ResponseStream {
 ///
 /// Records:
 /// - TTFB (`INVOKER_HTTP_REQUEST_DURATION`) when the first response headers arrive
-/// - Total duration (`INVOKER_HTTP_TOTAL_DURATION`) when the stream terminates
-/// - Non-200 status codes (`INVOKER_HTTP_STATUS_CODE`) at header receipt
+/// - Roundtrip duration (`INVOKER_HTTP_ROUNDTRIP_DURATION`) when the stream terminates
+/// - Response status codes (`INVOKER_HTTP_RESPONSES`) at header receipt
 pub(super) struct InstrumentedResponseStream {
     inner: ResponseStream,
     started_at: Instant,
@@ -718,7 +718,7 @@ impl Drop for InstrumentedResponseStream {
         // Note: on the v4 protocol path, this includes the response stream drain period
         // (up to 5s for deployments that don't cleanly close the stream).
         self.metric
-            .histogram(INVOKER_HTTP_TOTAL_DURATION)
+            .histogram(INVOKER_HTTP_ROUNDTRIP_DURATION)
             .record(self.started_at.elapsed());
     }
 }

@@ -21,7 +21,7 @@ use metrics::{Counter, counter, gauge};
 use crate::{
     InvokerId,
     metric_definitions::{
-        ID_LOOKUP, INVOKER_CONCURRENCY_LIMIT, INVOKER_CONCURRENCY_SLOTS_ACQUIRED,
+        ID_LOOKUP, INVOKER_CONCURRENCY_SLOTS_ACQUIRED, INVOKER_CONCURRENCY_SLOTS_LIMIT,
         INVOKER_CONCURRENCY_SLOTS_RELEASED,
     },
 };
@@ -54,7 +54,7 @@ impl InvokerConcurrencyQuota {
 
         let inner = match quota {
             Some(available_slots) => {
-                gauge!(INVOKER_CONCURRENCY_LIMIT, "invoker_id" => partition_id_str, "partition_id" => partition_id_str)
+                gauge!(INVOKER_CONCURRENCY_SLOTS_LIMIT, "invoker_id" => partition_id_str, "partition_id" => partition_id_str)
                     .set(available_slots.get() as f64);
 
                 let acquired_counter = counter!(INVOKER_CONCURRENCY_SLOTS_ACQUIRED, "invoker_id" => partition_id_str, "partition_id" => partition_id_str);
@@ -69,7 +69,7 @@ impl InvokerConcurrencyQuota {
                 }
             }
             None => {
-                gauge!(INVOKER_CONCURRENCY_LIMIT, "invoker_id" => partition_id_str, "partition_id" => partition_id_str)
+                gauge!(INVOKER_CONCURRENCY_SLOTS_LIMIT, "invoker_id" => partition_id_str, "partition_id" => partition_id_str)
                     .set(f64::INFINITY);
 
                 InvokerConcurrencyQuotaInner::Unlimited

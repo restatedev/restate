@@ -16,7 +16,6 @@ pub use throttle::ConnectThrottle;
 
 use std::sync::Arc;
 
-use metrics::counter;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tracing::debug;
@@ -31,7 +30,7 @@ use crate::Metadata;
 use crate::TaskId;
 use crate::TaskKind;
 use crate::network::PeerMetadataVersion;
-use crate::network::metric_definitions::NETWORK_CONNECTION_CREATED;
+use crate::network::metric_definitions::{ConnectionMetrics, NetworkMetrics};
 
 use super::ConnectError;
 use super::ConnectionClosed;
@@ -160,6 +159,7 @@ pub struct Connection {
     pub(crate) sender: EgressSender,
     pub(crate) swimlane: Swimlane,
     pub(crate) created: Instant,
+    pub(crate) metrics: ConnectionMetrics,
 }
 
 impl Connection {
@@ -168,6 +168,7 @@ impl Connection {
         protocol_version: ProtocolVersion,
         swimlane: Swimlane,
         sender: EgressSender,
+        metrics: ConnectionMetrics,
     ) -> Self {
         Self {
             peer,
@@ -175,6 +176,7 @@ impl Connection {
             sender,
             swimlane,
             created: Instant::now(),
+            metrics,
         }
     }
 
@@ -216,6 +218,7 @@ impl Connection {
         conn_tracker: impl ConnectionTracking + Send + Sync + 'static,
         is_dedicated: bool,
     ) -> Result<(Self, TaskId), ConnectError> {
+        let start = Instant::now();
         let result = Self::connect_inner(
             destination.clone(),
             swimlane,
@@ -227,6 +230,10 @@ impl Connection {
             is_dedicated,
         )
         .await;
+        let elapsed = start.elapsed();
+        NetworkMetrics::new(swimlane)
+            .handshake_duration(result.is_ok())
+            .record(elapsed);
 
         ConnectThrottle::note_connect_status(&destination, result.is_ok());
         match result {
@@ -345,7 +352,13 @@ impl Connection {
             .into());
         }
 
-        let connection = Connection::new(peer_node_id, protocol_version, swimlane, tx);
+        let connection = Connection::new(
+            peer_node_id,
+            protocol_version,
+            swimlane,
+            tx,
+            NetworkMetrics::new(swimlane).connection(peer_node_id, "outgoing"),
+        );
 
         // if peer cannot respect our hello intent of direction, we are okay with registering
         let is_bidi = matches!(
@@ -361,7 +374,7 @@ impl Connection {
 
         let task_id = reactor.start(task_kind, conn_tracker, is_dedicated, incoming)?;
 
-        counter!(NETWORK_CONNECTION_CREATED, "direction" => "outgoing", "swimlane" => swimlane.as_str_name()).increment(1);
+        connection.metrics.record_opened();
         Ok((connection, task_id))
     }
 
@@ -397,7 +410,11 @@ impl Connection {
     /// returns None.
     #[must_use]
     pub async fn reserve(&self) -> Option<SendPermit<'_>> {
+        let start = Instant::now();
         let permit = self.sender.reserve().await.ok()?;
+        self.metrics
+            .permit_acquisition_duration()
+            .record(start.elapsed());
         Some(SendPermit {
             permit,
             protocol_version: self.protocol_version,
@@ -406,7 +423,11 @@ impl Connection {
 
     #[must_use]
     pub async fn reserve_owned(&self) -> Option<OwnedSendPermit> {
+        let start = Instant::now();
         let permit = self.sender.clone().reserve_owned().await.ok()?;
+        self.metrics
+            .permit_acquisition_duration()
+            .record(start.elapsed());
         Some(OwnedSendPermit {
             permit,
             protocol_version: self.protocol_version,

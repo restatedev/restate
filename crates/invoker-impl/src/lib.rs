@@ -74,8 +74,8 @@ use crate::invocation_state_machine::OnTaskError;
 use crate::invocation_task::InvocationTask;
 use crate::invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 use crate::metric_definitions::{
-    ID_LOOKUP, INVOKER_ACTIVE_INVOCATIONS, INVOKER_ENQUEUE, INVOKER_QUEUE_DURATION,
-    INVOKER_THROTTLE_BALANCE, STR_LOOKUP, ServiceMetrics, TASK_OP_COMPLETED, TASK_OP_FAILED,
+    ID_LOOKUP, INVOKER_INVOCATIONS_ACTIVE, INVOKER_INVOCATIONS_QUEUED, INVOKER_QUEUE_DURATION,
+    INVOKER_THROTTLING_BALANCE, STR_LOOKUP, ServiceMetrics, TASK_OP_COMPLETED, TASK_OP_FAILED,
     TASK_OP_STARTED, TASK_OP_SUSPENDED, UUID_LOOKUP,
 };
 use crate::status_store::InvocationStatusStore;
@@ -476,14 +476,14 @@ where
                         ServiceMetrics::new(
                             ID_LOOKUP.get(invoke_command.partition.0),
                             STR_LOOKUP.get(invoke_command.invocation_target.service_name()),
-                        ).counter(INVOKER_ENQUEUE).increment(1);
+                        ).counter(INVOKER_INVOCATIONS_QUEUED).increment(1);
                         segmented_input_queue.inner_pin_mut().enqueue(invoke_command).await;
                     },
                     InputCommand::VQInvoke(command) => {
                         // Note: VQInvoke path has a legacy "status" label that Invoke path lacks.
                         // Kept for backwards compatibility — clean up in a future PR.
                         counter!(
-                            INVOKER_ENQUEUE,
+                            INVOKER_INVOCATIONS_QUEUED,
                             "status" => TASK_OP_COMPLETED,
                             "partition_id" => ID_LOOKUP.get(command.partition.0),
                             "service_name" => STR_LOOKUP.get(command.invocation_target.service_name()),
@@ -853,7 +853,7 @@ where
 
                 // Set deployment_id now that it's known, and track active invocations
                 ism.metric.deployment_id = UUID_LOOKUP.get(&pinned_deployment.deployment_id);
-                ism.metric.gauge(INVOKER_ACTIVE_INVOCATIONS).increment(1.0);
+                ism.metric.gauge(INVOKER_INVOCATIONS_ACTIVE).increment(1.0);
 
                 ism.notify_pinned_deployment(pinned_deployment, has_changed);
             },
@@ -1744,7 +1744,9 @@ where
     /// No-op if throttling is not configured.
     fn record_throttle_balance(&self, labels: &ServiceMetrics) {
         if let Some(bucket) = &self.invocation_token_bucket {
-            labels.gauge(INVOKER_THROTTLE_BALANCE).set(bucket.balance());
+            labels
+                .gauge(INVOKER_THROTTLING_BALANCE)
+                .set(bucket.balance());
         }
     }
 
@@ -1841,7 +1843,7 @@ where
 /// Decrement the active invocations gauge if deployment has been pinned.
 fn decrement_active_invocations(ism: &InvocationStateMachine) {
     if !ism.metric.deployment_id.is_empty() {
-        ism.metric.gauge(INVOKER_ACTIVE_INVOCATIONS).decrement(1.0);
+        ism.metric.gauge(INVOKER_INVOCATIONS_ACTIVE).decrement(1.0);
     }
 }
 

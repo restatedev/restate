@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt;
-use std::hash::Hash;
 use std::sync::LazyLock;
 
 use bytestring::ByteString;
@@ -18,6 +16,7 @@ use metrics::{
     Unit, counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram,
 };
 
+use restate_core::metric_definitions::LazyIntern;
 use restate_types::identifiers::DeploymentId;
 
 /// Lazily initialized cache that maps "partition" ids to their string representation for metric labels,
@@ -65,37 +64,6 @@ impl IdLookup {
             Entry::Occupied(entry) => entry.get(),
             Entry::Vacant(entry) => {
                 let s: &'static str = id.to_string().leak();
-                entry.insert(s).value()
-            }
-        }
-    }
-}
-
-/// Lazily initialized intern cache that maps values to their `Display` string representation
-/// as `&'static str`. Cache hit = hash comparison only, no formatting. Cache miss = format
-/// once via `Display`, leak, store. Bounded by the number of distinct values seen at runtime.
-pub(crate) struct LazyIntern<K: Hash + Eq> {
-    cache: LazyLock<DashMap<K, &'static str>>,
-}
-
-impl<K: Hash + Eq + fmt::Display + Clone> LazyIntern<K> {
-    pub const fn new() -> Self {
-        Self {
-            cache: LazyLock::new(DashMap::new),
-        }
-    }
-
-    #[inline]
-    pub fn get(&self, key: &K) -> &'static str {
-        if let Some(entry) = self.cache.get(key) {
-            return entry.value();
-        }
-
-        let entry = self.cache.entry(key.clone());
-        match entry {
-            Entry::Occupied(entry) => entry.get(),
-            Entry::Vacant(entry) => {
-                let s: &'static str = entry.key().to_string().leak();
                 entry.insert(s).value()
             }
         }
@@ -171,13 +139,13 @@ impl ServiceMetrics {
     pub fn http_status_counter(&self, status_code: u16) -> metrics::Counter {
         let code = STATUS_CODE_LOOKUP.get(&status_code);
         if self.deployment_id.is_empty() {
-            counter!(INVOKER_HTTP_STATUS_CODE,
+            counter!(INVOKER_HTTP_RESPONSES,
                 "partition_id" => self.partition_id,
                 "service_name" => self.service_name,
                 "status_code" => code,
             )
         } else {
-            counter!(INVOKER_HTTP_STATUS_CODE,
+            counter!(INVOKER_HTTP_RESPONSES,
                 "partition_id" => self.partition_id,
                 "service_name" => self.service_name,
                 "deployment_id" => self.deployment_id,
@@ -212,7 +180,7 @@ pub(crate) struct TaskMetrics {
 
 impl TaskMetrics {
     pub fn counter(&self) -> metrics::Counter {
-        counter!(INVOKER_INVOCATION_TASKS,
+        counter!(INVOKER_TASKS,
             "status" => self.status,
             "partition_id" => self.partition_id,
             "service_name" => self.service_name,
@@ -220,7 +188,7 @@ impl TaskMetrics {
     }
 
     pub fn failed_counter(&self, transient: bool) -> metrics::Counter {
-        counter!(INVOKER_INVOCATION_TASKS,
+        counter!(INVOKER_TASKS,
             "status" => self.status,
             "transient" => if transient { "true" } else { "false" },
             "partition_id" => self.partition_id,
@@ -229,19 +197,21 @@ impl TaskMetrics {
     }
 }
 
-pub const INVOKER_ENQUEUE: &str = "restate.invoker.enqueue.total";
-pub const INVOKER_INVOCATION_TASKS: &str = "restate.invoker.invocation_tasks.total";
-pub const INVOKER_CONCURRENCY_SLOTS_ACQUIRED: &str = "restate.invoker.concurrency_slots.acquired";
-pub const INVOKER_CONCURRENCY_SLOTS_RELEASED: &str = "restate.invoker.concurrency_slots.released";
-pub const INVOKER_CONCURRENCY_LIMIT: &str = "restate.invoker.concurrency_limit";
-pub const INVOKER_TASK_DURATION: &str = "restate.invoker.task_duration.seconds";
-pub const INVOKER_EAGER_STATE_TRUNCATED: &str = "restate.invoker.eager_state_truncated.total";
-pub const INVOKER_THROTTLE_BALANCE: &str = "restate.invoker.throttle_balance";
-pub const INVOKER_QUEUE_DURATION: &str = "restate.invoker.queue_duration.seconds";
-pub const INVOKER_ACTIVE_INVOCATIONS: &str = "restate.invoker.active_invocations";
-pub const INVOKER_HTTP_REQUEST_DURATION: &str = "restate.invoker.http_request_duration.seconds";
-pub const INVOKER_HTTP_TOTAL_DURATION: &str = "restate.invoker.http_total_duration.seconds";
-pub const INVOKER_HTTP_STATUS_CODE: &str = "restate.invoker.http_status_code.total";
+pub const INVOKER_INVOCATIONS_QUEUED: &str = "restate.invoker.invocations.queued.total";
+pub const INVOKER_TASKS: &str = "restate.invoker.tasks.total";
+pub const INVOKER_CONCURRENCY_SLOTS_LIMIT: &str = "restate.invoker.concurrency.slots.limit";
+pub const INVOKER_CONCURRENCY_SLOTS_ACQUIRED: &str =
+    "restate.invoker.concurrency.slots.acquired.total";
+pub const INVOKER_CONCURRENCY_SLOTS_RELEASED: &str =
+    "restate.invoker.concurrency.slots.released.total";
+pub const INVOKER_TASK_DURATION: &str = "restate.invoker.task.duration.seconds";
+pub const INVOKER_STATE_TRUNCATIONS: &str = "restate.invoker.state.truncations.total";
+pub const INVOKER_THROTTLING_BALANCE: &str = "restate.invoker.throttling.balance";
+pub const INVOKER_QUEUE_DURATION: &str = "restate.invoker.queue.duration.seconds";
+pub const INVOKER_INVOCATIONS_ACTIVE: &str = "restate.invoker.invocations.active";
+pub const INVOKER_HTTP_REQUEST_DURATION: &str = "restate.invoker.http.request.duration.seconds";
+pub const INVOKER_HTTP_ROUNDTRIP_DURATION: &str = "restate.invoker.http.roundtrip.duration.seconds";
+pub const INVOKER_HTTP_RESPONSES: &str = "restate.invoker.http.responses.total";
 
 pub const TASK_OP_STARTED: &str = "started";
 pub const TASK_OP_SUSPENDED: &str = "suspended";
@@ -250,22 +220,18 @@ pub const TASK_OP_COMPLETED: &str = "completed";
 
 pub(crate) fn describe_metrics() {
     describe_counter!(
-        INVOKER_ENQUEUE,
+        INVOKER_INVOCATIONS_QUEUED,
         Unit::Count,
-        "Number of invocations that were added to the queue"
+        "Number of invocations enqueued"
     );
 
     describe_gauge!(
-        INVOKER_CONCURRENCY_LIMIT,
+        INVOKER_CONCURRENCY_SLOTS_LIMIT,
         Unit::Count,
         "Concurrency limit (slots) for invoker tasks"
     );
 
-    describe_counter!(
-        INVOKER_INVOCATION_TASKS,
-        Unit::Count,
-        "Invocation task operation"
-    );
+    describe_counter!(INVOKER_TASKS, Unit::Count, "Invocation task operation");
 
     describe_counter!(
         INVOKER_CONCURRENCY_SLOTS_ACQUIRED,
@@ -286,13 +252,13 @@ pub(crate) fn describe_metrics() {
     );
 
     describe_counter!(
-        INVOKER_EAGER_STATE_TRUNCATED,
+        INVOKER_STATE_TRUNCATIONS,
         Unit::Count,
         "Number of invocations where eager state was truncated due to size limit"
     );
 
     describe_gauge!(
-        INVOKER_THROTTLE_BALANCE,
+        INVOKER_THROTTLING_BALANCE,
         Unit::Count,
         "Invocation token bucket balance, recorded on acquire/release. Negative = throttled."
     );
@@ -304,7 +270,7 @@ pub(crate) fn describe_metrics() {
     );
 
     describe_gauge!(
-        INVOKER_ACTIVE_INVOCATIONS,
+        INVOKER_INVOCATIONS_ACTIVE,
         Unit::Count,
         "Current in-flight invocations per service/deployment"
     );
@@ -316,14 +282,14 @@ pub(crate) fn describe_metrics() {
     );
 
     describe_histogram!(
-        INVOKER_HTTP_TOTAL_DURATION,
+        INVOKER_HTTP_ROUNDTRIP_DURATION,
         Unit::Seconds,
         "Full HTTP request duration including response body streaming"
     );
 
     describe_counter!(
-        INVOKER_HTTP_STATUS_CODE,
+        INVOKER_HTTP_RESPONSES,
         Unit::Count,
-        "Count of non-200 HTTP status codes returned by deployments"
+        "HTTP response status codes by deployment"
     );
 }

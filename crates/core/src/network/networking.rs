@@ -15,6 +15,8 @@ use restate_types::{GenerationalNodeId, NodeId};
 
 use tokio::time::Instant;
 
+use crate::network::metric_definitions::NetworkMetrics;
+
 use super::connection::OwnedSendPermit;
 use super::{
     ConnectError, Connection, ConnectionClosed, ConnectionManager, LazyConnection,
@@ -119,6 +121,7 @@ impl<T: TransportConnect> NetworkSender for Networking<T> {
         M: RpcRequest,
         N: Into<NodeId> + Send,
     {
+        let net_metrics = NetworkMetrics::new(swimlane);
         let start = Instant::now();
         let op = async {
             let connection = self
@@ -136,11 +139,12 @@ impl<T: TransportConnect> NetworkSender for Networking<T> {
             Ok(reply.await?)
         };
 
-        match timeout {
-            Some(timeout) => tokio::time::timeout(timeout, op)
-                .await
-                .map_err(|_| RpcError::Timeout(start.elapsed()))?,
-            None => op.await,
-        }
+        let result = match timeout {
+            Some(timeout) => tokio::time::timeout(timeout, op).await,
+            None => Ok(op.await),
+        };
+        let elapsed = start.elapsed();
+        net_metrics.rpc_duration(result.is_ok()).record(elapsed);
+        result.map_err(|_| RpcError::Timeout(elapsed))?
     }
 }
