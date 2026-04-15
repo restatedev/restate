@@ -8,102 +8,110 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_storage_api::vqueue_table::{EntryCard, EntryId, EntryKind, Stage, VisibleAt};
-use restate_types::clock::UniqueTimestamp;
-use restate_types::identifiers::PartitionKey;
-use restate_types::vqueue::{EffectivePriority, VQueueId};
+use restate_clock::RoughTimestamp;
+use restate_storage_api::vqueue_table::{EntryKey, Stage};
+use restate_types::vqueues::{EntryId, Seq, VQueueId};
 
 use crate::TableKind::VQueue;
-use crate::keys::{EncodeTableKey, KeyKind, define_table_key};
+use crate::keys::{KeyKind, define_table_key};
 
-// 'qi' | PKEY | QID | STAGE | PRIORITY | VISIBLE_AT | CREATED_AT | ENTRY_KIND | ENTRY_ID
-define_table_key!(
-    VQueue,
-    KeyKind::VQueueInbox,
-    InboxKey(
-        qid: VQueueId,
-        stage: Stage,
-        priority: EffectivePriority,
-        visible_at: VisibleAt,
-        created_at: UniqueTimestamp,
-        kind: EntryKind,
-        id: EntryId,
-    )
-);
+use super::key_codec::HasLock;
 
-// static_assertions::const_assert_eq!(InboxKey::serialized_length_fixed(), 53);
+// The stage is the second character of the table kind.
+// For instance:
+// 'qI' | QID | HAS_LOCK(1B) | RUN_AT(8B) | SEQ(8B) | ENTRY_ID(17B)
+// 'qR' | QID | HAS_LOCK(1B) | RUN_AT(8B) | SEQ(8B) | ENTRY_ID(17B)
+// 'qS' | QID | HAS_LOCK(1B) | RUN_AT(8B) | SEQ(8B) | ENTRY_ID(17B)
+// 'qP' | QID | HAS_LOCK(1B) | RUN_AT(8B) | SEQ(8B) | ENTRY_ID(17B)
+// 'qF' | QID | HAS_LOCK(1B) | RUN_AT(8B) | SEQ(8B) | ENTRY_ID(17B)
 
-impl InboxKey {
-    pub const fn serialized_length_fixed() -> usize {
-        KeyKind::SERIALIZED_LENGTH
-            + VQueueId::serialized_length_fixed()
-            // stage
-            + std::mem::size_of::<Stage>()
-            // priority
-            + std::mem::size_of::<EffectivePriority>()
-            // visible at
-            + std::mem::size_of::<VisibleAt>()
-            // created_at
-            + std::mem::size_of::<UniqueTimestamp>()
-            // entry kind
-            + std::mem::size_of::<EntryKind>()
-            // entry id
-            + std::mem::size_of::<EntryId>()
-    }
+// Inbox, Running, Suspended, Paused, and have the same key design.
+macro_rules! define_stage_keys {
+    ( $(Stage::$stage: ident => $key_name: ident),+ $(,)? ) => {
+        paste::paste! {
+            $(
+                define_table_key!(
+                    VQueue,
+                    KeyKind::[<VQueue  $stage  Stage >],
+                    $key_name(
+                        qid: VQueueId,
+                        has_lock: HasLock,
+                        run_at: RoughTimestamp,
+                        seq: Seq,
+                        entry_id: EntryId,
+                    )
+                );
 
-    pub const fn by_stage_prefix_len() -> usize {
-        KeyKind::SERIALIZED_LENGTH
-            + VQueueId::serialized_length_fixed()
-            // stage
-            + std::mem::size_of::<Stage>()
-    }
+                static_assertions::const_assert_eq!($key_name::serialized_length_fixed(), 61);
 
-    #[inline]
-    pub fn to_bytes(&self) -> [u8; Self::serialized_length_fixed()] {
-        let mut buf = [0u8; Self::serialized_length_fixed()];
-        self.serialize_to(&mut buf.as_mut());
-        buf
-    }
-}
+                // ensure that the key has the same length as prefix + qid + entry-key
+                static_assertions::const_assert_eq!($key_name::serialized_length_fixed(), 2 +
+                    VQueueId::serialized_length_fixed() + EntryKey::serialized_length_fixed());
 
-impl From<InboxKey> for EntryCard {
-    #[inline(always)]
-    fn from(value: InboxKey) -> Self {
-        let InboxKey {
-            priority,
-            visible_at,
-            created_at,
-            kind,
-            id,
-            ..
-        } = value;
-        Self {
-            priority,
-            visible_at,
-            created_at,
-            kind,
-            id,
+                impl $key_name {
+                    // 61 bytes
+                    pub const fn serialized_length_fixed() -> usize {
+                        // 2 bytes for prefix
+                        KeyKind::SERIALIZED_LENGTH
+                            // 25 bytes
+                            + VQueueId::serialized_length_fixed()
+                            // 34 bytes
+                            + EntryKey::serialized_length_fixed()
+                    }
+                    #[allow(dead_code)]
+                    pub const fn by_qid_prefix_len() -> usize {
+                        // 2 bytes for prefix
+                        KeyKind::SERIALIZED_LENGTH
+                            // 25 bytes
+                            + VQueueId::serialized_length_fixed()
+                    }
+                    #[allow(dead_code)]
+                    pub const fn offset_of_entry_key() -> usize {
+                        Self::by_qid_prefix_len()
+                    }
+                }
+            )+
         }
-    }
+    };
 }
 
-// 'qa' | QID (QID is prefixed by PartitionKey internally)
-define_table_key!(
-    VQueue,
-    KeyKind::VQueueActive,
-    ActiveKey(
-        qid: VQueueId,
-    )
-);
+// Inbox, Running, Suspended, Paused, and have the same key design.
+define_stage_keys! {
+    Stage::Inbox => InboxKey,
+    Stage::Running => RunningKey,
+    Stage::Suspended => SuspendedKey,
+    Stage::Paused => PausedKey,
+    Stage::Finished => FinishedKey,
+}
 
-static_assertions::const_assert_eq!(ActiveKey::serialized_length_fixed(), 27);
-
-impl ActiveKey {
-    pub const fn serialized_length_fixed() -> usize {
-        KeyKind::SERIALIZED_LENGTH + VQueueId::serialized_length_fixed()
+pub(super) fn encode_stage_key(
+    stage: Stage,
+    qid: &VQueueId,
+    entry_key: &EntryKey,
+) -> [u8; InboxKey::serialized_length_fixed()] {
+    let mut key_buffer = [0u8; InboxKey::serialized_length_fixed()];
+    {
+        let mut buf = &mut key_buffer[..];
+        match stage {
+            Stage::Unknown => unreachable!(),
+            Stage::Inbox => {
+                KeyKind::VQueueInboxStage.serialize(&mut buf);
+            }
+            Stage::Running => {
+                KeyKind::VQueueRunningStage.serialize(&mut buf);
+            }
+            Stage::Suspended => {
+                KeyKind::VQueueSuspendedStage.serialize(&mut buf);
+            }
+            Stage::Paused => {
+                KeyKind::VQueuePausedStage.serialize(&mut buf);
+            }
+            Stage::Finished => {
+                KeyKind::VQueueFinishedStage.serialize(&mut buf);
+            }
+        }
+        crate::keys::serialize(qid, &mut buf);
+        crate::keys::serialize(entry_key, &mut buf);
     }
-
-    pub const fn by_partition_prefix_len() -> usize {
-        KeyKind::SERIALIZED_LENGTH + std::mem::size_of::<PartitionKey>()
-    }
+    key_buffer
 }
