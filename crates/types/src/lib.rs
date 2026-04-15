@@ -58,10 +58,6 @@ pub mod storage;
 pub mod timer;
 pub mod vqueues;
 
-pub mod vqueue {
-    pub use crate::vqueues::{EffectivePriority, NewEntryPriority, VQueueId, VQueueIdRef};
-}
-
 pub use id_util::IdResourceType;
 pub use identifiers::PartitionedResourceId;
 pub use locking::*;
