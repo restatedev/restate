@@ -39,6 +39,7 @@ mod statistics;
 pub mod table_docs;
 mod table_macro;
 mod table_providers;
+mod vqueue_stats;
 pub use table_providers::Scan;
 pub mod table_util;
 
