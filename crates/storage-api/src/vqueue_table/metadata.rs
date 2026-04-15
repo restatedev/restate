@@ -74,21 +74,18 @@ pub struct VQueueMeta {
     /// being added to the vqueue. The capacity configuration will limit this value.
     #[bilrost(tag(2))]
     pub(crate) length: u32,
-    /// Number of concurrency tokens being used
-    #[bilrost(tag(3))]
-    pub(crate) num_tokens_used: u32,
     /// The number of entries waiting to be dequeued. The vector index implies the priority
-    #[bilrost(tag(4), encoding(packed))]
+    #[bilrost(tag(3), encoding(packed))]
     pub(crate) num_waiting: [u32; EffectivePriority::NUM_PRIORITIES],
-    #[bilrost(tag(5))]
+    #[bilrost(tag(4))]
     pub(crate) num_running: u32,
-    #[bilrost(tag(6))]
+    #[bilrost(tag(5))]
     pub(crate) stats: VQueueStatistics,
-    #[bilrost(tag(7))]
+    #[bilrost(tag(6))]
     pub(crate) scope: Option<Scope>,
-    #[bilrost(tag(8))]
+    #[bilrost(tag(7))]
     pub(crate) limit_key: LimitKey<ReString>,
-    #[bilrost(tag(9))]
+    #[bilrost(tag(8))]
     lock_name: Option<LockName>,
 }
 
@@ -101,7 +98,6 @@ impl VQueueMeta {
         Self {
             is_paused: false,
             length: 0,
-            num_tokens_used: 0,
             num_waiting: [0; EffectivePriority::NUM_PRIORITIES],
             num_running: 0,
             stats: VQueueStatistics::new(WallClock::recent_ms()),
@@ -129,10 +125,6 @@ impl VQueueMeta {
 
     pub fn limit_key(&self) -> &LimitKey<ReString> {
         &self.limit_key
-    }
-
-    pub fn tokens_used(&self) -> u32 {
-        self.num_tokens_used
     }
 
     pub fn len(&self) -> u32 {
@@ -199,14 +191,6 @@ impl VQueueMeta {
         self.num_waiting[priority as usize] -= 1;
     }
 
-    fn acquire_token(&mut self) {
-        self.num_tokens_used += 1;
-    }
-
-    fn release_token(&mut self) {
-        self.num_tokens_used = self.num_tokens_used.saturating_sub(1);
-    }
-
     pub fn apply_update(&mut self, update: &Update) -> anyhow::Result<()> {
         debug_assert!(self.length >= self.total_waiting());
         let now = update.ts;
@@ -244,13 +228,8 @@ impl VQueueMeta {
                     let latency_ms = now.to_unix_millis().saturating_sub_ms(visible_since);
                     self.stats.update_avg_queue_duration(latency_ms);
                 }
-
-                if !priority.token_held() {
-                    self.acquire_token();
-                }
             }
             Action::Park {
-                should_release_concurrency_token,
                 priority,
                 previous_stage,
             } => {
@@ -268,12 +247,6 @@ impl VQueueMeta {
                     Stage::Park => {
                         // do nothing.
                     }
-                }
-
-                if should_release_concurrency_token && priority.token_held() {
-                    // Release the token immediately on park if this entry doesn't require
-                    // holding while parked.
-                    self.release_token();
                 }
             }
             Action::WakeUp { priority } => {
@@ -305,10 +278,6 @@ impl VQueueMeta {
                     Stage::Park => {
                         // do nothing.
                     }
-                }
-
-                if priority.token_held() {
-                    self.release_token();
                 }
             }
         }
@@ -379,7 +348,6 @@ pub enum Action {
     #[bilrost(tag(4), message)]
     Park {
         priority: EffectivePriority,
-        should_release_concurrency_token: bool,
         previous_stage: Stage,
     },
     // Wake up after pause or suspend.
