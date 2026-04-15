@@ -251,7 +251,11 @@ impl InvocationTarget {
             // the partition processor at ingestion/creation time (via invocation/entry status)
             // Therefore, we treat them as normal services when it comes to locking and vqueue
             // management.
-            InvocationTarget::Service { .. } | InvocationTarget::Workflow { .. } => None,
+            //
+            // Also on virtual objects, shared handlers do not require locking.
+            InvocationTarget::VirtualObject { .. }
+            | InvocationTarget::Service { .. }
+            | InvocationTarget::Workflow { .. } => None,
         }
     }
 
