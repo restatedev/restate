@@ -272,7 +272,8 @@ impl LeaderState {
                     let mut commands = Vec::with_capacity(decisions.num_queues() * 2);
                     for (qid, decision) in decisions.into_iter() {
                         for (action, items) in decision.into_iter_per_action() {
-                            let mut assignment = Assignment::with_capacity(&qid, items.len());
+                            let mut assignment =
+                                Assignment::with_capacity(qid.clone(), items.len());
                             for entry in items.into_iter() {
                                 let (item, stats) = entry.split();
                                 assignment.push(item, stats);

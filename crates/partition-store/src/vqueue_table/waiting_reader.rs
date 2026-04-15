@@ -13,7 +13,7 @@ use rocksdb::DBRawIteratorWithThreadMode;
 
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{EntryCard, Stage, VQueueCursor};
-use restate_types::vqueue::VQueueId;
+use restate_types::vqueues::VQueueId;
 
 use crate::PartitionDb;
 use crate::keys::{DecodeTableKey, EncodeTableKeyPrefix};
@@ -36,11 +36,9 @@ impl VQueueWaitingReader {
 
         // we know how big the prefix is
         let mut key_buf = [0u8; InboxKey::by_stage_prefix_len()];
-        InboxKey::builder()
-            .partition_key(qid.partition_key())
-            .parent(qid.parent)
-            .instance(qid.instance)
-            .stage(Stage::Inbox)
+        InboxKey::builder_ref()
+            .qid(qid)
+            .stage(&Stage::Inbox)
             .serialize_to(&mut key_buf.as_mut());
 
         readopts.set_iterate_lower_bound(key_buf);
@@ -73,16 +71,14 @@ impl VQueueCursor for VQueueWaitingReader {
     fn seek_after(&mut self, qid: &VQueueId, item: &Self::Item) {
         let mut key_buf = [0u8; InboxKey::serialized_length_fixed()];
         let mut buf = key_buf.as_mut();
-        let key = InboxKey::builder()
-            .partition_key(qid.partition_key())
-            .parent(qid.parent)
-            .instance(qid.instance)
-            .stage(Stage::Inbox)
-            .visible_at(item.visible_at)
-            .priority(item.priority)
-            .created_at(item.created_at)
-            .kind(item.kind)
-            .id(item.id);
+        let key = InboxKey::builder_ref()
+            .qid(qid)
+            .stage(&Stage::Inbox)
+            .visible_at(&item.visible_at)
+            .priority(&item.priority)
+            .created_at(&item.created_at)
+            .kind(&item.kind)
+            .id(&item.id);
 
         tracing::trace!("Seeking after {key:?}");
 
