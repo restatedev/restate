@@ -13,7 +13,7 @@ use bytes::{Buf, Bytes};
 
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{EntryCard, WaitStats};
-use restate_types::vqueue::VQueueId;
+use restate_types::vqueues::VQueueId;
 
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct VQWaitingToRunning {
@@ -51,15 +51,8 @@ impl VQYieldRunning {
 
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct Assignment {
-    // todo: We should not need this field if we pass the partition-key from the envelope's
-    // header at rsm replay time.
     #[bilrost(1)]
-    pub partition_key: u64,
-    // doing so to avoid the need to implement serde for qid/entry-card types.
-    #[bilrost(2)]
-    pub parent: u32,
-    #[bilrost(3)]
-    pub instance: u32,
+    pub qid: VQueueId,
     // encoded entry cards
     #[bilrost(4)]
     pub entries: Vec<Entry>,
@@ -74,11 +67,9 @@ pub struct Entry {
 }
 
 impl Assignment {
-    pub fn with_capacity(qid: &VQueueId, capacity: usize) -> Self {
+    pub fn with_capacity(qid: VQueueId, capacity: usize) -> Self {
         Self {
-            partition_key: qid.partition_key(),
-            parent: qid.parent.as_u32(),
-            instance: qid.instance.as_u32(),
+            qid,
             entries: Vec::with_capacity(capacity),
         }
     }
