@@ -135,6 +135,8 @@ pub(crate) struct ProvisionalPermit {
 
 // A compound permit holds a set of resources and provides remote termination access
 // and signaling.
+#[must_use]
+#[clippy::has_significant_drop]
 pub struct ReservedResources {
     resources: SmallVec<[UserPermitKind; 1]>,
     system_permit: SystemPermit,

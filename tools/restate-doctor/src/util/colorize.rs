@@ -233,16 +233,19 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
                 });
             }
         }
-        KeyKind::VQueueInbox => {
-            // parent(4) + instance(4) + stage(1) + priority(1) + visible_at(8) + created_at(8) + kind(1) + id(16)
+        KeyKind::VQueueInboxStage
+        | KeyKind::VQueueRunningStage
+        | KeyKind::VQueueSuspendedStage
+        | KeyKind::VQueuePausedStage
+        | KeyKind::VQueueFinishedStage => {
+            // VQueueId tail (len(1) + digest(16)) + EntryKey(has_lock(1) + run_at(8) + seq(8) + kind(1) + id(16))
             let mut pos = 10;
             let fields = [
-                (4, "parent"),
-                (4, "instance"),
-                (1, "stage"),
-                (1, "priority"),
-                (8, "visible_at"),
-                (8, "created_at"),
+                (1, "qid_len"),
+                (16, "qid_digest"),
+                (1, "has_lock"),
+                (8, "run_at"),
+                (8, "seq"),
                 (1, "entry_kind"),
                 (16, "entry_id"),
             ];
@@ -260,7 +263,7 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
                 }
             }
         }
-        KeyKind::VQueueEntryState => {
+        KeyKind::VQueueEntryStatus => {
             // kind (1 byte) + id (16 bytes)
             if remaining >= 1 {
                 segments.push(Segment {
@@ -279,7 +282,7 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
                 });
             }
         }
-        KeyKind::VQueueItems => {
+        KeyKind::VQueueInput => {
             // parent(4) + instance(4) + kind(1) + id(16) + index(4)
             let mut pos = 10;
             let fields = [
