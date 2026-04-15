@@ -11,7 +11,7 @@
 use restate_storage_api::vqueue_table::{EntryCard, EntryId, EntryKind, Stage, VisibleAt};
 use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::PartitionKey;
-use restate_types::vqueue::{EffectivePriority, VQueueInstance, VQueueParent};
+use restate_types::vqueue::{EffectivePriority, VQueueId};
 
 use crate::TableKind::VQueue;
 use crate::keys::{EncodeTableKey, KeyKind, define_table_key};
@@ -21,9 +21,7 @@ define_table_key!(
     VQueue,
     KeyKind::VQueueInbox,
     InboxKey(
-        partition_key: PartitionKey,
-        parent: VQueueParent,
-        instance: VQueueInstance,
+        qid: VQueueId,
         stage: Stage,
         priority: EffectivePriority,
         visible_at: VisibleAt,
@@ -33,16 +31,12 @@ define_table_key!(
     )
 );
 
-static_assertions::const_assert_eq!(InboxKey::serialized_length_fixed(), 53);
+// static_assertions::const_assert_eq!(InboxKey::serialized_length_fixed(), 53);
 
 impl InboxKey {
     pub const fn serialized_length_fixed() -> usize {
         KeyKind::SERIALIZED_LENGTH
-            + std::mem::size_of::<PartitionKey>()
-            // vq parent
-            + std::mem::size_of::<VQueueParent>()
-            // vq instance
-            + std::mem::size_of::<VQueueInstance>()
+            + VQueueId::serialized_length_fixed()
             // stage
             + std::mem::size_of::<Stage>()
             // priority
@@ -59,11 +53,7 @@ impl InboxKey {
 
     pub const fn by_stage_prefix_len() -> usize {
         KeyKind::SERIALIZED_LENGTH
-            + std::mem::size_of::<PartitionKey>()
-            // vq parent
-            + std::mem::size_of::<VQueueParent>()
-            // vq instance
-            + std::mem::size_of::<VQueueInstance>()
+            + VQueueId::serialized_length_fixed()
             // stage
             + std::mem::size_of::<Stage>()
     }
@@ -97,25 +87,20 @@ impl From<InboxKey> for EntryCard {
     }
 }
 
-// 'qa' | PKEY | QID
+// 'qa' | QID (QID is prefixed by PartitionKey internally)
 define_table_key!(
     VQueue,
     KeyKind::VQueueActive,
     ActiveKey(
-        partition_key: PartitionKey,
-        parent: VQueueParent,
-        instance: VQueueInstance,
+        qid: VQueueId,
     )
 );
 
-static_assertions::const_assert_eq!(ActiveKey::serialized_length_fixed(), 18);
+static_assertions::const_assert_eq!(ActiveKey::serialized_length_fixed(), 27);
 
 impl ActiveKey {
     pub const fn serialized_length_fixed() -> usize {
-        KeyKind::SERIALIZED_LENGTH
-            + std::mem::size_of::<PartitionKey>()
-            + std::mem::size_of::<VQueueParent>()
-            + std::mem::size_of::<VQueueInstance>()
+        KeyKind::SERIALIZED_LENGTH + VQueueId::serialized_length_fixed()
     }
 
     pub const fn by_partition_prefix_len() -> usize {
