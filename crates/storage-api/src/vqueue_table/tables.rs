@@ -59,6 +59,9 @@ pub trait WriteVQueueTable {
     /// successful or not.
     fn pop_inbox_entry(&mut self, qid: &VQueueId, stage: Stage, card: &EntryCard) -> Result<bool>;
 
+    /// Deletes entry from inbox unconditionally
+    fn delete_inbox_entry(&mut self, qid: &VQueueId, stage: Stage, card: &EntryCard);
+
     /// Adds a vqueue to the list of active vqueues
     ///
     /// A vqueue is considered active when it's of interest to the scheduler.
