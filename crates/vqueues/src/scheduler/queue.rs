@@ -12,7 +12,7 @@ use hashbrown::HashSet;
 
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{VQueueCursor, VQueueEntry, VQueueStore};
-use restate_types::vqueue::VQueueId;
+use restate_types::vqueues::VQueueId;
 
 #[derive(Debug)]
 enum Head<Item> {
@@ -297,7 +297,7 @@ mod tests {
     use restate_types::clock::UniqueTimestamp;
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::partitions::Partition;
-    use restate_types::vqueue::{EffectivePriority, VQueueId, VQueueInstance, VQueueParent};
+    use restate_types::vqueue::{EffectivePriority, VQueueId};
 
     /// Helper to create an EntryCard for testing.
     fn entry_card(id: u8) -> EntryCard {
@@ -317,11 +317,7 @@ mod tests {
 
     /// Helper to create a test VQueueId with a unique partition key for test isolation.
     fn test_qid(partition_key: u64) -> VQueueId {
-        VQueueId::new(
-            VQueueParent::from_raw(1),
-            PartitionKey::from(partition_key),
-            VQueueInstance::from_raw(1),
-        )
+        VQueueId::custom(partition_key, "1")
     }
 
     /// Creates a test PartitionStore environment.

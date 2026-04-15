@@ -20,7 +20,7 @@ use restate_types::invocation::client::{
 use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::message::MessageIndex;
 use restate_types::time::MillisSinceEpoch;
-use restate_types::vqueue::VQueueId;
+use restate_types::vqueues::VQueueId;
 use restate_vqueues::VQueueEvent;
 use restate_wal_protocol::timer::TimerKeyValue;
 

@@ -20,7 +20,7 @@ use smallvec::SmallVec;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{ScanVQueueTable, VQueueEntry, VQueueStore, WaitStats};
 use restate_types::time::MillisSinceEpoch;
-use restate_types::vqueue::VQueueId;
+use restate_types::vqueues::VQueueId;
 
 use crate::VQueueEvent;
 use crate::VQueuesMetaCache;
