@@ -11,7 +11,7 @@
 use std::hash::{Hash, Hasher};
 use std::num::NonZero;
 
-use crate::identifiers::PartitionKey;
+use crate::identifiers::{PartitionKey, WithPartitionKey};
 
 /// Queue parent identifies which configuration to use for a particular vqueue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -114,12 +114,12 @@ impl VQueueInstance {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VQueueId {
+    // Key+Instance identify the individual queue.
+    partition_key: PartitionKey,
     // Identifies the configuration/parent of the vqueue
     pub parent: VQueueParent,
-    // Key+Instance identify the individual queue.
-    pub partition_key: PartitionKey,
     pub instance: VQueueInstance,
 }
 
@@ -136,13 +136,25 @@ impl VQueueId {
             instance,
         }
     }
+
+    #[inline]
+    pub fn partition_key(&self) -> PartitionKey {
+        self.partition_key
+    }
+}
+
+impl WithPartitionKey for VQueueId {
+    #[inline]
+    fn partition_key(&self) -> PartitionKey {
+        self.partition_key
+    }
 }
 
 // needed when using hashbrown's entry_ref API to convert the key reference to a value
 // lazily when inserting into the map.
 impl From<&VQueueId> for VQueueId {
     fn from(value: &VQueueId) -> Self {
-        *value
+        value.clone()
     }
 }
 
