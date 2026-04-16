@@ -29,6 +29,7 @@ ARG TARGETARCH
 
 ENV RUSTC_WRAPPER=/usr/bin/sccache
 ENV SCCACHE_DIR=/var/cache/sccache
+ENV CARGO_INCREMENTAL=0
 
 # todo only enable those env variables when cross compiling
 # todo remove once https://github.com/MaterializeInc/rust-krb5-src/pull/30 has been merged and released
@@ -67,7 +68,8 @@ RUN --mount=type=cache,target=/var/cache/sccache \
     just notice-file && \
     mv target/$(just arch=$TARGETARCH libc=gnu print-target)/debug/restate-server target/restate-server && \
     mv target/$(just arch=$TARGETARCH libc=gnu print-target)/debug/restatectl target/restatectl && \
-    mv target/$(just arch=$TARGETARCH libc=gnu print-target)/debug/restate target/restate
+    mv target/$(just arch=$TARGETARCH libc=gnu print-target)/debug/restate target/restate && \
+    sccache --show-stats
 
 # We do not need the Rust toolchain to run the server binary!
 FROM debian:trixie-slim AS runtime
