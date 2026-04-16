@@ -18,6 +18,10 @@ define_table!(sys_promise(
     /// Internal column that is used for partitioning the services invocations. Can be ignored.
     partition_key: DataType::UInt64,
 
+    /// The scope of the workflow instance, if scoped. NULL for unscoped entries.
+    /// Since v1.7.0
+    scope: DataType::Utf8,
+
     /// The name of the workflow service.
     service_name: DataType::LargeUtf8,
 

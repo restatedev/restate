@@ -187,7 +187,11 @@ where
             )
             .nest(
                 "/v3",
-                with_api_version_middleware(router, AdminApiVersion::V3),
+                with_api_version_middleware(router.clone(), AdminApiVersion::V3),
+            )
+            .nest(
+                "/v4",
+                with_api_version_middleware(router, AdminApiVersion::V4),
             )
             .layer(CompressionLayer::new())
             .layer(

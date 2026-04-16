@@ -25,6 +25,7 @@ restate-storage-api = { workspace = true }
 restate-timer-queue = { workspace = true }
 restate-types = { workspace = true }
 restate-tracing-instrumentation = { workspace = true }
+restate-util-string = { workspace = true }
 restate-wal-protocol = { workspace = true }
 
 anyhow = { workspace = true }

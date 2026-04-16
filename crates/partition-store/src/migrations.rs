@@ -57,7 +57,13 @@ impl SchemaVersion {
                      and then upgrade to 1.6+"
                 )));
             }
-            SchemaVersion::V1_5 => {}
+            SchemaVersion::V1_5 => {
+                // todo(tillrohrmann) add migrations for:
+                //  * service_status_table -> locks_table
+                //  * promise_table -> scoped promise_table
+                //  * state_table -> scoped state_table
+                //  * and more
+            }
         }
         Ok(())
     }

@@ -21,7 +21,7 @@ fn populate_data<T: WriteStateTable>(table: &mut T) {
     table
         .put_user_state(
             &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
-            Bytes::from_static(b"k1"),
+            &Bytes::from_static(b"k1"),
             Bytes::from_static(b"v1"),
         )
         .expect("");
@@ -29,7 +29,7 @@ fn populate_data<T: WriteStateTable>(table: &mut T) {
     table
         .put_user_state(
             &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
-            Bytes::from_static(b"k2"),
+            &Bytes::from_static(b"k2"),
             Bytes::from_static(b"v2"),
         )
         .unwrap();
@@ -37,7 +37,7 @@ fn populate_data<T: WriteStateTable>(table: &mut T) {
     table
         .put_user_state(
             &ServiceId::with_partition_key(1337, "svc-1", "key-2"),
-            Bytes::from_static(b"k2"),
+            &Bytes::from_static(b"k2"),
             Bytes::from_static(b"v2"),
         )
         .unwrap();
@@ -47,7 +47,7 @@ async fn point_lookup<T: ReadStateTable>(table: &mut T) {
     let result = table
         .get_user_state(
             &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
-            Bytes::from_static(b"k1"),
+            &Bytes::from_static(b"k1"),
         )
         .await
         .expect("should not fail");
@@ -71,7 +71,7 @@ fn deletes<T: WriteStateTable>(table: &mut T) {
     table
         .delete_user_state(
             &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
-            Bytes::from_static(b"k2"),
+            &Bytes::from_static(b"k2"),
         )
         .unwrap();
 }

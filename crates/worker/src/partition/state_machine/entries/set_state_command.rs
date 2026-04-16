@@ -52,7 +52,7 @@ where
             );
 
             ctx.storage
-                .put_user_state(&service_id, self.entry.key, self.entry.value)
+                .put_user_state(&service_id, self.entry.key.as_bytes(), self.entry.value)
                 .map_err(Error::Storage)?;
         } else {
             warn!(

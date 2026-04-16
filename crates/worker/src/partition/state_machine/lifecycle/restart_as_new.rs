@@ -26,15 +26,17 @@ use restate_storage_api::service_status_table::{
     ReadVirtualObjectStatusTable, WriteVirtualObjectStatusTable,
 };
 use restate_storage_api::timer_table::WriteTimerTable;
-use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
+use restate_storage_api::vqueue_table::{EntryStatusHeader, ReadVQueueTable, WriteVQueueTable};
 use restate_storage_api::{journal_table as journal_table_v1, journal_table_v2};
-use restate_types::identifiers::{DeploymentId, EntryIndex, InvocationId};
+use restate_types::LimitKey;
+use restate_types::identifiers::{DeploymentId, EntryIndex, InvocationId, WithPartitionKey};
 use restate_types::invocation::client::RestartAsNewInvocationResponse;
 use restate_types::invocation::{
     InvocationMutationResponseSink, ServiceInvocationSpanContext, Source, SpanRelation,
 };
 use restate_types::journal_v2;
 use restate_types::journal_v2::{CommandMetadata, EntryMetadata, EntryType, NotificationId};
+use restate_types::vqueues::EntryId;
 
 use crate::debug_if_leader;
 use crate::partition::state_machine::{Action, CommandHandler, Error, StateMachineApplyContext};
@@ -85,7 +87,8 @@ where
         + WriteVQueueTable
         + WriteLockTable
         + journal_table_v1::WriteJournalTable
-        + journal_table_v2::WriteJournalTable,
+        + journal_table_v2::WriteJournalTable
+        + ReadVQueueTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let OnRestartAsNewInvocationCommand {
@@ -271,8 +274,51 @@ where
         };
 
         // --- Invocation metadata ready, now go through the usual flow
-        ctx.on_pre_flight_invocation(new_invocation_id, pre_flight_invocation_metadata, None)
-            .await?;
+
+        // Look up limit_key from the original invocation's vqueue entry.
+        //
+        // Scope is already on the InvocationTarget (carried from the original invocation).
+        //
+        // TODO(vqueues): Revalidate this approach. It relies on VQueueMeta outliving
+        // all its entries — specifically, that the vqueue metadata is not removed
+        // before the vqueue entry itself is cleaned up (i.e., retention is over).
+        // If this assumption is violated, we'd silently lose limit_key on
+        // restart. Consider storing limit_key directly in the vqueue
+        // EntryStatus to avoid the extra lookup.
+        let limit_key = {
+            let entry_id = EntryId::from(&invocation_id);
+            if let Some(entry_status) = ctx
+                .storage
+                .get_vqueue_entry_status(invocation_id.partition_key(), &entry_id)
+                .await?
+            {
+                if let Some(vqueue_cache_key) = ctx
+                    .vqueues_cache
+                    .load(ctx.storage, entry_status.vqueue_id())
+                    .await?
+                {
+                    ctx.vqueues_cache
+                        .get_mut(vqueue_cache_key)
+                        .unwrap()
+                        .meta()
+                        .limit_key()
+                        .clone()
+                } else {
+                    LimitKey::None
+                }
+            } else {
+                // No vqueue entry (e.g., invocation predates vqueues)
+                LimitKey::None
+            }
+        };
+
+        ctx.on_pre_flight_invocation(
+            new_invocation_id,
+            pre_flight_invocation_metadata,
+            None,
+            &limit_key,
+        )
+        .await?;
 
         // --- Reply all good
         ctx.reply(

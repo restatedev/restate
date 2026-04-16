@@ -16,6 +16,7 @@ use http::{Response, StatusCode, header};
 use restate_types::errors::{IdDecodeError, InvocationError};
 use restate_types::identifiers::DeploymentId;
 use restate_types::schema::invocation_target::InputValidationError;
+use restate_util_string::RestrictedValueError;
 use serde::Serialize;
 use std::string;
 
@@ -51,6 +52,18 @@ pub(crate) enum HandlerError {
         "bad path, expected either /restate/workflow/:workflow_name/:workflow_key/output or /restate/workflow/:workflow_name/:workflow_key/attach"
     )]
     BadWorkflowPath,
+    #[error("bad path: {0}")]
+    BadPath(String),
+    #[error(
+        "bad path, expected /api/v1/call/:service/:handler, /api/v1/send/:service/:handler, or /api/v1/scope/:scope/call/:service/:handler"
+    )]
+    BadApiV1Path,
+    #[error("limit-key requires a scope to be set")]
+    LimitKeyWithoutScope,
+    #[error("invalid limit-key: {0}")]
+    InvalidLimitKey(String),
+    #[error("scoped invocations require vqueues to be enabled")]
+    ScopeRequiresVQueues,
     #[error("not implemented")]
     NotImplemented,
     #[error("bad header {0}: {1:?}")]
@@ -93,6 +106,8 @@ pub(crate) enum HandlerError {
         "internal routing error: {0}. The ingress was not able to acknowledge the invocation submission, and will not retry because the request is missing an 'idempotency-key'. Please note that the request may have been correctly submitted and executed."
     )]
     DispatcherError(#[from] RequestDispatcherError),
+    #[error("bad scope value: {0}")]
+    BadScopeValue(RestrictedValueError),
 }
 
 // IMPORTANT! If you touch this, please update crates/types/src/schema/openapi.rs too
@@ -134,7 +149,13 @@ impl HandlerError {
             | HandlerError::InputValidation(_)
             | HandlerError::UnsupportedIdempotencyKey
             | HandlerError::UnsupportedGetOutput
-            | HandlerError::DeploymentDeprecated(_, _) => StatusCode::BAD_REQUEST,
+            | HandlerError::DeploymentDeprecated(_, _)
+            | HandlerError::BadApiV1Path
+            | HandlerError::LimitKeyWithoutScope
+            | HandlerError::InvalidLimitKey(_)
+            | HandlerError::BadScopeValue(_)
+            | HandlerError::BadPath(_)
+            | HandlerError::ScopeRequiresVQueues => StatusCode::BAD_REQUEST,
             HandlerError::DispatcherError(_) => {
                 // TODO add more distinctions between different dispatcher errors (unavailable, etc)
                 StatusCode::INTERNAL_SERVER_ERROR

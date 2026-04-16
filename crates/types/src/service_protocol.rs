@@ -490,7 +490,8 @@ mod pb_into {
                 workflow_key,
             }: WorkflowTarget,
         ) -> Self {
-            ServiceId::new(workflow_name, workflow_key)
+            // todo(tillrohrmann) teach the service protocol to select a scoped workflow target
+            ServiceId::new(None, workflow_name, workflow_key)
         }
     }
 }

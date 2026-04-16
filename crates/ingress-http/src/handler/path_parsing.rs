@@ -11,6 +11,7 @@
 use super::Handler;
 use super::HandlerError;
 use http::Uri;
+use restate_types::ServiceName;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 
 pub(crate) enum WorkflowRequestType {
@@ -155,16 +156,22 @@ pub(crate) enum InvokeType {
 }
 
 pub(crate) struct ServiceRequestType {
-    pub(crate) name: String,
+    pub(crate) name: ServiceName,
     pub(crate) handler: String,
     pub(crate) target: TargetType,
     pub(crate) invoke_ty: InvokeType,
+    /// Scope from the `/api/v1/scope/{scopeKey}/...` path prefix.
+    pub(crate) scope: Option<String>,
 }
 
 impl ServiceRequestType {
+    /// Extracts the service request type from the unversioned ingress API:
+    ///
+    /// - `/{vo}/{key}/{handler}/send`
+    /// - `/{service}/{handler}/send`
     fn from_path_chunks<'a, Schemas>(
         mut path_parts: impl Iterator<Item = &'a str>,
-        service_name: String,
+        service_name: &str,
         schemas: &Schemas,
     ) -> Result<Self, HandlerError>
     where
@@ -172,8 +179,8 @@ impl ServiceRequestType {
     {
         // We need to query the service type before continuing to parse
         let service_type = schemas
-            .resolve_latest_service_type(&service_name)
-            .ok_or_else(|| HandlerError::ServiceNotFound(service_name.clone()))?;
+            .resolve_latest_service_type(service_name)
+            .ok_or_else(|| HandlerError::ServiceNotFound(service_name.to_owned()))?;
 
         let target_type = if service_type.is_keyed() {
             TargetType::Keyed {
@@ -203,10 +210,11 @@ impl ServiceRequestType {
         }
 
         Ok(Self {
-            name: service_name,
+            name: ServiceName::new(service_name),
             handler,
             target: target_type,
             invoke_ty,
+            scope: None,
         })
     }
 }
@@ -220,37 +228,124 @@ pub(crate) enum RequestType {
     Workflow(WorkflowRequestType),
 }
 
+/// Parse the remainder of an `/api/v1/...` path after the `api/v1` prefix has
+/// been consumed. The iterator should yield segments starting from the verb or
+/// scope keyword, e.g.:
+///   - `call/{service}/{handler}` or `call/{service}/{key}/{handler}`
+///   - `send/{service}/{handler}` or `send/{service}/{key}/{handler}`
+///   - `scope/{scopeKey}/call/{service}/{handler}`
+///   - `scope/{scopeKey}/send/{service}/{key}/{handler}`
+fn parse_api_v1<'a, Schemas>(
+    mut path_parts: impl Iterator<Item = &'a str>,
+    schemas: &Schemas,
+) -> Result<RequestType, HandlerError>
+where
+    Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
+{
+    let segment = path_parts.next().ok_or(HandlerError::NotFound)?;
+
+    let (invoke_ty, scope) = match segment {
+        "call" => (InvokeType::Call, None),
+        "send" => (InvokeType::Send, None),
+        "scope" => {
+            let scope_key =
+                urlencoding::decode(path_parts.next().ok_or(HandlerError::BadApiV1Path)?)
+                    .map_err(HandlerError::UrlDecodingError)?
+                    .into_owned();
+            let verb = path_parts.next().ok_or(HandlerError::BadApiV1Path)?;
+            let invoke_ty = match verb {
+                "call" => InvokeType::Call,
+                "send" => InvokeType::Send,
+                _ => return Err(HandlerError::BadApiV1Path),
+            };
+            (invoke_ty, Some(scope_key))
+        }
+        _ => return Err(HandlerError::BadApiV1Path),
+    };
+
+    let service_name = path_parts.next().ok_or(HandlerError::BadApiV1Path)?;
+
+    let service_type = schemas
+        .resolve_latest_service_type(service_name)
+        .ok_or_else(|| HandlerError::ServiceNotFound(service_name.to_owned()))?;
+
+    let target = if service_type.is_keyed() {
+        TargetType::Keyed {
+            key: urlencoding::decode(path_parts.next().ok_or(HandlerError::BadApiV1Path)?)
+                .map_err(HandlerError::UrlDecodingError)?
+                .into_owned(),
+        }
+    } else {
+        TargetType::Unkeyed
+    };
+
+    let handler = path_parts
+        .next()
+        .ok_or(HandlerError::BadApiV1Path)?
+        .to_owned();
+
+    if path_parts.next().is_some() {
+        return Err(HandlerError::BadApiV1Path);
+    }
+
+    Ok(RequestType::Service(ServiceRequestType {
+        name: ServiceName::new(service_name),
+        handler,
+        target,
+        invoke_ty,
+        scope,
+    }))
+}
+
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
     Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
 {
     /// This function takes care of parsing the path of the request, inferring the correct request type
     pub(crate) fn parse_path(&mut self, uri: &Uri) -> Result<RequestType, HandlerError> {
-        let mut path_parts = uri.path().split('/').skip(1);
+        let num_segments = uri.path().bytes().filter(|&b| b == b'/').count();
 
-        let first_segment = path_parts.next().ok_or(HandlerError::NotFound)?;
+        // The minimum number of segments are 2 when calling /service/handler through the old ingress API.
+        // The maximum number of segments are 8 when calling /api/v1/scope/my-scope/call/service/service-key/handler
+        if !(2..=8).contains(&num_segments) {
+            return Err(HandlerError::BadPath(uri.path().to_owned()));
+        }
+
+        let mut segments = uri.path().split('/').skip(1);
+        let first_segment = segments.next().ok_or(HandlerError::NotFound)?;
 
         let schema = self.schemas.live_load();
         match first_segment {
-            "restate" => match path_parts.next().ok_or(HandlerError::NotFound)? {
+            "restate" => match segments.next().ok_or(HandlerError::NotFound)? {
                 "health" => Ok(RequestType::Health),
                 "awakeables" | "a" => Ok(RequestType::Awakeable(
-                    AwakeableRequestType::from_path_chunks(path_parts)?,
+                    AwakeableRequestType::from_path_chunks(segments)?,
                 )),
                 "invocation" => Ok(RequestType::Invocation(
-                    InvocationRequestType::from_path_chunks(path_parts, schema)?,
+                    InvocationRequestType::from_path_chunks(segments, schema)?,
                 )),
                 "workflow" => Ok(RequestType::Workflow(
-                    WorkflowRequestType::from_path_chunks(path_parts)?,
+                    WorkflowRequestType::from_path_chunks(segments)?,
                 )),
                 _ => Err(HandlerError::NotFound),
             },
             "openapi" => Ok(RequestType::OpenAPI),
-            segment => Ok(RequestType::Service(ServiceRequestType::from_path_chunks(
-                path_parts,
-                segment.to_owned(),
-                schema,
-            )?)),
+            "api" if num_segments >= 5 => {
+                // Old API has at most 4 segments, so >=5 is unambiguously new API.
+                let version = segments.next().unwrap();
+
+                if version == "v1" {
+                    parse_api_v1(segments, schema)
+                } else {
+                    Err(HandlerError::BadPath(uri.path().to_owned()))
+                }
+            }
+            segment => {
+                // Old unversioned API (including "api" as a service name when <5 segments)
+                Ok(RequestType::Service(ServiceRequestType::from_path_chunks(
+                    segments, segment, schema,
+                )?))
+            }
         }
     }
 }

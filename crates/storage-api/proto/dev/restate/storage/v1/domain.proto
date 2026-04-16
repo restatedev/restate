@@ -23,6 +23,8 @@ message InvocationTarget {
   bytes name = 2;
   bytes handler = 3;
   bytes key = 4;
+  // Since v1.7.0 — scope for vqueue partitioning. Empty string means no scope.
+  optional string scope = 5;
 }
 
 message ServiceId {
@@ -74,8 +76,8 @@ message JournalEntryIndex { uint32 entry_index = 1; }
 // Journal entry index for notifications. Must remain wire-compatible with `JournalEntryIndex`
 // (field 1 with matching type and number) so that previously stored `JournalEntryIndex` messages
 // can be decoded as `NotificationEntryIndex`.
-message NotificationEntryIndex { 
-  uint32 entry_index = 1; 
+message NotificationEntryIndex {
+  uint32 entry_index = 1;
   NotificationResultVariant result_variant = 2;
 }
 
@@ -382,6 +384,12 @@ message ServiceInvocation {
   SubmitNotificationSink submit_notification_sink = 11;
   Duration journal_retention_duration = 12;
   string restate_version = 13;
+  // Limit key for the invocation. Empty string means no limit key.
+  // A limit key is only valid if scope is set.
+  // TODO(tillrohrmann): Revisit string serialization of limit_key. Currently serialized as
+  // "level1" or "level1/level2" which requires parsing on read. Check whether a dedicated
+  // Protobuf message would be faster to serialize/deserialize.
+  string limit_key = 15;
 }
 
 message StateMutation {

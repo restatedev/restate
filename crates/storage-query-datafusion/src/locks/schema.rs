@@ -20,7 +20,7 @@ define_table!(sys_locks(
 
     /// The scope of this lock. Only present if this is a scoped lock (i.e. a lock of a scoped virtual
     /// object).
-    scope: DataType::LargeUtf8,
+    scope: DataType::Utf8,
 
     /// The name of the lock (in the format of `service/key`)
     lock_name: DataType::LargeUtf8,

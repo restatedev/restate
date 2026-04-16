@@ -773,7 +773,7 @@ async fn get_output_with_invocation_id() {
 #[restate_core::test]
 #[traced_test]
 async fn get_output_with_workflow_key() {
-    let service_id = ServiceId::new("MyWorkflow", "my-key");
+    let service_id = ServiceId::new(None, "MyWorkflow", "my-key");
 
     let mock_schemas = MockSchemas::default().with_service_and_target(
         &service_id.service_name,

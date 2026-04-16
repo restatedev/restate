@@ -37,6 +37,7 @@ const INVOCATION_TARGET_1: InvocationTarget = InvocationTarget::VirtualObject {
     key: ByteString::from_static("1"),
     handler: ByteString::from_static("myhandler"),
     handler_ty: VirtualObjectHandlerType::Exclusive,
+    scope: None,
 };
 static INVOCATION_ID_1: LazyLock<InvocationId> =
     LazyLock::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_1));
@@ -46,6 +47,7 @@ const INVOCATION_TARGET_2: InvocationTarget = InvocationTarget::VirtualObject {
     key: ByteString::from_static("2"),
     handler: ByteString::from_static("myhandler"),
     handler_ty: VirtualObjectHandlerType::Exclusive,
+    scope: None,
 };
 static INVOCATION_ID_2: LazyLock<InvocationId> =
     LazyLock::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_2));
@@ -55,6 +57,7 @@ const INVOCATION_TARGET_3: InvocationTarget = InvocationTarget::VirtualObject {
     key: ByteString::from_static("3"),
     handler: ByteString::from_static("myhandler"),
     handler_ty: VirtualObjectHandlerType::Exclusive,
+    scope: None,
 };
 static INVOCATION_ID_3: LazyLock<InvocationId> =
     LazyLock::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_3));
@@ -64,6 +67,7 @@ const INVOCATION_TARGET_4: InvocationTarget = InvocationTarget::VirtualObject {
     key: ByteString::from_static("4"),
     handler: ByteString::from_static("myhandler"),
     handler_ty: VirtualObjectHandlerType::Exclusive,
+    scope: None,
 };
 static INVOCATION_ID_4: LazyLock<InvocationId> =
     LazyLock::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_4));

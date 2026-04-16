@@ -32,7 +32,7 @@ where
         let result =
             if let Some(service_id) = invocation_metadata.invocation_target.as_keyed_service_id() {
                 ctx.storage
-                    .get_user_state(&service_id, &self.entry.key)
+                    .get_user_state(&service_id, self.entry.key.as_bytes())
                     .await?
                     .map(GetStateResult::Success)
                     .unwrap_or(GetStateResult::Void)

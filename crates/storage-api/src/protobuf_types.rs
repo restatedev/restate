@@ -106,7 +106,7 @@ pub mod v1 {
         use restate_types::logs::Lsn;
         use restate_types::service_protocol::ServiceProtocolVersion;
         use restate_types::time::MillisSinceEpoch;
-        use restate_types::{GenerationalNodeId, journal_v2};
+        use restate_types::{GenerationalNodeId, Scope, journal_v2};
 
         use super::dedup_sequence_number::Variant;
         use super::enriched_entry_header::{
@@ -1605,6 +1605,7 @@ pub mod v1 {
                     journal_retention_duration,
                     submit_notification_sink,
                     restate_version,
+                    limit_key,
                 } = value;
 
                 let invocation_id = restate_types::identifiers::InvocationId::try_from(
@@ -1655,6 +1656,9 @@ pub mod v1 {
                     .map(TryInto::try_into)
                     .transpose()?;
 
+                // Scope is persisted as part of InvocationTarget since v1.7.0
+                let limit_key = limit_key.parse().map_err(ConversionError::invalid_data)?;
+
                 Ok(restate_types::invocation::ServiceInvocation {
                     invocation_id,
                     invocation_target,
@@ -1667,6 +1671,7 @@ pub mod v1 {
                     completion_retention_duration,
                     journal_retention_duration,
                     idempotency_key,
+                    limit_key,
                     submit_notification_sink,
                     restate_version: restate_version_from_pb(restate_version),
                 })
@@ -1675,6 +1680,8 @@ pub mod v1 {
 
         impl From<restate_types::invocation::ServiceInvocation> for ServiceInvocation {
             fn from(value: restate_types::invocation::ServiceInvocation) -> Self {
+                let limit_key = value.limit_key.to_string();
+                // Scope is persisted as part of InvocationTarget since v1.7.0
                 let invocation_target = InvocationTarget::from(value.invocation_target);
                 let span_context = SpanContext::from(value.span_context);
                 let response_sink = ServiceInvocationResponseSink::from(value.response_sink);
@@ -1695,33 +1702,14 @@ pub mod v1 {
                     idempotency_key: value.idempotency_key.map(|s| s.to_string()),
                     submit_notification_sink: value.submit_notification_sink.map(Into::into),
                     restate_version: value.restate_version.into_string(),
+                    limit_key,
                 }
             }
         }
 
         impl From<Box<restate_types::invocation::ServiceInvocation>> for ServiceInvocation {
             fn from(value: Box<restate_types::invocation::ServiceInvocation>) -> Self {
-                let invocation_target = InvocationTarget::from(value.invocation_target);
-                let span_context = SpanContext::from(value.span_context);
-                let response_sink = ServiceInvocationResponseSink::from(value.response_sink);
-                let source = Source::from(value.source);
-                let headers = value.headers.into_iter().map(Into::into).collect();
-
-                ServiceInvocation {
-                    invocation_id: Some(InvocationId::from(value.invocation_id)),
-                    invocation_target: Some(invocation_target),
-                    span_context: Some(span_context),
-                    response_sink: Some(response_sink),
-                    argument: value.argument,
-                    source: Some(source),
-                    headers,
-                    execution_time: value.execution_time.map(|m| m.as_u64()).unwrap_or_default(),
-                    completion_retention_duration: Some(value.completion_retention_duration.into()),
-                    journal_retention_duration: Some(value.journal_retention_duration.into()),
-                    idempotency_key: value.idempotency_key.map(|s| s.to_string()),
-                    submit_notification_sink: value.submit_notification_sink.map(Into::into),
-                    restate_version: value.restate_version.into_string(),
-                }
+                Self::from(*value)
             }
         }
 
@@ -1748,6 +1736,7 @@ pub mod v1 {
                     idempotency_key: value.idempotency_key.as_ref().map(|s| s.to_string()),
                     submit_notification_sink: value.submit_notification_sink.map(Into::into),
                     restate_version: value.restate_version.clone().into_string(),
+                    limit_key: value.limit_key.to_string(),
                 }
             }
         }
@@ -1841,10 +1830,21 @@ pub mod v1 {
                     ByteString::try_from(value.name).map_err(ConversionError::invalid_data)?;
                 let handler =
                     ByteString::try_from(value.handler).map_err(ConversionError::invalid_data)?;
+                let scope = if let Some(scope) = value.scope
+                    && !scope.is_empty()
+                {
+                    Some(Scope::new(&scope))
+                } else {
+                    None
+                };
 
                 match invocation_target::Ty::try_from(value.service_and_handler_ty) {
                     Ok(invocation_target::Ty::Service) => {
-                        Ok(restate_types::invocation::InvocationTarget::Service { name, handler })
+                        Ok(restate_types::invocation::InvocationTarget::Service {
+                            name,
+                            handler,
+                            scope,
+                        })
                     }
                     Ok(invocation_target::Ty::VirtualObjectExclusive) => {
                         Ok(restate_types::invocation::InvocationTarget::VirtualObject {
@@ -1854,6 +1854,7 @@ pub mod v1 {
                                 .map_err(ConversionError::invalid_data)?,
                             handler_ty:
                                 restate_types::invocation::VirtualObjectHandlerType::Exclusive,
+                            scope,
                         })
                     }
                     Ok(invocation_target::Ty::VirtualObjectShared) => {
@@ -1863,6 +1864,7 @@ pub mod v1 {
                             key: ByteString::try_from(value.key)
                                 .map_err(ConversionError::invalid_data)?,
                             handler_ty: restate_types::invocation::VirtualObjectHandlerType::Shared,
+                            scope,
                         })
                     }
                     Ok(invocation_target::Ty::WorkflowWorkflow) => {
@@ -1872,6 +1874,7 @@ pub mod v1 {
                             key: ByteString::try_from(value.key)
                                 .map_err(ConversionError::invalid_data)?,
                             handler_ty: restate_types::invocation::WorkflowHandlerType::Workflow,
+                            scope,
                         })
                     }
                     Ok(invocation_target::Ty::WorkflowShared) => {
@@ -1881,6 +1884,7 @@ pub mod v1 {
                             key: ByteString::try_from(value.key)
                                 .map_err(ConversionError::invalid_data)?,
                             handler_ty: restate_types::invocation::WorkflowHandlerType::Shared,
+                            scope,
                         })
                     }
                     _ => Err(ConversionError::unexpected_enum_variant(
@@ -1893,24 +1897,28 @@ pub mod v1 {
 
         impl From<restate_types::invocation::InvocationTarget> for InvocationTarget {
             fn from(value: restate_types::invocation::InvocationTarget) -> Self {
+                let scope = value.scope().map(|s| s.to_string());
                 match value {
-                    restate_types::invocation::InvocationTarget::Service { name, handler } => {
-                        InvocationTarget {
-                            name: name.into_bytes(),
-                            handler: handler.into_bytes(),
-                            service_and_handler_ty: invocation_target::Ty::Service.into(),
-                            ..InvocationTarget::default()
-                        }
-                    }
+                    restate_types::invocation::InvocationTarget::Service {
+                        name, handler, ..
+                    } => InvocationTarget {
+                        name: name.into_bytes(),
+                        handler: handler.into_bytes(),
+                        service_and_handler_ty: invocation_target::Ty::Service.into(),
+                        scope,
+                        ..InvocationTarget::default()
+                    },
                     restate_types::invocation::InvocationTarget::VirtualObject {
                         name,
                         key,
                         handler,
                         handler_ty,
+                        ..
                     } => InvocationTarget {
                         name: name.into_bytes(),
                         handler: handler.into_bytes(),
                         key: key.into_bytes(),
+                        scope,
                         service_and_handler_ty: match handler_ty {
                             restate_types::invocation::VirtualObjectHandlerType::Shared => {
                                 invocation_target::Ty::VirtualObjectShared
@@ -1926,10 +1934,12 @@ pub mod v1 {
                         key,
                         handler,
                         handler_ty,
+                        ..
                     } => InvocationTarget {
                         name: name.into_bytes(),
                         handler: handler.into_bytes(),
                         key: key.into_bytes(),
+                        scope,
                         service_and_handler_ty: match handler_ty {
                             restate_types::invocation::WorkflowHandlerType::Shared => {
                                 invocation_target::Ty::WorkflowShared
@@ -1946,24 +1956,28 @@ pub mod v1 {
 
         impl From<&restate_types::invocation::InvocationTarget> for InvocationTarget {
             fn from(value: &restate_types::invocation::InvocationTarget) -> Self {
+                let scope = value.scope().map(|s| s.to_string());
                 match value {
-                    restate_types::invocation::InvocationTarget::Service { name, handler } => {
-                        InvocationTarget {
-                            name: name.as_bytes().clone(),
-                            handler: handler.as_bytes().clone(),
-                            service_and_handler_ty: invocation_target::Ty::Service.into(),
-                            ..InvocationTarget::default()
-                        }
-                    }
+                    restate_types::invocation::InvocationTarget::Service {
+                        name, handler, ..
+                    } => InvocationTarget {
+                        name: name.as_bytes().clone(),
+                        handler: handler.as_bytes().clone(),
+                        service_and_handler_ty: invocation_target::Ty::Service.into(),
+                        scope,
+                        ..InvocationTarget::default()
+                    },
                     restate_types::invocation::InvocationTarget::VirtualObject {
                         name,
                         key,
                         handler,
                         handler_ty,
+                        ..
                     } => InvocationTarget {
                         name: name.as_bytes().clone(),
                         handler: handler.as_bytes().clone(),
                         key: key.as_bytes().clone(),
+                        scope,
                         service_and_handler_ty: match handler_ty {
                             restate_types::invocation::VirtualObjectHandlerType::Shared => {
                                 invocation_target::Ty::VirtualObjectShared
@@ -1979,10 +1993,12 @@ pub mod v1 {
                         key,
                         handler,
                         handler_ty,
+                        ..
                     } => InvocationTarget {
                         name: name.as_bytes().clone(),
                         handler: handler.as_bytes().clone(),
                         key: key.as_bytes().clone(),
+                        scope,
                         service_and_handler_ty: match handler_ty {
                             restate_types::invocation::WorkflowHandlerType::Shared => {
                                 invocation_target::Ty::WorkflowShared
@@ -2002,6 +2018,7 @@ pub mod v1 {
 
             fn try_from(service_id: ServiceId) -> Result<Self, ConversionError> {
                 Ok(restate_types::identifiers::ServiceId::new(
+                    None,
                     ByteString::try_from(service_id.service_name)
                         .map_err(ConversionError::invalid_data)?,
                     ByteString::try_from(service_id.service_key)

@@ -176,7 +176,7 @@ impl WriteLockTable for PartitionStoreTransaction<'_> {
         let partition_key = canonical.partition_key();
 
         let key_buf = {
-            let key = LockKey::builder_ref()
+            let key = LockKeyRef::builder()
                 .partition_key(&partition_key)
                 .optional_scope(scope)
                 .lock_name(lock_name);
@@ -198,7 +198,7 @@ impl WriteLockTable for PartitionStoreTransaction<'_> {
         let canonical = CanonicalLockId { scope, lock_name };
         let partition_key = canonical.partition_key();
 
-        let key = LockKey::builder_ref()
+        let key = LockKeyRef::builder()
             .partition_key(&partition_key)
             .optional_scope(scope)
             .lock_name(lock_name);

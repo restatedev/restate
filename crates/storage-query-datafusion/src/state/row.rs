@@ -21,6 +21,9 @@ pub(crate) fn append_state_row(
 ) {
     let mut row = builder.row();
     row.partition_key(service_id.partition_key());
+    if let Some(scope) = &service_id.scope {
+        row.scope(scope.as_str());
+    }
     row.service_name(&service_id.service_name);
     row.service_key(&service_id.key);
     if row.is_key_defined()

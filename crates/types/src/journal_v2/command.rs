@@ -17,6 +17,8 @@ use bytestring::ByteString;
 use enum_dispatch::enum_dispatch;
 use serde::{Deserialize, Serialize};
 
+use restate_util_string::ReString;
+
 use crate::errors::IdDecodeError;
 use crate::identifiers::{
     AwakeableIdentifier, ExternalSignalIdentifier, IdempotencyId, InvocationId, ServiceId,
@@ -26,6 +28,7 @@ use crate::journal_v2::raw::{TryFromEntry, TryFromEntryError};
 use crate::journal_v2::{
     CompletionId, Entry, EntryMetadata, EntryType, Failure, GetStateResult, SignalId, SignalResult,
 };
+use crate::limit_key::LimitKey;
 use crate::time::MillisSinceEpoch;
 
 #[enum_dispatch]
@@ -273,6 +276,9 @@ pub struct CallRequest {
     // matches the default behaviour of <= 1.3.x.
     #[serde(default)]
     pub journal_retention_duration: Duration,
+    /// Since v1.7.0
+    #[serde(default, skip_serializing_if = "LimitKey::is_none")]
+    pub limit_key: LimitKey<ReString>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -424,6 +430,7 @@ mod test_util {
                 idempotency_key: None,
                 completion_retention_duration: Default::default(),
                 journal_retention_duration: Default::default(),
+                limit_key: Default::default(),
             }
         }
     }

@@ -148,7 +148,7 @@ pub enum TableKind {
 impl TableKind {
     pub const fn key_kinds(self) -> &'static [KeyKind] {
         match self {
-            Self::State => &[KeyKind::State],
+            Self::State => &[KeyKind::State, KeyKind::ScopedState],
             Self::InvocationStatus => &[KeyKind::InvocationStatus],
             Self::ServiceStatus => &[KeyKind::ServiceStatus],
             Self::Idempotency => &[KeyKind::Idempotency],
@@ -165,7 +165,7 @@ impl TableKind {
                 KeyKind::JournalV2NotificationIdToNotificationIndex,
             ],
             Self::JournalEvent => &[KeyKind::JournalEvent],
-            Self::Promise => &[KeyKind::Promise],
+            Self::Promise => &[KeyKind::Promise, KeyKind::ScopedPromise],
             Self::VQueue => &[
                 KeyKind::VQueueMeta,
                 KeyKind::VQueueInboxStage,

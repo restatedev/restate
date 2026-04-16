@@ -15,6 +15,7 @@ use std::ops::RangeInclusive;
 use std::time::Duration;
 
 use http::{HeaderName, HeaderValue};
+use restate_util_string::RestrictedValueError;
 use tokio::task::JoinError;
 
 use restate_invoker_api::{InvocationErrorReport, InvocationReaderError};
@@ -379,6 +380,12 @@ pub(crate) enum CommandPreconditionError {
     #[error("the service {0} is exposed by the deprecated deployment {1}.")]
     #[code(restate_errors::RT0020)]
     DeploymentDeprecated(String, DeploymentId),
+    #[error("the provided limit_key is invalid")]
+    InvalidLimitKey,
+    #[error("limit_key was provided without a scope")]
+    LimitKeyWithoutScope,
+    #[error("invalid scope: {0}")]
+    InvalidScope(RestrictedValueError),
 }
 
 #[derive(Debug)]

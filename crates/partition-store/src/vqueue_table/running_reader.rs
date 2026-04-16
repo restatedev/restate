@@ -18,7 +18,7 @@ use restate_types::vqueues::VQueueId;
 
 use crate::PartitionDb;
 use crate::keys::{EncodeTableKeyPrefix, KeyDecode};
-use crate::vqueue_table::inbox::RunningKey;
+use crate::vqueue_table::inbox::{RunningKey, RunningKeyRef};
 
 pub struct VQueueRunningReader {
     it: DBRawIteratorWithThreadMode<'static, rocksdb::DB>,
@@ -36,7 +36,7 @@ impl VQueueRunningReader {
 
         // we know how big the prefix is
         let mut key_buf = [0u8; RunningKey::by_qid_prefix_len()];
-        RunningKey::builder_ref()
+        RunningKeyRef::builder()
             .qid(qid)
             .serialize_to(&mut key_buf.as_mut());
 

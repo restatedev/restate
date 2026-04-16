@@ -673,12 +673,12 @@ async fn mutate_state() -> anyhow::Result<()> {
 #[test(restate_core::test)]
 async fn clear_all_user_states() -> anyhow::Result<()> {
     let mut test_env = TestEnv::create().await;
-    let service_id = ServiceId::new("MySvc", "my-key");
+    let service_id = ServiceId::new(None, "MySvc", "my-key");
 
     // Fill with some state the service K/V store
     let mut txn = test_env.storage.transaction();
-    txn.put_user_state(&service_id, b"my-key-1", b"my-val-1")?;
-    txn.put_user_state(&service_id, b"my-key-2", b"my-val-2")?;
+    txn.put_user_state(&service_id, &Bytes::from_static(b"my-key-1"), b"my-val-1")?;
+    txn.put_user_state(&service_id, &Bytes::from_static(b"my-key-2"), b"my-val-2")?;
     txn.commit().await.unwrap();
 
     let invocation_id =
@@ -715,8 +715,8 @@ async fn get_state_keys() -> TestResult {
 
     // Mock some state
     let mut txn = test_env.storage.transaction();
-    txn.put_user_state(&service_id, b"key1", b"value1")?;
-    txn.put_user_state(&service_id, b"key2", b"value2")?;
+    txn.put_user_state(&service_id, &Bytes::from_static(b"key1"), b"value1")?;
+    txn.put_user_state(&service_id, &Bytes::from_static(b"key2"), b"value2")?;
     txn.commit().await.unwrap();
 
     let actions = test_env

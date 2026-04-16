@@ -21,7 +21,7 @@ pub trait ReadStateTable {
     fn get_user_state(
         &mut self,
         service_id: &ServiceId,
-        state_key: impl AsRef<[u8]> + Send,
+        state_key: &Bytes,
     ) -> impl Future<Output = Result<Option<Bytes>>> + Send;
 
     /// Returns a lazy stream over all user states for the given service.
@@ -62,15 +62,11 @@ pub trait WriteStateTable {
     fn put_user_state(
         &mut self,
         service_id: &ServiceId,
-        state_key: impl AsRef<[u8]> + Send,
+        state_key: &Bytes,
         state_value: impl AsRef<[u8]> + Send,
     ) -> Result<()>;
 
-    fn delete_user_state(
-        &mut self,
-        service_id: &ServiceId,
-        state_key: impl AsRef<[u8]> + Send,
-    ) -> Result<()>;
+    fn delete_user_state(&mut self, service_id: &ServiceId, state_key: &Bytes) -> Result<()>;
 
     fn delete_all_user_state(&mut self, service_id: &ServiceId) -> Result<()>;
 }

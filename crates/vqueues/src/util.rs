@@ -19,7 +19,7 @@ use restate_util_string::ReString;
 
 pub fn generate_vqueue_id(
     partition_key: PartitionKey,
-    scope: &Option<Scope>,
+    scope: Option<&Scope>,
     limit_key: &LimitKey<ReString>,
     is_exclusive: bool,
     service_name: &str,
@@ -104,35 +104,39 @@ pub fn infer_vqueue_id_from_invocation(
     invocation_target: &InvocationTarget,
     limit_key: &LimitKey<ReString>,
 ) -> VQueueId {
-    let scope = invocation_target.scope();
-
     match invocation_target {
-        InvocationTarget::Service { name, .. } => {
+        InvocationTarget::Service { name, scope, .. } => {
             // Shared service.
-            generate_vqueue_id(partition_key, &scope, limit_key, false, name, None)
+            generate_vqueue_id(partition_key, scope.as_ref(), limit_key, false, name, None)
         }
         InvocationTarget::VirtualObject {
             handler_ty,
             key,
             name,
+            scope,
             ..
         } => {
             match handler_ty {
-                VirtualObjectHandlerType::Exclusive => {
-                    generate_vqueue_id(partition_key, &scope, limit_key, true, name, Some(key))
-                }
+                VirtualObjectHandlerType::Exclusive => generate_vqueue_id(
+                    partition_key,
+                    scope.as_ref(),
+                    limit_key,
+                    true,
+                    name,
+                    Some(key),
+                ),
                 VirtualObjectHandlerType::Shared => {
                     // Note: we don't use the "key" here to reduce cardinality.
                     // the downside of this is that we get less scheduler-level fairness
                     // shared handler calls across multiple VOs, but that's on-par with
                     // what we do with normal services.
-                    generate_vqueue_id(partition_key, &scope, limit_key, false, name, None)
+                    generate_vqueue_id(partition_key, scope.as_ref(), limit_key, false, name, None)
                 }
             }
         }
-        InvocationTarget::Workflow { name, .. } => {
+        InvocationTarget::Workflow { name, scope, .. } => {
             // Workflows behave like shared services.
-            generate_vqueue_id(partition_key, &scope, limit_key, false, name, None)
+            generate_vqueue_id(partition_key, scope.as_ref(), limit_key, false, name, None)
         }
     }
 }

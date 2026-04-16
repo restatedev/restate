@@ -39,6 +39,10 @@ enum ServiceProtocolVersion {
   V6 = 6;
   // Added:
   // * Future & AwaitingOnMessage + Changed the SuspensionMessage
+  // * CallCommandMessage.scope
+  // * CallCommandMessage.limit_key
+  // * OneWayCallCommandMessage.scope
+  // * OneWayCallCommandMessage.limit_key
   V7 = 7;
 }
 

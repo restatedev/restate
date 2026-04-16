@@ -18,6 +18,8 @@ use anyhow::anyhow;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use prost::encoding::encoded_len_varint;
+use restate_types::ServiceName;
+use restate_util_string::ReString;
 use rocksdb::MergeOperands;
 use strum::EnumIter;
 use tracing::{error, trace};
@@ -50,8 +52,14 @@ pub enum KeyKind {
     Outbox,
     ServiceStatus,
     State,
+    /// Scoped variant of State with scope after partition_key.
+    /// Supports empty scope for future migration of unscoped entries.
+    ScopedState,
     Timers,
     Promise,
+    /// Scoped variant of Promise with scope after partition_key.
+    /// Supports empty scope for future migration of unscoped entries.
+    ScopedPromise,
     // # VQueues --> owned by restate-vqueues
     //
     // todo: split this into empty and non-empty, or add the status in the key prefix
@@ -118,8 +126,10 @@ impl KeyKind {
             KeyKind::Outbox => b"ob",
             KeyKind::ServiceStatus => b"ss",
             KeyKind::State => b"st",
+            KeyKind::ScopedState => b"sS",
             KeyKind::Timers => b"ti",
             KeyKind::Promise => b"pr",
+            KeyKind::ScopedPromise => b"sP",
             // ** VQueues ** //
             // VQueues own all keys that start with b"q".
             KeyKind::VQueueActive => b"qa",
@@ -162,8 +172,10 @@ impl KeyKind {
             b"ob" => Some(KeyKind::Outbox),
             b"ss" => Some(KeyKind::ServiceStatus),
             b"st" => Some(KeyKind::State),
+            b"sS" => Some(KeyKind::ScopedState),
             b"ti" => Some(KeyKind::Timers),
             b"pr" => Some(KeyKind::Promise),
+            b"sP" => Some(KeyKind::ScopedPromise),
             // VQueues own all keys that start with b"q"
             b"qa" => Some(KeyKind::VQueueActive),
             b"qi" => Some(KeyKind::VQueueInput),
@@ -343,6 +355,17 @@ macro_rules! define_table_key {
                 )+
                 return true;
             }
+
+            /// Converts this prefix builder into a complete key if all the required fields are
+            /// set.
+            pub fn into_complete(self) -> crate::Result<[< $key_name Ref >] <'a>> {
+                if !self.is_complete() {
+                    return Err(restate_storage_api::StorageError::DataIntegrityError);
+                }
+                Ok([< $key_name Ref >] {
+                    $($element: self.$element.unwrap(),)+
+                })
+            }
         }
 
         impl<'a> crate::keys::EncodeTableKeyPrefix for [<$key_name BuilderRef>]<'a> {
@@ -384,7 +407,7 @@ macro_rules! define_table_key {
 
         }
 
-        // main key holder
+        // main key holder builder
         #[derive(Default, Debug, Eq, PartialEq, Clone)]
         pub struct [< $key_name Builder >] { $(pub $element: Option<$ty>),+ }
 
@@ -418,16 +441,33 @@ macro_rules! define_table_key {
         }
 
         #[derive(Debug, Eq, PartialEq, Clone)]
+        pub struct [< $key_name Ref >]<'a> { $(pub $element: &'a $ty),+ }
+
+        #[allow(dead_code)]
+        impl<'a> [< $key_name Ref >]<'a> {
+            pub fn builder<'b>() -> [< $key_name BuilderRef >]<'b> {
+                [< $key_name BuilderRef >]::default()
+            }
+
+            $(pub fn $element(&self) -> &$ty {
+                &self.$element
+            })+
+
+            /// Converts this key into a prefix builder.
+            pub fn into_builder(self) -> [< $key_name BuilderRef >]<'a> {
+                [< $key_name BuilderRef >] {
+                    $($element: Some(self.$element),)+
+                }
+            }
+        }
+
+        #[derive(Debug, Eq, PartialEq, Clone)]
         pub struct $key_name { $(pub $element: $ty),+ }
 
         #[allow(dead_code)]
         impl $key_name {
             pub fn builder() -> [< $key_name Builder >] {
                 [< $key_name Builder >]::default()
-            }
-
-            pub fn builder_ref<'a>() -> [< $key_name BuilderRef >]<'a> {
-                [< $key_name BuilderRef >]::default()
             }
 
             $(pub fn $element(&self) -> &$ty {
@@ -485,6 +525,30 @@ macro_rules! define_table_key {
                 serialized_length
             }
 
+        }
+
+        // serde
+        impl<'a> crate::keys::EncodeTableKey for [< $key_name Ref >]<'a> {
+            const TABLE: crate::TableKind = $table_kind;
+            const KEY_KIND: $crate::keys::KeyKind = $key_kind;
+
+            #[inline]
+            fn serialize_to<B: bytes::BufMut>(&self, bytes: &mut B) {
+                $key_kind.serialize(bytes);
+                $(
+                $crate::keys::serialize(&self.$element, bytes);
+                )+
+            }
+
+            #[inline]
+            fn serialized_length(&self) -> usize {
+                // we always need space for the key kind
+                let mut serialized_length = $crate::keys::KeyKind::SERIALIZED_LENGTH;
+                $(
+                    serialized_length += $crate::keys::KeyEncode::serialized_length(&self.$element);
+                )+
+                serialized_length
+            }
         }
 
         // serde
@@ -970,6 +1034,49 @@ impl KeyDecode for NotificationId {
         })
     }
 }
+
+macro_rules! impl_string_key_codec {
+    ($t:ty) => {
+        impl KeyEncode for $t {
+            fn encode<B: BufMut>(&self, target: &mut B) {
+                write_delimited(self.as_bytes(), target);
+            }
+
+            fn serialized_length(&self) -> usize {
+                encoded_len_varint(u64::try_from(self.len()).expect("usize fitting into u64"))
+                    + self.len()
+            }
+        }
+
+        impl KeyDecode for $t {
+            fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+                let len = prost::encoding::decode_varint(source)
+                    .map_err(|error| StorageError::Generic(error.into()))
+                    .and_then(|len| {
+                        usize::try_from(len).map_err(|err| StorageError::Generic(err.into()))
+                    })?;
+
+                let mut string_data = source.take(len);
+
+                let result = if len <= string_data.chunk().len() {
+                    // SAFETY: previously serialized as valid UTF-8
+                    <$t>::from(unsafe { str::from_utf8_unchecked(&string_data.chunk()[..len]) })
+                } else {
+                    // Spread across multiple chunks; copy into a contiguous buffer.
+                    let string_data = string_data.copy_to_bytes(len);
+                    // SAFETY: previously serialized as valid UTF-8
+                    <$t>::from(unsafe { str::from_utf8_unchecked(&string_data) })
+                };
+
+                string_data.advance(len);
+                Ok(result)
+            }
+        }
+    };
+}
+
+impl_string_key_codec!(ReString);
+impl_string_key_codec!(ServiceName);
 
 #[inline]
 fn write_delimited<B: BufMut>(source: impl AsRef<[u8]>, target: &mut B) {

@@ -26,6 +26,7 @@ restate-service-protocol = { workspace = true, features = ["message", "codec"] }
 restate-service-protocol-v4 = { workspace = true, features = ["message-codec", "entry-codec"] }
 restate-time-util = { workspace = true }
 restate-types = { workspace = true }
+restate-util-string = { workspace = true }
 
 anyhow = { workspace = true }
 bytes = { workspace = true }

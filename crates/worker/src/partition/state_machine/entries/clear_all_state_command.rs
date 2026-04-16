@@ -75,13 +75,13 @@ mod tests {
     #[restate_core::test]
     async fn clear_all_user_states() {
         let mut test_env = TestEnv::create().await;
-        let service_id = ServiceId::new("MySvc", "my-key");
+        let service_id = ServiceId::new(None, "MySvc", "my-key");
 
         // Fill with some state the service K/V store
         let mut txn = test_env.storage.transaction();
-        txn.put_user_state(&service_id, b"my-key-1", b"my-val-1")
+        txn.put_user_state(&service_id, &Bytes::from_static(b"my-key-1"), b"my-val-1")
             .unwrap();
-        txn.put_user_state(&service_id, b"my-key-2", b"my-val-2")
+        txn.put_user_state(&service_id, &Bytes::from_static(b"my-key-2"), b"my-val-2")
             .unwrap();
         txn.commit().await.unwrap();
 

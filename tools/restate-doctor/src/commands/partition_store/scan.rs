@@ -29,9 +29,9 @@ use restate_partition_store::journal_table_v2::{
 use restate_partition_store::keys::{DecodeTableKey, KeyKind};
 use restate_partition_store::locks_table::LockKey;
 use restate_partition_store::outbox_table::OutboxKey;
-use restate_partition_store::promise_table::PromiseKey;
+use restate_partition_store::promise_table::{PromiseKey, ScopedPromiseKey};
 use restate_partition_store::service_status_table::ServiceStatusKey;
-use restate_partition_store::state_table::StateKey;
+use restate_partition_store::state_table::{ScopedStateKey, StateKey};
 use restate_partition_store::timer_table::TimersKey;
 use restate_partition_store::vqueue_table::{
     ActiveKey, EntryStatusKey, InboxKey as VQueueInboxKey, InputPayloadKey, MetaKey,
@@ -412,10 +412,16 @@ fn decode_key(key: &[u8]) -> (String, Option<String>, Option<KeyKind>) {
         KeyKind::State => StateKey::deserialize_from(&mut cursor)
             .ok()
             .map(|k| format!("{k:?}")),
+        KeyKind::ScopedState => ScopedStateKey::deserialize_from(&mut cursor)
+            .ok()
+            .map(|k| format!("{k:?}")),
         KeyKind::Timers => TimersKey::deserialize_from(&mut cursor)
             .ok()
             .map(|k| format!("{k:?}")),
         KeyKind::Promise => PromiseKey::deserialize_from(&mut cursor)
+            .ok()
+            .map(|k| format!("{k:?}")),
+        KeyKind::ScopedPromise => ScopedPromiseKey::deserialize_from(&mut cursor)
             .ok()
             .map(|k| format!("{k:?}")),
         KeyKind::VQueueActive => ActiveKey::deserialize_from(&mut cursor)

@@ -78,6 +78,7 @@ fn invoke_cmd() -> Command {
         invocation_target: InvocationTarget::Service {
             name: "AnotherService".into(),
             handler,
+            scope: None,
         },
         argument: "DataSent".to_string().into(),
         source: inv_source,
@@ -90,6 +91,7 @@ fn invoke_cmd() -> Command {
         completion_retention_duration: Duration::from_secs(10),
         journal_retention_duration: Default::default(),
         idempotency_key: Some(idempotency_key),
+        limit_key: Default::default(),
         response_sink: Some(
             restate_types::invocation::ServiceInvocationResponseSink::Ingress { request_id },
         ),

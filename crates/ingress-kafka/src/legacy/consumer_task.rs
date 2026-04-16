@@ -132,6 +132,7 @@ impl MessageSender {
             Bytes::default()
         };
         let headers = Self::generate_events_attributes(&msg, &self.subscription_id);
+        let (scope, limit_key) = crate::builder::extract_scope_limit_key(&msg);
 
         let (deduplication_id, deduplication_index) =
             Self::generate_deduplication_id(consumer_group_id, &msg);
@@ -143,6 +144,8 @@ impl MessageSender {
             deduplication_id,
             deduplication_index,
             headers,
+            scope,
+            limit_key,
             consumer_group_id,
             msg.topic(),
             msg.partition(),

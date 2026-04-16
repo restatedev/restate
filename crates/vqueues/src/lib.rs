@@ -176,8 +176,7 @@ where
         action_collector: Option<&'a mut Vec<A>>,
         limit_key: &LimitKey<ReString>,
     ) -> Result<Self, StorageError> {
-        let qid =
-            util::infer_vqueue_id_from_invocation(partition_key, invocation_target, limit_key);
+        let qid = infer_vqueue_id_from_invocation(partition_key, invocation_target, limit_key);
         let cache_key = match cache.load(storage, &qid).await? {
             Some(key) => key,
             None => {
@@ -187,7 +186,12 @@ where
                     VQueueLink::Service(ServiceName::new(invocation_target.service_name()))
                 };
 
-                let meta = VQueueMeta::new(at, invocation_target.scope(), limit_key.clone(), link);
+                let meta = VQueueMeta::new(
+                    at,
+                    invocation_target.scope().cloned(),
+                    limit_key.clone(),
+                    link,
+                );
                 storage.create_vqueue(&qid, &meta);
                 cache.insert(qid.clone(), meta)
             }

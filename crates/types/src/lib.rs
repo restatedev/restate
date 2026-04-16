@@ -10,6 +10,8 @@
 
 //! This crate contains the core types used by various Restate components.
 
+pub mod limit_key;
+
 mod base62_util;
 mod id_util;
 mod locking;
@@ -60,6 +62,7 @@ pub mod vqueues;
 
 pub use id_util::IdResourceType;
 pub use identifiers::PartitionedResourceId;
+pub use limit_key::LimitKey;
 pub use locking::*;
 pub use node_id::*;
 use restate_encoding::BilrostNewType;
@@ -156,6 +159,12 @@ impl std::borrow::Borrow<str> for ServiceName {
     }
 }
 
+impl From<&str> for ServiceName {
+    fn from(value: &str) -> Self {
+        ServiceName::new(value)
+    }
+}
+
 /// An interned scope
 ///
 /// A scope defines the partitioning boundary for sets of service instances and
@@ -172,6 +181,8 @@ impl std::borrow::Borrow<str> for ServiceName {
     PartialOrd,
     Hash,
     BilrostNewType,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 #[debug("{}", _0)]
 #[display("{}", _0)]

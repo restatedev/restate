@@ -229,7 +229,8 @@ where
         return Err(MetaApiError::ServiceNotFound(service_name));
     }
 
-    let service_id = ServiceId::new(service_name, object_key);
+    // todo(tillrohrmann) allow modify service state to specify scope
+    let service_id = ServiceId::new(None, service_name, object_key);
 
     let new_state = new_state
         .into_iter()

@@ -37,6 +37,7 @@ use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_service_protocol_v4::message_codec::{
     Decoder, Encoder, Message, MessageHeader, MessageType, StateEntry, proto,
 };
+use restate_types::Scope;
 use restate_types::errors::{GenericError, InvocationError};
 use restate_types::identifiers::InvocationId;
 use restate_types::identifiers::ServiceId;
@@ -52,9 +53,11 @@ use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawNotification};
 use restate_types::journal_v2::{
     CommandIndex, CommandType, Entry, EntryType, RunCompletion, RunResult, UnresolvedFuture,
 };
+use restate_types::limit_key::LimitKey;
 use restate_types::schema::deployment::{Deployment, DeploymentType, ProtocolType};
 use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
 use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_util_string::{ReString, RestrictedValue};
 
 use crate::Notification;
 use crate::error::{
@@ -937,6 +940,8 @@ where
                                 headers: cmd.headers.into_iter().map(Into::into).collect(),
                                 key: cmd.key.into(),
                                 idempotency_key: cmd.idempotency_key.map(|s| s.into()),
+                                scope: cmd.scope,
+                                limit_key: cmd.limit_key,
                                 span_relation: parent_span_context.as_linked()
                             }
                         )
@@ -972,6 +977,8 @@ where
                                 headers: cmd.headers.into_iter().map(Into::into).collect(),
                                 key: cmd.key.into(),
                                 idempotency_key: cmd.idempotency_key.map(|s| s.into()),
+                                scope: cmd.scope,
+                                limit_key: cmd.limit_key,
                                 span_relation: parent_span_context.as_parent()
                             }
                         )
@@ -1241,6 +1248,8 @@ pub struct InvokeRequest {
     /// whether the key is none or empty.
     key: ByteString,
     idempotency_key: Option<ByteString>,
+    scope: Option<String>,
+    limit_key: Option<String>,
     span_relation: SpanRelation,
     parameter: Bytes,
 }
@@ -1289,7 +1298,20 @@ fn resolve_call_request(
             request.handler_name,
             h_ty,
         ),
-    };
+    }
+    .with_scope(
+        if let Some(scope) = request.scope
+            && !scope.is_empty()
+        {
+            Some(Scope::new(
+                RestrictedValue::new(scope)
+                    .map_err(CommandPreconditionError::InvalidScope)?
+                    .as_str(),
+            ))
+        } else {
+            None
+        },
+    );
 
     let idempotency_key = if let Some(idempotency_key) = &request.idempotency_key {
         if idempotency_key.is_empty() {
@@ -1299,6 +1321,19 @@ fn resolve_call_request(
     } else {
         None
     };
+    let limit_key: LimitKey<ReString> = if let Some(limit_key) = request.limit_key {
+        limit_key
+            .parse()
+            .map_err(|_| CommandPreconditionError::InvalidLimitKey)?
+    } else {
+        LimitKey::None
+    };
+
+    // Validate invariant: limit_key requires scope
+    if !limit_key.is_empty() && invocation_target.scope().is_none() {
+        return Err(CommandPreconditionError::LimitKeyWithoutScope);
+    }
+
     let invocation_retention = meta.compute_retention(idempotency_key.is_some());
     let invocation_id = InvocationId::generate(&invocation_target, idempotency_key);
 
@@ -1314,6 +1349,7 @@ fn resolve_call_request(
         idempotency_key: request.idempotency_key,
         completion_retention_duration: invocation_retention.completion_retention,
         journal_retention_duration: invocation_retention.journal_retention,
+        limit_key,
     })
 }
 

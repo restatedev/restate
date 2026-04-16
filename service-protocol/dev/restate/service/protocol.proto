@@ -39,6 +39,10 @@ enum ServiceProtocolVersion {
   V6 = 6;
   // Added:
   // * Future & AwaitingOnMessage + Changed the SuspensionMessage
+  // * CallCommandMessage.scope
+  // * CallCommandMessage.limit_key
+  // * OneWayCallCommandMessage.scope
+  // * OneWayCallCommandMessage.limit_key
   V7 = 7;
 }
 
@@ -470,6 +474,18 @@ message CallCommandMessage {
   // If present, it must be non empty.
   optional string idempotency_key = 6;
 
+  // Scope for the invocation target. Empty string means no scope (unscoped invocation).
+  // Since V7.
+  optional string scope = 7;
+
+  // Limit key for the invocation. Empty string means no limit key.
+  // A limit key is only valid if scope is set.
+  // TODO(tillrohrmann): Revisit string serialization of limit_key. Currently serialized as
+  // "level1" or "level1/level2" which requires parsing on read. Check whether a dedicated
+  // Protobuf message would be faster to serialize/deserialize.
+  // Since V7.
+  optional string limit_key = 8;
+
   uint32 invocation_id_notification_idx = 10;
   uint32 result_completion_id = 11;
   string name = 12;
@@ -521,6 +537,18 @@ message OneWayCallCommandMessage {
 
   // If present, it must be non empty.
   optional string idempotency_key = 7;
+
+  // Scope for the invocation target. Empty string means no scope (unscoped invocation).
+  // Since V7.
+  optional string scope = 8;
+
+  // Limit key for the invocation. Empty string means no limit key.
+  // A limit key is only valid if scope is set.
+  // TODO(tillrohrmann): Revisit string serialization of limit_key. Currently serialized as
+  // "level1" or "level1/level2" which requires parsing on read. Check whether a dedicated
+  // Protobuf message would be faster to serialize/deserialize.
+  // Since V7.
+  optional string limit_key = 9;
 
   uint32 invocation_id_notification_idx = 10;
   string name = 12;

@@ -64,6 +64,7 @@ where
 mod tests {
     use crate::partition::state_machine::tests::fixtures::invoker_entry_effect;
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
+    use bytes::Bytes;
     use googletest::matchers::contains;
     use googletest::prelude::{assert_that, eq};
     use restate_storage_api::Transaction;
@@ -82,8 +83,10 @@ mod tests {
 
         // Mock some state
         let mut txn = test_env.storage.transaction();
-        txn.put_user_state(&service_id, b"key1", b"value1").unwrap();
-        txn.put_user_state(&service_id, b"key2", b"value2").unwrap();
+        txn.put_user_state(&service_id, &Bytes::from_static(b"key1"), b"value1")
+            .unwrap();
+        txn.put_user_state(&service_id, &Bytes::from_static(b"key2"), b"value2")
+            .unwrap();
         txn.commit().await.unwrap();
 
         let completion_id = 1;

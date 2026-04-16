@@ -45,6 +45,7 @@ static MOCK_INVOKE_JOURNAL_ENTRY: LazyLock<JournalEntry> = LazyLock::new(|| {
                 invocation_target: InvocationTarget::Service {
                     name: ByteString::from_static("MySvc"),
                     handler: ByteString::from_static("MyHandler"),
+                    scope: None,
                 },
                 completion_retention_time: Some(Duration::from_secs(10)),
                 span_context: ServiceInvocationSpanContext::empty(),

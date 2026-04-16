@@ -36,7 +36,7 @@ use restate_types::journal_v2::raw::{
     CallOrSendMetadata, RawCommand, RawCommandSpecificMetadata, RawEntry, RawNotification,
     RawNotificationResultVariant,
 };
-use restate_types::journal_v2::*;
+use restate_types::{LimitKey, journal_v2::*};
 
 use crate::proto;
 use crate::proto::{
@@ -124,6 +124,7 @@ impl Encoder for ServiceProtocolV4Codec {
                         span_context,
                         completion_retention_duration,
                         journal_retention_duration,
+                        limit_key,
                     },
                 invocation_id_completion_id,
                 result_completion_id,
@@ -140,6 +141,12 @@ impl Encoder for ServiceProtocolV4Codec {
                         .unwrap_or(&ByteString::new())
                         .to_string(),
                     idempotency_key: idempotency_key.map(|s| s.to_string()),
+                    scope: invocation_target.scope().map(ToString::to_string),
+                    limit_key: if limit_key == LimitKey::None {
+                        None
+                    } else {
+                        Some(limit_key.to_string())
+                    },
                     name: name.to_string(),
                     invocation_id_notification_idx: invocation_id_completion_id,
                     result_completion_id,
@@ -168,6 +175,7 @@ impl Encoder for ServiceProtocolV4Codec {
                         span_context,
                         completion_retention_duration,
                         journal_retention_duration,
+                        limit_key,
                     },
                 invoke_time,
                 invocation_id_completion_id,
@@ -185,6 +193,12 @@ impl Encoder for ServiceProtocolV4Codec {
                         .unwrap_or(&ByteString::new())
                         .to_string(),
                     idempotency_key: idempotency_key.map(|s| s.to_string()),
+                    scope: invocation_target.scope().map(ToString::to_string),
+                    limit_key: if limit_key == LimitKey::None {
+                        None
+                    } else {
+                        Some(limit_key.to_string())
+                    },
                     name: name.to_string(),
                     invocation_id_notification_idx: invocation_id_completion_id,
                 }
@@ -711,6 +725,7 @@ impl Decoder for ServiceProtocolV4Codec {
                         parameter,
                         headers,
                         idempotency_key,
+                        limit_key,
                         invocation_id_notification_idx,
                         result_completion_id,
                         name,
@@ -720,6 +735,7 @@ impl Decoder for ServiceProtocolV4Codec {
                         RawCommandSpecificMetadata::CallOrSend(metadata) =
                             cmd.command_specific_metadata()
                     );
+                    // Scope is part of the InvocationTarget in the stored metadata
                     CallCommand {
                         request: CallRequest {
                             invocation_id: metadata.invocation_id,
@@ -730,6 +746,11 @@ impl Decoder for ServiceProtocolV4Codec {
                             idempotency_key: idempotency_key.map(|s| s.into()),
                             completion_retention_duration: metadata.completion_retention_duration,
                             journal_retention_duration: metadata.journal_retention_duration,
+                            limit_key: if let Some(limit_key) = limit_key {
+                                limit_key.parse().map_err(GenericError::from)?
+                            } else {
+                                LimitKey::None
+                            },
                         },
                         invocation_id_completion_id: invocation_id_notification_idx,
                         result_completion_id,
@@ -743,6 +764,7 @@ impl Decoder for ServiceProtocolV4Codec {
                         invoke_time,
                         headers,
                         idempotency_key,
+                        limit_key,
                         invocation_id_notification_idx,
                         name,
                         ..
@@ -751,6 +773,7 @@ impl Decoder for ServiceProtocolV4Codec {
                         RawCommandSpecificMetadata::CallOrSend(metadata) =
                             cmd.command_specific_metadata()
                     );
+                    // Scope is part of the InvocationTarget in the stored metadata
                     OneWayCallCommand {
                         request: CallRequest {
                             invocation_id: metadata.invocation_id,
@@ -761,6 +784,11 @@ impl Decoder for ServiceProtocolV4Codec {
                             idempotency_key: idempotency_key.map(|s| s.into()),
                             completion_retention_duration: metadata.completion_retention_duration,
                             journal_retention_duration: metadata.journal_retention_duration,
+                            limit_key: if let Some(limit_key) = limit_key {
+                                limit_key.parse().map_err(GenericError::from)?
+                            } else {
+                                LimitKey::None
+                            },
                         },
                         invoke_time: invoke_time.into(),
                         invocation_id_completion_id: invocation_id_notification_idx,
@@ -1624,6 +1652,7 @@ impl TryFrom<proto::attach_invocation_command_message::Target> for AttachInvocat
             )),
             proto::attach_invocation_command_message::Target::WorkflowTarget(workflow_target) => {
                 Self::Workflow(ServiceId::new(
+                    None,
                     workflow_target.workflow_name,
                     workflow_target.workflow_key,
                 ))
@@ -1673,6 +1702,7 @@ impl TryFrom<proto::get_invocation_output_command_message::Target> for AttachInv
             proto::get_invocation_output_command_message::Target::WorkflowTarget(
                 workflow_target,
             ) => Self::Workflow(ServiceId::new(
+                None,
                 workflow_target.workflow_name,
                 workflow_target.workflow_key,
             )),

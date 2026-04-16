@@ -52,7 +52,7 @@ where
             );
 
             ctx.storage
-                .delete_user_state(&service_id, &self.entry.key)
+                .delete_user_state(&service_id, self.entry.key.as_bytes())
                 .map_err(Error::Storage)?;
         } else {
             warn!(

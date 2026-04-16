@@ -12,7 +12,6 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use bytes::Bytes;
-
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::state_table::ScanStateTable;

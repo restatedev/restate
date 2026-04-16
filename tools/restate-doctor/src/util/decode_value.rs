@@ -146,7 +146,7 @@ pub fn decode_value(key_kind: KeyKind, key: &[u8], value: &[u8]) -> DecodedValue
 
     match key_kind {
         // Raw bytes - user state, no decoding
-        KeyKind::State => DecodedValue::raw_bytes(value.len()),
+        KeyKind::State | KeyKind::ScopedState => DecodedValue::raw_bytes(value.len()),
 
         // Key-only tables (VQueue active have empty values)
         KeyKind::VQueueActive => {
@@ -190,7 +190,7 @@ pub fn decode_value(key_kind: KeyKind, key: &[u8], value: &[u8]) -> DecodedValue
         KeyKind::Outbox => decode_protobuf::<OutboxMessage>(value),
         KeyKind::ServiceStatus => decode_protobuf::<VirtualObjectStatus>(value),
         KeyKind::Timers => decode_protobuf::<Timer>(value),
-        KeyKind::Promise => decode_protobuf::<Promise>(value),
+        KeyKind::Promise | KeyKind::ScopedPromise => decode_protobuf::<Promise>(value),
 
         // FSM table - decode based on state_id from key
         KeyKind::Fsm => decode_fsm_value(key, value),

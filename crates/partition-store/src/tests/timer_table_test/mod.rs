@@ -51,7 +51,7 @@ async fn populate_data<T: WriteTimerTable>(txn: &mut T) {
     )
     .unwrap();
 
-    let service_invocation = mock_service_invocation(ServiceId::new("svc-2", "key-2"));
+    let service_invocation = mock_service_invocation(ServiceId::new(None, "svc-2", "key-2"));
     txn.put_timer(
         &TimerKey {
             kind: TimerKeyKind::Invoke {

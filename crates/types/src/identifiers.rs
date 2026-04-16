@@ -30,9 +30,8 @@ use rand::Rng;
 use sha2::{Digest, Sha256};
 use ulid::Ulid;
 
-use restate_encoding::{BilrostNewType, NetSerde};
-
 use self::partitioned::partitioned_resource_id;
+use crate::Scope;
 use crate::base62_util::{base62_encode_fixed_width_u128, base62_max_length_for_type};
 use crate::errors::IdDecodeError;
 use crate::id_util::IdResourceType;
@@ -40,6 +39,7 @@ use crate::id_util::{IdDecoder, IdEncoder};
 use crate::invocation::{InvocationTarget, InvocationTargetType, WorkflowHandlerType};
 use crate::journal_v2::SignalId;
 use crate::time::MillisSinceEpoch;
+use restate_encoding::{BilrostNewType, NetSerde};
 
 thread_local! {
     // a thread-local xxh3 hashing state to reuse its allocation since its internal buffer is quite
@@ -210,6 +210,7 @@ impl InvocationUuid {
     }
 
     pub fn generate(invocation_target: &InvocationTarget, idempotency_key: Option<&str>) -> Self {
+        let scope = invocation_target.scope();
         const HASH_SEPARATOR: u8 = 0x2c;
 
         // --- Rules for deterministic ID
@@ -224,7 +225,7 @@ impl InvocationUuid {
                 // Workflow run
                 let mut hasher = Sha256::new();
                 hasher.update(b"wf");
-                if let Some(scope) = invocation_target.scope() {
+                if let Some(scope) = scope {
                     hasher.update([HASH_SEPARATOR]);
                     hasher.update(scope.as_bytes());
                 }
@@ -248,7 +249,7 @@ impl InvocationUuid {
                 // Invocations with Idempotency key
                 let mut hasher = Sha256::new();
                 hasher.update(b"ik");
-                if let Some(scope) = invocation_target.scope() {
+                if let Some(scope) = scope {
                     hasher.update([HASH_SEPARATOR]);
                     hasher.update(scope.as_bytes());
                 }
@@ -366,27 +367,50 @@ pub struct ServiceId {
 
     #[bilrost(3)]
     partition_key: PartitionKey,
+
+    /// Optional scope for the service instance. Different scopes have separate state.
+    #[bilrost(4)]
+    pub scope: Option<Scope>,
 }
 
 impl ServiceId {
-    pub fn new(service_name: impl Into<ByteString>, key: impl Into<ByteString>) -> Self {
+    pub fn new(
+        scope: Option<Scope>,
+        service_name: impl Into<ByteString>,
+        key: impl Into<ByteString>,
+    ) -> Self {
         let key = key.into();
-        let partition_key = partitioner::HashPartitioner::compute_partition_key(&key);
-        Self::with_partition_key(partition_key, service_name, key)
+        let partition_key = scope
+            .as_ref()
+            .map(|s| s.partition_key())
+            .unwrap_or_else(|| partitioner::HashPartitioner::compute_partition_key(&key));
+        Self {
+            service_name: service_name.into(),
+            key,
+            partition_key,
+            scope,
+        }
     }
 
     /// # Important
-    /// The `partition_key` must be hash of the `key` computed via [`HashPartitioner`].
+    /// The `partition_key` must be hash of the `key` computed via [`HashPartitioner`],
+    /// or `scope.partition_key()` if scoped.
     pub fn with_partition_key(
         partition_key: PartitionKey,
         service_name: impl Into<ByteString>,
         key: impl Into<ByteString>,
     ) -> Self {
-        Self::from_parts(partition_key, service_name.into(), key.into())
+        Self {
+            service_name: service_name.into(),
+            key: key.into(),
+            partition_key,
+            scope: None,
+        }
     }
 
     /// # Important
-    /// The `partition_key` must be hash of the `key` computed via [`HashPartitioner`].
+    /// The `partition_key` must be hash of the `key` computed via [`HashPartitioner`],
+    /// or `scope.partition_key()` if scoped.
     pub const fn from_parts(
         partition_key: PartitionKey,
         service_name: ByteString,
@@ -396,6 +420,7 @@ impl ServiceId {
             service_name,
             key,
             partition_key,
+            scope: None,
         }
     }
 }
@@ -463,7 +488,8 @@ impl InvocationId {
     where
         F: FnOnce() -> PartitionKey,
     {
-        let partition_key = if let Some(scope) = invocation_target.scope() {
+        let scope = invocation_target.scope();
+        let partition_key = if let Some(scope) = scope {
             // Scoped invocations inherit the partition key from their owning scope
             scope.partition_key()
         } else {
@@ -1325,6 +1351,7 @@ mod mocks {
     impl ServiceId {
         pub fn mock_random() -> Self {
             Self::new(
+                None,
                 Alphanumeric.sample_string(&mut rand::rng(), 8),
                 Alphanumeric.sample_string(&mut rand::rng(), 16),
             )
@@ -1339,6 +1366,7 @@ mod mocks {
                 service_name: ByteString::from_static(service_name),
                 key: ByteString::from_static(service_key),
                 partition_key,
+                scope: None,
             }
         }
     }

@@ -724,7 +724,8 @@ pub(crate) async fn get_state_keys(
     let mut user_state: HashMap<ServiceId, HashMap<String, Bytes>> = HashMap::new();
     for row in query_result_iter {
         user_state
-            .entry(ServiceId::new(row.service_name, row.service_key))
+            // todo(tillrohrmann) allow specifying the scope
+            .entry(ServiceId::new(None, row.service_name, row.service_key))
             .or_default()
             .insert(row.key, Bytes::from(row.value));
     }

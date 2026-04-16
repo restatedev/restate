@@ -19,7 +19,7 @@ mod waiting_reader;
 
 use std::io::Cursor;
 
-pub use entry::{EntryStatusKey, StatusHeaderRaw};
+pub use entry::{EntryStatusKey, EntryStatusKeyRef, StatusHeaderRaw};
 pub use inbox::InboxKey;
 pub use input::InputPayloadKey;
 pub use metadata::*;
@@ -41,6 +41,7 @@ use restate_types::vqueues::{EntryId, Seq, VQueueId};
 
 use self::entry::{LazyEntryStatusHolder, OwnedEntryStatusHeader, StatusHeaderRawRef};
 use crate::keys::{DecodeTableKey, EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
+use crate::vqueue_table::input::InputPayloadKeyRef;
 use crate::{PartitionDb, PartitionStoreTransaction, Result, StorageAccess, TableKind};
 
 impl ScanVQueueTable for PartitionDb {
@@ -226,7 +227,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
 
     fn mark_vqueue_as_active(&mut self, qid: &VQueueId) {
         let mut key_buffer = [0u8; ActiveKey::serialized_length_fixed()];
-        ActiveKey::builder_ref()
+        ActiveKeyRef::builder()
             .qid(qid)
             .serialize_to(&mut key_buffer.as_mut());
         self.raw_put_cf(KeyKind::VQueueActive, key_buffer, []);
@@ -234,7 +235,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
 
     fn mark_vqueue_as_dormant(&mut self, qid: &restate_types::vqueues::VQueueId) {
         let mut key_buffer = [0u8; ActiveKey::serialized_length_fixed()];
-        ActiveKey::builder_ref()
+        ActiveKeyRef::builder()
             .qid(qid)
             .serialize_to(&mut key_buffer.as_mut());
         self.raw_delete_cf(KeyKind::VQueueActive, key_buffer);
@@ -250,7 +251,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         status: Status,
     ) {
         let mut key_buffer = [0u8; EntryStatusKey::serialized_length_fixed()];
-        EntryStatusKey::builder_ref()
+        EntryStatusKeyRef::builder()
             .partition_key(&qid.partition_key())
             .id(entry_key.entry_id())
             .serialize_to(&mut key_buffer.as_mut());
@@ -281,7 +282,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
 
     fn delete_vqueue_entry_status(&mut self, partition_key: PartitionKey, id: &EntryId) {
         let mut key_buffer = [0u8; EntryStatusKey::serialized_length_fixed()];
-        EntryStatusKey::builder_ref()
+        EntryStatusKeyRef::builder()
             .partition_key(&partition_key)
             .id(id)
             .serialize_to(&mut key_buffer.as_mut());
@@ -300,7 +301,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
     {
         let seq = seq.into();
         let mut key_buffer = [0u8; InputPayloadKey::serialized_length_fixed()];
-        InputPayloadKey::builder_ref()
+        InputPayloadKeyRef::builder()
             .qid(qid)
             .seq(&seq)
             .id(id)
@@ -318,7 +319,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
     fn delete_vqueue_input_payload(&mut self, qid: &VQueueId, seq: impl Into<Seq>, id: &EntryId) {
         let key_buf = {
             let seq = seq.into();
-            let key = InputPayloadKey::builder_ref().qid(qid).seq(&seq).id(id);
+            let key = InputPayloadKeyRef::builder().qid(qid).seq(&seq).id(id);
             let key_buf = self.cleared_key_buffer_mut(key.serialized_length());
             key.serialize_to(key_buf);
             key_buf.split()
@@ -331,7 +332,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
 impl ReadVQueueTable for PartitionStoreTransaction<'_> {
     async fn get_vqueue(&self, qid: &VQueueId) -> Result<Option<VQueueMeta>, StorageError> {
         let mut key_buffer = [0u8; MetaKey::serialized_length_fixed()];
-        MetaKey::builder_ref()
+        MetaKeyRef::builder()
             .qid(qid)
             .serialize_to(&mut key_buffer.as_mut());
         let Some(raw_value) = self.get(TableKind::VQueue, key_buffer)? else {
@@ -347,7 +348,7 @@ impl ReadVQueueTable for PartitionStoreTransaction<'_> {
         id: &EntryId,
     ) -> Result<Option<impl EntryStatusHeader + 'static>> {
         let mut key_buffer = [0u8; EntryStatusKey::serialized_length_fixed()];
-        EntryStatusKey::builder_ref()
+        EntryStatusKeyRef::builder()
             .partition_key(&partition_key)
             .id(id)
             .serialize_to(&mut key_buffer.as_mut());
@@ -369,7 +370,7 @@ impl ReadVQueueTable for PartitionStoreTransaction<'_> {
         entry_id: &EntryId,
     ) -> Result<Option<impl LazyEntryStatus + 'a>> {
         let mut key_buffer = [0u8; EntryStatusKey::serialized_length_fixed()];
-        EntryStatusKey::builder_ref()
+        EntryStatusKeyRef::builder()
             .partition_key(&partition_key)
             .id(entry_id)
             .serialize_to(&mut key_buffer.as_mut());
@@ -424,7 +425,7 @@ impl ReadVQueueTable for PartitionStoreTransaction<'_> {
     {
         let mut key_buffer = [0u8; InputPayloadKey::serialized_length_fixed()];
         let seq = seq.into();
-        InputPayloadKey::builder_ref()
+        InputPayloadKeyRef::builder()
             .qid(qid)
             .seq(&seq)
             .id(id)

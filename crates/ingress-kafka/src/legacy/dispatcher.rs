@@ -19,14 +19,17 @@ use tracing::trace;
 
 use restate_bifrost::Bifrost;
 use restate_storage_api::deduplication_table::DedupInformation;
+use restate_types::Scope;
 use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey, partitioner};
 use restate_types::invocation::{InvocationTarget, ServiceInvocation, SpanRelation};
+use restate_types::limit_key::LimitKey;
 use restate_types::live;
 use restate_types::message::MessageIndex;
 use restate_types::partition_table::PartitionTableError;
 use restate_types::schema::Schema;
 use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
 use restate_types::schema::subscriptions::{EventInvocationTargetTemplate, Sink, Subscription};
+use restate_util_string::ReString;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
 use crate::legacy::consumer_task::KafkaDeduplicationId;
@@ -49,6 +52,8 @@ impl KafkaIngressEvent {
         deduplication_id: KafkaDeduplicationId,
         deduplication_index: MessageIndex,
         headers: Vec<restate_types::invocation::Header>,
+        scope: Option<Scope>,
+        limit_key: LimitKey<ReString>,
         consumer_group_id: &str,
         topic: &str,
         partition: i32,
@@ -99,7 +104,8 @@ impl KafkaIngressEvent {
                     *handler_ty,
                 ),
             },
-        };
+        }
+        .with_scope(scope);
 
         // Compute the retention values
         let target = schema
@@ -141,6 +147,7 @@ impl KafkaIngressEvent {
         service_invocation.with_related_span(SpanRelation::parent(ingress_span_context));
         service_invocation.argument = payload;
         service_invocation.headers = headers;
+        service_invocation.limit_key = limit_key;
         service_invocation.with_retention(invocation_retention);
 
         Ok(KafkaIngressEvent {

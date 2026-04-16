@@ -369,6 +369,16 @@ impl ServiceRevision {
         retry_policy.merge_with_service_revision_overrides(self);
 
         let mut info = vec![];
+
+        // TODO(tillrohrmann): Once service renaming is supported, upgrade this to a
+        //  hard error in validate_service_name() (reserve 'api' like 'restate'/'openapi').
+        if self.name.eq_ignore_ascii_case("api") {
+            info.push(SchemaInfo::new_with_code(
+                &restate_errors::RT0024,
+                "The service name 'api' will become a reserved keyword in a future version of Restate. Please rename this service.",
+            ));
+        }
+
         if let Some(inactivity_timeout) = self.inactivity_timeout
             && served_using_protocol_type == Some(ProtocolType::RequestResponse)
         {

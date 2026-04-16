@@ -20,13 +20,18 @@ use rdkafka::Message;
 use rdkafka::message::BorrowedMessage;
 use tracing::{info_span, trace};
 
+use rdkafka::message::Headers;
+
 use restate_storage_api::deduplication_table::DedupInformation;
+use restate_types::Scope;
 use restate_types::identifiers::{InvocationId, WithPartitionKey, partitioner};
 use restate_types::invocation::{Header, InvocationTarget, ServiceInvocation, SpanRelation};
+use restate_types::limit_key::LimitKey;
 use restate_types::live::Live;
 use restate_types::schema::Schema;
 use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
 use restate_types::schema::subscriptions::{EventInvocationTargetTemplate, Sink, Subscription};
+use restate_util_string::ReString;
 use restate_wal_protocol::{Command, Destination, Envelope, Source};
 
 use crate::Error;
@@ -85,6 +90,7 @@ impl EnvelopeBuilder {
         };
 
         let headers = Self::generate_events_attributes(&msg, &self.subscription_id);
+        let (scope, limit_key) = extract_scope_limit_key(&msg);
         let dedup = DedupInformation::producer(producer_id, msg.offset() as u64);
 
         let invocation = InvocationBuilder::create(
@@ -94,6 +100,8 @@ impl EnvelopeBuilder {
             key,
             payload,
             headers,
+            scope,
+            limit_key,
             consumer_group_id,
             msg.topic(),
             msg.partition(),
@@ -147,6 +155,43 @@ impl EnvelopeBuilder {
     }
 }
 
+pub(crate) fn extract_scope_limit_key(
+    msg: &impl rdkafka::Message,
+) -> (Option<Scope>, LimitKey<ReString>) {
+    let Some(kafka_headers) = msg.headers() else {
+        return (None, LimitKey::None);
+    };
+
+    let mut scope = None;
+    let mut limit_key = LimitKey::None;
+
+    for idx in 0..kafka_headers.count() {
+        let header = kafka_headers.get(idx);
+        let Some(value) = header.value else {
+            continue;
+        };
+        match header.key {
+            "x-restate-scope" => {
+                if let Ok(s) = std::str::from_utf8(value)
+                    && !s.is_empty()
+                {
+                    scope = Some(Scope::new(s));
+                }
+            }
+            "x-restate-limit-key" => {
+                if let Ok(s) = std::str::from_utf8(value)
+                    && let Ok(lk) = s.parse()
+                {
+                    limit_key = lk;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (scope, limit_key)
+}
+
 #[derive(Debug)]
 pub struct InvocationBuilder;
 
@@ -159,6 +204,8 @@ impl InvocationBuilder {
         key: Bytes,
         payload: Bytes,
         headers: Vec<restate_types::invocation::Header>,
+        scope: Option<Scope>,
+        limit_key: LimitKey<ReString>,
         consumer_group_id: &str,
         topic: &str,
         partition: i32,
@@ -196,7 +243,8 @@ impl InvocationBuilder {
                 handler.clone(),
                 *handler_ty,
             ),
-        };
+        }
+        .with_scope(scope);
 
         // Compute the retention values
         let target = schema
@@ -221,9 +269,6 @@ impl InvocationBuilder {
         };
 
         let invocation_id = InvocationId::generate_or_else(&invocation_target, None, || {
-            // todo: reconcile this with the world of scopes+limit keys.
-            // In particular, the scatter-width of partition keys and how scopes can be assigned to
-            // ingested items from kafka.
             partitioner::HashPartitioner::compute_partition_key(seed)
         });
 
@@ -247,6 +292,7 @@ impl InvocationBuilder {
         service_invocation.with_related_span(SpanRelation::parent(ingress_span_context));
         service_invocation.argument = payload;
         service_invocation.headers = headers;
+        service_invocation.limit_key = limit_key;
         service_invocation.with_retention(invocation_retention);
 
         Ok(service_invocation)

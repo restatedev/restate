@@ -371,7 +371,7 @@ mod tests {
         let extractor =
             FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
 
-        let service_id = ServiceId::new("greeter", "key-1");
+        let service_id = ServiceId::new(None, "greeter", "key-1");
         let expected_key = service_id.partition_key();
 
         let got_keys = extractor
@@ -388,8 +388,8 @@ mod tests {
         let extractor =
             FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
 
-        let service_id_1 = ServiceId::new("greeter", "key-1");
-        let service_id_2 = ServiceId::new("greeter", "key-2");
+        let service_id_1 = ServiceId::new(None, "greeter", "key-1");
+        let service_id_2 = ServiceId::new(None, "greeter", "key-2");
         let expected_key_1 = service_id_1.partition_key();
         let expected_key_2 = service_id_2.partition_key();
 
@@ -412,8 +412,8 @@ mod tests {
         let extractor =
             FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
 
-        let service_id_1 = ServiceId::new("greeter", "key-1");
-        let service_id_2 = ServiceId::new("greeter", "key-2");
+        let service_id_1 = ServiceId::new(None, "greeter", "key-1");
+        let service_id_2 = ServiceId::new(None, "greeter", "key-2");
         let expected_key_1 = service_id_1.partition_key();
         let expected_key_2 = service_id_2.partition_key();
 
@@ -436,10 +436,10 @@ mod tests {
         let extractor =
             FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
 
-        let service_id_1 = ServiceId::new("greeter", "key-1");
-        let service_id_2 = ServiceId::new("greeter", "key-2");
-        let service_id_3 = ServiceId::new("greeter", "key-3");
-        let service_id_4 = ServiceId::new("greeter", "key-4");
+        let service_id_1 = ServiceId::new(None, "greeter", "key-1");
+        let service_id_2 = ServiceId::new(None, "greeter", "key-2");
+        let service_id_3 = ServiceId::new(None, "greeter", "key-3");
+        let service_id_4 = ServiceId::new(None, "greeter", "key-4");
         let expected_key_1 = service_id_1.partition_key();
         let expected_key_2 = service_id_2.partition_key();
         let expected_key_3 = service_id_3.partition_key();

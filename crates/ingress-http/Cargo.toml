@@ -19,6 +19,7 @@ restate-core = { workspace = true }
 restate-time-util = { workspace = true, features = ["serde_with"] }
 restate-tracing-instrumentation = { workspace = true }
 restate-types = { workspace = true }
+restate-util-string = { workspace = true }
 
 anyhow = { workspace = true }
 bytes = { workspace = true }

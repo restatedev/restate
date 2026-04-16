@@ -315,6 +315,14 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
                 &["service_name", "service_key", "state_key"],
             );
         }
+        KeyKind::ScopedState => {
+            // scope (var) + service_name (var) + service_key (var) + state_key (var)
+            parse_variable_fields(
+                &key[10..],
+                &mut segments,
+                &["scope", "service_name", "service_key", "state_key"],
+            );
+        }
         KeyKind::ServiceStatus => {
             // service_name (var) + service_key (var)
             parse_variable_fields(&key[10..], &mut segments, &["service_name", "service_key"]);
@@ -338,6 +346,14 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
                 &key[10..],
                 &mut segments,
                 &["service_name", "service_key", "promise_key"],
+            );
+        }
+        KeyKind::ScopedPromise => {
+            // scope (var) + service_name (var) + service_key (var) + key (var)
+            parse_variable_fields(
+                &key[10..],
+                &mut segments,
+                &["scope", "service_name", "service_key", "promise_key"],
             );
         }
         KeyKind::Idempotency => {

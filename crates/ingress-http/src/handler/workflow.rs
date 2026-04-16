@@ -35,13 +35,14 @@ where
     where
         <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
     {
+        // todo(tillrohrmann) plumb through scope value
         match workflow_request_type {
             WorkflowRequestType::Attach(name, key) => {
-                self.handle_workflow_attach(req, ServiceId::new(name, key))
+                self.handle_workflow_attach(req, ServiceId::new(None, name, key))
                     .await
             }
             WorkflowRequestType::GetOutput(name, key) => {
-                self.handle_workflow_get_output(req, ServiceId::new(name, key))
+                self.handle_workflow_get_output(req, ServiceId::new(None, name, key))
                     .await
             }
         }

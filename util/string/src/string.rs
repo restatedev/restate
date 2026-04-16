@@ -54,7 +54,7 @@ pub struct ReString(Inner);
 const _: () = {
     assert!(
         24 == size_of::<ReString>(),
-        "ReString should be the same size as u64"
+        "ReString should be the same size as String"
     );
 
     assert!(

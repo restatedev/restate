@@ -103,6 +103,8 @@ impl Default for PromiseState {
     }
 }
 
+// todo(tillrohrmann) add support for Bilrost so that we can serialize the promise
+// in the scoped promise table using Bilrost and deserialize it in a borrowed fashion.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Promise {
     pub state: PromiseState,

@@ -114,6 +114,7 @@ use restate_types::vqueues::{self, EntryId, VQueueId};
 use restate_types::{RESTATE_VERSION_1_6_0, journal_v2};
 use restate_types::{RestateVersion, SemanticRestateVersion};
 use restate_types::{Versioned, journal::*};
+use restate_util_string::ReString;
 use restate_vqueues::{VQueue, VQueuesMetaCache};
 use restate_wal_protocol::Command;
 use restate_wal_protocol::timer::TimerKeyDisplay;
@@ -758,6 +759,9 @@ impl<S> StateMachineApplyContext<'_, S> {
             return Ok(());
         };
 
+        // Extract limit_key before consuming the ServiceInvocation
+        let limit_key = std::mem::take(&mut service_invocation.limit_key);
+
         // Prepare PreFlightInvocationMetadata structure
         let submit_notification_sink = service_invocation.submit_notification_sink.take();
         let pre_flight_invocation_metadata = PreFlightInvocationMetadata::from_service_invocation(
@@ -769,6 +773,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             invocation_id,
             pre_flight_invocation_metadata,
             submit_notification_sink,
+            &limit_key,
         )
         .await
     }
@@ -778,6 +783,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         invocation_id: InvocationId,
         mut pre_flight_invocation_metadata: PreFlightInvocationMetadata,
         submit_notification_sink: Option<SubmitNotificationSink>,
+        limit_key: &LimitKey<ReString>,
     ) -> Result<(), Error>
     where
         S: IdempotencyTable
@@ -854,6 +860,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     invocation_id,
                     pre_flight_invocation_metadata,
                     submit_notification_sink,
+                    limit_key,
                 )
                 .await;
         }
@@ -921,6 +928,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         invocation_id: InvocationId,
         metadata: PreFlightInvocationMetadata,
         submit_notification_sink: Option<SubmitNotificationSink>,
+        limit_key: &LimitKey<ReString>,
     ) -> Result<(), Error>
     where
         S: IdempotencyTable
@@ -945,7 +953,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             self.storage,
             self.vqueues_cache,
             self.is_leader.then_some(self.action_collector),
-            &LimitKey::None,
+            limit_key,
         )
         .await?
         .enqueue_new(
@@ -3648,6 +3656,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                             .unwrap_or_default(),
                         journal_retention_duration: Default::default(),
                         idempotency_key: request.idempotency_key,
+                        limit_key: Default::default(),
                         submit_notification_sink: None,
                         restate_version: RestateVersion::current(),
                     });
@@ -3714,6 +3723,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     completion_retention_duration: (*completion_retention_time).unwrap_or_default(),
                     journal_retention_duration: Default::default(),
                     idempotency_key: request.idempotency_key,
+                    limit_key: Default::default(),
                     submit_notification_sink: None,
                     restate_version: RestateVersion::current(),
                 });
@@ -4817,7 +4827,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         );
 
         self.storage
-            .put_user_state(&service_id, key, value)
+            .put_user_state(&service_id, &key, value)
             .map_err(Error::Storage)
     }
 
@@ -5318,6 +5328,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             // fake, doesn't matter.
             handler: ByteString::from_static("_state_mutation"),
             handler_ty: VirtualObjectHandlerType::Exclusive,
+            scope: service_id.scope.clone(),
         };
 
         // todo: Make this a use-facing ID, generated at ingress.
@@ -5327,6 +5338,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             &target,
             &limit_key,
         );
+
         let mut vqueue = VQueue::vqueue_from_invocation_target(
             now,
             service_id.partition_key(),

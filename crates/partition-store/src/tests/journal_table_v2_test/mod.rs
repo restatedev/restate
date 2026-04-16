@@ -57,6 +57,7 @@ fn mock_call_command(
             invocation_target: InvocationTarget::Service {
                 name: ByteString::from_static("MySvc"),
                 handler: ByteString::from_static("MyHandler"),
+                scope: None,
             },
             span_context: ServiceInvocationSpanContext::empty(),
             parameter: Bytes::from_static(b"some payload"),
@@ -64,6 +65,7 @@ fn mock_call_command(
             idempotency_key: Some(ByteString::from_static("my-idempotency-key")),
             completion_retention_duration: Duration::from_secs(10),
             journal_retention_duration: Duration::from_secs(11),
+            limit_key: Default::default(),
         },
         invocation_id_completion_id,
         name: Default::default(),
@@ -78,6 +80,7 @@ fn mock_one_way_call_command(invocation_id_completion_id: CompletionId) -> Entry
             invocation_target: InvocationTarget::Service {
                 name: ByteString::from_static("MySvc"),
                 handler: ByteString::from_static("MyHandler"),
+                scope: None,
             },
             span_context: ServiceInvocationSpanContext::empty(),
             parameter: Bytes::from_static(b"some payload"),
@@ -85,6 +88,7 @@ fn mock_one_way_call_command(invocation_id_completion_id: CompletionId) -> Entry
             idempotency_key: Some(ByteString::from_static("my-idempotency-key")),
             completion_retention_duration: Duration::from_secs(10),
             journal_retention_duration: Duration::from_secs(11),
+            limit_key: Default::default(),
         },
         invoke_time: 0.into(),
         invocation_id_completion_id,

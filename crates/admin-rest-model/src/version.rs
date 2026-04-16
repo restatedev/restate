@@ -28,6 +28,9 @@ pub enum AdminApiVersion {
     V1 = 1,
     V2 = 2,
     V3 = 3,
+    /// Added with v1.7.0. Added scope column to sys_state and sys_promise tables. More changes to
+    /// follow with the vqueues changes.
+    V4 = 4,
 }
 
 impl AdminApiVersion {
