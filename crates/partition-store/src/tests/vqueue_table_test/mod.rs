@@ -66,7 +66,7 @@ fn entry_value(id: u8, original_run_at: u64, num_attempts: u32) -> EntryValue {
         stats.latest_attempt_at = Some(created_at);
     }
     let status = if num_attempts > 0 {
-        Status::Running
+        Status::Started
     } else if stats.first_runnable_at > created_at.to_unix_millis() {
         Status::Scheduled
     } else {
