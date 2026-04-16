@@ -2933,7 +2933,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 let record_unique_ts =
                     UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
 
-                self.mutate_state(&state_mutation).await?;
+                let status = self.mutate_state(&state_mutation).await?;
 
                 // A special case handling for state mutations since they run inline.
                 VQueue::get(
@@ -2945,7 +2945,12 @@ impl<S> StateMachineApplyContext<'_, S> {
                 .await?
                 .expect("state mutation run on vqueue on a non-existent vqueue")
                 // state mutations run and end immediately.
-                .run_then_finish(record_unique_ts, &state_header, wait_stats);
+                .run_then_finish(
+                    record_unique_ts,
+                    &state_header,
+                    wait_stats,
+                    status,
+                );
             }
         }
 
@@ -5208,7 +5213,10 @@ impl<S> StateMachineApplyContext<'_, S> {
             .map_err(Error::Storage)
     }
 
-    async fn mutate_state(&mut self, state_mutation: &ExternalStateMutation) -> StorageResult<()>
+    async fn mutate_state(
+        &mut self,
+        state_mutation: &ExternalStateMutation,
+    ) -> StorageResult<vqueue_table::Status>
     where
         S: ReadStateTable + WriteStateTable,
     {
@@ -5235,7 +5243,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     "Ignore state mutation for service id '{:?}' because the expected version '{}' is not matching the actual version '{}'",
                     &service_id, expected, actual
                 );
-                return Ok(());
+                return Ok(vqueue_table::Status::Failed);
             }
         }
 
@@ -5250,7 +5258,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             self.storage.put_user_state(service_id, key, value)?;
         }
 
-        Ok(())
+        Ok(vqueue_table::Status::Succeeded)
     }
 
     /// Moves the given invocation to the inbox and making it eligible for scheduling. Depending on its
