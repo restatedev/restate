@@ -24,6 +24,7 @@ mod wall_clock;
 pub use hlc::HlcClock;
 #[cfg(feature = "test-util")]
 pub use mock_clock::MockClock;
+pub use rough_ts::RoughTimestamp;
 #[cfg(feature = "hlc")]
 pub use storage::{AtomicStorage, HlcClockStorage, LocalStorage};
 pub use unique_timestamp::{Error, UniqueTimestamp};
