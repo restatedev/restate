@@ -23,6 +23,8 @@ pub const VQUEUE_GLOBAL_THROTTLE_WAIT_MS: &str =
     "restate.vqueue.scheduler.global_throttle_ms.total";
 // Per vqueue start throttling (affects starts only)
 pub const VQUEUE_LOCAL_THROTTLE_WAIT_MS: &str = "restate.vqueue.scheduler.vqueue_throttle_ms.total";
+pub const VQUEUE_USER_LIMIT_WAIT_MS: &str = "restate.vqueue.scheduler.user_limit_wait_ms.total";
+pub const VQUEUE_LOCK_WAIT_MS: &str = "restate.vqueue.scheduler.lock_wait_ms.total";
 
 pub const ACTION_YIELD: &str = "yield";
 pub const ACTION_RUN: &str = "run";
@@ -68,6 +70,18 @@ pub fn describe_metrics() {
         VQUEUE_LOCAL_THROTTLE_WAIT_MS,
         Unit::Count,
         "Cumulative number of seconds vqueues waited because of their self-imposed start throttling"
+    );
+
+    describe_counter!(
+        VQUEUE_USER_LIMIT_WAIT_MS,
+        Unit::Count,
+        "Cumulative number of milliseconds spent waiting for user-defined concurrency limits"
+    );
+
+    describe_counter!(
+        VQUEUE_LOCK_WAIT_MS,
+        Unit::Count,
+        "Cumulative number of milliseconds spent waiting to acquire virtual object locks"
     );
 }
 

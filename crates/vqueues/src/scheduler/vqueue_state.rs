@@ -21,7 +21,8 @@ use restate_types::vqueues::VQueueId;
 
 use crate::metric_definitions::{
     VQUEUE_GLOBAL_THROTTLE_WAIT_MS, VQUEUE_INVOKER_CONCURRENCY_WAIT_MS,
-    VQUEUE_INVOKER_MEMORY_WAIT_MS, VQUEUE_LOCAL_THROTTLE_WAIT_MS,
+    VQUEUE_INVOKER_MEMORY_WAIT_MS, VQUEUE_LOCAL_THROTTLE_WAIT_MS, VQUEUE_LOCK_WAIT_MS,
+    VQUEUE_USER_LIMIT_WAIT_MS,
 };
 use crate::scheduler::queue::QueueItem;
 
@@ -91,6 +92,10 @@ struct Stats {
     blocked_on_invoker_memory_micros: u32,
     local_start_throttling_micros: u32,
     global_throttling_micros: u32,
+    last_blocked_on_user_limit: Option<tokio::time::Instant>,
+    blocked_on_user_limit_micros: u32,
+    last_blocked_on_lock: Option<tokio::time::Instant>,
+    blocked_on_lock_micros: u32,
 }
 impl Stats {
     fn reset(&mut self) {
@@ -100,19 +105,26 @@ impl Stats {
         self.blocked_on_invoker_memory_micros = 0;
         self.local_start_throttling_micros = 0;
         self.global_throttling_micros = 0;
+        self.last_blocked_on_user_limit = None;
+        self.blocked_on_user_limit_micros = 0;
+        self.last_blocked_on_lock = None;
+        self.blocked_on_lock_micros = 0;
     }
 
     fn finalize(&mut self) -> WaitStats {
-        // ensures that the last capacity/memory-blocked segment is accounted for
+        // ensures that the last blocked segments are accounted for
         self.record_invoker_memory_delay(false);
-        // ensures that the last capacity-blocked segment is accounted for
         self.record_invoker_concurrency_delay(false);
+        self.record_user_limit_delay(false);
+        self.record_lock_delay(false);
 
         let stats = WaitStats {
             blocked_on_global_capacity_ms: self.blocked_on_invoker_concurrency_micros / 1000,
             vqueue_start_throttling_ms: self.local_start_throttling_micros / 1000,
             blocked_on_invoker_memory_ms: self.blocked_on_invoker_memory_micros / 1000,
             global_invoker_throttling_ms: self.global_throttling_micros / 1000,
+            blocked_on_user_limit_ms: self.blocked_on_user_limit_micros / 1000,
+            blocked_on_lock_ms: self.blocked_on_lock_micros / 1000,
         };
         self.reset();
 
@@ -138,11 +150,29 @@ impl Stats {
                 self.blocked_on_invoker_memory_micros
             };
 
+        let blocked_on_user_limit_micros = if let Some(last) = self.last_blocked_on_user_limit {
+            let delay = last.elapsed();
+            self.blocked_on_user_limit_micros
+                .saturating_add(delay.as_micros().try_into().unwrap_or(u32::MAX))
+        } else {
+            self.blocked_on_user_limit_micros
+        };
+
+        let blocked_on_lock_micros = if let Some(last) = self.last_blocked_on_lock {
+            let delay = last.elapsed();
+            self.blocked_on_lock_micros
+                .saturating_add(delay.as_micros().try_into().unwrap_or(u32::MAX))
+        } else {
+            self.blocked_on_lock_micros
+        };
+
         WaitStats {
             blocked_on_global_capacity_ms: blocked_on_global_capacity_micros / 1000,
             vqueue_start_throttling_ms: self.local_start_throttling_micros / 1000,
             global_invoker_throttling_ms: self.global_throttling_micros / 1000,
             blocked_on_invoker_memory_ms: blocked_on_invoker_memory_micros / 1000,
+            blocked_on_user_limit_ms: blocked_on_user_limit_micros / 1000,
+            blocked_on_lock_ms: blocked_on_lock_micros / 1000,
         }
     }
 }
@@ -194,6 +224,38 @@ impl Stats {
             counter!(VQUEUE_INVOKER_MEMORY_WAIT_MS).increment(delay.as_millis() as u64);
             self.blocked_on_invoker_memory_micros = self
                 .blocked_on_invoker_memory_micros
+                .saturating_add(delay.as_micros().try_into().unwrap_or(u32::MAX))
+        }
+    }
+
+    fn record_user_limit_delay(&mut self, is_now_blocked: bool) {
+        let last = self.last_blocked_on_user_limit.take();
+        self.last_blocked_on_user_limit = if is_now_blocked {
+            Some(Instant::now())
+        } else {
+            None
+        };
+        if let Some(last) = last {
+            let delay = last.elapsed();
+            counter!(VQUEUE_USER_LIMIT_WAIT_MS).increment(delay.as_millis() as u64);
+            self.blocked_on_user_limit_micros = self
+                .blocked_on_user_limit_micros
+                .saturating_add(delay.as_micros().try_into().unwrap_or(u32::MAX))
+        }
+    }
+
+    fn record_lock_delay(&mut self, is_now_blocked: bool) {
+        let last = self.last_blocked_on_lock.take();
+        self.last_blocked_on_lock = if is_now_blocked {
+            Some(Instant::now())
+        } else {
+            None
+        };
+        if let Some(last) = last {
+            let delay = last.elapsed();
+            counter!(VQUEUE_LOCK_WAIT_MS).increment(delay.as_millis() as u64);
+            self.blocked_on_lock_micros = self
+                .blocked_on_lock_micros
                 .saturating_add(delay.as_micros().try_into().unwrap_or(u32::MAX))
         }
     }
@@ -315,6 +377,12 @@ impl<S: VQueueStore> VQueueState<S> {
                     }
                     ResourceKind::InvokerThrottling => {
                         // self.head_stats.record_start_throttling_delay(delay);
+                    }
+                    ResourceKind::LimitKeyConcurrency { .. } => {
+                        self.head_stats.record_user_limit_delay(true);
+                    }
+                    ResourceKind::Lock { .. } => {
+                        self.head_stats.record_lock_delay(true);
                     }
                     _ => {}
                 }
