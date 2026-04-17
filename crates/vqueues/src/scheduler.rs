@@ -34,8 +34,12 @@ mod clock;
 mod drr;
 mod eligible;
 mod queue;
+mod queue_meta;
 mod resource_manager;
 mod vqueue_state;
+
+// Re-exports
+pub use self::queue_meta::{MetaLiteUpdate, VQueueMetaLite};
 pub use resource_manager::ResourceManager;
 
 slotmap::new_key_type! { pub(crate) struct VQueueHandle; }
