@@ -105,11 +105,7 @@ pub struct VQueue<'a, A, S> {
     action_collector: Option<&'a mut Vec<A>>,
 }
 
-impl<'a, A, S> VQueue<'a, A, S>
-where
-    A: From<VQueueEvent> + 'static,
-    S: WriteVQueueTable + ReadVQueueTable + WriteLockTable,
-{
+impl VQueue<'_, (), ()> {
     /// Determines the vqueue id from the invocation id, invocation target, and limit key.
     #[inline]
     pub fn infer_vqueue_id_from_invocation(
@@ -119,6 +115,13 @@ where
     ) -> VQueueId {
         util::infer_vqueue_id_from_invocation(partition_key, invocation_target, limit_key)
     }
+}
+
+impl<'a, A, S> VQueue<'a, A, S>
+where
+    A: From<VQueueEvent> + 'static,
+    S: WriteVQueueTable + ReadVQueueTable + WriteLockTable,
+{
     /// The entry has completed execution and it needs to be removed from the vqueue.
     ///
     /// Does nothing if the entry was not found in the previous stage.
@@ -178,7 +181,7 @@ where
         limit_key: &LimitKey<ReString>,
     ) -> Result<Self, StorageError> {
         let qid =
-            Self::infer_vqueue_id_from_invocation(partition_key, invocation_target, limit_key);
+            util::infer_vqueue_id_from_invocation(partition_key, invocation_target, limit_key);
         let cache_key = match cache.load(storage, &qid).await? {
             Some(key) => key,
             None => {
@@ -399,18 +402,24 @@ where
         debug!(
             header = ?header,
             modified_key = ?modified_key,
-            "[run] entry: {},  next_stage: '{}', new_status: {}",
+            "[run] entry: {},  next_stage: '{}', prev_status: {}",
             header.display_entry_id(),
             Stage::Running,
-            Status::Running,
+            header.status(),
         );
+
+        let new_status = if !header.has_started() {
+            Status::Started
+        } else {
+            header.status()
+        };
 
         self.storage.put_vqueue_inbox(
             vqueue_id,
             Stage::Running,
             &modified_key,
             &EntryValue {
-                status: Status::Running,
+                status: new_status,
                 stats: stats.clone(),
                 // We pick metadata from EntryStatusHeader since it could have been updated
                 // while we were parked, or after the previous run.
@@ -425,7 +434,7 @@ where
             &modified_key,
             header.metadata(),
             stats,
-            Status::Running,
+            new_status,
         );
 
         if let Some(collector) = self.action_collector.as_deref_mut() {
@@ -463,7 +472,6 @@ where
         header: &impl EntryStatusHeader,
         run_at: Option<RoughTimestamp>,
         updated_metadata: Option<EntryMetadata>,
-        new_status: Status,
     ) {
         let vqueue_id = header.vqueue_id();
         let meta = self.cache.get_mut(self.cache_key).unwrap();
@@ -504,8 +512,10 @@ where
         debug!(
             header = ?header,
             modified_key = ?modified_key,
-            "[wake-up] entry: {},  next_stage: 'inbox', new_status: {new_status}",
-            header.display_entry_id()
+            "[wake-up] entry: {},  next_stage: '{}', last_status: {}",
+            header.display_entry_id(),
+            Stage::Inbox,
+            header.status(),
         );
 
         // Update the entry state so we can track the new entry key and stage
@@ -515,12 +525,12 @@ where
             &modified_key,
             &maybe_new_metadata,
             stats.clone(),
-            new_status,
+            header.status(),
         );
 
         let value = EntryValue {
             stats,
-            status: new_status,
+            status: header.status(),
             metadata: maybe_new_metadata,
         };
 

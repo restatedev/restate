@@ -113,7 +113,7 @@ use restate_types::vqueues::{self, EntryId, VQueueId};
 use restate_types::{RESTATE_VERSION_1_6_0, journal_v2};
 use restate_types::{RestateVersion, SemanticRestateVersion};
 use restate_types::{Versioned, journal::*};
-use restate_vqueues::{VQueue, VQueuesMetaCache, generate_vqueue_id};
+use restate_vqueues::{VQueue, VQueuesMetaCache};
 use restate_wal_protocol::Command;
 use restate_wal_protocol::timer::TimerKeyDisplay;
 use restate_wal_protocol::timer::TimerKeyValue;
@@ -3018,13 +3018,33 @@ impl<S> StateMachineApplyContext<'_, S> {
             return Ok(());
         }
 
-        if !header.status().can_move_to_run() {
+        if header.has_started() {
             // Currently, we leave the status as is. We let the rest of the code handles the old
             // invocation status update and make the actual decision about resuming or not.
-            info!(
-                "Invocation {invocation_id} cannot resume because it's status is: {}",
-                header.status()
-            );
+
+            // just send to invoker
+            debug_if_leader!(self.is_leader, "Invoke");
+            info!("Resuming invocation {invocation_id}, scheduler stats: {wait_stats:?}");
+
+            let status = self.get_invocation_status(&invocation_id).await?;
+            VQueue::get(
+                qid,
+                self.storage,
+                self.vqueues_cache,
+                self.is_leader.then_some(self.action_collector),
+            )
+            .await?
+            .unwrap()
+            .run_entry(record_unique_ts, &header, wait_stats);
+
+            if self.is_leader {
+                self.action_collector.push(Action::VQInvoke {
+                    qid: qid.clone(),
+                    key: *entry_key,
+                    invocation_target: status.invocation_target().unwrap().clone(),
+                });
+            }
+            return Ok(());
         }
 
         // legacy status maintenance
@@ -3092,65 +3112,8 @@ impl<S> StateMachineApplyContext<'_, S> {
                     invocation_input,
                 )?;
             }
-            InvocationStatus::Invoked(metadata) if self.is_leader => {
-                // just send to invoker
-                debug_if_leader!(self.is_leader, "Invoke");
-                info!("Resuming invocation {invocation_id}, scheduler stats: {wait_stats:?}");
-
-                VQueue::get(
-                    qid,
-                    self.storage,
-                    self.vqueues_cache,
-                    self.is_leader.then_some(self.action_collector),
-                )
-                .await?
-                .unwrap()
-                .run_entry(record_unique_ts, &header, wait_stats);
-
-                self.action_collector.push(Action::VQInvoke {
-                    qid: qid.clone(),
-                    key: *entry_key,
-                    invocation_target: metadata.invocation_target,
-                });
-            }
-            InvocationStatus::Invoked(_) => { /* do nothing when not leader */ }
-            // Suspended invocations must first be put back on inbox. On wake-up, they
-            // transition back into Invoked state. So seeing a suspended invocation
-            // here means that some state transition is missing.
-            InvocationStatus::Suspended { .. } | InvocationStatus::Paused(..) => {
-                panic!(
-                    "Parked invocation {invocation_id} cannot be attempted to run without first being woken up"
-                );
-            }
-            // it's not okay, ignore the attempt, possibly pop the item from running queue
-            // and mark completed.
-            InvocationStatus::Completed(..) | InvocationStatus::Free => {
-                info!(
-                    "Will not run invocation {invocation_id} because it has been marked as completed/deleted already!"
-                );
-
-                let mut vqueue = VQueue::get(
-                    qid,
-                    self.storage,
-                    self.vqueues_cache,
-                    self.is_leader.then_some(self.action_collector),
-                )
-                .await?
-                .expect("running invocation on a non-existent vqueue");
-
-                if header.status().is_terminal() {
-                    // state is good, but for some reason we are not in Stage::Completed
-                    // let's move it.
-                    vqueue.end(record_unique_ts, &header, header.status());
-                } else {
-                    warn!(
-                        "Mismatch between vqueue's state of {invocation_id} ({}) and the invocation status is Completed|Free",
-                        header.status()
-                    );
-                    vqueue.end(record_unique_ts, &header, vqueue_table::Status::Succeeded);
-                }
-
-                return Ok(());
+            _ => {
+                unreachable!("Invocation have started");
             }
         }
         Ok(())
@@ -5301,13 +5264,13 @@ impl<S> StateMachineApplyContext<'_, S> {
         // metadata should be updated (i.e. a deployment was pinned)
         match header.stage() {
             Stage::Suspended => {
-                vqueue.wake_up(now, &header, None, None, vqueue_table::Status::WakingUp);
+                vqueue.wake_up(now, &header, None, None);
             }
             Stage::Paused => {
-                vqueue.wake_up(now, &header, None, None, header.status());
+                vqueue.wake_up(now, &header, None, None);
             }
             Stage::Running => {
-                vqueue.yield_entry(now, &header, None, None, vqueue_table::Status::WakingUp);
+                vqueue.yield_entry(now, &header, None, None, header.status());
             }
             Stage::Inbox => {
                 // nothing to do if we are already in the inbox
@@ -5332,35 +5295,36 @@ impl<S> StateMachineApplyContext<'_, S> {
     {
         let now = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
         let service_id = &state_mutation.service_id;
+        // we don't pass the limit key here yet
+        let limit_key = LimitKey::None;
 
-        let qid = generate_vqueue_id(
-            service_id.partition_key(),
-            // We don't pass the scope here yet
-            &None,
-            // we don't pass the limit key here yet
-            &LimitKey::None,
-            true, /* is_exclusive */
-            &service_id.service_name,
-            Some(&service_id.key),
-        );
+        // synthesize a virtual object invocation target so we can generate the vqueue id from.
+        let target = InvocationTarget::VirtualObject {
+            name: service_id.service_name.clone(),
+            key: service_id.key.clone(),
+            // fake, doesn't matter.
+            handler: ByteString::from_static("_state_mutation"),
+            handler_ty: VirtualObjectHandlerType::Exclusive,
+        };
 
         // todo: Make this a use-facing ID, generated at ingress.
-        let mutation_id = StateMutationId::generate(service_id.partition_key());
-        let Some(mut vqueue) = VQueue::get(
-            &qid,
+        let entry_id = EntryId::from(StateMutationId::generate(service_id.partition_key()));
+        let qid = VQueue::infer_vqueue_id_from_invocation(
+            service_id.partition_key(),
+            &target,
+            &limit_key,
+        );
+        let mut vqueue = VQueue::vqueue_from_invocation_target(
+            now,
+            service_id.partition_key(),
+            &target,
             self.storage,
             self.vqueues_cache,
             self.is_leader.then_some(self.action_collector),
+            &limit_key,
         )
-        .await?
-        else {
-            error!("State mutation request was ignored because the vqueue {qid} does not exist!");
-            // todo: When/if we made state mutations rpc-like, we should return the error to the
-            // user here.
-            return Ok(());
-        };
+        .await?;
 
-        let entry_id = EntryId::from(mutation_id);
         vqueue.enqueue_new(
             now,
             self.record_lsn,

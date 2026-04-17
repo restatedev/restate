@@ -23,59 +23,30 @@ pub enum Status {
     New,
     #[bilrost(2)]
     Scheduled,
-    // -- Statuses for an invocation that has already started (attempted at least once)
+    /// Invocation has started running with at least one attempt.
     #[bilrost(3)]
-    Running,
-    #[bilrost(4)]
-    Suspended,
+    Started,
     /// Invocation has previously started but has been placed back on the waiting inbox
     /// due to an attempt error.
-    #[bilrost(5)]
+    #[bilrost(4)]
     BackingOff,
     /// Invocation has previously started but has been placed back on the waiting inbox.
     /// This does not mean that the invocation attempt has failed, it just means that
     /// it has been evicted from the run queue and will be resumed later.
-    #[bilrost(6)]
+    #[bilrost(5)]
     Yielded,
-    /// Inovocation that was suspended and is now waiting for its turn
-    /// to run.
-    #[bilrost(7)]
-    WakingUp,
     ///
     /// -- Terminal states, invocation cannot transition back to any of the previous
     /// statuses
     ///
-    #[bilrost(8)]
+    #[bilrost(6)]
     Killed,
-    #[bilrost(9)]
+    #[bilrost(7)]
     Cancelled,
-    #[bilrost(10)]
+    #[bilrost(8)]
     Failed,
-    #[bilrost(11)]
+    #[bilrost(9)]
     Succeeded,
-}
-
-impl Status {
-    #[inline]
-    pub fn is_terminal(&self) -> bool {
-        matches!(
-            self,
-            Self::Unknown | Self::Killed | Self::Cancelled | Self::Failed | Self::Succeeded
-        )
-    }
-
-    #[inline]
-    pub fn can_move_to_run(&self) -> bool {
-        matches!(
-            self,
-            Self::New
-                | Self::Scheduled
-                | Self::WakingUp
-                | Self::Yielded
-                | Self::BackingOff
-                | Self::Running
-        )
-    }
 }
 
 pub trait EntryStatusHeader: std::fmt::Debug {
@@ -91,6 +62,18 @@ pub trait EntryStatusHeader: std::fmt::Debug {
     fn seq(&self) -> Seq;
     fn stats(&self) -> &EntryStatistics;
     fn display_entry_id(&self) -> impl std::fmt::Display + '_;
+    /// Returns new if this entry has not started yet.
+    fn has_started(&self) -> bool {
+        self.stats().num_attempts > 0
+    }
+    /// Returns true if this entry is in the terminal state and cannot transition
+    /// out of it.
+    fn is_terminal(&self) -> bool {
+        if matches!(self.stage(), Stage::Finished) {
+            return true;
+        }
+        false
+    }
 }
 
 /// For future support for extra state storage for entries.
