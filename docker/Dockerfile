@@ -11,11 +11,11 @@
 ARG UPLOAD_DEBUGINFO=false
 
 # NB this version is also pinned in dist-workspace.toml for release binary builds
-FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:1.16.1 AS planner
+FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:1.17.0 AS planner
 COPY . .
 RUN just chef-prepare
 
-FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:1.16.1 AS base
+FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:1.17.0 AS base
 COPY --from=planner /restate/recipe.json recipe.json
 COPY justfile justfile
 

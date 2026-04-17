@@ -62,7 +62,7 @@ impl<'e, 'ctx: 'e, 's: 'ctx, S: WriteJournalEventsTable>
         };
 
         // To store the event, we need to give it a total order wrt journal.
-        let after_journal_entry_index = journal_metadata.length.checked_sub(1).unwrap_or_default();
+        let after_journal_entry_index = journal_metadata.length.saturating_sub(1);
 
         // Store event
         ctx.storage.put_journal_event(
