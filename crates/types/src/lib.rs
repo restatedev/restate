@@ -207,6 +207,13 @@ impl Scope {
     }
 }
 
+// Needed for hashbrown's entry_ref API to lazily convert the key reference on insert.
+impl From<&Scope> for Scope {
+    fn from(value: &Scope) -> Self {
+        value.clone()
+    }
+}
+
 impl AsRef<str> for Scope {
     #[inline]
     fn as_ref(&self) -> &str {

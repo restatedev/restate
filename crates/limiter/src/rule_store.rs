@@ -41,6 +41,14 @@ impl<V> StructuredLimits<V> {
             l2: Limit::Undefined,
         }
     }
+
+    pub fn limit_at(&self, level: Level) -> &Limit<V> {
+        match level {
+            Level::Scope => &self.scope,
+            Level::Level1 => &self.l1,
+            Level::Level2 => &self.l2,
+        }
+    }
 }
 
 impl<V> Default for StructuredLimits<V> {
@@ -149,6 +157,7 @@ impl<S: StringLike, V> Rules<S, V> {
         }
         store
     }
+
     /// Add a rule to the store.
     pub fn add_rule(&mut self, pattern: RulePattern<S>, limit: V) {
         let level = pattern.level();
@@ -160,6 +169,58 @@ impl<S: StringLike, V> Rules<S, V> {
             Level::Level1 => self.l1_rules.push(handle),
             Level::Level2 => self.l2_rules.push(handle),
         }
+    }
+
+    /// Finds the rule with the matching pattern and updates its limit in-place
+    /// without invalidating rule handles. If no matching rule exists, inserts a
+    /// new one.
+    pub fn upsert_rule(&mut self, pattern: RulePattern<S>, limit: V) -> RuleHandle {
+        if let Some(handle) = self.find_rule(&pattern) {
+            self.limits.insert(handle, limit);
+            handle
+        } else {
+            let level = pattern.level();
+            let handle = self.rules.insert(pattern);
+            self.limits.insert(handle, limit);
+            match level {
+                Level::Scope => self.scope_rules.push(handle),
+                Level::Level1 => self.l1_rules.push(handle),
+                Level::Level2 => self.l2_rules.push(handle),
+            }
+            handle
+        }
+    }
+
+    /// Removes the rule matching the given pattern.
+    /// Returns the handle and old limit if found.
+    pub fn remove_rule(&mut self, pattern: &RulePattern<S>) -> Option<(RuleHandle, V)> {
+        let handle = self.find_rule(pattern)?;
+
+        let level_rules = match pattern.level() {
+            Level::Scope => &mut self.scope_rules,
+            Level::Level1 => &mut self.l1_rules,
+            Level::Level2 => &mut self.l2_rules,
+        };
+        if let Some(pos) = level_rules.iter().position(|&h| h == handle) {
+            level_rules.swap_remove(pos);
+        }
+
+        self.rules.remove(handle);
+        let limit = self.limits.remove(handle)?;
+        Some((handle, limit))
+    }
+
+    /// Finds an existing rule handle by matching its pattern.
+    fn find_rule(&self, pattern: &RulePattern<S>) -> Option<RuleHandle> {
+        let level_rules = match pattern.level() {
+            Level::Scope => &self.scope_rules,
+            Level::Level1 => &self.l1_rules,
+            Level::Level2 => &self.l2_rules,
+        };
+        level_rules
+            .iter()
+            .copied()
+            .find(|&h| self.rules.get(h).is_some_and(|p| *p == *pattern))
     }
 
     /// Clear all rules.
@@ -318,6 +379,73 @@ mod tests {
         let key: LimitKey<String> = "tenant1".parse().unwrap();
         let result = store.lookup("scope1", &key);
         assert!(matches!(result.l1, Limit::Undefined));
+    }
+
+    #[test]
+    fn upsert_inserts_new_and_updates_existing() {
+        let mut store = store_with_rules(&[("*", 1000), ("scope1/*", 100)]);
+        assert_eq!(store.scope_rules.len(), 1);
+        assert_eq!(store.l1_rules.len(), 1);
+
+        // Upsert existing scope rule: updates limit, same handle
+        let pattern: RulePattern<String> = "*".parse().unwrap();
+        let h1 = store.find_rule(&pattern).unwrap();
+        let h2 = store.upsert_rule(pattern, 2000);
+        assert_eq!(h1, h2);
+        assert_eq!(store.scope_rules.len(), 1);
+        assert_eq!(*store.get_limit(h2).unwrap(), 2000);
+
+        // Upsert new L2 rule: inserts
+        let pattern: RulePattern<String> = "scope1/*/tenant1".parse().unwrap();
+        let h3 = store.upsert_rule(pattern, 10);
+        assert_eq!(store.l2_rules.len(), 1);
+        assert_eq!(*store.get_limit(h3).unwrap(), 10);
+
+        // Lookups reflect the updated and new rules
+        let result = store.lookup("scope1", &LimitKey::None);
+        assert!(matches!(result.scope, Limit::Defined(_, 2000)));
+        let key: LimitKey<String> = "foo/tenant1".parse().unwrap();
+        let result = store.lookup("scope1", &key);
+        assert!(matches!(result.l2, Limit::Defined(_, 10)));
+    }
+
+    #[test]
+    fn remove_rule_removes_and_returns_old_limit() {
+        let mut store = store_with_rules(&[
+            ("*", 1000),
+            ("scope1", 500),
+            ("scope1/*", 100),
+            ("scope1/tenant1", 50),
+        ]);
+        assert_eq!(store.scope_rules.len(), 2);
+        assert_eq!(store.l1_rules.len(), 2);
+
+        // Remove an existing scope rule
+        let pattern: RulePattern<String> = "scope1".parse().unwrap();
+        let (handle, limit) = store.remove_rule(&pattern).unwrap();
+        assert_eq!(limit, 500);
+        assert_eq!(store.scope_rules.len(), 1);
+        assert!(store.rules.get(handle).is_none());
+        assert!(store.limits.get(handle).is_none());
+
+        // Lookups fall back to wildcard now
+        let result = store.lookup("scope1", &LimitKey::None);
+        assert!(matches!(result.scope, Limit::Defined(_, 1000)));
+
+        // Remove a non-existent rule returns None
+        let pattern: RulePattern<String> = "nonexistent".parse().unwrap();
+        assert!(store.remove_rule(&pattern).is_none());
+
+        // Remove an L1 rule
+        let pattern: RulePattern<String> = "scope1/tenant1".parse().unwrap();
+        let (_, limit) = store.remove_rule(&pattern).unwrap();
+        assert_eq!(limit, 50);
+        assert_eq!(store.l1_rules.len(), 1);
+
+        // Lookups fall back to wildcard L1
+        let key: LimitKey<String> = "tenant1".parse().unwrap();
+        let result = store.lookup("scope1", &key);
+        assert!(matches!(result.l1, Limit::Defined(_, 100)));
     }
 
     #[test]
