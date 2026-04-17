@@ -10,7 +10,7 @@
 
 use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::PartitionKey;
-use restate_types::vqueue::VQueueId;
+use restate_types::vqueues::VQueueId;
 
 use super::metadata::VQueueMeta;
 use super::{AsEntryState, AsEntryStateHeader, EntryCard, EntryId, EntryKind, EntryStateKind};
