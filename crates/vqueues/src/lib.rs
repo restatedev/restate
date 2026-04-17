@@ -105,11 +105,7 @@ pub struct VQueue<'a, A, S> {
     action_collector: Option<&'a mut Vec<A>>,
 }
 
-impl<'a, A, S> VQueue<'a, A, S>
-where
-    A: From<VQueueEvent> + 'static,
-    S: WriteVQueueTable + ReadVQueueTable + WriteLockTable,
-{
+impl VQueue<'_, (), ()> {
     /// Determines the vqueue id from the invocation id, invocation target, and limit key.
     #[inline]
     pub fn infer_vqueue_id_from_invocation(
@@ -119,6 +115,13 @@ where
     ) -> VQueueId {
         util::infer_vqueue_id_from_invocation(partition_key, invocation_target, limit_key)
     }
+}
+
+impl<'a, A, S> VQueue<'a, A, S>
+where
+    A: From<VQueueEvent> + 'static,
+    S: WriteVQueueTable + ReadVQueueTable + WriteLockTable,
+{
     /// The entry has completed execution and it needs to be removed from the vqueue.
     ///
     /// Does nothing if the entry was not found in the previous stage.
@@ -178,7 +181,7 @@ where
         limit_key: &LimitKey<ReString>,
     ) -> Result<Self, StorageError> {
         let qid =
-            Self::infer_vqueue_id_from_invocation(partition_key, invocation_target, limit_key);
+            util::infer_vqueue_id_from_invocation(partition_key, invocation_target, limit_key);
         let cache_key = match cache.load(storage, &qid).await? {
             Some(key) => key,
             None => {

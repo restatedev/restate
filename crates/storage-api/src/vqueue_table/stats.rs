@@ -27,6 +27,12 @@ pub struct WaitStats {
     /// Total milliseconds the item spent waiting on invoker memory pool
     #[bilrost(tag(4))]
     pub blocked_on_invoker_memory_ms: u32,
+    /// Total milliseconds the item spent waiting on user-defined concurrency limits
+    #[bilrost(tag(5))]
+    pub blocked_on_user_limit_ms: u32,
+    /// Total milliseconds the item spent waiting to acquire a virtual object lock
+    #[bilrost(tag(6))]
+    pub blocked_on_lock_ms: u32,
 }
 
 #[derive(Debug, Clone, bilrost::Message)]

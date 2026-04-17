@@ -113,7 +113,7 @@ use restate_types::vqueues::{self, EntryId, VQueueId};
 use restate_types::{RESTATE_VERSION_1_6_0, journal_v2};
 use restate_types::{RestateVersion, SemanticRestateVersion};
 use restate_types::{Versioned, journal::*};
-use restate_vqueues::{VQueue, VQueuesMetaCache, generate_vqueue_id};
+use restate_vqueues::{VQueue, VQueuesMetaCache};
 use restate_wal_protocol::Command;
 use restate_wal_protocol::timer::TimerKeyDisplay;
 use restate_wal_protocol::timer::TimerKeyValue;
@@ -5295,35 +5295,36 @@ impl<S> StateMachineApplyContext<'_, S> {
     {
         let now = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
         let service_id = &state_mutation.service_id;
+        // we don't pass the limit key here yet
+        let limit_key = LimitKey::None;
 
-        let qid = generate_vqueue_id(
-            service_id.partition_key(),
-            // We don't pass the scope here yet
-            &None,
-            // we don't pass the limit key here yet
-            &LimitKey::None,
-            true, /* is_exclusive */
-            &service_id.service_name,
-            Some(&service_id.key),
-        );
+        // synthesize a virtual object invocation target so we can generate the vqueue id from.
+        let target = InvocationTarget::VirtualObject {
+            name: service_id.service_name.clone(),
+            key: service_id.key.clone(),
+            // fake, doesn't matter.
+            handler: ByteString::from_static("_state_mutation"),
+            handler_ty: VirtualObjectHandlerType::Exclusive,
+        };
 
         // todo: Make this a use-facing ID, generated at ingress.
-        let mutation_id = StateMutationId::generate(service_id.partition_key());
-        let Some(mut vqueue) = VQueue::get(
-            &qid,
+        let entry_id = EntryId::from(StateMutationId::generate(service_id.partition_key()));
+        let qid = VQueue::infer_vqueue_id_from_invocation(
+            service_id.partition_key(),
+            &target,
+            &limit_key,
+        );
+        let mut vqueue = VQueue::vqueue_from_invocation_target(
+            now,
+            service_id.partition_key(),
+            &target,
             self.storage,
             self.vqueues_cache,
             self.is_leader.then_some(self.action_collector),
+            &limit_key,
         )
-        .await?
-        else {
-            error!("State mutation request was ignored because the vqueue {qid} does not exist!");
-            // todo: When/if we made state mutations rpc-like, we should return the error to the
-            // user here.
-            return Ok(());
-        };
+        .await?;
 
-        let entry_id = EntryId::from(mutation_id);
         vqueue.enqueue_new(
             now,
             self.record_lsn,
