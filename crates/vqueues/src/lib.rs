@@ -399,18 +399,24 @@ where
         debug!(
             header = ?header,
             modified_key = ?modified_key,
-            "[run] entry: {},  next_stage: '{}', new_status: {}",
+            "[run] entry: {},  next_stage: '{}', prev_status: {}",
             header.display_entry_id(),
             Stage::Running,
-            Status::Running,
+            header.status(),
         );
+
+        let new_status = if !header.has_started() {
+            Status::Started
+        } else {
+            header.status()
+        };
 
         self.storage.put_vqueue_inbox(
             vqueue_id,
             Stage::Running,
             &modified_key,
             &EntryValue {
-                status: Status::Running,
+                status: new_status,
                 stats: stats.clone(),
                 // We pick metadata from EntryStatusHeader since it could have been updated
                 // while we were parked, or after the previous run.
@@ -425,7 +431,7 @@ where
             &modified_key,
             header.metadata(),
             stats,
-            Status::Running,
+            new_status,
         );
 
         if let Some(collector) = self.action_collector.as_deref_mut() {
@@ -463,7 +469,6 @@ where
         header: &impl EntryStatusHeader,
         run_at: Option<RoughTimestamp>,
         updated_metadata: Option<EntryMetadata>,
-        new_status: Status,
     ) {
         let vqueue_id = header.vqueue_id();
         let meta = self.cache.get_mut(self.cache_key).unwrap();
@@ -504,8 +509,10 @@ where
         debug!(
             header = ?header,
             modified_key = ?modified_key,
-            "[wake-up] entry: {},  next_stage: 'inbox', new_status: {new_status}",
-            header.display_entry_id()
+            "[wake-up] entry: {},  next_stage: '{}', last_status: {}",
+            header.display_entry_id(),
+            Stage::Inbox,
+            header.status(),
         );
 
         // Update the entry state so we can track the new entry key and stage
@@ -515,12 +522,12 @@ where
             &modified_key,
             &maybe_new_metadata,
             stats.clone(),
-            new_status,
+            header.status(),
         );
 
         let value = EntryValue {
             stats,
-            status: new_status,
+            status: header.status(),
             metadata: maybe_new_metadata,
         };
 

@@ -3018,13 +3018,33 @@ impl<S> StateMachineApplyContext<'_, S> {
             return Ok(());
         }
 
-        if !header.status().can_move_to_run() {
+        if header.has_started() {
             // Currently, we leave the status as is. We let the rest of the code handles the old
             // invocation status update and make the actual decision about resuming or not.
-            info!(
-                "Invocation {invocation_id} cannot resume because it's status is: {}",
-                header.status()
-            );
+
+            // just send to invoker
+            debug_if_leader!(self.is_leader, "Invoke");
+            info!("Resuming invocation {invocation_id}, scheduler stats: {wait_stats:?}");
+
+            let status = self.get_invocation_status(&invocation_id).await?;
+            VQueue::get(
+                qid,
+                self.storage,
+                self.vqueues_cache,
+                self.is_leader.then_some(self.action_collector),
+            )
+            .await?
+            .unwrap()
+            .run_entry(record_unique_ts, &header, wait_stats);
+
+            if self.is_leader {
+                self.action_collector.push(Action::VQInvoke {
+                    qid: qid.clone(),
+                    key: *entry_key,
+                    invocation_target: status.invocation_target().unwrap().clone(),
+                });
+            }
+            return Ok(());
         }
 
         // legacy status maintenance
@@ -3092,65 +3112,8 @@ impl<S> StateMachineApplyContext<'_, S> {
                     invocation_input,
                 )?;
             }
-            InvocationStatus::Invoked(metadata) if self.is_leader => {
-                // just send to invoker
-                debug_if_leader!(self.is_leader, "Invoke");
-                info!("Resuming invocation {invocation_id}, scheduler stats: {wait_stats:?}");
-
-                VQueue::get(
-                    qid,
-                    self.storage,
-                    self.vqueues_cache,
-                    self.is_leader.then_some(self.action_collector),
-                )
-                .await?
-                .unwrap()
-                .run_entry(record_unique_ts, &header, wait_stats);
-
-                self.action_collector.push(Action::VQInvoke {
-                    qid: qid.clone(),
-                    key: *entry_key,
-                    invocation_target: metadata.invocation_target,
-                });
-            }
-            InvocationStatus::Invoked(_) => { /* do nothing when not leader */ }
-            // Suspended invocations must first be put back on inbox. On wake-up, they
-            // transition back into Invoked state. So seeing a suspended invocation
-            // here means that some state transition is missing.
-            InvocationStatus::Suspended { .. } | InvocationStatus::Paused(..) => {
-                panic!(
-                    "Parked invocation {invocation_id} cannot be attempted to run without first being woken up"
-                );
-            }
-            // it's not okay, ignore the attempt, possibly pop the item from running queue
-            // and mark completed.
-            InvocationStatus::Completed(..) | InvocationStatus::Free => {
-                info!(
-                    "Will not run invocation {invocation_id} because it has been marked as completed/deleted already!"
-                );
-
-                let mut vqueue = VQueue::get(
-                    qid,
-                    self.storage,
-                    self.vqueues_cache,
-                    self.is_leader.then_some(self.action_collector),
-                )
-                .await?
-                .expect("running invocation on a non-existent vqueue");
-
-                if header.status().is_terminal() {
-                    // state is good, but for some reason we are not in Stage::Completed
-                    // let's move it.
-                    vqueue.end(record_unique_ts, &header, header.status());
-                } else {
-                    warn!(
-                        "Mismatch between vqueue's state of {invocation_id} ({}) and the invocation status is Completed|Free",
-                        header.status()
-                    );
-                    vqueue.end(record_unique_ts, &header, vqueue_table::Status::Succeeded);
-                }
-
-                return Ok(());
+            _ => {
+                unreachable!("Invocation have started");
             }
         }
         Ok(())
@@ -5301,13 +5264,13 @@ impl<S> StateMachineApplyContext<'_, S> {
         // metadata should be updated (i.e. a deployment was pinned)
         match header.stage() {
             Stage::Suspended => {
-                vqueue.wake_up(now, &header, None, None, vqueue_table::Status::WakingUp);
+                vqueue.wake_up(now, &header, None, None);
             }
             Stage::Paused => {
-                vqueue.wake_up(now, &header, None, None, header.status());
+                vqueue.wake_up(now, &header, None, None);
             }
             Stage::Running => {
-                vqueue.yield_entry(now, &header, None, None, vqueue_table::Status::WakingUp);
+                vqueue.yield_entry(now, &header, None, None, header.status());
             }
             Stage::Inbox => {
                 // nothing to do if we are already in the inbox
