@@ -501,7 +501,7 @@ where
             tokio::time::interval(with_jitter(Duration::from_millis(500), 0.5));
         status_update_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-        let mut vqueues = VQueuesMetaCache::create(partition_store.partition_db()).await?;
+        let mut vqueues = VQueuesMetaCache::create(partition_store.partition_db().clone()).await?;
 
         let mut action_collector = ActionCollector::default();
         let mut command_buffer =
