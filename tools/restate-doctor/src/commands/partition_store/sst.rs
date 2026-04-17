@@ -352,25 +352,19 @@ fn print_key_details(key: &[u8]) {
 /// Decode type-specific key details
 fn decode_key_details(kind: KeyKind, key: &[u8]) -> Option<String> {
     match kind {
-        KeyKind::Fsm => {
-            if key.len() >= 18 {
-                let state_id_bytes: [u8; 8] = key[10..18].try_into().unwrap();
-                let state_id = u64::from_be_bytes(state_id_bytes);
-                return Some(format!("state_id={}", state_id));
-            }
+        KeyKind::Fsm if key.len() >= 18 => {
+            let state_id_bytes: [u8; 8] = key[10..18].try_into().unwrap();
+            let state_id = u64::from_be_bytes(state_id_bytes);
+            return Some(format!("state_id={}", state_id));
         }
-        KeyKind::Outbox => {
-            if key.len() >= 18 {
-                let idx_bytes: [u8; 8] = key[10..18].try_into().unwrap();
-                let idx = u64::from_be_bytes(idx_bytes);
-                return Some(format!("message_index={}", idx));
-            }
+        KeyKind::Outbox if key.len() >= 18 => {
+            let idx_bytes: [u8; 8] = key[10..18].try_into().unwrap();
+            let idx = u64::from_be_bytes(idx_bytes);
+            return Some(format!("message_index={}", idx));
         }
         #[allow(deprecated)]
-        KeyKind::InvocationStatus | KeyKind::InvocationStatusV1 => {
-            if key.len() >= 26 {
-                return Some(format!("invocation_uuid={}", format_uuid(&key[10..26])));
-            }
+        KeyKind::InvocationStatus | KeyKind::InvocationStatusV1 if key.len() >= 26 => {
+            return Some(format!("invocation_uuid={}", format_uuid(&key[10..26])));
         }
         KeyKind::Journal | KeyKind::JournalV2 => {
             if key.len() >= 30 {
@@ -385,73 +379,69 @@ fn decode_key_details(kind: KeyKind, key: &[u8]) -> Option<String> {
                 return Some(format!("invocation_uuid={}", format_uuid(&key[10..26])));
             }
         }
-        KeyKind::Timers => {
-            if key.len() >= 18 {
-                let ts_bytes: [u8; 8] = key[10..18].try_into().unwrap();
-                let ts = u64::from_be_bytes(ts_bytes);
-                return Some(format!("timestamp={}", ts));
-            }
+        KeyKind::Timers if key.len() >= 18 => {
+            let ts_bytes: [u8; 8] = key[10..18].try_into().unwrap();
+            let ts = u64::from_be_bytes(ts_bytes);
+            return Some(format!("timestamp={}", ts));
         }
-        KeyKind::State | KeyKind::ServiceStatus | KeyKind::Promise | KeyKind::Idempotency => {
-            if key.len() > 10 {
-                let mut details = Vec::new();
-                let mut pos = 10;
+        KeyKind::State | KeyKind::ServiceStatus | KeyKind::Promise | KeyKind::Idempotency
+            if key.len() > 10 =>
+        {
+            let mut details = Vec::new();
+            let mut pos = 10;
 
-                // Try to decode variable-length fields
-                let field_names: &[&str] = match kind {
-                    KeyKind::State => &["service_name", "service_key", "state_key"],
-                    KeyKind::ServiceStatus => &["service_name", "service_key"],
-                    KeyKind::Promise => &["service_name", "service_key", "promise_key"],
-                    KeyKind::Idempotency => {
-                        &["service_name", "service_key", "handler", "idempotency_key"]
-                    }
-                    _ => &[],
-                };
-
-                for field_name in field_names {
-                    if pos >= key.len() {
-                        break;
-                    }
-                    if let Some((value, consumed)) = decode_varint_string(&key[pos..]) {
-                        details.push(format!("{}={}", field_name, value));
-                        pos += consumed;
-                    } else {
-                        break;
-                    }
+            // Try to decode variable-length fields
+            let field_names: &[&str] = match kind {
+                KeyKind::State => &["service_name", "service_key", "state_key"],
+                KeyKind::ServiceStatus => &["service_name", "service_key"],
+                KeyKind::Promise => &["service_name", "service_key", "promise_key"],
+                KeyKind::Idempotency => {
+                    &["service_name", "service_key", "handler", "idempotency_key"]
                 }
+                _ => &[],
+            };
 
-                if !details.is_empty() {
-                    return Some(details.join(", "));
+            for field_name in field_names {
+                if pos >= key.len() {
+                    break;
+                }
+                if let Some((value, consumed)) = decode_varint_string(&key[pos..]) {
+                    details.push(format!("{}={}", field_name, value));
+                    pos += consumed;
+                } else {
+                    break;
                 }
             }
+
+            if !details.is_empty() {
+                return Some(details.join(", "));
+            }
         }
-        KeyKind::Inbox => {
-            if key.len() > 10 {
-                let mut details = Vec::new();
-                let mut pos = 10;
+        KeyKind::Inbox if key.len() > 10 => {
+            let mut details = Vec::new();
+            let mut pos = 10;
 
-                // service_name, service_key (variable), then sequence_number (8 bytes)
-                for field_name in &["service_name", "service_key"] {
-                    if pos >= key.len() {
-                        break;
-                    }
-                    if let Some((value, consumed)) = decode_varint_string(&key[pos..]) {
-                        details.push(format!("{}={}", field_name, value));
-                        pos += consumed;
-                    } else {
-                        break;
-                    }
+            // service_name, service_key (variable), then sequence_number (8 bytes)
+            for field_name in &["service_name", "service_key"] {
+                if pos >= key.len() {
+                    break;
                 }
+                if let Some((value, consumed)) = decode_varint_string(&key[pos..]) {
+                    details.push(format!("{}={}", field_name, value));
+                    pos += consumed;
+                } else {
+                    break;
+                }
+            }
 
-                if pos + 8 <= key.len() {
-                    let seq_bytes: [u8; 8] = key[pos..pos + 8].try_into().unwrap();
-                    let seq = u64::from_be_bytes(seq_bytes);
-                    details.push(format!("sequence_number={}", seq));
-                }
+            if pos + 8 <= key.len() {
+                let seq_bytes: [u8; 8] = key[pos..pos + 8].try_into().unwrap();
+                let seq = u64::from_be_bytes(seq_bytes);
+                details.push(format!("sequence_number={}", seq));
+            }
 
-                if !details.is_empty() {
-                    return Some(details.join(", "));
-                }
+            if !details.is_empty() {
+                return Some(details.join(", "));
             }
         }
         _ => {}

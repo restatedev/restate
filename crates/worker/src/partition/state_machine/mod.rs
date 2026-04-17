@@ -1059,7 +1059,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 "Invocation to workflow method is a duplicate"
             );
             self.send_response_to_sinks(
-                service_invocation.response_sink.take().into_iter(),
+                service_invocation.response_sink.take(),
                 ResponseResult::Failure(WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR),
                 Some(invocation_id),
                 None,
@@ -1094,7 +1094,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             InvocationStatus::Completed(completed) => {
                 let completion_expiry_time = completed.completion_expiry_time();
                 self.send_response_to_sinks(
-                    service_invocation.response_sink.take().into_iter(),
+                    service_invocation.response_sink.take(),
                     completed.response_result,
                     Some(invocation_id),
                     completion_expiry_time,

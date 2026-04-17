@@ -560,11 +560,11 @@ impl<T: TransportConnect> Scheduler<T> {
                         } else {
                             let (_, _, current, next, leadership_policy) =
                                 epoch_metadata.into_inner();
-                            Err(PartitionConfigurationUpdate {
+                            Err(Box::new(PartitionConfigurationUpdate {
                                 current,
                                 next,
                                 leadership_policy,
-                            })
+                            }))
                         }
                     } else {
                         Ok(EpochMetadata::new(current.clone(), None))
@@ -613,11 +613,11 @@ impl<T: TransportConnect> Scheduler<T> {
                         } else {
                             let (_, _, current, next, leadership_policy) =
                                 epoch_metadata.into_inner();
-                            Err(PartitionConfigurationUpdate {
+                            Err(Box::new(PartitionConfigurationUpdate {
                                 current,
                                 next,
                                 leadership_policy,
-                            })
+                            }))
                         }
                     } else {
                         // missing epoch metadata so we set next to be current right away
@@ -636,7 +636,7 @@ impl<T: TransportConnect> Scheduler<T> {
                     leadership_policy,
                 })
             }
-            Err(ReadModifyWriteError::FailedOperation(concurrent_update)) => Ok(concurrent_update),
+            Err(ReadModifyWriteError::FailedOperation(concurrent_update)) => Ok(*concurrent_update),
             Err(ReadModifyWriteError::ReadWrite(err)) => Err(err.into()),
         }
     }
@@ -660,11 +660,11 @@ impl<T: TransportConnect> Scheduler<T> {
                     let Some(actual_next_version) = epoch_metadata.next().map(|config| config.version()) else {
                         // if there is no next configuration, then a concurrent modification has happened
                         let (_, _, current, next, leadership_policy) = epoch_metadata.into_inner();
-                        return Err(PartitionConfigurationUpdate {
+                        return Err(Box::new(PartitionConfigurationUpdate {
                             current,
                             next,
                             leadership_policy,
-                        });
+                        }));
                     };
 
                     match actual_next_version.cmp(&expected_next_version) {
@@ -672,11 +672,11 @@ impl<T: TransportConnect> Scheduler<T> {
                         Ordering::Equal => Ok(epoch_metadata.complete_reconfiguration()),
                         Ordering::Greater => {
                             let (_, _, current, next, leadership_policy) = epoch_metadata.into_inner();
-                            Err(PartitionConfigurationUpdate {
+                            Err(Box::new(PartitionConfigurationUpdate {
                                 current,
                                 next,
                                 leadership_policy,
-                            })
+                            }))
                         }
                     }
                 }
@@ -696,7 +696,7 @@ impl<T: TransportConnect> Scheduler<T> {
                 })
             }
             Err(ReadModifyWriteError::FailedOperation(concurrent_update)) => {
-                Ok(concurrent_update)
+                Ok(*concurrent_update)
             }
             Err(ReadModifyWriteError::ReadWrite(err)) => {
                 Err(err.into())

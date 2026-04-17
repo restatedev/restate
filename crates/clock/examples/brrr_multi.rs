@@ -131,9 +131,7 @@ fn main() {
     println!("Final timestamp:        {final_ts:?}");
 
     // Use wall clock time for throughput calculation
-    let elapsed_ms = elapsed.as_millis() as u64;
-    if elapsed_ms > 0 {
-        let calls_per_ms = total_calls / elapsed_ms;
+    if let Some(calls_per_ms) = total_calls.checked_div(elapsed.as_millis() as u64) {
         let pct_of_max = (calls_per_ms as f64 / LC_MAX as f64) * 100.0;
         println!("Throughput:             {calls_per_ms} calls/ms ({pct_of_max:.2}% of max)");
         println!(
