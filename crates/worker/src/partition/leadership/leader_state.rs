@@ -662,7 +662,7 @@ impl LeaderState {
                     .to_invocation_id(qid.partition_key())
                     .unwrap();
 
-                let mut run_permit = self.scheduler.pop_resources(&key).unwrap_or_else(|| {
+                let mut run_permit = self.scheduler.confirm_run_attempt(&qid, &key).unwrap_or_else(|| {
                     tracing::error!(
                         vqueue = %qid,
                         restate.invocation.id = %invocation_id,

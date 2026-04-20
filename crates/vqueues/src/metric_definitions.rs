@@ -12,7 +12,7 @@ use metrics::{Unit, counter, describe_counter};
 
 pub const VQUEUE_ENQUEUE: &str = "restate.vqueue.scheduler.enqueue.total";
 pub const VQUEUE_SCHEDULER_DECISION: &str = "restate.vqueue.scheduler.decision.total";
-pub const VQUEUE_CONFIRMED: &str = "restate.vqueue.scheduler.decision_confirmed.total";
+pub const VQUEUE_RUN_CONFIRMED: &str = "restate.vqueue.scheduler.run_confirmed.total";
 pub const VQUEUE_INVOKER_MEMORY_WAIT_MS: &str =
     "restate.vqueue.scheduler.invoker_memory_wait_ms.total";
 pub const VQUEUE_INVOKER_CONCURRENCY_WAIT_MS: &str =
@@ -41,7 +41,7 @@ pub fn describe_metrics() {
     );
 
     describe_counter!(
-        VQUEUE_CONFIRMED,
+        VQUEUE_RUN_CONFIRMED,
         Unit::Count,
         "Number of entries/invocations in vqueues where the run request was confirmed"
     );

@@ -27,7 +27,7 @@ use crate::VQueuesMetaCache;
 use crate::metric_definitions::publish_scheduler_decision_metrics;
 
 use self::drr::DRRScheduler;
-use self::resource_manager::{ReservedResources, ResourceKind};
+use self::resource_manager::{PermitBuilder, ReservedResources, ResourceKind};
 use self::vqueue_state::DetailedEligibility;
 
 mod clock;
@@ -41,6 +41,8 @@ mod vqueue_state;
 // Re-exports
 pub use self::queue_meta::{MetaLiteUpdate, VQueueMetaLite};
 pub use resource_manager::ResourceManager;
+
+type UnconfirmedAssignments = hashbrown::HashMap<EntryKey, PermitBuilder>;
 
 slotmap::new_key_type! { pub(crate) struct VQueueHandle; }
 
@@ -230,9 +232,13 @@ impl<S: VQueueStore> SchedulerService<S> {
     /// item hash if it was assigned by the scheduler.
     ///
     /// Resources will not be returned if the unconfirmed assignment was rejected or removed.
-    pub fn pop_resources(&mut self, key: &EntryKey) -> Option<ReservedResources> {
+    pub fn confirm_run_attempt(
+        &mut self,
+        qid: &VQueueId,
+        key: &EntryKey,
+    ) -> Option<ReservedResources> {
         if let State::Active(ref mut drr_scheduler) = self.state {
-            drr_scheduler.as_mut().pop_resources(key)
+            drr_scheduler.as_mut().confirm_run_attempt(qid, key)
         } else {
             None
         }
@@ -254,11 +260,9 @@ impl<S: VQueueStore> SchedulerService<S> {
     }
 
     /// Returns the scheduling status for a specific vqueue.
-    ///
-    /// Returns `None` if the scheduler is disabled or the vqueue is not tracked.
-    pub fn get_status(&self, qid: &VQueueId) -> Option<VQueueSchedulerStatus> {
+    pub fn get_status(&self, qid: &VQueueId) -> VQueueSchedulerStatus {
         match self.state {
-            State::Disabled => None,
+            State::Disabled => VQueueSchedulerStatus::default(),
             State::Active(ref drr_scheduler) => drr_scheduler.get_status(qid),
         }
     }
