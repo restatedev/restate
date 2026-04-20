@@ -761,7 +761,7 @@ mod tests {
                 eq(true)
             );
             leaders.insert(nodeset.first().unwrap());
-            combined.extend(nodeset.into_iter());
+            combined.extend(nodeset);
         }
         // check how many leaders, we should see diversity
         assert_that!(leaders.len(), eq(9));

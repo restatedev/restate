@@ -258,7 +258,7 @@ impl TestEnv {
             .await
             .expect("to be decodable");
 
-        events.sort_by(|x, y| x.append_time.cmp(&y.append_time));
+        events.sort_by_key(|x| x.append_time);
 
         events
             .into_iter()
