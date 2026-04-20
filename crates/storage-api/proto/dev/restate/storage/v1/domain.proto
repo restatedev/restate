@@ -30,6 +30,8 @@ message InvocationTarget {
 message ServiceId {
   bytes service_name = 1;
   bytes service_key = 2;
+  // Since v1.7.0 — scope for vqueue partitioning. Empty string means no scope.
+  optional string scope = 3;
 }
 
 message IdempotencyId {
