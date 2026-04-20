@@ -10,7 +10,7 @@ publish = false
 [features]
 default = []
 codec = ["dep:restate-types", "dep:paste"]
-discovery = ["dep:serde_json", "dep:tracing", "dep:codederror", "dep:restate-errors", "dep:http", "dep:http-body-util", "dep:restate-service-client", "dep:restate-types", "dep:tokio"]
+discovery = ["dep:serde_json", "dep:tracing", "dep:codederror", "dep:restate-errors", "dep:http", "dep:http-body-util", "dep:metrics", "dep:restate-service-client", "dep:restate-types", "dep:tokio"]
 message = ["dep:restate-types", "dep:bytes-utils", "dep:codederror", "dep:restate-errors", "dep:tracing"]
 test-util = ["restate-types/test-util"]
 
@@ -27,6 +27,7 @@ bytes-utils = { workspace = true, optional = true }
 codederror = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
 http-body-util = { workspace = true, optional = true }
+metrics = { workspace = true, optional = true }
 itertools = { workspace = true }
 paste = { workspace = true, optional = true }
 prost = { workspace = true }
