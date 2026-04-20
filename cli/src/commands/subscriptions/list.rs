@@ -53,7 +53,7 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
         return Ok(());
     }
 
-    subs.sort_by(|a, b| a.id.to_string().cmp(&b.id.to_string()));
+    subs.sort_by_key(|a| a.id.to_string());
 
     let mut table = Table::new_styled();
     table.set_styled_header(vec!["ID", "SOURCE", "SINK", "OPTIONS"]);

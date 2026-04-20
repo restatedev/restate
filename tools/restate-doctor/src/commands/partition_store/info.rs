@@ -485,7 +485,7 @@ fn print_size_distribution(stats: &[CfStats], total_size: u64) {
 
     // Sort by size descending for the chart
     let mut sorted: Vec<_> = stats.iter().collect();
-    sorted.sort_by(|a, b| b.total_size.cmp(&a.total_size));
+    sorted.sort_by_key(|b| std::cmp::Reverse(b.total_size));
 
     // Find the largest CF size for scaling the bars
     let max_size = sorted.first().map(|cf| cf.total_size).unwrap_or(1);
