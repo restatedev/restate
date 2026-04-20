@@ -35,6 +35,12 @@ pub struct LazyIntern<K: Hash + Eq> {
     cache: LazyLock<DashMap<K, &'static str>>,
 }
 
+impl<K: Hash + Eq + fmt::Display + Clone> Default for LazyIntern<K> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<K: Hash + Eq + fmt::Display + Clone> LazyIntern<K> {
     pub const fn new() -> Self {
         Self {
