@@ -10,7 +10,7 @@
 
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::TimerKey;
-use restate_storage_api::vqueue_table::EntryCard;
+use restate_storage_api::vqueue_table::EntryKey;
 use restate_types::identifiers::{EntryIndex, InvocationId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::InvocationTarget;
 use restate_types::invocation::client::{
@@ -20,7 +20,7 @@ use restate_types::invocation::client::{
 use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::message::MessageIndex;
 use restate_types::time::MillisSinceEpoch;
-use restate_types::vqueue::VQueueId;
+use restate_types::vqueues::VQueueId;
 use restate_vqueues::VQueueEvent;
 use restate_wal_protocol::timer::TimerKeyValue;
 
@@ -29,12 +29,11 @@ pub type ActionCollector = Vec<Action>;
 #[derive(derive_more::Debug, strum::IntoStaticStr)]
 pub enum Action {
     /// Notifies the scheduler about a vqueue inbox event (e.g, enqueue, run permitted, etc.)
-    VQEvent(VQueueEvent<EntryCard>),
+    VQEvent(VQueueEvent),
     /// Tells invoker to run this invocation (similar to Invoke) but carries more information
     VQInvoke {
         qid: VQueueId,
-        item_hash: u64,
-        invocation_id: InvocationId,
+        key: EntryKey,
         invocation_target: InvocationTarget,
     },
     Invoke {
@@ -106,9 +105,9 @@ pub enum Action {
     },
 }
 
-impl From<VQueueEvent<EntryCard>> for Action {
+impl From<VQueueEvent> for Action {
     #[inline(always)]
-    fn from(value: VQueueEvent<EntryCard>) -> Self {
+    fn from(value: VQueueEvent) -> Self {
         Self::VQEvent(value)
     }
 }

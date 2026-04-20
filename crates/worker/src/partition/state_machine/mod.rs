@@ -30,6 +30,7 @@ use futures::{StreamExt, TryStreamExt};
 use metrics::{counter, histogram};
 use tracing::{Instrument, Span, debug, error, info, trace, warn};
 
+use restate_limiter::LimitKey;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::WriteFsmTable;
@@ -45,7 +46,7 @@ use restate_storage_api::invocation_status_table::{InvocationStatus, ScheduledIn
 use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table::ReadJournalTable;
 use restate_storage_api::journal_table::{JournalEntry, WriteJournalTable};
-use restate_storage_api::journal_table_v2;
+use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::outbox_table::{OutboxMessage, WriteOutboxTable};
 use restate_storage_api::promise_table::{
     Promise, PromiseState, ReadPromiseTable, WritePromiseTable,
@@ -56,11 +57,11 @@ use restate_storage_api::service_status_table::{
 use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_storage_api::timer_table::TimerKey;
 use restate_storage_api::timer_table::{Timer, WriteTimerTable};
-use restate_storage_api::vqueue_table::{self, EntryId, EntryKind, Stage, WaitStats};
-use restate_storage_api::vqueue_table::{
-    AsEntryStateHeader, EntryCard, ReadVQueueTable, VisibleAt, WriteVQueueTable,
-};
+use restate_storage_api::vqueue_table::scheduler::{self, SchedulerDecisions};
+use restate_storage_api::vqueue_table::{self, EntryKey, Stage};
+use restate_storage_api::vqueue_table::{EntryStatusHeader, ReadVQueueTable, WriteVQueueTable};
 use restate_storage_api::{Result as StorageResult, journal_table};
+use restate_storage_api::{StorageError, journal_table_v2};
 use restate_tracing_instrumentation as instrumentation;
 use restate_types::clock::UniqueTimestamp;
 use restate_types::config::Configuration;
@@ -70,8 +71,8 @@ use restate_types::errors::{
     NOT_READY_INVOCATION_ERROR, WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
-    AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId, InvocationUuid,
-    PartitionKey, PartitionProcessorRpcRequestId, ServiceId, StateMutationId,
+    AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId, PartitionKey,
+    PartitionProcessorRpcRequestId, ServiceId, StateMutationId,
 };
 use restate_types::identifiers::{IdempotencyId, WithPartitionKey};
 use restate_types::invocation::client::{
@@ -82,9 +83,8 @@ use restate_types::invocation::{
     AttachInvocationRequest, IngressInvocationResponseSink, InvocationMutationResponseSink,
     InvocationQuery, InvocationResponse, InvocationTarget, InvocationTargetType,
     InvocationTermination, JournalCompletionTarget, NotifySignalRequest, ResponseResult,
-    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, ServiceType,
-    Source, SubmitNotificationSink, TerminationFlavor, VirtualObjectHandlerType,
-    WorkflowHandlerType,
+    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
+    SubmitNotificationSink, TerminationFlavor, VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use restate_types::invocation::{InvocationInput, SpanRelation};
 use restate_types::journal::Completion;
@@ -109,14 +109,14 @@ use restate_types::state_mut::ExternalStateMutation;
 use restate_types::state_mut::StateMutationVersion;
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
-use restate_types::vqueue::{NewEntryPriority, VQueueId, VQueueInstance, VQueueParent};
+use restate_types::vqueues::{self, EntryId, VQueueId};
 use restate_types::{RESTATE_VERSION_1_6_0, journal_v2};
 use restate_types::{RestateVersion, SemanticRestateVersion};
 use restate_types::{Versioned, journal::*};
-use restate_vqueues::{VQueues, VQueuesMetaMut};
+use restate_vqueues::{VQueue, VQueuesMetaCache};
+use restate_wal_protocol::Command;
 use restate_wal_protocol::timer::TimerKeyDisplay;
 use restate_wal_protocol::timer::TimerKeyValue;
-use restate_wal_protocol::{Command, vqueues};
 
 use self::utils::SpanExt;
 use crate::metric_definitions::{
@@ -255,7 +255,7 @@ pub(crate) struct StateMachineApplyContext<'a, S> {
     record_created_at: MillisSinceEpoch,
     record_lsn: Lsn,
     action_collector: &'a mut ActionCollector,
-    vqueues_cache: &'a mut VQueuesMetaMut,
+    vqueues_cache: &'a mut VQueuesMetaCache,
     inbox_seq_number: &'a mut MessageIndex,
     outbox_seq_number: &'a mut MessageIndex,
     outbox_head_seq_number: &'a mut Option<MessageIndex>,
@@ -282,7 +282,7 @@ impl StateMachine {
         record_lsn: Lsn,
         transaction: &mut TransactionType,
         action_collector: &mut ActionCollector,
-        vqueues_cache: &mut VQueuesMetaMut,
+        vqueues_cache: &mut VQueuesMetaCache,
         is_leader: bool,
     ) -> Result<(), Error> {
         let span = utils::state_machine_apply_command_span(is_leader, &command);
@@ -453,45 +453,73 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteStateTable
             + WriteVQueueTable
             + ReadVQueueTable
+            + WriteLockTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
             + WriteJournalEventsTable,
     {
         match command {
-            Command::VQWaitingToRunning(encoded_cmd) => {
-                // move the entry from inbox and notify the scheduler that it has started
-                // also, ship to invoker.
-                let command = vqueues::VQWaitingToRunning::decode(encoded_cmd)?;
-                self.attempt_to_run(command).await?;
-                Ok(())
-            }
-            // perhaps consolidate with the one above.
-            Command::VQYieldRunning(encoded_cmd) => {
-                // move the entry from inbox and notify the scheduler that it has started
-                // also, ship to invoker.
-                let cmd = vqueues::VQYieldRunning::decode(encoded_cmd)?;
-                tracing::info!(
-                    "Entry in qid_parent={}, instance={} should be placed back to the waiting queue",
-                    cmd.assignment.parent,
-                    cmd.assignment.instance
-                );
-                let qid = VQueueId::new(
-                    VQueueParent::from_raw(cmd.assignment.parent),
-                    cmd.assignment.partition_key,
-                    VQueueInstance::from_raw(cmd.assignment.instance),
-                );
-                let mut inbox = VQueues::new(
-                    qid,
-                    self.storage,
-                    self.vqueues_cache,
-                    self.is_leader.then_some(self.action_collector),
-                );
-
-                let record_unique_ts =
-                    UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
-                for entry in cmd.assignment.entries {
-                    inbox.yield_running(record_unique_ts, entry.card).await?;
+            Command::VQSchedulerDecisions(encoded_cmd) => {
+                let command = SchedulerDecisions::bilrost_decode(encoded_cmd)
+                    .map_err(StorageError::BilrostDecode)?;
+                for (qid, actions) in &command.qids {
+                    for action in actions {
+                        match action {
+                            scheduler::SchedulerAction::Unknown => {
+                                return Err(StorageError::Generic(anyhow::anyhow!(
+                                    "Cannot deal with unknown scheduler actions"
+                                ))
+                                .into());
+                            }
+                            scheduler::SchedulerAction::Run(run_action) => {
+                                self.attempt_to_run(qid, &run_action.key, &run_action.wait_stats)
+                                    .await?;
+                            }
+                            scheduler::SchedulerAction::Yield(yield_action) => {
+                                let at = UniqueTimestamp::from_unix_millis_unchecked(
+                                    self.record_created_at,
+                                );
+                                let Some(header) = self
+                                    .storage
+                                    .get_vqueue_entry_status(
+                                        qid.partition_key(),
+                                        yield_action.key.entry_id(),
+                                    )
+                                    .await?
+                                else {
+                                    info!(
+                                        vqueue = %qid,
+                                        "Not yielding {} because it has no vqueue state",
+                                        yield_action.key.entry_id().display(qid.partition_key())
+                                    );
+                                    continue;
+                                };
+                                // move the entry from inbox and notify the scheduler that it has started
+                                // also, ship to invoker.
+                                let mut vqueue = VQueue::get(
+                                    qid,
+                                    self.storage,
+                                    self.vqueues_cache,
+                                    self.is_leader.then_some(self.action_collector),
+                                )
+                                .await?
+                                .expect("yielding in a non-existent vqueue");
+                                vqueue.yield_entry(
+                                    at,
+                                    &header,
+                                    None,
+                                    // todo: this would be a good place to pick up if the invocation
+                                    // metadata should be updated (i.e. a deployment was pinned)
+                                    None,
+                                    // We are assuming it's an invocation because state mutations
+                                    // can never be observed in the run stage.
+                                    vqueue_table::Status::Yielded,
+                                );
+                            }
+                        }
+                    }
                 }
+
                 Ok(())
             }
             Command::UpdatePartitionDurability(_) => {
@@ -700,6 +728,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteVQueueTable
             + ReadVQueueTable
             + WriteJournalTable
+            + WriteLockTable
             + journal_table_v2::WriteJournalTable,
     {
         let invocation_id = service_invocation.invocation_id;
@@ -761,6 +790,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteVQueueTable
             + ReadVQueueTable
             + WriteJournalTable
+            + WriteLockTable
             + journal_table_v2::WriteJournalTable,
     {
         // A pre-flight invocation has been already deduplicated
@@ -902,33 +932,33 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteFsmTable
             + WriteVQueueTable
             + ReadVQueueTable
+            + WriteLockTable
             + WriteJournalTable,
     {
-        // todo(asoli): temporary until we move this to the invocation id creation site.
-        let qid = Self::vqueue_id_from_invocation(&invocation_id, &metadata.invocation_target);
-
         let record_unique_ts = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
-        let visible_at = VisibleAt::new(metadata.execution_time.unwrap_or(self.record_created_at));
+        let run_at = metadata.execution_time.unwrap_or(self.record_created_at);
 
-        VQueues::new(
-            qid,
+        VQueue::vqueue_from_invocation_target(
+            record_unique_ts,
+            invocation_id.partition_key(),
+            &metadata.invocation_target,
             self.storage,
             self.vqueues_cache,
             self.is_leader.then_some(self.action_collector),
+            &LimitKey::None,
         )
+        .await?
         .enqueue_new(
             record_unique_ts,
-            visible_at,
-            NewEntryPriority::default(),
-            vqueue_table::EntryKind::Invocation,
-            vqueue_table::EntryId::from(invocation_id),
-            None::<()>,
-        )
-        .await?;
+            self.record_lsn,
+            run_at,
+            EntryId::from(&invocation_id),
+            vqueue_table::EntryMetadata::default(),
+        );
 
         // 1. Check if we need to schedule it
         // only schedule the invocation if it's actually in the future
-        let invocation_status = if visible_at > self.record_created_at {
+        let invocation_status = if run_at > self.record_created_at {
             InvocationStatus::Scheduled(ScheduledInvocation::from_pre_flight_invocation_metadata(
                 metadata,
                 self.record_created_at,
@@ -1216,8 +1246,8 @@ impl<S> StateMachineApplyContext<'_, S> {
 
     fn init_journal_and_vqueue_invoke(
         &mut self,
-        qid: VQueueId,
-        item_hash: u64,
+        qid: &VQueueId,
+        key: &EntryKey,
         invocation_id: InvocationId,
         mut in_flight_invocation_metadata: InFlightInvocationMetadata,
         invocation_input: Option<InvocationInput>,
@@ -1244,7 +1274,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             )?;
         }
 
-        self.vqueue_invoke(qid, item_hash, invocation_id, in_flight_invocation_metadata)
+        self.vqueue_invoke(qid, key, invocation_id, in_flight_invocation_metadata)
     }
 
     /// Inits the journal if invocation_input is `Some` and invokes the invocation. If
@@ -1353,8 +1383,8 @@ impl<S> StateMachineApplyContext<'_, S> {
 
     fn vqueue_invoke(
         &mut self,
-        qid: VQueueId,
-        item_hash: u64,
+        qid: &VQueueId,
+        key: &EntryKey,
         invocation_id: InvocationId,
         in_flight_invocation_metadata: InFlightInvocationMetadata,
     ) -> Result<(), Error>
@@ -1372,9 +1402,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         if self.is_leader {
             let invocation_target = status.into_invocation_metadata().unwrap().invocation_target;
             self.action_collector.push(Action::VQInvoke {
-                qid,
-                item_hash,
-                invocation_id,
+                qid: qid.clone(),
+                key: *key,
                 invocation_target,
             });
         }
@@ -1440,6 +1469,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + ReadVirtualObjectStatusTable
             + WriteVirtualObjectStatusTable
             + WriteVQueueTable
+            + WriteLockTable
             + ReadVQueueTable,
     {
         if Configuration::pinned().common.experimental_enable_vqueues {
@@ -1488,6 +1518,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WritePromiseTable
             + ReadVQueueTable
             + WriteVQueueTable
+            + WriteLockTable
             + WriteJournalEventsTable,
     {
         match termination_flavor {
@@ -1521,6 +1552,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + journal_table_v2::ReadJournalTable
             + ReadVQueueTable
             + WriteVQueueTable
+            + WriteLockTable
             + WriteJournalEventsTable,
     {
         let status = self.get_invocation_status(&invocation_id).await?;
@@ -1595,6 +1627,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WritePromiseTable
             + ReadVQueueTable
             + WriteVQueueTable
+            + WriteLockTable
             + WriteTimerTable,
     {
         let mut status = self.get_invocation_status(&invocation_id).await?;
@@ -1751,7 +1784,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + journal_table_v2::WriteJournalTable
             + ReadVQueueTable
             + WriteVQueueTable
-            + WriteJournalEventsTable,
+            + WriteJournalEventsTable
+            + WriteLockTable,
     {
         let error = match termination_flavor {
             TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
@@ -1781,15 +1815,19 @@ impl<S> StateMachineApplyContext<'_, S> {
         if Configuration::pinned().common.experimental_enable_vqueues {
             let record_unique_ts =
                 UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
+            let new_status = match termination_flavor {
+                TerminationFlavor::Kill => vqueue_table::Status::Killed,
+                TerminationFlavor::Cancel => vqueue_table::Status::Cancelled,
+            };
             // Is this an invocation that has a vqueue inbox?
-            if !VQueues::end_by_id(
+            if !VQueue::end_by_id(
                 self.storage,
                 self.vqueues_cache,
                 self.is_leader.then_some(self.action_collector),
                 record_unique_ts,
-                EntryKind::Invocation,
                 invocation_id.partition_key(),
                 &EntryId::from(invocation_id),
+                new_status,
             )
             .await?
             {
@@ -1858,6 +1896,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteJournalTable
             + ReadVQueueTable
             + WriteVQueueTable
+            + WriteLockTable
             + journal_table_v2::WriteJournalTable
             + WriteJournalEventsTable,
     {
@@ -1889,15 +1928,20 @@ impl<S> StateMachineApplyContext<'_, S> {
         if Configuration::pinned().common.experimental_enable_vqueues {
             let record_unique_ts =
                 UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
+            let new_status = match termination_flavor {
+                TerminationFlavor::Kill => vqueue_table::Status::Killed,
+                TerminationFlavor::Cancel => vqueue_table::Status::Cancelled,
+            };
+
             // Is this an invocation that has a vqueue inbox?
-            if !VQueues::end_by_id(
+            if !VQueue::end_by_id(
                 self.storage,
                 self.vqueues_cache,
                 self.is_leader.then_some(self.action_collector),
                 record_unique_ts,
-                EntryKind::Invocation,
                 invocation_id.partition_key(),
                 &EntryId::from(invocation_id),
+                new_status,
             )
             .await?
             {
@@ -1978,6 +2022,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + journal_table_v2::ReadJournalTable
             + ReadVQueueTable
             + WriteVQueueTable
+            + WriteLockTable
             + WriteJournalEventsTable,
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
@@ -2014,6 +2059,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + journal_table_v2::ReadJournalTable
             + ReadVQueueTable
             + WriteVQueueTable
+            + WriteLockTable
             + WriteJournalEventsTable,
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
@@ -2244,6 +2290,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteStateTable
             + WriteVQueueTable
             + ReadVQueueTable
+            + WriteLockTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
             + WriteJournalEventsTable,
@@ -2374,6 +2421,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + journal_table_v2::ReadJournalTable
             + ReadVQueueTable
             + WriteVQueueTable
+            + WriteLockTable
             + WriteJournalEventsTable,
     {
         let status = self
@@ -2407,7 +2455,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + journal_table_v2::ReadJournalTable
             + WriteJournalEventsTable
             + ReadVQueueTable
-            + WriteVQueueTable,
+            + WriteVQueueTable
+            + WriteLockTable,
     {
         let is_status_invoked = matches!(invocation_status, InvocationStatus::Invoked(_));
 
@@ -2593,6 +2642,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + ReadStateTable
             + WriteStateTable
             + WriteVQueueTable
+            + WriteLockTable
             + ReadVQueueTable,
     {
         entries::OnJournalEntryCommand::from_raw_entry(invocation_id, invocation_status, raw_entry)
@@ -2631,6 +2681,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + journal_table_v2::ReadJournalTable
             + ReadVQueueTable
             + WriteVQueueTable
+            + WriteLockTable
             + WriteJournalEventsTable,
     {
         let invocation_target = invocation_metadata.invocation_target.clone();
@@ -2744,14 +2795,16 @@ impl<S> StateMachineApplyContext<'_, S> {
                 UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
 
             // we need to remove the invocation from the running list
-            VQueues::end_by_id(
+            VQueue::end_by_id(
                 self.storage,
                 self.vqueues_cache,
                 self.is_leader.then_some(self.action_collector),
                 record_unique_ts,
-                EntryKind::Invocation,
                 invocation_id.partition_key(),
                 &EntryId::from(invocation_id),
+                // todo(tillrohrmann): This is a temporary, we should extract the new state from the code
+                // above and use that instead.
+                vqueue_table::Status::Succeeded,
             )
             .await?;
 
@@ -2809,90 +2862,11 @@ impl<S> StateMachineApplyContext<'_, S> {
     }
 
     // [vqueues only]
-    async fn attempt_to_run(&mut self, command: vqueues::VQWaitingToRunning) -> Result<(), Error>
-    where
-        S: WriteInboxTable
-            + WriteVirtualObjectStatusTable
-            + ReadInvocationStatusTable
-            + WriteInvocationStatusTable
-            + WriteVirtualObjectStatusTable
-            + ReadVirtualObjectStatusTable
-            + WriteJournalTable
-            + ReadVQueueTable
-            + WriteVQueueTable
-            + ReadStateTable
-            + WriteStateTable
-            + journal_table_v2::WriteJournalTable,
-    {
-        let qid = VQueueId::new(
-            VQueueParent::from_raw(command.assignment.parent),
-            command.assignment.partition_key,
-            VQueueInstance::from_raw(command.assignment.instance),
-        );
-
-        let record_unique_ts = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
-        let updated_run_token_bucket_zero_time =
-            command.meta_updates.updated_token_bucket_zero_time;
-        for entry in command.assignment.entries {
-            let vqueues::Entry { card, stats } = entry;
-
-            let Some(modified_card) = VQueues::new(
-                qid,
-                self.storage,
-                self.vqueues_cache,
-                self.is_leader.then_some(self.action_collector),
-            )
-            .attempt_to_run(record_unique_ts, &card, updated_run_token_bucket_zero_time)
-            .await?
-            else {
-                // Ignore invocations/mutations that were removed from the vqueue already from the
-                // vqueue already.
-                debug!(
-                    vqueue_id = ?qid,
-                    "Not running vqueue entry {card:?} since it was removed from vqueue already!"
-                );
-                continue;
-            };
-
-            match card.kind {
-                EntryKind::Unknown => {
-                    panic!("Unknown card kind in inbox, cannot proceed");
-                }
-                EntryKind::StateMutation => {
-                    self.vqueue_mutate_state(qid, &modified_card, record_unique_ts)
-                        .await?;
-                }
-                EntryKind::Invocation => {
-                    let invocation_id = InvocationId::from_parts(
-                        qid.partition_key,
-                        InvocationUuid::from_slice(card.id.as_bytes()).unwrap(),
-                    );
-
-                    self.run_invocation(
-                        qid,
-                        // important to pass in the unique hash of the original card to correlate
-                        // permits hold by the LeaderState
-                        card.unique_hash(),
-                        invocation_id,
-                        record_unique_ts,
-                        stats,
-                    )
-                    .await?;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    // [vqueues only]
-    async fn run_invocation(
+    async fn attempt_to_run(
         &mut self,
-        qid: VQueueId,
-        item_hash: u64,
-        invocation_id: InvocationId,
-        at: UniqueTimestamp,
-        wait_stats: WaitStats,
+        qid: &VQueueId,
+        entry_key: &EntryKey,
+        wait_stats: &vqueue_table::stats::WaitStats,
     ) -> Result<(), Error>
     where
         S: WriteInboxTable
@@ -2904,9 +2878,178 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteJournalTable
             + ReadVQueueTable
             + WriteVQueueTable
+            + WriteLockTable
+            + ReadStateTable
+            + WriteStateTable
             + journal_table_v2::WriteJournalTable,
     {
+        match entry_key.kind() {
+            vqueues::EntryKind::Unknown => panic!("Cannot run unknown entry id"),
+            vqueues::EntryKind::Invocation => {
+                self.run_invocation(qid, entry_key, wait_stats).await?;
+            }
+            vqueues::EntryKind::StateMutation => {
+                let mutation_id = entry_key
+                    .entry_id()
+                    .to_state_mutation_id(qid.partition_key())
+                    .unwrap();
+
+                let Some(state_header) = self
+                    .storage
+                    .get_vqueue_entry_status(qid.partition_key(), entry_key.entry_id())
+                    .await?
+                else {
+                    info!(
+                        "Will not run {mutation_id} because we cannot find a vqueue entry state for it!"
+                    );
+                    return Ok(());
+                };
+
+                if !matches!(state_header.stage(), Stage::Inbox) {
+                    info!(
+                        vqueue = %qid,
+                        "Not running vqueue entry key {mutation_id} since its not runnable anymore, current stage is {}.",
+                        state_header.stage()
+                    );
+                    return Ok(());
+                }
+
+                let Some(state_mutation) = self
+                    .storage
+                    .get_vqueue_input_payload::<ExternalStateMutation>(
+                        qid,
+                        entry_key.seq(),
+                        entry_key.entry_id(),
+                    )
+                    .await?
+                else {
+                    error!(
+                        vqueue = %qid,
+                        "Cannot perform state mutation {mutation_id} because the input entry was removed!",
+                    );
+                    return Ok(());
+                };
+
+                let record_unique_ts =
+                    UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
+
+                let status = self.mutate_state(&state_mutation).await?;
+
+                // A special case handling for state mutations since they run inline.
+                VQueue::get(
+                    qid,
+                    self.storage,
+                    self.vqueues_cache,
+                    self.is_leader.then_some(self.action_collector),
+                )
+                .await?
+                .expect("state mutation run on vqueue on a non-existent vqueue")
+                // state mutations run and end immediately.
+                .run_then_finish(
+                    record_unique_ts,
+                    &state_header,
+                    wait_stats,
+                    status,
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    // [vqueues only]
+    //
+    // Executes an invocation from Inbox -> Running
+    //
+    // Panics if the EntryKind is not an invocation
+    async fn run_invocation(
+        &mut self,
+        qid: &VQueueId,
+        entry_key: &EntryKey,
+        wait_stats: &vqueue_table::stats::WaitStats,
+    ) -> Result<(), Error>
+    where
+        S: WriteInboxTable
+            + WriteVirtualObjectStatusTable
+            + ReadInvocationStatusTable
+            + WriteInvocationStatusTable
+            + WriteVirtualObjectStatusTable
+            + ReadVirtualObjectStatusTable
+            + WriteJournalTable
+            + ReadVQueueTable
+            + WriteVQueueTable
+            + WriteLockTable
+            + journal_table_v2::WriteJournalTable,
+    {
+        let record_unique_ts = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
+
+        let invocation_id = entry_key
+            .entry_id()
+            .to_invocation_id(qid.partition_key())
+            .expect("call run_invocation() on invocation entries only");
+
+        let Some(header) = self
+            .storage
+            .get_vqueue_entry_status(qid.partition_key(), entry_key.entry_id())
+            .await?
+        else {
+            // This can happen if the invocation was killed (and) expired/removed from the vqueue
+            // between the time the scheduler decided to run it and the time we observed its
+            // decision. In particular, if we are configured with a retention policy that removes
+            // the entry state immediately after completion.
+            //
+            // We assume that the activity that removed/killed the invocation has already notified
+            // the scheduler, so we don't need to do anything here.
+            debug!(
+                vqueue = %qid,
+                "Will not run {invocation_id} because we cannot find a vqueue entry state for it!",
+            );
+            return Ok(());
+        };
+
+        if !matches!(header.stage(), Stage::Inbox) {
+            // Similar to the case above.
+            debug!(
+                vqueue = %qid,
+                "Ignoring the scheduler's decision to run {invocation_id} because the entry has
+                already moved to {} stage!",
+                header.stage(),
+            );
+            return Ok(());
+        }
+
+        if header.has_started() {
+            // Currently, we leave the status as is. We let the rest of the code handles the old
+            // invocation status update and make the actual decision about resuming or not.
+
+            // just send to invoker
+            debug_if_leader!(self.is_leader, "Invoke");
+            info!("Resuming invocation {invocation_id}, scheduler stats: {wait_stats:?}");
+
+            let status = self.get_invocation_status(&invocation_id).await?;
+            VQueue::get(
+                qid,
+                self.storage,
+                self.vqueues_cache,
+                self.is_leader.then_some(self.action_collector),
+            )
+            .await?
+            .unwrap()
+            .run_entry(record_unique_ts, &header, wait_stats);
+
+            if self.is_leader {
+                self.action_collector.push(Action::VQInvoke {
+                    qid: qid.clone(),
+                    key: *entry_key,
+                    invocation_target: status.invocation_target().unwrap().clone(),
+                });
+            }
+            return Ok(());
+        }
+
+        // legacy status maintenance
         let status = self.get_invocation_status(&invocation_id).await?;
+
         match status {
             InvocationStatus::Scheduled(ScheduledInvocation { metadata, .. })
             | InvocationStatus::Inboxed(InboxedInvocation { metadata, .. }) => {
@@ -2916,6 +3059,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     invocation_target.invocation_target_ty(),
                     InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
                 ) {
+                    // todo(asoli): Remove this once we have confidence in the new locking mechanism
                     let keyed_service_id = invocation_target.as_keyed_service_id().expect(
                         "When the handler type is Exclusive, the invocation target must have a key",
                     );
@@ -2931,6 +3075,8 @@ impl<S> StateMachineApplyContext<'_, S> {
                         }
                         VirtualObjectStatus::Unlocked => {
                             // Lock the service
+                            // Obsolete: Remove in lieu of using Locks.
+                            // maintained for compatibility until full migration to locks.
                             self.storage
                                 .put_virtual_object_status(
                                     &keyed_service_id,
@@ -2948,55 +3094,28 @@ impl<S> StateMachineApplyContext<'_, S> {
                     );
 
                 info!("Starting invocation {invocation_id}, scheduler stats: {wait_stats:?}");
+                VQueue::get(
+                    qid,
+                    self.storage,
+                    self.vqueues_cache,
+                    self.is_leader.then_some(self.action_collector),
+                )
+                .await?
+                .unwrap()
+                .run_entry(record_unique_ts, &header, wait_stats);
+
                 self.init_journal_and_vqueue_invoke(
                     qid,
-                    item_hash,
+                    entry_key,
                     invocation_id,
                     metadata,
                     invocation_input,
                 )?;
             }
-            InvocationStatus::Invoked(metadata) if self.is_leader => {
-                // just send to invoker
-                debug_if_leader!(self.is_leader, "Invoke");
-                info!("Resuming invocation {invocation_id}, scheduler stats: {wait_stats:?}");
-                self.action_collector.push(Action::VQInvoke {
-                    qid,
-                    item_hash,
-                    invocation_id,
-                    invocation_target: metadata.invocation_target,
-                });
-            }
-            InvocationStatus::Invoked(_) => { /* do nothing when not leader */ }
-            // Suspended invocations must first be put back on inbox. On wake-up, they
-            // transition back into Invoked state. So seeing a suspended invocation
-            // here means that some state transition is missing.
-            InvocationStatus::Suspended { .. } | InvocationStatus::Paused(..) => {
-                panic!(
-                    "Parked invocation {invocation_id} cannot be attempted to run without first being woken up"
-                );
-            }
-            // it's not okay, ignore the attempt, possibly pop the item from running queue
-            // and mark completed.
-            InvocationStatus::Completed(..) | InvocationStatus::Free => {
-                info!(
-                    "Will not run invocation {invocation_id} because it has been marked as completed/deleted already!"
-                );
-                // we delete by id because we are not really sure if the invocation is still in
-                // Stage::Inbox or not.
-                VQueues::end_by_id(
-                    self.storage,
-                    self.vqueues_cache,
-                    self.is_leader.then_some(self.action_collector),
-                    at,
-                    EntryKind::Invocation,
-                    invocation_id.partition_key(),
-                    &EntryId::from(invocation_id),
-                )
-                .await?;
+            _ => {
+                unreachable!("Invocation have started");
             }
         }
-
         Ok(())
     }
 
@@ -3939,6 +4058,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteFsmTable
             + WriteOutboxTable
             + WriteVQueueTable
+            + WriteLockTable
             + ReadVQueueTable,
     {
         match status {
@@ -4394,7 +4514,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         mut metadata: InFlightInvocationMetadata,
     ) -> Result<(), Error>
     where
-        S: WriteInvocationStatusTable + WriteVQueueTable + ReadVQueueTable,
+        S: WriteInvocationStatusTable + WriteVQueueTable + WriteLockTable + ReadVQueueTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -4438,7 +4558,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         waiting_for_completed_entries: HashSet<EntryIndex>,
     ) -> Result<(), Error>
     where
-        S: WriteInvocationStatusTable + WriteVQueueTable + ReadVQueueTable,
+        S: WriteInvocationStatusTable + WriteVQueueTable + WriteLockTable + ReadVQueueTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -4450,12 +4570,28 @@ impl<S> StateMachineApplyContext<'_, S> {
         metadata.timestamps.update(self.record_created_at);
 
         if Configuration::pinned().common.experimental_enable_vqueues {
-            self.vqueue_park_invocation(
-                &invocation_id,
-                &metadata.invocation_target,
-                ParkCause::Suspend,
+            let now = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
+            let entry_id = EntryId::from(&invocation_id);
+            let Some(header) = self
+                .storage
+                .get_vqueue_entry_status(invocation_id.partition_key(), &entry_id)
+                .await?
+            else {
+                // todo resolve once we decided on the actual migration strategy
+                panic!(
+                    "Trying to suspend invocation {invocation_id} which does not exist as a vqueue entry. Have you forgotten to migrate from the old inbox to vqueues?",
+                );
+            };
+
+            VQueue::get(
+                header.vqueue_id(),
+                self.storage,
+                self.vqueues_cache,
+                self.is_leader.then_some(self.action_collector),
             )
-            .await?;
+            .await?
+            .expect("suspending in a non-existent vqueue")
+            .suspend_entry(now, &header);
         }
 
         self.storage
@@ -5040,7 +5176,10 @@ impl<S> StateMachineApplyContext<'_, S> {
             .map_err(Error::Storage)
     }
 
-    async fn mutate_state(&mut self, state_mutation: &ExternalStateMutation) -> StorageResult<()>
+    async fn mutate_state(
+        &mut self,
+        state_mutation: &ExternalStateMutation,
+    ) -> StorageResult<vqueue_table::Status>
     where
         S: ReadStateTable + WriteStateTable,
     {
@@ -5067,7 +5206,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     "Ignore state mutation for service id '{:?}' because the expected version '{}' is not matching the actual version '{}'",
                     &service_id, expected, actual
                 );
-                return Ok(());
+                return Ok(vqueue_table::Status::Failed);
             }
         }
 
@@ -5082,80 +5221,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             self.storage.put_user_state(service_id, key, value)?;
         }
 
-        Ok(())
-    }
-
-    // [vqueues only]
-    async fn vqueue_park_invocation(
-        &mut self,
-        invocation_id: &InvocationId,
-        invocation_target: &InvocationTarget,
-        cause: ParkCause,
-    ) -> Result<(), Error>
-    where
-        S: WriteVQueueTable + ReadVQueueTable,
-    {
-        let qid = Self::vqueue_id_from_invocation(invocation_id, invocation_target);
-
-        // Not great that we have to look up the entry card here.
-        // todo remove once the reworked InvocationStatus can hold the required information
-        let Some(entry_state_header) = self
-            .storage
-            .get_entry_state_header(
-                EntryKind::Invocation,
-                invocation_id.partition_key(),
-                &EntryId::from(invocation_id),
-            )
-            .await?
-        else {
-            // todo resolve once we decided on the actual migration strategy
-            panic!(
-                "Trying to park invocation {invocation_id} which does not exist as a vqueue entry. Have you forgotten to migrate from the old inbox to vqueues?"
-            );
-        };
-
-        let mut vqueue = VQueues::new(
-            qid,
-            self.storage,
-            self.vqueues_cache,
-            self.is_leader.then_some(self.action_collector),
-        );
-
-        let now = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
-
-        let should_release_concurrency_token = match cause {
-            ParkCause::Suspend => {
-                // Always hold on to your concurrency token until the invocation is completed if
-                // we are suspending for all types (services, VOs, workflows). This has the benefit
-                // of an easy to reason about concurrency model for our users. The downside is that
-                // callers might deadlock if they call a limited service which has no more
-                // concurrency tokens left and there is a cyclic dependency (e.g. a limited service
-                // calling itself).
-                false
-            }
-            ParkCause::Pause => {
-                // We release the concurrency token in case we are pausing a service because
-                // unpausing requires human intervention, and we don't want to block other service
-                // invocations.
-                //
-                // Note that we don't do this for paused VOs and workflows because they need to
-                // ensure that no other instance can run while they hold their lock. Technically,
-                // we still have the service_status_table which stores the locking information, and
-                // we need to keep things in sync until we decide what to do with this table.
-                matches!(invocation_target.service_ty(), ServiceType::Service)
-            }
-        };
-
-        vqueue
-            .park(
-                now,
-                &entry_state_header.current_entry_card(),
-                entry_state_header.stage(),
-                should_release_concurrency_token,
-            )
-            .await?;
-
-        Ok(())
+        Ok(vqueue_table::Status::Succeeded)
     }
 
     /// Moves the given invocation to the inbox and making it eligible for scheduling. Depending on its
@@ -5167,17 +5233,12 @@ impl<S> StateMachineApplyContext<'_, S> {
         invocation_id: &InvocationId,
     ) -> Result<(), Error>
     where
-        S: WriteVQueueTable + ReadVQueueTable,
+        S: WriteVQueueTable + WriteLockTable + ReadVQueueTable,
     {
-        // Not great that we have to look up the entry card here.
-        // todo remove once the reworked InvocationStatus can hold the required information
-        let Some(entry_state_header) = self
+        let entry_id = EntryId::from(invocation_id);
+        let Some(header) = self
             .storage
-            .get_entry_state_header(
-                EntryKind::Invocation,
-                invocation_id.partition_key(),
-                &EntryId::from(invocation_id),
-            )
+            .get_vqueue_entry_status(invocation_id.partition_key(), &entry_id)
             .await?
         else {
             // todo resolve once we decided on the actual migration strategy
@@ -5186,91 +5247,43 @@ impl<S> StateMachineApplyContext<'_, S> {
             );
         };
 
-        let qid = entry_state_header.vqueue_id();
+        let qid = header.vqueue_id();
 
-        let mut vqueue = VQueues::new(
+        let mut vqueue = VQueue::get(
             qid,
             self.storage,
             self.vqueues_cache,
             self.is_leader.then_some(self.action_collector),
-        );
+        )
+        .await?
+        .expect("waking up in a non-existent vqueue");
 
         let now = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
 
-        match entry_state_header.stage() {
-            Stage::Park => {
-                vqueue
-                    .wake_up(now, &entry_state_header.current_entry_card())
-                    .await?;
+        // todo: this would be a good place to pick up if the invocation
+        // metadata should be updated (i.e. a deployment was pinned)
+        match header.stage() {
+            Stage::Suspended => {
+                vqueue.wake_up(now, &header, None, None);
             }
-            Stage::Run => {
-                vqueue
-                    .yield_running(now, entry_state_header.current_entry_card())
-                    .await?;
+            Stage::Paused => {
+                vqueue.wake_up(now, &header, None, None);
+            }
+            Stage::Running => {
+                vqueue.yield_entry(now, &header, None, None, header.status());
             }
             Stage::Inbox => {
                 // nothing to do if we are already in the inbox
             }
-            Stage::Unknown => {
-                panic!("Trying to move invocation from unknown stage to inbox is not supported.")
+            Stage::Finished | Stage::Unknown => {
+                panic!(
+                    "Trying to move invocation from a terminal stage ({}) to inbox is not supported.",
+                    header.stage()
+                )
             }
         };
 
         Ok(())
-    }
-
-    // todo placeholder until we have decided on the VQueueParent resolution
-    fn vqueue_id_from_invocation(
-        invocation_id: &InvocationId,
-        invocation_target: &InvocationTarget,
-    ) -> VQueueId {
-        let (parent, instance) = match invocation_target {
-            InvocationTarget::Service { .. } => {
-                (VQueueParent::default_unlimited(), VQueueInstance::Default)
-            }
-            InvocationTarget::VirtualObject {
-                handler_ty,
-                key,
-                name,
-                ..
-            } => {
-                let parent = match handler_ty {
-                    VirtualObjectHandlerType::Exclusive => VQueueParent::default_singleton(),
-                    VirtualObjectHandlerType::Shared => VQueueParent::default_unlimited(),
-                };
-
-                // todo fix once we generate distinct parents for VOs and workflows
-                // Temporarily we have to include the virtual object name since VOs with the same
-                // key are mapped to the same partition key (see https://github.com/restatedev/restate/blob/786dc7dc6c240ef0a7abd6a48af7463f341bea2f/crates/types/src/identifiers.rs#L151-L150)
-                // and different VOs must not fall into the same vqueue.
-                (
-                    parent,
-                    VQueueInstance::infer_from(name.as_bytes(), key.as_bytes()),
-                )
-            }
-            InvocationTarget::Workflow {
-                handler_ty,
-                key,
-                name,
-                ..
-            } => {
-                let parent = match handler_ty {
-                    WorkflowHandlerType::Workflow => VQueueParent::default_singleton(),
-                    WorkflowHandlerType::Shared => VQueueParent::default_unlimited(),
-                };
-
-                // we have to include the virtual object name since VOs with the same key are mapped
-                // to the same partition key (see https://github.com/restatedev/restate/blob/786dc7dc6c240ef0a7abd6a48af7463f341bea2f/crates/types/src/identifiers.rs#L151-L150)
-                // and different VOs must not fall into the same vqueue.
-                (
-                    parent,
-                    VQueueInstance::infer_from(name.as_bytes(), key.as_bytes()),
-                )
-            }
-        };
-        let partition_key = invocation_id.partition_key();
-
-        VQueueId::new(parent, partition_key, instance)
     }
 
     async fn vqueue_enqueue_state_mutation(
@@ -5278,85 +5291,53 @@ impl<S> StateMachineApplyContext<'_, S> {
         state_mutation: ExternalStateMutation,
     ) -> Result<(), Error>
     where
-        S: WriteVQueueTable + ReadVQueueTable + WriteFsmTable,
+        S: WriteVQueueTable + WriteLockTable + ReadVQueueTable + WriteFsmTable,
     {
         let now = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
-        let visible_at = VisibleAt::Now;
-
         let service_id = &state_mutation.service_id;
-        let parent = VQueueParent::default_singleton();
+        // we don't pass the limit key here yet
+        let limit_key = LimitKey::None;
 
-        let qid = VQueueId::new(
-            parent,
-            service_id.partition_key(),
-            VQueueInstance::infer_from(
-                service_id.service_name.as_bytes(),
-                service_id.key.as_bytes(),
-            ),
-        );
+        // synthesize a virtual object invocation target so we can generate the vqueue id from.
+        let target = InvocationTarget::VirtualObject {
+            name: service_id.service_name.clone(),
+            key: service_id.key.clone(),
+            // fake, doesn't matter.
+            handler: ByteString::from_static("_state_mutation"),
+            handler_ty: VirtualObjectHandlerType::Exclusive,
+        };
 
         // todo: Make this a use-facing ID, generated at ingress.
-        let mutation_id = StateMutationId::generate(service_id.partition_key());
-
-        let mut vqueue = VQueues::new(
-            qid,
+        let entry_id = EntryId::from(StateMutationId::generate(service_id.partition_key()));
+        let qid = VQueue::infer_vqueue_id_from_invocation(
+            service_id.partition_key(),
+            &target,
+            &limit_key,
+        );
+        let mut vqueue = VQueue::vqueue_from_invocation_target(
+            now,
+            service_id.partition_key(),
+            &target,
             self.storage,
             self.vqueues_cache,
             self.is_leader.then_some(self.action_collector),
+            &limit_key,
+        )
+        .await?;
+
+        vqueue.enqueue_new(
+            now,
+            self.record_lsn,
+            now,
+            entry_id,
+            vqueue_table::EntryMetadata::default(),
         );
-        vqueue
-            .enqueue_new(
-                now,
-                visible_at,
-                NewEntryPriority::UserDefault,
-                EntryKind::StateMutation,
-                // todo revisit entry id generation for state mutations
-                EntryId::from(mutation_id),
-                Some(state_mutation),
-            )
-            .await?;
+
+        self.storage
+            .put_vqueue_input_payload(&qid, self.record_lsn, &entry_id, state_mutation);
 
         Ok(())
     }
-
-    /// Apply the state mutation identified by the given qid and entry card.
-    async fn vqueue_mutate_state(
-        &mut self,
-        qid: VQueueId,
-        card: &EntryCard,
-        now: UniqueTimestamp,
-    ) -> Result<(), Error>
-    where
-        S: WriteVQueueTable + ReadVQueueTable + ReadStateTable + WriteStateTable,
-    {
-        if let Some(state_mutation) = self
-            .storage
-            .get_item::<ExternalStateMutation>(&qid, card.created_at, card.kind, &card.id)
-            .await?
-        {
-            self.mutate_state(&state_mutation).await?;
-
-            VQueues::new(
-                qid,
-                self.storage,
-                self.vqueues_cache,
-                self.is_leader.then_some(self.action_collector),
-            )
-            .end(now, Stage::Run, card)
-            .await?;
-        }
-
-        Ok(())
-    }
-}
-
-/// Cause for parking an invocation
-#[derive(Debug)]
-enum ParkCause {
-    /// The invocation suspends to await completion or signals
-    Suspend,
-    /// The invocation pauses because it depleted it retries or was manually paused
-    Pause,
 }
 
 // To write completions in the effects log

@@ -203,6 +203,13 @@ impl<S: StringLike> std::ops::Deref for RestrictedValue<S> {
     }
 }
 
+// Needed for hashbrown's entry_ref API to lazily convert the key reference on insert.
+impl<S: Clone> From<&RestrictedValue<S>> for RestrictedValue<S> {
+    fn from(value: &RestrictedValue<S>) -> Self {
+        value.clone()
+    }
+}
+
 impl<S: OwnedStringLike> FromStr for RestrictedValue<S> {
     type Err = RestrictedValueError;
 

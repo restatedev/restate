@@ -56,7 +56,7 @@ pub mod service_protocol;
 pub mod state_mut;
 pub mod storage;
 pub mod timer;
-pub mod vqueue;
+pub mod vqueues;
 
 pub use id_util::IdResourceType;
 pub use identifiers::PartitionedResourceId;
@@ -204,6 +204,13 @@ impl Scope {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+}
+
+// Needed for hashbrown's entry_ref API to lazily convert the key reference on insert.
+impl From<&Scope> for Scope {
+    fn from(value: &Scope) -> Self {
+        value.clone()
     }
 }
 
