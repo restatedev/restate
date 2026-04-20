@@ -24,7 +24,6 @@ use tracing::{info, trace, warn};
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::EntryKey;
 use restate_storage_api::vqueue_table::VQueueStore;
-use restate_storage_api::vqueue_table::metadata::VQueueMeta;
 use restate_types::vqueues::VQueueId;
 use restate_types::{LockName, Scope};
 
@@ -32,7 +31,7 @@ use crate::EventDetails;
 use crate::VQueueEvent;
 use crate::VQueuesMeta;
 use crate::metric_definitions::VQUEUE_CONFIRMED;
-use crate::metric_definitions::VQUEUE_ENQUEUE;
+use crate::scheduler::MetaLiteUpdate;
 use crate::scheduler::eligible::EligibilityTracker;
 use crate::scheduler::vqueue_state::Pop;
 
@@ -40,6 +39,7 @@ use super::Decisions;
 use super::ReservedResources;
 use super::ResourceManager;
 use super::VQueueHandle;
+use super::VQueueMetaLite;
 use super::VQueueSchedulerStatus;
 use super::vqueue_state::VQueueState;
 
@@ -87,8 +87,14 @@ impl<S: VQueueStore> DRRScheduler<S> {
         for (qid, meta) in vqueues.iter_active_vqueues() {
             total_running += meta.num_running();
             total_waiting += meta.total_waiting();
-            let handle =
-                q.insert_with_key(|handle| VQueueState::new(qid.clone(), handle, meta.clone()));
+            let handle = q.insert_with_key(|handle| {
+                VQueueState::new(
+                    qid.clone(),
+                    handle,
+                    VQueueMetaLite::new(meta),
+                    meta.num_running(),
+                )
+            });
             id_lookup.insert(qid.clone(), handle);
             // We init all active vqueues as eligible first
             eligible.insert_eligible(handle);
@@ -203,22 +209,9 @@ impl<S: VQueueStore> DRRScheduler<S> {
         }
     }
 
-    fn add_active_vqueue(&mut self, qid: &VQueueId, meta: VQueueMeta) {
-        let handle = self
-            .q
-            .insert_with_key(|handle| VQueueState::new_empty(qid.clone(), handle, meta));
-
-        assert!(
-            self.id_lookup.insert(qid.clone(), handle).is_none(),
-            "vqueue id lingering"
-        );
-    }
-
-    fn mark_vqueue_as_dormant(&mut self, qid: &VQueueId) {
-        let Some(handle) = self.id_lookup.remove(qid) else {
-            return;
-        };
-        // retire the vqueue state
+    fn mark_vqueue_as_dormant(&mut self, qid: &VQueueId, handle: VQueueHandle) {
+        trace!("VQueue {qid} is no longer observed by the scheduler");
+        self.id_lookup.remove(qid);
         self.q.remove(handle);
         self.eligible.remove(handle);
     }
@@ -231,34 +224,68 @@ impl<S: VQueueStore> DRRScheduler<S> {
     #[track_caller]
     pub fn on_inbox_event(&mut self, event: VQueueEvent) {
         let qid = event.qid;
+        let mut maybe_handle = self.id_lookup.get(&qid).copied();
+        debug_assert!(maybe_handle.map(|h| self.q.contains_key(h)).unwrap_or(true));
+
         for update in event.updates {
             match update {
-                EventDetails::MetadataUpdated(update) => {
-                    let qstate = self
-                        .id_lookup
-                        .get(&qid)
-                        .and_then(|handle| self.q.get_mut(*handle))
-                        .expect("vqueue must be active");
-                    qstate.apply_meta_update(&update);
-                }
-                EventDetails::VQueueBecameActive(meta) => {
-                    self.add_active_vqueue(&qid, meta);
-                }
-                EventDetails::VQueueBecameDormant => {
-                    self.mark_vqueue_as_dormant(&qid);
+                EventDetails::AddVQueue {
+                    scope,
+                    limit_key,
+                    lock_name,
+                } => {
+                    if maybe_handle.is_none() {
+                        // add it.
+                        trace!("VQueue {qid} is added to the scheduler");
+                        maybe_handle = Some(self.q.insert_with_key(|h| {
+                            VQueueState::new_empty(
+                                qid.clone(),
+                                h,
+                                VQueueMetaLite::new_empty(scope, limit_key, lock_name),
+                            )
+                        }));
+                        self.id_lookup.insert(qid.clone(), maybe_handle.unwrap());
+                        // Note: We don't make this eligible yet. We'll do that when we see
+                        // an actual enqueue because we initialize the vqueue metadata with
+                        // length 0.
+                    }
                 }
                 EventDetails::LockReleased { scope, lock_name } => {
                     self.release_lock(&scope, &lock_name);
                 }
-                EventDetails::Enqueued { key, value } => {
-                    let handle = self
-                        .id_lookup
-                        .get(&qid)
-                        .copied()
-                        .expect("vqueue must be active");
-                    let qstate = self.q.get_mut(handle).expect("vqueue must be active");
+                EventDetails::InboxUpdate(ref update @ MetaLiteUpdate::QueuePaused) => {
+                    let Some(handle) = maybe_handle else {
+                        continue;
+                    };
+                    let qstate = self.q.get_mut(handle).unwrap();
+                    qstate.apply_meta_update(update);
+                    if qstate.is_dormant() {
+                        self.mark_vqueue_as_dormant(&qid, handle);
+                    }
+                }
+                EventDetails::InboxUpdate(ref update @ MetaLiteUpdate::QueueResumed { .. }) => {
+                    let Some(handle) = maybe_handle else {
+                        continue;
+                    };
+                    let qstate = self.q.get_mut(handle).unwrap();
+                    qstate.apply_meta_update(update);
+                    if self.eligible.refresh_membership(qstate) {
+                        self.wake_up();
+                    }
+                }
+                EventDetails::InboxUpdate(
+                    ref update @ MetaLiteUpdate::EnqueuedToInbox { ref key, ref value },
+                ) => {
+                    assert!(
+                        maybe_handle.is_some(),
+                        "scheduler must know about queue {qid}  before an inbox enqueue",
+                    );
+                    let handle = maybe_handle.unwrap();
+                    let qstate = self.q.get_mut(handle).unwrap();
 
-                    counter!(VQUEUE_ENQUEUE).increment(1);
+                    // keep inbox size in sync
+                    qstate.apply_meta_update(update);
+
                     if let Some(permit_builder) = qstate.notify_enqueued(key, value) {
                         // The newly enqueued item became the head of the queue.
                         // If the vqueue was blocked we need to place it back
@@ -284,16 +311,9 @@ impl<S: VQueueStore> DRRScheduler<S> {
                     }
                 }
                 EventDetails::DecisionConfirmed {
-                    ref key,
+                    key,
                     drop_pending_resources,
                 } => {
-                    let Some(handle) = self.id_lookup.get(&qid) else {
-                        continue;
-                    };
-                    let Some(qstate) = self.q.get_mut(*handle) else {
-                        continue;
-                    };
-
                     // In some scenarios (state mutation), we don't consume the resources permit
                     // because it's not driven by the invoker. For that case, we remove the permit.
                     //
@@ -301,23 +321,41 @@ impl<S: VQueueStore> DRRScheduler<S> {
                     // leader to pop it when it actually runs the item (e.g on VQInvoke action)
                     // which doesn't necessarily need to happen before we see this inbox event.
                     if drop_pending_resources {
-                        self.pending_resources.remove(key);
+                        self.pending_resources.remove(&key);
                     }
 
-                    if qstate.remove_from_unconfirmed_assignments(key) {
-                        counter!(VQUEUE_CONFIRMED).increment(1);
-                    }
-                }
-                EventDetails::Removed { ref key } => {
-                    // If we have been holding a concurrency permit for this item, we release it.
-                    self.pending_resources.remove(key);
-
-                    let Some(handle) = self.id_lookup.get(&qid).copied() else {
+                    let Some(handle) = maybe_handle else {
                         continue;
                     };
+
                     let Some(qstate) = self.q.get_mut(handle) else {
                         continue;
                     };
+
+                    if qstate.remove_from_unconfirmed_assignments(&key) {
+                        counter!(VQUEUE_CONFIRMED).increment(1);
+                    }
+                    // To make sure the num_waiting counter is updated.
+                    qstate.apply_meta_update(&MetaLiteUpdate::RemovedFromInbox(key));
+
+                    if qstate.is_dormant() {
+                        self.mark_vqueue_as_dormant(&qid, handle);
+                        maybe_handle = None;
+                    }
+                }
+                EventDetails::InboxUpdate(
+                    ref update @ MetaLiteUpdate::RemovedFromInbox(ref key),
+                ) => {
+                    // If we have been holding a concurrency permit for this item, we release it.
+                    self.pending_resources.remove(key);
+
+                    let Some(handle) = maybe_handle else {
+                        continue;
+                    };
+                    let qstate = self.q.get_mut(handle).unwrap();
+
+                    // keep inbox size in sync
+                    qstate.apply_meta_update(update);
 
                     // This means it might be the current head. Let's invalidate it if
                     // that's the case.
@@ -328,12 +366,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
                         }
 
                         let mut wake_up = false;
-                        if qstate.is_dormant() {
-                            // queue is now dormant. Remove it from everything.
-                            self.eligible.remove(handle);
-                            self.id_lookup.remove(&qid);
-                            self.q.remove(handle);
-                        } else {
+                        if !qstate.is_dormant() {
                             // force the queue to be polled again since the head
                             // will definitely be unknown at this point.
                             self.eligible.ensure_queue_needs_polling(handle);
@@ -347,13 +380,13 @@ impl<S: VQueueStore> DRRScheduler<S> {
                             .revert_permit_builder(&mut self.eligible, permit_builder);
 
                         if wake_up {
-                            self.wake_up();
+                            self.waker.wake_by_ref();
                         }
-                    } else if qstate.is_dormant() {
+                    }
+
+                    if qstate.is_dormant() {
                         // the removal makes the queue dormant. Remove it from everything
-                        self.eligible.remove(handle);
-                        self.id_lookup.remove(&qid);
-                        self.q.remove(handle);
+                        self.mark_vqueue_as_dormant(&qid, handle);
                     }
                 }
             }

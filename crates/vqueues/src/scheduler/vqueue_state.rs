@@ -16,7 +16,6 @@ use tokio::time::Instant;
 
 use restate_clock::RoughTimestamp;
 use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::metadata::{self, VQueueMeta};
 use restate_storage_api::vqueue_table::{EntryKey, EntryValue, VQueueStore, stats::WaitStats};
 use restate_types::vqueues::VQueueId;
 
@@ -28,6 +27,8 @@ use crate::scheduler::queue::QueueItem;
 
 use super::clock::SchedulerClock;
 use super::queue::Queue;
+use super::queue_meta::MetaLiteUpdate;
+pub use super::queue_meta::VQueueMetaLite;
 use super::resource_manager::{AcquireOutcome, PermitBuilder, ReservedResources, ResourceKind};
 use super::{ResourceManager, RunAction, ThrottleScope, VQueueHandle, YieldAction};
 
@@ -202,7 +203,7 @@ impl Stats {
 pub struct VQueueState<S: VQueueStore> {
     pub handle: VQueueHandle,
     pub qid: VQueueId,
-    meta: VQueueMeta,
+    meta: VQueueMetaLite,
     deficit: i32,
     #[debug(skip)]
     unconfirmed_assignments: HashSet<EntryKey>,
@@ -214,8 +215,13 @@ pub struct VQueueState<S: VQueueStore> {
 }
 
 impl<S: VQueueStore> VQueueState<S> {
-    pub fn new(qid: VQueueId, handle: VQueueHandle, meta: VQueueMeta) -> Self {
-        let queue = Queue::new(meta.num_running());
+    pub fn new(
+        qid: VQueueId,
+        handle: VQueueHandle,
+        meta: VQueueMetaLite,
+        num_running: u32,
+    ) -> Self {
+        let queue = Queue::new(num_running);
         Self {
             handle,
             qid,
@@ -228,11 +234,11 @@ impl<S: VQueueStore> VQueueState<S> {
         }
     }
 
-    pub fn apply_meta_update(&mut self, update: &metadata::Update) {
+    pub fn apply_meta_update(&mut self, update: &MetaLiteUpdate) {
         self.meta.apply_update(update)
     }
 
-    pub fn new_empty(qid: VQueueId, handle: VQueueHandle, meta: VQueueMeta) -> Self {
+    pub fn new_empty(qid: VQueueId, handle: VQueueHandle, meta: VQueueMetaLite) -> Self {
         Self {
             qid,
             handle,
@@ -321,7 +327,7 @@ impl<S: VQueueStore> VQueueState<S> {
         // We hold on to the vqueue until we confirm/reject all pending assignments. If we didn't
         // do so, we risk revisiting/redequeuing the unconfirmed items if the vqueue popped back to life
         // (i.e., on enqueue). This is the reason why we check for `unconfirmed_assignments`
-        (self.queue.is_empty() || self.meta.total_waiting() == 0 || self.meta.queue_is_paused())
+        (self.queue.is_empty() || self.meta.is_inbox_empty() || self.meta.is_queue_paused())
             && self.unconfirmed_assignments.is_empty()
     }
 
@@ -340,7 +346,7 @@ impl<S: VQueueStore> VQueueState<S> {
             None if self.queue.remaining_in_running_stage() > 0 => {
                 return DetailedEligibility::EligibleRunning;
             }
-            None if self.meta.total_waiting() > 0 => return DetailedEligibility::EligibleInbox,
+            None if self.meta.inbox_len() > 0 => return DetailedEligibility::EligibleInbox,
             None => return DetailedEligibility::Empty,
         };
 
@@ -367,7 +373,7 @@ impl<S: VQueueStore> VQueueState<S> {
     }
 
     /// Returns true if the head was changed
-    pub fn notify_enqueued(&mut self, key: EntryKey, value: EntryValue) -> Option<PermitBuilder> {
+    pub fn notify_enqueued(&mut self, key: &EntryKey, value: &EntryValue) -> Option<PermitBuilder> {
         if self.queue.enqueue(key, value) {
             self.head_stats.reset();
             Some(self.current_permit.take())
@@ -385,9 +391,11 @@ impl<S: VQueueStore> VQueueState<S> {
         self.queue.remaining_in_running_stage()
     }
 
+    /// Takes into account the number of unconfirmed assignments when calculating
+    /// the inbox length
     pub fn num_waiting_inbox(&self) -> u64 {
         self.meta
-            .total_waiting()
-            .saturating_sub(self.unconfirmed_assignments.len() as u64)
+            .inbox_len()
+            .saturating_sub(self.unconfirmed_assignments.len()) as u64
     }
 }

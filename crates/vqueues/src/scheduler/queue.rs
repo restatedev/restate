@@ -107,7 +107,7 @@ impl<S: VQueueStore> Queue<S> {
     }
 
     /// Returns true if the head was changed
-    pub fn enqueue(&mut self, key: EntryKey, value: EntryValue) -> bool {
+    pub fn enqueue(&mut self, key: &EntryKey, value: &EntryValue) -> bool {
         match (&self.head, &self.reader) {
             // we are only unknown if we are new and didn't read the running list yet,
             // we might also be in a limbo state if advance() failed.
@@ -115,7 +115,10 @@ impl<S: VQueueStore> Queue<S> {
             (Head::Unknown, _) => { /* do nothing */ }
             (Head::Empty, _) => {
                 self.reader = Reader::Closed;
-                self.head = Head::Known { key, value };
+                self.head = Head::Known {
+                    key: *key,
+                    value: value.clone(),
+                };
                 return true;
             }
             (
@@ -124,8 +127,11 @@ impl<S: VQueueStore> Queue<S> {
                 },
                 Reader::Inbox(_) | Reader::Closed,
             ) => {
-                if &key < current_key {
-                    self.head = Head::Known { key, value };
+                if key < current_key {
+                    self.head = Head::Known {
+                        key: *key,
+                        value: value.clone(),
+                    };
                     // Ensure that next advance would re-seek to the newly added item
                     self.reader = Reader::Closed;
                     return true;
@@ -453,7 +459,7 @@ mod tests {
         assert!(queue.is_empty());
 
         let higher = default_entry(0);
-        assert!(queue.enqueue(higher.0, higher.1.clone()));
+        assert!(queue.enqueue(&higher.0, &higher.1));
         let head = queue.advance_if_needed(db, &skip, &qid).unwrap();
         assert!(matches!(head, QueueItem::Inbox { key, .. } if *key == higher.0));
     }
@@ -546,14 +552,14 @@ mod tests {
         assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == initial.0));
 
         let higher = test_entry(2, false, 2_000);
-        assert!(queue.enqueue(higher.0, higher.1.clone()));
+        assert!(queue.enqueue(&higher.0, &higher.1));
         assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == higher.0));
         assert!(
             matches!(queue.advance_if_needed(db, &skip, &qid).unwrap(), QueueItem::Inbox { key, .. } if *key == higher.0)
         );
 
         let lower = test_entry(3, false, 4_000);
-        assert!(!queue.enqueue(lower.0, lower.1.clone()));
+        assert!(!queue.enqueue(&lower.0, &lower.1));
         assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == higher.0));
     }
 
@@ -691,7 +697,7 @@ mod tests {
         assert!(matches!(queue.head(), Some(QueueItem::Running { key, .. }) if *key == running1.0));
 
         let even_higher = test_entry(11, true, 0);
-        assert!(!queue.enqueue(even_higher.0, even_higher.1.clone()));
+        assert!(!queue.enqueue(&even_higher.0, &even_higher.1));
         assert!(matches!(queue.head(), Some(QueueItem::Running { key, .. }) if *key == running1.0));
 
         assert!(!queue.remove(&running2.0));
