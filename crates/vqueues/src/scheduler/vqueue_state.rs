@@ -21,7 +21,7 @@ use restate_futures_util::concurrency::{Concurrency, Permit};
 use restate_memory::{MemoryLease, PollMemoryPool};
 use restate_serde_util::NonZeroByteCount;
 use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::metadata::VQueueMeta;
+use restate_storage_api::vqueue_table::metadata::{self, VQueueMeta};
 use restate_storage_api::vqueue_table::{
     EntryKind, VQueueEntry, VQueueStore, VisibleAt, WaitStats,
 };
@@ -59,7 +59,6 @@ pub(super) enum Pop<Item> {
         /// require global resources (e.g. yield, state mutations).
         resources: Option<ReservedResources>,
         entry: Entry<Item>,
-        updated_zt: Option<f64>,
     },
     Throttle {
         delay: Duration,
@@ -218,6 +217,7 @@ impl Stats {
 pub struct VQueueState<S: VQueueStore> {
     pub handle: VQueueHandle,
     pub qid: VQueueId,
+    meta: VQueueMeta,
     // contains hashes (unique_hash)
     deficit: i32,
     #[debug(skip)]
@@ -234,37 +234,41 @@ impl<S: VQueueStore> VQueueState<S> {
     pub fn new(
         qid: VQueueId,
         handle: VQueueHandle,
-        meta: &VQueueMeta,
+        meta: VQueueMeta,
         config: &VQueueConfig,
     ) -> Self {
-        let start_tb = config.start_rate_limit().map(|limit| {
-            LocalTokenBucket::with_zero_time(*limit, SchedulerClock, meta.start_tb_zero_time())
-        });
+        let start_tb = config
+            .start_rate_limit()
+            .map(|limit| LocalTokenBucket::new(*limit, SchedulerClock));
 
+        let queue = Queue::new(meta.num_running());
         Self {
-            qid,
             handle,
+            qid,
+            meta,
+            deficit: QUANTUM,
             start_tb,
             unconfirmed_assignments: HashSet::new(),
-            queue: Queue::new(meta.num_running()),
-            deficit: QUANTUM,
+            queue,
             head_stats: Stats::default(),
         }
     }
 
-    pub fn new_empty(
-        qid: VQueueId,
-        handle: VQueueHandle,
-        meta: &VQueueMeta,
-        config: &VQueueConfig,
-    ) -> Self {
-        let start_tb = config.start_rate_limit().map(|limit| {
-            LocalTokenBucket::with_zero_time(*limit, SchedulerClock, meta.start_tb_zero_time())
-        });
+    pub fn apply_meta_update(&mut self, update: &metadata::Update) {
+        self.meta
+            .apply_update(update)
+            .expect("vqueue cache cannot be updated with invalid updates");
+    }
+
+    pub fn new_empty(qid: VQueueId, handle: VQueueHandle, meta: VQueueMeta) -> Self {
+        // let start_tb = config
+        //     .start_rate_limit()
+        //     .map(|limit| LocalTokenBucket::new(*limit, SchedulerClock));
         Self {
             qid,
             handle,
-            start_tb,
+            meta,
+            start_tb: None,
             unconfirmed_assignments: HashSet::new(),
             queue: Queue::new_closed(),
             deficit: 0,
@@ -309,7 +313,6 @@ impl<S: VQueueStore> VQueueState<S> {
                     item: inbox_head.clone(),
                     stats: self.head_stats.finalize(),
                 },
-                updated_zt: None,
             };
             self.queue
                 .advance(storage, &self.unconfirmed_assignments, &self.qid)?;
@@ -406,10 +409,6 @@ impl<S: VQueueStore> VQueueState<S> {
                 item: inbox_head.clone(),
                 stats: self.head_stats.finalize(),
             },
-            updated_zt: self
-                .start_tb
-                .as_ref()
-                .map(|start_tb| start_tb.get_zero_time()),
         };
 
         self.queue
@@ -418,28 +417,27 @@ impl<S: VQueueStore> VQueueState<S> {
         Ok(result)
     }
 
-    pub fn is_dormant(&self, meta: &VQueueMeta, config: &VQueueConfig) -> bool {
+    pub fn is_dormant(&self, config: &VQueueConfig) -> bool {
         // We hold on to the vqueue until we confirm/reject all pending assignments. If we didn't
         // do so, we risk revisiting/redequeuing the unconfirmed items if the vqueue popped back to life
         // (i.e., on enqueue). This is the reason why we check for `unconfirmed_assignments`
-        (self.queue.is_empty() || meta.total_waiting() == 0 || self.is_paused(meta, config).yes())
+        (self.queue.is_empty() || self.meta.total_waiting() == 0 || self.is_paused(config).yes())
             && self.unconfirmed_assignments.is_empty()
     }
 
     pub fn poll_eligibility(
         &mut self,
         storage: &S,
-        meta: &VQueueMeta,
         config: &VQueueConfig,
     ) -> Result<DetailedEligibility, StorageError> {
         self.queue
             .advance_if_needed(storage, &self.unconfirmed_assignments, &self.qid)?;
 
-        Ok(self.check_eligibility(meta, config))
+        Ok(self.check_eligibility(config))
     }
 
-    pub fn is_paused(&self, meta: &VQueueMeta, config: &VQueueConfig) -> IsPaused {
-        if meta.is_paused() {
+    pub fn is_paused(&self, config: &VQueueConfig) -> IsPaused {
+        if self.meta.is_paused() {
             IsPaused::Directly
         } else if config.is_paused() {
             IsPaused::ViaParent
@@ -448,11 +446,7 @@ impl<S: VQueueStore> VQueueState<S> {
         }
     }
 
-    pub fn check_eligibility(
-        &self,
-        meta: &VQueueMeta,
-        config: &VQueueConfig,
-    ) -> DetailedEligibility {
+    pub fn check_eligibility(&self, config: &VQueueConfig) -> DetailedEligibility {
         let inbox_head = match self.queue.head() {
             Some(QueueItem::Running(_)) => return DetailedEligibility::EligibleRunning,
             Some(QueueItem::Inbox(item)) => item,
@@ -460,7 +454,7 @@ impl<S: VQueueStore> VQueueState<S> {
             None if self.queue.remaining_in_running_stage() > 0 => {
                 return DetailedEligibility::EligibleRunning;
             }
-            None if meta.total_waiting() > 0 => return DetailedEligibility::EligibleInbox,
+            None if self.meta.total_waiting() > 0 => return DetailedEligibility::EligibleInbox,
             None => return DetailedEligibility::Empty,
         };
 
@@ -471,7 +465,7 @@ impl<S: VQueueStore> VQueueState<S> {
             return DetailedEligibility::Scheduled(ts);
         }
 
-        if inbox_head.is_token_held() || self.has_available_tokens(meta, config) {
+        if inbox_head.is_token_held() || self.has_available_tokens(config) {
             DetailedEligibility::EligibleInbox
         } else {
             DetailedEligibility::WaitingConcurrencyTokens
@@ -511,18 +505,19 @@ impl<S: VQueueStore> VQueueState<S> {
         self.queue.remaining_in_running_stage()
     }
 
-    pub fn num_waiting_inbox(&self, meta: &VQueueMeta) -> u32 {
-        meta.total_waiting()
+    pub fn num_waiting_inbox(&self) -> u32 {
+        self.meta
+            .total_waiting()
             .saturating_sub(self.unconfirmed_assignments.len() as u32)
     }
 
-    pub fn num_tokens_used(&self, meta: &VQueueMeta) -> u32 {
-        meta.tokens_used() + self.unconfirmed_assignments.len() as u32
+    pub fn num_tokens_used(&self) -> u32 {
+        self.meta.tokens_used() + self.unconfirmed_assignments.len() as u32
     }
 
-    fn has_available_tokens(&self, meta: &VQueueMeta, config: &VQueueConfig) -> bool {
+    fn has_available_tokens(&self, config: &VQueueConfig) -> bool {
         config
             .concurrency()
-            .is_none_or(|limit| self.num_tokens_used(meta) < limit.get())
+            .is_none_or(|limit| self.num_tokens_used() < limit.get())
     }
 }

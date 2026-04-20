@@ -230,7 +230,13 @@ impl InvocationTarget {
 
     pub fn lock_name(&self) -> Option<LockName> {
         match self {
-            InvocationTarget::VirtualObject { name, key, .. } => Some(LockName::new(
+            // Exclusive handler require holding a lock
+            InvocationTarget::VirtualObject {
+                name,
+                key,
+                handler_ty,
+                ..
+            } if handler_ty == &VirtualObjectHandlerType::Exclusive => Some(LockName::new(
                 ServiceName::new(name.as_ref()),
                 ReString::from(key.as_ref()),
             )),
@@ -238,7 +244,11 @@ impl InvocationTarget {
             // the partition processor at ingestion/creation time (via invocation/entry status)
             // Therefore, we treat them as normal services when it comes to locking and vqueue
             // management.
-            InvocationTarget::Service { .. } | InvocationTarget::Workflow { .. } => None,
+            //
+            // Also on virtual objects, shared handlers do not require locking.
+            InvocationTarget::VirtualObject { .. }
+            | InvocationTarget::Service { .. }
+            | InvocationTarget::Workflow { .. } => None,
         }
     }
 
