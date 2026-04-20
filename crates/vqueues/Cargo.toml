@@ -30,6 +30,7 @@ gardal = { workspace = true, features = ["tokio"] }
 hashbrown = { workspace = true }
 metrics = { workspace = true }
 pin-project = { workspace = true }
+sha2 = { workspace = true }
 slotmap = { workspace = true }
 smallvec = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }

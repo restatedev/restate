@@ -58,8 +58,7 @@ where
         debug_if_leader!(ctx.is_leader, "Paused the invocation");
 
         if Configuration::pinned().common.experimental_enable_vqueues {
-            ctx.vqueue_park_invocation(&self.invocation_id, &invoked_meta.invocation_target)
-                .await?;
+            ctx.vqueue_park_invocation(&self.invocation_id).await?;
         }
 
         let mut invocation_status = InvocationStatus::Paused(invoked_meta);

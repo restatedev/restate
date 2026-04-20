@@ -8,15 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::fmt::{Debug, Formatter};
+
 use bytes::{Buf, BufMut};
 
 use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::{InvocationId, StateMutationId};
 use restate_types::state_mut::ExternalStateMutation;
-use restate_types::vqueue::{
-    EffectivePriority, NewEntryPriority, VQueueId, VQueueInstance, VQueueParent,
-};
-use std::fmt::{Debug, Formatter};
+use restate_types::vqueue::{EffectivePriority, NewEntryPriority, VQueueId};
 
 use crate::StorageError;
 
@@ -192,9 +191,7 @@ impl EntryCard {
 pub trait AsEntryStateHeader {
     fn kind(&self) -> EntryKind;
     fn stage(&self) -> Stage;
-    fn queue_parent(&self) -> VQueueParent;
-    fn queue_instance(&self) -> VQueueInstance;
-    fn vqueue_id(&self) -> VQueueId;
+    fn vqueue_id(&self) -> &VQueueId;
     fn current_entry_card(&self) -> EntryCard;
 }
 
