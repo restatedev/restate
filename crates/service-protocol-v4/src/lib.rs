@@ -36,7 +36,9 @@ pub mod proto {
         ProposeRunCompletionMessage,
         CallCommandMessage,
         OneWayCallCommandMessage,
-        AwaitingOnMessage
+        AwaitingOnMessage,
+        AttachInvocationCommandMessage,
+        GetInvocationOutputCommandMessage
     );
 
     mod pb_conversion {

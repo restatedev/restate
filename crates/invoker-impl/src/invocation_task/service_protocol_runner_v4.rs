@@ -21,6 +21,7 @@ use gardal::futures::StreamExt as GardalStreamExt;
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use opentelemetry::trace::TraceFlags;
+use prost::Message as ProstMessage;
 use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
 
@@ -31,6 +32,9 @@ use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_service_protocol_v4::message_codec::{
     Decoder, Encoder, Message, MessageHeader, MessageType, StateEntry, proto,
+};
+use restate_service_protocol_v4::proto::{
+    attach_invocation_command_message, get_invocation_output_command_message,
 };
 use restate_types::Scope;
 use restate_types::errors::{GenericError, InvocationError};
@@ -898,21 +902,43 @@ where
                 TerminalLoopState::Continue(())
             }
             Message::GetInvocationOutputCommand(cmd) => {
-                // Verify the provided InvocationId is valid
-                let _: Entry = crate::shortcircuit!(
-                    RawCommand::new(CommandType::GetInvocationOutput, cmd.clone())
-                        .decode::<ServiceProtocolV4Codec, _>()
+                if let Some(target) = &cmd.target {
+                    crate::shortcircuit!(
+                        Self::validate_get_invocation_output_target(
+                            self.invocation_task.schemas.live_load(),
+                            target
+                        )
+                        .map_err(|err| InvokerError::CommandPrecondition(
+                            self.command_index,
+                            EntryType::Command(CommandType::GetInvocationOutput),
+                            err
+                        ))
+                    );
+                }
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::GetInvocationOutput, cmd.encode_to_vec()),
                 );
-                self.handle_new_command(mh, RawCommand::new(CommandType::GetInvocationOutput, cmd));
                 TerminalLoopState::Continue(())
             }
             Message::AttachInvocationCommand(cmd) => {
-                // Verify the provided InvocationId is valid
-                let _: Entry = crate::shortcircuit!(
-                    RawCommand::new(CommandType::AttachInvocation, cmd.clone())
-                        .decode::<ServiceProtocolV4Codec, _>()
+                if let Some(target) = &cmd.target {
+                    crate::shortcircuit!(
+                        Self::validate_attach_invocation_target(
+                            self.invocation_task.schemas.live_load(),
+                            target
+                        )
+                        .map_err(|err| InvokerError::CommandPrecondition(
+                            self.command_index,
+                            EntryType::Command(CommandType::AttachInvocation),
+                            err
+                        ))
+                    );
+                }
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::AttachInvocation, cmd.encode_to_vec()),
                 );
-                self.handle_new_command(mh, RawCommand::new(CommandType::AttachInvocation, cmd));
                 TerminalLoopState::Continue(())
             }
             Message::RunCommand(cmd) => {
@@ -1250,6 +1276,110 @@ where
             next_retry_interval_override: error.next_retry_delay.map(Duration::from_millis),
             error: InvocationError::from(error).into(),
         }))
+    }
+
+    fn validate_get_invocation_output_target(
+        invocation_target_resolver: &impl InvocationTargetResolver,
+        target: &get_invocation_output_command_message::Target,
+    ) -> Result<(), CommandPreconditionError> {
+        match target {
+            get_invocation_output_command_message::Target::InvocationId(invocation_id) => {
+                invocation_id.parse::<InvocationId>().map_err(|err| {
+                    CommandPreconditionError::InvalidInvocationId(invocation_id.clone(), err)
+                })?;
+            }
+            get_invocation_output_command_message::Target::IdempotentRequestTarget(
+                idempotent_request_target,
+            ) => {
+                // check whether we know the service/handler
+                invocation_target_resolver
+                    .resolve_latest_invocation_target(
+                        &idempotent_request_target.service_name,
+                        &idempotent_request_target.handler_name,
+                    )
+                    .ok_or_else(|| {
+                        CommandPreconditionError::ServiceHandlerNotFound(
+                            idempotent_request_target.service_name.clone(),
+                            idempotent_request_target.handler_name.clone(),
+                        )
+                    })?;
+                if let Some(scope) = idempotent_request_target.scope.as_ref() {
+                    // check whether the scope value is restricted
+                    let _ = RestrictedValue::new(scope.as_str())
+                        .map_err(CommandPreconditionError::InvalidScope)?;
+                }
+            }
+            get_invocation_output_command_message::Target::WorkflowTarget(workflow_target) => {
+                // check whether we know the workflow
+                invocation_target_resolver
+                    // the "run" handler must always be present for a workflow
+                    .resolve_latest_invocation_target(&workflow_target.workflow_name, "run")
+                    .ok_or_else(|| {
+                        CommandPreconditionError::WorkflowNotFound(
+                            workflow_target.workflow_name.clone(),
+                        )
+                    })?;
+                if let Some(scope) = workflow_target.scope.as_ref() {
+                    // check whether the scope value is restricted
+                    let _ = RestrictedValue::new(scope.as_str())
+                        .map_err(CommandPreconditionError::InvalidScope)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_attach_invocation_target(
+        invocation_target_resolver: &impl InvocationTargetResolver,
+        target: &attach_invocation_command_message::Target,
+    ) -> Result<(), CommandPreconditionError> {
+        match target {
+            attach_invocation_command_message::Target::InvocationId(invocation_id) => {
+                invocation_id.parse::<InvocationId>().map_err(|err| {
+                    CommandPreconditionError::InvalidInvocationId(invocation_id.clone(), err)
+                })?;
+            }
+            attach_invocation_command_message::Target::IdempotentRequestTarget(
+                idempotent_request_target,
+            ) => {
+                // check whether we know the service/handler
+                invocation_target_resolver
+                    .resolve_latest_invocation_target(
+                        &idempotent_request_target.service_name,
+                        &idempotent_request_target.handler_name,
+                    )
+                    .ok_or_else(|| {
+                        CommandPreconditionError::ServiceHandlerNotFound(
+                            idempotent_request_target.service_name.clone(),
+                            idempotent_request_target.handler_name.clone(),
+                        )
+                    })?;
+                if let Some(scope) = idempotent_request_target.scope.as_ref() {
+                    // check whether the scope value is restricted
+                    let _ = RestrictedValue::new(scope.as_str())
+                        .map_err(CommandPreconditionError::InvalidScope)?;
+                }
+            }
+            attach_invocation_command_message::Target::WorkflowTarget(workflow_target) => {
+                // check whether we know the workflow
+                invocation_target_resolver
+                    // the "run" handler must always be present for a workflow
+                    .resolve_latest_invocation_target(&workflow_target.workflow_name, "run")
+                    .ok_or_else(|| {
+                        CommandPreconditionError::WorkflowNotFound(
+                            workflow_target.workflow_name.clone(),
+                        )
+                    })?;
+                if let Some(scope) = workflow_target.scope.as_ref() {
+                    // check whether the scope value is restricted
+                    let _ = RestrictedValue::new(scope.as_str())
+                        .map_err(CommandPreconditionError::InvalidScope)?;
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 

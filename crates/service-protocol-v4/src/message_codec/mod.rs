@@ -368,9 +368,9 @@ gen_message!(
     Run Command noparse allows_ack = 0x0411,
     Run CompletionNotification noparse = 0x8011,
 
-    AttachInvocation Command noparse allows_ack = 0x0412,
+    AttachInvocation Command allows_ack = 0x0412,
     AttachInvocation CompletionNotification noparse = 0x8012,
-    GetInvocationOutput Command noparse allows_ack = 0x0413,
+    GetInvocationOutput Command allows_ack = 0x0413,
     GetInvocationOutput CompletionNotification noparse = 0x8013,
 
     CompleteAwakeable Command noparse allows_ack = 0x0414,

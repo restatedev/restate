@@ -22,7 +22,7 @@ use restate_serde_util::NonZeroByteCount;
 use restate_service_client::ServiceClientError;
 use restate_service_protocol::message::{EncodingError, MessageType};
 use restate_time_util::FriendlyDuration;
-use restate_types::errors::{InvocationError, InvocationErrorCode, codes};
+use restate_types::errors::{IdDecodeError, InvocationError, InvocationErrorCode, codes};
 use restate_types::identifiers::DeploymentId;
 use restate_types::journal::raw::RawEntryCodecError;
 use restate_types::journal::{EntryIndex, EntryType};
@@ -389,6 +389,11 @@ pub(crate) enum CommandPreconditionError {
     LimitKeyWithoutScope,
     #[error("invalid scope: {0}")]
     InvalidScope(RestrictedValueError),
+    #[error("invalid invocation id {0}: {1}")]
+    InvalidInvocationId(String, IdDecodeError),
+    #[error("workflow {0} not found")]
+    #[code(restate_errors::RT0018)]
+    WorkflowNotFound(String),
 }
 
 #[derive(Debug)]

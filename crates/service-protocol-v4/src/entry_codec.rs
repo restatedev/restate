@@ -36,7 +36,7 @@ use restate_types::journal_v2::raw::{
     CallOrSendMetadata, RawCommand, RawCommandSpecificMetadata, RawEntry, RawNotification,
     RawNotificationResultVariant,
 };
-use restate_types::{LimitKey, journal_v2::*};
+use restate_types::{LimitKey, Scope, journal_v2::*};
 
 use crate::proto;
 use crate::proto::{
@@ -1622,11 +1622,13 @@ impl From<AttachInvocationTarget> for proto::attach_invocation_command_message::
                     service_key: id.service_key.map(Into::into),
                     handler_name: id.service_handler.into(),
                     idempotency_key: id.idempotency_key.into(),
+                    scope: id.scope.map(|s| s.to_string()),
                 })
             }
             AttachInvocationTarget::Workflow(id) => Self::WorkflowTarget(proto::WorkflowTarget {
                 workflow_name: id.service_name.into(),
                 workflow_key: id.key.into(),
+                scope: id.scope.map(|s| s.to_string()),
             }),
         }
     }
@@ -1640,21 +1642,36 @@ impl TryFrom<proto::attach_invocation_command_message::Target> for AttachInvocat
     ) -> Result<Self, Self::Error> {
         Ok(match value {
             proto::attach_invocation_command_message::Target::InvocationId(invocation_id) => {
+                // Before we accept an idempotent request we validate in
+                // ServiceProtocolRunner::handle_message that the invocation_id value is valid.
                 Self::InvocationId(to_invocation_id_or_bail!(invocation_id))
             }
             proto::attach_invocation_command_message::Target::IdempotentRequestTarget(
                 idempotent_request,
-            ) => Self::IdempotentRequest(IdempotencyId::new(
-                idempotent_request.service_name.into(),
-                idempotent_request.service_key.map(Into::into),
-                idempotent_request.handler_name.into(),
-                idempotent_request.idempotency_key.into(),
-                // TODO(tillrohrmann): IdempotentRequestTarget proto doesn't carry scope yet
-                None,
-            )),
+            ) => {
+                // Before we accept an idempotent request we validate in
+                // ServiceProtocolRunner::handle_message that the scope value is valid.
+                let scope = idempotent_request
+                    .scope
+                    .as_ref()
+                    .map(|scope| Scope::new(scope));
+                Self::IdempotentRequest(IdempotencyId::new(
+                    idempotent_request.service_name.into(),
+                    idempotent_request.service_key.map(Into::into),
+                    idempotent_request.handler_name.into(),
+                    idempotent_request.idempotency_key.into(),
+                    scope,
+                ))
+            }
             proto::attach_invocation_command_message::Target::WorkflowTarget(workflow_target) => {
+                // Before we accept a workflow target we validate in
+                // ServiceProtocolRunner::handle_message that the scope value is valid.
+                let scope = workflow_target
+                    .scope
+                    .as_ref()
+                    .map(|scope| Scope::new(scope));
                 Self::Workflow(ServiceId::new(
-                    None,
+                    scope,
                     workflow_target.workflow_name,
                     workflow_target.workflow_key,
                 ))
@@ -1673,11 +1690,13 @@ impl From<AttachInvocationTarget> for proto::get_invocation_output_command_messa
                     service_key: id.service_key.map(Into::into),
                     handler_name: id.service_handler.into(),
                     idempotency_key: id.idempotency_key.into(),
+                    scope: id.scope.map(|s| s.to_string()),
                 })
             }
             AttachInvocationTarget::Workflow(id) => Self::WorkflowTarget(proto::WorkflowTarget {
                 workflow_name: id.service_name.into(),
                 workflow_key: id.key.into(),
+                scope: id.scope.map(|s| s.to_string()),
             }),
         }
     }
@@ -1691,25 +1710,42 @@ impl TryFrom<proto::get_invocation_output_command_message::Target> for AttachInv
     ) -> Result<Self, Self::Error> {
         Ok(match value {
             proto::get_invocation_output_command_message::Target::InvocationId(invocation_id) => {
+                // Before we accept an idempotent request we validate in
+                // ServiceProtocolRunner::handle_message that the invocation_id value is valid.
                 Self::InvocationId(to_invocation_id_or_bail!(invocation_id))
             }
             proto::get_invocation_output_command_message::Target::IdempotentRequestTarget(
                 idempotent_request,
-            ) => Self::IdempotentRequest(IdempotencyId::new(
-                idempotent_request.service_name.into(),
-                idempotent_request.service_key.map(Into::into),
-                idempotent_request.handler_name.into(),
-                idempotent_request.idempotency_key.into(),
-                // TODO(tillrohrmann): IdempotentRequestTarget proto doesn't carry scope yet
-                None,
-            )),
+            ) => {
+                // Before we accept an idempotent request we validate in
+                // ServiceProtocolRunner::handle_message that the scope value is valid.
+                let scope = idempotent_request
+                    .scope
+                    .as_ref()
+                    .map(|scope| Scope::new(scope));
+                Self::IdempotentRequest(IdempotencyId::new(
+                    idempotent_request.service_name.into(),
+                    idempotent_request.service_key.map(Into::into),
+                    idempotent_request.handler_name.into(),
+                    idempotent_request.idempotency_key.into(),
+                    scope,
+                ))
+            }
             proto::get_invocation_output_command_message::Target::WorkflowTarget(
                 workflow_target,
-            ) => Self::Workflow(ServiceId::new(
-                None,
-                workflow_target.workflow_name,
-                workflow_target.workflow_key,
-            )),
+            ) => {
+                // Before we accept a workflow target we validate in
+                // ServiceProtocolRunner::handle_message that the scope value is valid.
+                let scope = workflow_target
+                    .scope
+                    .as_ref()
+                    .map(|scope| Scope::new(scope));
+                Self::Workflow(ServiceId::new(
+                    scope,
+                    workflow_target.workflow_name,
+                    workflow_target.workflow_key,
+                ))
+            }
         })
     }
 }
