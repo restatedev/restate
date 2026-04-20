@@ -59,12 +59,17 @@ pub enum KeyKind {
     // or have empty_vqueues that carry the empty_since in their key prefix. Note that
     // doing so would require that we know the empty_since when we attempt to delete it
     VQueueActive,
-    VQueueInbox,
     VQueueMeta,
-    // Resources' canonical key(s)
-    VQueueEntryState,
-    // Items stored in vqueues (e.g. state mutations, invocations, etc.)
-    VQueueItems,
+    // Inbox stage management keys
+    VQueueInboxStage,
+    VQueueRunningStage,
+    VQueueSuspendedStage,
+    VQueuePausedStage,
+    VQueueFinishedStage,
+    // Resources' status key
+    VQueueEntryStatus,
+    // Input payloads stored in vqueues (e.g. state mutations, invocations, etc.)
+    VQueueInput,
     // # Locks
     // locks for scoped and unscoped virtual objects and workflows
     Lock,
@@ -118,11 +123,17 @@ impl KeyKind {
             // ** VQueues ** //
             // VQueues own all keys that start with b"q".
             KeyKind::VQueueActive => b"qa",
-            KeyKind::VQueueInbox => b"qi",
             KeyKind::VQueueMeta => b"qm",
-            // Queue Entry State (canonical state of vqueue entries)
-            KeyKind::VQueueEntryState => b"qe",
-            KeyKind::VQueueItems => b"qI",
+            // Input payloads stored for vqueue items
+            KeyKind::VQueueInput => b"qi",
+            // Queue Entry Status
+            KeyKind::VQueueEntryStatus => b"qs",
+            // Inbox stage management
+            KeyKind::VQueueInboxStage => b"qI",
+            KeyKind::VQueueRunningStage => b"qR",
+            KeyKind::VQueueSuspendedStage => b"qS",
+            KeyKind::VQueuePausedStage => b"qP",
+            KeyKind::VQueueFinishedStage => b"qF",
         }
     }
 
@@ -155,10 +166,15 @@ impl KeyKind {
             b"pr" => Some(KeyKind::Promise),
             // VQueues own all keys that start with b"q"
             b"qa" => Some(KeyKind::VQueueActive),
-            b"qi" => Some(KeyKind::VQueueInbox),
+            b"qi" => Some(KeyKind::VQueueInput),
             b"qm" => Some(KeyKind::VQueueMeta),
-            b"qe" => Some(KeyKind::VQueueEntryState),
-            b"qI" => Some(KeyKind::VQueueItems),
+            b"qs" => Some(KeyKind::VQueueEntryStatus),
+            // VQueue stage management (second char is always uppercase)
+            b"qI" => Some(KeyKind::VQueueInboxStage),
+            b"qR" => Some(KeyKind::VQueueRunningStage),
+            b"qS" => Some(KeyKind::VQueueSuspendedStage),
+            b"qP" => Some(KeyKind::VQueuePausedStage),
+            b"qF" => Some(KeyKind::VQueueFinishedStage),
             _ => None,
         }
     }
