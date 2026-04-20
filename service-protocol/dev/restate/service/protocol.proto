@@ -43,6 +43,8 @@ enum ServiceProtocolVersion {
   // * CallCommandMessage.limit_key
   // * OneWayCallCommandMessage.scope
   // * OneWayCallCommandMessage.limit_key
+  // * WorkflowTarget.scope
+  // * IdempotentRequestTarget.scope
   V7 = 7;
 }
 
@@ -731,6 +733,9 @@ message Header {
 message WorkflowTarget {
   string workflow_name = 1;
   string workflow_key = 2;
+  // Scope for the invocation target. Empty string means no scope (unscoped invocation).
+  // Since V7.
+  optional string scope = 3;
 }
 
 message IdempotentRequestTarget {
@@ -738,6 +743,9 @@ message IdempotentRequestTarget {
   optional string service_key = 2;
   string handler_name = 3;
   string idempotency_key = 4;
+  // Scope for the invocation target. Empty string means no scope (unscoped invocation).
+  // Since V7.
+  optional string scope = 5;
 }
 
 message Void {
