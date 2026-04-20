@@ -17,9 +17,6 @@ use std::task::Poll;
 use hashbrown::HashMap;
 use smallvec::SmallVec;
 
-use restate_futures_util::concurrency::Concurrency;
-use restate_memory::MemoryPool;
-use restate_serde_util::NonZeroByteCount;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{ScanVQueueTable, VQueueEntry, VQueueStore, WaitStats};
 use restate_types::time::MillisSinceEpoch;
@@ -30,41 +27,20 @@ use crate::VQueuesMetaCache;
 use crate::metric_definitions::publish_scheduler_decision_metrics;
 
 use self::drr::DRRScheduler;
+use self::resource_manager::{ReservedResources, ResourceKind};
 use self::vqueue_state::DetailedEligibility;
-
-pub use self::vqueue_state::ReservedResources;
 
 mod clock;
 mod drr;
 mod eligible;
 mod queue;
+mod resource_manager;
 mod vqueue_state;
+pub use resource_manager::ResourceManager;
 
 const INLINED_SIZE: usize = 4;
 
-slotmap::new_key_type! { struct VQueueHandle; }
-
-// Token bucket used for throttling over all vqueues
-type GlobalTokenBucket<C = gardal::TokioClock> =
-    gardal::TokenBucket<gardal::PaddedAtomicSharedStorage, C>;
-
-/// Indicates the pause state of a vqueue.
-#[derive(Debug, Clone, Default)]
-pub enum IsPaused {
-    #[default]
-    /// The vqueue is enabled
-    No,
-    /// The vqueue is paused directly by the user
-    Directly,
-    /// The vqueue is paused because its parent is paused
-    ViaParent,
-}
-
-impl IsPaused {
-    pub fn yes(&self) -> bool {
-        matches!(self, IsPaused::Directly | IsPaused::ViaParent)
-    }
-}
+slotmap::new_key_type! { pub(crate) struct VQueueHandle; }
 
 /// A public view of the scheduler's status of a single vqueue.
 ///
@@ -72,8 +48,6 @@ impl IsPaused {
 /// wait statistics for a vqueue.
 #[derive(Debug, Clone, Default)]
 pub struct VQueueSchedulerStatus {
-    /// Whether the vqueue is paused or not.
-    pub is_paused: IsPaused,
     /// Statistics about the wait time experienced by the head item in the vqueue.
     pub wait_stats: WaitStats,
     /// Number of items remaining in the running stage.
@@ -113,7 +87,9 @@ pub enum SchedulingStatus {
         at: MillisSinceEpoch,
     },
     /// The vqueue is blocked on invoker global capacity.
-    BlockedOnCapacity,
+    BlockedOn(ResourceKind),
+    /// The vqueue is waiting to acquire a lock of a VO.
+    BlockedOnLock,
     /// The vqueue is waiting for concurrency tokens. Concurrency tokens are released
     /// when currently running items are completed or (in some cases) when running items
     /// are parked.
@@ -127,9 +103,6 @@ impl From<DetailedEligibility> for SchedulingStatus {
                 SchedulingStatus::Ready
             }
             DetailedEligibility::Scheduled(ts) => SchedulingStatus::Scheduled { at: ts },
-            DetailedEligibility::WaitingConcurrencyTokens => {
-                SchedulingStatus::WaitingConcurrencyTokens
-            }
             DetailedEligibility::Empty => SchedulingStatus::Empty,
         }
     }
@@ -327,10 +300,7 @@ impl<S: VQueueStore> SchedulerService<S> {
     }
 
     pub async fn create(
-        concurrency: Concurrency,
-        global_throttling: Option<GlobalTokenBucket>,
-        memory_pool: MemoryPool,
-        initial_invocation_memory: NonZeroByteCount,
+        resource_manager: ResourceManager,
         storage: S,
         vqueues_cache: &VQueuesMetaCache,
     ) -> Result<Self, StorageError>
@@ -349,10 +319,7 @@ impl<S: VQueueStore> SchedulerService<S> {
             NonZeroU16::new(25).unwrap(),
             // currently constant but we can make it configurable if needed
             NonZeroU16::new(1000).unwrap(),
-            concurrency,
-            global_throttling,
-            memory_pool,
-            initial_invocation_memory,
+            resource_manager,
             storage,
             vqueues_cache.view(),
         )));
