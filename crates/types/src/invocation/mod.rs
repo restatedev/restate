@@ -1400,7 +1400,7 @@ impl InvocationQuery {
                     handler: Default::default(),
                     // Must be the workflow handler type
                     handler_ty: WorkflowHandlerType::Workflow,
-                    scope: None,
+                    scope: wfid.scope.clone(),
                 },
                 None,
             ),

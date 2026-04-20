@@ -15,15 +15,17 @@ use restate_types::ServiceName;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 
 pub(crate) enum WorkflowRequestType {
-    Attach(String, String),
-    GetOutput(String, String),
+    /// (name, key, scope)
+    Attach(String, String, Option<String>),
+    /// (name, key, scope)
+    GetOutput(String, String, Option<String>),
 }
 
 impl WorkflowRequestType {
+    /// Parse workflow request from unversioned path: `/restate/workflow/{name}/{key}/attach|output`
     fn from_path_chunks<'a>(
         mut path_parts: impl Iterator<Item = &'a str>,
     ) -> Result<Self, HandlerError> {
-        // Parse invocation id
         let workflow_name = path_parts
             .next()
             .ok_or(HandlerError::BadWorkflowPath)?
@@ -33,11 +35,54 @@ impl WorkflowRequestType {
                 .map_err(HandlerError::UrlDecodingError)?
                 .into_owned();
 
-        // Resolve or reject
         match path_parts.next().ok_or(HandlerError::BadWorkflowPath)? {
-            "output" => Ok(WorkflowRequestType::GetOutput(workflow_name, workflow_key)),
-            "attach" => Ok(WorkflowRequestType::Attach(workflow_name, workflow_key)),
+            "output" => Ok(WorkflowRequestType::GetOutput(
+                workflow_name,
+                workflow_key,
+                None,
+            )),
+            "attach" => Ok(WorkflowRequestType::Attach(
+                workflow_name,
+                workflow_key,
+                None,
+            )),
             _ => Err(HandlerError::NotFound),
+        }
+    }
+
+    /// Parse workflow request from versioned path segments (after `workflow` keyword).
+    /// Expects: `{name}/{key}/attach|output`
+    fn from_v1_path_chunks<'a>(
+        mut path_parts: impl Iterator<Item = &'a str>,
+        scope: Option<String>,
+    ) -> Result<Self, HandlerError> {
+        let workflow_name = path_parts
+            .next()
+            .ok_or(HandlerError::BadApiV1Path)?
+            .to_owned();
+        let workflow_key =
+            urlencoding::decode(path_parts.next().ok_or(HandlerError::BadApiV1Path)?)
+                .map_err(HandlerError::UrlDecodingError)?
+                .into_owned();
+
+        let action = path_parts.next().ok_or(HandlerError::BadApiV1Path)?;
+
+        if path_parts.next().is_some() {
+            return Err(HandlerError::BadApiV1Path);
+        }
+
+        match action {
+            "output" => Ok(WorkflowRequestType::GetOutput(
+                workflow_name,
+                workflow_key,
+                scope,
+            )),
+            "attach" => Ok(WorkflowRequestType::Attach(
+                workflow_name,
+                workflow_key,
+                scope,
+            )),
+            _ => Err(HandlerError::BadApiV1Path),
         }
     }
 }
@@ -244,22 +289,40 @@ where
 {
     let segment = path_parts.next().ok_or(HandlerError::NotFound)?;
 
-    let (invoke_ty, scope) = match segment {
-        "call" => (InvokeType::Call, None),
-        "send" => (InvokeType::Send, None),
+    match segment {
+        "call" | "send" | "workflow" => parse_api_v1_verb(segment, None, path_parts, schemas),
         "scope" => {
             let scope_key =
                 urlencoding::decode(path_parts.next().ok_or(HandlerError::BadApiV1Path)?)
                     .map_err(HandlerError::UrlDecodingError)?
                     .into_owned();
             let verb = path_parts.next().ok_or(HandlerError::BadApiV1Path)?;
-            let invoke_ty = match verb {
-                "call" => InvokeType::Call,
-                "send" => InvokeType::Send,
-                _ => return Err(HandlerError::BadApiV1Path),
-            };
-            (invoke_ty, Some(scope_key))
+            parse_api_v1_verb(verb, Some(scope_key), path_parts, schemas)
         }
+        _ => Err(HandlerError::BadApiV1Path),
+    }
+}
+
+/// Dispatch a v1 API verb (`call`, `send`, or `workflow`) with an optional scope.
+fn parse_api_v1_verb<'a, Schemas>(
+    verb: &str,
+    scope: Option<String>,
+    mut path_parts: impl Iterator<Item = &'a str>,
+    schemas: &Schemas,
+) -> Result<RequestType, HandlerError>
+where
+    Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
+{
+    // Workflow verb returns a WorkflowRequestType instead of ServiceRequestType
+    if verb == "workflow" {
+        return Ok(RequestType::Workflow(
+            WorkflowRequestType::from_v1_path_chunks(path_parts, scope)?,
+        ));
+    }
+
+    let invoke_ty = match verb {
+        "call" => InvokeType::Call,
+        "send" => InvokeType::Send,
         _ => return Err(HandlerError::BadApiV1Path),
     };
 
