@@ -674,6 +674,8 @@ pub struct IdempotencyId {
     pub service_handler: ByteString,
     /// The user supplied idempotency_key
     pub idempotency_key: ByteString,
+    /// Optional scope for vqueue partitioning
+    pub scope: Option<Scope>,
 
     partition_key: PartitionKey,
 }
@@ -684,23 +686,29 @@ impl IdempotencyId {
         service_key: Option<ByteString>,
         service_handler: ByteString,
         idempotency_key: ByteString,
+        scope: Option<Scope>,
     ) -> Self {
-        // The ownership model for idempotent invocations is the following:
-        //
+        // When scoped, the partition key comes from the scope.
+        // Otherwise:
         // * For services without key, the partition key is the hash(idempotency key).
-        //   This makes sure that for a given idempotency key and its scope, we always land in the same partition.
-        // * For services with key, the partition key is the hash(service key), this due to the virtual object locking requirement.
-        let partition_key = deterministic_partition_key(
-            service_key.as_ref().map(|bs| bs.as_ref()),
-            Some(&idempotency_key),
-        )
-        .expect("A deterministic partition key can always be generated for idempotency id");
+        // * For services with key, the partition key is the hash(service key).
+        let partition_key = scope
+            .as_ref()
+            .map(|s| s.partition_key())
+            .or_else(|| {
+                deterministic_partition_key(
+                    service_key.as_ref().map(|bs| bs.as_ref()),
+                    Some(&idempotency_key),
+                )
+            })
+            .expect("A deterministic partition key can always be generated for idempotency id");
 
         Self {
             service_name,
             service_key,
             service_handler,
             idempotency_key,
+            scope,
             partition_key,
         }
     }
@@ -715,6 +723,7 @@ impl IdempotencyId {
             service_key: invocation_target.key().cloned(),
             service_handler: invocation_target.handler_name().clone(),
             idempotency_key,
+            scope: invocation_target.scope().cloned(),
             partition_key: invocation_id.partition_key(),
         }
     }
@@ -1383,6 +1392,7 @@ mod mocks {
                 service_key: None,
                 service_handler: ByteString::from_static(service_handler),
                 idempotency_key: ByteString::from_static(idempotency_key),
+                scope: None,
                 partition_key,
             }
         }
@@ -1393,6 +1403,7 @@ mod mocks {
                 Some(Alphanumeric.sample_string(&mut rand::rng(), 16).into()),
                 Alphanumeric.sample_string(&mut rand::rng(), 8).into(),
                 Alphanumeric.sample_string(&mut rand::rng(), 8).into(),
+                None,
             )
         }
     }

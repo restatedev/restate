@@ -474,11 +474,13 @@ mod pb_into {
                 idempotency_key,
             }: IdempotentRequestTarget,
         ) -> Self {
+            // TODO(tillrohrmann): IdempotentRequestTarget doesn't carry scope yet
             IdempotencyId::new(
                 service_name.into(),
                 service_key.map(Into::into),
                 handler_name.into(),
                 idempotency_key.into(),
+                None,
             )
         }
     }

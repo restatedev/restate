@@ -223,6 +223,7 @@ pub mod v1 {
                     service_key: value.service_key.map(Into::into),
                     handler_name: value.service_handler.into(),
                     idempotency_key: value.idempotency_key.into(),
+                    scope: value.scope.map(|s| s.to_string()),
                 }
             }
         }
@@ -231,11 +232,13 @@ pub mod v1 {
             type Error = ConversionError;
 
             fn try_from(value: IdempotencyId) -> Result<Self, ConversionError> {
+                let scope = value.scope.as_ref().map(|scope| Scope::new(scope));
                 Ok(restate_types::identifiers::IdempotencyId::new(
                     value.service_name.into(),
                     value.service_key.map(Into::into),
                     value.handler_name.into(),
                     value.idempotency_key.into(),
+                    scope,
                 ))
             }
         }
