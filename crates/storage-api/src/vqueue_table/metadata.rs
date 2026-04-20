@@ -319,10 +319,6 @@ impl VQueueMeta {
         &self.scope
     }
 
-    pub fn requires_locking(&self) -> bool {
-        self.lock_name().is_some()
-    }
-
     pub fn lock_name(&self) -> Option<&LockName> {
         match self.link {
             VQueueLink::Lock(ref lock_name) => Some(lock_name),
@@ -358,6 +354,10 @@ impl VQueueMeta {
 
     pub fn total_waiting(&self) -> u64 {
         self.stats.num_inbox
+    }
+
+    pub fn is_inbox_empty(&self) -> bool {
+        self.stats.num_inbox == 0
     }
 
     fn decrement_stage(&mut self, stage: Stage) {
