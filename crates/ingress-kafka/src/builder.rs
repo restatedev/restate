@@ -246,6 +246,20 @@ impl InvocationBuilder {
         }
         .with_scope(scope);
 
+        // Validate: scoped invocations require vqueues to be enabled
+        if invocation_target.scope().is_some()
+            && !restate_types::config::Configuration::pinned()
+                .common
+                .experimental_enable_vqueues
+        {
+            bail!("Scoped invocations require experimental vqueues to be enabled");
+        }
+
+        // Validate: limit_key requires scope
+        if !limit_key.is_empty() && invocation_target.scope().is_none() {
+            bail!("limit-key requires a scope to be set");
+        }
+
         // Compute the retention values
         let target = schema
             .resolve_latest_invocation_target(

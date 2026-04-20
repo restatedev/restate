@@ -798,6 +798,16 @@ impl<S> StateMachineApplyContext<'_, S> {
     {
         // A pre-flight invocation has been already deduplicated
 
+        // Invariant: limit_key requires scope (defense-in-depth, ingress should also validate)
+        debug_assert!(
+            limit_key.is_empty()
+                || pre_flight_invocation_metadata
+                    .invocation_target
+                    .scope()
+                    .is_some(),
+            "limit_key set without scope — this should have been rejected at the ingress"
+        );
+
         // 0. Prepare the journal table v2. This ensures that all newly created invocations will
         // have a journal v2 created. To handle already existing invocations for which we didn't
         // create the journal yet, there is a separate path in init_journal to create the journal
