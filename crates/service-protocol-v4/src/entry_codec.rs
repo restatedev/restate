@@ -1649,6 +1649,8 @@ impl TryFrom<proto::attach_invocation_command_message::Target> for AttachInvocat
                 idempotent_request.service_key.map(Into::into),
                 idempotent_request.handler_name.into(),
                 idempotent_request.idempotency_key.into(),
+                // TODO(tillrohrmann): IdempotentRequestTarget proto doesn't carry scope yet
+                None,
             )),
             proto::attach_invocation_command_message::Target::WorkflowTarget(workflow_target) => {
                 Self::Workflow(ServiceId::new(
@@ -1698,6 +1700,8 @@ impl TryFrom<proto::get_invocation_output_command_message::Target> for AttachInv
                 idempotent_request.service_key.map(Into::into),
                 idempotent_request.handler_name.into(),
                 idempotent_request.idempotency_key.into(),
+                // TODO(tillrohrmann): IdempotentRequestTarget proto doesn't carry scope yet
+                None,
             )),
             proto::get_invocation_output_command_message::Target::WorkflowTarget(
                 workflow_target,

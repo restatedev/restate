@@ -39,6 +39,8 @@ message IdempotencyId {
   optional string service_key = 2;
   string handler_name = 3;
   string idempotency_key = 4;
+  // Since v1.7.0 — scope for vqueue partitioning. Empty string means no scope.
+  optional string scope = 5;
 }
 
 message GenerationalNodeId {

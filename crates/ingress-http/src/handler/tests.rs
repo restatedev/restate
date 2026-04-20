@@ -623,7 +623,8 @@ async fn attach_with_idempotency_id_to_unkeyed_service() {
                     "greeter.Greeter".into(),
                     None,
                     "greet".into(),
-                    "myid".into()
+                    "myid".into(),
+                    None,
                 )),
                 actual_invocation_query
             );
@@ -681,7 +682,8 @@ async fn attach_with_idempotency_id_to_keyed_service() {
                     "greeter.Greeter".into(),
                     Some("mygreet".into()),
                     "greet".into(),
-                    "myid".into()
+                    "myid".into(),
+                    None,
                 )),
                 actual_invocation_query
             );

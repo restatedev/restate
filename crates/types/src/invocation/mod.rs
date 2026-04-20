@@ -1409,6 +1409,7 @@ impl InvocationQuery {
                 service_key,
                 service_handler,
                 idempotency_key,
+                scope,
                 ..
             }) => {
                 let target = match service_key {
@@ -1422,7 +1423,8 @@ impl InvocationQuery {
                         // Doesn't really matter
                         VirtualObjectHandlerType::Exclusive,
                     ),
-                };
+                }
+                .with_scope(scope.clone());
                 InvocationId::generate(&target, Some(idempotency_key.deref()))
             }
         }
