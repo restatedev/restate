@@ -34,7 +34,7 @@ use restate_storage_api::vqueue_table::{
 };
 use restate_storage_api::{StorageError, lock_table};
 use restate_types::clock::UniqueTimestamp;
-use restate_types::identifiers::PartitionKey;
+use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::invocation::InvocationTarget;
 use restate_types::vqueues::{EntryId, Seq, VQueueId};
 use restate_types::{LockName, Scope, ServiceName};
@@ -202,8 +202,49 @@ where
         })
     }
 
+    /// Gets or creates the vqueue backing an external state mutation targeting
+    /// the given virtual-object [`ServiceId`]. Returns the computed [`VQueueId`]
+    /// and the handle.
+    ///
+    /// State mutations target exclusive virtual-object handlers, so the vqueue
+    /// is keyed identically to what an exclusive invocation on the same key
+    /// would produce and is linked to the corresponding [`VQueueLink::Lock`].
+    pub async fn vqueue_for_state_mutation(
+        at: UniqueTimestamp,
+        service_id: &ServiceId,
+        storage: &'a mut S,
+        cache: &'a mut VQueuesMetaCache,
+        action_collector: Option<&'a mut Vec<A>>,
+    ) -> Result<(VQueueId, Self), StorageError> {
+        let qid = generate_vqueue_id(
+            service_id.partition_key(),
+            &None,
+            &LimitKey::None,
+            true, /* is_exclusive */
+            &service_id.service_name,
+            Some(&service_id.key),
+        );
+        let service_name = ServiceName::new(&service_id.service_name);
+        let lock_name = Some(LockName::new(
+            service_name.clone(),
+            ReString::from(service_id.key.as_ref()),
+        ));
+        let vqueue = Self::get_or_create_vqueue(
+            at,
+            &qid,
+            storage,
+            cache,
+            action_collector,
+            &service_name,
+            &None,
+            &LimitKey::None,
+            &lock_name,
+        )
+        .await?;
+        Ok((qid, vqueue))
+    }
+
     #[allow(clippy::too_many_arguments)]
-    #[cfg(test)]
     pub async fn get_or_create_vqueue(
         at: UniqueTimestamp,
         qid: &VQueueId,
