@@ -2016,8 +2016,9 @@ pub mod v1 {
             type Error = ConversionError;
 
             fn try_from(service_id: ServiceId) -> Result<Self, ConversionError> {
+                let scope = service_id.scope.as_ref().map(|scope| Scope::new(scope));
                 Ok(restate_types::identifiers::ServiceId::new(
-                    None,
+                    scope,
                     ByteString::try_from(service_id.service_name)
                         .map_err(ConversionError::invalid_data)?,
                     ByteString::try_from(service_id.service_key)
@@ -2031,6 +2032,7 @@ pub mod v1 {
                 ServiceId {
                     service_key: service_id.key.into_bytes(),
                     service_name: service_id.service_name.into_bytes(),
+                    scope: service_id.scope.map(|s| s.to_string()),
                 }
             }
         }
