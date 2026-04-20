@@ -165,6 +165,13 @@ impl UniqueTimestamp {
         self.0.get() - 1
     }
 
+    /// Calculates the number of milliseconds between this timestamp and the earlier timestamp
+    /// If the earlier timestamp is later than this timestamp, this will return zero.
+    #[inline]
+    pub const fn saturating_sub_ms(&self, earlier: Self) -> u64 {
+        self.physical_raw().saturating_sub(earlier.physical_raw())
+    }
+
     /// Splits the timestamp into its physical and logical components.
     #[cfg(feature = "hlc")]
     pub(super) const fn split(&self) -> (u64, u64) {
