@@ -13,9 +13,9 @@ use smallvec::SmallVec;
 use restate_clock::WallClock;
 use restate_clock::time::MillisSinceEpoch;
 use restate_limiter::LimitKey;
-use restate_types::Scope;
 use restate_types::clock::UniqueTimestamp;
 use restate_types::vqueue::EffectivePriority;
+use restate_types::{LockName, Scope};
 use restate_util_string::ReString;
 
 use super::{Stage, VisibleAt};
@@ -88,10 +88,16 @@ pub struct VQueueMeta {
     pub(crate) scope: Option<Scope>,
     #[bilrost(tag(8))]
     pub(crate) limit_key: LimitKey<ReString>,
+    #[bilrost(tag(9))]
+    lock_name: Option<LockName>,
 }
 
 impl VQueueMeta {
-    pub fn new(scope: Option<Scope>, limit_key: LimitKey<ReString>) -> Self {
+    pub fn new(
+        scope: Option<Scope>,
+        limit_key: LimitKey<ReString>,
+        lock_name: Option<LockName>,
+    ) -> Self {
         Self {
             is_paused: false,
             length: 0,
@@ -101,11 +107,24 @@ impl VQueueMeta {
             stats: VQueueStatistics::new(WallClock::recent_ms()),
             scope,
             limit_key,
+            lock_name,
         }
     }
 
     pub fn scope(&self) -> &Option<Scope> {
         &self.scope
+    }
+
+    pub fn scope_ref(&self) -> &Option<Scope> {
+        &self.scope
+    }
+
+    pub fn requires_locking(&self) -> bool {
+        self.lock_name.is_some()
+    }
+
+    pub fn lock_name(&self) -> &Option<LockName> {
+        &self.lock_name
     }
 
     pub fn limit_key(&self) -> &LimitKey<ReString> {
