@@ -10,7 +10,6 @@
 
 use std::time::Duration;
 
-use hashbrown::HashSet;
 use metrics::counter;
 use tokio::time::Instant;
 
@@ -29,8 +28,10 @@ use super::clock::SchedulerClock;
 use super::queue::Queue;
 use super::queue_meta::MetaLiteUpdate;
 pub use super::queue_meta::VQueueMetaLite;
-use super::resource_manager::{AcquireOutcome, PermitBuilder, ReservedResources, ResourceKind};
-use super::{ResourceManager, RunAction, ThrottleScope, VQueueHandle, YieldAction};
+use super::resource_manager::{AcquireOutcome, PermitBuilder, ResourceKind};
+use super::{
+    ResourceManager, RunAction, ThrottleScope, UnconfirmedAssignments, VQueueHandle, YieldAction,
+};
 
 const QUANTUM: i32 = 1;
 
@@ -38,7 +39,7 @@ pub(super) enum Pop {
     /// The queue needs to receive more credits to be driven.
     NeedsCredit,
     /// An action is ready to be executed.
-    Run(RunAction, ReservedResources),
+    Run(RunAction),
     /// Yielding can place back an item from the run queue to inbox, or from inbox to inbox
     /// but with a different run_at time.
     Yield(YieldAction),
@@ -206,7 +207,7 @@ pub struct VQueueState<S: VQueueStore> {
     meta: VQueueMetaLite,
     deficit: i32,
     #[debug(skip)]
-    unconfirmed_assignments: HashSet<EntryKey>,
+    unconfirmed_assignments: UnconfirmedAssignments,
     #[debug(skip)]
     queue: Queue<S>,
     head_stats: Stats,
@@ -227,7 +228,7 @@ impl<S: VQueueStore> VQueueState<S> {
             qid,
             meta,
             deficit: QUANTUM,
-            unconfirmed_assignments: HashSet::new(),
+            unconfirmed_assignments: UnconfirmedAssignments::new(),
             queue,
             head_stats: Stats::default(),
             current_permit: Default::default(),
@@ -243,7 +244,7 @@ impl<S: VQueueStore> VQueueState<S> {
             qid,
             handle,
             meta,
-            unconfirmed_assignments: HashSet::new(),
+            unconfirmed_assignments: UnconfirmedAssignments::new(),
             queue: Queue::new_closed(),
             deficit: 0,
             head_stats: Stats::default(),
@@ -296,7 +297,8 @@ impl<S: VQueueStore> VQueueState<S> {
             &mut self.current_permit,
         ) {
             AcquireOutcome::Acquired(resources) => {
-                self.unconfirmed_assignments.insert(*inbox_head_key);
+                self.unconfirmed_assignments
+                    .insert(*inbox_head_key, resources);
 
                 let action = RunAction {
                     key: *inbox_head_key,
@@ -305,7 +307,7 @@ impl<S: VQueueStore> VQueueState<S> {
 
                 self.queue
                     .advance(storage, &self.unconfirmed_assignments, &self.qid)?;
-                Ok(Pop::Run(action, resources))
+                Ok(Pop::Run(action))
             }
             AcquireOutcome::BlockedOn(resource) => {
                 // based on the resource we are blocked on, we might collect some stats
@@ -359,7 +361,6 @@ impl<S: VQueueStore> VQueueState<S> {
     }
 
     pub fn notify_removed(&mut self, key: &EntryKey) -> Option<PermitBuilder> {
-        self.remove_from_unconfirmed_assignments(key);
         if self.queue.remove(key) {
             self.head_stats.reset();
             Some(self.current_permit.take())
@@ -368,7 +369,7 @@ impl<S: VQueueStore> VQueueState<S> {
         }
     }
 
-    pub fn remove_from_unconfirmed_assignments(&mut self, key: &EntryKey) -> bool {
+    pub fn remove_from_unconfirmed_assignments(&mut self, key: &EntryKey) -> Option<PermitBuilder> {
         self.unconfirmed_assignments.remove(key)
     }
 
