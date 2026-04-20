@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_storage_api::vqueue_table::{EntryCard, VQueueStore};
-use restate_types::vqueue::VQueueId;
+use restate_types::vqueues::VQueueId;
 
 use crate::PartitionDb;
 
