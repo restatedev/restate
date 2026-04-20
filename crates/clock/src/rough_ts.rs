@@ -125,6 +125,27 @@ impl RoughTimestamp {
         Self::new(clamped)
     }
 
+    /// Creates a `RoughTimestamp` from unix milliseconds, rounding UP to the next
+    /// whole second if there is any sub-second fraction. Use this for future-scheduled
+    /// times so an entry is never eligible before its real `execution_time`.
+    #[inline]
+    pub const fn from_unix_millis_ceil(unix_millis: MillisSinceEpoch) -> Self {
+        let ms = unix_millis.as_u64();
+        let unix_secs = ms / 1_000;
+        let rounded = if ms.is_multiple_of(1_000) {
+            unix_secs
+        } else {
+            unix_secs + 1
+        };
+        let since_restate_epoch = rounded.saturating_sub(RESTATE_EPOCH_SECONDS);
+        let clamped = if since_restate_epoch > u32::MAX as u64 {
+            u32::MAX
+        } else {
+            since_restate_epoch as u32
+        };
+        Self::new(clamped)
+    }
+
     /// Returns true when this timestamp equals the restate epoch.
     #[inline]
     pub const fn is_zero(&self) -> bool {
