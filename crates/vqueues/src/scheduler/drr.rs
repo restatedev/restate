@@ -30,7 +30,7 @@ use restate_types::{LockName, Scope};
 use crate::EventDetails;
 use crate::VQueueEvent;
 use crate::VQueuesMeta;
-use crate::metric_definitions::VQUEUE_CONFIRMED;
+use crate::metric_definitions::VQUEUE_RUN_CONFIRMED;
 use crate::scheduler::MetaLiteUpdate;
 use crate::scheduler::eligible::EligibilityTracker;
 use crate::scheduler::vqueue_state::Pop;
@@ -46,8 +46,6 @@ use super::vqueue_state::VQueueState;
 #[pin_project]
 pub struct DRRScheduler<S: VQueueStore> {
     resource_manager: ResourceManager,
-    /// Permits waiting for confirmation, rejection, or removal from the leader.
-    pending_resources: HashMap<EntryKey, ReservedResources>,
     // sorted by queue_id
     eligible: EligibilityTracker,
     /// Mapping of vqueue_id -> handle for active vqueues
@@ -115,16 +113,14 @@ impl<S: VQueueStore> DRRScheduler<S> {
             storage,
             limit_qid_per_poll,
             max_items_per_decision,
-            pending_resources: Default::default(),
         }
     }
 
     fn report(&mut self) {
         trace!(
-            "DRR scheduler report: eligible={}, queue_states_len={}, pending_resources={}",
+            "DRR scheduler report: eligible={}, queue_states_len={}",
             self.eligible.len(),
             self.q.len(),
-            self.pending_resources.len(),
         );
     }
 
@@ -168,9 +164,8 @@ impl<S: VQueueStore> DRRScheduler<S> {
                 Pop::NeedsCredit => {
                     this.eligible.rotate_one();
                 }
-                Pop::Run(action, resources) => {
+                Pop::Run(action) => {
                     coop.made_progress();
-                    this.pending_resources.insert(action.key, resources);
                     decisions.push(&qstate.qid, action);
                     // We need to set the state so we check eligibility and setup
                     // necessary schedules when we poll the queue again.
@@ -216,8 +211,28 @@ impl<S: VQueueStore> DRRScheduler<S> {
         self.eligible.remove(handle);
     }
 
-    pub fn pop_resources(mut self: Pin<&mut Self>, key: &EntryKey) -> Option<ReservedResources> {
-        self.pending_resources.remove(key)
+    // To be replaced by an invoke event that runs the invocation within the scheduler itself.
+    pub fn confirm_run_attempt(
+        mut self: Pin<&mut Self>,
+        qid: &VQueueId,
+        key: &EntryKey,
+    ) -> Option<ReservedResources> {
+        let handle = self.id_lookup.get(qid).copied()?;
+        let qstate = self.q.get_mut(handle)?;
+
+        // I've the resources. Let's run it.
+        let permit = qstate.remove_from_unconfirmed_assignments(key)?;
+        // To make sure the num_waiting counter is updated.
+        qstate.apply_meta_update(&MetaLiteUpdate::RemovedFromInbox(*key));
+        counter!(VQUEUE_RUN_CONFIRMED).increment(1);
+
+        if qstate.is_dormant() {
+            trace!("VQueue {qid} is no longer observed by the scheduler");
+            self.id_lookup.remove(qid);
+            self.q.remove(handle);
+            self.eligible.remove(handle);
+        }
+        Some(permit.build(&self.resource_manager))
     }
 
     #[tracing::instrument(skip_all)]
@@ -310,62 +325,41 @@ impl<S: VQueueStore> DRRScheduler<S> {
                         }
                     }
                 }
-                EventDetails::DecisionConfirmed {
-                    key,
-                    drop_pending_resources,
-                } => {
-                    // In some scenarios (state mutation), we don't consume the resources permit
-                    // because it's not driven by the invoker. For that case, we remove the permit.
-                    //
-                    // For everything else, we do not remove the permit here, we depend on the
-                    // leader to pop it when it actually runs the item (e.g on VQInvoke action)
-                    // which doesn't necessarily need to happen before we see this inbox event.
-                    if drop_pending_resources {
-                        self.pending_resources.remove(&key);
-                    }
-
-                    let Some(handle) = maybe_handle else {
-                        continue;
-                    };
-
-                    let Some(qstate) = self.q.get_mut(handle) else {
-                        continue;
-                    };
-
-                    if qstate.remove_from_unconfirmed_assignments(&key) {
-                        counter!(VQUEUE_CONFIRMED).increment(1);
-                    }
-                    // To make sure the num_waiting counter is updated.
-                    qstate.apply_meta_update(&MetaLiteUpdate::RemovedFromInbox(key));
-
-                    if qstate.is_dormant() {
-                        self.mark_vqueue_as_dormant(&qid, handle);
-                        maybe_handle = None;
-                    }
-                }
                 EventDetails::InboxUpdate(
                     ref update @ MetaLiteUpdate::RemovedFromInbox(ref key),
                 ) => {
-                    // If we have been holding a concurrency permit for this item, we release it.
-                    self.pending_resources.remove(key);
-
                     let Some(handle) = maybe_handle else {
                         continue;
                     };
                     let qstate = self.q.get_mut(handle).unwrap();
 
+                    // Three cases:
+                    // 1. The item was pending confirmation (we hold resources that should be
+                    // released).
+                    // 2. The item was the head of the queue (not scheduled yet). We _may_ have a
+                    // permit builder in-flight that we can release.
+                    // 3. None of the above, removing only changes the vqueue metadata.
+
+                    let mut wake_up = false;
                     // keep inbox size in sync
                     qstate.apply_meta_update(update);
 
-                    // This means it might be the current head. Let's invalidate it if
-                    // that's the case.
-                    if let Some(permit_builder) = qstate.notify_removed(key) {
+                    // If we have been holding a concurrency permit for this item, we release it.
+                    if let Some(permit) = qstate.remove_from_unconfirmed_assignments(key) {
+                        // Case 1:
+                        // This item is _not_ going to run, so we revert its built up permit
+                        wake_up |= self
+                            .resource_manager
+                            .revert_permit_builder(&mut self.eligible, permit);
+                    } else if let Some(permit_builder) = qstate.notify_removed(key) {
+                        // Case 2:
+                        // This means it might be the current head. Let's invalidate it if
+                        // that's the case.
                         if let Some(resource) = self.eligible.find_blocking_resource(handle) {
                             // The head was removed and the queue was blocked on a resource.
                             self.resource_manager.remove_vqueue(handle, resource);
                         }
 
-                        let mut wake_up = false;
                         if !qstate.is_dormant() {
                             // force the queue to be polled again since the head
                             // will definitely be unknown at this point.
@@ -378,15 +372,15 @@ impl<S: VQueueStore> DRRScheduler<S> {
                         wake_up |= self
                             .resource_manager
                             .revert_permit_builder(&mut self.eligible, permit_builder);
-
-                        if wake_up {
-                            self.waker.wake_by_ref();
-                        }
                     }
 
                     if qstate.is_dormant() {
                         // the removal makes the queue dormant. Remove it from everything
                         self.mark_vqueue_as_dormant(&qid, handle);
+                    }
+
+                    if wake_up {
+                        self.waker.wake_by_ref();
                     }
                 }
             }
@@ -415,18 +409,21 @@ impl<S: VQueueStore> DRRScheduler<S> {
         })
     }
 
-    pub fn get_status(&self, qid: &VQueueId) -> Option<VQueueSchedulerStatus> {
-        let qstate = self
+    pub fn get_status(&self, qid: &VQueueId) -> VQueueSchedulerStatus {
+        let Some(qstate) = self
             .id_lookup
             .get(qid)
-            .and_then(|handle| self.q.get(*handle))?;
+            .and_then(|handle| self.q.get(*handle))
+        else {
+            return VQueueSchedulerStatus::default();
+        };
 
-        Some(VQueueSchedulerStatus {
+        VQueueSchedulerStatus {
             wait_stats: qstate.get_head_wait_stats(),
             remaining_running: qstate.num_remaining_in_running_stage(),
             waiting_inbox: qstate.num_waiting_inbox(),
             status: self.eligible.get_status(qstate),
-        })
+        }
     }
 
     fn wake_up(&mut self) {
@@ -793,14 +790,8 @@ mod tests {
         let db = rocksdb.partition_db();
         let mut scheduler = create_scheduler_with_concurrency(db, &cache, 1).await;
 
-        assert_eq!(
-            scheduler.get_status(&qid1).unwrap().status,
-            SchedulingStatus::Ready,
-        );
-        assert_eq!(
-            scheduler.get_status(&qid2).unwrap().status,
-            SchedulingStatus::Ready,
-        );
+        assert_eq!(scheduler.get_status(&qid1).status, SchedulingStatus::Ready,);
+        assert_eq!(scheduler.get_status(&qid2).status, SchedulingStatus::Ready,);
 
         let result = poll_scheduler(pin!(&mut scheduler));
         assert!(matches!(result, Poll::Ready(Ok(ref d)) if d.total_items() == 1));
@@ -818,16 +809,18 @@ mod tests {
             Poll::Pending
         ));
         assert_eq!(
-            scheduler.get_status(&first_pop_qid).unwrap().status,
+            scheduler.get_status(&first_pop_qid).status,
             SchedulingStatus::Empty,
         );
         assert_eq!(
-            scheduler.get_status(&qids[0]).unwrap().status,
+            scheduler.get_status(&qids[0]).status,
             SchedulingStatus::BlockedOn(ResourceKind::InvokerConcurrency),
         );
 
         let mut scheduler = pin!(scheduler);
-        let resources = scheduler.as_mut().pop_resources(&first_pop_key);
+        let resources = scheduler
+            .as_mut()
+            .confirm_run_attempt(&first_pop_qid, &first_pop_key);
         assert!(resources.is_some());
         drop(resources);
 
@@ -840,13 +833,10 @@ mod tests {
         qids.retain(|qid| qid != &second_pop_qid);
         assert!(qids.is_empty());
         assert_eq!(
-            scheduler.get_status(&qid1).unwrap().status,
-            SchedulingStatus::Empty,
+            scheduler.get_status(&qid1).status,
+            SchedulingStatus::Dormant,
         );
-        assert_eq!(
-            scheduler.get_status(&qid2).unwrap().status,
-            SchedulingStatus::Empty,
-        );
+        assert_eq!(scheduler.get_status(&qid2).status, SchedulingStatus::Empty,);
     }
 
     #[restate_core::test]
@@ -968,14 +958,8 @@ mod tests {
             cache.view(),
         );
 
-        assert_eq!(
-            scheduler.get_status(&qid1).unwrap().status,
-            SchedulingStatus::Ready
-        );
-        assert_eq!(
-            scheduler.get_status(&qid2).unwrap().status,
-            SchedulingStatus::Ready
-        );
+        assert_eq!(scheduler.get_status(&qid1).status, SchedulingStatus::Ready);
+        assert_eq!(scheduler.get_status(&qid2).status, SchedulingStatus::Ready);
 
         let Poll::Ready(Ok(decision)) = poll_scheduler(pin!(&mut scheduler)) else {
             panic!("expected decision");
@@ -983,7 +967,7 @@ mod tests {
         assert_eq!(decision.total_items(), 3);
         assert_eq!(decision.num_queues(), 2);
 
-        let status = scheduler.get_status(&qid1).unwrap();
+        let status = scheduler.get_status(&qid1);
         assert_eq!(
             status.status,
             SchedulingStatus::BlockedOn(ResourceKind::InvokerConcurrency)
@@ -991,7 +975,7 @@ mod tests {
         assert_eq!(status.waiting_inbox, 1);
         assert_eq!(status.remaining_running, 0);
 
-        let status = scheduler.get_status(&qid2).unwrap();
+        let status = scheduler.get_status(&qid2);
         assert_eq!(status.status, SchedulingStatus::Empty);
         assert_eq!(status.waiting_inbox, 0);
         assert_eq!(status.remaining_running, 0);
@@ -1008,7 +992,7 @@ mod tests {
             .expect("qid2 run action should exist");
 
         let mut scheduler = pin!(scheduler);
-        let resources = scheduler.as_mut().pop_resources(&qid2_key);
+        let resources = scheduler.as_mut().confirm_run_attempt(&qid2, &qid2_key);
         assert!(resources.is_some());
         drop(resources);
 
@@ -1018,13 +1002,10 @@ mod tests {
         assert_eq!(decision.total_items(), 1);
         assert_eq!(decision.num_queues(), 1);
 
+        assert_eq!(scheduler.get_status(&qid1).status, SchedulingStatus::Empty);
         assert_eq!(
-            scheduler.get_status(&qid1).unwrap().status,
-            SchedulingStatus::Empty
-        );
-        assert_eq!(
-            scheduler.get_status(&qid2).unwrap().status,
-            SchedulingStatus::Empty
+            scheduler.get_status(&qid2).status,
+            SchedulingStatus::Dormant
         );
         assert!(matches!(poll_scheduler(scheduler.as_mut()), Poll::Pending));
     }

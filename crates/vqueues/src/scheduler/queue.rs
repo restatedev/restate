@@ -8,11 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use hashbrown::HashSet;
-
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{EntryKey, EntryValue, VQueueCursor, VQueueStore};
 use restate_types::vqueues::VQueueId;
+
+use super::UnconfirmedAssignments;
 
 #[derive(Debug)]
 enum Head {
@@ -159,7 +159,7 @@ impl<S: VQueueStore> Queue<S> {
     pub fn advance_if_needed(
         &mut self,
         storage: &S,
-        skip: &HashSet<EntryKey>,
+        skip: &UnconfirmedAssignments,
         qid: &VQueueId,
     ) -> Result<QueueItem<'_>, StorageError> {
         // Keep advancing until the head is known
@@ -187,7 +187,7 @@ impl<S: VQueueStore> Queue<S> {
     pub fn advance(
         &mut self,
         storage: &S,
-        skip: &HashSet<EntryKey>,
+        skip: &UnconfirmedAssignments,
         qid: &VQueueId,
     ) -> Result<(), StorageError> {
         loop {
@@ -239,7 +239,7 @@ impl<S: VQueueStore> Queue<S> {
                     reader.advance();
                     let key = reader.current_key()?;
                     if let Some(key) = key {
-                        if skip.contains(&key) {
+                        if skip.contains_key(&key) {
                             continue;
                         }
                         self.head = Head::Known {
@@ -261,7 +261,7 @@ impl<S: VQueueStore> Queue<S> {
                             reader.seek_to_first();
                             let key = reader.current_key()?;
                             if let Some(key) = key {
-                                if skip.contains(&key) {
+                                if skip.contains_key(&key) {
                                     self.reader = Reader::Inbox(reader);
                                     continue;
                                 }
@@ -282,7 +282,7 @@ impl<S: VQueueStore> Queue<S> {
                             reader.seek_after(qid, key);
                             let next_key = reader.current_key()?;
                             if let Some(next_key) = next_key {
-                                if skip.contains(&next_key) {
+                                if skip.contains_key(&next_key) {
                                     self.reader = Reader::Inbox(reader);
                                     continue;
                                 }
@@ -435,7 +435,7 @@ mod tests {
 
         let db = rocksdb.partition_db();
         let mut queue: Queue<PartitionDb> = Queue::new(1);
-        let mut skip = HashSet::new();
+        let mut skip = UnconfirmedAssignments::new();
 
         assert!(!queue.is_empty());
 
@@ -452,7 +452,7 @@ mod tests {
         let Some(QueueItem::Inbox { key, .. }) = queue.head() else {
             panic!("expected inbox head");
         };
-        skip.insert(*key);
+        skip.insert(*key, Default::default());
         assert!(!queue.is_empty());
 
         queue.advance(db, &skip, &qid).unwrap();
@@ -483,7 +483,7 @@ mod tests {
 
         let db = rocksdb.partition_db();
         let mut queue: Queue<PartitionDb> = Queue::new(0);
-        let skip = HashSet::new();
+        let skip = UnconfirmedAssignments::new();
 
         queue.advance(db, &skip, &qid).unwrap();
         assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == highest.0));
@@ -516,7 +516,7 @@ mod tests {
 
         let db = rocksdb.partition_db();
         let mut queue: Queue<PartitionDb> = Queue::new(0);
-        let skip = HashSet::new();
+        let skip = UnconfirmedAssignments::new();
 
         queue.advance(db, &skip, &qid).unwrap();
         assert!(
@@ -546,7 +546,7 @@ mod tests {
 
         let db = rocksdb.partition_db();
         let mut queue: Queue<PartitionDb> = Queue::new(0);
-        let skip = HashSet::new();
+        let skip = UnconfirmedAssignments::new();
 
         queue.advance(db, &skip, &qid).unwrap();
         assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == initial.0));
@@ -580,7 +580,7 @@ mod tests {
 
         let db = rocksdb.partition_db();
         let mut queue: Queue<PartitionDb> = Queue::new(0);
-        let mut skip = HashSet::new();
+        let mut skip = UnconfirmedAssignments::new();
 
         queue.advance(db, &skip, &qid).unwrap();
         let head_key = match queue.head() {
@@ -595,7 +595,7 @@ mod tests {
             matches!(queue.advance_if_needed(db, &skip, &qid).unwrap(), QueueItem::Inbox { key, .. } if *key == entry.0)
         );
 
-        skip.insert(entry.0);
+        skip.insert(entry.0, Default::default());
         assert!(queue.remove(&head_key));
         assert!(queue.head().is_none());
         assert!(matches!(
@@ -623,9 +623,9 @@ mod tests {
 
         let db = rocksdb.partition_db();
         let mut queue: Queue<PartitionDb> = Queue::new(0);
-        let mut skip = HashSet::new();
-        skip.insert(entry1.0);
-        skip.insert(entry2.0);
+        let mut skip = UnconfirmedAssignments::new();
+        skip.insert(entry1.0, Default::default());
+        skip.insert(entry2.0, Default::default());
 
         queue.advance(db, &skip, &qid).unwrap();
         assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == entry3.0));
@@ -656,7 +656,7 @@ mod tests {
 
         let db = rocksdb.partition_db();
         let mut queue: Queue<PartitionDb> = Queue::new(1);
-        let skip = HashSet::new();
+        let skip = UnconfirmedAssignments::new();
 
         queue.advance(db, &skip, &qid).unwrap();
         assert!(matches!(queue.head(), Some(QueueItem::Running { .. })));
@@ -691,7 +691,7 @@ mod tests {
 
         let db = rocksdb.partition_db();
         let mut queue: Queue<PartitionDb> = Queue::new(2);
-        let skip = HashSet::new();
+        let skip = UnconfirmedAssignments::new();
 
         queue.advance(db, &skip, &qid).unwrap();
         assert!(matches!(queue.head(), Some(QueueItem::Running { key, .. }) if *key == running1.0));

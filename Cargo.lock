@@ -8405,6 +8405,7 @@ dependencies = [
  "restate-timer",
  "restate-tracing-instrumentation",
  "restate-types",
+ "restate-util-string",
  "restate-vqueues",
  "restate-wal-protocol",
  "restate-workspace-hack",
