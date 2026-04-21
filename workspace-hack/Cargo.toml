@@ -35,7 +35,7 @@ aws-smithy-runtime = { version = "1", default-features = false, features = ["cli
 aws-smithy-runtime-api = { version = "1", features = ["client", "http-auth", "test-util"] }
 aws-smithy-types = { version = "1", default-features = false, features = ["byte-stream-poll-next", "http-body-0-4-x", "http-body-1-x", "rt-tokio", "test-util"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "query", "tokio"] }
-bilrost = { version = "0.1014", features = ["bytestring", "smallvec"] }
+bilrost = { version = "0.1014", default-features = false, features = ["auto-optimize", "bytestring", "derive", "smallvec", "std"] }
 bytes = { version = "1", features = ["serde"] }
 bytestring = { version = "1", default-features = false, features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -165,7 +165,7 @@ aws-smithy-runtime = { version = "1", default-features = false, features = ["cli
 aws-smithy-runtime-api = { version = "1", features = ["client", "http-auth", "test-util"] }
 aws-smithy-types = { version = "1", default-features = false, features = ["byte-stream-poll-next", "http-body-0-4-x", "http-body-1-x", "rt-tokio", "test-util"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "query", "tokio"] }
-bilrost = { version = "0.1014", features = ["bytestring", "smallvec"] }
+bilrost = { version = "0.1014", default-features = false, features = ["auto-optimize", "bytestring", "derive", "smallvec", "std"] }
 bytes = { version = "1", features = ["serde"] }
 bytestring = { version = "1", default-features = false, features = ["serde"] }
 cc = { version = "1", default-features = false, features = ["parallel"] }

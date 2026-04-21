@@ -119,7 +119,7 @@ aws-smithy-runtime-api = "1.9.3"
 aws-smithy-types = "1.3.5"
 axum = { version = "0.8.8", default-features = false }
 base64 = "0.22"
-bilrost = { version = "0.1014" }
+bilrost = { version = "0.1014", default-features = false, features = ["std", "auto-optimize", "derive"] }
 bincode = { version = "2.0.1", default-features = false }
 bitflags = { version = "2.10.0" }
 bs58 = { version = "0.5.1" }
