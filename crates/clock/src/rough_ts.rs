@@ -199,7 +199,13 @@ impl From<RoughTimestamp> for MillisSinceEpoch {
 impl From<UniqueTimestamp> for RoughTimestamp {
     #[inline]
     fn from(value: UniqueTimestamp) -> Self {
-        Self::from(value.to_unix_millis())
+        let since_restate_epoch = value.physical_raw() / 1_000;
+        let clamped = if since_restate_epoch > u32::MAX as u64 {
+            u32::MAX
+        } else {
+            since_restate_epoch as u32
+        };
+        Self::new(clamped)
     }
 }
 
@@ -231,7 +237,40 @@ impl Sub<Duration> for RoughTimestamp {
 
 impl Display for RoughTimestamp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} s since restate epoch", self.as_u32())
+        if self == &RoughTimestamp::MAX {
+            write!(f, "INF")
+        } else {
+            write!(f, "{} s since restate epoch", self.as_u32())
+        }
+    }
+}
+
+// Compare RoughTimestamps to MillisSinceEpoch
+impl PartialEq<MillisSinceEpoch> for RoughTimestamp {
+    fn eq(&self, other: &MillisSinceEpoch) -> bool {
+        let other = RoughTimestamp::from_unix_millis_clamped(*other);
+        self.eq(&other)
+    }
+}
+
+impl PartialOrd<MillisSinceEpoch> for RoughTimestamp {
+    fn partial_cmp(&self, other: &MillisSinceEpoch) -> Option<std::cmp::Ordering> {
+        let other = RoughTimestamp::from_unix_millis_clamped(*other);
+        self.partial_cmp(&other)
+    }
+}
+
+impl PartialEq<RoughTimestamp> for MillisSinceEpoch {
+    fn eq(&self, other: &RoughTimestamp) -> bool {
+        let this = RoughTimestamp::from_unix_millis_clamped(*self);
+        this.eq(other)
+    }
+}
+
+impl PartialOrd<RoughTimestamp> for MillisSinceEpoch {
+    fn partial_cmp(&self, other: &RoughTimestamp) -> Option<std::cmp::Ordering> {
+        let this = RoughTimestamp::from_unix_millis_clamped(*self);
+        this.partial_cmp(other)
     }
 }
 
