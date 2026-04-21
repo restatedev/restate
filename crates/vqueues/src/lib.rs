@@ -19,10 +19,12 @@ pub use metric_definitions::describe_metrics;
 pub use scheduler::{
     ResourceManager, SchedulerService, SchedulingStatus, ThrottleScope, VQueueSchedulerStatus,
 };
-use tracing::{debug, trace};
+use smallvec::SmallVec;
+use tracing::debug;
 pub use util::*;
 
 use restate_clock::RoughTimestamp;
+use restate_clock::time::MillisSinceEpoch;
 use restate_limiter::LimitKey;
 use restate_storage_api::lock_table::{LockState, WriteLockTable};
 use restate_storage_api::vqueue_table::metadata::{VQueueLink, VQueueMeta};
@@ -40,31 +42,28 @@ use restate_types::{LockName, Scope, ServiceName};
 use restate_util_string::ReString;
 
 use self::cache::VQueueCacheKey;
+use self::scheduler::MetaLiteUpdate;
 
 // Token bucket used for throttling over all vqueues
 type GlobalTokenBucket<C = gardal::TokioClock> =
     gardal::TokenBucket<gardal::PaddedAtomicSharedStorage, C>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum EventDetails {
-    MetadataUpdated(metadata::Update),
-    // Queue has been added to the list of active
-    VQueueBecameActive(VQueueMeta),
-    // Queue has been marked as dormant
-    VQueueBecameDormant,
-    /// Entry is being enqueued for the first time
-    Enqueued {
-        key: EntryKey,
-        value: EntryValue,
+    // A vqueue that had empty inbox and now the scheduler needs to monitor
+    //
+    // It's implied that this vqueue is active (not in paused state)
+    AddVQueue {
+        scope: Option<Scope>,
+        limit_key: LimitKey<ReString>,
+        lock_name: Option<LockName>,
     },
+    // An inbox enqueue, inbox remove, or pause/unpause of the queue.
+    InboxUpdate(MetaLiteUpdate),
     /// Scheduler decision has been confirmed
     DecisionConfirmed {
         key: EntryKey,
         drop_pending_resources: bool,
-    },
-    /// Entry has been removed from the inbox
-    Removed {
-        key: EntryKey,
     },
     LockReleased {
         scope: Option<Scope>,
@@ -72,17 +71,21 @@ pub enum EventDetails {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct VQueueEvent {
     pub qid: VQueueId,
-    pub updates: Vec<EventDetails>,
+    pub updates: SmallVec<[EventDetails; 2]>,
 }
 
 impl VQueueEvent {
+    pub fn is_empty(&self) -> bool {
+        self.updates.is_empty()
+    }
+
     pub const fn new(qid: VQueueId) -> Self {
         Self {
             qid,
-            updates: Vec::new(),
+            updates: SmallVec::new_const(),
         }
     }
 
@@ -245,24 +248,32 @@ where
         &mut self,
         created_at: UniqueTimestamp,
         seq: impl Into<Seq>,
-        run_at: impl Into<RoughTimestamp>,
+        run_at: Option<MillisSinceEpoch>,
         entry_id: impl Into<EntryId>,
         metadata: impl Into<EntryMetadata>,
     ) {
         let meta = self.cache.get_mut(self.cache_key).unwrap();
-        let mut event = VQueueEvent::new(meta.vqueue_id().clone());
 
-        let run_at = run_at.into();
+        let created_at_unix = created_at.to_unix_millis();
+        let (run_at, status) = match run_at {
+            // Future: ceil to the next whole second so we never fire early.
+            Some(t) if t > created_at_unix => {
+                (RoughTimestamp::from_unix_millis_ceil(t), Status::Scheduled)
+            }
+            // Already past: floor is safe — it's eligible immediately regardless.
+            Some(t) => (RoughTimestamp::from_unix_millis_clamped(t), Status::New),
+            // Unset: treat as "run ASAP" using the record's creation timestamp, floored.
+            None => (
+                RoughTimestamp::from_unix_millis_clamped(created_at_unix),
+                Status::New,
+            ),
+        };
+
         let entry_id = entry_id.into();
         let metadata = metadata.into();
 
         let key = EntryKey::new(false, run_at, seq, entry_id);
         let stats = EntryStatistics::new(created_at, run_at);
-        let status = if stats.first_runnable_at > created_at.to_unix_millis() {
-            Status::Scheduled
-        } else {
-            Status::New
-        };
 
         let update = metadata::Update::new(
             created_at,
@@ -274,10 +285,15 @@ where
         );
 
         // Update cache
+        let was_inbox_empty = meta.meta().is_inbox_empty();
         let (was_active_before, is_active_now) = meta.apply_update(&update);
 
         // Update vqueue meta in storage
         self.storage.update_vqueue(meta.vqueue_id(), &update);
+
+        if !was_active_before && is_active_now {
+            self.storage.mark_vqueue_as_active(meta.vqueue_id());
+        }
 
         // We need to add the entry into the inbox vqueue.
         let value = EntryValue {
@@ -305,21 +321,23 @@ where
             status,
         );
 
-        if was_active_before != is_active_now {
-            assert!(is_active_now);
-            self.storage.mark_vqueue_as_active(meta.vqueue_id());
-            event.push(EventDetails::VQueueBecameActive(meta.meta().clone()));
-            event.push(EventDetails::Enqueued { key, value });
-        } else if is_active_now {
-            event.push(EventDetails::MetadataUpdated(update));
-            event.push(EventDetails::Enqueued { key, value });
-        } else {
-            unreachable!("Cannot enqueue an item on a dormant vqueue");
-        }
-
         if let Some(collector) = self.action_collector.as_deref_mut() {
             // Let the scheduler know about the new entry to keep its head-of-line cache of the vqueue
             // as fresh as possible.
+            let mut event = VQueueEvent::new(meta.vqueue_id().clone());
+            if was_inbox_empty {
+                event.push(EventDetails::AddVQueue {
+                    scope: meta.meta().scope().clone(),
+                    limit_key: meta.meta().limit_key().clone(),
+                    lock_name: meta.meta().lock_name().cloned(),
+                });
+            }
+
+            event.push(EventDetails::InboxUpdate(MetaLiteUpdate::EnqueuedToInbox {
+                key,
+                value,
+            }));
+
             collector.push(A::from(event));
         }
     }
@@ -350,8 +368,6 @@ where
         self.storage
             .delete_vqueue_inbox(vqueue_id, Stage::Inbox, header.entry_key());
 
-        let mut event = VQueueEvent::new(vqueue_id.clone());
-
         let update = metadata::Update::new(
             at,
             metadata::Action::Move {
@@ -363,26 +379,8 @@ where
             },
         );
 
-        let (was_active_before, is_active_now) = meta.apply_update(&update);
+        meta.apply_update(&update);
         self.storage.update_vqueue(vqueue_id, &update);
-
-        if was_active_before != is_active_now {
-            assert!(is_active_now);
-            self.storage.mark_vqueue_as_active(vqueue_id);
-            event.push(EventDetails::VQueueBecameActive(meta.meta().clone()));
-            event.push(EventDetails::DecisionConfirmed {
-                key: *header.entry_key(),
-                drop_pending_resources: false,
-            });
-        } else if is_active_now {
-            event.push(EventDetails::MetadataUpdated(update));
-            event.push(EventDetails::DecisionConfirmed {
-                key: *header.entry_key(),
-                drop_pending_resources: false,
-            });
-        } else {
-            unreachable!("Cannot run an item on a dormant vqueue");
-        }
 
         let stats = Self::mark_run_attempt(at, header.stats(), wait_stats);
 
@@ -441,6 +439,11 @@ where
         );
 
         if let Some(collector) = self.action_collector.as_deref_mut() {
+            let mut event = VQueueEvent::new(vqueue_id.clone());
+            event.push(EventDetails::DecisionConfirmed {
+                key: *header.entry_key(),
+                drop_pending_resources: false,
+            });
             collector.push(A::from(event));
         }
 
@@ -481,7 +484,6 @@ where
         self.storage
             .delete_vqueue_inbox(vqueue_id, header.stage(), header.entry_key());
 
-        let mut event = VQueueEvent::new(vqueue_id.clone());
         let update = metadata::Update::new(
             at,
             metadata::Action::Move {
@@ -492,10 +494,14 @@ where
         );
 
         // Update cache
+        let was_inbox_empty = meta.meta().is_inbox_empty();
         let (was_active_before, is_active_now) = meta.apply_update(&update);
-
         // Update vqueue meta in storage
         self.storage.update_vqueue(vqueue_id, &update);
+
+        if !was_active_before && is_active_now {
+            self.storage.mark_vqueue_as_active(vqueue_id);
+        }
 
         // We can be asked to wake up but not run immediately (or get a lower run_at for priority
         // boosting). If that's the case, we mutate the entry key to reflect that.
@@ -532,25 +538,21 @@ where
         self.storage
             .put_vqueue_inbox(vqueue_id, Stage::Inbox, &modified_key, &value);
 
-        if was_active_before != is_active_now {
-            assert!(is_active_now);
-            self.storage.mark_vqueue_as_active(vqueue_id);
-            event.push(EventDetails::VQueueBecameActive(meta.meta().clone()));
-            event.push(EventDetails::Enqueued {
-                key: modified_key,
-                value,
-            });
-        } else if is_active_now {
-            event.push(EventDetails::MetadataUpdated(update));
-            event.push(EventDetails::Enqueued {
-                key: modified_key,
-                value,
-            });
-        } else {
-            unreachable!("Cannot enqueue an item on a dormant vqueue");
-        }
-
         if let Some(collector) = self.action_collector.as_deref_mut() {
+            let mut event = VQueueEvent::new(vqueue_id.clone());
+
+            if was_inbox_empty {
+                event.push(EventDetails::AddVQueue {
+                    scope: meta.meta().scope().clone(),
+                    limit_key: meta.meta().limit_key().clone(),
+                    lock_name: meta.meta().lock_name().cloned(),
+                });
+            }
+
+            event.push(EventDetails::InboxUpdate(MetaLiteUpdate::EnqueuedToInbox {
+                key: modified_key,
+                value,
+            }));
             collector.push(A::from(event));
         }
     }
@@ -593,8 +595,6 @@ where
         self.storage
             .delete_vqueue_inbox(vqueue_id, header.stage(), header.entry_key());
 
-        let mut event = VQueueEvent::new(vqueue_id.clone());
-
         let update = metadata::Update::new(
             at,
             metadata::Action::Move {
@@ -610,22 +610,8 @@ where
         // Update vqueue meta in storage
         self.storage.update_vqueue(meta.vqueue_id(), &update);
 
-        if was_active_before != is_active_now {
-            assert!(!is_active_now);
+        if was_active_before && !is_active_now {
             self.storage.mark_vqueue_as_dormant(meta.vqueue_id());
-            // todo: This only makes sense if previous stage was inbox
-            event.push(EventDetails::Removed {
-                key: *header.entry_key(),
-            });
-            event.push(EventDetails::VQueueBecameDormant);
-        } else if is_active_now {
-            event.push(EventDetails::MetadataUpdated(update));
-            // todo: This only makes sense if previous stage was inbox
-            event.push(EventDetails::Removed {
-                key: *header.entry_key(),
-            });
-        } else {
-            unreachable!("Cannot remove an item from a dormant vqueue");
         }
 
         let stats = match next_stage {
@@ -656,7 +642,13 @@ where
             header.status(),
         );
 
-        if let Some(collector) = self.action_collector.as_deref_mut() {
+        if let Some(collector) = self.action_collector.as_deref_mut()
+            && matches!(header.stage(), Stage::Inbox)
+        {
+            let mut event = VQueueEvent::new(vqueue_id.clone());
+            event.push(EventDetails::InboxUpdate(MetaLiteUpdate::RemovedFromInbox(
+                *header.entry_key(),
+            )));
             collector.push(A::from(event));
         }
     }
@@ -669,7 +661,7 @@ where
         &mut self,
         at: UniqueTimestamp,
         header: &impl EntryStatusHeader,
-        run_at: Option<RoughTimestamp>,
+        run_at: Option<MillisSinceEpoch>,
         updated_metadata: Option<EntryMetadata>,
         new_status: Status,
     ) {
@@ -697,16 +689,29 @@ where
         );
 
         // Update cache
+        let was_inbox_empty = meta.meta().is_inbox_empty();
         let (was_active_before, is_active_now) = meta.apply_update(&update);
         self.storage.update_vqueue(vqueue_id, &update);
 
-        if was_active_before != is_active_now {
-            unreachable!("Yielding should never toggle vqueue's active state");
+        if !was_active_before && is_active_now {
+            self.storage.mark_vqueue_as_active(meta.vqueue_id());
         }
 
         // We can be asked to wake up but not run immediately (or get a lower run_at for priority
         // boosting). If that's the case, we mutate the entry key to reflect that.
-        let modified_key = header.entry_key().set_run_at(run_at);
+        let modified_key = {
+            let run_at = match run_at {
+                // Future: ceil to the next whole second so we never fire early.
+                Some(t) if t > at.to_unix_millis() => {
+                    Some(RoughTimestamp::from_unix_millis_ceil(t))
+                }
+                // Already past: floor is safe — it's eligible immediately regardless.
+                Some(t) => Some(RoughTimestamp::from_unix_millis_clamped(t)),
+                // Leave as is
+                None => None,
+            };
+            header.entry_key().set_run_at(run_at)
+        };
 
         let stats = Self::mark_yield(at, header.stats());
 
@@ -730,11 +735,18 @@ where
         );
 
         if let Some(collector) = self.action_collector.as_deref_mut() {
-            // Let the scheduler know about the new entry to keep its head-of-line cache of the vqueue
-            // as fresh as possible.
-            let mut event = VQueueEvent::new(meta.vqueue_id().clone());
-            event.push(EventDetails::MetadataUpdated(update));
+            let mut event = VQueueEvent::new(vqueue_id.clone());
+
+            if was_inbox_empty {
+                event.push(EventDetails::AddVQueue {
+                    scope: meta.meta().scope().clone(),
+                    limit_key: meta.meta().limit_key().clone(),
+                    lock_name: meta.meta().lock_name().cloned(),
+                });
+            }
+
             if matches!(header.stage(), Stage::Inbox) {
+                // Inbox -> Inbox
                 // The scheduler is moving the item from inbox, so we need to confirm its
                 // decision. We only do that if prev_stage is Inbox because it's the only
                 // stage that needs confirmation.
@@ -743,13 +755,13 @@ where
                     drop_pending_resources: false,
                 });
             }
-            trace!(
-                "Informing the scheduler about this item being enqueued to Inbox: {modified_key:?}"
-            );
-            event.push(EventDetails::Enqueued {
+
+            // Enqueue the replaced entry now
+            event.push(EventDetails::InboxUpdate(MetaLiteUpdate::EnqueuedToInbox {
                 key: modified_key,
                 value,
-            });
+            }));
+
             collector.push(A::from(event));
         }
     }
@@ -778,7 +790,6 @@ where
             Stage::Finished,
         );
 
-        let mut event = VQueueEvent::new(vqueue_id.clone());
         let update = metadata::Update::new(
             at,
             metadata::Action::Move {
@@ -792,10 +803,6 @@ where
             && let Some(lock_name) = meta.meta().lock_name()
         {
             self.storage.release_lock(meta.meta().scope(), lock_name);
-            event.push(EventDetails::LockReleased {
-                scope: meta.meta().scope().clone(),
-                lock_name: lock_name.clone(),
-            });
             header.entry_key().release_lock()
         } else {
             *header.entry_key()
@@ -829,29 +836,30 @@ where
         let (was_active_before, is_active_now) = meta.apply_update(&update);
         self.storage.update_vqueue(meta.vqueue_id(), &update);
 
-        if was_active_before != is_active_now {
-            assert!(!is_active_now);
+        if was_active_before && !is_active_now {
             self.storage.mark_vqueue_as_dormant(meta.vqueue_id());
-            // todo: when does this make sense?
-            // if we were in inbox only.
-            // validate that
-            event.push(EventDetails::Removed {
-                key: *header.entry_key(),
-            });
-            event.push(EventDetails::VQueueBecameDormant);
-        } else if is_active_now {
-            event.push(EventDetails::MetadataUpdated(update));
-            // todo: when does this make sense?
-            // if we were in inbox only.
-            event.push(EventDetails::Removed {
-                key: *header.entry_key(),
-            });
-        } else {
-            unreachable!("Cannot remove an item from a dormant vqueue");
         }
 
         if let Some(collector) = self.action_collector.as_deref_mut() {
-            collector.push(A::from(event));
+            let mut event = VQueueEvent::new(vqueue_id.clone());
+            // Release the lock if this entry has been holding a lock already
+            if header.has_lock()
+                && let Some(lock_name) = meta.meta().lock_name()
+            {
+                event.push(EventDetails::LockReleased {
+                    scope: meta.meta().scope().clone(),
+                    lock_name: lock_name.clone(),
+                });
+            }
+
+            if matches!(header.stage(), Stage::Inbox) {
+                event.push(EventDetails::InboxUpdate(MetaLiteUpdate::RemovedFromInbox(
+                    *header.entry_key(),
+                )));
+            }
+            if !event.is_empty() {
+                collector.push(A::from(event));
+            }
         }
 
         // -- DELETION --
@@ -892,6 +900,7 @@ where
         at: UniqueTimestamp,
         header: &impl EntryStatusHeader,
         wait_stats: &WaitStats,
+        status: Status,
     ) {
         let vqueue_id = header.vqueue_id();
         let meta = self.cache.get_mut(self.cache_key).unwrap();
@@ -902,9 +911,7 @@ where
         self.storage
             .delete_vqueue_inbox(vqueue_id, Stage::Inbox, header.entry_key());
 
-        let mut event = VQueueEvent::new(vqueue_id.clone());
-
-        // fake run, for the same of completeness
+        // Fake run, for the same of completeness
         let update = metadata::Update::new(
             at,
             metadata::Action::Move {
@@ -918,44 +925,23 @@ where
         self.storage.update_vqueue(vqueue_id, &update);
         let stats = Self::mark_run_attempt(at, header.stats(), wait_stats);
 
-        event.push(EventDetails::MetadataUpdated(update));
-        event.push(EventDetails::DecisionConfirmed {
-            key: *header.entry_key(),
-            // In the case of state mutation, we execute it inline and we can
-            // ask the scheduler to drop any pending resources for this entry.
-            drop_pending_resources: true,
-        });
-
-        // move to finished
-        if let Some(lock_name) = meta.meta().lock_name() {
-            // We only release the lock in scheduler's memory.
-            // We don't release it in storage because we didn't acquire it in storage.
-            event.push(EventDetails::LockReleased {
-                scope: meta.meta().scope().clone(),
-                lock_name: lock_name.clone(),
-            });
-        }
-
+        // Move to finish
         let update = metadata::Update::new(
             at,
             metadata::Action::Move {
                 prev_stage: Some(Stage::Running),
                 next_stage: Stage::Finished,
-                metrics: Self::build_move_metrics(header.stats()),
+                metrics: Self::build_move_metrics(&stats),
             },
         );
+
+        let stats = Self::mark_transition(at, &stats);
 
         let (was_active_before, is_active_now) = meta.apply_update(&update);
         self.storage.update_vqueue(vqueue_id, &update);
 
-        if was_active_before != is_active_now {
-            assert!(!is_active_now);
+        if was_active_before && !is_active_now {
             self.storage.mark_vqueue_as_dormant(meta.vqueue_id());
-            event.push(EventDetails::VQueueBecameDormant);
-        } else if is_active_now {
-            event.push(EventDetails::MetadataUpdated(update));
-        } else {
-            unreachable!("Cannot remove an item from a dormant vqueue");
         }
 
         // Move the entry to Finished stage
@@ -969,8 +955,8 @@ where
             &modified_key,
             &EntryValue {
                 stats: stats.clone(),
-                status: Status::Succeeded,
                 metadata: header.metadata().clone(),
+                status,
             },
         );
 
@@ -981,10 +967,26 @@ where
             &modified_key,
             header.metadata(),
             stats,
-            Status::Succeeded,
+            status,
         );
 
         if let Some(collector) = self.action_collector.as_deref_mut() {
+            let mut event = VQueueEvent::new(vqueue_id.clone());
+            event.push(EventDetails::DecisionConfirmed {
+                key: *header.entry_key(),
+                // In the case of state mutation, we execute it inline and we can
+                // ask the scheduler to drop any pending resources for this entry.
+                drop_pending_resources: true,
+            });
+
+            // Even though we did not store the lock on disk, we still need to let the
+            // resource manager that we no longer hold the lock.
+            if let Some(lock_name) = meta.meta().lock_name() {
+                event.push(EventDetails::LockReleased {
+                    scope: meta.meta().scope().clone(),
+                    lock_name: lock_name.clone(),
+                });
+            }
             collector.push(A::from(event));
         }
 
