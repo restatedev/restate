@@ -68,3 +68,29 @@ bilrost::delegate_proxied_encoding!(
     using proxy tag (RangeTag)
     with encoding (RestateEncoding)
 );
+
+impl ForOverwrite<RestateEncoding, restate_util_sharding::KeyRange> for () {
+    fn for_overwrite() -> restate_util_sharding::KeyRange {
+        restate_util_sharding::KeyRange::new(0, 0)
+    }
+}
+
+impl EmptyState<RestateEncoding, restate_util_sharding::KeyRange> for () {
+    fn empty() -> restate_util_sharding::KeyRange {
+        restate_util_sharding::KeyRange::new(0, 0)
+    }
+
+    fn is_empty(val: &restate_util_sharding::KeyRange) -> bool {
+        val.start() == 0 && val.end() == 0
+    }
+
+    fn clear(val: &mut restate_util_sharding::KeyRange) {
+        *val = <() as EmptyState<RestateEncoding, restate_util_sharding::KeyRange>>::empty();
+    }
+}
+
+bilrost::delegate_proxied_encoding!(
+    use encoding (::bilrost::encoding::General)
+    to encode proxied type (restate_util_sharding::KeyRange)
+    with encoding (RestateEncoding)
+);

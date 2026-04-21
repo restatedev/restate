@@ -98,6 +98,7 @@ where
 
 impl<V> NetSerde for HashSet<V> where V: NetSerde {}
 impl<Idx> NetSerde for RangeInclusive<Idx> where Idx: NetSerde {}
+impl NetSerde for restate_util_sharding::KeyRange {}
 impl<T> NetSerde for Arc<T> where T: NetSerde {}
 impl<T> NetSerde for Arc<[T]> where T: NetSerde {}
 impl<T> NetSerde for Box<T> where T: NetSerde {}
