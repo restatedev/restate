@@ -189,12 +189,12 @@ impl Handler {
 
                     match self {
                         Handler::Get => {
-                            for await message in Self::handle_get(start_message, input, replayed, incoming) {
+                            for await message in Self::handle_get(start_message, input, replayed) {
                                 yield message?
                             }
                         },
                         Handler::Add => {
-                            for await message in Self::handle_add(start_message, input, replayed, incoming) {
+                            for await message in Self::handle_add(start_message, input, replayed) {
                                 yield message?
                             }
                         },
@@ -202,6 +202,14 @@ impl Handler {
                 },
                 _ => {Err(FrameError::InvalidJournal)?; return},
             };
+
+            // drain incoming
+            while let Some(msg) = incoming.next().await {
+                if msg.is_err() {
+                    break;
+                }
+            }
+
         }
     }
 
@@ -209,7 +217,6 @@ impl Handler {
         start_message: StartMessage,
         _input: InputCommand,
         replayed: Vec<Message>,
-        _incoming: impl Stream<Item = Result<Message, FrameError>>,
     ) -> impl Stream<Item = Result<Message, FrameError>> {
         try_stream! {
             let counter = read_counter(&start_message.state_map);
@@ -235,7 +242,6 @@ impl Handler {
         start_message: StartMessage,
         input: InputCommand,
         replayed: Vec<Message>,
-        _incoming: impl Stream<Item = Result<Message, FrameError>>,
     ) -> impl Stream<Item = Result<Message, FrameError>> {
         try_stream! {
                 let counter = read_counter(&start_message.state_map);
