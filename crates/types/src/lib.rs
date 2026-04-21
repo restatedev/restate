@@ -81,6 +81,11 @@ pub mod memory {
     pub use restate_memory::*;
 }
 
+// Re-export restate-sharding crate for key range utilities.
+pub mod sharding {
+    pub use restate_sharding::*;
+}
+
 // Re-export metrics' SharedString (Space-efficient Cow + RefCounted variant)
 pub type SharedString = metrics::SharedString;
 
