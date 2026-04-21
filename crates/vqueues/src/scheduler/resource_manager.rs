@@ -87,7 +87,7 @@ enum ResourceManagerUpdate {
 }
 
 pub(super) enum AcquireOutcome {
-    Acquired(ReservedResources),
+    Acquired(PermitBuilder),
     BlockedOn(ResourceKind),
 }
 
@@ -254,7 +254,7 @@ impl ResourceManager {
             }
         }
 
-        AcquireOutcome::Acquired(current_permit.build(self))
+        AcquireOutcome::Acquired(current_permit.take())
     }
 
     pub(super) fn poll_resources(
