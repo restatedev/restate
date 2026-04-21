@@ -417,6 +417,12 @@ impl InvocationRequest {
     }
 }
 
+impl WithPartitionKey for InvocationRequest {
+    fn partition_key(&self) -> PartitionKey {
+        self.header.invocation_id().partition_key()
+    }
+}
+
 impl WithInvocationId for InvocationRequest {
     fn invocation_id(&self) -> InvocationId {
         self.header.invocation_id()
@@ -580,6 +586,12 @@ impl JournalCompletionTarget {
     }
 }
 
+impl WithPartitionKey for JournalCompletionTarget {
+    fn partition_key(&self) -> PartitionKey {
+        self.caller_id.partition_key()
+    }
+}
+
 impl WithInvocationId for JournalCompletionTarget {
     fn invocation_id(&self) -> InvocationId {
         self.caller_id
@@ -595,6 +607,12 @@ impl WithInvocationId for JournalCompletionTarget {
 pub struct InvocationResponse {
     pub target: JournalCompletionTarget,
     pub result: ResponseResult,
+}
+
+impl WithPartitionKey for InvocationResponse {
+    fn partition_key(&self) -> PartitionKey {
+        self.target.invocation_id().partition_key()
+    }
 }
 
 impl WithInvocationId for InvocationResponse {
@@ -1349,6 +1367,12 @@ impl WithPartitionKey for AttachInvocationRequest {
 pub struct NotifySignalRequest {
     pub invocation_id: InvocationId,
     pub signal: Signal,
+}
+
+impl WithPartitionKey for NotifySignalRequest {
+    fn partition_key(&self) -> PartitionKey {
+        self.invocation_id.partition_key()
+    }
 }
 
 impl WithInvocationId for NotifySignalRequest {

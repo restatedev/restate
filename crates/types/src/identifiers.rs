@@ -13,6 +13,7 @@
 mod partitioned;
 
 pub use partitioned::PartitionedResourceId;
+pub use restate_util_sharding::{PartitionKey, WithPartitionKey};
 
 use std::cell::RefCell;
 use std::fmt::{self, Display, Formatter};
@@ -155,10 +156,6 @@ pub type PartitionLeaderEpoch = (PartitionId, LeaderEpoch);
 // Just an alias
 pub type EntryIndex = u32;
 
-/// Identifying to which partition a key belongs. This is unlike the [`PartitionId`]
-/// which identifies a consecutive range of partition keys.
-pub type PartitionKey = u64;
-
 /// Returns the partition key computed from either the service_key, or idempotency_key, if possible
 fn deterministic_partition_key(
     service_key: Option<&str>,
@@ -167,12 +164,6 @@ fn deterministic_partition_key(
     service_key
         .map(partitioner::HashPartitioner::compute_partition_key)
         .or_else(|| idempotency_key.map(partitioner::HashPartitioner::compute_partition_key))
-}
-
-/// Trait for data structures that have a partition key
-pub trait WithPartitionKey {
-    /// Returns the partition key
-    fn partition_key(&self) -> PartitionKey;
 }
 
 /// A family of resource identifiers that tracks the timestamp of its creation.
@@ -607,12 +598,6 @@ impl WithPartitionKey for InvocationId {
     }
 }
 
-impl<T: WithInvocationId> WithPartitionKey for T {
-    fn partition_key(&self) -> PartitionKey {
-        self.invocation_id().partition_key
-    }
-}
-
 impl Display for InvocationId {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         // encode the id such that it is possible to do a string prefix search for a
@@ -764,6 +749,12 @@ impl JournalEntryId {
 impl From<(InvocationId, EntryIndex)> for JournalEntryId {
     fn from(value: (InvocationId, EntryIndex)) -> Self {
         Self::from_parts(value.0, value.1)
+    }
+}
+
+impl WithPartitionKey for JournalEntryId {
+    fn partition_key(&self) -> PartitionKey {
+        self.invocation_id.partition_key()
     }
 }
 

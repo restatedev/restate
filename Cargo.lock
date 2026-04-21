@@ -7180,6 +7180,7 @@ dependencies = [
  "bytestring",
  "rand",
  "restate-encoding-derive",
+ "restate-util-sharding",
  "restate-workspace-hack",
  "static_assertions",
 ]
@@ -8241,6 +8242,7 @@ dependencies = [
  "restate-test-util",
  "restate-time-util",
  "restate-types",
+ "restate-util-sharding",
  "restate-util-string",
  "restate-utoipa",
  "restate-workspace-hack",
@@ -8271,6 +8273,16 @@ dependencies = [
  "ulid",
  "utoipa",
  "xxhash-rust",
+]
+
+[[package]]
+name = "restate-util-sharding"
+version = "1.6.3-dev"
+dependencies = [
+ "bilrost",
+ "restate-util-sharding",
+ "restate-workspace-hack",
+ "serde",
 ]
 
 [[package]]
