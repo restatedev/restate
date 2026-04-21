@@ -8307,6 +8307,7 @@ dependencies = [
  "derive_more",
  "gardal",
  "hashbrown 0.16.1",
+ "itertools 0.14.0",
  "metrics",
  "pin-project",
  "restate-clock",
@@ -8335,6 +8336,7 @@ version = "1.6.3-dev"
 dependencies = [
  "bilrost",
  "bytes",
+ "derive_more",
  "restate-invoker-api",
  "restate-storage-api",
  "restate-types",
