@@ -24,6 +24,7 @@ restate-storage-api = { workspace = true }
 restate-types = { workspace = true }
 restate-util-string = { workspace = true }
 
+arrayvec = { workspace = true }
 bilrost = { workspace = true, features = ["smallvec"] }
 derive_more = { workspace = true, features = ["debug", "is_variant"] }
 gardal = { workspace = true, features = ["tokio"] }
