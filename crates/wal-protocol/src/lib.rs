@@ -228,7 +228,7 @@ impl HasRecordKeys for Envelope {
             Command::UpdatePartitionDurability(_) => Keys::Single(self.partition_key()),
             Command::VersionBarrier(barrier) => barrier.partition_key_range.clone(),
             Command::AnnounceLeader(announce) => {
-                Keys::RangeInclusive(announce.partition_key_range.clone())
+                Keys::RangeInclusive(announce.partition_key_range.into())
             }
             Command::PatchState(mutation) => Keys::Single(mutation.service_id.partition_key()),
             Command::TerminateInvocation(terminate) => {

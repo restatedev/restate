@@ -51,8 +51,7 @@ use restate_test_util::matchers::*;
 use restate_types::config::StorageOptions;
 use restate_types::errors::{InvocationError, KILLED_INVOCATION_ERROR, codes};
 use restate_types::identifiers::{
-    AwakeableIdentifier, InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId,
-    ServiceId,
+    AwakeableIdentifier, InvocationId, PartitionId, PartitionProcessorRpcRequestId, ServiceId,
 };
 use restate_types::invocation::client::InvocationOutputResponse;
 use restate_types::invocation::{
@@ -95,7 +94,7 @@ impl TestEnv {
             0,    /* inbox_seq_number */
             0,    /* outbox_seq_number */
             None, /* outbox_head_seq_number */
-            PartitionKey::MIN..=PartitionKey::MAX,
+            KeyRange::FULL,
             min_restate_version,
             None,
         ))
@@ -133,13 +132,7 @@ impl TestEnv {
         );
         let manager = PartitionStoreManager::create().await.unwrap();
         let rocksdb_storage = manager
-            .open(
-                &Partition::new(
-                    PartitionId::MIN,
-                    RangeInclusive::new(PartitionKey::MIN, PartitionKey::MAX),
-                ),
-                None,
-            )
+            .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
             .await
             .unwrap();
 
@@ -1061,7 +1054,7 @@ async fn truncate_outbox_with_gap() -> Result<(), Error> {
         0,
         outbox_tail_index,
         Some(outbox_head_index),
-        PartitionKey::MIN..=PartitionKey::MAX,
+        KeyRange::FULL,
         SemanticRestateVersion::unknown().clone(),
         None,
     ))

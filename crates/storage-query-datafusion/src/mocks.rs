@@ -28,7 +28,7 @@ use restate_types::NodeId;
 use restate_types::config::QueryEngineOptions;
 use restate_types::deployment::{DeploymentAddress, Headers};
 use restate_types::errors::GenericError;
-use restate_types::identifiers::{DeploymentId, PartitionId, PartitionKey, ServiceRevision};
+use restate_types::identifiers::{DeploymentId, PartitionId, ServiceRevision};
 use restate_types::live::Live;
 use restate_types::net::address::{AdvertisedAddress, HttpIngressPort};
 use restate_types::net::remote_query_scanner::RemoteQueryScannerOpen;
@@ -37,6 +37,7 @@ use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry
 use restate_types::schema::deployment::{Deployment, DeploymentResolver};
 use restate_types::schema::service::test_util::MockServiceMetadataResolver;
 use restate_types::schema::service::{ServiceMetadata, ServiceMetadataResolver};
+use restate_types::sharding::KeyRange;
 
 use super::context::QueryContext;
 use crate::context::SelectPartitions;
@@ -113,8 +114,7 @@ struct MockPartitionSelector;
 impl SelectPartitions for MockPartitionSelector {
     async fn get_live_partitions(&self) -> Result<Vec<(PartitionId, Partition)>, GenericError> {
         let id = PartitionId::MIN;
-        let partition_range = 0..=PartitionKey::MAX;
-        let partition = Partition::new(id, partition_range);
+        let partition = Partition::new(id, KeyRange::FULL);
         Ok(vec![(id, partition)])
     }
 }
@@ -164,10 +164,7 @@ impl MockQueryEngine {
             .await
             .expect("DB creation succeeds");
         let partition_store = manager
-            .open(
-                &Partition::new(PartitionId::MIN, PartitionKey::MIN..=PartitionKey::MAX),
-                None,
-            )
+            .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
             .await
             .unwrap();
 

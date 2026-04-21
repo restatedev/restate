@@ -98,6 +98,7 @@ where
 
 impl<V> NetSerde for HashSet<V> where V: NetSerde {}
 impl<Idx> NetSerde for RangeInclusive<Idx> where Idx: NetSerde {}
+impl NetSerde for restate_util_sharding::PartitionId {}
 impl<T> NetSerde for Arc<T> where T: NetSerde {}
 impl<T> NetSerde for Arc<[T]> where T: NetSerde {}
 impl<T> NetSerde for Box<T> where T: NetSerde {}
@@ -130,5 +131,50 @@ mod test {
         let y = Flattened::decode(bytes).expect("decodes");
 
         assert_eq!(x.id.0, y.id);
+    }
+
+    /// Validates that `KeyRange`'s general bilrost encoding produces the same
+    /// wire format as `RangeInclusive<u64>` with `RestateEncoding`. This ensures
+    /// that `KeyRange` fields can use `#[bilrost(N)]` and remain wire-compatible
+    /// with the old `#[bilrost(tag(N), encoding(RestateEncoding))] RangeInclusive<u64>`.
+    #[test]
+    fn key_range_wire_compat_with_range_inclusive() {
+        use restate_util_sharding::KeyRange;
+
+        use super::RestateEncoding;
+
+        #[derive(Debug, PartialEq, bilrost::Message)]
+        struct WithKeyRange {
+            #[bilrost(1)]
+            range: KeyRange,
+        }
+
+        #[derive(Debug, PartialEq, bilrost::Message)]
+        struct WithRangeInclusive {
+            #[bilrost(tag(1), encoding(RestateEncoding))]
+            range: std::ops::RangeInclusive<u64>,
+        }
+
+        for (start, end) in [(0u64, 0u64), (1, 100), (0, u64::MAX), (42, 42)] {
+            let kr = KeyRange::new(start, end);
+            let ri = start..=end;
+
+            let kr_bytes = WithKeyRange { range: kr }.encode_to_vec();
+            let ri_bytes = WithRangeInclusive { range: ri.clone() }.encode_to_vec();
+
+            assert_eq!(
+                kr_bytes, ri_bytes,
+                "wire format mismatch for range ({start}, {end})"
+            );
+
+            // Cross-decode
+            let decoded: WithRangeInclusive =
+                WithRangeInclusive::decode(&*kr_bytes).expect("cross-decode KeyRange→RI");
+            assert_eq!(decoded.range, ri);
+
+            let decoded: WithKeyRange =
+                WithKeyRange::decode(&*ri_bytes).expect("cross-decode RI→KeyRange");
+            assert_eq!(decoded.range, kr);
+        }
     }
 }

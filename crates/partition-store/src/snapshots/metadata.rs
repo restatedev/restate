@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
 use std::path::PathBuf;
 
 use rocksdb::LiveFile;
@@ -16,9 +15,10 @@ use serde::{Deserialize, Serialize};
 use serde_with::hex::Hex;
 use serde_with::{DeserializeAs, SerializeAs, serde_as};
 
-use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
+use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::{LogId, Lsn};
 use restate_types::nodes_config::ClusterFingerprint;
+use restate_types::sharding::KeyRange;
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SnapshotFormatVersion {
@@ -59,7 +59,7 @@ pub struct PartitionSnapshotMetadata {
 
     /// The partition key range that the partition processor which generated this snapshot was
     /// responsible for, at the time the snapshot was generated.
-    pub key_range: RangeInclusive<PartitionKey>,
+    pub key_range: KeyRange,
 
     /// The log id backing the partition.
     pub log_id: LogId,
@@ -118,7 +118,7 @@ struct PartitionSnapshotMetadataShadow {
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
     pub created_at: jiff::Timestamp,
     pub snapshot_id: SnapshotId,
-    pub key_range: RangeInclusive<PartitionKey>,
+    pub key_range: KeyRange,
     pub log_id: Option<LogId>,
     pub min_applied_lsn: Lsn,
     pub db_comparator_name: String,
@@ -158,7 +158,7 @@ pub struct LocalPartitionSnapshot {
     pub min_applied_lsn: Lsn,
     pub db_comparator_name: String,
     pub files: Vec<LiveFile>,
-    pub key_range: RangeInclusive<PartitionKey>,
+    pub key_range: KeyRange,
 }
 /// RocksDB SST file that is part of a snapshot. Serialization wrapper around [LiveFile].
 #[serde_as]

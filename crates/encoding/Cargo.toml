@@ -11,6 +11,7 @@ publish = false
 restate-workspace-hack = { workspace = true }
 
 restate-encoding-derive = { version = "0.1.0", path = "derive" }
+restate-util-sharding = { workspace = true }
 
 bilrost = { workspace = true }
 bytes = { workspace = true }

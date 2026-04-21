@@ -285,8 +285,6 @@ impl<S: VQueueStore> Queue<S> {
 mod tests {
     use super::*;
 
-    use std::ops::RangeInclusive;
-
     use restate_core::TaskCenter;
     use restate_partition_store::{PartitionDb, PartitionStore, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
@@ -297,6 +295,7 @@ mod tests {
     use restate_types::clock::UniqueTimestamp;
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::partitions::Partition;
+    use restate_types::sharding::KeyRange;
     use restate_types::vqueue::{EffectivePriority, VQueueId, VQueueInstance, VQueueParent};
 
     /// Helper to create an EntryCard for testing.
@@ -337,10 +336,7 @@ mod tests {
         // A single partition store that spans all keys.
         manager
             .open(
-                &Partition::new(
-                    PartitionId::MIN,
-                    RangeInclusive::new(0, PartitionKey::MAX - 1),
-                ),
+                &Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1)),
                 None,
             )
             .await

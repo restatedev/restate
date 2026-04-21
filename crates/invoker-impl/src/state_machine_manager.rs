@@ -9,11 +9,10 @@
 // by the Apache License, Version 2.0.
 
 use super::*;
-use std::ops::RangeInclusive;
 
 use restate_invoker_api::Effect;
 use restate_invoker_api::invocation_reader::InvocationReader;
-use restate_types::identifiers::PartitionKey;
+use restate_types::sharding::KeyRange;
 
 /// Tree of [InvocationStateMachine] held by the [Service].
 #[derive(Debug)]
@@ -33,7 +32,7 @@ impl<SR> Default for InvocationStateMachineManager<SR> {
 struct PartitionInvocationStateMachineCoordinator<IR> {
     output_tx: mpsc::Sender<Box<Effect>>,
     invocation_state_machines: HashMap<InvocationId, InvocationStateMachine>,
-    partition_key_range: RangeInclusive<PartitionKey>,
+    partition_key_range: KeyRange,
     storage_reader: IR,
 }
 
@@ -115,7 +114,7 @@ where
     pub(super) fn register_partition(
         &mut self,
         partition: PartitionLeaderEpoch,
-        partition_key_range: RangeInclusive<PartitionKey>,
+        partition_key_range: KeyRange,
         storage_reader: IR,
         sender: mpsc::Sender<Box<Effect>>,
     ) {
@@ -150,7 +149,7 @@ where
 
     pub(super) fn registered_partitions_with_keys(
         &self,
-        keys: RangeInclusive<PartitionKey>,
+        keys: KeyRange,
     ) -> impl Iterator<Item = PartitionLeaderEpoch> + '_ {
         self.partitions
             .iter()

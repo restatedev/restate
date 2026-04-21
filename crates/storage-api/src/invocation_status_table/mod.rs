@@ -19,12 +19,13 @@ use futures::Stream;
 
 use restate_types::RestateVersion;
 use restate_types::deployment::PinnedDeployment;
-use restate_types::identifiers::{InvocationId, PartitionKey};
+use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
     Header, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
 };
 use restate_types::journal_v2::NotificationId;
+use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
 
 use crate::Result;
@@ -793,7 +794,7 @@ pub trait ReadInvocationStatusTable {
 
 #[derive(Debug, Clone)]
 pub enum ScanInvocationStatusTableRange {
-    PartitionKey(RangeInclusive<PartitionKey>),
+    PartitionKey(KeyRange),
     InvocationId(RangeInclusive<InvocationId>),
 }
 

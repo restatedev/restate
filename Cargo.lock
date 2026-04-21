@@ -8280,6 +8280,7 @@ name = "restate-util-sharding"
 version = "1.6.3-dev"
 dependencies = [
  "bilrost",
+ "derive_more",
  "restate-util-sharding",
  "restate-workspace-hack",
  "serde",

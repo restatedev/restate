@@ -143,7 +143,7 @@ where
 
         let invoker_name = Arc::from(format!("invoker-{}", partition.partition_id));
         let invoker_config = configuration.clone().map(|c| &c.worker.invoker);
-        let key_range = partition.key_range.clone();
+        let key_range = partition.key_range;
 
         let root_task_handle = TaskCenter::current().start_runtime(
             TaskKind::PartitionProcessor,

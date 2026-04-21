@@ -8,11 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_invoker_api::{InvocationStatusReport, StatusHandle};
-use restate_types::identifiers::PartitionKey;
-use std::future::Future;
-use std::ops::RangeInclusive;
 use std::{future, iter};
+
+use restate_invoker_api::{InvocationStatusReport, StatusHandle};
+use restate_types::sharding::KeyRange;
 
 #[derive(Clone, Debug)]
 pub struct EmptyInvokerStatusHandle;
@@ -20,10 +19,7 @@ pub struct EmptyInvokerStatusHandle;
 impl StatusHandle for EmptyInvokerStatusHandle {
     type Iterator = iter::Empty<InvocationStatusReport>;
 
-    fn read_status(
-        &self,
-        _keys: RangeInclusive<PartitionKey>,
-    ) -> impl Future<Output = Self::Iterator> + Send {
+    fn read_status(&self, _keys: KeyRange) -> impl Future<Output = Self::Iterator> + Send {
         future::ready(iter::empty())
     }
 }

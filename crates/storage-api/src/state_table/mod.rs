@@ -8,13 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
-
 use bytes::Bytes;
 use futures::Stream;
 
 use restate_memory::{LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream};
-use restate_types::identifiers::{PartitionKey, ServiceId};
+use restate_types::identifiers::ServiceId;
+use restate_types::sharding::KeyRange;
 
 use crate::{BudgetedReadError, Result};
 
@@ -54,7 +53,7 @@ pub trait ScanStateTable {
         F: FnMut((ServiceId, Bytes, &[u8])) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
     >(
         &self,
-        range: RangeInclusive<PartitionKey>,
+        range: KeyRange,
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 }

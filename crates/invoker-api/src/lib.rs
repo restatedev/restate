@@ -26,7 +26,6 @@ pub mod test_util {
     use super::*;
     use std::convert::Infallible;
     use std::marker::PhantomData;
-    use std::ops::RangeInclusive;
 
     use bytes::Bytes;
     use tokio::sync::mpsc::Sender;
@@ -36,10 +35,9 @@ pub mod test_util {
     use restate_memory::{
         IgnorePinnableMemoryStream, LocalMemoryLease, LocalMemoryPool, MemoryLease,
     };
-    use restate_types::identifiers::{
-        EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch, ServiceId,
-    };
+    use restate_types::identifiers::{EntryIndex, InvocationId, PartitionLeaderEpoch, ServiceId};
     use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
+    use restate_types::sharding::KeyRange;
     use restate_types::time::MillisSinceEpoch;
     use restate_types::vqueue::VQueueId;
 
@@ -238,7 +236,7 @@ pub mod test_util {
         fn register_partition(
             &mut self,
             _partition: PartitionLeaderEpoch,
-            _partition_key_range: RangeInclusive<PartitionKey>,
+            _partition_key_range: KeyRange,
             _storage_reader: SR,
             _sender: Sender<Box<Effect>>,
         ) -> Result<(), NotRunningError> {

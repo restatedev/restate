@@ -22,6 +22,7 @@ use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::message::MessageIndex;
+use restate_types::sharding::KeyRange;
 
 use crate::TableKind::Inbox;
 use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
@@ -103,7 +104,7 @@ impl ScanInboxTable for PartitionStore {
         F: FnMut(SequenceNumberInboxEntry) -> ControlFlow<()> + Send + Sync + 'static,
     >(
         &self,
-        range: std::ops::RangeInclusive<PartitionKey>,
+        range: KeyRange,
         mut f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send> {
         self.iterator_for_each(
