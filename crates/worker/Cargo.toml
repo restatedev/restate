@@ -27,11 +27,12 @@ restate-clock = { workspace = true, features = ["jiff", "hlc"] }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-futures-util = { workspace = true }
+restate-ingestion-client = { workspace = true }
 restate-ingress-http = { workspace = true }
 restate-ingress-kafka = { workspace = true }
-restate-ingestion-client = { workspace = true }
 restate-invoker-api = { workspace = true }
 restate-invoker-impl = { workspace = true }
+restate-limiter = { workspace = true }
 restate-memory = { workspace = true }
 restate-metadata-server = { workspace = true }
 restate-metadata-store = { workspace = true }
@@ -82,6 +83,7 @@ restate-service-protocol = { workspace = true, features = ["test-util"] }
 restate-storage-api = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true, features = ["prost"] }
 restate-types = { workspace = true, features = ["test-util"] }
+restate-vqueues = { workspace = true, features = ["test-util"] }
 
 googletest = { workspace = true }
 mockall = { workspace = true }
