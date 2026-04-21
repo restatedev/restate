@@ -8,12 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_types::identifiers::PartitionKey;
 use restate_types::vqueues::VQueueId;
 
 use crate::TableKind::VQueue;
 use crate::keys::{EncodeTableKey, KeyKind, define_table_key};
-
-use super::inbox::ActiveKey;
 
 // 'qm' | QID
 define_table_key!(
@@ -23,6 +22,27 @@ define_table_key!(
         qid: VQueueId,
     )
 );
+
+// 'qa' | QID (QID is prefixed by PartitionKey internally)
+define_table_key!(
+    VQueue,
+    KeyKind::VQueueActive,
+    ActiveKey(
+        qid: VQueueId,
+    )
+);
+
+static_assertions::const_assert_eq!(ActiveKey::serialized_length_fixed(), 27);
+
+impl ActiveKey {
+    pub const fn serialized_length_fixed() -> usize {
+        KeyKind::SERIALIZED_LENGTH + VQueueId::serialized_length_fixed()
+    }
+
+    pub const fn by_partition_prefix_len() -> usize {
+        KeyKind::SERIALIZED_LENGTH + std::mem::size_of::<PartitionKey>()
+    }
+}
 
 impl MetaKey {
     pub const fn serialized_length_fixed() -> usize {
@@ -112,15 +132,7 @@ pub(crate) mod vqueue_meta_merge {
                 Ok(batch) => batch,
             };
             for update in batch.updates.iter() {
-                if let Err(err) = vqueue_meta.apply_update(update) {
-                    let key = MetaKey::deserialize_from(&mut key);
-                    error!(
-                        ?key,
-                        ?err,
-                        "[full merge] Failed to apply vqueue meta update"
-                    );
-                    return None;
-                }
+                vqueue_meta.apply_update(update);
             }
         }
         Some(vqueue_meta.encode_to_vec())
