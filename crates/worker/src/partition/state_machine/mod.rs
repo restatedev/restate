@@ -84,9 +84,8 @@ use restate_types::invocation::{
     AttachInvocationRequest, IngressInvocationResponseSink, InvocationMutationResponseSink,
     InvocationQuery, InvocationResponse, InvocationTarget, InvocationTargetType,
     InvocationTermination, JournalCompletionTarget, NotifySignalRequest, ResponseResult,
-    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, ServiceType,
-    Source, SubmitNotificationSink, TerminationFlavor, VirtualObjectHandlerType,
-    WorkflowHandlerType,
+    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
+    SubmitNotificationSink, TerminationFlavor, VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use restate_types::invocation::{InvocationInput, SpanRelation};
 use restate_types::journal::Completion;
@@ -4475,12 +4474,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         metadata.timestamps.update(self.record_created_at);
 
         if Configuration::pinned().common.experimental_enable_vqueues {
-            self.vqueue_park_invocation(
-                &invocation_id,
-                &metadata.invocation_target,
-                ParkCause::Suspend,
-            )
-            .await?;
+            self.vqueue_park_invocation(&invocation_id, &metadata.invocation_target)
+                .await?;
         }
 
         self.storage
@@ -5115,7 +5110,6 @@ impl<S> StateMachineApplyContext<'_, S> {
         &mut self,
         invocation_id: &InvocationId,
         invocation_target: &InvocationTarget,
-        cause: ParkCause,
     ) -> Result<(), Error>
     where
         S: WriteVQueueTable + WriteLockTable + ReadVQueueTable,
@@ -5150,34 +5144,10 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         let now = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
 
-        let should_release_concurrency_token = match cause {
-            ParkCause::Suspend => {
-                // Always hold on to your concurrency token until the invocation is completed if
-                // we are suspending for all types (services, VOs, workflows). This has the benefit
-                // of an easy to reason about concurrency model for our users. The downside is that
-                // callers might deadlock if they call a limited service which has no more
-                // concurrency tokens left and there is a cyclic dependency (e.g. a limited service
-                // calling itself).
-                false
-            }
-            ParkCause::Pause => {
-                // We release the concurrency token in case we are pausing a service because
-                // unpausing requires human intervention, and we don't want to block other service
-                // invocations.
-                //
-                // Note that we don't do this for paused VOs and workflows because they need to
-                // ensure that no other instance can run while they hold their lock. Technically,
-                // we still have the service_status_table which stores the locking information, and
-                // we need to keep things in sync until we decide what to do with this table.
-                matches!(invocation_target.service_ty(), ServiceType::Service)
-            }
-        };
-
         vqueue.park(
             now,
             &entry_state_header.current_entry_card(),
             entry_state_header.stage(),
-            should_release_concurrency_token,
         )?;
 
         Ok(())
@@ -5376,15 +5346,6 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         Ok(())
     }
-}
-
-/// Cause for parking an invocation
-#[derive(Debug)]
-enum ParkCause {
-    /// The invocation suspends to await completion or signals
-    Suspend,
-    /// The invocation pauses because it depleted it retries or was manually paused
-    Pause,
 }
 
 // To write completions in the effects log
