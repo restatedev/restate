@@ -30,6 +30,7 @@ restate-memory = { workspace = true }
 restate-serde-util = { workspace = true }
 restate-test-util = { workspace = true, optional = true }
 restate-time-util = { workspace = true, features = ["serde", "serde_with"] }
+restate-util-sharding = { workspace = true, features = ["serde", "bilrost"] }
 restate-util-string = { workspace = true, features = ["serde", "bilrost"] }
 restate-utoipa = { workspace = true }
 
