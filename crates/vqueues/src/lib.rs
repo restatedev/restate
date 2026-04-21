@@ -11,29 +11,34 @@
 mod cache;
 mod metric_definitions;
 pub mod scheduler;
-mod vqueue_config;
 
+// Re-exports
 pub use cache::{VQueuesMeta, VQueuesMetaCache};
 pub use metric_definitions::describe_metrics;
 pub use scheduler::{
-    ReservedResources, SchedulerService, SchedulingStatus, ThrottleScope, VQueueSchedulerStatus,
+    ResourceManager, SchedulerService, SchedulingStatus, ThrottleScope, VQueueSchedulerStatus,
 };
-
-use smallvec::SmallVec;
 
 use restate_limiter::LimitKey;
 use restate_storage_api::StorageError;
+use restate_storage_api::lock_table::{AcquiredBy, LockState, WriteLockTable};
 use restate_storage_api::vqueue_table::metadata::VQueueMeta;
 use restate_storage_api::vqueue_table::{
     AsEntryStateHeader, EntryCard, EntryId, EntryKind, ReadVQueueTable, Stage, VisibleAt,
     WriteVQueueTable, metadata,
 };
-use restate_types::Scope;
 use restate_types::clock::UniqueTimestamp;
-use restate_types::identifiers::PartitionKey;
+use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, StateMutationId};
+use restate_types::invocation::InvocationTarget;
 use restate_types::vqueue::{EffectivePriority, NewEntryPriority, VQueueId};
+use restate_types::{LockName, Scope};
+use restate_util_string::ReString;
 
 use self::cache::VQueueCacheKey;
+
+// Token bucket used for throttling over all vqueues
+type GlobalTokenBucket<C = gardal::TokioClock> =
+    gardal::TokenBucket<gardal::PaddedAtomicSharedStorage, C>;
 
 #[derive(Debug, Clone)]
 pub enum EventDetails<Item> {
@@ -48,27 +53,27 @@ pub enum EventDetails<Item> {
     RunAttemptConfirmed {
         item_hash: u64,
     },
-    /// We cannot accept the run attempt request, notify the scheduler
-    RunAttemptRejected {
-        item_hash: u64,
-    },
     /// Entry has been removed from the inbox
     Removed {
         item_hash: u64,
+    },
+    LockReleased {
+        scope: Option<Scope>,
+        lock_name: LockName,
     },
 }
 
 #[derive(Debug, Clone)]
 pub struct VQueueEvent<Item> {
     pub qid: VQueueId,
-    pub updates: SmallVec<[EventDetails<Item>; 2]>,
+    pub updates: Vec<EventDetails<Item>>,
 }
 
 impl<Item> VQueueEvent<Item> {
     pub const fn new(qid: VQueueId) -> Self {
         Self {
             qid,
-            updates: SmallVec::new_const(),
+            updates: Vec::new(),
         }
     }
 
@@ -92,7 +97,7 @@ pub struct VQueue<'a, A, S> {
 impl<'a, A, S> VQueue<'a, A, S>
 where
     A: From<VQueueEvent<EntryCard>> + 'static,
-    S: WriteVQueueTable + ReadVQueueTable,
+    S: WriteVQueueTable + ReadVQueueTable + WriteLockTable,
 {
     /// The entry has completed execution and it needs to be removed from the vqueue.
     ///
@@ -143,18 +148,50 @@ where
         }))
     }
 
+    pub async fn vqueue_from_invocation_target(
+        qid: &VQueueId,
+        storage: &'a mut S,
+        cache: &'a mut VQueuesMetaCache,
+        action_collector: Option<&'a mut Vec<A>>,
+        invocation_target: &InvocationTarget,
+        limit_key: &LimitKey<ReString>,
+    ) -> Result<Self, StorageError> {
+        let cache_key = match cache.load(storage, qid).await? {
+            Some(key) => key,
+            None => {
+                let meta = VQueueMeta::new(
+                    invocation_target.scope(),
+                    limit_key.clone(),
+                    invocation_target.lock_name(),
+                );
+                storage.create_vqueue(qid, &meta);
+                cache.insert(qid.clone(), meta)
+            }
+        };
+
+        Ok(Self {
+            storage,
+            cache_key,
+            cache,
+            action_collector,
+        })
+    }
+
     pub async fn get_or_create_vqueue(
         qid: &VQueueId,
         storage: &'a mut S,
         cache: &'a mut VQueuesMetaCache,
         action_collector: Option<&'a mut Vec<A>>,
-        scope: Option<&Scope>,
-        limit_key: LimitKey<&str>,
+        scope: &Option<Scope>,
+        limit_key: &LimitKey<ReString>,
+        lock_name: &Option<LockName>,
     ) -> Result<Self, StorageError> {
         let cache_key = match cache.load(storage, qid).await? {
             None => {
+                // Note: we don't send an event (i.e. vqueue created) because we only care
+                // about notifying the scheduler only when the queue becomes active.
                 let limit_key = limit_key.to_cheap_cloneable();
-                let meta = VQueueMeta::new(scope.cloned(), limit_key);
+                let meta = VQueueMeta::new(scope.clone(), limit_key, lock_name.clone());
                 storage.create_vqueue(qid, &meta);
                 cache.insert(qid.clone(), meta)
             }
@@ -259,6 +296,7 @@ where
         }
 
         let mut event = VQueueEvent::new(meta.vqueue_id().clone());
+        let mut modified_card = card.clone();
 
         let update = metadata::Update::new(
             at,
@@ -270,6 +308,38 @@ where
 
         let (was_active_before, is_active_now) = meta.apply_update(&update)?;
         self.storage.update_vqueue(meta.vqueue_id(), &update);
+
+        // Do we need to hold the lock or is this running an entry that doesn't need a lock (or)
+        // already has the lock held?
+        if !card.has_lock()
+            && let Some(lock_name) = meta.meta().lock_name()
+        {
+            let acquired_by = match card.kind {
+                EntryKind::Unknown => AcquiredBy::Other(ReString::from_static("unknown")),
+                EntryKind::Invocation => AcquiredBy::InvocationId(InvocationId::from_parts(
+                    meta.vqueue_id().partition_key(),
+                    InvocationUuid::from_slice(card.id.as_bytes()).unwrap(),
+                )),
+                EntryKind::StateMutation => {
+                    AcquiredBy::StateMutation(StateMutationId::from_partition_key_and_bytes(
+                        meta.vqueue_id().partition_key(),
+                        *card.id.as_bytes(),
+                    ))
+                }
+            };
+
+            // acquire lock
+            let lock_state = LockState {
+                acquired_at: at,
+                acquired_by,
+            };
+
+            self.storage
+                .acquire_lock(meta.meta().scope(), lock_name, &lock_state);
+            // todo: make this "lock held" instead
+            // modified_card.has_lock = true;
+            modified_card.priority = EffectivePriority::TokenHeld;
+        }
 
         if was_active_before != is_active_now {
             assert!(is_active_now);
@@ -286,9 +356,6 @@ where
         } else {
             unreachable!("Cannot run an item on a dormant vqueue");
         }
-
-        let mut modified_card = card.clone();
-        modified_card.priority = EffectivePriority::TokenHeld;
 
         self.storage
             .put_inbox_entry(meta.vqueue_id(), Stage::Run, &modified_card);
@@ -515,6 +582,16 @@ where
                 previous_stage,
             },
         );
+
+        if card.has_lock()
+            && let Some(lock_name) = meta.meta().lock_name()
+        {
+            self.storage.release_lock(meta.meta().scope(), lock_name);
+            event.push(EventDetails::LockReleased {
+                scope: meta.meta().scope().clone(),
+                lock_name: lock_name.clone(),
+            });
+        }
 
         // todo(asoli): We need to discuss whether entry_state should outlive the item's
         // lifecycle in the queue or not. For now, we'll remove it.
