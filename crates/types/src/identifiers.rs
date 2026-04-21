@@ -25,7 +25,7 @@ use base64::Engine;
 use bytes::Bytes;
 use bytestring::ByteString;
 use generic_array::ArrayLength;
-use rand::RngCore;
+use rand::Rng;
 use sha2::{Digest, Sha256};
 use ulid::Ulid;
 
@@ -169,6 +169,41 @@ fn deterministic_partition_key(
         .or_else(|| idempotency_key.map(partitioner::HashPartitioner::compute_partition_key))
 }
 
+/// Number of partition keys each unscoped service can spread over.
+///
+/// For unscoped, non-idempotent invocations we avoid global randomness (`next_u64`) and instead
+/// pick one key out of a bounded, service-specific set.
+///
+/// This can be configurable in the future and it wouldn't affect correctness if users want to change it.
+const UNSCOPED_SERVICE_PARTITION_KEY_FANOUT: u8 = 8;
+
+/// Computes one of the deterministic partition keys assigned to an unscoped service.
+///
+/// The key set for a service name is generated as:
+/// - `key(bucket) = H((service_name, "unscoped_partition_key_fanout", bucket))`
+///
+/// This keeps bucket-to-key mapping deterministic per service while preserving uniform hash
+/// distribution over the full `PartitionKey` space. The random selection happens at bucket level,
+/// not at raw key level.
+///
+/// Examples for a given service `S`:
+/// - bucket `0` selects `H((S, "unscoped/service", 0))`
+/// - bucket `1` selects `H((S, "unscoped/service", 1))`
+/// - bucket `7` selects `H((S, "unscoped/service", 7))`
+#[inline]
+fn unscoped_service_partition_key(service_name: &str, bucket: u8) -> PartitionKey {
+    debug_assert!(bucket < UNSCOPED_SERVICE_PARTITION_KEY_FANOUT);
+
+    partitioner::HashPartitioner::compute_partition_key((service_name, "unscoped/service", bucket))
+}
+
+#[inline]
+fn random_unscoped_service_partition_key(service_name: &str) -> PartitionKey {
+    // Selects uniformly in [0, FAN_OUT) and maps into the service-specific key set.
+    let bucket = rand::rng().random_range(0..UNSCOPED_SERVICE_PARTITION_KEY_FANOUT);
+    unscoped_service_partition_key(service_name, bucket)
+}
+
 /// Trait for data structures that have a partition key
 pub trait WithPartitionKey {
     /// Returns the partition key
@@ -240,6 +275,8 @@ impl InvocationUuid {
         const HASH_SEPARATOR: u8 = 0x2c;
 
         // --- Rules for deterministic ID
+        // * If the target is _scoped_, use the scope name as part of the hash to avoid collision
+        // with unscoped requests with the same idempotency key.
         // * If the target IS a workflow run, use workflow name + key
         // * If the target IS an idempotent request, use the idempotency scope + key
         // * If the target IS NEITHER an idempotent request or a workflow run, then just generate a random ulid
@@ -249,6 +286,10 @@ impl InvocationUuid {
                 // Workflow run
                 let mut hasher = Sha256::new();
                 hasher.update(b"wf");
+                if let Some(scope) = invocation_target.scope() {
+                    hasher.update([HASH_SEPARATOR]);
+                    hasher.update(scope.as_bytes());
+                }
                 hasher.update([HASH_SEPARATOR]);
                 hasher.update(invocation_target.service_name());
                 hasher.update([HASH_SEPARATOR]);
@@ -269,6 +310,10 @@ impl InvocationUuid {
                 // Invocations with Idempotency key
                 let mut hasher = Sha256::new();
                 hasher.update(b"ik");
+                if let Some(scope) = invocation_target.scope() {
+                    hasher.update([HASH_SEPARATOR]);
+                    hasher.update(scope.as_bytes());
+                }
                 hasher.update([HASH_SEPARATOR]);
                 hasher.update(invocation_target.service_name());
                 if let Some(key) = invocation_target.key() {
@@ -466,7 +511,7 @@ impl InvocationId {
     /// target/idempotency key when available; otherwise a random partition key is used.
     pub fn generate(invocation_target: &InvocationTarget, idempotency_key: Option<&str>) -> Self {
         Self::generate_or_else(invocation_target, idempotency_key, || {
-            rand::rng().next_u64()
+            random_unscoped_service_partition_key(invocation_target.service_name())
         })
     }
 
@@ -480,15 +525,19 @@ impl InvocationId {
     where
         F: FnOnce() -> PartitionKey,
     {
-        // --- Partition key generation
-        let partition_key =
-                // Either try to generate the deterministic partition key, if possible
-                deterministic_partition_key(
-                    invocation_target.key().map(|bs| bs.as_ref()),
-                    idempotency_key,
-                )
-                // If no deterministic partition key can be generated, just pick a random number
-                .unwrap_or_else(f);
+        let partition_key = if let Some(scope) = invocation_target.scope() {
+            // Scoped invocations inherit the partition key from their owning scope
+            scope.partition_key()
+        } else {
+            // --- Partition key generation
+            // Either try to generate the deterministic partition key, if possible
+            deterministic_partition_key(
+                invocation_target.key().map(|bs| bs.as_ref()),
+                idempotency_key,
+            )
+            // If no deterministic partition key can be generated, just pick a random number
+            .unwrap_or_else(f)
+        };
 
         // --- Invocation UUID generation
         InvocationId::from_parts(
@@ -1387,6 +1436,8 @@ mod mocks {
 mod tests {
     use super::*;
 
+    use std::collections::HashSet;
+
     use crate::invocation::VirtualObjectHandlerType;
     use rand::distr::{Alphanumeric, SampleString};
 
@@ -1504,6 +1555,56 @@ mod tests {
             InvocationId::mock_generate(&invocation_target),
             InvocationId::mock_generate(&invocation_target)
         );
+    }
+
+    #[test]
+    fn unscoped_service_invocations_use_consistent_bounded_partition_key_set() {
+        fn service_partition_key_set(service_name: &ByteString) -> HashSet<PartitionKey> {
+            (0..UNSCOPED_SERVICE_PARTITION_KEY_FANOUT)
+                .map(|bucket| unscoped_service_partition_key(service_name, bucket))
+                .collect()
+        }
+
+        let invocation_target = InvocationTarget::service("MyService", "MyMethod");
+        let expected_keys = service_partition_key_set(invocation_target.service_name());
+        let expected_keys_recomputed = service_partition_key_set(invocation_target.service_name());
+
+        assert_eq!(expected_keys, expected_keys_recomputed);
+
+        assert_eq!(
+            expected_keys.len(),
+            usize::from(UNSCOPED_SERVICE_PARTITION_KEY_FANOUT)
+        );
+
+        for _ in 0..512 {
+            let partition_key = InvocationId::generate(&invocation_target, None).partition_key();
+            assert!(expected_keys.contains(&partition_key));
+        }
+    }
+
+    #[test]
+    fn unscoped_services_have_different_partition_key_sets() {
+        fn service_partition_key_set(service_name: &ByteString) -> HashSet<PartitionKey> {
+            (0..UNSCOPED_SERVICE_PARTITION_KEY_FANOUT)
+                .map(|bucket| unscoped_service_partition_key(service_name, bucket))
+                .collect()
+        }
+
+        let service_a = InvocationTarget::service("ServiceA", "MyMethod");
+        let service_b = InvocationTarget::service("ServiceB", "MyMethod");
+
+        let service_a_keys = service_partition_key_set(service_a.service_name());
+        let service_b_keys = service_partition_key_set(service_b.service_name());
+
+        assert_eq!(
+            service_a_keys.len(),
+            usize::from(UNSCOPED_SERVICE_PARTITION_KEY_FANOUT)
+        );
+        assert_eq!(
+            service_b_keys.len(),
+            usize::from(UNSCOPED_SERVICE_PARTITION_KEY_FANOUT)
+        );
+        assert_ne!(service_a_keys, service_b_keys);
     }
 
     #[test]
