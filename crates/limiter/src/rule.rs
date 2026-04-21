@@ -181,6 +181,11 @@ impl<S: StringLike> Pattern<S> {
         }
     }
 
+    /// A pattern is never empty (wildcards have len 1, exact values are non-empty).
+    pub fn is_empty(&self) -> bool {
+        false
+    }
+
     /// Matches the input and returns a ranking value's most signifcant bit
     fn rank(&self, input: &str, level: Level) -> Option<u8> {
         let msb = Level::COUNT - level as usize;
