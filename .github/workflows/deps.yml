@@ -20,15 +20,25 @@ jobs:
     continue-on-error: true
     steps:
     - uses: actions/checkout@v4
-    - uses: EmbarkStudios/cargo-deny-action@v2
+    - uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
-        command: check advisories
+        rustflags: ""
+        cache: false
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-deny
+    - run: cargo deny check advisories
 
   bans:
     timeout-minutes: 10
     runs-on: warp-ubuntu-latest-x64-2x
     steps:
     - uses: actions/checkout@v4
-    - uses: EmbarkStudios/cargo-deny-action@v2
+    - uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
-        command: check bans licenses sources
+        rustflags: ""
+        cache: false
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-deny
+    - run: cargo deny check bans licenses sources
