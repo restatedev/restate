@@ -53,6 +53,7 @@ If these rules conflict with normal behavior, always follow the rules above.
 1. New or deprecated config options must have `/// Since vX.Y.Z` in their doc comment.
 1. Use `ByteCount::from(value)` (from `restate_memory`) when displaying byte sizes in errors/logs.
 1. Use `KeyRange` (from `restate_sharding`, re-exported via `restate_types::sharding::KeyRange`) instead of `std::ops::RangeInclusive<PartitionKey>` for partition key ranges. `KeyRange` is `Copy`, 16 bytes (vs 24), and has wire-compatible serde/bilrost encoding.
+1. Use types from `restate_platform` instead of their std equivalents: `restate_platform::hash::{HashMap, HashSet}` instead of `std::collections::{HashMap, HashSet}`, and `restate_platform::sync::{Mutex, RwLock}` instead of `std::sync::{Mutex, RwLock}`. The `restate_platform::prelude::*` re-exports the most common types and traits. See `clippy.toml` for the enforced `disallowed_types` list.
 
 
 # Validation Before Committing Changes
