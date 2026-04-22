@@ -17,6 +17,8 @@ use std::time::{Duration, SystemTime};
 // Note: BilrostNewType and NetSerde derives are not used since both MillisSinceEpoch
 // and NanosSinceEpoch have custom implementations for niche optimization.
 
+use restate_platform::network::NetSerde;
+
 use crate::WallClock;
 
 /// Milliseconds since the unix epoch.
@@ -46,7 +48,7 @@ impl fmt::Debug for MillisSinceEpoch {
     }
 }
 
-impl restate_encoding::NetSerde for MillisSinceEpoch {}
+impl NetSerde for MillisSinceEpoch {}
 
 // Static assertions to ensure that MillisSinceEpoch is the same size as u64
 // and that niche optimization works.
@@ -376,7 +378,7 @@ impl fmt::Debug for NanosSinceEpoch {
     }
 }
 
-impl restate_encoding::NetSerde for NanosSinceEpoch {}
+impl NetSerde for NanosSinceEpoch {}
 
 // Static assertions to ensure that NanosSinceEpoch is the same size as u64
 // and that niche optimization works.

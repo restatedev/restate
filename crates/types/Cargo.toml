@@ -27,10 +27,11 @@ restate-clock = { workspace = true, features = ["prost-types", "jiff", "hlc"] }
 restate-encoding = { workspace = true }
 restate-errors = { workspace = true }
 restate-memory = { workspace = true }
+restate-platform = { workspace = true }
 restate-serde-util = { workspace = true }
+restate-sharding = { workspace = true, features = ["serde", "bilrost"] }
 restate-test-util = { workspace = true, optional = true }
 restate-time-util = { workspace = true, features = ["serde", "serde_with"] }
-restate-sharding = { workspace = true, features = ["serde", "bilrost"] }
 restate-util-string = { workspace = true, features = ["serde", "bilrost"] }
 restate-utoipa = { workspace = true }
 

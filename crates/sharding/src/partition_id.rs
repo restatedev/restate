@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_platform::network::NetSerde;
+
 /// Identifying the partition
 #[derive(
     Copy,
@@ -42,6 +44,8 @@ impl From<PartitionId> for u64 {
         u64::from(value.0)
     }
 }
+
+impl NetSerde for PartitionId {}
 
 impl PartitionId {
     /// It's your responsibility to ensure the value is within the valid range.
