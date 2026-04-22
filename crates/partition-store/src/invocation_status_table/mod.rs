@@ -11,7 +11,6 @@
 use std::ops::ControlFlow;
 
 use futures::Stream;
-use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::invocation_status_table::{
@@ -20,8 +19,10 @@ use restate_storage_api::invocation_status_table::{
     WriteInvocationStatusTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
+use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
+use restate_util_string::format_restring;
 
 use crate::TableScan::FullScanPartitionKeyRange;
 use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
@@ -168,7 +169,7 @@ impl ScanInvocationStatusTable for PartitionStore {
                             break_on_err(InvocationStatusKey::deserialize_from(&mut key))?;
 
                         if value.len() < std::mem::size_of::<u8>() {
-                            return ControlFlow::Break(Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::ReadingCodec(format!(
+                            return ControlFlow::Break(Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::ReadingCodec(format_restring!(
                                 "remaining bytes in buf '{}' < version bytes '{}'",
                                 value.len(),
                                 std::mem::size_of::<u8>()
@@ -228,7 +229,7 @@ impl ScanInvocationStatusTable for PartitionStore {
                         let status_key = InvocationStatusKey::deserialize_from(&mut key)?;
 
                         if value.len() < std::mem::size_of::<u8>() {
-                            return Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::ReadingCodec(format!(
+                            return Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::ReadingCodec(format_restring!(
                                 "remaining bytes in buf '{}' < version bytes '{}'",
                                 value.len(),
                                 std::mem::size_of::<u8>()

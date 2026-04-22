@@ -7179,7 +7179,7 @@ dependencies = [
  "prost-types",
  "rand 0.9.4",
  "restate-clock",
- "restate-encoding",
+ "restate-platform",
  "restate-workspace-hack",
  "schemars 1.2.1",
  "serde",
@@ -7240,6 +7240,7 @@ dependencies = [
  "restate-futures-util",
  "restate-memory",
  "restate-metadata-store",
+ "restate-platform",
  "restate-test-util",
  "restate-time-util",
  "restate-types",
@@ -7316,12 +7317,10 @@ version = "1.6.3-dev"
 dependencies = [
  "bilrost",
  "bytes",
- "bytestring",
  "rand 0.9.4",
  "restate-encoding-derive",
- "restate-sharding",
+ "restate-platform",
  "restate-workspace-hack",
- "static_assertions",
 ]
 
 [[package]]
@@ -7645,6 +7644,7 @@ dependencies = [
  "restate-futures-util",
  "restate-memory",
  "restate-metadata-store",
+ "restate-platform",
  "restate-rocksdb",
  "restate-serde-util",
  "restate-time-util",
@@ -7682,10 +7682,9 @@ version = "1.6.3-dev"
 dependencies = [
  "bytes",
  "futures",
- "hashbrown 0.16.1",
  "metrics",
- "parking_lot",
  "pin-project-lite",
+ "restate-platform",
  "restate-serde-util",
  "restate-workspace-hack",
  "thiserror 2.0.18",
@@ -7952,6 +7951,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-platform"
+version = "1.6.3-dev"
+dependencies = [
+ "bilrost",
+ "bytes",
+ "bytestring",
+ "derive_more",
+ "downcast-rs",
+ "hashbrown 0.16.1",
+ "parking_lot",
+ "restate-util-string",
+ "restate-workspace-hack",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "restate-queue"
 version = "1.6.3-dev"
 dependencies = [
@@ -8174,6 +8189,7 @@ dependencies = [
  "bilrost",
  "derive_more",
  "flexbuffers",
+ "restate-platform",
  "restate-sharding",
  "restate-workspace-hack",
  "serde",
@@ -8391,6 +8407,7 @@ dependencies = [
  "restate-encoding",
  "restate-errors",
  "restate-memory",
+ "restate-platform",
  "restate-serde-util",
  "restate-sharding",
  "restate-test-util",

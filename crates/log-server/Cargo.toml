@@ -24,6 +24,7 @@ restate-core = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-memory = { workspace = true }
 restate-metadata-store = { workspace = true }
+restate-platform = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-serde-util = { workspace = true }
 restate-time-util = { workspace = true }
