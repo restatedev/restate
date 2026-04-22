@@ -23,6 +23,7 @@ jobs:
     - uses: EmbarkStudios/cargo-deny-action@v2
       with:
         command: check advisories
+        rust-version: "1.95.0"
 
   bans:
     timeout-minutes: 10
@@ -32,3 +33,4 @@ jobs:
     - uses: EmbarkStudios/cargo-deny-action@v2
       with:
         command: check bans licenses sources
+        rust-version: "1.95.0"
