@@ -14,6 +14,8 @@ use std::num::NonZeroU32;
 use std::ops::{Add, Sub};
 use std::time::Duration;
 
+use restate_platform::network::NetSerde;
+
 use crate::WallClock;
 use crate::time::MillisSinceEpoch;
 use crate::unique_timestamp::UniqueTimestamp;
@@ -45,7 +47,7 @@ impl fmt::Debug for RoughTimestamp {
     }
 }
 
-impl restate_encoding::NetSerde for RoughTimestamp {}
+impl NetSerde for RoughTimestamp {}
 
 const _: () = {
     assert!(

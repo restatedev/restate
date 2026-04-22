@@ -29,6 +29,7 @@ restate-core-derive = { workspace = true, optional = true }
 restate-futures-util = { workspace = true }
 restate-memory = { workspace = true }
 restate-metadata-store = { workspace = true }
+restate-platform = { workspace = true }
 restate-time-util = { workspace = true }
 restate-types = { workspace = true }
 

@@ -12,6 +12,8 @@ use std::fmt;
 use std::ops::{Bound, RangeBounds};
 use std::range::RangeInclusiveIter;
 
+use restate_platform::network::NetSerde;
+
 /// An inclusive range of partition keys `[start, end]`.
 ///
 /// This is a compact, `Copy` representation of an inclusive key range backed by
@@ -21,6 +23,8 @@ use std::range::RangeInclusiveIter;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct KeyRange(std::range::RangeInclusive<u64>);
+
+impl NetSerde for KeyRange {}
 
 impl KeyRange {
     /// The full key space `[0, u64::MAX]`.

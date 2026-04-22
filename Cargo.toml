@@ -73,6 +73,7 @@ restate-metadata-store = { path = "crates/metadata-store" }
 restate-node = { path = "crates/node" }
 restate-object-store-util = { path = "crates/object-store-util" }
 restate-partition-store = { path = "crates/partition-store" }
+restate-platform = { path = "crates/platform" }
 restate-queue = { path = "crates/queue" }
 restate-rocksdb = { path = "crates/rocksdb" }
 restate-serde-util = { path = "crates/serde-util" }

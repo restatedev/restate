@@ -13,8 +13,9 @@ use bilrost::{
     encoding::{EmptyState, ForOverwrite, Proxiable},
 };
 use restate_encoding_derive::BilrostNewType;
+use restate_platform::network::NetSerde;
 
-use crate::{NetSerde, bilrost_encodings::RestateEncoding};
+use crate::bilrost_encodings::RestateEncoding;
 
 struct U128Tag;
 
