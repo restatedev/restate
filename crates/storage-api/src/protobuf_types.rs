@@ -4061,6 +4061,7 @@ pub mod v1 {
 
         use bytes::Bytes;
         use prost::Message;
+        use restate_types::journal_v2::UnresolvedFuture;
         use restate_types::{
             errors::ConversionError,
             identifiers::{DeploymentId, InvocationId, SubscriptionId},
@@ -4375,6 +4376,18 @@ pub mod v1 {
                         ConversionError::invalid_data_static("created_using_restate_version")
                     })
                 }
+            }
+
+            pub fn awaiting_on(&self) -> std::result::Result<UnresolvedFuture, ConversionError> {
+                super::Future {
+                    waiting_completions: self.inner.waiting_for_completions.clone(),
+                    waiting_signals: self.inner.waiting_for_signal_indexes.clone(),
+                    waiting_named_signals: self.inner.waiting_for_signal_names.clone(),
+                    combinator_type: self.inner.combinator_type,
+                    nested_futures: self.inner.nested_futures.clone(),
+                }
+                .try_into()
+                .map_err(|_| ConversionError::invalid_data_static("awaiting_on"))
             }
         }
 

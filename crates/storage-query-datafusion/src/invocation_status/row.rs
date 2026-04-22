@@ -160,6 +160,13 @@ pub(crate) fn append_invocation_status_row<'a>(
                         .map(|c| Some(*c)),
                 );
             }
+            if row.is_suspended_waiting_future_json_defined() {
+                let awaiting_on_json = serde_json::to_string(&invocation_status.awaiting_on()?)
+                    .map_err(|_| {
+                        ConversionError::invalid_data_static("suspended_waiting_future_json")
+                    })?;
+                row.suspended_waiting_future_json(awaiting_on_json);
+            }
 
             fill_journal_metadata(&mut row, invocation_status)?;
             fill_in_flight_invocation_metadata(&mut row, invocation_status)?;
