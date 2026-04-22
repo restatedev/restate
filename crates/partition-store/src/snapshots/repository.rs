@@ -393,7 +393,7 @@ impl SnapshotRepository {
             Err(put_error) => {
                 metrics::counter!(SNAPSHOT_UPLOAD_FAILED).increment(1);
                 for filename in put_error.uploaded_files {
-                    let path = put_error.full_snapshot_path.child(filename);
+                    let path = put_error.full_snapshot_path.clone().join(filename);
 
                     // We disregard errors at this point; the snapshot repository pruning mechanism
                     // should catch these eventually.
@@ -640,9 +640,10 @@ impl SnapshotRepository {
     ) {
         let metadata_path = self
             .prefix
-            .child(partition_id.to_string())
-            .child(snapshot_ref.path.as_str())
-            .child("metadata.json");
+            .clone()
+            .join(partition_id.to_string())
+            .join(snapshot_ref.path.as_str())
+            .join("metadata.json");
 
         let metadata = match self.object_store.get(&metadata_path).await {
             Ok(data) => {
@@ -749,9 +750,10 @@ impl SnapshotRepository {
 
         let snapshot_metadata_path = self
             .prefix
-            .child(partition_id.to_string())
-            .child(latest.path.as_str())
-            .child("metadata.json");
+            .clone()
+            .join(partition_id.to_string())
+            .join(latest.path.as_str())
+            .join("metadata.json");
         let snapshot_metadata = self.object_store.get(&snapshot_metadata_path).await;
 
         let snapshot_metadata = match snapshot_metadata {
@@ -810,9 +812,10 @@ impl SnapshotRepository {
             let expected_size = file.size;
             let key = self
                 .prefix
-                .child(partition_id.to_string())
-                .child(latest.path.as_str())
-                .child(filename);
+                .clone()
+                .join(partition_id.to_string())
+                .join(latest.path.as_str())
+                .join(filename);
             let local_path = snapshot_dir.path().join(filename);
             let concurrency_limiter = Arc::clone(&concurrency_limiter);
             let object_store = Arc::clone(&self.object_store);
@@ -967,16 +970,16 @@ impl SnapshotRepository {
 
     fn latest_snapshot_pointer_path(&self, partition_id: PartitionId) -> ObjectPath {
         self.partition_snapshots_prefix(partition_id)
-            .child("latest.json")
+            .join("latest.json")
     }
 
     fn partition_snapshots_prefix(&self, partition_id: PartitionId) -> ObjectPath {
-        self.prefix.child(partition_id.to_string())
+        self.prefix.clone().join(partition_id.to_string())
     }
 
     fn base_prefix(&self, snapshot_metadata: &PartitionSnapshotMetadata) -> ObjectPath {
         self.partition_snapshots_prefix(snapshot_metadata.partition_id)
-            .child(UniqueSnapshotKey::from_metadata(snapshot_metadata).padded_key())
+            .join(UniqueSnapshotKey::from_metadata(snapshot_metadata).padded_key())
     }
 
     fn snapshot_file_path(
@@ -984,7 +987,7 @@ impl SnapshotRepository {
         snapshot_metadata: &PartitionSnapshotMetadata,
         filename: &str,
     ) -> ObjectPath {
-        self.base_prefix(snapshot_metadata).child(filename)
+        self.base_prefix(snapshot_metadata).join(filename)
     }
 
     fn conditional_put_options(&self, version: Option<&UpdateVersion>) -> PutOptions {
@@ -1217,8 +1220,8 @@ mod tests {
 
         let destination_url = Url::parse(destination.as_str())?;
         let latest_path = ObjectPath::from(destination_url.path().to_string())
-            .child(PartitionId::MIN.to_string())
-            .child("latest.json");
+            .join(PartitionId::MIN.to_string())
+            .join("latest.json");
         let object_store = create_object_store_client(
             destination_url.clone(),
             &ObjectStoreOptions::default(),
@@ -1257,27 +1260,27 @@ mod tests {
         repository.put(&snapshot1, source_dir.clone()).await?;
 
         let partition_prefix =
-            ObjectPath::from(destination_url.path()).child(snapshot1.partition_id.to_string());
+            ObjectPath::from(destination_url.path()).join(snapshot1.partition_id.to_string());
 
-        let snapshot_1_prefix = partition_prefix.child(
+        let snapshot_1_prefix = partition_prefix.clone().join(
             UniqueSnapshotKey::from_metadata(&snapshot1)
                 .padded_key()
                 .as_str(),
         );
 
         let data = object_store
-            .get(&snapshot_1_prefix.child("data.sst"))
+            .get(&snapshot_1_prefix.clone().join("data.sst"))
             .await?;
         assert_eq!(data.bytes().await?, Bytes::from_static(b"snapshot-data"));
 
         let metadata = object_store
-            .get(&snapshot_1_prefix.child("metadata.json"))
+            .get(&snapshot_1_prefix.join("metadata.json"))
             .await?;
         let metadata: PartitionSnapshotMetadata = serde_json::from_slice(&metadata.bytes().await?)?;
         assert_eq!(snapshot1.snapshot_id, metadata.snapshot_id);
 
         let latest = object_store
-            .get(&partition_prefix.child("latest.json"))
+            .get(&partition_prefix.clone().join("latest.json"))
             .await?;
         let latest: LatestSnapshot = serde_json::from_slice(&latest.bytes().await?)?;
         assert_eq!(LatestSnapshot::from_snapshot(&snapshot1), latest);
@@ -1300,7 +1303,7 @@ mod tests {
         repository.put(&snapshot2, source_dir).await?;
 
         let latest = object_store
-            .get(&partition_prefix.child("latest.json"))
+            .get(&partition_prefix.join("latest.json"))
             .await?;
         let latest: LatestSnapshot = serde_json::from_slice(&latest.bytes().await?)?;
         assert_eq!(LatestSnapshot::from_snapshot(&snapshot2,), latest);
@@ -1415,8 +1418,8 @@ mod tests {
         }
 
         let latest_path = ObjectPath::from(Url::parse(&destination)?.path().to_string())
-            .child(PartitionId::MIN.to_string())
-            .child("latest.json");
+            .join(PartitionId::MIN.to_string())
+            .join("latest.json");
 
         let object_store = create_object_store_client(
             Url::parse(&destination)?,
@@ -1481,8 +1484,8 @@ mod tests {
         .await?;
 
         let latest_path = ObjectPath::from(Url::parse(&destination)?.path().to_string())
-            .child(PartitionId::MIN.to_string())
-            .child("latest.json");
+            .join(PartitionId::MIN.to_string())
+            .join("latest.json");
 
         let latest_data = object_store.get(&latest_path).await?;
         let latest: LatestSnapshot = serde_json::from_slice(&latest_data.bytes().await?)?;
