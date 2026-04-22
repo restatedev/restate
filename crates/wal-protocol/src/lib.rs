@@ -239,15 +239,17 @@ impl HasRecordKeys for Envelope {
             Command::TruncateOutbox(_) => Keys::Single(self.partition_key()),
             Command::ProxyThrough(_) => Keys::Single(self.partition_key()),
             Command::AttachInvocation(_) => Keys::Single(self.partition_key()),
-            Command::ResumeInvocation(req) => Keys::Single(req.partition_key()),
-            Command::RestartAsNewInvocation(req) => Keys::Single(req.partition_key()),
+            Command::ResumeInvocation(req) => Keys::Single(req.invocation_id.partition_key()),
+            Command::RestartAsNewInvocation(req) => Keys::Single(req.invocation_id.partition_key()),
             // todo: Handle journal entries that request cross-partition invocations
             Command::InvokerEffect(effect) => Keys::Single(effect.invocation_id.partition_key()),
             Command::Timer(timer) => Keys::Single(timer.invocation_id().partition_key()),
             Command::ScheduleTimer(timer) => Keys::Single(timer.invocation_id().partition_key()),
             Command::InvocationResponse(response) => Keys::Single(response.partition_key()),
             Command::NotifySignal(sig) => Keys::Single(sig.partition_key()),
-            Command::NotifyGetInvocationOutputResponse(res) => Keys::Single(res.partition_key()),
+            Command::NotifyGetInvocationOutputResponse(res) => {
+                Keys::Single(res.target.partition_key())
+            }
             Command::UpsertSchema(schema) => schema.partition_key_range.clone(),
             Command::VQSchedulerDecisions(_) => Keys::Single(self.partition_key()),
         }
