@@ -18,6 +18,7 @@ publish = false
 [dependencies]
 adaptive-timeout = { version = "0.0.1-alpha.4", features = ["schemars", "serde", "sync", "tokio"] }
 ahash = { version = "0.8", features = ["serde"] }
+arrayvec = { version = "0.7" }
 arrow = { version = "57", features = ["chrono-tz", "prettyprint"] }
 arrow-array = { version = "57", default-features = false, features = ["chrono-tz"] }
 arrow-cast = { version = "57", default-features = false, features = ["prettyprint"] }
@@ -145,6 +146,7 @@ zstd-sys = { version = "2", features = ["experimental", "std"] }
 [build-dependencies]
 adaptive-timeout = { version = "0.0.1-alpha.4", features = ["schemars", "serde", "sync", "tokio"] }
 ahash = { version = "0.8", features = ["serde"] }
+arrayvec = { version = "0.7" }
 arrow = { version = "57", features = ["chrono-tz", "prettyprint"] }
 arrow-array = { version = "57", default-features = false, features = ["chrono-tz"] }
 arrow-cast = { version = "57", default-features = false, features = ["prettyprint"] }

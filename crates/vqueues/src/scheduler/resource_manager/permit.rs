@@ -163,11 +163,25 @@ impl ProvisionalPermit {
         self.lock = Some(CanonicalLock { scope, lock_name });
     }
 
+    /// Atomically acquires all staged resources. This is the only place where state
+    /// mutations happen — the check phase leading up to this must be side-effect free.
     pub(crate) fn secure(self, resource_manager: &mut ResourceManager) -> UserPermit {
         if let Some(lock) = self.lock.as_ref() {
             resource_manager
                 .locks
                 .acquire_lock(lock.scope.clone(), lock.lock_name.clone());
+        }
+
+        for resource in &self.resources {
+            match resource {
+                UserPermitKind::LimitKeyConcurrency(scope, limit_key) => {
+                    resource_manager.user_limiter.increment_all(
+                        scope,
+                        limit_key,
+                        super::user_limiter::LimitKind::Concurrency,
+                    );
+                }
+            }
         }
 
         UserPermit {

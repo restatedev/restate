@@ -108,17 +108,18 @@ adaptive-timeout = { version = "0.0.1-alpha.4" }
 ahash = "0.8.12"
 anyhow = "1.0.100"
 arc-swap = "1.8"
+arrayvec = { version = "0.7" }
 arrow = { version = "57.1.0", default-features = false }
 assert2 = "0.3.16"
 async-channel = "2.5.0"
 async-trait = "0.1.89"
-axum = { version = "0.8.8", default-features = false }
 aws-config = "1.8.12"
-aws-sdk-dynamodb = { version = "1.101.0", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"] }
 aws-credential-types = "1.2.11"
+aws-sdk-dynamodb = { version = "1.101.0", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"] }
 aws-smithy-async = { version = "1.2.7", default-features = false }
 aws-smithy-runtime-api = "1.9.3"
 aws-smithy-types = "1.3.5"
+axum = { version = "0.8.8", default-features = false }
 base64 = "0.22"
 bilrost = { version = "0.1014", default-features = false, features = ["std", "auto-optimize", "derive"] }
 bincode = { version = "2.0.1", default-features = false }
