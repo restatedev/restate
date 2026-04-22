@@ -49,6 +49,7 @@ restate-types = { workspace = true }
 restate-util-string = { workspace = true }
 restate-vqueues = { workspace = true }
 restate-wal-protocol = { workspace = true }
+restate-worker-api = { workspace = true }
 
 ahash = { workspace = true }
 anyhow = { workspace = true }

@@ -21,7 +21,7 @@ use restate_core::network::NetworkServerBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
 use restate_core::partitions::PartitionRouting;
-use restate_core::worker_api::PartitionProcessorInvocationClient;
+use restate_worker_api::PartitionProcessorInvocationClient;
 use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_ingestion_client::IngestionClient;
 use restate_partition_store::PartitionStoreManager;

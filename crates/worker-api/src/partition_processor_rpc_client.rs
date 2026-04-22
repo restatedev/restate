@@ -8,12 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::ShutdownError;
-use crate::network::ConnectError;
-use crate::network::{NetworkSender, RpcReplyError, Swimlane};
-use crate::network::{Networking, TransportConnect};
-use crate::partitions::PartitionRouting;
-use assert2::let_assert;
+use std::sync::Arc;
+
+use tracing::trace;
+
+use restate_core::ShutdownError;
+use restate_core::network::ConnectError;
+use restate_core::network::{NetworkSender, RpcReplyError, Swimlane};
+use restate_core::network::{Networking, TransportConnect};
+use restate_core::partitions::PartitionRouting;
 use restate_types::NodeId;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{
@@ -34,8 +37,6 @@ use restate_types::net::partition_processor::{
     PartitionProcessorRpcRequest, PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
 };
 use restate_types::partition_table::{FindPartition, PartitionTable, PartitionTableError};
-use std::sync::Arc;
-use tracing::trace;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PartitionProcessorInvocationClientError {
@@ -265,10 +266,9 @@ where
             )
             .await?;
 
-        let_assert!(
-            PartitionProcessorRpcResponse::Submitted(submit_notification) = response,
-            "Expecting PartitionProcessorRpcResponse::Submitted"
-        );
+        let PartitionProcessorRpcResponse::Submitted(submit_notification) = response else {
+            panic!("Expecting PartitionProcessorRpcResponse::Submitted");
+        };
         debug_assert_eq!(
             request_id, submit_notification.request_id,
             "Conflicting submit notification received"
@@ -292,10 +292,9 @@ where
             )
             .await?;
 
-        let_assert!(
-            PartitionProcessorRpcResponse::Output(invocation_output) = response,
-            "Expecting PartitionProcessorRpcResponse::Output"
-        );
+        let PartitionProcessorRpcResponse::Output(invocation_output) = response else {
+            panic!("Expecting PartitionProcessorRpcResponse::Output");
+        };
         debug_assert_eq!(
             request_id, invocation_output.request_id,
             "Conflicting invocation output received"
@@ -374,10 +373,9 @@ where
             )
             .await?;
 
-        let_assert!(
-            PartitionProcessorRpcResponse::Appended = response,
-            "Expecting PartitionProcessorRpcResponse::Appended"
-        );
+        let PartitionProcessorRpcResponse::Appended = response else {
+            panic!("Expecting PartitionProcessorRpcResponse::Appended");
+        };
 
         Ok(())
     }
@@ -394,10 +392,9 @@ where
             )
             .await?;
 
-        let_assert!(
-            PartitionProcessorRpcResponse::Appended = response,
-            "Expecting PartitionProcessorRpcResponse::Appended"
-        );
+        let PartitionProcessorRpcResponse::Appended = response else {
+            panic!("Expecting PartitionProcessorRpcResponse::Appended");
+        };
 
         Ok(())
     }
