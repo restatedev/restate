@@ -7861,6 +7861,7 @@ dependencies = [
  "restate-types",
  "restate-wal-protocol",
  "restate-worker",
+ "restate-worker-api",
  "restate-workspace-hack",
  "rust-rocksdb",
  "serde",
@@ -8581,6 +8582,7 @@ dependencies = [
  "restate-util-string",
  "restate-vqueues",
  "restate-wal-protocol",
+ "restate-worker-api",
  "restate-workspace-hack",
  "rstest",
  "serde",
@@ -8594,6 +8596,18 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "ulid",
+]
+
+[[package]]
+name = "restate-worker-api"
+version = "1.6.3-dev"
+dependencies = [
+ "restate-core",
+ "restate-types",
+ "restate-workspace-hack",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

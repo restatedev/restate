@@ -29,8 +29,8 @@ use restate_core::{
         ServiceReceiver, Verdict,
     },
     task_center::TaskCenterMonitoring,
-    worker_api::ProcessorsManagerHandle,
 };
+use restate_worker_api::ProcessorsManagerHandle;
 use restate_memory::NonZeroByteCount;
 use restate_types::health::NodeStatus;
 use restate_types::live::LiveLoad;

@@ -38,7 +38,7 @@ use restate_core::network::{
     ServiceReceiver, ShardControlMessage, ShardRegistrationDecision, Sharded, TransportConnect,
     Verdict,
 };
-use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
+use restate_worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 use restate_core::{
     Metadata, MetadataWriter, TaskCenterFutureExt, TaskHandle, TaskKind, cancellation_watcher,
     my_node_id,
