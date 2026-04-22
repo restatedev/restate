@@ -8,11 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::state_machine::Action;
-use crate::partition::state_machine::tests::TestEnv;
-use crate::partition::types::InvokerEffectKind;
 use bytes::Bytes;
 use googletest::prelude::*;
+
 use restate_invoker_api::Effect;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::journal_table::JournalEntry;
@@ -26,11 +24,13 @@ use restate_types::invocation::{
 use restate_types::journal::enriched::{
     CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
 };
-use restate_types::journal_v2;
-use restate_types::journal_v2::Entry;
+use restate_types::journal_v2::{Entry, UnresolvedFuture};
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_wal_protocol::Command;
-use std::collections::HashSet;
+
+use crate::partition::state_machine::Action;
+use crate::partition::state_machine::tests::TestEnv;
+use crate::partition::types::InvokerEffectKind;
 
 pub fn completed_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
     JournalEntry::Entry(EnrichedRawEntry::new(
@@ -119,12 +119,13 @@ pub fn pinned_deployment(
 
 pub fn invoker_suspended(
     invocation_id: InvocationId,
-    waiting_for_notifications: impl Into<HashSet<journal_v2::NotificationId>>,
+    future: impl Into<UnresolvedFuture>,
 ) -> Command {
+    let future = future.into();
     Command::InvokerEffect(Box::new(Effect {
         invocation_id,
-        kind: InvokerEffectKind::SuspendedV2 {
-            waiting_for_notifications: waiting_for_notifications.into(),
+        kind: InvokerEffectKind::SuspendedV3 {
+            awaiting_on: future,
         },
     }))
 }

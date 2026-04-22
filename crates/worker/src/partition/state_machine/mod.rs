@@ -99,7 +99,7 @@ use restate_types::journal_v2::command::{OutputCommand, OutputResult};
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::journal_v2::{
     CommandIndex, CommandType, CompletionId, EntryMetadata, InputCommand, NotificationId, Signal,
-    SignalResult,
+    SignalResult, UnresolvedFuture,
 };
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
@@ -1700,19 +1700,18 @@ impl<S> StateMachineApplyContext<'_, S> {
             }
             InvocationStatus::Suspended {
                 metadata,
-                waiting_for_notifications,
+                awaiting_on,
             } => {
                 if self
                     .cancel_journal_leaves(
                         invocation_id,
                         InvocationStatusProjection::Suspended(
-                            waiting_for_notifications
+                            awaiting_on.flatten()
                                 .into_iter()
                                 .map(|n| match n {
                                     NotificationId::CompletionId(idx) => idx,
                                     _ => panic!("When using Service Protocol <= 3, an invocation cannot be suspended on a named notification")
                                 }).collect()
-
                         ),
                         metadata.journal_metadata.length,
                     )
@@ -2572,10 +2571,22 @@ impl<S> StateMachineApplyContext<'_, S> {
             InvokerEffectKind::SuspendedV2 {
                 waiting_for_notifications,
             } => {
+                let awaiting_on = UnresolvedFuture::unknown_from_iter(waiting_for_notifications);
+
                 lifecycle::OnSuspendCommand {
                     invocation_id: effect.invocation_id,
                     invocation_status,
-                    waiting_for_notifications,
+                    awaiting_on,
+                }
+                .apply(self)
+                .await?;
+            }
+            InvokerEffectKind::SuspendedV3 { awaiting_on } => {
+                // awaiting_on introduced in Restate v1.7.
+                lifecycle::OnSuspendCommand {
+                    invocation_id: effect.invocation_id,
+                    invocation_status,
+                    awaiting_on,
                 }
                 .apply(self)
                 .await?;
@@ -4067,12 +4078,13 @@ impl<S> StateMachineApplyContext<'_, S> {
             }
             InvocationStatus::Suspended {
                 metadata,
-                waiting_for_notifications,
+                // awaiting_on not supported in Service protocol <= 3.
+                awaiting_on,
             } => {
                 if self.handle_completion_for_suspended(
                     invocation_id,
                     completion,
-                    &waiting_for_notifications
+                    &awaiting_on.flatten()
                         .into_iter()
                         .map(|n| match n {
                             NotificationId::CompletionId(idx) => idx,
@@ -4599,10 +4611,11 @@ impl<S> StateMachineApplyContext<'_, S> {
                 &invocation_id,
                 &InvocationStatus::Suspended {
                     metadata,
-                    waiting_for_notifications: waiting_for_completed_entries
-                        .into_iter()
-                        .map(NotificationId::CompletionId)
-                        .collect(),
+                    awaiting_on: UnresolvedFuture::unknown_from_iter(
+                        waiting_for_completed_entries
+                            .into_iter()
+                            .map(NotificationId::CompletionId),
+                    ),
                 },
             )
             .map_err(Error::Storage)

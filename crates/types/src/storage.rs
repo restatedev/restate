@@ -22,7 +22,7 @@ use restate_encoding::{BilrostAs, NetSerde};
 use restate_memory::EstimatedMemorySize;
 use restate_serde_util::ByteCount;
 
-use crate::errors::GenericError;
+use crate::errors::{ConversionError, GenericError};
 use crate::journal_v2::raw::{RawEntry, RawEntryError, TryFromEntry};
 use crate::journal_v2::{Decoder, EntryMetadata, EntryType};
 use crate::time::MillisSinceEpoch;
@@ -41,6 +41,12 @@ pub enum StorageDecodeError {
     DecodeValue(GenericError),
     #[error("unsupported codec kind: {0}")]
     UnsupportedCodecKind(StorageCodecKind),
+}
+
+impl From<ConversionError> for StorageDecodeError {
+    fn from(value: ConversionError) -> Self {
+        StorageDecodeError::DecodeValue(value.into())
+    }
 }
 
 #[derive(

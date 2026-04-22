@@ -631,9 +631,11 @@ impl WithInvocationId for InvocationResponse {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(derive_more::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ResponseResult {
+    #[debug("Success(<data>)")]
     Success(Bytes),
+    #[debug("Failure({_0})")]
     Failure(InvocationError),
 }
 

@@ -24,6 +24,7 @@ use restate_types::identifiers::EntryIndex;
 use restate_types::invocation::{IngressInvocationResponseSink, TerminationFlavor};
 use restate_types::journal::enriched::EnrichedEntryHeader;
 use restate_types::journal_v2::NotificationId;
+use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::service_protocol;
 use rstest::rstest;
 use test_log::test;
@@ -519,11 +520,12 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
     let invocation_status = tx.get_invocation_status(&invocation_id).await?;
     let_assert!(InvocationStatus::Invoked(mut in_flight_meta) = invocation_status);
     in_flight_meta.journal_metadata.length = (journal_length + 1) as EntryIndex;
+
     tx.put_invocation_status(
         &invocation_id,
         &InvocationStatus::Suspended {
             metadata: in_flight_meta,
-            waiting_for_notifications: HashSet::from([
+            awaiting_on: UnresolvedFuture::unknown_from_iter([
                 NotificationId::for_completion(3),
                 NotificationId::for_completion(4),
                 NotificationId::for_completion(5),

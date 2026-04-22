@@ -46,9 +46,8 @@ use restate_types::identifiers::{InvocationId, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::EntryIndex;
 use restate_types::journal::enriched::EnrichedRawEntry;
-use restate_types::journal_v2;
 use restate_types::journal_v2::raw::RawNotification;
-use restate_types::journal_v2::{CommandIndex, NotificationId};
+use restate_types::journal_v2::{self, CommandIndex, NotificationId, UnresolvedFuture};
 use restate_types::live::Live;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
@@ -84,6 +83,10 @@ const SERVICE_PROTOCOL_VERSION_V5: HeaderValue =
 #[allow(clippy::declare_interior_mutable_const)]
 const SERVICE_PROTOCOL_VERSION_V6: HeaderValue =
     HeaderValue::from_static("application/vnd.restate.invocation.v6");
+
+#[allow(clippy::declare_interior_mutable_const)]
+const SERVICE_PROTOCOL_VERSION_V7: HeaderValue =
+    HeaderValue::from_static("application/vnd.restate.invocation.v7");
 
 #[allow(clippy::declare_interior_mutable_const)]
 const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server");
@@ -180,6 +183,7 @@ pub(super) enum InvocationTaskOutputInner {
     Closed,
     Suspended(HashSet<EntryIndex>),
     SuspendedV2(HashSet<NotificationId>),
+    SuspendedV3(UnresolvedFuture),
     Failed(InvokerError, LocalMemoryPool),
     /// The invocation task yielded due to memory pressure.
     /// The budget was dropped, returning memory to the global pool.
@@ -258,6 +262,8 @@ pub(super) struct InvocationTask<EE, DMR> {
 
     // throttling
     action_token_bucket: Option<TokenBucket>,
+
+    allow_protocol_v7: bool,
 }
 
 /// This is needed to split the run_internal in multiple loop functions and have shortcircuiting.
@@ -266,6 +272,7 @@ enum TerminalLoopState<T> {
     Closed,
     Suspended(HashSet<EntryIndex>),
     SuspendedV2(HashSet<NotificationId>),
+    SuspendedV3(UnresolvedFuture),
     Failed(InvokerError),
     /// Memory budget exhausted — the invocation should yield.
     ShouldYield(InvocationMemoryExhausted),
@@ -305,6 +312,7 @@ macro_rules! shortcircuit {
             TerminalLoopState::Closed => return TerminalLoopState::Closed,
             TerminalLoopState::Suspended(v) => return TerminalLoopState::Suspended(v),
             TerminalLoopState::SuspendedV2(v) => return TerminalLoopState::SuspendedV2(v),
+            TerminalLoopState::SuspendedV3(v) => return TerminalLoopState::SuspendedV3(v),
             TerminalLoopState::ShouldYield(oom) => return TerminalLoopState::ShouldYield(oom),
             TerminalLoopState::Failed(e) => return TerminalLoopState::Failed(e),
         }
@@ -333,6 +341,7 @@ where
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         action_token_bucket: Option<TokenBucket>,
+        allow_protocol_v7: bool,
     ) -> Self {
         Self {
             client,
@@ -350,6 +359,7 @@ where
             message_size_warning,
             retry_count_since_last_stored_entry,
             action_token_bucket,
+            allow_protocol_v7,
         }
     }
 
@@ -388,6 +398,7 @@ where
             TerminalLoopState::Closed => InvocationTaskOutputInner::Closed,
             TerminalLoopState::Suspended(v) => InvocationTaskOutputInner::Suspended(v),
             TerminalLoopState::SuspendedV2(v) => InvocationTaskOutputInner::SuspendedV2(v),
+            TerminalLoopState::SuspendedV3(v) => InvocationTaskOutputInner::SuspendedV3(v),
             TerminalLoopState::Failed(e) => {
                 // Best effort to release excessive memory. Note there can still be effects in flight
                 // that are being replicated and thereby occupy memory. Best if we periodically check
@@ -478,13 +489,16 @@ where
                 );
 
                 let chosen_service_protocol_version = shortcircuit!(
-                    ServiceProtocolVersion::pick(&deployment.supported_protocol_versions,)
-                        .ok_or_else(|| {
-                            InvokerError::IncompatibleServiceEndpoint(
-                                deployment.id,
-                                deployment.supported_protocol_versions.clone(),
-                            )
-                        })
+                    ServiceProtocolVersion::pick(
+                        &deployment.supported_protocol_versions,
+                        self.allow_protocol_v7
+                    )
+                    .ok_or_else(|| {
+                        InvokerError::IncompatibleServiceEndpoint(
+                            deployment.id,
+                            deployment.supported_protocol_versions.clone(),
+                        )
+                    })
                 );
 
                 (
@@ -600,6 +614,7 @@ fn service_protocol_version_to_header_value(
         ServiceProtocolVersion::V4 => SERVICE_PROTOCOL_VERSION_V4,
         ServiceProtocolVersion::V5 => SERVICE_PROTOCOL_VERSION_V5,
         ServiceProtocolVersion::V6 => SERVICE_PROTOCOL_VERSION_V6,
+        ServiceProtocolVersion::V7 => SERVICE_PROTOCOL_VERSION_V7,
     }
 }
 

@@ -20,6 +20,7 @@ fn main() -> std::io::Result<()> {
     // Only re-run when proto files, JSON schema, or this build script change
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=../../service-protocol/dev/restate/service/protocol.proto");
+    println!("cargo:rerun-if-changed=../../service-protocol/dev/restate/service/legacy.proto");
     println!("cargo:rerun-if-changed=../../service-protocol/endpoint_manifest_schema.json");
 
     prost_build::Config::new()
@@ -28,6 +29,9 @@ fn main() -> std::io::Result<()> {
         .compile_protos(
             &[
                 Path::new("../../service-protocol/dev/restate/service/protocol.proto")
+                    .canonicalize()
+                    .unwrap(),
+                Path::new("../../service-protocol/dev/restate/service/legacy.proto")
                     .canonicalize()
                     .unwrap(),
             ],
