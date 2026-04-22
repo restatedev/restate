@@ -11,9 +11,9 @@
 mod invoker;
 mod invoker_memory;
 mod invoker_throttle;
-mod limiter;
 mod locks;
 mod permit;
+mod user_limiter;
 
 pub use self::permit::{PermitBuilder, ReservedResources};
 
@@ -25,19 +25,21 @@ use tokio::sync::mpsc;
 use tracing::trace;
 
 use restate_futures_util::concurrency::Concurrency;
+use restate_limiter::{Level, LimitKey, RuleHandle};
 use restate_memory::{MemoryPool, NonZeroByteCount};
 use restate_storage_api::StorageError;
 use restate_storage_api::lock_table::LoadLocks;
 use restate_storage_api::vqueue_table::{EntryKey, EntryMetadata};
 use restate_types::vqueues::EntryKind;
 use restate_types::{LockName, Scope};
+use restate_util_string::ReString;
 
 use self::invoker::InvokerConcurrencyLimiter;
 use self::invoker_memory::InvokerMemoryLimiter;
 use self::invoker_throttle::InvokerThrottlingLimiter;
-use self::limiter::UserLimiter;
 use self::locks::Locks;
 use self::permit::{ProvisionalPermit, UserPermitKind};
+use self::user_limiter::UserLimiter;
 use super::VQueueHandle;
 use super::eligible::EligibilityTracker;
 use super::queue_meta::VQueueMetaLite;
@@ -53,9 +55,7 @@ pub struct ResourceManager {
     invoker_concurrency: InvokerConcurrencyLimiter,
     invoker_throttling: InvokerThrottlingLimiter,
     invoker_memory: InvokerMemoryLimiter,
-    #[allow(dead_code)]
     user_limiter: UserLimiter,
-    // todo: counters.
     rx: mpsc::UnboundedReceiver<ResourceManagerUpdate>,
     // We need to keep this alive to:
     // - Keep the receiver alive even if we don't have any resource permits handed out
@@ -77,13 +77,22 @@ pub enum ResourceKind {
     InvokerMemory,
     /// Waiting for deployment-level concurrency tokens to be available
     DeploymentConcurrency,
-    /// Waiting for user-defined concurrency to be acquired
-    LimitKeyConcurrency,
+    /// Waiting for user-defined concurrency to be acquired.
+    /// Carries routing info so the eligibility tracker can return it for waiter removal.
+    LimitKeyConcurrency {
+        scope: Scope,
+        limit_key: LimitKey<ReString>,
+        blocked_level: Level,
+        /// Handle to the blocking rule. Resolve via the rules store for display.
+        /// May be stale if the rule was removed since blocking.
+        blocked_rule: Option<RuleHandle>,
+    },
 }
 
+#[allow(dead_code)]
 enum ResourceManagerUpdate {
     PermitReleased(SmallVec<[UserPermitKind; 1]>),
-    // todo: RulesUpdated
+    RulesUpdated(user_limiter::RuleUpdate),
 }
 
 pub(super) enum AcquireOutcome {
@@ -107,7 +116,7 @@ impl ResourceManager {
             invoker_concurrency: InvokerConcurrencyLimiter::new(concurrency_limiter),
             invoker_throttling: InvokerThrottlingLimiter::new(global_throttling),
             invoker_memory: InvokerMemoryLimiter::new(memory_pool, initial_invocation_memory),
-            user_limiter: UserLimiter::default(),
+            user_limiter: UserLimiter::create(),
             locks,
             rx,
             tx: _tx,
@@ -130,7 +139,15 @@ impl ResourceManager {
                 self.invoker_memory.remove_from_waiters(handle);
             }
             ResourceKind::DeploymentConcurrency => todo!(),
-            ResourceKind::LimitKeyConcurrency => todo!(),
+            ResourceKind::LimitKeyConcurrency {
+                scope,
+                limit_key,
+                blocked_level,
+                ..
+            } => {
+                self.user_limiter
+                    .remove_from_waiters(handle, scope, limit_key, *blocked_level);
+            }
         }
     }
 
@@ -167,16 +184,19 @@ impl ResourceManager {
 
         let mut wake_up = false;
         // Release the lock if we have one held
-        if let Some(lock) = permit.lock {
-            wake_up |= self.release_lock(eligible, &lock.scope, &lock.lock_name);
+        if let Some(lock) = permit.lock
+            && let Some(queues) = self.locks.release_lock(&lock.scope, &lock.lock_name)
+        {
+            wake_up |= eligible.wake_up_queues(queues);
         }
 
-        // 1. reclaim resources
-        // 2. collect the vqueues that need to be woken up
         for resource in permit.resources {
             match resource {
-                UserPermitKind::LimitKeyConcurrency(_scope, _limit_key) => {
-                    todo!("pending implementation of hierarchical counters")
+                UserPermitKind::LimitKeyConcurrency(scope, limit_key) => {
+                    let woken = self
+                        .user_limiter
+                        .release_action_concurrency(&scope, &limit_key);
+                    wake_up |= eligible.wake_up_queues(woken);
                 }
             }
         }
@@ -218,6 +238,40 @@ impl ResourceManager {
                         lock_name: lock_name.clone(),
                     });
                 }
+            }
+
+            // unscoped entries cannot acquire user limits
+            if let Some(scope) = meta.scope() {
+                let capacity = self
+                    .user_limiter
+                    .check_concurrency_capacity(scope, meta.limit_key());
+                if let Some((blocked_level, blocked_rule)) = capacity.narrowest_blocked() {
+                    trace!(
+                        %scope,
+                        limit_key = %meta.limit_key(),
+                        blocked_at = %blocked_level,
+                        details = %capacity.display(&self.user_limiter),
+                        "User concurrency limit reached",
+                    );
+                    self.user_limiter.add_to_waiters(
+                        vqueue,
+                        scope,
+                        meta.limit_key(),
+                        blocked_level,
+                    );
+                    return AcquireOutcome::BlockedOn(ResourceKind::LimitKeyConcurrency {
+                        scope: scope.clone(),
+                        limit_key: meta.limit_key().clone(),
+                        blocked_level,
+                        blocked_rule,
+                    });
+                }
+
+                // Stage the permit — counters are incremented in secure()
+                provisional.add_permit(UserPermitKind::LimitKeyConcurrency(
+                    scope.clone(),
+                    meta.limit_key().clone(),
+                ));
             }
 
             // All user requirements are satisfied.
@@ -267,15 +321,20 @@ impl ResourceManager {
         while let Poll::Ready(Some(update)) = self.rx.poll_recv(cx) {
             match update {
                 ResourceManagerUpdate::PermitReleased(resources) => {
-                    // 1. reclaim resources
-                    // 2. collect the vqueues that need to be woken up
                     for resource in resources {
                         match resource {
-                            UserPermitKind::LimitKeyConcurrency(_scope, _limit_key) => {
-                                todo!("pending implementation of hierarchical counters")
+                            UserPermitKind::LimitKeyConcurrency(scope, limit_key) => {
+                                let woken = self
+                                    .user_limiter
+                                    .release_action_concurrency(&scope, &limit_key);
+                                eligible.wake_up_queues(woken);
                             }
                         }
                     }
+                }
+                ResourceManagerUpdate::RulesUpdated(update) => {
+                    let woken = self.user_limiter.apply_rule_update(update);
+                    eligible.wake_up_queues(woken);
                 }
             }
         }

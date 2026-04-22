@@ -8457,6 +8457,7 @@ dependencies = [
 name = "restate-vqueues"
 version = "1.6.3-dev"
 dependencies = [
+ "arrayvec",
  "bilrost",
  "derive_more",
  "gardal",
@@ -8582,6 +8583,7 @@ version = "0.0.1"
 dependencies = [
  "adaptive-timeout",
  "ahash",
+ "arrayvec",
  "arrow",
  "arrow-array",
  "arrow-cast",
