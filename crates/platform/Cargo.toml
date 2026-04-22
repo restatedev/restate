@@ -1,0 +1,22 @@
+[package]
+name = "restate-platform"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+restate-workspace-hack = { workspace = true }
+
+restate-util-string = { workspace = true }
+
+bilrost = { workspace = true, optional = true }
+bytes = { workspace = true }
+bytestring = { workspace = true, optional = true }
+derive_more = { workspace = true, features = ["deref", "from", "display"] }
+downcast-rs = { workspace = true }
+hashbrown = { workspace = true }
+parking_lot = { workspace = true }
+thiserror = { workspace = true }

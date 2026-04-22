@@ -13,11 +13,8 @@
 //! This crate provides:
 //! - [`MemoryPool`]: A named memory budget for bounding memory usage
 //! - [`MemoryLease`]: RAII guard for memory leases that can be passed through channels
-//! - [`EstimatedMemorySize`]: Trait for types that can estimate their memory
-//!   footprint
 
 mod controller;
-mod footprint;
 pub mod local_pool;
 mod metric_definitions;
 mod pinned_memory_stream;
@@ -30,5 +27,3 @@ pub use local_pool::{
 pub use pinned_memory_stream::{IgnorePinnableMemoryStream, PinnableMapErr, PinnableMemoryStream};
 pub use pool::{MemoryLease, MemoryPool, PollMemoryPool};
 pub use restate_serde_util::{ByteCount, NonZeroByteCount};
-
-pub use footprint::*;

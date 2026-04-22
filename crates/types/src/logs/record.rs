@@ -13,7 +13,7 @@ use std::sync::Arc;
 use bytes::BytesMut;
 
 use restate_encoding::NetSerde;
-use restate_memory::EstimatedMemorySize;
+use restate_platform::memory::EstimatedMemorySize;
 
 use crate::storage::{PolyBytes, StorageCodec, StorageDecode, StorageDecodeError, StorageEncode};
 use crate::time::NanosSinceEpoch;
