@@ -14,7 +14,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use restate_types::{cluster::cluster_state::PartitionProcessorStatus, identifiers::PartitionId};
 
-use crate::ShutdownError;
+use restate_core::ShutdownError;
 
 #[derive(Debug)]
 pub enum ProcessorsManagerCommand {

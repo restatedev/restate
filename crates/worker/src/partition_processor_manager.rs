@@ -38,7 +38,6 @@ use restate_core::network::{
     ServiceReceiver, ShardControlMessage, ShardRegistrationDecision, Sharded, TransportConnect,
     Verdict,
 };
-use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 use restate_core::{
     Metadata, MetadataWriter, TaskCenterFutureExt, TaskHandle, TaskKind, cancellation_watcher,
     my_node_id,
@@ -48,6 +47,7 @@ use restate_ingestion_client::IngestionClient;
 use restate_invoker_api::StatusHandle;
 use restate_invoker_api::capacity::InvokerCapacity;
 use restate_invoker_impl::ChannelStatusReader;
+use restate_worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 
 use restate_metadata_server::{MetadataStoreClient, ReadModifyWriteError};
 use restate_metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};

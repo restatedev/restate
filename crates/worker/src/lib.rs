@@ -34,7 +34,6 @@ use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
 use restate_core::partitions::PartitionRouting;
-use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{Metadata, TaskKind};
 use restate_core::{MetadataWriter, TaskCenter};
 use restate_ingestion_client::IngestionClient;
@@ -53,6 +52,7 @@ use restate_types::protobuf::common::WorkerStatus;
 use restate_types::schema::Redaction;
 use restate_types::schema::kafka::KafkaClusterResolver;
 use restate_types::schema::subscriptions::SubscriptionResolver;
+use restate_worker_api::ProcessorsManagerHandle;
 
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition_processor_manager::PartitionProcessorManager;
