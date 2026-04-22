@@ -9,13 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::promise_table::{OwnedPromiseRow, ScanPromiseTable};
-use restate_types::identifiers::PartitionKey;
+use restate_types::sharding::KeyRange;
 
 use super::row::append_promise_row;
 use super::schema::{SysPromiseBuilder, sys_promise_sort_order};
@@ -55,7 +54,7 @@ impl ScanLocalPartition for PromiseScanner {
     type Builder = SysPromiseBuilder;
     type Item<'a> = OwnedPromiseRow;
     type ConversionError = std::convert::Infallible;
-    type Filter = RangeInclusive<PartitionKey>;
+    type Filter = KeyRange;
 
     fn for_each_row<
         F: for<'a> FnMut(
@@ -66,7 +65,7 @@ impl ScanLocalPartition for PromiseScanner {
             + 'static,
     >(
         partition_store: &PartitionStore,
-        range: RangeInclusive<PartitionKey>,
+        range: KeyRange,
         mut f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
         partition_store.for_each_promise(range, move |item| f(item).map_break(Result::unwrap))

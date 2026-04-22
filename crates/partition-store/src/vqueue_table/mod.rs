@@ -70,7 +70,7 @@ impl ScanVQueueTable for PartitionDb {
             // of it.
             let mut key_buf = key_buf.as_mut();
             ActiveKey::serialize_key_kind(&mut key_buf);
-            crate::keys::serialize(self.partition().key_range.start(), &mut key_buf);
+            crate::keys::serialize(&self.partition().key_range.start(), &mut key_buf);
         }
 
         // setting iterator bounds.
@@ -84,7 +84,7 @@ impl ScanVQueueTable for PartitionDb {
             // of it.
             let mut key_buf = key_buf.as_mut();
             ActiveKey::serialize_key_kind(&mut key_buf);
-            crate::keys::serialize(self.partition().key_range.end(), &mut key_buf);
+            crate::keys::serialize(&self.partition().key_range.end(), &mut key_buf);
         }
         let _success = crate::convert_to_upper_bound(&mut key_buf);
         debug_assert!(_success);

@@ -9,18 +9,18 @@
 // by the Apache License, Version 2.0.
 
 use std::future::Future;
-use std::ops::RangeInclusive;
 
 use bytes::Bytes;
 use bytestring::ByteString;
 
 use restate_types::errors::InvocationErrorCode;
-use restate_types::identifiers::{PartitionKey, ServiceId};
+use restate_types::identifiers::ServiceId;
 use restate_types::invocation::JournalCompletionTarget;
 use restate_types::journal::{CompletionResult, EntryResult};
 use restate_types::journal_v2::{
     CompletePromiseValue, Failure, FailureMetadata, GetPromiseResult, PeekPromiseResult,
 };
+use restate_types::sharding::KeyRange;
 
 use super::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
@@ -132,7 +132,7 @@ pub trait ScanPromiseTable {
         F: FnMut(OwnedPromiseRow) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
     >(
         &self,
-        range: RangeInclusive<PartitionKey>,
+        range: KeyRange,
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 }

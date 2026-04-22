@@ -9,13 +9,10 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::{Display, Formatter};
-use std::ops::RangeInclusive;
-
-use restate_encoding::RestateEncoding;
 
 use super::ServiceTag;
 use crate::GenerationalNodeId;
-use crate::identifiers::{PartitionId, PartitionKey};
+use crate::identifiers::PartitionId;
 use crate::net::{bilrost_wire_codec, define_rpc, define_service};
 
 pub struct RemoteDataFusionService;
@@ -41,8 +38,8 @@ impl Display for ScannerId {
 pub struct RemoteQueryScannerOpen {
     #[bilrost(1)]
     pub partition_id: PartitionId,
-    #[bilrost(tag(2), encoding(RestateEncoding))]
-    pub range: RangeInclusive<PartitionKey>,
+    #[bilrost(2)]
+    pub range: crate::sharding::KeyRange,
     #[bilrost(3)]
     pub table: String,
     #[bilrost(tag(4), encoding(plainbytes))]

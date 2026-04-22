@@ -440,7 +440,7 @@ mod test {
             let partition = pt.get(&partition_id).unwrap();
             client
                 .ingest(
-                    *partition.key_range.start(),
+                    partition.key_range.start(),
                     InputRecord::from_str(format!("partition {p}")),
                 )
                 .await

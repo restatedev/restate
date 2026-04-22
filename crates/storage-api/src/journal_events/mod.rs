@@ -8,12 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use futures::Stream;
 use std::ops::RangeInclusive;
 
+use futures::Stream;
+
 use crate::Result;
-use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey};
+use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::journal_events::raw::RawEvent;
+use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
 
 pub trait ReadJournalEventsTable {
@@ -25,7 +27,7 @@ pub trait ReadJournalEventsTable {
 
 #[derive(Debug, Clone)]
 pub enum ScanJournalEventsTableRange {
-    PartitionKey(RangeInclusive<PartitionKey>),
+    PartitionKey(KeyRange),
     InvocationId(RangeInclusive<InvocationId>),
 }
 

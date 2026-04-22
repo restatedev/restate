@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
-
 use bytestring::ByteString;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
@@ -20,6 +18,7 @@ use restate_storage_api::service_status_table::{
 };
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
+use restate_types::sharding::KeyRange;
 
 use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
 use crate::scan::TableScan;
@@ -95,7 +94,7 @@ impl ScanVirtualObjectStatusTable for PartitionStore {
             + 'static,
     >(
         &self,
-        range: RangeInclusive<PartitionKey>,
+        range: KeyRange,
         mut f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send> {
         self.iterator_for_each(

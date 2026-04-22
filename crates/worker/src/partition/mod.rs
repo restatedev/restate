@@ -17,6 +17,7 @@ mod state_machine;
 pub mod types;
 
 use std::fmt::Debug;
+use std::ops::RangeBounds;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -254,7 +255,7 @@ where
             inbox_seq_number,
             outbox_seq_number,
             outbox_head_seq_number,
-            partition_store.partition_key_range().clone(),
+            partition_store.partition_key_range(),
             min_restate_version,
             schema,
         );
@@ -491,7 +492,7 @@ where
 
         let mut record_stream = self.bifrost.create_reader(
             log_id,
-            KeyFilter::Within(self.partition_store.partition_key_range().clone()),
+            KeyFilter::Within(self.partition_store.partition_key_range().into()),
             last_applied_lsn.next(),
             Lsn::MAX,
         )?;

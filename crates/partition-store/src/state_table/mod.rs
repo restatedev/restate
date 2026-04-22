@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -25,6 +24,7 @@ use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::state_table::{ReadStateTable, ScanStateTable, WriteStateTable};
 use restate_storage_api::{BudgetedReadError, Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
+use restate_types::sharding::KeyRange;
 
 use crate::TableKind::State;
 use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
@@ -211,7 +211,7 @@ impl ScanStateTable for PartitionStore {
         F: FnMut((ServiceId, Bytes, &[u8])) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
     >(
         &self,
-        range: RangeInclusive<PartitionKey>,
+        range: KeyRange,
         mut f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send> {
         self.iterator_for_each(

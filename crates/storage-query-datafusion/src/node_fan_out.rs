@@ -22,7 +22,6 @@
 
 use std::any::Any;
 use std::fmt::{self, Debug, Display, Formatter};
-use std::ops::RangeInclusive;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -45,8 +44,9 @@ use datafusion::physical_plan::{
 use futures::{Stream, StreamExt};
 
 use restate_core::Metadata;
-use restate_types::identifiers::{PartitionId, PartitionKey};
+use restate_types::identifiers::PartitionId;
 use restate_types::nodes_config::Role;
+use restate_types::sharding::KeyRange;
 use restate_types::{NodeId, PlainNodeId};
 
 use crate::remote_query_scanner_client::{RemoteScannerService, remote_scan_as_datafusion_stream};
@@ -425,7 +425,7 @@ impl ExecutionPlan for NodeFanOutExecutionPlan {
                 self.remote_scanner.clone(),
                 target.node_id,
                 PartitionId::MIN,
-                RangeInclusive::new(PartitionKey::MIN, PartitionKey::MAX),
+                KeyRange::FULL,
                 self.table_name.clone(),
                 self.projected_schema.clone(),
                 None, // predicate is applied locally after combining

@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
-
 use anyhow::Context;
 use bilrost::{Message, OwnedMessage};
 use bytes::{Buf, BufMut};
@@ -18,6 +16,7 @@ use restate_rocksdb::Priority;
 use restate_storage_api::StorageError;
 use restate_storage_api::lock_table::{LoadLocks, LockState, ScanLocksTable, WriteLockTable};
 use restate_types::identifiers::{PartitionKey, WithPartitionKey};
+use restate_types::sharding::KeyRange;
 use restate_types::{CanonicalLockId, LockName, Scope};
 use restate_util_string::InternedReString;
 
@@ -137,13 +136,13 @@ impl LoadLocks for PartitionDb {
         let mut key_buf = [0u8; KeyKind::SERIALIZED_LENGTH + std::mem::size_of::<PartitionKey>()];
         // Setting up iterator bounds
         EncodeTableKeyPrefix::serialize_to(
-            &LockKey::builder().partition_key(*self.partition().key_range.start()),
+            &LockKey::builder().partition_key(self.partition().key_range.start()),
             &mut key_buf.as_mut(),
         );
         iterator_opts.set_iterate_lower_bound(key_buf);
 
         EncodeTableKeyPrefix::serialize_to(
-            &LockKey::builder().partition_key(*self.partition().key_range.end()),
+            &LockKey::builder().partition_key(self.partition().key_range.end()),
             &mut key_buf.as_mut(),
         );
         // End key is exclusive in rocksdb iterators, so the end prefix is one byte
@@ -223,7 +222,7 @@ impl ScanLocksTable for PartitionStore {
             + 'static,
     >(
         &self,
-        range: RangeInclusive<PartitionKey>,
+        range: KeyRange,
         mut f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send> {
         self.iterator_for_each(

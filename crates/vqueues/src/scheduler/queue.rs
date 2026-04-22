@@ -322,8 +322,6 @@ impl<S: VQueueStore> Queue<S> {
 mod tests {
     use super::*;
 
-    use std::ops::RangeInclusive;
-
     use restate_clock::RoughTimestamp;
     use restate_clock::time::MillisSinceEpoch;
     use restate_core::TaskCenter;
@@ -337,6 +335,7 @@ mod tests {
     use restate_types::clock::UniqueTimestamp;
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::partitions::Partition;
+    use restate_types::sharding::KeyRange;
     use restate_types::vqueues::VQueueId;
 
     const BASE_RUN_AT_MS: u64 = 1_744_000_000_000;
@@ -387,10 +386,7 @@ mod tests {
             .expect("DB storage creation succeeds");
         manager
             .open(
-                &Partition::new(
-                    PartitionId::MIN,
-                    RangeInclusive::new(0, PartitionKey::MAX - 1),
-                ),
+                &Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1)),
                 None,
             )
             .await
