@@ -18,4 +18,5 @@ bytestring = { workspace = true }
 
 [dev-dependencies]
 rand = { workspace = true }
+restate-sharding = { workspace = true, features = ["bilrost"] }
 static_assertions = { workspace = true }
