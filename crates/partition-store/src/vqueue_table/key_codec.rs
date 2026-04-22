@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use anyhow::Context;
 use bytes::{Buf, BufMut};
 
 use restate_clock::RoughTimestamp;
@@ -130,11 +129,14 @@ impl KeyDecode for EntryId {
     }
 }
 
-// RoughTimestamp is encoded as a u64 in big-endian order to enable forward compatibility
-// with potential future higher-precision restate-epoch based timestamp.
+// The on-disk value is milliseconds-since-restate-epoch, quantized to whole
+// seconds by the current seconds-precision `RoughTimestamp`. Storing in the
+// millisecond domain keeps the format forward-compatible with a future
+// higher-precision ms timestamp using the same u64 slot — no migration, and
+// sort order is preserved across the boundary.
 impl KeyEncode for RoughTimestamp {
     fn encode<B: BufMut>(&self, target: &mut B) {
-        target.put_u64(self.as_u32() as u64);
+        target.put_u64(self.as_u32() as u64 * 1_000);
     }
 
     fn serialized_length(&self) -> usize {
@@ -144,11 +146,12 @@ impl KeyEncode for RoughTimestamp {
 
 impl KeyDecode for RoughTimestamp {
     fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
-        let raw = source.get_u64();
-        Ok(Self::new(
-            raw.try_into()
-                .context("RoughTimestamp needs to fit into u32")?,
-        ))
+        let raw_ms = source.get_u64();
+        // Floor to seconds. Clamp so that forward-written ms values beyond
+        // `RoughTimestamp`'s range saturate at MAX instead of truncating
+        // on the `as u32` cast.
+        let secs = (raw_ms / 1_000).min(u32::MAX as u64) as u32;
+        Ok(Self::new(secs))
     }
 }
 
@@ -188,5 +191,57 @@ impl KeyEncode for EntryKey {
 
     fn serialized_length(&self) -> usize {
         Self::serialized_length_fixed()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rough_timestamp_ms_codec() {
+        // Round-trip preserves seconds across the representable range, and
+        // encoded bytes are always an exact multiple of 1_000 (i.e. the
+        // encoder only ever emits whole-second ms values, so the `*1_000` /
+        // `/1_000` pair is lossless for every `RoughTimestamp`).
+        for &secs in &[0u32, 1, 100, 1_000, u32::MAX / 2, u32::MAX - 1] {
+            let mut buf = Vec::new();
+            RoughTimestamp::new(secs).encode(&mut buf);
+
+            let raw = u64::from_be_bytes(buf.as_slice().try_into().unwrap());
+            assert_eq!(
+                raw % 1_000,
+                0,
+                "encoded value must be a multiple of 1_000 (got {raw} for {secs}s)"
+            );
+            assert_eq!(
+                raw,
+                secs as u64 * 1_000,
+                "encoded ms must equal seconds * 1_000"
+            );
+
+            let mut slice = buf.as_slice();
+            let decoded = RoughTimestamp::decode(&mut slice).expect("decode ok");
+            assert_eq!(decoded.as_u32(), secs, "round-trip failed for {secs}s");
+        }
+
+        // Forward-compat: sub-second ms values floor to the correct second.
+        let mut sub_second = Vec::new();
+        sub_second.put_u64(5_999);
+        let mut slice = sub_second.as_slice();
+        assert_eq!(
+            RoughTimestamp::decode(&mut slice).unwrap().as_u32(),
+            5,
+            "ms value should floor to whole seconds on decode"
+        );
+
+        // Forward-compat: ms values beyond RoughTimestamp::MAX clamp to MAX.
+        let mut over_max = Vec::new();
+        over_max.put_u64(u64::MAX);
+        let mut slice = over_max.as_slice();
+        assert_eq!(
+            RoughTimestamp::decode(&mut slice).unwrap(),
+            RoughTimestamp::MAX,
+        );
     }
 }

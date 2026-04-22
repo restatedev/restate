@@ -10,7 +10,7 @@
 
 mod entry;
 mod inbox;
-mod items;
+mod input;
 mod key_codec;
 mod metadata;
 mod reader;
@@ -21,7 +21,7 @@ use std::io::Cursor;
 
 pub use entry::{EntryStatusKey, StatusHeaderRaw};
 pub use inbox::InboxKey;
-pub use items::InputPayloadKey;
+pub use input::InputPayloadKey;
 pub use metadata::*;
 
 use anyhow::Context;
@@ -298,13 +298,13 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
     ) where
         E: Message,
     {
-        let key_buf = {
-            let seq = seq.into();
-            let key = InputPayloadKey::builder_ref().qid(qid).seq(&seq).id(id);
-            let key_buf = self.cleared_key_buffer_mut(key.serialized_length());
-            key.serialize_to(key_buf);
-            key_buf.split()
-        };
+        let seq = seq.into();
+        let mut key_buffer = [0u8; InputPayloadKey::serialized_length_fixed()];
+        InputPayloadKey::builder_ref()
+            .qid(qid)
+            .seq(&seq)
+            .id(id)
+            .serialize_to(&mut key_buffer.as_mut());
 
         let value_buffer = self.cleared_value_buffer_mut(item.encoded_len());
 
@@ -312,7 +312,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
             .expect("enough space to encode item");
         let value = value_buffer.split();
 
-        self.raw_put_cf(KeyKind::VQueueInput, key_buf, value);
+        self.raw_put_cf(KeyKind::VQueueInput, key_buffer, value);
     }
 
     fn delete_vqueue_input_payload(&mut self, qid: &VQueueId, seq: impl Into<Seq>, id: &EntryId) {

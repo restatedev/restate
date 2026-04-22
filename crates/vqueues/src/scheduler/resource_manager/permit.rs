@@ -64,14 +64,10 @@ impl PermitBuilder {
         }
     }
 
-    pub(crate) fn build(&mut self, resource_manager: &ResourceManager) -> ReservedResources {
+    pub(crate) fn build(self, resource_manager: &ResourceManager) -> ReservedResources {
         ReservedResources {
-            resources: self
-                .user_permit
-                .take()
-                .expect("user permit must be set")
-                .resources,
-            system_permit: self.system_permit.take(),
+            resources: self.user_permit.expect("user permit must be set").resources,
+            system_permit: self.system_permit,
             manager_tx: Some(resource_manager.tx.clone()),
         }
     }

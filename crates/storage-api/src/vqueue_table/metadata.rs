@@ -439,7 +439,7 @@ impl VQueueMeta {
                 }
 
                 match next_stage {
-                    Stage::Unknown => {}
+                    Stage::Unknown => unreachable!(),
                     Stage::Inbox => {
                         self.stats.num_inbox += 1;
                         if prev_stage.is_none() {
@@ -545,11 +545,10 @@ pub enum Action {
     /// An item has moved from one stage to another
     ///
     /// if previous_stage is None, the item is new.
-    /// if new_stage is Archive, the item has completed.
+    /// if new_stage is Finished, the item has completed.
     #[bilrost(tag(2), message)]
     Move {
         prev_stage: Option<Stage>,
-        /// When next_stage is None, the item is removed from the vqueue.
         next_stage: Stage,
         metrics: MoveMetrics,
     },
@@ -600,49 +599,12 @@ mod tests {
     }
 
     #[test]
-    fn first_run_wait_uses_created_at_when_original_run_at_is_in_the_past() {
+    fn avg_queue_duration_tracks_first_attempt_wait() {
         let created_at = ts(BASE_TS_MS + 10_000);
         let mut meta = VQueueMeta::new(created_at, None, LimitKey::None, VQueueLink::None);
 
-        meta.apply_update(&Update::new(
-            created_at,
-            Action::Move {
-                prev_stage: None,
-                next_stage: Stage::Inbox,
-                metrics: metrics(BASE_TS_MS + 10_000, BASE_TS_MS + 10_000, false),
-            },
-        ));
-
-        meta.apply_update(&Update::new(
-            ts(BASE_TS_MS + 12_000),
-            Action::Move {
-                prev_stage: Some(Stage::Inbox),
-                next_stage: Stage::Running,
-                metrics: metrics(BASE_TS_MS + 10_000, BASE_TS_MS + 10_000, false),
-            },
-        ));
-
-        assert_eq!(meta.stats.avg_queue_duration_ms, 2_000);
-        assert_eq!(meta.stats.last_start_at, Some(ts(BASE_TS_MS + 12_000)));
-        assert_eq!(meta.stats.last_attempt_at, Some(ts(BASE_TS_MS + 12_000)));
-
-        meta.apply_update(&Update::new(
-            ts(BASE_TS_MS + 13_000),
-            Action::Move {
-                prev_stage: Some(Stage::Running),
-                next_stage: Stage::Running,
-                metrics: metrics(BASE_TS_MS + 12_000, BASE_TS_MS + 10_000, true),
-            },
-        ));
-
-        assert_eq!(meta.stats.avg_queue_duration_ms, 2_000);
-    }
-
-    #[test]
-    fn first_run_wait_uses_original_run_at_when_it_is_in_the_future() {
-        let created_at = ts(BASE_TS_MS + 10_000);
-        let mut meta = VQueueMeta::new(created_at, None, LimitKey::None, VQueueLink::None);
-
+        // Enqueue: caller has already computed
+        // first_runnable_at = max(created_at, original_run_at).
         meta.apply_update(&Update::new(
             created_at,
             Action::Move {
@@ -652,6 +614,8 @@ mod tests {
             },
         ));
 
+        // First transition to Running: first-attempt wait is
+        // now(14_000) - first_runnable_at(12_000) = 2_000 ms.
         meta.apply_update(&Update::new(
             ts(BASE_TS_MS + 14_000),
             Action::Move {
@@ -662,10 +626,31 @@ mod tests {
         ));
 
         assert_eq!(meta.stats.avg_queue_duration_ms, 2_000);
+        assert_eq!(meta.stats.last_start_at, Some(ts(BASE_TS_MS + 14_000)));
+        assert_eq!(meta.stats.last_attempt_at, Some(ts(BASE_TS_MS + 14_000)));
+
+        // A subsequent Running→Running transition (has_started = true) must
+        // not touch avg_queue_duration_ms or last_start_at — those only track
+        // the first attempt. last_attempt_at does advance.
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 15_000),
+            Action::Move {
+                prev_stage: Some(Stage::Running),
+                next_stage: Stage::Running,
+                metrics: metrics(BASE_TS_MS + 14_000, BASE_TS_MS + 12_000, true),
+            },
+        ));
+
+        assert_eq!(meta.stats.avg_queue_duration_ms, 2_000);
+        assert_eq!(meta.stats.last_start_at, Some(ts(BASE_TS_MS + 14_000)));
+        assert_eq!(meta.stats.last_attempt_at, Some(ts(BASE_TS_MS + 15_000)));
     }
 
     #[test]
-    fn stage_emas_are_updated_and_end_to_end_skips_non_running_finish() {
+    fn stage_emas_update_on_transitions() {
+        // Inbox→Running→Suspended→Inbox→Finished exercises every tracked
+        // stage-dwell EMA. Inbox gets two samples so the EMA blend path
+        // (not just the initial assignment) is covered.
         let created_at = ts(BASE_TS_MS + 1_000);
         let mut meta = VQueueMeta::new(created_at, None, LimitKey::None, VQueueLink::None);
 
@@ -677,7 +662,6 @@ mod tests {
                 metrics: metrics(BASE_TS_MS + 1_000, BASE_TS_MS + 2_000, false),
             },
         ));
-
         meta.apply_update(&Update::new(
             ts(BASE_TS_MS + 2_000),
             Action::Move {
@@ -686,7 +670,6 @@ mod tests {
                 metrics: metrics(BASE_TS_MS + 1_000, BASE_TS_MS + 2_000, false),
             },
         ));
-
         meta.apply_update(&Update::new(
             ts(BASE_TS_MS + 5_000),
             Action::Move {
@@ -695,7 +678,6 @@ mod tests {
                 metrics: metrics(BASE_TS_MS + 2_000, BASE_TS_MS + 2_000, true),
             },
         ));
-
         meta.apply_update(&Update::new(
             ts(BASE_TS_MS + 9_000),
             Action::Move {
@@ -704,7 +686,6 @@ mod tests {
                 metrics: metrics(BASE_TS_MS + 5_000, BASE_TS_MS + 2_000, true),
             },
         ));
-
         meta.apply_update(&Update::new(
             ts(BASE_TS_MS + 15_000),
             Action::Move {
@@ -714,15 +695,71 @@ mod tests {
             },
         ));
 
+        // Inbox: EMA(0, 1_000) = 1_000, then EMA(1_000, 6_000) = 1_250.
         assert_eq!(meta.stats.avg_inbox_duration_ms, 1_250);
         assert_eq!(meta.stats.avg_run_duration_ms, 3_000);
         assert_eq!(meta.stats.avg_suspension_duration_ms, 4_000);
-        assert_eq!(meta.stats.avg_end_to_end_duration_ms, 0);
 
         assert_eq!(meta.stats.num_inbox, 0);
         assert_eq!(meta.stats.num_running, 0);
-        assert_eq!(meta.stats.num_paused, 0);
+        assert_eq!(meta.stats.num_suspended, 0);
+        assert_eq!(meta.stats.num_finished, 1);
         assert_eq!(meta.stats.last_finish_at, Some(ts(BASE_TS_MS + 15_000)));
+    }
+
+    #[test]
+    fn end_to_end_updates_only_on_finish_from_running() {
+        // Finish-from-Running updates avg_end_to_end_duration_ms.
+        let created_at = ts(BASE_TS_MS);
+        let mut running_finish =
+            VQueueMeta::new(created_at, None, LimitKey::None, VQueueLink::None);
+        running_finish.apply_update(&Update::new(
+            created_at,
+            Action::Move {
+                prev_stage: None,
+                next_stage: Stage::Inbox,
+                metrics: metrics(BASE_TS_MS, BASE_TS_MS, false),
+            },
+        ));
+        running_finish.apply_update(&Update::new(
+            ts(BASE_TS_MS + 1_000),
+            Action::Move {
+                prev_stage: Some(Stage::Inbox),
+                next_stage: Stage::Running,
+                metrics: metrics(BASE_TS_MS, BASE_TS_MS, false),
+            },
+        ));
+        running_finish.apply_update(&Update::new(
+            ts(BASE_TS_MS + 5_000),
+            Action::Move {
+                prev_stage: Some(Stage::Running),
+                next_stage: Stage::Finished,
+                metrics: metrics(BASE_TS_MS + 1_000, BASE_TS_MS, true),
+            },
+        ));
+        // end_to_end = now_ms(5_000) - first_runnable_at(0) = 5_000.
+        assert_eq!(running_finish.stats.avg_end_to_end_duration_ms, 5_000);
+
+        // Finish from anywhere other than Running (e.g. cancel from Inbox)
+        // must leave avg_end_to_end_duration_ms untouched.
+        let mut inbox_finish = VQueueMeta::new(created_at, None, LimitKey::None, VQueueLink::None);
+        inbox_finish.apply_update(&Update::new(
+            created_at,
+            Action::Move {
+                prev_stage: None,
+                next_stage: Stage::Inbox,
+                metrics: metrics(BASE_TS_MS, BASE_TS_MS, false),
+            },
+        ));
+        inbox_finish.apply_update(&Update::new(
+            ts(BASE_TS_MS + 10_000),
+            Action::Move {
+                prev_stage: Some(Stage::Inbox),
+                next_stage: Stage::Finished,
+                metrics: metrics(BASE_TS_MS, BASE_TS_MS, false),
+            },
+        ));
+        assert_eq!(inbox_finish.stats.avg_end_to_end_duration_ms, 0);
     }
 
     #[test]

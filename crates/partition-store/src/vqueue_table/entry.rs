@@ -34,8 +34,6 @@ define_table_key!(
     )
 );
 
-static_assertions::const_assert_eq!(EntryKind::serialized_length_fixed(), 1);
-
 impl EntryStatusKey {
     pub const fn serialized_length_fixed() -> usize {
         KeyKind::SERIALIZED_LENGTH
@@ -61,8 +59,6 @@ impl From<&InvocationId> for EntryStatusKey {
 pub struct StatusHeaderRawRef<'a> {
     #[bilrost(tag(1))]
     pub(super) qid: VQueueIdRef<'a>,
-    /// Unknown is an invalid state, this will be set to None when the invocation
-    /// leaves the queue.
     #[bilrost(tag(2))]
     pub(super) stage: Stage,
     #[bilrost(tag(3))]

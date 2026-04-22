@@ -15,6 +15,9 @@ use crate::keys::{KeyKind, define_table_key};
 
 // Input payloads stored for vqueue items.
 // Vqueue items are stored under the qid they belong to and their creation order
+// The sequence number acts as an epoch to distinguish between different incarinations
+// of the same EntryId (e.g. deterministic invocation re-invoked after expiration).
+//
 // 'qi' | QID | SEQ | ENTRY_ID
 define_table_key!(
     VQueue,

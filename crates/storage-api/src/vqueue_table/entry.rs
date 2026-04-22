@@ -157,7 +157,7 @@ impl EntryKey {
 
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct EntryValue {
-    /// Status is copied over from the entry's state when the last transition
+    /// Status is copied over from the entry status table when the last transition
     /// happened.
     #[bilrost(tag(1))]
     pub status: Status,

@@ -25,7 +25,7 @@ use super::key_codec::HasLock;
 // 'qP' | QID | HAS_LOCK(1B) | RUN_AT(8B) | SEQ(8B) | ENTRY_ID(17B)
 // 'qF' | QID | HAS_LOCK(1B) | RUN_AT(8B) | SEQ(8B) | ENTRY_ID(17B)
 
-// Inbox, Running, Suspended, Paused, and have the same key design.
+// Inbox, Running, Suspended, Paused, and Finished and have the same key design.
 macro_rules! define_stage_keys {
     ( $(Stage::$stage: ident => $key_name: ident),+ $(,)? ) => {
         paste::paste! {
