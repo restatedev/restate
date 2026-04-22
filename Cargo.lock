@@ -7644,6 +7644,7 @@ dependencies = [
  "restate-futures-util",
  "restate-memory",
  "restate-metadata-store",
+ "restate-platform",
  "restate-rocksdb",
  "restate-serde-util",
  "restate-time-util",
