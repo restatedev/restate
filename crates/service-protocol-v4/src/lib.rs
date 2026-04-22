@@ -19,6 +19,18 @@ pub mod message_codec;
 // We need to allow dead code because the entry-codec feature only uses a subset of the defined
 // service protocol messages. Otherwise, crates depending only on this feature fail clippy.
 #[allow(dead_code)]
-mod proto {
+pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/dev.restate.service.protocol.rs"));
+
+    #[cfg(feature = "message-codec")]
+    crate::message_codec::default_encode_decode!(
+        StartMessage,
+        SuspensionMessage,
+        ErrorMessage,
+        EndMessage,
+        CommandAckMessage,
+        ProposeRunCompletionMessage,
+        CallCommandMessage,
+        OneWayCallCommandMessage
+    );
 }
