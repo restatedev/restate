@@ -121,7 +121,7 @@ impl ScanInvocationStatusTable for PartitionStore {
         self.iterator_filter_map(
             "scan-all-invoked",
             Priority::High,
-            FullScanPartitionKeyRange::<InvocationStatusKey>(self.partition_key_range().clone()),
+            FullScanPartitionKeyRange::<InvocationStatusKey>(self.partition_key_range()),
             read_invoked_full_invocation_id,
         )
         .map_err(|_| StorageError::OperationalError)
@@ -221,7 +221,7 @@ impl ScanInvocationStatusTable for PartitionStore {
                 "df-filter-map-invocation-status",
                 Priority::Low,
                 TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(
-                    self.partition_key_range().clone(),
+                    self.partition_key_range(),
                 ),
                 {
                     move |(mut key, mut value)| {

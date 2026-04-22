@@ -20,13 +20,16 @@ use restate_types::{
     identifiers::{PartitionId, PartitionKey},
     logs::Lsn,
     partitions::Partition,
+    sharding::KeyRange,
     time::MillisSinceEpoch,
 };
 
 use crate::PartitionStoreManager;
 
-const PARTITION: Partition =
-    Partition::new(PartitionId::MIN, PartitionKey::MIN..=PartitionKey::MAX);
+const PARTITION: Partition = Partition::new(
+    PartitionId::MIN,
+    KeyRange::new(PartitionKey::MIN, PartitionKey::MAX),
+);
 
 #[restate_core::test]
 async fn track_latest_applied_lsn() -> googletest::Result<()> {

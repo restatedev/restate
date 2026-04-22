@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::{ControlFlow, RangeInclusive};
+use std::ops::ControlFlow;
 
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -20,6 +20,7 @@ use restate_storage_api::idempotency_table::{
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{IdempotencyId, PartitionKey, WithPartitionKey};
+use restate_types::sharding::KeyRange;
 
 use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
 use crate::scan::TableScan;
@@ -92,7 +93,7 @@ impl ScanIdempotencyTable for PartitionStore {
         F: FnMut((IdempotencyId, IdempotencyMetadata)) -> ControlFlow<()> + Send + Sync + 'static,
     >(
         &self,
-        range: RangeInclusive<PartitionKey>,
+        range: KeyRange,
         mut f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send> {
         self.iterator_for_each(

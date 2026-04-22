@@ -349,7 +349,7 @@ pub fn cleanup_orphaned_completion_id_index_entries(
     let mut cancelled = false;
 
     let scan_store = storage.clone();
-    let partition_key_range = scan_store.partition_key_range().clone();
+    let partition_key_range = scan_store.partition_key_range();
     let scan = TableScan::FullScanPartitionKeyRange::<JournalCompletionIdToCommandIndexKeyBuilder>(
         partition_key_range,
     );

@@ -9,10 +9,14 @@
 // by the Apache License, Version 2.0.
 
 mod key_range;
+mod partition_id;
+mod partitioner;
 
 use std::sync::Arc;
 
 pub use key_range::KeyRange;
+pub use partition_id::PartitionId;
+pub use partitioner::EqualSizedPartitionPartitioner;
 
 /// Identifying to which partition a key belongs. This is unlike the [`PartitionId`]
 /// which identifies a consecutive range of partition keys.

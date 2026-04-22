@@ -13,7 +13,7 @@ mod spawn_processor_task;
 
 use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
-use std::ops::{Add, RangeInclusive};
+use std::ops::Add;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -62,8 +62,8 @@ use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::config::Configuration;
 use restate_types::epoch::EpochMetadata;
 use restate_types::health::HealthStatus;
+use restate_types::identifiers::PartitionId;
 use restate_types::identifiers::SnapshotId;
-use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::live::Live;
 use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
@@ -80,6 +80,7 @@ use restate_types::partitions::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::retries::with_jitter;
+use restate_types::sharding::KeyRange;
 use restate_types::{GenerationalNodeId, SharedString};
 use restate_wal_protocol::Envelope;
 
@@ -189,7 +190,7 @@ impl std::fmt::Display for RestartDelay {
     }
 }
 
-type ChannelStatusReaderList = Vec<(RangeInclusive<PartitionKey>, ChannelStatusReader)>;
+type ChannelStatusReaderList = Vec<(KeyRange, ChannelStatusReader)>;
 
 #[derive(Debug, Clone, Default)]
 pub struct MultiplexedInvokerStatusReader {
@@ -197,12 +198,12 @@ pub struct MultiplexedInvokerStatusReader {
 }
 
 impl MultiplexedInvokerStatusReader {
-    fn push(&mut self, key_range: RangeInclusive<PartitionKey>, reader: ChannelStatusReader) {
+    fn push(&mut self, key_range: KeyRange, reader: ChannelStatusReader) {
         self.readers.write().push((key_range, reader));
     }
 
-    fn remove(&mut self, key_range: &RangeInclusive<PartitionKey>) {
-        self.readers.write().retain(|elem| &elem.0 != key_range);
+    fn remove(&mut self, key_range: KeyRange) {
+        self.readers.write().retain(|elem| elem.0 != key_range);
     }
 }
 
@@ -210,7 +211,7 @@ impl StatusHandle for MultiplexedInvokerStatusReader {
     type Iterator =
         std::iter::Flatten<std::vec::IntoIter<<ChannelStatusReader as StatusHandle>::Iterator>>;
 
-    async fn read_status(&self, keys: RangeInclusive<PartitionKey>) -> Self::Iterator {
+    async fn read_status(&self, keys: KeyRange) -> Self::Iterator {
         let mut overlapping_partitions = Vec::new();
 
         // first clone the readers while holding the lock, then release the lock before reading the
@@ -218,18 +219,18 @@ impl StatusHandle for MultiplexedInvokerStatusReader {
         for (range, reader) in self.readers.read().iter() {
             if keys.start() <= range.end() && keys.end() >= range.start() {
                 // if this partition is actually overlapping with the search range
-                overlapping_partitions.push((range.clone(), reader.clone()))
+                overlapping_partitions.push((*range, reader.clone()))
             }
         }
         // although we never have a single scans that cross partitions (thus overlapping_partitions.len() == 1),
         // we can make this code path a bit more future resilient cheaply, by ordering the partitions by their start key.
         // (this uniquely defines the order between the partitions)
-        overlapping_partitions.sort_by(|(a, _), (b, _)| a.start().cmp(b.start()));
+        overlapping_partitions.sort_by_key(|(a, _)| a.start());
 
         let mut result = Vec::with_capacity(overlapping_partitions.len());
 
         for (_, reader) in overlapping_partitions {
-            result.push(reader.read_status(keys.clone()).await);
+            result.push(reader.read_status(keys).await);
         }
 
         result.into_iter().flatten()
@@ -523,7 +524,7 @@ where
                                 } => {
                                     debug!(%target_run_mode, "Partition processor was successfully created.");
                                     self.invokers_status_reader.push(
-                                        started_processor.key_range().clone(),
+                                        started_processor.key_range(),
                                         started_processor.invoker_status_reader().clone(),
                                     );
 

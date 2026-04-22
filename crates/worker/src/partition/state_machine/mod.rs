@@ -19,7 +19,7 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
-use std::ops::RangeInclusive;
+use std::ops::{RangeBounds, RangeInclusive};
 use std::str::FromStr;
 use std::time::Instant;
 
@@ -71,7 +71,7 @@ use restate_types::errors::{
     NOT_READY_INVOCATION_ERROR, WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
-    AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId, PartitionKey,
+    AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId,
     PartitionProcessorRpcRequestId, ServiceId, StateMutationId,
 };
 use restate_types::identifiers::{IdempotencyId, WithPartitionKey};
@@ -105,6 +105,7 @@ use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
 use restate_types::schema::Schema;
 use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_types::sharding::KeyRange;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::state_mut::StateMutationVersion;
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
@@ -152,7 +153,7 @@ pub struct StateMachine {
     /// Consistent schema
     pub(crate) schema: Option<Schema>,
 
-    pub(crate) partition_key_range: RangeInclusive<PartitionKey>,
+    pub(crate) partition_key_range: KeyRange,
 }
 
 impl Debug for StateMachine {
@@ -235,7 +236,7 @@ impl StateMachine {
         inbox_seq_number: MessageIndex,
         outbox_seq_number: MessageIndex,
         outbox_head_seq_number: Option<MessageIndex>,
-        partition_key_range: RangeInclusive<PartitionKey>,
+        partition_key_range: KeyRange,
         min_restate_version: SemanticRestateVersion,
         schema: Option<Schema>,
     ) -> Self {
@@ -261,7 +262,7 @@ pub(crate) struct StateMachineApplyContext<'a, S> {
     outbox_head_seq_number: &'a mut Option<MessageIndex>,
     min_restate_version: &'a mut SemanticRestateVersion,
     schema: &'a mut Option<Schema>,
-    partition_key_range: RangeInclusive<PartitionKey>,
+    partition_key_range: KeyRange,
     is_leader: bool,
 }
 
@@ -301,7 +302,7 @@ impl StateMachine {
                 min_restate_version: &mut self.min_restate_version,
                 vqueues_cache,
                 schema: &mut self.schema,
-                partition_key_range: self.partition_key_range.clone(),
+                partition_key_range: self.partition_key_range,
                 is_leader,
             }
             .on_apply(command)

@@ -8,12 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
-
 use futures::Stream;
 
 use restate_types::identifiers::{InvocationId, PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::message::MessageIndex;
+use restate_types::sharding::KeyRange;
 use restate_types::state_mut::ExternalStateMutation;
 
 use crate::Result;
@@ -101,7 +100,7 @@ pub trait ScanInboxTable {
         F: FnMut(SequenceNumberInboxEntry) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
     >(
         &self,
-        range: RangeInclusive<PartitionKey>,
+        range: KeyRange,
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 }

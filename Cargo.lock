@@ -8033,6 +8033,7 @@ name = "restate-sharding"
 version = "1.6.3-dev"
 dependencies = [
  "bilrost",
+ "derive_more",
  "restate-sharding",
  "restate-workspace-hack",
  "serde",

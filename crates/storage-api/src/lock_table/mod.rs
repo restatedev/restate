@@ -8,10 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
-
 use restate_clock::UniqueTimestamp;
 use restate_types::identifiers::{InvocationId, PartitionKey, StateMutationId};
+use restate_types::sharding::KeyRange;
 use restate_types::vqueues::{EntryId, EntryKind};
 use restate_types::{LockName, Scope};
 use restate_util_string::ReString;
@@ -68,7 +67,7 @@ pub trait ScanLocksTable {
             + 'static,
     >(
         &self,
-        range: RangeInclusive<PartitionKey>,
+        range: KeyRange,
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 }

@@ -9,13 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::inbox_table::{ScanInboxTable, SequenceNumberInboxEntry};
-use restate_types::identifiers::PartitionKey;
+use restate_types::sharding::KeyRange;
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::filter::FirstMatchingPartitionKeyExtractor;
@@ -57,7 +56,7 @@ impl ScanLocalPartition for InboxScanner {
     type Builder = SysInboxBuilder;
     type Item<'a> = SequenceNumberInboxEntry;
     type ConversionError = std::convert::Infallible;
-    type Filter = RangeInclusive<PartitionKey>;
+    type Filter = KeyRange;
 
     fn for_each_row<
         F: for<'a> FnMut(
@@ -68,7 +67,7 @@ impl ScanLocalPartition for InboxScanner {
             + 'static,
     >(
         partition_store: &PartitionStore,
-        range: RangeInclusive<PartitionKey>,
+        range: KeyRange,
         mut f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
         partition_store.for_each_inbox(range, move |item| f(item).map_break(Result::unwrap))

@@ -8,15 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::future::Future;
+use std::time::SystemTime;
+
 use codederror::Code;
+
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey};
+use restate_types::identifiers::{DeploymentId, InvocationId};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
 use restate_types::journal::{EntryIndex, EntryType};
 use restate_types::service_protocol::ServiceProtocolVersion;
-use std::future::Future;
-use std::ops::RangeInclusive;
-use std::time::SystemTime;
+use restate_types::sharding::KeyRange;
 
 // -- Status data structure
 
@@ -125,10 +127,7 @@ pub trait StatusHandle {
     /// filtered by the partition key range
     ///
     /// The data returned by this method is eventually consistent.
-    fn read_status(
-        &self,
-        keys: RangeInclusive<PartitionKey>,
-    ) -> impl Future<Output = Self::Iterator> + Send;
+    fn read_status(&self, keys: KeyRange) -> impl Future<Output = Self::Iterator> + Send;
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -148,7 +147,7 @@ pub mod test_util {
     impl StatusHandle for MockStatusHandle {
         type Iterator = std::vec::IntoIter<InvocationStatusReport>;
 
-        async fn read_status(&self, _keys: RangeInclusive<PartitionKey>) -> Self::Iterator {
+        async fn read_status(&self, _keys: KeyRange) -> Self::Iterator {
             self.0.clone().into_iter()
         }
     }

@@ -84,7 +84,7 @@ impl ScannerTask {
 
         let stream = scanner.scan_partition(
             request.partition_id,
-            request.range.clone(),
+            request.range,
             schema.clone(),
             dynamic_filter
                 .as_ref()
