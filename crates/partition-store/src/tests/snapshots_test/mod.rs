@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use tempfile::tempdir;
@@ -18,6 +17,7 @@ use restate_storage_api::fsm_table::{ReadFsmTable, WriteFsmTable};
 use restate_types::identifiers::{PartitionKey, SnapshotId};
 use restate_types::logs::{LogId, Lsn};
 use restate_types::partitions::Partition;
+use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
 
 use crate::snapshots::{LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion};
@@ -38,7 +38,7 @@ pub(crate) async fn run_tests(
         .await
         .unwrap();
 
-    let key_range = partition_store.partition_key_range().clone();
+    let key_range = partition_store.partition_key_range();
     let snapshot_meta = PartitionSnapshotMetadata {
         version: SnapshotFormatVersion::V1,
         cluster_name: "cluster_name".to_string(),
@@ -47,7 +47,7 @@ pub(crate) async fn run_tests(
         node_name: "node".to_string(),
         created_at: MillisSinceEpoch::new(0).into_timestamp(),
         snapshot_id: SnapshotId::from_parts(0, 0),
-        key_range: key_range.clone(),
+        key_range,
         log_id: LogId::from(partition_id),
         min_applied_lsn: snapshot.min_applied_lsn,
         db_comparator_name: snapshot.db_comparator_name.clone(),
@@ -73,7 +73,7 @@ pub(crate) async fn run_tests(
 
     let mut new_partition_store = manager
         .open_from_snapshot(
-            &Partition::new(partition_id, RangeInclusive::new(0, PartitionKey::MAX - 1)),
+            &Partition::new(partition_id, KeyRange::new(0, PartitionKey::MAX - 1)),
             snapshot,
         )
         .await

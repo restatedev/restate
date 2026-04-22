@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::{Debug, Formatter};
-use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -24,12 +23,13 @@ use tracing::debug;
 use restate_core::network::{Connection, NetworkSender, Networking, Swimlane, TransportConnect};
 use restate_core::{TaskCenter, TaskCenterFutureExt, TaskKind, task_center};
 use restate_types::NodeId;
-use restate_types::identifiers::{PartitionId, PartitionKey};
+use restate_types::identifiers::PartitionId;
 use restate_types::net::remote_query_scanner::{
     RemoteQueryScannerClose, RemoteQueryScannerNext, RemoteQueryScannerNextResult,
     RemoteQueryScannerOpen, RemoteQueryScannerOpened, RemoteQueryScannerPredicate, ScannerBatch,
     ScannerFailure, ScannerId,
 };
+use restate_types::sharding::KeyRange;
 
 use crate::{decode_record_batch, encode_expr, encode_schema};
 
@@ -143,7 +143,7 @@ pub fn remote_scan_as_datafusion_stream(
     service: Arc<dyn RemoteScannerService>,
     target_node_id: NodeId,
     partition_id: PartitionId,
-    range: RangeInclusive<PartitionKey>,
+    range: KeyRange,
     table_name: String,
     projection_schema: SchemaRef,
     predicate: Option<Arc<dyn PhysicalExpr>>,

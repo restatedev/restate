@@ -251,7 +251,7 @@ where
             node_id: my_node_id(),
             leader_epoch,
             epoch_version: Some(leadership_info.version),
-            partition_key_range: self.partition.key_range.clone(),
+            partition_key_range: self.partition.key_range,
             current_config: Some(leadership_info.current_config),
             next_config: leadership_info.next_config,
         }));
@@ -263,7 +263,7 @@ where
         )?;
 
         self_proposer
-            .self_propose(*self.partition.key_range.start(), announce_leader)
+            .self_propose(self.partition.key_range.start(), announce_leader)
             .await?;
 
         self.state = State::Candidate {
@@ -396,7 +396,7 @@ where
             self.invoker_tx
                 .register_partition(
                     (self.partition.partition_id, *leader_epoch),
-                    self.partition.key_range.clone(),
+                    self.partition.key_range,
                     InvokerStorageReader::new(partition_store.clone()),
                     invoker_tx,
                 )
@@ -480,11 +480,11 @@ where
             {
                 self_proposer
                     .self_propose(
-                        *self.partition.key_range.start(),
+                        self.partition.key_range.start(),
                         Command::VersionBarrier(VersionBarrier {
                             version: forced_min_restate_version.clone(),
                             partition_key_range: Keys::RangeInclusive(
-                                self.partition.key_range.clone(),
+                                self.partition.key_range.into(),
                             ),
                             human_reason: Some("Force min Restate version".to_owned()),
                         }),
@@ -500,11 +500,11 @@ where
             {
                 self_proposer
                     .self_propose(
-                        *self.partition.key_range.start(),
+                        self.partition.key_range.start(),
                         Command::VersionBarrier(VersionBarrier {
                             version: RESTATE_VERSION_1_6_0.clone(),
                             partition_key_range: Keys::RangeInclusive(
-                                self.partition.key_range.clone(),
+                                self.partition.key_range.into(),
                             ),
                             human_reason: Some("Enable journal v2 by default".to_owned()),
                         }),
@@ -528,7 +528,7 @@ where
             self.state = State::Leader(Box::new(LeaderState::new(
                 self.partition.partition_id,
                 *leader_epoch,
-                self.partition.key_range.clone(),
+                self.partition.key_range,
                 shuffle_task_handle,
                 cleaner_handle,
                 trimmer_task_id,
@@ -785,23 +785,23 @@ mod tests {
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
-    use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
+    use restate_types::identifiers::{LeaderEpoch, PartitionId};
     use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
     use restate_types::partitions::state::PartitionReplicaSetStates;
     use restate_types::partitions::{Partition, PartitionConfiguration};
+    use restate_types::sharding::KeyRange;
     use restate_types::{GenerationalNodeId, Version};
     use restate_vqueues::VQueuesMetaCache;
     use restate_wal_protocol::Command;
     use restate_wal_protocol::Envelope;
     use std::num::NonZeroUsize;
-    use std::ops::RangeInclusive;
     use std::sync::Arc;
     use test_log::test;
     use tokio_stream::StreamExt;
 
     const PARTITION_ID: PartitionId = PartitionId::MIN;
     const NODE_ID: GenerationalNodeId = GenerationalNodeId::new(0, 0);
-    const PARTITION_KEY_RANGE: RangeInclusive<PartitionKey> = PartitionKey::MIN..=PartitionKey::MAX;
+    const PARTITION_KEY_RANGE: KeyRange = KeyRange::FULL;
     const PARTITION: Partition = Partition::new(PARTITION_ID, PARTITION_KEY_RANGE);
 
     #[test(restate_core::test)]

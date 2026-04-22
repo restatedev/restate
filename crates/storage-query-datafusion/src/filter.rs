@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 use std::fmt::{Debug, Formatter};
-use std::ops::RangeInclusive;
+use std::ops::{RangeBounds, RangeInclusive};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -24,6 +24,7 @@ use datafusion::physical_plan::expressions::{BinaryExpr, Column, InListExpr, Lit
 
 use restate_types::identifiers::partitioner::HashPartitioner;
 use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey};
+use restate_types::sharding::KeyRange;
 
 use crate::partition_store_scanner::ScanLocalPartitionFilter;
 
@@ -243,19 +244,17 @@ fn extract_column_literal<'a>(
 
 #[derive(Debug, Clone)]
 pub struct InvocationIdFilter {
-    pub partition_keys: RangeInclusive<PartitionKey>,
+    pub partition_keys: KeyRange,
     pub invocation_ids: Option<RangeInclusive<InvocationId>>,
 }
 
 impl ScanLocalPartitionFilter for InvocationIdFilter {
-    fn new(range: RangeInclusive<PartitionKey>, predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
+    fn new(range: KeyRange, predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
         if let Some(predicate) = predicate
             && let Ok(predicate) = snapshot_physical_expr(predicate)
         {
             for conjunct in split_conjunction(&predicate) {
-                if let Some(invocation_ids) =
-                    parse_invocation_id_range("id", range.clone(), conjunct)
-                {
+                if let Some(invocation_ids) = parse_invocation_id_range("id", range, conjunct) {
                     return Self {
                         partition_keys: range,
                         invocation_ids: Some(invocation_ids),
@@ -273,7 +272,7 @@ impl ScanLocalPartitionFilter for InvocationIdFilter {
 
 fn parse_invocation_id_range(
     column_name: &str,
-    range: RangeInclusive<PartitionKey>,
+    range: KeyRange,
     predicate: &Arc<dyn PhysicalExpr>,
 ) -> Option<RangeInclusive<InvocationId>> {
     let in_list = InList::parse(predicate, 5)?;
@@ -308,8 +307,9 @@ mod tests {
     use datafusion::physical_plan::PhysicalExpr;
     use datafusion::physical_plan::expressions::{BinaryExpr, Column, InListExpr, Literal};
 
-    use restate_types::identifiers::{InvocationId, PartitionKey, ServiceId, WithPartitionKey};
+    use restate_types::identifiers::{InvocationId, ServiceId, WithPartitionKey};
     use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType};
+    use restate_types::sharding::KeyRange;
 
     use crate::filter::{
         FirstMatchingPartitionKeyExtractor, InvocationIdFilter, PartitionKeyExtractor,
@@ -354,7 +354,7 @@ mod tests {
         ))
     }
 
-    const FULL_RANGE: std::ops::RangeInclusive<PartitionKey> = 0..=PartitionKey::MAX;
+    const FULL_RANGE: KeyRange = KeyRange::FULL;
 
     fn make_invocation_id(key: &str) -> InvocationId {
         let target = InvocationTarget::virtual_object(
@@ -582,7 +582,11 @@ mod tests {
     fn invocation_id_filter_excludes_out_of_range() {
         let id = make_invocation_id("key-1");
         let pk = id.partition_key();
-        let narrow_range = if pk > 0 { 0..=(pk - 1) } else { 1..=1 };
+        let narrow_range = if pk > 0 {
+            KeyRange::new(0, pk - 1)
+        } else {
+            KeyRange::new(1, 1)
+        };
 
         let predicate = eq(col("id"), utf8_lit(id.to_string()));
         let filter = InvocationIdFilter::new(narrow_range, Some(predicate));

@@ -16,6 +16,7 @@ bilrost = ["dep:bilrost"]
 restate-workspace-hack = { workspace = true }
 
 bilrost = { workspace = true, optional = true }
+derive_more = { workspace = true, features = ["deref", "from", "into", "add", "display", "debug", "from_str"] }
 serde = { workspace = true, optional = true }
 
 [dev-dependencies]

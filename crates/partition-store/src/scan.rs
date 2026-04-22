@@ -16,7 +16,7 @@ use crate::scan::TableScan::{
 use crate::{PaddedPartitionId, ScanMode, TableKind};
 use bytes::BytesMut;
 use restate_types::identifiers::{PartitionId, PartitionKey};
-use std::ops::RangeInclusive;
+use restate_types::sharding::KeyRange;
 
 // Note: we take extra arguments like (PartitionId or PartitionKey) only to make sure that
 // call-sites know what they are opting to. Those values might not actually be used to perform the
@@ -27,7 +27,7 @@ pub enum TableScan<K> {
     SinglePartition(PartitionId),
     /// Scan an inclusive key-range potentially across partitions.
     /// Requires total seek order
-    FullScanPartitionKeyRange(RangeInclusive<PartitionKey>),
+    FullScanPartitionKeyRange(KeyRange),
     /// Scan within a single partition key
     SinglePartitionKeyPrefix(PartitionKey, K),
     /// Inclusive Key Range in a single partition.
@@ -74,7 +74,8 @@ impl<K: EncodeTableKeyPrefix> From<TableScan<K>> for PhysicalScan {
                 PhysicalScan::Prefix(K::TABLE, K::KEY_KIND, prefix_start)
             }
             FullScanPartitionKeyRange(range) => {
-                let (start, end) = (range.start(), range.end());
+                let start = range.start();
+                let end = range.end();
                 let mut start_bytes =
                     BytesMut::with_capacity(start.serialized_length() + KeyKind::SERIALIZED_LENGTH);
                 K::serialize_key_kind(&mut start_bytes);

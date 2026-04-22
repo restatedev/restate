@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 use std::any::Any;
 use std::fmt::{self, Debug, Display, Formatter};
-use std::ops::RangeInclusive;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -35,8 +34,9 @@ use datafusion::physical_plan::{
 };
 use futures::stream::{self, Stream, StreamExt, TryStreamExt};
 
-use restate_types::identifiers::{PartitionId, PartitionKey};
+use restate_types::identifiers::PartitionId;
 use restate_types::partition_table::Partition;
+use restate_types::sharding::KeyRange;
 
 use crate::context::SelectPartitions;
 use crate::filter::{FirstMatchingPartitionKeyExtractor, PartitionKeyExtractor};
@@ -47,7 +47,7 @@ pub trait ScanPartition: Send + Sync + Debug + 'static {
     fn scan_partition(
         &self,
         partition_id: PartitionId,
-        range: RangeInclusive<PartitionKey>,
+        range: KeyRange,
         projection: SchemaRef,
         predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
@@ -212,7 +212,10 @@ where
                                     // in parallel efficiently.
                                     (
                                         partition_id,
-                                        Partition::new(partition_id, partition_key..=partition_key),
+                                        Partition::new(
+                                            partition_id,
+                                            KeyRange::new(partition_key, partition_key),
+                                        ),
                                     )
                                 }),
                         )

@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::ops::ControlFlow;
-use std::ops::RangeInclusive;
+use std::ops::RangeBounds;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -37,6 +37,7 @@ use restate_types::config::Configuration;
 use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId, WithPartitionKey};
 use restate_types::logs::Lsn;
 use restate_types::partitions::Partition;
+use restate_types::sharding::KeyRange;
 use restate_types::storage::StorageCodec;
 use restate_types::storage::StorageDecode;
 use restate_types::storage::StorageEncode;
@@ -251,13 +252,13 @@ impl PartitionStore {
         self.db.partition().partition_id
     }
 
-    pub fn partition_key_range(&self) -> &RangeInclusive<PartitionKey> {
-        &self.db.partition().key_range
+    pub fn partition_key_range(&self) -> KeyRange {
+        self.db.partition().key_range
     }
 
     #[inline]
     pub(crate) fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) -> Result<()> {
-        assert_partition_key_or_err(&self.db.partition().key_range, partition_key)
+        assert_partition_key_or_err(self.db.partition().key_range, partition_key)
     }
 
     pub fn contains_partition_key(&self, key: PartitionKey) -> bool {
@@ -686,7 +687,7 @@ impl PartitionStore {
             db_comparator_name: export_files.get_db_comparator_name(),
             log_id: self.db.partition().log_id(),
             min_applied_lsn: applied_lsn,
-            key_range: self.db.partition().key_range.clone(),
+            key_range: self.db.partition().key_range,
         })
     }
 
@@ -946,12 +947,12 @@ impl PartitionStoreTransaction<'_> {
 
     #[inline]
     pub(crate) fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) -> Result<()> {
-        assert_partition_key_or_err(&self.meta.key_range, partition_key)
+        assert_partition_key_or_err(self.meta.key_range, partition_key)
     }
 }
 
 fn assert_partition_key_or_err(
-    partition_key_range: &RangeInclusive<PartitionKey>,
+    partition_key_range: KeyRange,
     partition_key: &impl WithPartitionKey,
 ) -> Result<()> {
     let partition_key = partition_key.partition_key();
@@ -1324,6 +1325,7 @@ mod tests {
     use restate_storage_api::{IsolationLevel, StorageError, Transaction};
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::partitions::Partition;
+    use restate_types::sharding::KeyRange;
 
     impl EncodeTableKey for String {
         const TABLE: TableKind = TableKind::State;
@@ -1358,7 +1360,10 @@ mod tests {
         let partition_store_manager = PartitionStoreManager::create().await?;
         let mut partition_store = partition_store_manager
             .open(
-                &Partition::new(PartitionId::MIN, PartitionKey::MIN..=PartitionKey::MAX),
+                &Partition::new(
+                    PartitionId::MIN,
+                    KeyRange::new(PartitionKey::MIN, PartitionKey::MAX),
+                ),
                 None,
             )
             .await?;

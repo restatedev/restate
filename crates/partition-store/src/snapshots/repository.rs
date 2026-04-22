@@ -889,7 +889,7 @@ impl SnapshotRepository {
             min_applied_lsn: snapshot_metadata.min_applied_lsn,
             db_comparator_name: snapshot_metadata.db_comparator_name,
             files: snapshot_metadata.files,
-            key_range: snapshot_metadata.key_range.clone(),
+            key_range: snapshot_metadata.key_range,
         }))
     }
 
@@ -1132,9 +1132,10 @@ mod tests {
     use restate_core::{Metadata, TestCoreEnv};
     use restate_object_store_util::create_object_store_client;
     use restate_types::config::{ObjectStoreOptions, SnapshotsOptions};
-    use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
+    use restate_types::identifiers::{PartitionId, SnapshotId};
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
     use restate_types::retries::RetryPolicy;
+    use restate_types::sharding::KeyRange;
 
     use crate::snapshots::repository::LatestSnapshotVersion;
 
@@ -1353,7 +1354,7 @@ mod tests {
             partition_id: PartitionId::MIN,
             created_at: jiff::Timestamp::now(),
             snapshot_id: SnapshotId::new(),
-            key_range: PartitionKey::MIN..=PartitionKey::MAX,
+            key_range: KeyRange::FULL,
             log_id: LogId::MIN,
             min_applied_lsn: Lsn::new(1),
             db_comparator_name: "leveldb.BytewiseComparator".to_string(),

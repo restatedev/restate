@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::time::Instant;
 use std::{fmt::Debug, ops::ControlFlow};
@@ -23,17 +22,18 @@ use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
-use restate_types::identifiers::{PartitionId, PartitionKey};
+use restate_types::identifiers::PartitionId;
+use restate_types::sharding::KeyRange;
 
 use crate::table_providers::ScanPartition;
 use crate::table_util::BatchSender;
 
 pub trait ScanLocalPartitionFilter {
-    fn new(range: RangeInclusive<PartitionKey>, predicate: Option<Arc<dyn PhysicalExpr>>) -> Self;
+    fn new(range: KeyRange, predicate: Option<Arc<dyn PhysicalExpr>>) -> Self;
 }
 
-impl ScanLocalPartitionFilter for RangeInclusive<PartitionKey> {
-    fn new(range: RangeInclusive<PartitionKey>, _predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
+impl ScanLocalPartitionFilter for KeyRange {
+    fn new(range: KeyRange, _predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
         range
     }
 }
@@ -89,7 +89,7 @@ where
     fn scan_partition(
         &self,
         partition_id: PartitionId,
-        range: RangeInclusive<PartitionKey>,
+        range: KeyRange,
         projection: SchemaRef,
         predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
@@ -117,7 +117,7 @@ where
 
             S::for_each_row(
                 &partition_store,
-                S::Filter::new(range.clone(), predicate),
+                S::Filter::new(range, predicate),
                 move |row| {
                     elapsed_compute.start();
                     match S::append_row(batch_sender.builder_mut(), row) {
@@ -146,7 +146,7 @@ where
     fn scan_partition(
         &self,
         partition_id: PartitionId,
-        range: RangeInclusive<PartitionKey>,
+        range: KeyRange,
         projection: SchemaRef,
         predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,

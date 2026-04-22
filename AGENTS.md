@@ -52,6 +52,7 @@ If these rules conflict with normal behavior, always follow the rules above.
 1. Check crates/cli-util/README.md when doing CLI changes to make sure that you are adhering to the CLI style guide.
 1. New or deprecated config options must have `/// Since vX.Y.Z` in their doc comment.
 1. Use `ByteCount::from(value)` (from `restate_memory`) when displaying byte sizes in errors/logs.
+1. Use `KeyRange` (from `restate_sharding`, re-exported via `restate_types::sharding::KeyRange`) instead of `std::ops::RangeInclusive<PartitionKey>` for partition key ranges. `KeyRange` is `Copy`, 16 bytes (vs 24), and has wire-compatible serde/bilrost encoding.
 
 
 # Validation Before Committing Changes

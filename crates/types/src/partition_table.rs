@@ -10,7 +10,6 @@
 
 use std::collections::BTreeMap;
 use std::hash::Hash;
-use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use serde_with::serde_as;
@@ -36,18 +35,6 @@ pub trait FindPartition {
         &self,
         partition_key: PartitionKey,
     ) -> Result<PartitionId, PartitionTableError>;
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct KeyRange {
-    pub from: PartitionKey,
-    pub to: PartitionKey,
-}
-
-impl From<KeyRange> for RangeInclusive<PartitionKey> {
-    fn from(val: KeyRange) -> Self {
-        RangeInclusive::new(val.from, val.to)
-    }
 }
 
 /// Specified how partitions are replicated across the cluster.
@@ -204,7 +191,7 @@ impl FindPartition for PartitionTable {
         self.partitions
             .get(&candidate)
             .and_then(|partition| {
-                if partition.key_range.start() <= &partition_key {
+                if partition.key_range.start() <= partition_key {
                     Some(candidate)
                 } else {
                     None
@@ -272,14 +259,14 @@ impl AsRef<str> for CfName {
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Partition {
     pub partition_id: PartitionId,
-    pub key_range: RangeInclusive<PartitionKey>,
+    pub key_range: crate::sharding::KeyRange,
     log_id: Option<LogId>,
     db_name: Option<DbName>,
     cf_name: Option<CfName>,
 }
 
 impl Partition {
-    pub const fn new(partition_id: PartitionId, key_range: RangeInclusive<PartitionKey>) -> Self {
+    pub const fn new(partition_id: PartitionId, key_range: crate::sharding::KeyRange) -> Self {
         Self {
             partition_id,
             key_range,
@@ -392,8 +379,8 @@ impl PartitionTableBuilder {
             return Err(BuilderError::LimitReached);
         }
 
-        let start = *partition.key_range.start();
-        let end = *partition.key_range.end();
+        let start = partition.key_range.start();
+        let end = partition.key_range.end();
 
         if let Some((_, partition_id)) = self.inner.partition_key_index.range(end..).next() {
             let partition = self
@@ -401,7 +388,7 @@ impl PartitionTableBuilder {
                 .partitions
                 .get(partition_id)
                 .expect("partition should be present");
-            if *partition.key_range.start() <= end {
+            if partition.key_range.start() <= end {
                 return Err(BuilderError::Overlap(*partition_id));
             }
         }
@@ -422,7 +409,7 @@ impl PartitionTableBuilder {
         if let Some(partition) = self.inner.partitions.remove(partition_id) {
             self.inner
                 .partition_key_index
-                .remove(partition.key_range.end());
+                .remove(&partition.key_range.end());
         }
     }
 
@@ -458,7 +445,7 @@ impl From<PartitionTable> for PartitionTableBuilder {
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct PartitionShadow {
     pub log_id: Option<LogId>,
-    pub key_range: RangeInclusive<PartitionKey>,
+    pub key_range: crate::sharding::KeyRange,
     #[serde(default)]
     pub db_name: Option<DbName>,
     pub cf_name: Option<CfName>,
@@ -541,105 +528,18 @@ impl TryFrom<PartitionTableShadow> for PartitionTable {
     }
 }
 
-#[derive(Debug)]
-pub struct EqualSizedPartitionPartitioner {
-    num_partitions: u16,
-    next_partition_id: PartitionId,
-}
-
-impl EqualSizedPartitionPartitioner {
-    const PARTITION_KEY_RANGE_END: u128 = 1 << 64;
-
-    fn new(num_partitions: u16) -> Self {
-        Self {
-            num_partitions,
-            next_partition_id: PartitionId::MIN,
-        }
-    }
-
-    fn partition_id_to_partition_range(
-        num_partitions: u16,
-        partition_id: PartitionId,
-    ) -> RangeInclusive<PartitionKey> {
-        let num_partitions = u128::from(num_partitions);
-        let partition_id = u128::from(*partition_id);
-
-        assert!(
-            partition_id < num_partitions,
-            "There cannot be a partition id which is larger than the number of partitions \
-                '{num_partitions}', when using the fixed consecutive partitioning scheme."
-        );
-
-        // adding num_partitions - 1 to dividend is equivalent to applying ceil function to result
-        let start = (partition_id * Self::PARTITION_KEY_RANGE_END).div_ceil(num_partitions);
-        let end = ((partition_id + 1) * Self::PARTITION_KEY_RANGE_END).div_ceil(num_partitions) - 1;
-
-        let start = u64::try_from(start)
-            .expect("Resulting partition start '{start}' should be <= u64::MAX.");
-        let end =
-            u64::try_from(end).expect("Resulting partition end '{end}' should be <= u64::MAX.");
-
-        start..=end
-    }
-}
-
-impl Iterator for EqualSizedPartitionPartitioner {
-    type Item = (PartitionId, RangeInclusive<PartitionKey>);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if *self.next_partition_id < self.num_partitions {
-            let partition_id = self.next_partition_id;
-            self.next_partition_id = self.next_partition_id.next();
-
-            let partition_range =
-                Self::partition_id_to_partition_range(self.num_partitions, partition_id);
-
-            Some((partition_id, partition_range))
-        } else {
-            None
-        }
-    }
-}
+pub use crate::sharding::EqualSizedPartitionPartitioner;
 
 #[cfg(test)]
 mod tests {
     use bytes::BytesMut;
     use test_log::test;
 
-    use crate::identifiers::{PartitionId, PartitionKey};
-    use crate::partition_table::{
-        EqualSizedPartitionPartitioner, FindPartition, Partition, PartitionTable,
-        PartitionTableBuilder,
-    };
+    use crate::identifiers::PartitionId;
+    use crate::partition_table::{FindPartition, Partition, PartitionTable, PartitionTableBuilder};
+    use crate::sharding::KeyRange;
     use crate::storage::StorageCodec;
     use crate::{Version, flexbuffers_storage_encode_decode};
-
-    #[test]
-    fn partitioner_produces_consecutive_ranges() {
-        let partitioner = EqualSizedPartitionPartitioner::new(10);
-        let mut previous_end = None;
-        let mut previous_length = None::<PartitionKey>;
-
-        for (_id, range) in partitioner {
-            let current_length = *range.end() - *range.start();
-
-            if let Some(previous_length) = previous_length {
-                let length_diff = previous_length.abs_diff(current_length);
-                assert!(length_diff <= 1);
-            } else {
-                assert_eq!(*range.start(), 0);
-            }
-
-            if let Some(previous_end) = previous_end {
-                assert_eq!(previous_end + 1, *range.start());
-            }
-
-            previous_end = Some(*range.end());
-            previous_length = Some(current_length);
-        }
-
-        assert_eq!(previous_end, Some(PartitionKey::MAX));
-    }
 
     #[test(tokio::test)]
     async fn partition_table_resolves_partition_keys() {
@@ -651,13 +551,13 @@ mod tests {
         for (partition_id, partition) in partitioner {
             assert_eq!(
                 partition_table
-                    .find_partition_id(*partition.key_range.start())
+                    .find_partition_id(partition.key_range.start())
                     .expect("partition should exist"),
                 *partition_id
             );
             assert_eq!(
                 partition_table
-                    .find_partition_id(*partition.key_range.end())
+                    .find_partition_id(partition.key_range.end())
                     .expect("partition should exist"),
                 *partition_id
             );
@@ -707,8 +607,11 @@ mod tests {
     #[test]
     fn detect_holes_in_partition_table() -> googletest::Result<()> {
         let mut builder = PartitionTableBuilder::new(Version::INVALID);
-        builder.add_partition(Partition::new(PartitionId::from(0), 0..=1024))?;
-        builder.add_partition(Partition::new(PartitionId::from(1), 2048..=4096))?;
+        builder.add_partition(Partition::new(PartitionId::from(0), KeyRange::new(0, 1024)))?;
+        builder.add_partition(Partition::new(
+            PartitionId::from(1),
+            KeyRange::new(2048, 4096),
+        ))?;
 
         let partition_table = builder.build();
 

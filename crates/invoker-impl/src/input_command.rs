@@ -8,16 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
-
 use tokio::sync::mpsc;
 
 use restate_errors::NotRunningError;
 use restate_futures_util::concurrency::Permit;
 use restate_memory::MemoryLease;
-use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch};
+use restate_types::identifiers::{EntryIndex, InvocationId, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal_v2::{CommandIndex, NotificationId};
+use restate_types::sharding::KeyRange;
 use restate_types::vqueues::VQueueId;
 
 use restate_invoker_api::{Effect, InvocationStatusReport, StatusHandle};
@@ -93,7 +92,7 @@ pub(crate) enum InputCommand<SR> {
     // needed for dynamic registration at Invoker
     RegisterPartition {
         partition: PartitionLeaderEpoch,
-        partition_key_range: RangeInclusive<PartitionKey>,
+        partition_key_range: KeyRange,
         storage_reader: SR,
         sender: mpsc::Sender<Box<Effect>>,
     },
@@ -241,7 +240,7 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
     fn register_partition(
         &mut self,
         partition: PartitionLeaderEpoch,
-        partition_key_range: RangeInclusive<PartitionKey>,
+        partition_key_range: KeyRange,
         storage_reader: SR,
         sender: mpsc::Sender<Box<Effect>>,
     ) -> Result<(), NotRunningError> {
@@ -259,10 +258,7 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
 #[derive(Debug, Clone)]
 pub struct ChannelStatusReader(
     pub(super)  mpsc::UnboundedSender<
-        restate_futures_util::command::Command<
-            RangeInclusive<PartitionKey>,
-            Vec<InvocationStatusReport>,
-        >,
+        restate_futures_util::command::Command<KeyRange, Vec<InvocationStatusReport>>,
     >,
 );
 
@@ -272,7 +268,7 @@ impl StatusHandle for ChannelStatusReader {
         std::vec::IntoIter<InvocationStatusReport>,
     >;
 
-    async fn read_status(&self, keys: RangeInclusive<PartitionKey>) -> Self::Iterator {
+    async fn read_status(&self, keys: KeyRange) -> Self::Iterator {
         let (cmd, rx) = restate_futures_util::command::Command::prepare(keys);
         if self.0.send(cmd).is_err() {
             return itertools::Either::Left(std::iter::empty::<InvocationStatusReport>());

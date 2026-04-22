@@ -9,9 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use std::future::Future;
-use std::ops::RangeInclusive;
 
-use restate_types::identifiers::{InvocationId, PartitionKey, ServiceId};
+use restate_types::identifiers::{InvocationId, ServiceId};
+use restate_types::sharding::KeyRange;
 
 use crate::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
@@ -42,7 +42,7 @@ pub trait ScanVirtualObjectStatusTable {
             + 'static,
     >(
         &self,
-        range: RangeInclusive<PartitionKey>,
+        range: KeyRange,
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
