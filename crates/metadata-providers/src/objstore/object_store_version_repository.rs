@@ -80,7 +80,8 @@ impl ObjectStoreVersionRepository {
     #[inline]
     fn path(&self, key: &ByteString) -> Path {
         self.prefix
-            .child(PathPart::from(<ByteString as AsRef<str>>::as_ref(key)))
+            .clone()
+            .join(PathPart::from(<ByteString as AsRef<str>>::as_ref(key)))
     }
 }
 
