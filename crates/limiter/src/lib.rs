@@ -43,6 +43,11 @@ mod key;
 mod rule;
 mod rule_store;
 
+// Re-exports
+pub use key::LimitKey;
+pub use rule::{Pattern, RuleHandle, RulePattern};
+pub use rule_store::{Limit, Rules, StructuredLimits};
+
 /// Represents the hierarchy level of counters or rules
 ///
 /// This enum is used throughout the limiter to identify which level
@@ -91,7 +96,3 @@ impl std::fmt::Display for Level {
         }
     }
 }
-
-pub use key::LimitKey;
-pub use rule::RulePattern;
-pub use rule_store::{Limit, Rules, StructuredLimits};

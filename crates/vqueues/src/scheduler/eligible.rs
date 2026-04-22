@@ -236,6 +236,12 @@ impl EligibilityTracker {
         }
     }
 
+    pub fn wake_up_queues(&mut self, vqueues: impl IntoIterator<Item = VQueueHandle>) -> bool {
+        vqueues.into_iter().fold(false, |wake_up, vqueue| {
+            wake_up | self.wake_up_queue(vqueue)
+        })
+    }
+
     /// returns true if the scheduler should be woken up
     pub fn wake_up_queue(&mut self, vqueue: VQueueHandle) -> bool {
         if let Some(state) = self.states.entry(vqueue) {
