@@ -8,6 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+// This crate re-exports the disallowed types — allow them here.
+#![allow(clippy::disallowed_types)]
+
 pub mod errors;
 pub mod hash;
 pub mod memory;

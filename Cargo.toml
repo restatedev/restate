@@ -333,6 +333,10 @@ opt-level = 2
 [profile.dist]
 inherits = "release"
 
+[workspace.lints.clippy]
+# Prefer restate-platform's re-exports over direct std usage. See clippy.toml for the list.
+disallowed_types = "warn"
+
 [workspace.lints.rust]
 # Temporarily allow unused assignments until https://github.com/rust-lang/rust/issues/147648 has been fixed.
 # The problem is that error fields used by thiserror::error attribute generate false positives for unused_assignments.
