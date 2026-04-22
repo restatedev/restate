@@ -8,7 +8,7 @@ use restate_storage_api::lock_table::WriteLockTable;
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
-use tracing::trace;
+use tracing::{debug, trace};
 
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::invocation_status_table::{InFlightInvocationMetadata, InvocationStatus};
@@ -154,12 +154,14 @@ where
 
         // If we're suspended, let's figure out if we need to resume
         match self.invocation_status {
-            InvocationStatus::Suspended {
-                waiting_for_notifications,
-                ..
-            } => {
-                // If we're suspended, let's figure out if we need to resume
-                if waiting_for_notifications.remove(&self.entry.id()) {
+            InvocationStatus::Suspended { awaiting_on, .. } => {
+                debug!(
+                    "Resolving combinator '{awaiting_on:?}' with ({}, result: {:?})",
+                    self.entry.id(),
+                    self.entry.result_variant()
+                );
+
+                if awaiting_on.resolve(&self.entry.id(), self.entry.result_variant()) {
                     ResumeInvocationCommand {
                         invocation_id: self.invocation_id,
                         invocation_status: self.invocation_status,

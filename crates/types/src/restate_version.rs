@@ -234,6 +234,10 @@ pub static RESTATE_VERSION_1_6_0: LazyLock<SemanticRestateVersion> =
 pub static RESTATE_VERSION_1_7_0: LazyLock<SemanticRestateVersion> =
     LazyLock::new(|| SemanticRestateVersion::parse("1.7.0-dev").expect("valid semver version"));
 
+/// Why isn't this value simply v1.8.0? See description of [`RESTATE_VERSION_1_6_0`].
+pub static RESTATE_VERSION_1_8_0: LazyLock<SemanticRestateVersion> =
+    LazyLock::new(|| SemanticRestateVersion::parse("1.8.0-dev").expect("valid semver version"));
+
 #[cfg(test)]
 mod tests {
     use super::*;

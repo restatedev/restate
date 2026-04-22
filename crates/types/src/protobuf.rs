@@ -226,9 +226,9 @@ pub mod metadata {
 
         fn try_from(value: Precondition) -> Result<Self, Self::Error> {
             match value.kind() {
-                PreconditionKind::Unknown => {
-                    Err(ConversionError::invalid_data("unknown precondition kind"))
-                }
+                PreconditionKind::Unknown => Err(ConversionError::invalid_data_static(
+                    "unknown precondition kind",
+                )),
                 PreconditionKind::None => Ok(crate::metadata::Precondition::None),
                 PreconditionKind::DoesNotExist => Ok(crate::metadata::Precondition::DoesNotExist),
                 PreconditionKind::MatchesVersion => {

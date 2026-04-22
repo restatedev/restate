@@ -95,7 +95,7 @@ pub mod pb_conversions {
                 .into();
 
             let request = match WriteRequestKind::try_from(value.kind)
-                .map_err(|_| ConversionError::invalid_data("kind"))?
+                .map_err(|_| ConversionError::invalid_data_static("kind"))?
             {
                 WriteRequestKind::Delete => Self {
                     request_id,
@@ -103,7 +103,7 @@ pub mod pb_conversions {
                         key: value
                             .key
                             .try_into()
-                            .map_err(|_| ConversionError::invalid_data("key"))?,
+                            .map_err(|_| ConversionError::invalid_data_static("key"))?,
                         precondition: value
                             .precondition
                             .ok_or_else(|| ConversionError::missing_field("precondition"))?
@@ -116,7 +116,7 @@ pub mod pb_conversions {
                         key: value
                             .key
                             .try_into()
-                            .map_err(|_| ConversionError::invalid_data("key"))?,
+                            .map_err(|_| ConversionError::invalid_data_static("key"))?,
                         value: value
                             .value
                             .ok_or_else(|| ConversionError::missing_field("value"))?
@@ -127,7 +127,7 @@ pub mod pb_conversions {
                             .try_into()?,
                     },
                 },
-                _ => return Err(ConversionError::InvalidData("kind")),
+                _ => return Err(ConversionError::invalid_data_static("kind")),
             };
 
             Ok(request)

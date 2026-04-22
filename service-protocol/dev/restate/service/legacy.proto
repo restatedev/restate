@@ -1,0 +1,26 @@
+// Copyright (c) 2026 - Restate Software, Inc., Restate GmbH
+//
+// This file is part of the Restate service protocol, which is
+// released under the MIT license.
+//
+// You can find a copy of the license in file LICENSE in the root
+// directory of this repository or package, or at
+// https://github.com/restatedev/service-protocol/blob/main/LICENSE
+
+syntax = "proto3";
+
+package dev.restate.service.legacy;
+
+option java_package = "dev.restate.generated.service.legacy";
+option go_package = "restate.dev/sdk-go/pb/service/legacy";
+
+// Type: 0x0000 + 1
+//
+// SuspensionMessage for V6 service protocol
+// this message type has been replaced by the new
+// SuspensionMessage introduced in V7
+message SuspensionMessageV6 {
+  repeated uint32 waiting_completions = 1;
+  repeated uint32 waiting_signals = 2;
+  repeated string waiting_named_signals = 3;
+}

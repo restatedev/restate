@@ -391,13 +391,14 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
     use std::future::ready;
 
     use assert2::let_assert;
     use bytes::Bytes;
     use futures::{FutureExt, Stream, StreamExt, stream};
     use googletest::prelude::*;
+    use restate_storage_api::journal_table_v2::NotificationEntryIndex;
     use rstest::rstest;
     use test_log::test;
 
@@ -412,7 +413,7 @@ mod tests {
     use restate_types::invocation::{Header, InvocationTarget};
     use restate_types::journal::raw::RawEntryCodec;
     use restate_types::journal_v2::raw::RawCommand;
-    use restate_types::journal_v2::{CompletionId, Entry, NotificationId};
+    use restate_types::journal_v2::{CompletionId, Entry, NotificationId, UnresolvedFuture};
     use restate_types::schema::deployment::Deployment;
     use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry;
     use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
@@ -525,8 +526,9 @@ mod tests {
         fn get_notifications_index(
             &mut self,
             _: InvocationId,
-        ) -> impl Future<Output = restate_storage_api::Result<HashMap<NotificationId, EntryIndex>>> + Send
-        {
+        ) -> impl Future<
+            Output = restate_storage_api::Result<HashMap<NotificationId, NotificationEntryIndex>>,
+        > + Send {
             panic!("This should be unused");
             #[allow(unreachable_code)]
             std::future::ready(Ok(HashMap::new()))
@@ -1198,7 +1200,7 @@ mod tests {
         #[values(
             InvocationStatus::Suspended {
                 metadata: InFlightInvocationMetadata::mock(),
-                waiting_for_notifications: HashSet::new(),
+                awaiting_on: UnresolvedFuture::empty(),
             },
             InvocationStatus::Invoked(InFlightInvocationMetadata::mock())
         )]

@@ -175,11 +175,11 @@ mod tests {
     use restate_types::deployment::PinnedDeployment;
     use restate_types::identifiers::DeploymentId;
     use restate_types::invocation::InvocationTarget;
+    use restate_types::journal_v2::UnresolvedFuture;
     use restate_types::schema::deployment::Deployment;
     use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry;
     use restate_types::service_protocol::ServiceProtocolVersion;
     use rstest::rstest;
-    use std::collections::HashSet;
     use std::future::ready;
     use test_log::test;
 
@@ -240,7 +240,7 @@ mod tests {
         #[values(
             InvocationStatus::Suspended {
                 metadata: InFlightInvocationMetadata::mock(),
-                waiting_for_notifications: HashSet::new(),
+                awaiting_on: UnresolvedFuture::empty(),
                 },
             InvocationStatus::Paused(InFlightInvocationMetadata::mock())
         )]
@@ -447,7 +447,7 @@ mod tests {
             status: if suspended {
                 InvocationStatus::Suspended {
                     metadata,
-                    waiting_for_notifications: Default::default(),
+                    awaiting_on: UnresolvedFuture::empty(),
                 }
             } else {
                 InvocationStatus::Paused(metadata)
@@ -536,7 +536,7 @@ mod tests {
             status: if suspended {
                 InvocationStatus::Suspended {
                     metadata,
-                    waiting_for_notifications: Default::default(),
+                    awaiting_on: UnresolvedFuture::empty(),
                 }
             } else {
                 InvocationStatus::Paused(metadata)

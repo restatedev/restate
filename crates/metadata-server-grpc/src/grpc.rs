@@ -68,7 +68,7 @@ pub mod pb_conversions {
         fn try_from(kv_entry: KvEntry) -> Result<Self, Self::Error> {
             Ok((
                 ByteString::try_from(kv_entry.key)
-                    .map_err(|_| ConversionError::invalid_data("key"))?,
+                    .map_err(|_| ConversionError::invalid_data_static("key"))?,
                 kv_entry
                     .value
                     .ok_or(ConversionError::missing_field("value"))?

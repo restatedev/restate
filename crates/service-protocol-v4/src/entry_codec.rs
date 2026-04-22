@@ -34,6 +34,7 @@ use restate_types::journal_v2::lite::{
 };
 use restate_types::journal_v2::raw::{
     CallOrSendMetadata, RawCommand, RawCommandSpecificMetadata, RawEntry, RawNotification,
+    RawNotificationResultVariant,
 };
 use restate_types::journal_v2::*;
 
@@ -399,6 +400,7 @@ impl Encoder for ServiceProtocolV4Codec {
             ))) => RawNotification::new(
                 CompletionType::GetLazyState,
                 NotificationId::CompletionId(completion_id),
+                RawNotificationResultVariant::Value,
                 proto::GetLazyStateCompletionNotificationMessage {
                     completion_id,
                     result: Some(result.into()),
@@ -414,6 +416,7 @@ impl Encoder for ServiceProtocolV4Codec {
             ))) => RawNotification::new(
                 CompletionType::GetLazyStateKeys,
                 NotificationId::CompletionId(completion_id),
+                RawNotificationResultVariant::StateKeys,
                 proto::GetLazyStateKeysCompletionNotificationMessage {
                     completion_id,
                     state_keys: Some(proto::StateKeys {
@@ -432,6 +435,10 @@ impl Encoder for ServiceProtocolV4Codec {
             ))) => RawNotification::new(
                 CompletionType::GetPromise,
                 NotificationId::CompletionId(completion_id),
+                match &result {
+                    GetPromiseResult::Success(_) => RawNotificationResultVariant::Value,
+                    GetPromiseResult::Failure(_) => RawNotificationResultVariant::Failure,
+                },
                 proto::GetPromiseCompletionNotificationMessage {
                     completion_id,
                     result: Some(result.into()),
@@ -447,6 +454,11 @@ impl Encoder for ServiceProtocolV4Codec {
             ))) => RawNotification::new(
                 CompletionType::PeekPromise,
                 NotificationId::CompletionId(completion_id),
+                match &result {
+                    PeekPromiseResult::Void => RawNotificationResultVariant::Void,
+                    PeekPromiseResult::Success(_) => RawNotificationResultVariant::Value,
+                    PeekPromiseResult::Failure(_) => RawNotificationResultVariant::Failure,
+                },
                 proto::PeekPromiseCompletionNotificationMessage {
                     completion_id,
                     result: Some(result.into()),
@@ -462,6 +474,10 @@ impl Encoder for ServiceProtocolV4Codec {
             ))) => RawNotification::new(
                 CompletionType::CompletePromise,
                 NotificationId::CompletionId(completion_id),
+                match &result {
+                    CompletePromiseResult::Void => RawNotificationResultVariant::Void,
+                    CompletePromiseResult::Failure(_) => RawNotificationResultVariant::Failure,
+                },
                 proto::CompletePromiseCompletionNotificationMessage {
                     completion_id,
                     result: Some(result.into()),
@@ -475,6 +491,7 @@ impl Encoder for ServiceProtocolV4Codec {
             }))) => RawNotification::new(
                 CompletionType::Sleep,
                 NotificationId::CompletionId(completion_id),
+                RawNotificationResultVariant::Void,
                 proto::SleepCompletionNotificationMessage {
                     completion_id,
                     void: Some(proto::Void::default()),
@@ -491,6 +508,7 @@ impl Encoder for ServiceProtocolV4Codec {
             ))) => RawNotification::new(
                 CompletionType::CallInvocationId,
                 NotificationId::CompletionId(completion_id),
+                RawNotificationResultVariant::InvocationId,
                 proto::CallInvocationIdCompletionNotificationMessage {
                     completion_id,
                     invocation_id: invocation_id.to_string(),
@@ -504,6 +522,10 @@ impl Encoder for ServiceProtocolV4Codec {
             }))) => RawNotification::new(
                 CompletionType::Call,
                 NotificationId::CompletionId(completion_id),
+                match &result {
+                    CallResult::Success(_) => RawNotificationResultVariant::Value,
+                    CallResult::Failure(_) => RawNotificationResultVariant::Failure,
+                },
                 proto::CallCompletionNotificationMessage {
                     completion_id,
                     result: Some(result.into()),
@@ -518,6 +540,10 @@ impl Encoder for ServiceProtocolV4Codec {
             }))) => RawNotification::new(
                 CompletionType::Run,
                 NotificationId::CompletionId(completion_id),
+                match &result {
+                    RunResult::Success(_) => RawNotificationResultVariant::Value,
+                    RunResult::Failure(_) => RawNotificationResultVariant::Failure,
+                },
                 proto::RunCompletionNotificationMessage {
                     completion_id,
                     result: Some(result.into()),
@@ -534,6 +560,10 @@ impl Encoder for ServiceProtocolV4Codec {
             ))) => RawNotification::new(
                 CompletionType::AttachInvocation,
                 NotificationId::CompletionId(completion_id),
+                match &result {
+                    AttachInvocationResult::Success(_) => RawNotificationResultVariant::Value,
+                    AttachInvocationResult::Failure(_) => RawNotificationResultVariant::Failure,
+                },
                 proto::AttachInvocationCompletionNotificationMessage {
                     completion_id,
                     result: Some(result.into()),
@@ -549,6 +579,11 @@ impl Encoder for ServiceProtocolV4Codec {
             ))) => RawNotification::new(
                 CompletionType::GetInvocationOutput,
                 NotificationId::CompletionId(completion_id),
+                match &result {
+                    GetInvocationOutputResult::Void => RawNotificationResultVariant::Void,
+                    GetInvocationOutputResult::Success(_) => RawNotificationResultVariant::Value,
+                    GetInvocationOutputResult::Failure(_) => RawNotificationResultVariant::Failure,
+                },
                 proto::GetInvocationOutputCompletionNotificationMessage {
                     completion_id,
                     result: Some(result.into()),
@@ -561,6 +596,11 @@ impl Encoder for ServiceProtocolV4Codec {
                 RawNotification::new(
                     NotificationType::Signal,
                     id.clone().into(),
+                    match &result {
+                        SignalResult::Void => RawNotificationResultVariant::Void,
+                        SignalResult::Success(_) => RawNotificationResultVariant::Value,
+                        SignalResult::Failure(_) => RawNotificationResultVariant::Failure,
+                    },
                     proto::SignalNotificationMessage {
                         signal_id: Some(match id {
                             SignalId::Index(idx) => {

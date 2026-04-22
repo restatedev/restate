@@ -30,7 +30,7 @@ The dissector is composed by two components:
       This will fail printing the scan path of the modules. On my Fedora machine the path is `/usr/lib64/lua/5.1/`.
    1. Copy the compiled `target/release/libservice_protocol_wireshark_dissector.so` in the chosen path, and rename it as `restate_service_protocol_decoder.so`. For example:
       ```shell
-      cp target/release/libservice_protocol_wireshark_dissector.so /usr/lib64/lua/5.1/restate_service_protocol_decoder.so
+      cp target/release/libservice_protocol_wireshark_dissector.so /usr/lib64/lua/5.4/restate_service_protocol_decoder.so
       ```
    1. You can now check if the module is loaded in Wireshark by evaluating the following expression:
       ```lua

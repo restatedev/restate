@@ -145,25 +145,60 @@ pub enum RawCommandSpecificMetadata {
     None,
 }
 
+/// Covers all possible notification result variants. This maps
+/// 1:1 with protocol.proto `NotificationTemplate`
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RawNotificationResultVariant {
+    /// `Unknown` indicates no result is stored, which is the case
+    /// for notifications created before Restate v1.7.
+    Unknown,
+    Void,
+    Value,
+    Failure,
+    InvocationId,
+    StateKeys,
+}
+
+impl RawNotificationResultVariant {
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, Self::Unknown)
+    }
+
+    pub fn is_success(&self) -> bool {
+        matches!(
+            self,
+            Self::Void | Self::Value | Self::InvocationId | Self::StateKeys
+        )
+    }
+}
+
 // -- Raw notification
 
 #[derive(derive_more::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RawNotification {
     ty: NotificationType,
     id: NotificationId,
+    #[serde(default = "default_unknown_result")]
+    result: RawNotificationResultVariant,
     #[debug("Bytes({})", ByteCount::from(serialized_content.len()))]
     serialized_content: Bytes,
+}
+
+fn default_unknown_result() -> RawNotificationResultVariant {
+    RawNotificationResultVariant::Unknown
 }
 
 impl RawNotification {
     pub fn new(
         ty: impl Into<NotificationType>,
         id: NotificationId,
+        result: RawNotificationResultVariant,
         serialized_content: impl Into<Bytes>,
     ) -> Self {
         Self {
             ty: ty.into(),
             id,
+            result,
             serialized_content: serialized_content.into(),
         }
     }
@@ -188,6 +223,10 @@ impl RawNotification {
         Ok(<T as TryFromEntry>::try_from(D::decode_entry(
             &RawEntry::Notification(self.clone()),
         )?)?)
+    }
+
+    pub fn result_variant(&self) -> RawNotificationResultVariant {
+        self.result
     }
 }
 

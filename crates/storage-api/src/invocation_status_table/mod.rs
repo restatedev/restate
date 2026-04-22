@@ -24,7 +24,7 @@ use restate_types::invocation::{
     Header, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
 };
-use restate_types::journal_v2::NotificationId;
+use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
 
@@ -145,7 +145,7 @@ pub enum InvocationStatus {
     Invoked(InFlightInvocationMetadata),
     Suspended {
         metadata: InFlightInvocationMetadata,
-        waiting_for_notifications: HashSet<NotificationId>,
+        awaiting_on: UnresolvedFuture,
     },
     Paused(InFlightInvocationMetadata),
     Completed(CompletedInvocation),

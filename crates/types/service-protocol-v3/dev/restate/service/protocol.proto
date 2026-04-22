@@ -37,6 +37,9 @@ enum ServiceProtocolVersion {
   // * StartMessage.random_seed
   // * Failure.metadata
   V6 = 6;
+  // Added:
+  // * Future & AwaitingOnMessage + Changed the SuspensionMessage
+  V7 = 7;
 }
 
 // --- Core frames ---
@@ -110,7 +113,7 @@ message SuspensionMessage {
   // This list MUST not be empty.
   // False positive, entry_indexes is a valid plural of entry_indices.
   // https://learn.microsoft.com/en-us/style-guide/a-z-word-list-term-collections/i/index-indexes-indices
-  repeated uint32 entry_indexes = 1;  // protolint:disable:this REPEATED_FIELD_NAMES_PLURALIZED
+  repeated uint32 entry_indexes = 1; // protolint:disable:this REPEATED_FIELD_NAMES_PLURALIZED
 }
 
 // Type: 0x0000 + 3
