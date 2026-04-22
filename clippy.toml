@@ -2,3 +2,12 @@
 ignore-interior-mutability = ["bytes::Bytes", "bytestring::ByteString", "http::header::HeaderName", "http::header::HeaderValue"]
 # Sometimes we want to keep the mod.rs file clean
 allow-private-module-inception = true
+
+# Prefer restate-platform's re-exports over direct std usage.
+# Activated by the clippy::disallowed_types lint in [workspace.lints.clippy].
+disallowed-types = [
+    { path = "std::sync::Mutex", reason = "use `restate_platform::sync::Mutex` instead" },
+    { path = "std::sync::RwLock", reason = "use `restate_platform::sync::RwLock` instead" },
+    { path = "std::collections::HashMap", reason = "use `restate_platform::hash::HashMap` instead" },
+    { path = "std::collections::HashSet", reason = "use `restate_platform::hash::HashSet` instead" },
+]
