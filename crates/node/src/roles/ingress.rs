@@ -10,7 +10,6 @@
 
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::partitions::PartitionRouting;
-use restate_core::worker_api::PartitionProcessorInvocationClient;
 use restate_core::{TaskCenter, TaskKind};
 use restate_ingress_http::{HyperServerIngress, InvocationClientRequestDispatcher};
 use restate_types::config::IngressOptions;
@@ -20,6 +19,7 @@ use restate_types::net::listener::AddressBook;
 use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::common::IngressStatus;
 use restate_types::schema::Schema;
+use restate_worker_api::PartitionProcessorInvocationClient;
 
 type IngressHttp<T> = HyperServerIngress<
     Schema,
