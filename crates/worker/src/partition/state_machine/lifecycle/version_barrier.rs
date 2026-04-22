@@ -51,6 +51,7 @@ mod tests {
     use restate_types::SemanticRestateVersion;
     use restate_types::identifiers::PartitionKey;
     use restate_types::logs::Keys;
+    use restate_types::sharding::KeyRange;
     use restate_wal_protocol::Command;
     use restate_wal_protocol::control::VersionBarrier;
 
@@ -64,7 +65,7 @@ mod tests {
             0,    /* inbox_seq_number */
             0,    /* outbox_seq_number */
             None, /* outbox_head_seq_number */
-            PartitionKey::MIN..=PartitionKey::MAX,
+            KeyRange::FULL,
             SemanticRestateVersion::unknown().clone(),
             Default::default(),
         );
@@ -106,7 +107,7 @@ mod tests {
             0,    /* inbox_seq_number */
             0,    /* outbox_seq_number */
             None, /* outbox_head_seq_number */
-            PartitionKey::MIN..=PartitionKey::MAX,
+            KeyRange::FULL,
             SemanticRestateVersion::unknown().clone(),
             Default::default(),
         );

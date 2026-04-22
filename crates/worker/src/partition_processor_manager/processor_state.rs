@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
 use std::time::{Duration, Instant};
 
 use tokio::sync::watch;
@@ -19,8 +18,9 @@ use ulid::Ulid;
 use restate_core::network::ShardSender;
 use restate_invoker_impl::ChannelStatusReader;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
-use restate_types::identifiers::{LeaderEpoch, PartitionKey};
+use restate_types::identifiers::LeaderEpoch;
 use restate_types::net::partition_processor::PartitionLeaderService;
+use restate_types::sharding::KeyRange;
 
 use crate::partition::{LeadershipInfo, TargetLeaderState};
 
@@ -325,7 +325,7 @@ impl ProcessorState {
 #[derive(Debug)]
 pub struct StartedProcessor {
     cancellation_token: CancellationToken,
-    key_range: RangeInclusive<PartitionKey>,
+    key_range: KeyRange,
     control_tx: watch::Sender<TargetLeaderState>,
     status_reader: ChannelStatusReader,
     rpc_shard_tx: ShardSender<PartitionLeaderService>,
@@ -335,7 +335,7 @@ pub struct StartedProcessor {
 impl StartedProcessor {
     pub fn new(
         cancellation_token: CancellationToken,
-        key_range: RangeInclusive<PartitionKey>,
+        key_range: KeyRange,
         control_tx: watch::Sender<TargetLeaderState>,
         status_reader: ChannelStatusReader,
         rpc_shard_tx: ShardSender<PartitionLeaderService>,
@@ -389,8 +389,8 @@ impl StartedProcessor {
     }
 
     #[inline]
-    pub fn key_range(&self) -> &RangeInclusive<PartitionKey> {
-        &self.key_range
+    pub fn key_range(&self) -> KeyRange {
+        self.key_range
     }
 
     #[inline]

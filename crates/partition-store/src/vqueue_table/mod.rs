@@ -185,7 +185,7 @@ impl ScanVQueueTable for PartitionDb {
         let mut key_buf = [0u8; ActiveKey::by_partition_prefix_len()];
         // serialize prefix bytes
         crate::keys::EncodeTableKeyPrefix::serialize_to(
-            &ActiveKey::builder().partition_key(*self.partition().key_range.start()),
+            &ActiveKey::builder().partition_key(self.partition().key_range.start()),
             &mut key_buf.as_mut(),
         );
 
@@ -194,7 +194,7 @@ impl ScanVQueueTable for PartitionDb {
 
         // the end prefix is one byte beyond the max partition key on this key kind prefix.
         crate::keys::EncodeTableKeyPrefix::serialize_to(
-            &ActiveKey::builder().partition_key(*self.partition().key_range.end()),
+            &ActiveKey::builder().partition_key(self.partition().key_range.end()),
             &mut key_buf.as_mut(),
         );
         let _success = crate::convert_to_upper_bound(&mut key_buf);

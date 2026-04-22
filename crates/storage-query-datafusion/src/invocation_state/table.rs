@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use anyhow::anyhow;
@@ -23,7 +22,8 @@ use tokio::sync::mpsc::Sender;
 
 use restate_invoker_api::{InvocationStatusReport, StatusHandle};
 use restate_partition_store::PartitionStoreManager;
-use restate_types::identifiers::{PartitionId, PartitionKey};
+use restate_types::identifiers::PartitionId;
+use restate_types::sharding::KeyRange;
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::filter::FirstMatchingPartitionKeyExtractor;
@@ -74,7 +74,7 @@ pub(crate) fn register_self(
 async fn partition_key_range(
     partition_store_manager: &PartitionStoreManager,
     partition_id: PartitionId,
-) -> datafusion::common::Result<RangeInclusive<PartitionKey>> {
+) -> datafusion::common::Result<KeyRange> {
     partition_store_manager
         .get_partition_store(partition_id)
         .await
@@ -82,7 +82,7 @@ async fn partition_key_range(
             let err = anyhow!("expecting a partition store");
             DataFusionError::External(err.into())
         })
-        .map(|store| store.partition_key_range().clone())
+        .map(|store| store.partition_key_range())
 }
 
 #[derive(derive_more::Debug, Clone)]
@@ -96,7 +96,7 @@ impl<S: StatusHandle + Send + Sync + Debug + Clone + 'static> ScanPartition for 
     fn scan_partition(
         &self,
         partition_id: PartitionId,
-        _range: RangeInclusive<PartitionKey>,
+        _range: KeyRange,
         projection: SchemaRef,
         _predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,

@@ -9,9 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use std::future::Future;
-use std::ops::RangeInclusive;
 
-use restate_types::identifiers::{IdempotencyId, InvocationId, PartitionKey};
+use restate_types::identifiers::{IdempotencyId, InvocationId};
+use restate_types::sharding::KeyRange;
 
 use super::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
@@ -40,7 +40,7 @@ pub trait ScanIdempotencyTable {
             + 'static,
     >(
         &self,
-        range: RangeInclusive<PartitionKey>,
+        range: KeyRange,
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 }

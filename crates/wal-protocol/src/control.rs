@@ -8,15 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
-
 use restate_storage_api::fsm_table::{CurrentReplicaSetState, NextReplicaSetState};
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
+use restate_types::identifiers::{LeaderEpoch, PartitionId};
 use restate_types::logs::{Keys, Lsn, SequenceNumber};
 use restate_types::partitions::PartitionConfiguration;
 use restate_types::partitions::state::{MemberState, ReplicaSetState};
 use restate_types::replication::{NodeSet, ReplicationProperty};
 use restate_types::schema::Schema;
+use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{GenerationalNodeId, SemanticRestateVersion, Version, Versioned};
 
@@ -30,7 +29,7 @@ pub struct AnnounceLeader {
     /// it's safe to assume that it's always set.
     pub node_id: GenerationalNodeId,
     pub leader_epoch: LeaderEpoch,
-    pub partition_key_range: RangeInclusive<PartitionKey>,
+    pub partition_key_range: KeyRange,
 
     /// Associated epoch metadata version
     ///

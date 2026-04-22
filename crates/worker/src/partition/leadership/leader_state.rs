@@ -11,7 +11,6 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::future::Future;
-use std::ops::RangeInclusive;
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 
@@ -39,6 +38,7 @@ use restate_types::net::ingest::IngestRecord;
 use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
+use restate_types::sharding::KeyRange;
 use restate_types::{RESTATE_VERSION_1_7_0, SemanticRestateVersion, Version, Versioned};
 use restate_vqueues::VQueueEvent;
 use restate_vqueues::{SchedulerService, VQueuesMeta, scheduler};
@@ -66,7 +66,7 @@ pub struct LeaderState {
     pub(crate) partition_id: PartitionId,
     pub leader_epoch: LeaderEpoch,
     // only needed for proposing TruncateOutbox to ourselves
-    partition_key_range: RangeInclusive<PartitionKey>,
+    partition_key_range: KeyRange,
 
     pub shuffle_hint_tx: HintSender,
     // It's illegal to await the shuffle task handle once it has
@@ -93,7 +93,7 @@ impl LeaderState {
     pub fn new(
         partition_id: PartitionId,
         leader_epoch: LeaderEpoch,
-        partition_key_range: RangeInclusive<PartitionKey>,
+        partition_key_range: KeyRange,
         shuffle_task_handle: TaskHandle<anyhow::Result<()>>,
         cleaner_handle: CleanerHandle,
         trimmer_task_id: TaskId,
@@ -319,7 +319,7 @@ impl LeaderState {
                     // the replica-set as a sufficient source of durability, or only snapshots.
                     self.self_proposer
                         .self_propose(
-                            *self.partition_key_range.start(),
+                            self.partition_key_range.start(),
                             Command::UpdatePartitionDurability(partition_durability),
                         )
                         .await?;
@@ -337,7 +337,7 @@ impl LeaderState {
                     //  specific destination messages that are identified by a partition_id
                     self.self_proposer
                         .self_propose(
-                            *self.partition_key_range.start(),
+                            self.partition_key_range.start(),
                             Command::TruncateOutbox(outbox_truncation.index()),
                         )
                         .await?;
@@ -375,10 +375,10 @@ impl LeaderState {
                     {
                         self.self_proposer
                             .self_propose(
-                                *self.partition_key_range.start(),
+                                self.partition_key_range.start(),
                                 Command::UpsertSchema(UpsertSchema {
                                     partition_key_range: Keys::RangeInclusive(
-                                        self.partition_key_range.clone(),
+                                        self.partition_key_range.into(),
                                     ),
                                     schema,
                                 }),

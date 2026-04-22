@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -17,7 +16,8 @@ use bytes::Bytes;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::state_table::ScanStateTable;
-use restate_types::identifiers::{PartitionKey, ServiceId};
+use restate_types::identifiers::ServiceId;
+use restate_types::sharding::KeyRange;
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::filter::FirstMatchingPartitionKeyExtractor;
@@ -57,7 +57,7 @@ impl ScanLocalPartition for StateScanner {
     type Builder = StateBuilder;
     type Item<'a> = (ServiceId, Bytes, &'a [u8]);
     type ConversionError = std::convert::Infallible;
-    type Filter = RangeInclusive<PartitionKey>;
+    type Filter = KeyRange;
 
     fn for_each_row<
         F: for<'a> FnMut(
@@ -68,7 +68,7 @@ impl ScanLocalPartition for StateScanner {
             + 'static,
     >(
         partition_store: &PartitionStore,
-        range: RangeInclusive<PartitionKey>,
+        range: KeyRange,
         mut f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
         partition_store.for_each_user_state(range, move |item| f(item).map_break(Result::unwrap))

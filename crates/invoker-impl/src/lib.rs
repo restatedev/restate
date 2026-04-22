@@ -20,7 +20,7 @@ mod status_store;
 
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
-use std::ops::RangeInclusive;
+use std::ops::RangeBounds;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::{Duration, Instant, SystemTime};
@@ -49,7 +49,7 @@ use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_time_util::DurationExt;
 use restate_types::config::{Configuration, InvokerOptions, ServiceClientOptions};
 use restate_types::deployment::PinnedDeployment;
-use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, WithPartitionKey};
+use restate_types::identifiers::{DeploymentId, InvocationId, WithPartitionKey};
 use restate_types::identifiers::{PartitionId, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::EntryIndex;
@@ -61,6 +61,7 @@ use restate_types::journal_v2::{CommandIndex, EntryMetadata, NotificationId};
 use restate_types::live::{Live, LiveLoad};
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
+use restate_types::sharding::KeyRange;
 use tokio_util::time::DelayQueue;
 use tokio_util::time::delay_queue::Key as RetryTimerKey;
 
@@ -203,10 +204,7 @@ pub struct Service<StorageReader, EntryEnricher, Schemas> {
     // Used for constructing the invoker sender and status reader
     input_tx: mpsc::UnboundedSender<InputCommand<StorageReader>>,
     status_tx: mpsc::UnboundedSender<
-        restate_futures_util::command::Command<
-            RangeInclusive<PartitionKey>,
-            Vec<InvocationStatusReport>,
-        >,
+        restate_futures_util::command::Command<KeyRange, Vec<InvocationStatusReport>>,
     >,
     // For the segment queue
     tmp_dir: PathBuf,
@@ -386,10 +384,7 @@ where
 struct ServiceInner<InvocationTaskRunner, Schemas, StorageReader> {
     input_rx: mpsc::UnboundedReceiver<InputCommand<StorageReader>>,
     status_rx: mpsc::UnboundedReceiver<
-        restate_futures_util::command::Command<
-            RangeInclusive<PartitionKey>,
-            Vec<InvocationStatusReport>,
-        >,
+        restate_futures_util::command::Command<KeyRange, Vec<InvocationStatusReport>>,
     >,
 
     // Channel to communicate with invocation tasks
@@ -449,10 +444,10 @@ where
 
         tokio::select! {
             Some(cmd) = self.status_rx.recv() => {
-                let keys = cmd.payload();
+                let keys = *cmd.payload();
                 let statuses = self
                     .invocation_state_machine_manager
-                    .registered_partitions_with_keys(keys.clone())
+                    .registered_partitions_with_keys(keys)
                     .flat_map(|partition| self.status_store.status_for_partition(partition))
                     .filter(|status| keys.contains(&status.invocation_id().partition_key()))
                     .collect();
@@ -607,7 +602,7 @@ where
     fn handle_register_partition(
         &mut self,
         partition: PartitionLeaderEpoch,
-        partition_key_range: RangeInclusive<PartitionKey>,
+        partition_key_range: KeyRange,
         storage_reader: IR,
         sender: mpsc::Sender<Box<Effect>>,
     ) {
@@ -1850,10 +1845,7 @@ mod tests {
         ) -> (
             mpsc::UnboundedSender<InputCommand<IR>>,
             mpsc::UnboundedSender<
-                restate_futures_util::command::Command<
-                    RangeInclusive<PartitionKey>,
-                    Vec<InvocationStatusReport>,
-                >,
+                restate_futures_util::command::Command<KeyRange, Vec<InvocationStatusReport>>,
             >,
             Self,
         ) {
@@ -1887,7 +1879,7 @@ mod tests {
             let (partition_tx, partition_rx) = mpsc::channel(1024);
             self.handle_register_partition(
                 MOCK_PARTITION,
-                RangeInclusive::new(0, 0),
+                KeyRange::new(0, 0),
                 storage_reader,
                 partition_tx,
             );
@@ -2139,7 +2131,7 @@ mod tests {
         handle
             .register_partition(
                 partition_leader_epoch,
-                RangeInclusive::new(0, 0),
+                KeyRange::new(0, 0),
                 EmptyStorageReader,
                 output_tx,
             )

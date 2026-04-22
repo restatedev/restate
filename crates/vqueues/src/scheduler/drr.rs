@@ -425,7 +425,6 @@ mod tests {
     use super::*;
 
     use std::num::{NonZeroU16, NonZeroUsize};
-    use std::ops::RangeInclusive;
     use std::pin::pin;
     use std::task::Poll;
 
@@ -441,6 +440,7 @@ mod tests {
     use restate_types::clock::UniqueTimestamp;
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::partitions::Partition;
+    use restate_types::sharding::KeyRange;
     use restate_types::vqueue::{
         EffectivePriority, NewEntryPriority, VQueueId, VQueueInstance, VQueueParent,
     };
@@ -473,10 +473,7 @@ mod tests {
         // A single partition store that spans all keys.
         manager
             .open(
-                &Partition::new(
-                    PartitionId::MIN,
-                    RangeInclusive::new(0, PartitionKey::MAX - 1),
-                ),
+                &Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1)),
                 None,
             )
             .await

@@ -10,7 +10,6 @@
 
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::ops::RangeInclusive;
 use std::pin::pin;
 use std::sync::Arc;
 
@@ -26,6 +25,7 @@ use restate_types::identifiers::{
     InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, ServiceId,
 };
 use restate_types::invocation::{InvocationTarget, ServiceInvocation, Source};
+use restate_types::sharding::KeyRange;
 use restate_types::state_mut::ExternalStateMutation;
 
 mod barrier_test;
@@ -60,10 +60,7 @@ async fn storage_test_environment_with_manager() -> (Arc<PartitionStoreManager>,
     // A single partition store that spans all keys.
     let store = manager
         .open(
-            &Partition::new(
-                PartitionId::MIN,
-                RangeInclusive::new(0, PartitionKey::MAX - 1),
-            ),
+            &Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1)),
             None,
         )
         .await

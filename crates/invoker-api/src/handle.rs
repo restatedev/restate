@@ -8,17 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
-
-use restate_types::vqueue::VQueueId;
 use tokio::sync::mpsc;
 
 use restate_errors::NotRunningError;
 use restate_futures_util::concurrency::Permit;
 use restate_memory::MemoryLease;
-use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch};
+use restate_types::identifiers::{EntryIndex, InvocationId, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal_v2::{CommandIndex, NotificationId};
+use restate_types::sharding::KeyRange;
+use restate_types::vqueue::VQueueId;
 
 use super::Effect;
 
@@ -89,7 +88,7 @@ pub trait InvokerHandle<SR> {
     fn register_partition(
         &mut self,
         partition: PartitionLeaderEpoch,
-        partition_key_range: RangeInclusive<PartitionKey>,
+        partition_key_range: KeyRange,
         storage_reader: SR,
         sender: mpsc::Sender<Box<Effect>>,
     ) -> Result<(), NotRunningError>;

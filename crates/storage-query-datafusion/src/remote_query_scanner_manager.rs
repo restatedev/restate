@@ -10,7 +10,6 @@
 
 use std::collections::BTreeMap;
 use std::fmt::{Debug, Formatter};
-use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail};
@@ -23,7 +22,8 @@ use parking_lot::Mutex;
 use restate_core::Metadata;
 use restate_core::partitions::PartitionRouting;
 use restate_types::NodeId;
-use restate_types::identifiers::{PartitionId, PartitionKey};
+use restate_types::identifiers::PartitionId;
+use restate_types::sharding::KeyRange;
 
 use crate::remote_query_scanner_client::{RemoteScannerService, remote_scan_as_datafusion_stream};
 use crate::table_providers::{Scan, ScanPartition};
@@ -194,7 +194,7 @@ impl ScanPartition for ScanToScanPartitionAdapter {
     fn scan_partition(
         &self,
         _partition_id: PartitionId,
-        _range: RangeInclusive<PartitionKey>,
+        _range: KeyRange,
         projection: SchemaRef,
         _predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
@@ -210,7 +210,7 @@ impl ScanPartition for RemotePartitionsScanner {
     fn scan_partition(
         &self,
         partition_id: PartitionId,
-        range: RangeInclusive<PartitionKey>,
+        range: KeyRange,
         projection: SchemaRef,
         predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
