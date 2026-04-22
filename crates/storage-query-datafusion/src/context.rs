@@ -74,6 +74,7 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
             ss.journal_retention,
             ss.suspended_waiting_for_completions,
             ss.suspended_waiting_for_signals,
+            ss.suspended_waiting_future_json,
 
             sis.retry_count,
             sis.last_start_at,

@@ -124,8 +124,13 @@ define_table!(sys_invocation_status(
     journal_retention: DataType::Duration,
 
     /// List of completion ids the invocation is awaiting on, if `status = suspended`.
+    /// DEPRECATED: use `suspended_waiting_future_json` instead.
     suspended_waiting_for_completions: UInt32List,
 
     /// List of signals the invocation is awaiting on, if `status = suspended`.
+    /// DEPRECATED: use `suspended_waiting_future_json` instead.
     suspended_waiting_for_signals: UInt32List,
+
+    /// Future tree the invocation is suspended on, if `status = suspended`.
+    suspended_waiting_future_json: DataType::LargeUtf8,
 ));

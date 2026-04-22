@@ -299,6 +299,9 @@ message InvocationStatusV2Lazy {
   // Suspended
   repeated uint32 waiting_for_completions = 17;
   repeated uint32 waiting_for_signal_indexes = 23;
+  repeated string waiting_for_signal_names = 24;
+  repeated Future nested_futures = 32;
+  CombinatorType combinator_type = 33;
 
   // Completed
   // optional bytes result_lazy = 18;
