@@ -34,7 +34,7 @@ fn decode_packages(lua: &Lua, buf_lua: Value) -> LuaResult<Table> {
     // so we just keep it simple and assume all messages are self contained within the same http data frame
     // https://ask.wireshark.org/question/11650/lua-wireshark-dissector-combine-data-from-2-udp-packets
     let mut dec = Decoder::new(
-        ServiceProtocolVersion::V4,
+        ServiceProtocolVersion::V7,
         NonZeroUsize::MAX,
         NonZeroUsize::MAX,
     );

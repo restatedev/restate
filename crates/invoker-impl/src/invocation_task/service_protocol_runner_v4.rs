@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashSet;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::pin::Pin;
@@ -38,7 +37,7 @@ use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_service_protocol_v4::message_codec::{
     Decoder, Encoder, Message, MessageHeader, MessageType, StateEntry, proto,
 };
-use restate_types::errors::InvocationError;
+use restate_types::errors::{GenericError, InvocationError};
 use restate_types::identifiers::InvocationId;
 use restate_types::identifiers::ServiceId;
 use restate_types::invocation::{
@@ -51,7 +50,7 @@ use restate_types::journal_v2::command::{
 };
 use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawNotification};
 use restate_types::journal_v2::{
-    CommandIndex, CommandType, Entry, EntryType, NotificationId, RunCompletion, RunResult, SignalId,
+    CommandIndex, CommandType, Entry, EntryType, RunCompletion, RunResult, UnresolvedFuture,
 };
 use restate_types::schema::deployment::{Deployment, DeploymentType, ProtocolType};
 use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
@@ -849,6 +848,7 @@ where
                 MessageType::CommandAck,
             )),
             Message::Suspension(suspension) => self.handle_suspension_message(suspension),
+            Message::AwaitingOn(awaiting_on) => self.handle_awaiting_on_message(awaiting_on),
             Message::Error(e) => self.handle_error_message(e),
             Message::End(_) => TerminalLoopState::Closed,
 
@@ -1171,34 +1171,45 @@ where
         }
     }
 
+    fn handle_awaiting_on_message(
+        &mut self,
+        _awaiting_on: proto::AwaitingOnMessage,
+    ) -> TerminalLoopState<()> {
+        // this message should mark this invocation as suspendable.
+        // if it's not running any side effects.
+
+        // todo(azmy): Handle awaiting on message"
+        TerminalLoopState::Continue(())
+    }
+
     fn handle_suspension_message(
         &mut self,
         suspension: proto::SuspensionMessage,
     ) -> TerminalLoopState<()> {
-        let suspension_indexes: HashSet<_> = suspension
-            .waiting_completions
-            .into_iter()
-            .map(NotificationId::for_completion)
-            .chain(
-                suspension
-                    .waiting_signals
-                    .into_iter()
-                    .map(SignalId::for_index)
-                    .map(NotificationId::for_signal),
-            )
-            .chain(
-                suspension
-                    .waiting_named_signals
-                    .into_iter()
-                    .map(|s| SignalId::for_name(s.into()))
-                    .map(NotificationId::for_signal),
-            )
-            .collect();
-        // We currently don't support empty suspension_indexes set
-        if suspension_indexes.is_empty() {
+        let Some(awaiting_on) = suspension.awaiting_on else {
+            return TerminalLoopState::Failed(InvokerError::EmptySuspensionMessage);
+        };
+
+        let future: UnresolvedFuture = match awaiting_on.try_into().map_err(GenericError::from) {
+            Ok(future) => future,
+            Err(err) => return TerminalLoopState::Failed(InvokerError::EncodingV2(err.into())),
+        };
+
+        // We currently don't support empty future set
+        if future.is_empty() {
             return TerminalLoopState::Failed(InvokerError::EmptySuspensionMessage);
         }
-        TerminalLoopState::SuspendedV2(suspension_indexes)
+
+        match self.service_protocol_version {
+            ServiceProtocolVersion::Unspecified => unreachable!(),
+            ServiceProtocolVersion::V1
+            | ServiceProtocolVersion::V2
+            | ServiceProtocolVersion::V3
+            | ServiceProtocolVersion::V4
+            | ServiceProtocolVersion::V5
+            | ServiceProtocolVersion::V6 => TerminalLoopState::SuspendedV2(future.flatten()),
+            ServiceProtocolVersion::V7 => TerminalLoopState::SuspendedV3(future),
+        }
     }
 
     fn handle_error_message(&mut self, error: proto::ErrorMessage) -> TerminalLoopState<()> {

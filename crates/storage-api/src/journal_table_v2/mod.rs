@@ -15,7 +15,7 @@ use futures::Stream;
 
 use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_types::identifiers::{EntryIndex, InvocationId};
-use restate_types::journal_v2::raw::RawCommand;
+use restate_types::journal_v2::raw::{RawCommand, RawNotificationResultVariant};
 use restate_types::journal_v2::{CompletionId, NotificationId};
 use restate_types::sharding::KeyRange;
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
@@ -39,7 +39,7 @@ pub trait ReadJournalTable {
     fn get_notifications_index(
         &mut self,
         invocation_id: InvocationId,
-    ) -> impl Future<Output = Result<HashMap<NotificationId, EntryIndex>>> + Send;
+    ) -> impl Future<Output = Result<HashMap<NotificationId, NotificationEntryIndex>>> + Send;
 
     fn get_command_by_completion_id(
         &mut self,
@@ -114,7 +114,7 @@ pub trait WriteJournalTable {
     fn put_journal_entry(
         &mut self,
         invocation_id: InvocationId,
-        index: u32,
+        index: EntryIndex,
         entry: &StoredRawEntry,
         related_completion_ids: &[CompletionId],
     ) -> Result<()>;
@@ -131,7 +131,31 @@ impl PartitionStoreProtobufValue for StoredEntry {
 }
 
 #[derive(Debug, Clone, Copy, derive_more::From, derive_more::Into)]
-pub struct JournalEntryIndex(pub u32);
+pub struct JournalEntryIndex(pub EntryIndex);
 impl PartitionStoreProtobufValue for JournalEntryIndex {
     type ProtobufType = crate::protobuf_types::v1::JournalEntryIndex;
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct NotificationEntryIndex {
+    pub entry_index: EntryIndex,
+    pub result_variant: RawNotificationResultVariant,
+}
+
+impl NotificationEntryIndex {
+    /// Creates a new NotificationEntryIndex with given entry_index
+    /// and unknown result variant
+    pub fn from_entry_index(
+        entry_index: EntryIndex,
+        result_variant: RawNotificationResultVariant,
+    ) -> Self {
+        Self {
+            entry_index,
+            result_variant,
+        }
+    }
+}
+
+impl PartitionStoreProtobufValue for NotificationEntryIndex {
+    type ProtobufType = crate::protobuf_types::v1::NotificationEntryIndex;
 }

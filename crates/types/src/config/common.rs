@@ -516,6 +516,18 @@ pub struct CommonOptions {
     ///
     /// Defaults to `false` in v1.6.
     pub experimental_shuffler_batch_ingestion: bool,
+
+    /// # Enables service protocol v7
+    ///
+    /// Introduced in Restate v1.7
+    ///
+    /// Set to `true` to enable the experimental service protocol v7
+    ///
+    /// Once enabled, you **cannot** rollback back to previous versions
+    /// where v7 is not supported < v1.7
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub experimental_allow_protocol_v7: bool,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
@@ -755,6 +767,7 @@ impl Default for CommonOptions {
             hlc_max_drift: FriendlyDuration::from_millis(5000),
             experimental_kafka_batch_ingestion: false,
             experimental_shuffler_batch_ingestion: false,
+            experimental_allow_protocol_v7: false,
         }
     }
 }

@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashSet;
+
 use restate_memory::NonZeroByteCount;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::InvocationError;
@@ -15,16 +17,15 @@ use restate_types::identifiers::InvocationId;
 use restate_types::journal::EntryIndex;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal_events::raw::RawEvent;
-use restate_types::journal_v2;
 use restate_types::journal_v2::CommandIndex;
 use restate_types::journal_v2::raw::RawEntry;
+use restate_types::journal_v2::{self, UnresolvedFuture};
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
-use std::collections::HashSet;
 
 use crate::EffectKind::JournalEntryV2;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Effect {
     pub invocation_id: InvocationId,
@@ -37,7 +38,7 @@ pub struct Effect {
     pub kind: EffectKind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 // todo: fix this and box the large variant (EffectKind is 320 bytes)
 #[allow(clippy::large_enum_variant)]
@@ -62,7 +63,15 @@ pub enum EffectKind {
         event: RawEvent,
     },
     SuspendedV2 {
+        /// Flattened set of notification ids
+        /// can be thought of as `UnresolvedFuture::unknown(waiting_for_notifications)`
         waiting_for_notifications: HashSet<journal_v2::NotificationId>,
+    },
+    // Introduced in Restate v1.7. With the new service-protocol v7
+    SuspendedV3 {
+        /// Future tree describing the notifications this invocation is waiting on.
+        /// Introduced in Restate v1.7 (protocol version V7). `None` for older invocations.
+        awaiting_on: UnresolvedFuture,
     },
     Paused {
         paused_event: RawEvent,

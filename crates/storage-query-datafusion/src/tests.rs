@@ -33,6 +33,7 @@ use restate_types::identifiers::{InvocationUuid, LeaderEpoch};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::EntryType;
 use restate_types::journal_v2::NotificationId;
+use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::service_protocol::ServiceProtocolVersion;
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
@@ -349,14 +350,13 @@ async fn query_sys_invocation_suspended_waiting() {
                 invocation_target: InvocationTarget::mock_service(),
                 ..InFlightInvocationMetadata::mock()
             },
-            waiting_for_notifications: [
+            awaiting_on: UnresolvedFuture::unknown_from_iter([
                 NotificationId::for_completion(1),
                 NotificationId::for_completion(2),
                 NotificationId::for_completion(3),
                 NotificationId::SignalIndex(10),
                 NotificationId::SignalIndex(20),
-            ]
-            .into(),
+            ]),
         },
     )
     .unwrap();

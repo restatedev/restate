@@ -37,6 +37,9 @@ enum ServiceProtocolVersion {
   // * StartMessage.random_seed
   // * Failure.metadata
   V6 = 6;
+  // Added:
+  // * Future & AwaitingOnMessage + Changed the SuspensionMessage
+  V7 = 7;
 }
 
 // --- Core frames ---
@@ -84,16 +87,53 @@ message StartMessage {
   uint64 random_seed = 9;
 }
 
-// Type: 0x0000 + 1
-// Implementations MUST send this message when suspending an invocation.
+// Defines how a set of child futures are combined.
+enum CombinatorType {
+  // Should be treated as FIRST_COMPLETED.
+  COMBINATOR_TYPE_UNKNOWN = 0;
+  // Resolve as soon as any one child future completes with success, or with failure (same as JS Promise.race).
+  FIRST_COMPLETED = 1;
+  // Wait for every child to complete, regardless of success or failure (same as JS Promise.allSettled).
+  ALL_COMPLETED = 2;
+  // Resolve on the first success; fail only if all children fail (same as JS Promise.any).
+  FIRST_SUCCEEDED_OR_ALL_FAILED = 3;
+  // Resolve when all children succeed; short-circuit on the first failure (same as JS Promise.all).
+  ALL_SUCCEEDED_OR_FIRST_FAILED = 4;
+}
+
+// Recursively describes an await point as a tree of future combinators.
 //
-// These lists represent any of the notification_idx and/or notification_name the invocation is waiting on to progress.
-// The runtime will resume the invocation as soon as either one of the given notification_idx or notification_name is completed.
-// Between the two lists there MUST be at least one element.
-message SuspensionMessage {
+// Leaf data is the set of notification IDs this node is waiting for.
+// For representation purposes, the list of notification ids is flattened in 3 lists to avoid a per-element oneof wrapper.
+// Inner nodes combine their children (leaves + nested) via `combinator_type`.
+//
+// Example: Promise.all([completion_3, Promise.race([signal_1, signal_2])]) becomes:
+//
+//   Future {
+//     combinator_type: ALL_SUCCEEDED_OR_FIRST_FAILED
+//     waiting_completions: [3]
+//     nested: [
+//       Future {
+//         combinator_type: FIRST_COMPLETED
+//         waiting_signals: [1, 2]
+//       }
+//     ]
+//   }
+message Future {
   repeated uint32 waiting_completions = 1;
   repeated uint32 waiting_signals = 2;
   repeated string waiting_named_signals = 3;
+  repeated Future nested_futures = 4;
+  CombinatorType combinator_type = 5;
+}
+
+// Type: 0x0000 + 1
+// Implementations MUST send this message when suspending an invocation.
+message SuspensionMessage {
+  // These used to be the old waiting_ fields. Reserved to simplify parsing.
+  reserved 1, 2, 3;
+  // Describes the await point.
+  Future awaiting_on = 4;
 }
 
 // Type: 0x0000 + 2
@@ -141,6 +181,16 @@ message ProposeRunCompletionMessage {
     bytes value = 14;
     Failure failure = 15;
   };
+}
+
+// Type: 0x0000 + 6
+// The SDK MAY send this message to the runtime when inside an await point, to notify what the user code is currently blocked awaiting on.
+// This information SHOULD be considered outdated by the runtime as soon as a notification in the future tree is sent over.
+message AwaitingOnMessage {
+  // Describes the await point.
+  Future awaiting_on = 1;
+  // True if any of the notifications the SDK is awaiting on are side effects the SDK is currently executing.
+  bool executing_side_effects = 2;
 }
 
 // --- Commands and Notifications ---
@@ -666,7 +716,7 @@ message Void {
 }
 
 enum BuiltInSignal {
-  UNKNOWN = 0;
+  SIGNAL_UNKNOWN = 0;
   CANCEL = 1;
   reserved 2 to 15;
 }

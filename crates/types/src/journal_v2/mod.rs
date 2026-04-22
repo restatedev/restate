@@ -34,12 +34,15 @@ pub mod encoding;
 pub mod lite;
 pub mod notification;
 pub mod raw;
+pub mod unresolved_future;
+
 mod types;
 
 pub use command::*;
 pub use encoding::*;
 pub use notification::*;
 pub use types::*;
+pub use unresolved_future::*;
 
 // -- Various alias types for Ids
 

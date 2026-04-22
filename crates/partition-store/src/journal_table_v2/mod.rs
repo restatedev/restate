@@ -18,8 +18,8 @@ use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::journal_table_v2::{
-    JournalEntryIndex, ReadJournalTable, ScanJournalTable, ScanJournalTableRange, StoredEntry,
-    WriteJournalTable,
+    JournalEntryIndex, NotificationEntryIndex, ReadJournalTable, ScanJournalTable,
+    ScanJournalTableRange, StoredEntry, WriteJournalTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{BudgetedReadError, Result, StorageError};
@@ -149,7 +149,10 @@ fn put_journal_entry<S: StorageAccess>(
                 invocation_uuid: invocation_id.invocation_uuid(),
                 notification_id: notification.id(),
             },
-            &JournalEntryIndex(journal_index),
+            &NotificationEntryIndex {
+                entry_index: journal_index,
+                result_variant: notification.result_variant(),
+            },
         )?;
     } else if let RawEntry::Command(_) = &journal_entry.inner {
         for completion_id in related_completion_ids {
@@ -419,7 +422,7 @@ fn has_journal_entries(
 fn get_notifications_index<S: StorageAccess>(
     storage: &mut S,
     invocation_id: InvocationId,
-) -> Result<HashMap<NotificationId, EntryIndex>> {
+) -> Result<HashMap<NotificationId, NotificationEntryIndex>> {
     let key = JournalNotificationIdToNotificationIndexKey::builder()
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid());
@@ -431,12 +434,12 @@ fn get_notifications_index<S: StorageAccess>(
         .map(|(mut key, mut value)| {
             let journal_key =
                 JournalNotificationIdToNotificationIndexKey::deserialize_from(&mut key)?;
-            let index = JournalEntryIndex::decode(&mut value)
+            let index = NotificationEntryIndex::decode(&mut value)
                 .map_err(|err| StorageError::Conversion(err.into()))?;
 
             let (_, _, notification_id) = journal_key.split();
 
-            Ok((notification_id, index.0))
+            Ok((notification_id, index))
         })
         .collect()
 }
@@ -523,7 +526,7 @@ impl ReadJournalTable for PartitionStore {
     async fn get_notifications_index(
         &mut self,
         invocation_id: InvocationId,
-    ) -> Result<HashMap<NotificationId, EntryIndex>> {
+    ) -> Result<HashMap<NotificationId, NotificationEntryIndex>> {
         get_notifications_index(self, invocation_id)
     }
 
@@ -655,7 +658,7 @@ impl ReadJournalTable for PartitionStoreTransaction<'_> {
     async fn get_notifications_index(
         &mut self,
         invocation_id: InvocationId,
-    ) -> Result<HashMap<NotificationId, EntryIndex>> {
+    ) -> Result<HashMap<NotificationId, NotificationEntryIndex>> {
         get_notifications_index(self, invocation_id)
     }
 

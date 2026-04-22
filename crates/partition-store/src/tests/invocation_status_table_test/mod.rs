@@ -29,6 +29,7 @@ use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::{
     InvocationTarget, ServiceInvocationSpanContext, Source, VirtualObjectHandlerType,
 };
+use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::time::MillisSinceEpoch;
 
 const INVOCATION_TARGET_1: InvocationTarget = InvocationTarget::VirtualObject {
@@ -119,7 +120,7 @@ fn suspended_status(invocation_target: InvocationTarget) -> InvocationStatus {
             hotfix_apply_cancellation_after_deployment_is_pinned: false,
             random_seed: None,
         },
-        waiting_for_notifications: HashSet::default(),
+        awaiting_on: UnresolvedFuture::Unknown(Vec::default()),
     }
 }
 

@@ -312,12 +312,20 @@ pub enum IdDecodeError {
     UnrecognizedType(String),
 }
 
+impl From<IdDecodeError> for ConversionError {
+    fn from(value: IdDecodeError) -> Self {
+        ConversionError::invalid_data(value)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConversionError {
     #[error("missing field '{0}'")]
     MissingField(&'static str),
+    #[error("unexpected enum variant {1} for field '{0}'")]
+    UnexpectedEnumVariant(&'static str, i32),
     #[error("invalid data '{0}'")]
-    InvalidData(&'static str),
+    InvalidData(anyhow::Error),
 }
 
 impl ConversionError {
@@ -325,8 +333,16 @@ impl ConversionError {
         ConversionError::MissingField(field)
     }
 
-    pub fn invalid_data(field: &'static str) -> Self {
-        ConversionError::InvalidData(field)
+    pub fn invalid_data(source: impl Into<anyhow::Error>) -> Self {
+        ConversionError::InvalidData(source.into())
+    }
+
+    pub fn invalid_data_static(field: &'static str) -> Self {
+        ConversionError::InvalidData(anyhow::anyhow!(field))
+    }
+
+    pub fn unexpected_enum_variant(field: &'static str, variant: impl Into<i32>) -> Self {
+        ConversionError::UnexpectedEnumVariant(field, variant.into())
     }
 }
 

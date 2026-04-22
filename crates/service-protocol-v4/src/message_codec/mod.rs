@@ -17,17 +17,17 @@ use std::time::Duration;
 mod encoding;
 mod header;
 
-pub use encoding::{Decoder, Encoder, EncodingError};
+pub(crate) use encoding::default_encode_decode;
+pub use encoding::{
+    Decoder, Encoder, EncodingError, MessageEncodingError, ServiceWireDecoder, ServiceWireEncoder,
+};
 pub use header::MessageHeader;
 pub use proto::start_message::StateEntry;
 use restate_types::journal_v2::{
     CommandIndex, CommandType, CompletionType, EntryType, NotificationType,
 };
 
-/// Protobuf protocol messages
-pub mod proto {
-    pub use crate::proto::*;
-}
+pub use crate::proto;
 
 const CUSTOM_MESSAGE_MASK: u16 = 0xFC00;
 
@@ -66,22 +66,22 @@ macro_rules! gen_message {
 
     (@gen_message_enum_encoded_len [] -> [$($body:tt)*]) => {
         impl Message {
-            pub(crate) fn encoded_len(&self) -> usize {
-                match self {
+            pub(crate) fn encoded_len(&self, service_protocol_version: restate_types::service_protocol::ServiceProtocolVersion) -> usize {
+                match (self, service_protocol_version) {
                     $($body)*
-                    Message::Custom(_, b) => b.len()
+                    (Message::Custom(_, b), _) => b.len()
                 }
             }
         }
     };
     (@gen_message_enum_encoded_len [$variant:ident Control = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
-        gen_message!(@gen_message_enum_encoded_len [$($tail)*] -> [Message::$variant(msg) => prost::Message::encoded_len(msg), $($body)*]);
+        paste::paste! { gen_message!(@gen_message_enum_encoded_len [$($tail)*] -> [(Message::$variant(msg), service_protocol_version) => <proto::[< $variant Message >] as $crate::message_codec::encoding::ServiceWireEncoder>::encoded_len(msg, service_protocol_version), $($body)*]); }
     };
     (@gen_message_enum_encoded_len [$variant:ident $ty:ident noparse $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
-        paste::paste! { gen_message!(@gen_message_enum_encoded_len [$($tail)*] -> [Message::[< $variant $ty >](b) => b.len(), $($body)*]); }
+        paste::paste! { gen_message!(@gen_message_enum_encoded_len [$($tail)*] -> [(Message::[< $variant $ty >](b), _) => b.len(), $($body)*]); }
     };
     (@gen_message_enum_encoded_len [$variant:ident $ty:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
-        paste::paste! { gen_message!(@gen_message_enum_encoded_len [$($tail)*] -> [Message::[< $variant $ty >](msg) => prost::Message::encoded_len(msg), $($body)*]); }
+        paste::paste! { gen_message!(@gen_message_enum_encoded_len [$($tail)*] -> [(Message::[< $variant $ty >](msg), service_protocol_version) => <proto::[< $variant $ty Message >] as $crate::message_codec::encoding::ServiceWireEncoder>::encoded_len(msg, service_protocol_version), $($body)*]); }
     };
 
     (@gen_message_enum_ty [] -> [$($body:tt)*]) => {
@@ -103,23 +103,23 @@ macro_rules! gen_message {
 
     (@gen_message_enum_encode [] -> [$($body:tt)*]) => {
         impl Message {
-            pub(crate) fn encode(&self, buf: &mut impl bytes::BufMut) -> Result<(), prost::EncodeError> {
-                match (self, buf) {
+            pub(crate) fn encode(&self, buf: &mut impl bytes::BufMut, service_protocol_version: restate_types::service_protocol::ServiceProtocolVersion) -> Result<(), $crate::message_codec::encoding::MessageEncodingError> {
+                match (self, service_protocol_version, buf) {
                     $($body)*
-                    (Message::Custom(_, b), buf) => buf.put(b.clone())
+                    (Message::Custom(_, b), _, buf) => buf.put(b.clone())
                 };
                 Ok(())
             }
         }
     };
     (@gen_message_enum_encode [$variant:ident Control = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
-        gen_message!(@gen_message_enum_encode [$($tail)*] -> [(Message::$variant(msg), buf) => prost::Message::encode(msg, buf)?, $($body)*]);
+        paste::paste! { gen_message!(@gen_message_enum_encode [$($tail)*] -> [(Message::$variant(msg), service_protocol_version, buf) => <proto::[< $variant Message >] as $crate::message_codec::encoding::ServiceWireEncoder>::encode(msg, buf, service_protocol_version)?, $($body)*]); }
     };
     (@gen_message_enum_encode [$variant:ident $ty:ident noparse $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
-        paste::paste! { gen_message!(@gen_message_enum_encode [$($tail)*] -> [(Message::[< $variant $ty >](b), buf) => buf.put(b.clone()), $($body)*]); }
+        paste::paste! { gen_message!(@gen_message_enum_encode [$($tail)*] -> [(Message::[< $variant $ty >](b), _, buf) => buf.put(b.clone()), $($body)*]); }
     };
     (@gen_message_enum_encode [$variant:ident $ty:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
-        paste::paste! { gen_message!(@gen_message_enum_encode [$($tail)*] -> [(Message::[< $variant $ty >](msg), buf) => prost::Message::encode(msg, buf)?, $($body)*]); }
+        paste::paste! { gen_message!(@gen_message_enum_encode [$($tail)*] -> [(Message::[< $variant $ty >](msg), service_protocol_version, buf) => <proto::[< $variant $ty Message >] as $crate::message_codec::encoding::ServiceWireEncoder>::encode(msg, buf, service_protocol_version)?, $($body)*]); }
     };
 
     (@gen_message_enum_proto_debug [] -> [$($body:tt)*]) => {
@@ -181,22 +181,22 @@ macro_rules! gen_message {
 
     (@gen_message_type_enum_decode [] -> [$($body:tt)*]) => {
         impl MessageType {
-            pub(crate) fn decode(&self, buf: impl bytes::Buf) -> Result<Message, prost::DecodeError> {
-                match (self, buf) {
+            pub(crate) fn decode(&self, buf: impl bytes::Buf,  service_protocol_version: restate_types::service_protocol::ServiceProtocolVersion) -> Result<Message, $crate::message_codec::encoding::MessageEncodingError> {
+                match (self, buf, service_protocol_version) {
                     $($body)*
-                    (MessageType::Custom(t), mut buf) => Ok(Message::Custom(*t, buf.copy_to_bytes(buf.remaining())))
+                    (MessageType::Custom(t), mut buf, _) => Ok(Message::Custom(*t, buf.copy_to_bytes(buf.remaining())))
                 }
             }
         }
     };
     (@gen_message_type_enum_decode [$variant:ident Control = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
-        paste::paste! { gen_message!(@gen_message_type_enum_decode [$($tail)*] -> [(MessageType::$variant, buf) => Ok(Message::$variant(<proto::[< $variant Message >] as prost::Message>::decode(buf)?)), $($body)*]); }
+        paste::paste! { gen_message!(@gen_message_type_enum_decode [$($tail)*] -> [(MessageType::$variant, buf, service_protocol_version) => Ok(Message::$variant(<proto::[< $variant Message >] as $crate::message_codec::encoding::ServiceWireDecoder>::decode(buf, service_protocol_version)?)), $($body)*]); }
     };
     (@gen_message_type_enum_decode [$variant:ident $ty:ident noparse $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
-        paste::paste! { gen_message!(@gen_message_type_enum_decode [$($tail)*] -> [(MessageType::[< $variant $ty >], mut buf) => Ok(Message::[< $variant $ty >](buf.copy_to_bytes(buf.remaining()))), $($body)*]); }
+        paste::paste! { gen_message!(@gen_message_type_enum_decode [$($tail)*] -> [(MessageType::[< $variant $ty >], mut buf, _) => Ok(Message::[< $variant $ty >](buf.copy_to_bytes(buf.remaining()))), $($body)*]); }
     };
     (@gen_message_type_enum_decode [$variant:ident $ty:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
-        paste::paste! { gen_message!(@gen_message_type_enum_decode [$($tail)*] -> [(MessageType::[< $variant $ty >], buf) => Ok(Message::[< $variant $ty >](<proto::[< $variant $ty Message >] as prost::Message>::decode(buf)?)), $($body)*]); }
+        paste::paste! { gen_message!(@gen_message_type_enum_decode [$($tail)*] -> [(MessageType::[< $variant $ty >], buf, service_protocol_version) => Ok(Message::[< $variant $ty >](<proto::[< $variant $ty Message >] as $crate::message_codec::encoding::ServiceWireDecoder>::decode(buf, service_protocol_version)?)), $($body)*]); }
     };
 
     (@gen_to_id [] -> [$($variant:ident, $id:literal,)*]) => {
@@ -334,6 +334,7 @@ gen_message!(
     End Control = 0x0003,
     CommandAck Control = 0x0004,
     ProposeRunCompletion Control = 0x0005,
+    AwaitingOn Control = 0x0006,
 
     Input Command noparse allows_ack = 0x0400,
     Output Command noparse allows_ack = 0x0401,

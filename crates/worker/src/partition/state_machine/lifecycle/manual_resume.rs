@@ -244,10 +244,7 @@ mod tests {
                         completion_id,
                     },
                 ),
-                invoker_suspended(
-                    invocation_id,
-                    [NotificationId::for_completion(completion_id)],
-                ),
+                invoker_suspended(invocation_id, NotificationId::for_completion(completion_id)),
             ])
             .await;
 
