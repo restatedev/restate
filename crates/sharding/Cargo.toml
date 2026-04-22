@@ -1,0 +1,26 @@
+[package]
+name = "restate-sharding"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+serde = ["dep:serde"]
+bilrost = ["dep:bilrost"]
+
+[dependencies]
+restate-workspace-hack = { workspace = true }
+
+bilrost = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+restate-sharding = { path = ".", default-features = false, features = ["serde", "bilrost"] }
+
+flexbuffers = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
