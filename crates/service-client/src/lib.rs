@@ -26,7 +26,7 @@ use hyper::http::uri::PathAndQuery;
 use hyper::{HeaderMap, Response, Uri};
 use restate_types::config::ServiceClientOptions;
 use restate_types::identifiers::LambdaARN;
-use restate_types::schema::deployment::EndpointLambdaCompression;
+use restate_types::schema::deployment::{Deployment, DeploymentType, EndpointLambdaCompression};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Formatter;
@@ -264,6 +264,30 @@ impl Parts {
             path,
             headers,
         }
+    }
+
+    pub fn from_deployment(
+        deployment: Deployment,
+        method: Method,
+        path: PathAndQuery,
+        mut headers: HeaderMap<HeaderValue>,
+    ) -> Self {
+        let address = match deployment.ty {
+            DeploymentType::Lambda {
+                arn,
+                assume_role_arn,
+                compression,
+            } => Endpoint::Lambda(arn, assume_role_arn, compression),
+            DeploymentType::Http {
+                address,
+                http_version,
+                ..
+            } => Endpoint::Http(address, Some(http_version)),
+        };
+
+        headers.extend(deployment.additional_headers);
+
+        Self::new(method, address, path, headers)
     }
 }
 

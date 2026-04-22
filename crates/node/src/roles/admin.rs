@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use codederror::CodedError;
+
 use restate_admin::StorageAccountingTask;
 use restate_admin::cluster_controller;
 use restate_admin::schema_registry_integration::{MetadataService, TelemetryClient};
@@ -25,7 +26,8 @@ use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_ingestion_client::IngestionClient;
 use restate_partition_store::PartitionStoreManager;
 use restate_service_client::{AssumeRoleCacheMode, HttpClient, ServiceClient};
-use restate_service_protocol::discovery::ServiceDiscovery;
+use restate_service_protocol_v4::discovery::ServiceDiscovery;
+use restate_service_protocol_v4::serdes::SerdesClient;
 use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
 use restate_storage_query_datafusion::empty_invoker_status_handle::EmptyInvokerStatusHandle;
 use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
@@ -97,9 +99,10 @@ impl<T: TransportConnect> AdminRole<T> {
 
         // Total duration roughly 1s
         let retry_policy = RetryPolicy::exponential(Duration::from_millis(100), 2.0, Some(4), None);
-        let client =
+        let service_client =
             ServiceClient::from_options(&config.common.service_client, AssumeRoleCacheMode::None)?;
-        let service_discovery = ServiceDiscovery::new(retry_policy, client);
+        let serdes_client = SerdesClient::new(service_client.clone());
+        let service_discovery = ServiceDiscovery::new(retry_policy, service_client);
 
         let telemetry_http_client = if config.common.disable_telemetry {
             None
@@ -137,6 +140,7 @@ impl<T: TransportConnect> AdminRole<T> {
                 partition_table,
                 partition_routing,
             ),
+            serdes_client,
             service_discovery,
             telemetry_http_client,
         )

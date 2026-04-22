@@ -13,7 +13,7 @@ restate-core = { workspace = true, features = ["test-util"] }
 restate-ingestion-client = { workspace = true }
 restate-metadata-server = { workspace = true }
 restate-service-client = { workspace = true }
-restate-service-protocol = { workspace = true, features = ["discovery"]}
+restate-service-protocol-v4 = { workspace = true, features = ["discovery", "serdes"]}
 restate-storage-query-datafusion = { workspace = true, features = ["table_docs"] }
 restate-types = { workspace = true, features = ["schemars"] }
 restate-worker = { workspace = true, features = ["options_schema"] }

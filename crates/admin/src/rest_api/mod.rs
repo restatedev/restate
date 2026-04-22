@@ -18,6 +18,7 @@ mod health;
 mod invocations;
 mod kafka_clusters;
 mod query;
+mod serdes;
 mod services;
 mod subscriptions;
 mod version;
@@ -163,6 +164,14 @@ where
         .route(
             "/internal/invocations_batch_operations/pause",
             axum::routing::post(invocations::batch_pause_invocations),
+        )
+        .route(
+            "/internal/services/{service}/serdes/decode/{*serde_name}",
+            axum::routing::post(serdes::decode),
+        )
+        .route(
+            "/internal/services/{service}/serdes/encode/{*serde_name}",
+            axum::routing::post(serdes::encode),
         )
         .route(
             "/openapi",
