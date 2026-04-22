@@ -173,8 +173,9 @@ where
             &journal_metadata.span_context,
         );
 
-        // Initialize the response stream state
-        let http_stream_rx = ResponseStream::initialize(&self.invocation_task.client, request);
+        // Initialize the response stream, wrapped to record HTTP timing metrics
+        let http_stream_rx = ResponseStream::initialize(&self.invocation_task.client, request)
+            .instrument(self.invocation_task.metric);
 
         let mut decoder_stream = std::pin::pin!(
             DecoderStream::new(
@@ -657,6 +658,7 @@ where
         let (partial_state, state_map, state_lease) = collect_eager_state(
             state,
             self.invocation_task.eager_state_size_limit,
+            self.invocation_task.metric,
             |(key, value)| StateEntry { key, value },
         )
         .await?;

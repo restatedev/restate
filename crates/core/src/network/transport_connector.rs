@@ -190,8 +190,14 @@ pub mod test_util {
                 .unbounded_send(EgressMessage::Message(welcome.into()))
                 .unwrap();
 
-            let connection =
-                Connection::new(my_node_id, selected_protocol_version, hello.swimlane(), tx);
+            let connection = Connection::new(
+                my_node_id,
+                selected_protocol_version,
+                hello.swimlane(),
+                tx,
+                crate::network::metric_definitions::NetworkMetrics::new(hello.swimlane())
+                    .connection(my_node_id, "incoming"),
+            );
             let reactor =
                 ConnectionReactor::new(connection.clone(), shared, Some(peer_metadata), router)
                     .start(

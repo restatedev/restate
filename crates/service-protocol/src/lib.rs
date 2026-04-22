@@ -19,3 +19,5 @@ pub mod codec;
 pub mod discovery;
 #[cfg(feature = "message")]
 pub mod message;
+#[cfg(feature = "discovery")]
+mod metric_definitions;

@@ -12,6 +12,7 @@ use std::borrow::Cow;
 use std::fmt::Display;
 use std::ops::Deref;
 use std::sync::LazyLock;
+use std::time::Instant;
 
 use bytes::Bytes;
 use codederror::CodedError;
@@ -22,6 +23,7 @@ use http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Version};
 use http_body_util::BodyExt;
 use http_body_util::Empty;
 use itertools::Itertools;
+use metrics::{counter, histogram};
 use strum::IntoEnumIterator;
 use tracing::{debug, warn};
 
@@ -42,6 +44,10 @@ use restate_types::service_discovery::{
 use restate_types::service_protocol::{
     MAX_DISCOVERABLE_SERVICE_PROTOCOL_VERSION, MAX_SERVICE_PROTOCOL_VERSION_VALUE,
     MIN_DISCOVERABLE_SERVICE_PROTOCOL_VERSION, ServiceProtocolVersion,
+};
+
+use crate::metric_definitions::{
+    DEPLOYMENT_DISCOVERY_ATTEMPTS, DEPLOYMENT_DISCOVERY_DURATION, DEPLOYMENT_DISCOVERY_RETRIES,
 };
 
 // TODO(slinkydeveloper) move this code somewhere else!
@@ -181,6 +187,7 @@ pub struct ServiceDiscovery {
 
 impl ServiceDiscovery {
     pub fn new(retry_policy: RetryPolicy, client: ServiceClient) -> Self {
+        crate::metric_definitions::describe_metrics();
         Self {
             retry_policy,
             client,
@@ -237,13 +244,25 @@ impl DiscoveryClient for ServiceDiscovery {
         };
 
         let retry_policy = self.retry_policy.iter();
-        let (mut parts, body) = Self::invoke_discovery_endpoint(
+        let started = Instant::now();
+        let result = Self::invoke_discovery_endpoint(
             &self.client,
             endpoint.clone(),
             build_request,
             retry_policy,
         )
-        .await?;
+        .await;
+
+        let elapsed = started.elapsed().as_secs_f64();
+        let outcome = match &result {
+            Ok(_) => "success",
+            Err(e) if e.is_retryable() => "retryable_exhausted",
+            Err(_) => "permanent_failure",
+        };
+        counter!(DEPLOYMENT_DISCOVERY_ATTEMPTS, "outcome" => outcome).increment(1);
+        histogram!(DEPLOYMENT_DISCOVERY_DURATION, "outcome" => outcome).record(elapsed);
+
+        let (mut parts, body) = result?;
 
         // Retrieve chosen service discovery protocol version.
         // No need to retry these: if the validation fails, they're sdk bugs.
@@ -488,6 +507,8 @@ impl ServiceDiscovery {
             if e.is_retryable()
                 && let Some(next_retry_interval) = retry_iter.next()
             {
+                let reason = discovery_error_category(&e);
+                counter!(DEPLOYMENT_DISCOVERY_RETRIES, "reason" => reason).increment(1);
                 warn!(
                     "Error when discovering deployment at address '{}'. Retrying in {} seconds: {}",
                     address,
@@ -500,6 +521,22 @@ impl ServiceDiscovery {
 
             return Err(e);
         }
+    }
+}
+
+fn discovery_error_category(e: &DiscoveryError) -> &'static str {
+    match e {
+        DiscoveryError::BadStatusCode(status, _, _) if status.is_server_error() => "server_error",
+        DiscoveryError::BadStatusCode(status, _, _)
+            if *status == StatusCode::REQUEST_TIMEOUT
+                || *status == StatusCode::TOO_MANY_REQUESTS =>
+        {
+            "rate_limited"
+        }
+        DiscoveryError::BadStatusCode(_, _, _) => "bad_status",
+        DiscoveryError::Client(_) => "connection",
+        DiscoveryError::BodyError(_) => "body_error",
+        _ => "other",
     }
 }
 

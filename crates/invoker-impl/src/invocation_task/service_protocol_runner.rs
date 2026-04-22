@@ -47,9 +47,9 @@ use restate_types::service_protocol::ServiceProtocolVersion;
 use crate::Notification;
 use crate::error::{InvocationErrorRelatedEntry, InvokerError, SdkInvocationError};
 use crate::invocation_task::{
-    InvocationTask, InvocationTaskOutputInner, InvokerBodySender, InvokerBodyType, ResponseChunk,
-    ResponseStream, TerminalLoopState, X_RESTATE_SERVER, collect_eager_state,
-    invocation_id_to_header_value, leased_frame, new_invoker_body,
+    InstrumentedResponseStream, InvocationTask, InvocationTaskOutputInner, InvokerBodySender,
+    InvokerBodyType, ResponseChunk, ResponseStream, TerminalLoopState, X_RESTATE_SERVER,
+    collect_eager_state, invocation_id_to_header_value, leased_frame, new_invoker_body,
     service_protocol_version_to_header_value,
 };
 
@@ -165,8 +165,9 @@ where
             &service_invocation_span_context,
         );
 
-        // Initialize the response stream state
-        let mut http_stream_rx = ResponseStream::initialize(&self.invocation_task.client, request);
+        // Initialize the response stream state, wrapped to record HTTP timing metrics
+        let mut http_stream_rx = ResponseStream::initialize(&self.invocation_task.client, request)
+            .instrument(self.invocation_task.metric);
 
         // === Replay phase (transaction alive) ===
         {
@@ -342,7 +343,7 @@ where
     async fn replay_loop<JournalStream, E>(
         &mut self,
         http_stream_tx: &mut InvokerBodySender,
-        http_stream_rx: &mut ResponseStream,
+        http_stream_rx: &mut InstrumentedResponseStream,
         journal_stream: JournalStream,
     ) -> TerminalLoopState<()>
     where
@@ -419,7 +420,7 @@ where
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
         mut http_stream_tx: InvokerBodySender,
-        http_stream_rx: &mut ResponseStream,
+        http_stream_rx: &mut InstrumentedResponseStream,
         mut invocation_reader: IR,
         outbound_budget: &mut LocalMemoryPool,
     ) -> TerminalLoopState<()>
@@ -485,7 +486,7 @@ where
     async fn response_stream_loop(
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
-        http_stream_rx: &mut ResponseStream,
+        http_stream_rx: &mut InstrumentedResponseStream,
     ) -> TerminalLoopState<()> {
         loop {
             tokio::select! {
@@ -524,6 +525,7 @@ where
         let (partial_state, state_map, state_lease) = collect_eager_state(
             state,
             self.invocation_task.eager_state_size_limit,
+            self.invocation_task.metric,
             |(key, value)| StateEntry { key, value },
         )
         .await?;

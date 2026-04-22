@@ -14,8 +14,8 @@ use std::sync::Arc;
 use ahash::HashMap;
 use futures::future::{BoxFuture, Shared};
 use futures::{FutureExt, Stream};
-use metrics::counter;
 use parking_lot::Mutex;
+use tokio::time::Instant;
 use tracing::{debug, info, trace};
 
 use restate_types::config::Configuration;
@@ -35,7 +35,7 @@ use super::{
 use crate::network::PeerMetadataVersion;
 use crate::network::connection::ConnectThrottle;
 use crate::network::handshake::{negotiate_protocol_version, wait_for_hello};
-use crate::network::metric_definitions::{NETWORK_CONNECTION_CREATED, NETWORK_CONNECTION_DROPPED};
+use crate::network::metric_definitions::NetworkMetrics;
 use crate::{Metadata, TaskId, TaskKind, my_node_id};
 
 #[derive(Copy, Clone, PartialOrd, PartialEq, Default)]
@@ -102,6 +102,7 @@ impl ConnectionManagerInner {
             restate_types::net::CURRENT_PROTOCOL_VERSION,
             swimlane,
             tx,
+            NetworkMetrics::new(swimlane).connection(my_node_id(), "loopback"),
         );
 
         let reactor = ConnectionReactor::new(connection.clone(), shared, None, self.router.clone());
@@ -155,6 +156,9 @@ impl ConnectionManagerInner {
         match self.connection_by_gen_id.entry((peer, swimlane)) {
             hash_map::Entry::Occupied(c) if c.get() == connection => {
                 c.remove();
+                NetworkMetrics::new(connection.swimlane)
+                    .pool_connections_active()
+                    .decrement(1.0);
             }
             _ => {}
         }
@@ -366,6 +370,7 @@ impl ConnectionManager {
             selected_protocol_version,
             hello.swimlane(),
             sender,
+            NetworkMetrics::new(hello.swimlane()).connection(peer_node_id, "incoming"),
         );
 
         // Register the connection.
@@ -405,7 +410,7 @@ impl ConnectionManager {
             "Incoming connection accepted from node {}", peer_node_id
         );
 
-        counter!(NETWORK_CONNECTION_CREATED, "direction" => "incoming", "swimlane" => hello.swimlane().as_str_name()).increment(1);
+        connection.metrics.record_opened();
 
         // Our output stream, i.e. responses.
         Ok(egress)
@@ -462,6 +467,7 @@ impl ConnectionManager {
     where
         C: TransportConnect,
     {
+        let start = Instant::now();
         let my_node_id_opt = Metadata::with_current(|m| m.my_node_id_opt());
         let node_id = node_id.into();
         // find latest generation if this is not generational node id
@@ -481,17 +487,26 @@ impl ConnectionManager {
             return Err(DiscoveryError::NodeIsGone(node_id.into()).into());
         }
 
+        let metrics = NetworkMetrics::new(swimlane);
+
         let router = {
             // -- Lock held
             let mut guard = self.inner.lock();
 
             // find a connection by node_id
             if let Some(connection) = guard.get_connection(node_id, swimlane) {
+                metrics
+                    .connection_acquisition_duration("hit", true)
+                    .record(start.elapsed());
                 return Ok(connection);
             }
 
             if my_node_id_opt.is_some_and(|my_node| my_node == node_id) {
-                return guard.create_loopback_connection(swimlane, self.clone());
+                let result = guard.create_loopback_connection(swimlane, self.clone());
+                metrics
+                    .connection_acquisition_duration("hit", result.is_ok())
+                    .record(start.elapsed());
+                return result;
             }
 
             // fail if the node is seen as gone before
@@ -501,13 +516,19 @@ impl ConnectionManager {
 
         // We have no connection. We attempt to create a new connection or latch onto an
         // existing attempt.
-        self.create_shared_connection(
-            Destination::Node(node_id),
-            swimlane,
-            router,
-            transport_connector,
-        )
-        .await
+        let result = self
+            .create_shared_connection(
+                Destination::Node(node_id),
+                swimlane,
+                router,
+                transport_connector,
+                &metrics,
+            )
+            .await;
+        metrics
+            .connection_acquisition_duration("miss", result.is_ok())
+            .record(start.elapsed());
+        result
     }
 
     async fn create_shared_connection<C>(
@@ -516,6 +537,7 @@ impl ConnectionManager {
         swimlane: Swimlane,
         router: Arc<MessageRouter>,
         transport_connector: &C,
+        metrics: &NetworkMetrics,
     ) -> Result<Connection, ConnectError>
     where
         C: TransportConnect,
@@ -568,6 +590,7 @@ impl ConnectionManager {
 
                 // Put it in the map so other concurrent callers share the same future
                 in_flight.insert((dest.clone(), swimlane), fut.clone());
+                metrics.connections_pending().increment(1.0);
                 fut
             }
         };
@@ -577,7 +600,9 @@ impl ConnectionManager {
 
         // 5) Remove the completed future so subsequent calls can attempt a fresh connect
         let mut in_flight = self.in_flight_connects.lock();
-        in_flight.remove(&(dest, swimlane));
+        if in_flight.remove(&(dest, swimlane)).is_some() {
+            metrics.connections_pending().decrement(1.0);
+        }
 
         Ok(maybe_connection?.0)
     }
@@ -594,6 +619,9 @@ impl ConnectionTracking for ConnectionManager {
     fn connection_created(&self, conn: &Connection, is_dedicated: bool) {
         if !is_dedicated {
             self.inner.lock().register(conn.clone());
+            NetworkMetrics::new(conn.swimlane)
+                .pool_connections_active()
+                .increment(1.0);
         }
         trace!(
             swimlane = %conn.swimlane,
@@ -606,8 +634,11 @@ impl ConnectionTracking for ConnectionManager {
             "Connection terminated, connection lived for {:?}",
             conn.created.elapsed()
         );
+        conn.metrics
+            .connection_lifetime()
+            .record(conn.created.elapsed());
         self.inner.lock().deregister(conn);
-        counter!(NETWORK_CONNECTION_DROPPED).increment(1);
+        conn.metrics.record_closed();
     }
 
     fn notify_peer_shutdown(&self, node_id: GenerationalNodeId) {
