@@ -29,7 +29,6 @@ use restate_core::{
         ServiceReceiver, Verdict,
     },
     task_center::TaskCenterMonitoring,
-    worker_api::ProcessorsManagerHandle,
 };
 use restate_memory::NonZeroByteCount;
 use restate_types::health::NodeStatus;
@@ -45,6 +44,7 @@ use restate_types::{
     config::GossipOptions,
     net::node::{GetNodeState, GossipService, NodeStateResponse},
 };
+use restate_worker_api::ProcessorsManagerHandle;
 
 use crate::metric_definitions::GOSSIP_SENT;
 

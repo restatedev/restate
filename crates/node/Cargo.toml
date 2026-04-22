@@ -51,6 +51,7 @@ restate-tracing-instrumentation = { workspace = true, features = ["prometheus"] 
 restate-types = { workspace = true, features = ["clap"] }
 restate-wal-protocol = { workspace = true }
 restate-worker = { workspace = true }
+restate-worker-api = { workspace = true }
 
 ahash = { workspace = true }
 anyhow = { workspace = true }

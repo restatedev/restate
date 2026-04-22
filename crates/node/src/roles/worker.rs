@@ -16,7 +16,6 @@ use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
-use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{MetadataWriter, TaskCenter, TaskKind};
 use restate_ingestion_client::IngestionClient;
 use restate_partition_store::PartitionStoreManager;
@@ -27,6 +26,7 @@ use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_wal_protocol::Envelope;
 use restate_worker::Worker;
+use restate_worker_api::ProcessorsManagerHandle;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum WorkerRoleBuildError {

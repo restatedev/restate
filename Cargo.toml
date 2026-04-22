@@ -96,6 +96,7 @@ restate-utoipa = { path = "crates/utoipa" }
 restate-vqueues = { path = "crates/vqueues" }
 restate-wal-protocol = { path = "crates/wal-protocol" }
 restate-worker = { path = "crates/worker" }
+restate-worker-api = { path = "crates/worker-api" }
 restate-ingestion-client = { path = "crates/ingestion-client" }
 restate-limiter = { path = "crates/limiter" }
 
