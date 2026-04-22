@@ -24,7 +24,7 @@ use restate_core::network::{
 use restate_core::task_center::TaskGuard;
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_token};
 use restate_futures_util::waiter_queue::WaiterQueue;
-use restate_memory::EstimatedMemorySize;
+use restate_platform::memory::EstimatedMemorySize;
 use restate_serde_util::ByteCount;
 use restate_types::GenerationalNodeId;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber, TailState};

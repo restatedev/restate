@@ -30,7 +30,8 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio_stream::StreamExt;
 use tracing::{debug, instrument, trace, warn};
 
-use restate_memory::{EstimatedMemorySize, MemoryLease, MemoryPool};
+use restate_memory::{MemoryLease, MemoryPool};
+use restate_platform::memory::EstimatedMemorySize;
 use restate_types::SharedString;
 use restate_types::net::{Service, ServiceTag};
 
