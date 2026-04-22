@@ -7180,6 +7180,7 @@ dependencies = [
  "bytestring",
  "rand",
  "restate-encoding-derive",
+ "restate-sharding",
  "restate-workspace-hack",
  "static_assertions",
 ]
@@ -8028,6 +8029,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-sharding"
+version = "1.6.3-dev"
+dependencies = [
+ "bilrost",
+ "flexbuffers",
+ "restate-sharding",
+ "restate-workspace-hack",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "restate-storage-api"
 version = "1.6.3-dev"
 dependencies = [
@@ -8239,6 +8252,7 @@ dependencies = [
  "restate-errors",
  "restate-memory",
  "restate-serde-util",
+ "restate-sharding",
  "restate-test-util",
  "restate-time-util",
  "restate-types",
