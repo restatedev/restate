@@ -80,6 +80,16 @@ pub struct VQueueStatistics {
     /// Note that this only tracks entries that were not killed/cancelled or failed/paused.
     #[bilrost(tag(15))]
     pub(crate) avg_end_to_end_duration_ms: u64,
+    /// Exponential moving average (EMA) of time the head item spent blocked on
+    /// user-defined concurrency rules before entering `Running`. Sampled on
+    /// every Inbox → Running transition (every run attempt, including retries).
+    #[bilrost(tag(16))]
+    pub(crate) avg_blocked_on_concurrency_rules_ms: u64,
+    /// Exponential moving average (EMA) of time the head item spent in
+    /// node-level invoker throttling before entering `Running`. Sampled on
+    /// every Inbox → Running transition (every run attempt, including retries).
+    #[bilrost(tag(17))]
+    pub(crate) avg_blocked_on_invoker_throttling_ms: u64,
 }
 
 impl VQueueStatistics {
@@ -100,6 +110,8 @@ impl VQueueStatistics {
             avg_run_duration_ms: 0,
             avg_suspension_duration_ms: 0,
             avg_end_to_end_duration_ms: 0,
+            avg_blocked_on_concurrency_rules_ms: 0,
+            avg_blocked_on_invoker_throttling_ms: 0,
         }
     }
 
@@ -121,6 +133,16 @@ impl VQueueStatistics {
 
     fn update_avg_end_to_end_duration(&mut self, latency_ms: u64) {
         self.avg_end_to_end_duration_ms = Self::ema(self.avg_end_to_end_duration_ms, latency_ms);
+    }
+
+    fn update_avg_blocked_on_concurrency_rules(&mut self, latency_ms: u64) {
+        self.avg_blocked_on_concurrency_rules_ms =
+            Self::ema(self.avg_blocked_on_concurrency_rules_ms, latency_ms);
+    }
+
+    fn update_avg_blocked_on_invoker_throttling(&mut self, latency_ms: u64) {
+        self.avg_blocked_on_invoker_throttling_ms =
+            Self::ema(self.avg_blocked_on_invoker_throttling_ms, latency_ms);
     }
 
     fn ema(previous: u64, sample_ms: u64) -> u64 {
@@ -164,6 +186,14 @@ impl VQueueStatistics {
 
     pub const fn avg_end_to_end_duration_ms(&self) -> u64 {
         self.avg_end_to_end_duration_ms
+    }
+
+    pub const fn avg_blocked_on_concurrency_rules_ms(&self) -> u64 {
+        self.avg_blocked_on_concurrency_rules_ms
+    }
+
+    pub const fn avg_blocked_on_invoker_throttling_ms(&self) -> u64 {
+        self.avg_blocked_on_invoker_throttling_ms
     }
 
     pub const fn last_enqueued_at(&self) -> Option<UniqueTimestamp> {
@@ -450,6 +480,17 @@ impl VQueueMeta {
                         self.stats.num_running += 1;
                         self.stats.last_attempt_at = Some(now);
 
+                        // EMAs for per-run-attempt blocking time. Sampled on
+                        // every Inbox → Running transition (including retries),
+                        // unlike `avg_queue_duration_ms` which only tracks the
+                        // first attempt.
+                        self.stats.update_avg_blocked_on_concurrency_rules(
+                            metrics.blocked_on_concurrency_rules_ms as u64,
+                        );
+                        self.stats.update_avg_blocked_on_invoker_throttling(
+                            metrics.blocked_on_invoker_throttling_ms as u64,
+                        );
+
                         if !metrics.has_started {
                             let first_wait_ms = now_ms.saturating_sub_ms(metrics.first_runnable_at);
                             self.stats.update_avg_queue_duration(first_wait_ms);
@@ -499,6 +540,16 @@ pub struct MoveMetrics {
     /// Earliest timestamp at which the entry can realistically start.
     #[bilrost(tag(3))]
     pub first_runnable_at: MillisSinceEpoch,
+    /// Milliseconds the head item spent blocked on user-defined concurrency
+    /// rules during this run attempt. Only populated on Inbox → Running moves;
+    /// zero for every other transition. Feeds `avg_blocked_on_concurrency_rules_ms`.
+    #[bilrost(tag(4))]
+    pub blocked_on_concurrency_rules_ms: u32,
+    /// Milliseconds the head item spent in node-level invoker throttling
+    /// during this run attempt. Only populated on Inbox → Running moves; zero
+    /// for every other transition. Feeds `avg_blocked_on_invoker_throttling_ms`.
+    #[bilrost(tag(5))]
+    pub blocked_on_invoker_throttling_ms: u32,
 }
 
 impl VQueueMetaUpdates {
@@ -591,9 +642,27 @@ mod tests {
         first_runnable_at_ms: u64,
         has_started: bool,
     ) -> MoveMetrics {
+        metrics_with_wait(
+            last_transition_at_ms,
+            first_runnable_at_ms,
+            has_started,
+            0,
+            0,
+        )
+    }
+
+    fn metrics_with_wait(
+        last_transition_at_ms: u64,
+        first_runnable_at_ms: u64,
+        has_started: bool,
+        blocked_on_concurrency_rules_ms: u32,
+        blocked_on_invoker_throttling_ms: u32,
+    ) -> MoveMetrics {
         MoveMetrics {
             last_transition_at: ts(last_transition_at_ms),
             has_started,
+            blocked_on_concurrency_rules_ms,
+            blocked_on_invoker_throttling_ms,
             first_runnable_at: MillisSinceEpoch::new(first_runnable_at_ms),
         }
     }
@@ -644,6 +713,78 @@ mod tests {
         assert_eq!(meta.stats.avg_queue_duration_ms, 2_000);
         assert_eq!(meta.stats.last_start_at, Some(ts(BASE_TS_MS + 14_000)));
         assert_eq!(meta.stats.last_attempt_at, Some(ts(BASE_TS_MS + 15_000)));
+    }
+
+    #[test]
+    fn blocking_emas_sample_every_run_attempt() {
+        // These two EMAs (`avg_blocked_on_concurrency_rules_ms`,
+        // `avg_blocked_on_invoker_throttling_ms`) are sampled on EVERY Inbox→Running
+        // transition, not just the first attempt like `avg_queue_duration_ms`.
+        // This test pins that distinction down.
+        let created_at = ts(BASE_TS_MS + 1_000);
+        let mut meta = VQueueMeta::new(created_at, None, LimitKey::None, VQueueLink::None);
+
+        // Enqueue.
+        meta.apply_update(&Update::new(
+            created_at,
+            Action::Move {
+                prev_stage: None,
+                next_stage: Stage::Inbox,
+                metrics: metrics(BASE_TS_MS + 1_000, BASE_TS_MS + 1_000, false),
+            },
+        ));
+
+        // First Inbox→Running: 1_000 ms on concurrency rules, 500 ms on global
+        // invoker throttling. First sample — EMA equals the sample.
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 2_000),
+            Action::Move {
+                prev_stage: Some(Stage::Inbox),
+                next_stage: Stage::Running,
+                metrics: metrics_with_wait(
+                    BASE_TS_MS + 1_000,
+                    BASE_TS_MS + 1_000,
+                    false,
+                    1_000,
+                    500,
+                ),
+            },
+        ));
+        assert_eq!(meta.stats.avg_blocked_on_concurrency_rules_ms, 1_000);
+        assert_eq!(meta.stats.avg_blocked_on_invoker_throttling_ms, 500);
+        assert_eq!(meta.stats.avg_queue_duration_ms, 1_000);
+
+        // Yield back Running→Inbox. Neither the new EMAs nor the old
+        // `avg_queue_duration_ms` should move — this is not a Running arm.
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 3_000),
+            Action::Move {
+                prev_stage: Some(Stage::Running),
+                next_stage: Stage::Inbox,
+                metrics: metrics(BASE_TS_MS + 2_000, BASE_TS_MS + 1_000, true),
+            },
+        ));
+        assert_eq!(meta.stats.avg_blocked_on_concurrency_rules_ms, 1_000);
+        assert_eq!(meta.stats.avg_blocked_on_invoker_throttling_ms, 500);
+
+        // Second Inbox→Running (a retry, `has_started = true`): 2_000 ms /
+        // 0 ms. The new EMAs MUST continue sampling even though has_started.
+        // With α = 0.05: 1000*0.95 + 2000*0.05 = 1050, 500*0.95 + 0*0.05 = 475.
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 4_000),
+            Action::Move {
+                prev_stage: Some(Stage::Inbox),
+                next_stage: Stage::Running,
+                metrics: metrics_with_wait(BASE_TS_MS + 3_000, BASE_TS_MS + 1_000, true, 2_000, 0),
+            },
+        ));
+        assert_eq!(meta.stats.avg_blocked_on_concurrency_rules_ms, 1_050);
+        assert_eq!(meta.stats.avg_blocked_on_invoker_throttling_ms, 475);
+
+        // `avg_queue_duration_ms` must NOT have moved on the retry — the
+        // first-attempt gate (`has_started = false`) is still the existing
+        // behavior for that EMA.
+        assert_eq!(meta.stats.avg_queue_duration_ms, 1_000);
     }
 
     #[test]
@@ -784,6 +925,8 @@ mod tests {
                 avg_run_duration_ms: 12,
                 avg_suspension_duration_ms: 13,
                 avg_end_to_end_duration_ms: 14,
+                avg_blocked_on_concurrency_rules_ms: 15,
+                avg_blocked_on_invoker_throttling_ms: 16,
             },
             scope: Some(Scope::new("scope-a")),
             limit_key: "tenant-1/user-1".parse::<LimitKey<ReString>>().unwrap(),

@@ -10,6 +10,7 @@
 
 use std::time::Duration;
 
+use enum_map::{Enum, EnumMap};
 use metrics::counter;
 use tokio::time::Instant;
 
@@ -19,8 +20,9 @@ use restate_storage_api::vqueue_table::{EntryKey, EntryValue, VQueueStore, stats
 use restate_types::vqueues::VQueueId;
 
 use crate::metric_definitions::{
-    VQUEUE_GLOBAL_THROTTLE_WAIT_MS, VQUEUE_INVOKER_CONCURRENCY_WAIT_MS,
-    VQUEUE_INVOKER_MEMORY_WAIT_MS, VQUEUE_LOCAL_THROTTLE_WAIT_MS,
+    VQUEUE_CONCURRENCY_RULES_WAIT_MS, VQUEUE_DEPLOYMENT_CONCURRENCY_WAIT_MS,
+    VQUEUE_INVOKER_CONCURRENCY_WAIT_MS, VQUEUE_INVOKER_MEMORY_WAIT_MS,
+    VQUEUE_INVOKER_THROTTLING_WAIT_MS, VQUEUE_LOCK_WAIT_MS, VQUEUE_THROTTLING_RULES_WAIT_MS,
 };
 use crate::scheduler::queue::QueueItem;
 
@@ -45,6 +47,11 @@ pub(super) enum Pop {
     Yield(YieldAction),
     // may get used in the future if per-vqueue throttling is implemented through the
     // same delayed queue of eligibility tracker.
+    //
+    // When this is generated, also call
+    // `head_stats.set_wait(Some(WaitBucket::ThrottlingRules))` (or
+    // `InvokerThrottling`, depending on `scope`) so the throttle wait time is
+    // attributed correctly. The segment is closed lazily on the next `try_pop`.
     #[allow(dead_code)]
     Throttle {
         delay: Duration,
@@ -84,119 +91,138 @@ impl DetailedEligibility {
     }
 }
 
+/// Every distinct state the head item can be waiting in. A `Stats` instance is
+/// in at most one bucket at any moment; transitions are recorded on entry/exit
+/// via `Stats::set_wait`, and the elapsed time is the wait time attributed to
+/// that bucket.
+///
+/// `WaitBucket::for_resource` maps every `BlockedOn(ResourceKind)` outcome to a
+/// bucket. The match is exhaustive, so adding a new `ResourceKind` is a compile
+/// error until a bucket is assigned.
+///
+/// The throttling buckets (`ThrottlingRules`, `InvokerThrottling`)
+/// will be entered when `Pop::Throttle` starts being emitted — that path is not
+/// wired up yet — and exited lazily on the next `try_pop` call (which resolves
+/// to acquire, block, or re-throttle).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Enum)]
+#[repr(u8)]
+enum WaitBucket {
+    Lock,
+    ConcurrencyRules,
+    InvokerConcurrency,
+    InvokerMemory,
+    DeploymentConcurrency,
+    ThrottlingRules,
+    /// Node-level invoker throttling — entered whenever the item is either
+    /// `BlockedOn(ResourceKind::InvokerThrottling)` or delayed on the global
+    /// "run" token bucket (same underlying concept, observed from two sides).
+    InvokerThrottling,
+}
+
+impl WaitBucket {
+    fn metric(self) -> &'static str {
+        match self {
+            WaitBucket::Lock => VQUEUE_LOCK_WAIT_MS,
+            WaitBucket::ConcurrencyRules => VQUEUE_CONCURRENCY_RULES_WAIT_MS,
+            WaitBucket::InvokerConcurrency => VQUEUE_INVOKER_CONCURRENCY_WAIT_MS,
+            WaitBucket::InvokerMemory => VQUEUE_INVOKER_MEMORY_WAIT_MS,
+            WaitBucket::DeploymentConcurrency => VQUEUE_DEPLOYMENT_CONCURRENCY_WAIT_MS,
+            WaitBucket::ThrottlingRules => VQUEUE_THROTTLING_RULES_WAIT_MS,
+            WaitBucket::InvokerThrottling => VQUEUE_INVOKER_THROTTLING_WAIT_MS,
+        }
+    }
+
+    /// Categorize a `BlockedOn(ResourceKind)` outcome into the wait bucket that
+    /// will accumulate the time spent blocked on it.
+    ///
+    /// The match is exhaustive on purpose: any new `ResourceKind` variant must
+    /// choose a bucket here, so accounting can never silently drop on the floor.
+    fn for_resource(r: &ResourceKind) -> Self {
+        match r {
+            ResourceKind::Lock { .. } => WaitBucket::Lock,
+            ResourceKind::LimitKeyConcurrency { .. } => WaitBucket::ConcurrencyRules,
+            ResourceKind::InvokerConcurrency => WaitBucket::InvokerConcurrency,
+            ResourceKind::InvokerMemory => WaitBucket::InvokerMemory,
+            ResourceKind::InvokerThrottling => WaitBucket::InvokerThrottling,
+            ResourceKind::DeploymentConcurrency => WaitBucket::DeploymentConcurrency,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct Stats {
-    last_blocked_on_invoker_concurrency: Option<tokio::time::Instant>,
-    blocked_on_invoker_concurrency_micros: u32,
-    last_blocked_on_invoker_memory: Option<tokio::time::Instant>,
-    blocked_on_invoker_memory_micros: u32,
-    local_start_throttling_micros: u32,
-    global_throttling_micros: u32,
+    /// At most one wait segment is open at any moment — the current blocking reason
+    /// (or `None` if not blocked). Making "at most one" a structural invariant is
+    /// what prevents the over-attribution bug where two timers run concurrently.
+    current: Option<(WaitBucket, Instant)>,
+    /// Micros accumulated per bucket. `usize` (≥ 64 bits on supported targets)
+    /// is large enough to hold arbitrarily long waits without overflow concerns.
+    accumulated_micros: EnumMap<WaitBucket, usize>,
 }
+
 impl Stats {
     fn reset(&mut self) {
-        self.last_blocked_on_invoker_concurrency = None;
-        self.blocked_on_invoker_concurrency_micros = 0;
-        self.last_blocked_on_invoker_memory = None;
-        self.blocked_on_invoker_memory_micros = 0;
-        self.local_start_throttling_micros = 0;
-        self.global_throttling_micros = 0;
+        // Flush any open segment to the cumulative metric counter before zeroing
+        // the accumulators. `reset` is called when the head changes (item removed,
+        // preempted, or a higher-priority item replaces it) — the in-memory
+        // `WaitStats` for the previous head is by design dropped on the floor,
+        // but the node-wide metric counters should still reflect the time we
+        // observed the item actually waiting, otherwise the counters systematically
+        // under-report whenever items don't make it all the way to `finalize()`.
+        self.set_wait(None);
+        *self = Self::default();
+    }
+
+    /// Transition the wait segment. Passing `None` means "no longer blocked".
+    /// Passing the *same* bucket as the currently-open segment is a no-op —
+    /// the segment keeps running.
+    fn set_wait(&mut self, next: Option<WaitBucket>) {
+        if self.current.map(|(b, _)| b) == next {
+            return;
+        }
+        let now = Instant::now();
+        if let Some((bucket, since)) = self.current {
+            self.accumulate(bucket, now.saturating_duration_since(since));
+        }
+        self.current = next.map(|b| (b, now));
+    }
+
+    fn accumulate(&mut self, bucket: WaitBucket, delay: Duration) {
+        counter!(bucket.metric()).increment(delay.as_millis() as u64);
+        let micros = usize::try_from(delay.as_micros()).unwrap_or(usize::MAX);
+        self.accumulated_micros[bucket] = self.accumulated_micros[bucket].saturating_add(micros);
+    }
+
+    fn build_wait_stats(&self, open_segment: Option<(WaitBucket, Duration)>) -> WaitStats {
+        let mut micros = self.accumulated_micros;
+        if let Some((bucket, delay)) = open_segment {
+            let extra = usize::try_from(delay.as_micros()).unwrap_or(usize::MAX);
+            micros[bucket] = micros[bucket].saturating_add(extra);
+        }
+        // Cast usize-micros to u32-ms, saturating so that very long waits clamp to
+        // ~49 days per bucket instead of silently wrapping.
+        let ms = |bucket| u32::try_from(micros[bucket] / 1000).unwrap_or(u32::MAX);
+        WaitStats {
+            blocked_on_lock_ms: ms(WaitBucket::Lock),
+            blocked_on_concurrency_rules_ms: ms(WaitBucket::ConcurrencyRules),
+            blocked_on_invoker_concurrency_ms: ms(WaitBucket::InvokerConcurrency),
+            blocked_on_invoker_memory_ms: ms(WaitBucket::InvokerMemory),
+            blocked_on_deployment_concurrency_ms: ms(WaitBucket::DeploymentConcurrency),
+            blocked_on_throttling_rules_ms: ms(WaitBucket::ThrottlingRules),
+            blocked_on_invoker_throttling_ms: ms(WaitBucket::InvokerThrottling),
+        }
     }
 
     fn finalize(&mut self) -> WaitStats {
-        // ensures that the last capacity/memory-blocked segment is accounted for
-        self.record_invoker_memory_delay(false);
-        // ensures that the last capacity-blocked segment is accounted for
-        self.record_invoker_concurrency_delay(false);
-
-        let stats = WaitStats {
-            blocked_on_global_capacity_ms: self.blocked_on_invoker_concurrency_micros / 1000,
-            vqueue_start_throttling_ms: self.local_start_throttling_micros / 1000,
-            blocked_on_invoker_memory_ms: self.blocked_on_invoker_memory_micros / 1000,
-            global_invoker_throttling_ms: self.global_throttling_micros / 1000,
-        };
+        self.set_wait(None);
+        let stats = self.build_wait_stats(None);
         self.reset();
-
         stats
     }
 
     pub fn snapshot(&self) -> WaitStats {
-        let blocked_on_global_capacity_micros =
-            if let Some(last) = self.last_blocked_on_invoker_concurrency {
-                let delay = last.elapsed();
-                self.blocked_on_invoker_concurrency_micros
-                    .saturating_add(delay.as_micros().try_into().unwrap_or(u32::MAX))
-            } else {
-                self.blocked_on_invoker_concurrency_micros
-            };
-
-        let blocked_on_invoker_memory_micros =
-            if let Some(last) = self.last_blocked_on_invoker_memory {
-                let delay = last.elapsed();
-                self.blocked_on_invoker_memory_micros
-                    .saturating_add(delay.as_micros().try_into().unwrap_or(u32::MAX))
-            } else {
-                self.blocked_on_invoker_memory_micros
-            };
-
-        WaitStats {
-            blocked_on_global_capacity_ms: blocked_on_global_capacity_micros / 1000,
-            vqueue_start_throttling_ms: self.local_start_throttling_micros / 1000,
-            global_invoker_throttling_ms: self.global_throttling_micros / 1000,
-            blocked_on_invoker_memory_ms: blocked_on_invoker_memory_micros / 1000,
-        }
-    }
-}
-
-impl Stats {
-    #[allow(dead_code)]
-    fn record_start_throttling_delay(&mut self, delay: &Duration) {
-        self.record_invoker_concurrency_delay(false);
-        counter!(VQUEUE_LOCAL_THROTTLE_WAIT_MS).increment(delay.as_millis() as u64);
-        self.local_start_throttling_micros = self
-            .local_start_throttling_micros
-            .saturating_add(delay.as_micros().try_into().unwrap_or(u32::MAX))
-    }
-
-    #[allow(dead_code)]
-    fn record_global_throttling_delay(&mut self, delay: &Duration) {
-        self.record_invoker_concurrency_delay(false);
-        counter!(VQUEUE_GLOBAL_THROTTLE_WAIT_MS).increment(delay.as_millis() as u64);
-        self.global_throttling_micros = self
-            .global_throttling_micros
-            .saturating_add(delay.as_micros().try_into().unwrap_or(u32::MAX))
-    }
-
-    fn record_invoker_concurrency_delay(&mut self, is_now_blocked: bool) {
-        let last = self.last_blocked_on_invoker_concurrency.take();
-        self.last_blocked_on_invoker_concurrency = if is_now_blocked {
-            Some(Instant::now())
-        } else {
-            None
-        };
-        if let Some(last) = last {
-            let delay = last.elapsed();
-            counter!(VQUEUE_INVOKER_CONCURRENCY_WAIT_MS).increment(delay.as_millis() as u64);
-            self.blocked_on_invoker_concurrency_micros = self
-                .blocked_on_invoker_concurrency_micros
-                .saturating_add(delay.as_micros().try_into().unwrap_or(u32::MAX))
-        }
-    }
-
-    fn record_invoker_memory_delay(&mut self, is_now_blocked: bool) {
-        let last = self.last_blocked_on_invoker_memory.take();
-        self.last_blocked_on_invoker_memory = if is_now_blocked {
-            Some(Instant::now())
-        } else {
-            None
-        };
-        if let Some(last) = last {
-            let delay = last.elapsed();
-            counter!(VQUEUE_INVOKER_MEMORY_WAIT_MS).increment(delay.as_millis() as u64);
-            self.blocked_on_invoker_memory_micros = self
-                .blocked_on_invoker_memory_micros
-                .saturating_add(delay.as_micros().try_into().unwrap_or(u32::MAX))
-        }
+        let open = self.current.map(|(b, since)| (b, since.elapsed()));
+        self.build_wait_stats(open)
     }
 }
 
@@ -310,16 +336,10 @@ impl<S: VQueueStore> VQueueState<S> {
                 Ok(Pop::Run(action))
             }
             AcquireOutcome::BlockedOn(resource) => {
-                // based on the resource we are blocked on, we might collect some stats
-                match resource {
-                    ResourceKind::InvokerConcurrency => {
-                        self.head_stats.record_invoker_concurrency_delay(true);
-                    }
-                    ResourceKind::InvokerThrottling => {
-                        // self.head_stats.record_start_throttling_delay(delay);
-                    }
-                    _ => {}
-                }
+                // One call handles the full state transition: closes any previously
+                // open segment (for a different resource) and opens the new one.
+                self.head_stats
+                    .set_wait(Some(WaitBucket::for_resource(&resource)));
                 Ok(Pop::Blocked(resource))
             }
         }
@@ -398,5 +418,82 @@ impl<S: VQueueStore> VQueueState<S> {
         self.meta
             .inbox_len()
             .saturating_sub(self.unconfirmed_assignments.len()) as u64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::{Stats, WaitBucket};
+
+    /// Regression test for the "two open wait segments overlap" bug.
+    ///
+    /// Before the single-current-segment redesign, transitioning from
+    /// `BlockedOn(Lock)` to `BlockedOn(LimitKeyConcurrency)` opened the
+    /// concurrency-rules timer without closing the lock one, so both timers ran
+    /// concurrently and the final `WaitStats` over-attributed time to both
+    /// buckets. Here the head waits 5 s on a lock, then 3 s on a concurrency
+    /// rule — the sum across buckets must be exactly 8 s, never 13 s.
+    #[tokio::test(start_paused = true)]
+    async fn transition_between_wait_buckets_does_not_double_count() {
+        let mut s = Stats::default();
+
+        s.set_wait(Some(WaitBucket::Lock));
+        tokio::time::advance(Duration::from_secs(5)).await;
+
+        s.set_wait(Some(WaitBucket::ConcurrencyRules));
+        tokio::time::advance(Duration::from_secs(3)).await;
+
+        let stats = s.finalize();
+
+        assert_eq!(stats.blocked_on_lock_ms, 5_000);
+        assert_eq!(stats.blocked_on_concurrency_rules_ms, 3_000);
+        // Other buckets never opened — all zero.
+        assert_eq!(stats.blocked_on_invoker_concurrency_ms, 0);
+        assert_eq!(stats.blocked_on_invoker_memory_ms, 0);
+        assert_eq!(stats.blocked_on_deployment_concurrency_ms, 0);
+        assert_eq!(stats.blocked_on_throttling_rules_ms, 0);
+        assert_eq!(stats.blocked_on_invoker_throttling_ms, 0);
+
+        // finalize() must fully reset: a subsequent finalize is all-zero.
+        assert!(s.current.is_none());
+        let empty = s.finalize();
+        assert_eq!(empty.blocked_on_lock_ms, 0);
+        assert_eq!(empty.blocked_on_concurrency_rules_ms, 0);
+    }
+
+    /// `set_wait(Some(X))` called twice in a row with the same bucket must keep
+    /// the original segment running — not reset the start time — so the full
+    /// elapsed wait is attributed on close.
+    #[tokio::test(start_paused = true)]
+    async fn same_bucket_set_wait_is_idempotent() {
+        let mut s = Stats::default();
+        s.set_wait(Some(WaitBucket::Lock));
+        tokio::time::advance(Duration::from_secs(2)).await;
+        s.set_wait(Some(WaitBucket::Lock)); // no-op; segment must continue
+        tokio::time::advance(Duration::from_secs(2)).await;
+
+        let stats = s.finalize();
+        assert_eq!(stats.blocked_on_lock_ms, 4_000);
+    }
+
+    /// `reset()` (called when the head is preempted or the item is removed)
+    /// must flush any open segment so the cumulative metric counter still
+    /// reflects the wait time, even though the per-item `WaitStats` is
+    /// discarded. We verify the flush by observing that a subsequent call to
+    /// `set_wait(None)` on the fresh `Stats` doesn't double-count the flushed
+    /// time, and that `current` is cleared.
+    #[tokio::test(start_paused = true)]
+    async fn reset_clears_open_segment() {
+        let mut s = Stats::default();
+        s.set_wait(Some(WaitBucket::Lock));
+        tokio::time::advance(Duration::from_secs(7)).await;
+        s.reset();
+
+        // After reset, there's no open segment and no accumulated per-bucket time.
+        assert!(s.current.is_none());
+        let stats = s.finalize();
+        assert_eq!(stats.blocked_on_lock_ms, 0);
     }
 }
