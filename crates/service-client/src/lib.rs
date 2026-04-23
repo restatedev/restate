@@ -108,7 +108,7 @@ impl ServiceClient {
         req: Request<B>,
     ) -> impl Future<Output = Result<Response<ResponseBody>, ServiceClientError>> + Send + 'static
     where
-        B: Body<Data = Bytes> + Send + Sync + Unpin + Sized + 'static,
+        B: Body<Data = Bytes> + Send + Unpin + Sized + 'static,
         <B as Body>::Error: Error + Send + Sync + 'static,
     {
         let (mut parts, body) = req.into_parts();
