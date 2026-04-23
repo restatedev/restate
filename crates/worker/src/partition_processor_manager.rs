@@ -8,8 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod introspection;
 mod processor_state;
 mod spawn_processor_task;
+
+pub use introspection::{LeaderQueryGuard, PartitionLeaderHandlesRegistry};
 
 use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
@@ -44,9 +47,7 @@ use restate_core::{
 };
 use restate_core::{RuntimeTaskHandle, TaskCenter};
 use restate_ingestion_client::IngestionClient;
-use restate_invoker_api::StatusHandle;
 use restate_invoker_api::capacity::InvokerCapacity;
-use restate_invoker_impl::ChannelStatusReader;
 use restate_worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 
 use restate_metadata_server::{MetadataStoreClient, ReadModifyWriteError};
@@ -80,7 +81,6 @@ use restate_types::partitions::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::retries::with_jitter;
-use restate_types::sharding::KeyRange;
 use restate_types::{GenerationalNodeId, SharedString};
 use restate_wal_protocol::Envelope;
 
@@ -115,7 +115,7 @@ pub struct PartitionProcessorManager<T> {
 
     replica_set_states: PartitionReplicaSetStates,
     target_tail_lsns: HashMap<PartitionId, Lsn>,
-    invokers_status_reader: MultiplexedInvokerStatusReader,
+    leader_handles_registry: PartitionLeaderHandlesRegistry,
 
     asynchronous_operations: JoinSet<AsynchronousEvent>,
 
@@ -190,53 +190,6 @@ impl std::fmt::Display for RestartDelay {
     }
 }
 
-type ChannelStatusReaderList = Vec<(KeyRange, ChannelStatusReader)>;
-
-#[derive(Debug, Clone, Default)]
-pub struct MultiplexedInvokerStatusReader {
-    readers: Arc<parking_lot::RwLock<ChannelStatusReaderList>>,
-}
-
-impl MultiplexedInvokerStatusReader {
-    fn push(&mut self, key_range: KeyRange, reader: ChannelStatusReader) {
-        self.readers.write().push((key_range, reader));
-    }
-
-    fn remove(&mut self, key_range: KeyRange) {
-        self.readers.write().retain(|elem| elem.0 != key_range);
-    }
-}
-
-impl StatusHandle for MultiplexedInvokerStatusReader {
-    type Iterator =
-        std::iter::Flatten<std::vec::IntoIter<<ChannelStatusReader as StatusHandle>::Iterator>>;
-
-    async fn read_status(&self, keys: KeyRange) -> Self::Iterator {
-        let mut overlapping_partitions = Vec::new();
-
-        // first clone the readers while holding the lock, then release the lock before reading the
-        // status to avoid holding the lock across await points
-        for (range, reader) in self.readers.read().iter() {
-            if keys.start() <= range.end() && keys.end() >= range.start() {
-                // if this partition is actually overlapping with the search range
-                overlapping_partitions.push((*range, reader.clone()))
-            }
-        }
-        // although we never have a single scans that cross partitions (thus overlapping_partitions.len() == 1),
-        // we can make this code path a bit more future resilient cheaply, by ordering the partitions by their start key.
-        // (this uniquely defines the order between the partitions)
-        overlapping_partitions.sort_by_key(|(a, _)| a.start());
-
-        let mut result = Vec::with_capacity(overlapping_partitions.len());
-
-        for (_, reader) in overlapping_partitions {
-            result.push(reader.read_status(keys).await);
-        }
-
-        result.into_iter().flatten()
-    }
-}
-
 impl<T> PartitionProcessorManager<T>
 where
     T: TransportConnect,
@@ -297,7 +250,7 @@ where
             tx,
             replica_set_states,
             target_tail_lsns: HashMap::default(),
-            invokers_status_reader: MultiplexedInvokerStatusReader::default(),
+            leader_handles_registry: PartitionLeaderHandlesRegistry::default(),
             asynchronous_operations: JoinSet::default(),
             pending_snapshots: HashMap::default(),
             latest_snapshots: HashMap::default(),
@@ -312,8 +265,8 @@ where
         }
     }
 
-    pub fn invokers_status_reader(&self) -> MultiplexedInvokerStatusReader {
-        self.invokers_status_reader.clone()
+    pub fn leader_handles_registry(&self) -> PartitionLeaderHandlesRegistry {
+        self.leader_handles_registry.clone()
     }
 
     pub fn handle(&self) -> ProcessorsManagerHandle {
@@ -523,10 +476,9 @@ where
                                     delay,
                                 } => {
                                     debug!(%target_run_mode, "Partition processor was successfully created.");
-                                    self.invokers_status_reader.push(
-                                        started_processor.key_range(),
-                                        started_processor.invoker_status_reader().clone(),
-                                    );
+                                    // Note: leader-side handles are registered by the partition
+                                    // processor itself on leadership transition — see
+                                    // `LeadershipState::become_leader`.
 
                                     // Pre-register the shard so messages route
                                     // directly to this PP without going through
@@ -623,8 +575,12 @@ where
                             delay,
                             ..
                         } => {
-                            self.invokers_status_reader
-                                .remove(processor.as_ref().expect("must be some").key_range());
+                            // Defensive: normally the processor unregisters itself during
+                            // step_down before run() returns, but this guards against panics
+                            // or abnormal exits that skip that path.
+                            self.leader_handles_registry.unregister_all(
+                                processor.as_ref().expect("must be some").key_range(),
+                            );
 
                             match &result {
                                 Err(ProcessorError::TrimGapEncountered {
@@ -674,7 +630,8 @@ where
                         }
                         ProcessorState::Stopping { processor, .. } => {
                             if let Some(processor) = processor {
-                                self.invokers_status_reader.remove(processor.key_range());
+                                self.leader_handles_registry
+                                    .unregister_all(processor.key_range());
                             }
                             counter!(PARTITION_STOP, PARTITION_LABEL => partition_id.to_string(), TYPE_LABEL => NORMAL_STOP).increment(1);
                             RestartDelay::Immediate
@@ -1402,13 +1359,13 @@ where
         let starting_task = SpawnPartitionProcessorTask::new(
             task_name.clone(),
             partition,
-            self.updateable_config.clone(),
             self.bifrost.clone(),
             self.replica_set_states.clone(),
             self.partition_store_manager.clone(),
             self.fast_forward_on_startup.remove(&partition_id),
             self.invoker_capacity.clone(),
             self.ingestion_client.clone(),
+            self.leader_handles_registry.clone(),
         );
 
         self.asynchronous_operations

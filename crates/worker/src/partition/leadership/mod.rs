@@ -26,12 +26,17 @@ use tracing::{debug, instrument, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::network::{Oneshot, Reciprocal, TransportConnect};
-use restate_core::{ShutdownError, TaskCenter, TaskKind, my_node_id};
+use restate_core::{Metadata, ShutdownError, TaskCenter, TaskKind, my_node_id};
 use restate_errors::NotRunningError;
 use restate_ingestion_client::IngestionClient;
 
+use restate_invoker_api::InvokerHandle;
 use restate_invoker_api::capacity::InvokerCapacity;
+use restate_invoker_impl::{
+    InvokerHandle as InvokerChannelServiceHandle, Service as InvokerService,
+};
 use restate_partition_store::PartitionStore;
+use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::StorageError;
 use restate_vqueues::scheduler::{self};
 
@@ -48,6 +53,7 @@ use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
 use restate_types::identifiers::{PartitionKey, PartitionProcessorRpcRequestId};
+use restate_types::live::LiveLoadExt;
 use restate_types::logs::Keys;
 use restate_types::message::MessageIndex;
 use restate_types::net::ingest::IngestRecord;
@@ -66,7 +72,11 @@ use restate_vqueues::{ResourceManager, SchedulerService, VQueuesMetaCache};
 use restate_wal_protocol::control::{AnnounceLeader, PartitionDurability, VersionBarrier};
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::{Command, Envelope};
+use restate_worker_api::{
+    LeaderQueryCommand, LeaderQueryRequest, LeaderQueryResponse, LeaderQuerySender,
+};
 
+use crate::invoker_integration::EntryEnricher;
 use crate::partition::LeadershipInfo;
 use crate::partition::cleaner::{self, Cleaner};
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
@@ -76,6 +86,7 @@ use crate::partition::shuffle;
 use crate::partition::shuffle::{OutboxReaderError, Shuffle, ShuffleMetadata};
 use crate::partition::state_machine::{Action, StateMachine};
 use crate::partition::types::InvokerEffect;
+use crate::partition_processor_manager::PartitionLeaderHandlesRegistry;
 
 use self::durability_tracker::DurabilityTracker;
 use self::trim_queue::{LogTrimmer, TrimQueue};
@@ -97,6 +108,8 @@ pub(crate) enum Error {
     Decode(#[from] StorageDecodeError),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
+    #[error(transparent)]
+    InvokerBuild(#[from] restate_invoker_impl::BuildError),
     #[error("error when self proposing: {0}")]
     SelfProposer(String),
     #[error("task '{name}' failed: {cause}")]
@@ -161,42 +174,44 @@ impl State {
     }
 }
 
-pub(crate) struct LeadershipState<T, I> {
+pub(crate) struct LeadershipState<T> {
     state: State,
     last_seen_leader_epoch: Option<LeaderEpoch>,
 
     partition: Arc<Partition>,
-    invoker_tx: I,
     ingestion_client: IngestionClient<T, Envelope>,
     invoker_capacity: InvokerCapacity,
     bifrost: Bifrost,
     trim_queue: TrimQueue,
+    leader_query_tx: LeaderQuerySender,
+    leader_handles_registry: PartitionLeaderHandlesRegistry,
 }
 
-impl<T, I> LeadershipState<T, I>
+impl<T> LeadershipState<T>
 where
-    I: restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
     T: TransportConnect,
 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         partition: Arc<Partition>,
-        invoker_tx: I,
         invoker_capacity: InvokerCapacity,
         ingestion_client: IngestionClient<T, Envelope>,
         bifrost: Bifrost,
         last_seen_leader_epoch: Option<LeaderEpoch>,
         trim_queue: TrimQueue,
+        leader_query_tx: LeaderQuerySender,
+        leader_handles_registry: PartitionLeaderHandlesRegistry,
     ) -> Self {
         Self {
             state: State::Follower,
             partition,
-            invoker_tx,
             ingestion_client,
             invoker_capacity,
             bifrost,
             last_seen_leader_epoch,
             trim_queue,
+            leader_query_tx,
+            leader_handles_registry,
         }
     }
 
@@ -390,10 +405,57 @@ where
             self_proposer,
         } = &mut self.state
         {
+            let schema = Metadata::with_current(|m| m.updateable_schema());
+            let invoker: InvokerService<
+                InvokerStorageReader<PartitionStore>,
+                EntryEnricher<Schema, ProtobufRawEntryCodec>,
+                Schema,
+            > = InvokerService::from_options(
+                self.partition.partition_id,
+                &config.common.service_client,
+                &config.worker.invoker,
+                EntryEnricher::new(schema.clone()),
+                schema,
+                self.invoker_capacity.invocation_token_bucket.clone(),
+                self.invoker_capacity.action_token_bucket.clone(),
+                self.invoker_capacity.memory_pool.clone(),
+            )?;
+
+            let mut invoker_handle = invoker.handle();
+
+            // Register the direct invoker-status handle so DataFusion reads bypass
+            // the partition processor's main select! loop. The guard is moved into
+            // the invoker task's future below, binding the entry's lifetime to the
+            // invoker task: cancel or panic drops the future, drops the guard, and
+            // removes the entry.
+            let invoker_status_guard = self
+                .leader_handles_registry
+                .register_invoker_status(self.partition.key_range, invoker.status_reader());
+
+            // Register the leader-query channel separately so scheduler status (and
+            // future user-limit counters) can be routed through the partition
+            // processor's select! while we're leader. The guard is stored in
+            // LeaderState so it drops exactly when we step down — independent of
+            // the invoker task's lifetime. When the scheduler becomes its own task,
+            // it will register its own status handle and own its own guard.
+            let leader_query_guard = self
+                .leader_handles_registry
+                .register_leader_query(self.partition.key_range, self.leader_query_tx.clone());
+
+            let invoker_name = Arc::from(format!("invoker-{}", self.partition.partition_id));
+            let invoker_config = Configuration::live().map(|c| &c.worker.invoker);
+            let invoker_task_guard =
+                TaskCenter::spawn_unmanaged(TaskKind::SystemService, invoker_name, async move {
+                    let _invoker_status_guard = invoker_status_guard;
+                    invoker.run(invoker_config).await
+                })?
+                .into_guard();
+
             let (invoker_tx, invoker_rx) = mpsc::channel(config.worker.internal_queue_length());
             let invoker_rx = ReceiverStream::new(invoker_rx);
 
-            self.invoker_tx
+            // todo: Remove this once the invoker is partition-id-key-range aware.
+            invoker_handle
                 .register_partition(
                     (self.partition.partition_id, *leader_epoch),
                     self.partition.key_range,
@@ -419,7 +481,7 @@ where
             } else {
                 // we only perform the mass-resumption if vqueues are disabled
                 Self::resume_invoked_invocations(
-                    &mut self.invoker_tx,
+                    &mut invoker_handle,
                     (self.partition.partition_id, *leader_epoch),
                     partition_store,
                 )
@@ -535,10 +597,13 @@ where
                 shuffle_hint_tx,
                 timer_service,
                 scheduler_service,
+                invoker_handle,
+                invoker_task_guard.into_handle(),
                 self_proposer,
                 invoker_rx,
                 shuffle_rx,
                 durability_tracker,
+                leader_query_guard,
             )));
 
             Ok(())
@@ -548,7 +613,7 @@ where
     }
 
     async fn resume_invoked_invocations(
-        invoker_handle: &mut I,
+        invoker_handle: &mut InvokerChannelServiceHandle<InvokerStorageReader<PartitionStore>>,
         partition_leader_epoch: PartitionLeaderEpoch,
         partition_store: &mut PartitionStore,
     ) -> Result<(), Error> {
@@ -592,7 +657,11 @@ where
                 // nothing to do :-)
             }
             State::Leader(leader_state) => {
-                leader_state.stop(&mut self.invoker_tx).await;
+                // Registry entries are unregistered via RAII: the invoker-status
+                // entry drops with the invoker task's future (after stop cancels it),
+                // and the leader-query entry drops with LeaderState (via its
+                // `_leader_query_guard` field).
+                leader_state.stop().await;
             }
         }
     }
@@ -603,7 +672,7 @@ where
                 // nothing to do :-)
             }
             State::Leader(leader_state) => {
-                leader_state.handle_actions(&mut self.invoker_tx, actions)?;
+                leader_state.handle_actions(actions)?;
             }
         }
 
@@ -645,18 +714,43 @@ where
     }
 
     // This is returned only if we're leaders (otherwise there's no messages to be sent to the invoker)
-    pub fn invoker_handle(&mut self) -> Option<(PartitionLeaderEpoch, &mut I)> {
+    pub fn invoker_handle(
+        &mut self,
+    ) -> Option<(
+        PartitionLeaderEpoch,
+        &mut InvokerChannelServiceHandle<InvokerStorageReader<PartitionStore>>,
+    )> {
         match &mut self.state {
             State::Leader(leader_state) => {
                 let partition_leader_epoch = (leader_state.partition_id, leader_state.leader_epoch);
-                Some((partition_leader_epoch, &mut self.invoker_tx))
+                Some((partition_leader_epoch, leader_state.invoker_handle()))
             }
             _ => None,
         }
     }
 }
 
-impl<T, I> LeadershipState<T, I> {
+impl<T> LeadershipState<T> {
+    pub fn handle_leader_query(&self, leader_query_cmd: LeaderQueryCommand) {
+        let (request, response_tx) = leader_query_cmd.into_inner();
+
+        match (&self.state, request) {
+            (State::Leader(leader_state), LeaderQueryRequest::SchedulerStatus { keys }) => {
+                let _ = response_tx.send(LeaderQueryResponse::SchedulerStatus(
+                    leader_state.read_scheduler_status(keys),
+                ));
+            }
+            (State::Leader(leader_state), LeaderQueryRequest::UserLimitCounters { keys }) => {
+                let _ = response_tx.send(LeaderQueryResponse::UserLimitCounters(
+                    leader_state.read_user_limit_counters(keys),
+                ));
+            }
+            (_, request) => {
+                let _ = response_tx.send(LeaderQueryResponse::NotLeader(request.kind()));
+            }
+        }
+    }
+
     pub async fn handle_rpc_proposal_command(
         &mut self,
         request_id: PartitionProcessorRpcRequestId,
@@ -775,13 +869,13 @@ mod tests {
     use crate::partition::LeadershipInfo;
     use crate::partition::leadership::trim_queue::TrimQueue;
     use crate::partition::leadership::{LeadershipState, State};
+    use crate::partition_processor_manager::PartitionLeaderHandlesRegistry;
     use assert2::let_assert;
     use restate_bifrost::Bifrost;
     use restate_core::partitions::PartitionRouting;
     use restate_core::{TaskCenter, TestCoreEnv};
     use restate_ingestion_client::IngestionClient;
     use restate_invoker_api::capacity::InvokerCapacity;
-    use restate_invoker_api::test_util::MockInvokerHandle;
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
@@ -822,15 +916,16 @@ mod tests {
             None,
         );
 
-        let invoker_tx = MockInvokerHandle::default();
+        let (leader_query_tx, _leader_query_rx) = restate_worker_api::channel();
         let mut state = LeadershipState::new(
             Arc::new(PARTITION),
-            invoker_tx,
             InvokerCapacity::new_unlimited(),
             ingress,
             bifrost.clone(),
             None,
             TrimQueue::default(),
+            leader_query_tx,
+            PartitionLeaderHandlesRegistry::default(),
         );
 
         assert!(matches!(state.state, State::Follower));

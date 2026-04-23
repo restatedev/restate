@@ -17,12 +17,15 @@ restate-workspace-hack = { workspace = true }
 
 restate-core = { workspace = true }
 restate-invoker-api = { workspace = true }
+restate-limiter = { workspace = true }
+restate-util-string = { workspace = true }
 restate-partition-store = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["codec"] }
 restate-service-protocol-v4 = { workspace = true, features = ["entry-codec"]  }
 restate-sharding = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-types = { workspace = true }
+restate-worker-api = { workspace = true }
 
 ahash = { workspace = true }                                                    # Required to due a yanked version used by datafusion
 anyhow = { workspace = true }

@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::future::Future;
+use std::ops::RangeBounds;
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 
@@ -26,6 +27,8 @@ use tracing::{debug, error, trace};
 use restate_bifrost::CommitToken;
 use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{Metadata, MetadataKind, TaskCenter, TaskHandle, TaskId};
+use restate_invoker_api::InvokerHandle;
+use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
 use restate_partition_store::{PartitionDb, PartitionStore};
 use restate_storage_api::vqueue_table::scheduler::SchedulerDecisions;
 use restate_types::identifiers::{
@@ -45,6 +48,7 @@ use restate_vqueues::VQueueEvent;
 use restate_vqueues::scheduler::Decisions;
 use restate_wal_protocol::Command;
 use restate_wal_protocol::control::UpsertSchema;
+use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
 
 use crate::metric_definitions::{PARTITION_HANDLE_LEADER_ACTIONS, USAGE_LEADER_ACTION_COUNT};
 use crate::partition::cleaner::{CleanerEffect, CleanerHandle};
@@ -54,6 +58,7 @@ use crate::partition::leadership::{ActionEffect, Error, InvokerStream, TimerServ
 use crate::partition::shuffle;
 use crate::partition::shuffle::HintSender;
 use crate::partition::state_machine::{Action, StateMachine};
+use crate::partition_processor_manager::LeaderQueryGuard;
 
 use super::durability_tracker::DurabilityTracker;
 
@@ -75,6 +80,8 @@ pub struct LeaderState {
     shuffle_task_handle: Option<TaskHandle<anyhow::Result<()>>>,
     pub timer_service: Pin<Box<TimerService>>,
     scheduler: SchedulerService<PartitionDb>,
+    invoker_handle: InvokerChannelServiceHandle<InvokerStorageReader<PartitionStore>>,
+    invoker_task_handle: Option<TaskHandle<()>>,
     self_proposer: SelfProposer,
 
     awaiting_rpc_actions: HashMap<PartitionProcessorRpcRequestId, RpcReciprocal>,
@@ -86,6 +93,9 @@ pub struct LeaderState {
     cleaner_handle: CleanerHandle,
     trimmer_task_id: TaskId,
     durability_tracker: DurabilityTracker,
+    // Unregisters the leader-query registry entry on drop. Must live as long as
+    // the partition processor's select! is willing to serve scheduler queries.
+    _leader_query_guard: LeaderQueryGuard,
 }
 
 impl LeaderState {
@@ -100,10 +110,13 @@ impl LeaderState {
         shuffle_hint_tx: HintSender,
         timer_service: TimerService,
         scheduler: SchedulerService<PartitionDb>,
+        invoker_handle: InvokerChannelServiceHandle<InvokerStorageReader<PartitionStore>>,
+        invoker_task_handle: TaskHandle<()>,
         self_proposer: SelfProposer,
         invoker_rx: InvokerStream,
         shuffle_rx: tokio::sync::mpsc::Receiver<shuffle::OutboxTruncation>,
         durability_tracker: DurabilityTracker,
+        leader_query_guard: LeaderQueryGuard,
     ) -> Self {
         LeaderState {
             partition_id,
@@ -118,13 +131,32 @@ impl LeaderState {
             }),
             timer_service: Box::pin(timer_service),
             scheduler,
+            invoker_handle,
+            invoker_task_handle: Some(invoker_task_handle),
             self_proposer,
             awaiting_rpc_actions: Default::default(),
             awaiting_rpc_self_propose: Default::default(),
             invoker_stream: invoker_rx,
             shuffle_stream: ReceiverStream::new(shuffle_rx),
             durability_tracker,
+            _leader_query_guard: leader_query_guard,
         }
+    }
+
+    pub fn read_scheduler_status(&self, keys: KeyRange) -> Vec<SchedulerStatusEntry> {
+        self.scheduler
+            .iter_status()
+            .into_iter()
+            .flatten()
+            .filter(|(qid, _)| keys.contains(&qid.partition_key()))
+            .collect()
+    }
+
+    pub fn read_user_limit_counters(&self, keys: KeyRange) -> Vec<UserLimitCounterEntry> {
+        // Stamp counters with a key inside this partition's range so DataFusion's
+        // partition-aware scan accepts the row. Use the range start — counters are
+        // partition-scoped, not per-item, so any key in range is fine.
+        self.scheduler.scan_user_limit_counters(keys.start())
     }
 
     /// Runs the leader specific task which is the awaiting of action effects and the monitoring
@@ -192,6 +224,7 @@ impl LeaderState {
         let mut all_streams = all_streams.ready_chunks(BATCH_READY_UP_TO);
 
         let shuffle_task_handle = self.shuffle_task_handle.as_mut().expect("is set");
+        let invoker_task_handle = self.invoker_task_handle.as_mut().expect("is set");
         tokio::select! {
             // watch the shuffle task in case it crashed
             result = shuffle_task_handle => {
@@ -205,6 +238,13 @@ impl LeaderState {
                     Err(shutdown_error) => Err(Error::Shutdown(shutdown_error))
                 }
             }
+            result = invoker_task_handle => {
+                self.invoker_task_handle.take();
+                match result {
+                    Ok(()) => Err(Error::task_terminated_unexpectedly("invoker")),
+                    Err(shutdown_error) => Err(Error::Shutdown(shutdown_error)),
+                }
+            }
             Some(action_effects) = all_streams.next() => {
                 Ok(action_effects)
             },
@@ -215,17 +255,20 @@ impl LeaderState {
     }
 
     /// Stops all leader relevant tasks.
-    pub async fn stop(
-        mut self,
-        invoker_handle: &mut impl restate_invoker_api::InvokerHandle<
-            InvokerStorageReader<PartitionStore>,
-        >,
-    ) {
+    pub async fn stop(mut self) {
         let shuffle_handle = match self.shuffle_task_handle {
             None => OptionFuture::from(None),
             Some(shuffle_handle) => {
                 shuffle_handle.cancel();
                 OptionFuture::from(Some(shuffle_handle))
+            }
+        };
+
+        let invoker_task_handle = match self.invoker_task_handle {
+            None => OptionFuture::from(None),
+            Some(invoker_task_handle) => {
+                invoker_task_handle.cancel();
+                OptionFuture::from(Some(invoker_task_handle))
             }
         };
 
@@ -241,14 +284,20 @@ impl LeaderState {
         // It's ok to not check the abort_result because either it succeeded or the invoker
         // is not running. If the invoker is not running, and we are not shutting down, then
         // we will fail the next time we try to invoke.
-        let _ = invoker_handle.abort_all_partition((self.partition_id, self.leader_epoch));
-        let (shuffle_result, cleaner_result) = tokio::join!(shuffle_handle, cleaner_handle);
+        let _ = self
+            .invoker_handle
+            .abort_all_partition((self.partition_id, self.leader_epoch));
+        let (shuffle_result, cleaner_result, invoker_result) =
+            tokio::join!(shuffle_handle, cleaner_handle, invoker_task_handle);
 
         if let Some(shuffle_result) = shuffle_result {
             let _ = shuffle_result.expect("graceful termination of shuffle task");
         }
         if let Some(cleaner_result) = cleaner_result {
             cleaner_result.expect("graceful termination of cleaner task");
+        }
+        if let Some(invoker_result) = invoker_result {
+            let _ = invoker_result;
         }
 
         // Reply to all RPCs with not a leader
@@ -471,11 +520,7 @@ impl LeaderState {
         }
     }
 
-    pub fn handle_actions(
-        &mut self,
-        invoker_tx: &mut impl restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
-        actions: impl Iterator<Item = Action>,
-    ) -> Result<(), Error> {
+    pub fn handle_actions(&mut self, actions: impl Iterator<Item = Action>) -> Result<(), Error> {
         for action in actions {
             let action_name = action.name();
 
@@ -489,23 +534,20 @@ impl LeaderState {
             )
             .increment(1);
 
-            self.handle_action(action, invoker_tx)?;
+            self.handle_action(action)?;
         }
 
         Ok(())
     }
 
-    fn handle_action(
-        &mut self,
-        action: Action,
-        invoker_tx: &mut impl restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
-    ) -> Result<(), Error> {
+    fn handle_action(&mut self, action: Action) -> Result<(), Error> {
         let partition_leader_epoch = (self.partition_id, self.leader_epoch);
         match action {
             Action::Invoke {
                 invocation_id,
                 invocation_target,
-            } => invoker_tx
+            } => self
+                .invoker_handle
                 .invoke(partition_leader_epoch, invocation_id, invocation_target)
                 .map_err(Error::Invoker)?,
             Action::NewOutboxMessage {
@@ -524,17 +566,19 @@ impl LeaderState {
                 invocation_id,
                 command_index,
             } => {
-                invoker_tx
+                self.invoker_handle
                     .notify_stored_command_ack(partition_leader_epoch, invocation_id, command_index)
                     .map_err(Error::Invoker)?;
             }
             Action::ForwardCompletion {
                 invocation_id,
                 entry_index,
-            } => invoker_tx
+            } => self
+                .invoker_handle
                 .notify_completion(partition_leader_epoch, invocation_id, entry_index)
                 .map_err(Error::Invoker)?,
-            Action::AbortInvocation { invocation_id } => invoker_tx
+            Action::AbortInvocation { invocation_id } => self
+                .invoker_handle
                 .abort_invocation(partition_leader_epoch, invocation_id)
                 .map_err(Error::Invoker)?,
             Action::IngressResponse {
@@ -578,7 +622,7 @@ impl LeaderState {
                 entry_index,
                 notification_id,
             } => {
-                invoker_tx
+                self.invoker_handle
                     .notify_notification(
                         partition_leader_epoch,
                         invocation_id,
@@ -674,7 +718,7 @@ impl LeaderState {
                 // todo: This is temporary until we wrap the returned permit into an InvokePermit
                 // that invoker permit will carry the inner permit as opaque type.
                 let (permit, memory_lease) = run_permit.take_invoker_permit();
-                invoker_tx
+                self.invoker_handle
                     .vqueue_invoke(
                         partition_leader_epoch,
                         qid,
@@ -688,6 +732,12 @@ impl LeaderState {
         }
 
         Ok(())
+    }
+
+    pub fn invoker_handle(
+        &mut self,
+    ) -> &mut InvokerChannelServiceHandle<InvokerStorageReader<PartitionStore>> {
+        &mut self.invoker_handle
     }
 
     fn handle_vqueue_inbox_event(&mut self, event: VQueueEvent) {
