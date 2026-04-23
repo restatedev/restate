@@ -24,7 +24,8 @@ use restate_admin_rest_model::version::AdminApiVersion;
 use restate_core::network::{TransportConnect, net_util};
 use restate_core::{MetadataWriter, TaskCenter};
 use restate_service_client::HttpClient;
-use restate_service_protocol::discovery::ServiceDiscovery;
+use restate_service_protocol_v4::discovery::ServiceDiscovery;
+use restate_service_protocol_v4::serdes::SerdesClient;
 use restate_time_util::DurationExt;
 use restate_types::config::AdminOptions;
 use restate_types::invocation::client::InvocationClient;
@@ -45,6 +46,7 @@ pub struct AdminService<Metadata, Discovery, Telemetry, Invocations, Transport> 
     listeners: Listeners<AdminPort>,
     ingestion_client: IngestionClient<Transport, Envelope>,
     schema_registry: SchemaRegistry<Metadata, Discovery, Telemetry>,
+    serdes_client: SerdesClient,
     invocation_client: Invocations,
     query_context: Option<restate_storage_query_datafusion::context::QueryContext>,
     #[cfg(feature = "metadata-api")]
@@ -62,6 +64,7 @@ where
         metadata_writer: MetadataWriter,
         ingestion_client: IngestionClient<Transport, Envelope>,
         invocation_client: Invocations,
+        serdes_client: SerdesClient,
         service_discovery: ServiceDiscovery,
         telemetry_http_client: Option<HttpClient>,
     ) -> Self {
@@ -75,6 +78,7 @@ where
                 service_discovery,
                 TelemetryClient(telemetry_http_client),
             ),
+            serdes_client,
             invocation_client,
             query_context: None,
         }
@@ -98,6 +102,7 @@ where
 
         let rest_state = state::AdminServiceState::new(
             self.schema_registry,
+            self.serdes_client,
             self.invocation_client,
             self.ingestion_client,
             self.query_context,

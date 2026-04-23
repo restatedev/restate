@@ -10,10 +10,14 @@
 
 //! This crate contains the code-generated structs of [service-protocol](https://github.com/restatedev/service-protocol) and the codec to use them.
 
+#[cfg(feature = "discovery")]
+pub mod discovery;
 #[cfg(feature = "entry-codec")]
 pub mod entry_codec;
 #[cfg(feature = "message-codec")]
 pub mod message_codec;
+#[cfg(feature = "serdes")]
+pub mod serdes;
 
 #[allow(clippy::enum_variant_names)]
 // We need to allow dead code because the entry-codec feature only uses a subset of the defined

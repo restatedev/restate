@@ -194,7 +194,7 @@ where
 {
     let (deployment, services) = state
         .schema_registry
-        .get_deployment(deployment_id)
+        .get_deployment_and_services(deployment_id)
         .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
 
     Ok(to_detailed_deployment_response(deployment, services).into())
@@ -337,7 +337,7 @@ where
                 // No changes to do, just return 200
                 let (deployment, services) = state
                     .schema_registry
-                    .get_deployment(deployment_id)
+                    .get_deployment_and_services(deployment_id)
                     .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
 
                 return Ok(to_detailed_deployment_response(deployment, services).into());
@@ -366,7 +366,7 @@ where
                 // No changes to do, just return 200
                 let (deployment, services) = state
                     .schema_registry
-                    .get_deployment(deployment_id)
+                    .get_deployment_and_services(deployment_id)
                     .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
 
                 return Ok(to_detailed_deployment_response(deployment, services).into());

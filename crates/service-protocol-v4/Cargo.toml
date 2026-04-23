@@ -11,12 +11,15 @@ publish = false
 default = []
 entry-codec = ["dep:bytestring", "dep:assert2"]
 message-codec = ["dep:bytes-utils", "dep:codederror", "dep:restate-errors", "dep:tracing", "dep:paste"]
+discovery = ["dep:serde_json", "dep:tracing", "dep:codederror", "dep:restate-errors", "dep:http", "dep:http-body-util", "dep:restate-service-client", "dep:tokio"]
+serdes = ["dep:serde_json", "dep:tracing", "dep:codederror", "dep:restate-errors", "dep:http", "dep:http-body", "dep:http-body-util", "dep:restate-service-client", "dep:tokio"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
 restate-errors = { workspace = true, optional = true }
 restate-serde-util = { workspace = true }
+restate-service-client = { workspace = true, optional = true }
 restate-types = { workspace = true }
 
 assert2 = { workspace = true, optional = true }
@@ -24,14 +27,22 @@ bytes = { workspace = true }
 bytestring = { workspace = true, optional = true }
 bytes-utils = { workspace = true, optional = true }
 codederror = { workspace = true, optional = true }
+http = { workspace = true, optional = true }
+http-body = { workspace = true, optional = true }
+http-body-util = { workspace = true, optional = true }
+itertools = { workspace = true }
 paste = { workspace = true, optional = true }
 prost = { workspace = true }
+serde_json = { workspace = true, optional = true }
+strum = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true, optional = true, features = ["time"] }
 tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
+googletest = { workspace = true }
 
 [build-dependencies]
 prost-build = { workspace = true }

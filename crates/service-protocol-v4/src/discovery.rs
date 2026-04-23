@@ -44,8 +44,6 @@ use restate_types::service_protocol::{
     MIN_DISCOVERABLE_SERVICE_PROTOCOL_VERSION, ServiceProtocolVersion,
 };
 
-// TODO(slinkydeveloper) move this code somewhere else!
-
 #[allow(clippy::declare_interior_mutable_const)]
 const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server");
 
@@ -453,9 +451,7 @@ impl ServiceDiscovery {
                     let body_message = body
                         .collect()
                         .await
-                        .map(|b| {
-                            String::from_utf8_lossy(b.to_bytes().to_vec().as_slice()).to_string()
-                        })
+                        .map(|b| String::from_utf8_lossy(&b.to_bytes()).to_string())
                         .unwrap_or_else(|err| format!("Failed to read body {err}"));
                     if parts.status == StatusCode::NOT_FOUND {
                         return Err(DiscoveryError::NotFound(parts.headers, body_message.into()));

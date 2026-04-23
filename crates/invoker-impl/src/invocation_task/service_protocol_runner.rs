@@ -27,7 +27,7 @@ use restate_invoker_api::invocation_reader::{
 };
 use restate_invoker_api::{EntryEnricher, JournalMetadata};
 use restate_memory::{LocalMemoryLease, LocalMemoryPool};
-use restate_service_client::{Endpoint, Method, Parts, Request};
+use restate_service_client::{Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::message::{
     Decoder, Encoder, MessageHeader, MessageType, ProtocolMessage, StateEntry,
@@ -41,7 +41,7 @@ use restate_types::journal::raw::RawEntryCodec;
 use restate_types::journal::{Completion, CompletionResult, EntryType};
 use restate_types::journal_v2;
 use restate_types::journal_v2::EntryMetadata;
-use restate_types::schema::deployment::{Deployment, DeploymentType, ProtocolType};
+use restate_types::schema::deployment::{Deployment, ProtocolType};
 use restate_types::service_protocol::ServiceProtocolVersion;
 
 use crate::Notification;
@@ -315,24 +315,12 @@ where
             }
         }
 
-        let address = match deployment.ty {
-            DeploymentType::Lambda {
-                arn,
-                assume_role_arn,
-                compression,
-            } => Endpoint::Lambda(arn, assume_role_arn, compression),
-            DeploymentType::Http {
-                address,
-                http_version,
-                ..
-            } => Endpoint::Http(address, Some(http_version)),
-        };
-
-        headers.extend(deployment.additional_headers);
-
         (
             http_stream_tx,
-            Request::new(Parts::new(Method::POST, address, path, headers), req_body),
+            Request::new(
+                Parts::from_deployment(deployment, Method::POST, path, headers),
+                req_body,
+            ),
         )
     }
 

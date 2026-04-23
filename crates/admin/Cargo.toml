@@ -31,7 +31,7 @@ restate-ingestion-client = { workspace = true }
 restate-metadata-store = { workspace = true }
 restate-metadata-providers = { workspace = true }
 restate-service-client = { workspace = true }
-restate-service-protocol = { workspace = true, features = ["discovery"] }
+restate-service-protocol-v4 = { workspace = true, features = ["discovery", "serdes"] }
 restate-storage-query-datafusion = { workspace = true }
 restate-time-util = { workspace = true }
 restate-types = { workspace = true }

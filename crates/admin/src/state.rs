@@ -10,6 +10,7 @@
 
 use restate_core::network::TransportConnect;
 use restate_ingestion_client::IngestionClient;
+use restate_service_protocol_v4::serdes::SerdesClient;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::schema::registry::SchemaRegistry;
 use restate_wal_protocol::Envelope;
@@ -17,6 +18,7 @@ use restate_wal_protocol::Envelope;
 #[derive(Clone, derive_builder::Builder)]
 pub struct AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport> {
     pub schema_registry: SchemaRegistry<Metadata, Discovery, Telemetry>,
+    pub serdes_client: SerdesClient,
     pub invocation_client: Invocations,
     pub ingestion_client: IngestionClient<Transport, Envelope>,
     // Some value if the query endpoint is activated
@@ -30,12 +32,14 @@ where
 {
     pub fn new(
         schema_registry: SchemaRegistry<Metadata, Discovery, Telemetry>,
+        serdes_client: SerdesClient,
         invocation_client: Invocations,
         ingestion_client: IngestionClient<Transport, Envelope>,
         query_context: Option<QueryContext>,
     ) -> Self {
         Self {
             schema_registry,
+            serdes_client,
             invocation_client,
             ingestion_client,
             query_context,

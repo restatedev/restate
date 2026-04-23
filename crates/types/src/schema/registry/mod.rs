@@ -556,13 +556,26 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
             .resolve_latest_service_openapi(&service_name, ingress_address)
     }
 
-    pub fn get_deployment(
+    pub fn get_deployment_and_services(
         &self,
         deployment_id: DeploymentId,
     ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
         self.metadata_service
             .get()
             .get_deployment_and_services(&deployment_id)
+    }
+
+    pub fn get_deployment(&self, deployment_id: DeploymentId) -> Option<Deployment> {
+        self.metadata_service.get().get_deployment(&deployment_id)
+    }
+
+    pub fn resolve_latest_deployment_for_service(
+        &self,
+        service_name: impl AsRef<str>,
+    ) -> Option<Deployment> {
+        self.metadata_service
+            .get()
+            .resolve_latest_deployment_for_service(&service_name)
     }
 
     pub fn list_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)> {

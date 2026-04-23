@@ -24,7 +24,8 @@ use restate_core::{TaskCenter, TaskCenterBuilder, TestCoreEnv};
 use restate_core::{TaskCenterFutureExt, TaskKind};
 use restate_ingestion_client::IngestionClient;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
-use restate_service_protocol::discovery::ServiceDiscovery;
+use restate_service_protocol_v4::discovery::ServiceDiscovery;
+use restate_service_protocol_v4::serdes::SerdesClient;
 use restate_storage_query_datafusion::table_docs;
 use restate_types::config::Configuration;
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
@@ -225,16 +226,16 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
 
     let socket_dir = tempfile::tempdir()?;
     let socket_path = socket_dir.path().join("admin.sock");
+    let service_client =
+        ServiceClient::from_options(&config.common.service_client, AssumeRoleCacheMode::None)
+            .unwrap();
     let admin_service = AdminService::new(
         Listeners::new_unix_listener(socket_path.clone())?,
         node_env.metadata_writer.clone(),
         ingress_client,
         Mock,
-        ServiceDiscovery::new(
-            RetryPolicy::default(),
-            ServiceClient::from_options(&config.common.service_client, AssumeRoleCacheMode::None)
-                .unwrap(),
-        ),
+        SerdesClient::new(service_client.clone()),
+        ServiceDiscovery::new(RetryPolicy::default(), service_client),
         None,
     );
 
