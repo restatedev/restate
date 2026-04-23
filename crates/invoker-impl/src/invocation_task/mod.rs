@@ -180,6 +180,9 @@ pub(super) enum InvocationTaskOutputInner {
     NewNotificationProposal {
         notification: RawNotification,
     },
+    AwaitingOn {
+        unresolved_future: UnresolvedFuture,
+    },
     Closed,
     Suspended(HashSet<EntryIndex>),
     SuspendedV2(HashSet<NotificationId>),

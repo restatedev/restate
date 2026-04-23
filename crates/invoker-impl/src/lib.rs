@@ -545,6 +545,13 @@ where
                             notification
                         ).await
                     },
+                    InvocationTaskOutputInner::AwaitingOn { unresolved_future } => {
+                        self.handle_awaiting_on(
+                            partition,
+                            invocation_id,
+                            unresolved_future
+                        )
+                    },
                     InvocationTaskOutputInner::Closed => {
                         self.handle_invocation_task_closed(partition, invocation_id).await
                     },
@@ -1056,6 +1063,37 @@ where
 
             ism.notify_entry(entry_index, notification_id);
         });
+    }
+
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            restate.invocation.id = %invocation_id,
+            restate.invoker.partition_leader_epoch = ?partition,
+        )
+    )]
+    fn handle_awaiting_on(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        invocation_id: InvocationId,
+        unresolved_future: UnresolvedFuture,
+    ) {
+        self.invocation_state_machine_manager.handle_for_invocation(
+            partition,
+            &invocation_id,
+            |_, ism| {
+                trace!(
+                    restate.invocation.target = %ism.invocation_target,
+                    "awaiting on received {:?}. Invocation state: {:?}",
+                    unresolved_future,
+                    ism.invocation_state_debug()
+                );
+
+                self.status_store
+                    .on_awaiting_on(&partition, &invocation_id, unresolved_future);
+            },
+        );
     }
 
     #[instrument(

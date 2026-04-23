@@ -66,8 +66,9 @@ impl InvocationStatusStore {
         if let Some(inner) = self.0.get_mut(partition)
             && let Some(report) = inner.get_mut(invocation_id)
         {
-            // When we do progress, we reset the last retry attempt failure as that's now invalid
+            // When we do progress, we reset the last retry attempt failure and last unresolved future as that's now invalid
             report.last_retry_attempt_failure = None;
+            report.last_awaiting_on_unresolved_future = None;
         }
     }
 
@@ -96,6 +97,19 @@ impl InvocationStatusStore {
             && let Some(report) = inner.get_mut(invocation_id)
         {
             report.last_attempt_server = Some(x_restate_server_header);
+        }
+    }
+
+    pub(super) fn on_awaiting_on(
+        &mut self,
+        partition: &PartitionLeaderEpoch,
+        invocation_id: &InvocationId,
+        unresolved_future: UnresolvedFuture,
+    ) {
+        if let Some(inner) = self.0.get_mut(partition)
+            && let Some(report) = inner.get_mut(invocation_id)
+        {
+            report.last_awaiting_on_unresolved_future = Some(unresolved_future);
         }
     }
 

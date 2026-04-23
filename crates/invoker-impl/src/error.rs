@@ -96,6 +96,9 @@ pub(crate) enum InvokerError {
     #[error("got empty SuspensionMessage")]
     #[code(restate_errors::RT0012)]
     EmptySuspensionMessage,
+    #[error("got empty AwaitingOnMessage")]
+    #[code(restate_errors::RT0012)]
+    EmptyAwaitingOnMessage,
     #[error(
         "got bad SuspensionMessage, suspending on journal indexes {0:?}, but journal length is {1}"
     )]

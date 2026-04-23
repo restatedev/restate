@@ -56,7 +56,6 @@ use restate_types::schema::deployment::{Deployment, DeploymentType, ProtocolType
 use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
 use restate_types::service_protocol::ServiceProtocolVersion;
 
-use crate::Notification;
 use crate::error::{
     CommandPreconditionError, InvocationErrorRelatedCommandV2, InvokerError, SdkInvocationErrorV2,
 };
@@ -66,6 +65,7 @@ use crate::invocation_task::{
     invocation_id_to_header_value, leased_frame, new_invoker_body, retry_after,
     service_protocol_version_to_header_value,
 };
+use crate::{Notification, shortcircuit};
 
 ///  Provides the value of the invocation id
 const INVOCATION_ID_HEADER_NAME: HeaderName = HeaderName::from_static("x-restate-invocation-id");
@@ -1173,12 +1173,25 @@ where
 
     fn handle_awaiting_on_message(
         &mut self,
-        _awaiting_on: proto::AwaitingOnMessage,
+        awaiting_on: proto::AwaitingOnMessage,
     ) -> TerminalLoopState<()> {
         // this message should mark this invocation as suspendable.
         // if it's not running any side effects.
 
-        // todo(azmy): Handle awaiting on message"
+        let Some(awaiting_on_future) = awaiting_on.awaiting_on else {
+            return TerminalLoopState::Failed(InvokerError::EmptyAwaitingOnMessage);
+        };
+
+        let unresolved_future: UnresolvedFuture = shortcircuit!(
+            awaiting_on_future
+                .try_into()
+                .map_err(|e| InvokerError::EncodingV2(GenericError::from(e).into()))
+        );
+        self.invocation_task
+            .send_invoker_tx(InvocationTaskOutputInner::AwaitingOn { unresolved_future });
+
+        // todo(azmy): Handle awaiting on message
+        //  Also verify that we keep correctly updated the InvocationStatusReportInner.last_awaiting_on_unresolved_future field!
         TerminalLoopState::Continue(())
     }
 
@@ -1190,10 +1203,11 @@ where
             return TerminalLoopState::Failed(InvokerError::EmptySuspensionMessage);
         };
 
-        let future: UnresolvedFuture = match awaiting_on.try_into().map_err(GenericError::from) {
-            Ok(future) => future,
-            Err(err) => return TerminalLoopState::Failed(InvokerError::EncodingV2(err.into())),
-        };
+        let future: UnresolvedFuture = shortcircuit!(
+            awaiting_on
+                .try_into()
+                .map_err(|e| InvokerError::EncodingV2(GenericError::from(e).into()))
+        );
 
         // We currently don't support empty future set
         if future.is_empty() {
