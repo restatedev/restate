@@ -17,16 +17,26 @@ use restate_clock::{RoughTimestamp, UniqueTimestamp};
 pub struct WaitStats {
     /// Total milliseconds the item spent waiting on global invoker capacity
     #[bilrost(tag(1))]
-    pub blocked_on_global_capacity_ms: u32,
-    /// Total milliseconds the item was throttled on vqueue's "start" token bucket
+    pub blocked_on_invoker_concurrency_ms: u32,
+    /// Total milliseconds the item was blocked on user-defined per-vqueue
+    /// throttling rules.
     #[bilrost(tag(2))]
-    pub vqueue_start_throttling_ms: u32,
-    /// Total milliseconds the item was throttled on global "run" token bucket
+    pub blocked_on_throttling_rules_ms: u32,
+    /// Total milliseconds the item was blocked on node-level invoker throttling.
     #[bilrost(tag(3))]
-    pub global_invoker_throttling_ms: u32,
+    pub blocked_on_invoker_throttling_ms: u32,
     /// Total milliseconds the item spent waiting on invoker memory pool
     #[bilrost(tag(4))]
     pub blocked_on_invoker_memory_ms: u32,
+    /// Total milliseconds the item spent waiting on user-defined concurrency limits
+    #[bilrost(tag(5))]
+    pub blocked_on_concurrency_rules_ms: u32,
+    /// Total milliseconds the item spent waiting to acquire a virtual object lock
+    #[bilrost(tag(6))]
+    pub blocked_on_lock_ms: u32,
+    /// Total milliseconds the item spent blocked on deployment concurrency capacity
+    #[bilrost(tag(8))]
+    pub blocked_on_deployment_concurrency_ms: u32,
 }
 
 #[derive(Debug, Clone, bilrost::Message)]
@@ -64,12 +74,6 @@ pub struct EntryStatistics {
     /// inflating the first-attempt wait time.
     #[bilrost(tag(9))]
     pub first_runnable_at: MillisSinceEpoch,
-    // todo:
-    // pub time_spent_running: u32,
-    // pub time_spent_parked: u32,
-    // pub time_spent_ready_in_inbox: u32,
-    // pub time_spent_waiting_for_retry: u32,
-    // pub last_updated_at: MillisSinceEpoch,
 }
 
 impl EntryStatistics {

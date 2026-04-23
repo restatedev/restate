@@ -18,11 +18,17 @@ pub const VQUEUE_INVOKER_MEMORY_WAIT_MS: &str =
 pub const VQUEUE_INVOKER_CONCURRENCY_WAIT_MS: &str =
     "restate.vqueue.scheduler.invoker_concurrency_wait_ms.total";
 
-// Node-level scheduler throttling (affects resume/start)
-pub const VQUEUE_GLOBAL_THROTTLE_WAIT_MS: &str =
-    "restate.vqueue.scheduler.global_throttle_ms.total";
-// Per vqueue start throttling (affects starts only)
-pub const VQUEUE_LOCAL_THROTTLE_WAIT_MS: &str = "restate.vqueue.scheduler.vqueue_throttle_ms.total";
+// Node-level invoker throttling (affects resume/start)
+pub const VQUEUE_INVOKER_THROTTLING_WAIT_MS: &str =
+    "restate.vqueue.scheduler.invoker_throttling_wait_ms.total";
+// Per-vqueue user-defined throttling rules (affects starts only)
+pub const VQUEUE_THROTTLING_RULES_WAIT_MS: &str =
+    "restate.vqueue.scheduler.throttling_rules_wait_ms.total";
+pub const VQUEUE_CONCURRENCY_RULES_WAIT_MS: &str =
+    "restate.vqueue.scheduler.concurrency_rules_wait_ms.total";
+pub const VQUEUE_LOCK_WAIT_MS: &str = "restate.vqueue.scheduler.lock_wait_ms.total";
+pub const VQUEUE_DEPLOYMENT_CONCURRENCY_WAIT_MS: &str =
+    "restate.vqueue.scheduler.deployment_concurrency_wait_ms.total";
 
 pub const ACTION_YIELD: &str = "yield";
 pub const ACTION_RUN: &str = "run";
@@ -59,15 +65,33 @@ pub fn describe_metrics() {
     );
 
     describe_counter!(
-        VQUEUE_GLOBAL_THROTTLE_WAIT_MS,
+        VQUEUE_INVOKER_THROTTLING_WAIT_MS,
         Unit::Count,
-        "Cumulative number of seconds vqueues waited because of global start/resume throttling"
+        "Cumulative number of milliseconds vqueues waited on node-level invoker throttling"
     );
 
     describe_counter!(
-        VQUEUE_LOCAL_THROTTLE_WAIT_MS,
+        VQUEUE_THROTTLING_RULES_WAIT_MS,
         Unit::Count,
-        "Cumulative number of seconds vqueues waited because of their self-imposed start throttling"
+        "Cumulative number of milliseconds vqueues spent blocked on user-defined throttling rules"
+    );
+
+    describe_counter!(
+        VQUEUE_CONCURRENCY_RULES_WAIT_MS,
+        Unit::Count,
+        "Cumulative number of milliseconds spent waiting on user-defined concurrency rules"
+    );
+
+    describe_counter!(
+        VQUEUE_LOCK_WAIT_MS,
+        Unit::Count,
+        "Cumulative number of milliseconds spent waiting to acquire virtual object locks"
+    );
+
+    describe_counter!(
+        VQUEUE_DEPLOYMENT_CONCURRENCY_WAIT_MS,
+        Unit::Count,
+        "Cumulative number of milliseconds spent blocked on deployment concurrency capacity"
     );
 }
 
