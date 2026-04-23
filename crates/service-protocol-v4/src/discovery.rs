@@ -451,9 +451,7 @@ impl ServiceDiscovery {
                     let body_message = body
                         .collect()
                         .await
-                        .map(|b| {
-                            String::from_utf8_lossy(b.to_bytes().to_vec().as_slice()).to_string()
-                        })
+                        .map(|b| String::from_utf8_lossy(&b.to_bytes()).to_string())
                         .unwrap_or_else(|err| format!("Failed to read body {err}"));
                     if parts.status == StatusCode::NOT_FOUND {
                         return Err(DiscoveryError::NotFound(parts.headers, body_message.into()));
