@@ -191,6 +191,9 @@ pub fn sys_invocation_table_docs() -> OwnedTableDocs {
         sys_invocation_status
             .remove("suspended_waiting_for_signals")
             .expect("suspended_waiting_for_signals should exist"),
+        sys_invocation_status
+            .remove("suspended_waiting_future_json")
+            .expect("suspended_waiting_future_json should exist"),
         sys_invocation_state
             .remove("retry_count")
             .expect("retry_count should exist"),

@@ -74,6 +74,7 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
             ss.journal_retention,
             ss.suspended_waiting_for_completions,
             ss.suspended_waiting_for_signals,
+            ss.suspended_waiting_future_json,
 
             sis.retry_count,
             sis.last_start_at,
@@ -233,6 +234,13 @@ where
             &self.remote_scanner_manager,
         )?;
         crate::promise::register_self(
+            ctx,
+            self.partition_selector.clone(),
+            self.partition_store_manager.clone(),
+            &self.remote_scanner_manager,
+        )?;
+        // VQueues Tables
+        crate::vqueue_meta::register_self(
             ctx,
             self.partition_selector.clone(),
             self.partition_store_manager.clone(),

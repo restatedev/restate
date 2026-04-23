@@ -27,6 +27,7 @@ restate-util-string = { workspace = true }
 arrayvec = { workspace = true }
 bilrost = { workspace = true, features = ["smallvec"] }
 derive_more = { workspace = true, features = ["debug", "is_variant"] }
+enum-map = { workspace = true }
 gardal = { workspace = true, features = ["tokio"] }
 hashbrown = { workspace = true }
 itertools = { workspace = true }
@@ -34,7 +35,7 @@ metrics = { workspace = true }
 pin-project = { workspace = true }
 sha2 = { workspace = true }
 slotmap = { workspace = true }
-smallvec = { workspace = true }
+smallvec = { workspace = true, features = ["const_new"] }
 tokio = { workspace = true, features = ["sync"] }
 tokio-util = { workspace = true, features = ["time"] }
 tracing = { workspace = true }
