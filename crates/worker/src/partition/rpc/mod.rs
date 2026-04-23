@@ -20,7 +20,6 @@ mod purge_journal;
 mod restart_as_new_invocation;
 mod resume_invocation;
 
-use crate::partition;
 use crate::partition::leadership::LeadershipState;
 use restate_core::network::{Oneshot, Reciprocal, TransportConnect};
 use restate_invoker_api::InvokerHandle;
@@ -76,14 +75,9 @@ pub(super) trait Actuator {
     fn partition_id(&self) -> PartitionId;
 }
 
-impl<T, I> Actuator for LeadershipState<T, I>
+impl<T> Actuator for LeadershipState<T>
 where
     T: TransportConnect,
-    I: InvokerHandle<
-        partition::invoker_storage_reader::InvokerStorageReader<
-            restate_partition_store::PartitionStore,
-        >,
-    >,
 {
     async fn append_and_respond_asynchronously<O: Into<PartitionProcessorRpcResponse>>(
         &mut self,

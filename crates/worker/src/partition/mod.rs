@@ -75,6 +75,7 @@ use restate_wal_protocol::control::{
     AnnounceLeader, CurrentReplicaSetConfiguration, NextReplicaSetConfiguration,
 };
 use restate_wal_protocol::{Command, Destination, Envelope, Header};
+use restate_worker_api::{LeaderQueryCommand, LeaderQueryReceiver};
 
 use self::leadership::trim_queue::TrimQueue;
 use crate::metric_definitions::{
@@ -82,9 +83,9 @@ use crate::metric_definitions::{
     PARTITION_BLOCKED_FLARE, PARTITION_INGESTION_REQUEST_LEN, PARTITION_INGESTION_REQUEST_SIZE,
     PARTITION_LABEL, PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, REASON_LABEL,
 };
-use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::LeadershipState;
 use crate::partition::state_machine::{ActionCollector, StateMachine};
+use crate::partition_processor_manager::PartitionLeaderHandlesRegistry;
 
 /// Information needed to run as leader, including the epoch and partition configurations.
 #[derive(Clone, Debug)]
@@ -116,35 +117,32 @@ pub enum TargetLeaderState {
     Follower,
 }
 
-pub(super) struct PartitionProcessorBuilder<InvokerInputSender> {
+pub(super) struct PartitionProcessorBuilder {
     status: PartitionProcessorStatus,
-    invoker_tx: InvokerInputSender,
     target_leader_state_rx: watch::Receiver<TargetLeaderState>,
     network_svc_rx: ServiceStream<PartitionLeaderService>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
     invoker_capacity: InvokerCapacity,
+    leader_handles_registry: PartitionLeaderHandlesRegistry,
 }
 
-impl<InvokerInputSender> PartitionProcessorBuilder<InvokerInputSender>
-where
-    InvokerInputSender:
-        restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>> + Clone,
-{
+impl PartitionProcessorBuilder {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         status: PartitionProcessorStatus,
         target_leader_state_rx: watch::Receiver<TargetLeaderState>,
         network_svc_rx: ServiceStream<PartitionLeaderService>,
         status_watch_tx: watch::Sender<PartitionProcessorStatus>,
-        invoker_tx: InvokerInputSender,
         invoker_capacity: InvokerCapacity,
+        leader_handles_registry: PartitionLeaderHandlesRegistry,
     ) -> Self {
         Self {
             status,
-            invoker_tx,
             target_leader_state_rx,
             network_svc_rx,
             status_watch_tx,
             invoker_capacity,
+            leader_handles_registry,
         }
     }
 
@@ -154,18 +152,17 @@ where
         ingestion_client: IngestionClient<T, Envelope>,
         mut partition_store: PartitionStore,
         replica_set_states: PartitionReplicaSetStates,
-    ) -> Result<PartitionProcessor<T, InvokerInputSender>, state_machine::Error>
+    ) -> Result<PartitionProcessor<T>, state_machine::Error>
     where
         T: TransportConnect,
     {
         let PartitionProcessorBuilder {
-            invoker_tx,
             target_leader_state_rx,
             network_svc_rx: rpc_rx,
             status_watch_tx,
             status,
             invoker_capacity,
-            ..
+            leader_handles_registry,
         } = self;
 
         let partition_id_str = SharedString::from(partition_store.partition_id().to_string());
@@ -201,14 +198,20 @@ where
             );
         }
 
+        // Yes, I know how awkward this looks. This is temporary until the scheduler
+        // is taskified. The scheduler will respond to its status queries directly
+        // instead of piping this through the partition processor's main select!
+        let (leader_query_tx, leader_query_rx) = restate_worker_api::channel();
+
         let leadership_state = LeadershipState::new(
             Arc::clone(partition_store.partition()),
-            invoker_tx,
             invoker_capacity,
             ingestion_client,
             bifrost.clone(),
             last_seen_leader_epoch,
             trim_queue.clone(),
+            leader_query_tx,
+            leader_handles_registry,
         );
 
         let last_applied_log_lsn_watch = watch::Sender::new(Lsn::INVALID);
@@ -222,6 +225,7 @@ where
             target_leader_state_rx,
             network_leader_svc_rx: rpc_rx,
             status_watch_tx,
+            leader_query_rx,
             status,
             replica_set_states,
             trim_queue,
@@ -264,14 +268,15 @@ where
     }
 }
 
-pub struct PartitionProcessor<T, InvokerSender> {
+pub struct PartitionProcessor<T> {
     partition_id_str: SharedString,
-    leadership_state: LeadershipState<T, InvokerSender>,
+    leadership_state: LeadershipState<T>,
     state_machine: StateMachine,
     bifrost: Bifrost,
     target_leader_state_rx: watch::Receiver<TargetLeaderState>,
     network_leader_svc_rx: ServiceStream<PartitionLeaderService>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
+    leader_query_rx: LeaderQueryReceiver,
     status: PartitionProcessorStatus,
     replica_set_states: PartitionReplicaSetStates,
 
@@ -323,8 +328,6 @@ pub enum ProcessorError {
     ShutdownError(#[from] ShutdownError),
     #[error("log read stream has terminated")]
     LogReadStreamTerminated,
-    #[error("Invoker stopped unexpectedly")]
-    InvokerStoppedUnexpectedly,
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -345,10 +348,9 @@ enum OrderedOp {
     },
 }
 
-impl<T, InvokerSender> PartitionProcessor<T, InvokerSender>
+impl<T> PartitionProcessor<T>
 where
     T: TransportConnect,
-    InvokerSender: restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>> + Clone,
 {
     #[instrument(
         level = "error", skip_all,
@@ -683,6 +685,9 @@ where
                     // implemented.
                     self.leadership_state.handle_action_effects(action_effects).await?;
                 }
+                Some(leader_query_cmd) = self.leader_query_rx.recv() => {
+                    self.on_leader_query(leader_query_cmd);
+                }
             }
             // Allow other tasks on this thread to run, but only if we have exhausted the coop
             // budget.
@@ -710,6 +715,10 @@ where
         }
 
         Ok(())
+    }
+
+    fn on_leader_query(&mut self, leader_query_cmd: LeaderQueryCommand) {
+        self.leadership_state.handle_leader_query(leader_query_cmd);
     }
 
     async fn on_pp_rpc_request(

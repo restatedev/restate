@@ -30,6 +30,7 @@ use codederror::CodedError;
 use restate_core::{Metadata, TaskCenter};
 use restate_invoker_api::StatusHandle;
 use restate_partition_store::PartitionStoreManager;
+use restate_sharding::KeyRange;
 use restate_types::cluster::cluster_state::LegacyClusterState;
 use restate_types::config::QueryEngineOptions;
 use restate_types::errors::GenericError;
@@ -39,6 +40,7 @@ use restate_types::partition_table::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
+use restate_worker_api::SchedulerStatusEntry;
 
 use crate::node_fan_out::NodeWarnings;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
@@ -129,6 +131,28 @@ pub trait RegisterTable: Send + Sync + 'static {
     fn register(&self, ctx: &QueryContext) -> impl Future<Output = Result<(), BuildError>>;
 }
 
+/// A leader-state introspection handle that extends invoker status queries with
+/// additional query methods for future leader-owned components.
+pub trait PartitionLeaderStatusHandle:
+    StatusHandle + Send + Sync + Debug + Clone + 'static
+{
+    type SchedulerStatus;
+    type SchedulerStatusIterator: Iterator<Item = Self::SchedulerStatus> + Send;
+
+    type UserLimitCounter;
+    type UserLimitCounterIterator: Iterator<Item = Self::UserLimitCounter> + Send;
+
+    fn read_scheduler_status(
+        &self,
+        keys: KeyRange,
+    ) -> impl Future<Output = Self::SchedulerStatusIterator> + Send;
+
+    fn read_user_limit_counters(
+        &self,
+        keys: KeyRange,
+    ) -> impl Future<Output = Self::UserLimitCounterIterator> + Send;
+}
+
 /// A no-op registerer that creates a minimal query context with no tables.
 /// Useful for nodes that only need to serve remote scanner RPCs (e.g.,
 /// log-server-only nodes), where only `task_ctx()` is needed.
@@ -144,7 +168,7 @@ impl RegisterTable for NoTables {
 pub struct UserTables<P, S, D> {
     partition_selector: P,
     partition_store_manager: Arc<PartitionStoreManager>,
-    status: Option<S>,
+    partition_leader_status: Option<S>,
     schemas: Live<D>,
     remote_scanner_manager: RemoteScannerManager,
 }
@@ -153,14 +177,14 @@ impl<P, S, D> UserTables<P, S, D> {
     pub fn new(
         partition_selector: P,
         partition_store_manager: Arc<PartitionStoreManager>,
-        status: Option<S>,
+        partition_leader_status: Option<S>,
         schemas: Live<D>,
         remote_scanner_manager: RemoteScannerManager,
     ) -> Self {
         Self {
             partition_selector,
             partition_store_manager,
-            status,
+            partition_leader_status,
             schemas,
             remote_scanner_manager,
         }
@@ -170,7 +194,7 @@ impl<P, S, D> UserTables<P, S, D> {
 impl<P, S, D> RegisterTable for UserTables<P, S, D>
 where
     P: SelectPartitions + Clone,
-    S: StatusHandle + Send + Sync + Debug + Clone + 'static,
+    S: PartitionLeaderStatusHandle<SchedulerStatus = SchedulerStatusEntry>,
     D: DeploymentResolver + ServiceMetadataResolver + Send + Sync + Debug + Clone + 'static,
 {
     async fn register(&self, ctx: &QueryContext) -> Result<(), BuildError> {
@@ -181,7 +205,7 @@ where
         crate::invocation_state::register_self(
             ctx,
             self.partition_selector.clone(),
-            self.status.clone(),
+            self.partition_leader_status.clone(),
             self.partition_store_manager.clone(),
             &self.remote_scanner_manager,
         )?;
@@ -349,7 +373,9 @@ impl QueryContext {
         options: &QueryEngineOptions,
         partition_selector: impl SelectPartitions + Clone,
         partition_store_manager: Arc<PartitionStoreManager>,
-        status: Option<impl StatusHandle + Send + Sync + Debug + Clone + 'static>,
+        partition_leader_status: Option<
+            impl PartitionLeaderStatusHandle<SchedulerStatus = SchedulerStatusEntry>,
+        >,
         schemas: Live<
             impl DeploymentResolver + ServiceMetadataResolver + Send + Sync + Debug + Clone + 'static,
         >,
@@ -358,7 +384,7 @@ impl QueryContext {
         let tables = UserTables::new(
             partition_selector,
             partition_store_manager,
-            status,
+            partition_leader_status,
             schemas,
             remote_scanner_manager,
         );
