@@ -27,6 +27,7 @@ restate-util-string = { workspace = true }
 arrayvec = { workspace = true }
 bilrost = { workspace = true, features = ["smallvec"] }
 derive_more = { workspace = true, features = ["debug", "is_variant"] }
+enum-map = { workspace = true }
 gardal = { workspace = true, features = ["tokio"] }
 hashbrown = { workspace = true }
 itertools = { workspace = true }
