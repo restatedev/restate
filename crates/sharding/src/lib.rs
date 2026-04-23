@@ -11,12 +11,13 @@
 mod key_range;
 mod partition_id;
 mod partitioner;
+pub mod subsharding;
 
 use std::sync::Arc;
 
 pub use key_range::KeyRange;
 pub use partition_id::PartitionId;
-pub use partitioner::EqualSizedPartitionPartitioner;
+pub use partitioner::{EqualSizedPartitionPartitioner, EqualSizedPartitions};
 
 /// Identifying to which partition a key belongs. This is unlike the [`PartitionId`]
 /// which identifies a consecutive range of partition keys.
