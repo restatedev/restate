@@ -458,9 +458,9 @@ mod tests {
     use restate_types::sharding::KeyRange;
     use restate_types::vqueues::VQueueId;
     use restate_types::vqueues::{EntryId, EntryKind};
+    use restate_worker_api::ResourceKind;
 
     use crate::cache::VQueuesMetaCache;
-    use crate::scheduler::resource_manager::ResourceKind;
     use crate::{SchedulingStatus, VQueue, VQueueEvent};
 
     use super::*;

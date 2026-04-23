@@ -8497,6 +8497,7 @@ dependencies = [
  "restate-storage-api",
  "restate-types",
  "restate-util-string",
+ "restate-worker-api",
  "restate-workspace-hack",
  "sha2 0.10.9",
  "slotmap",
@@ -8603,8 +8604,12 @@ dependencies = [
 name = "restate-worker-api"
 version = "1.6.3-dev"
 dependencies = [
+ "restate-clock",
  "restate-core",
+ "restate-limiter",
+ "restate-storage-api",
  "restate-types",
+ "restate-util-string",
  "restate-workspace-hack",
  "thiserror 2.0.18",
  "tokio",
