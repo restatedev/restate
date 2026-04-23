@@ -23,6 +23,7 @@ use restate_types::schema::deployment::Deployment;
 
 const APPLICATION_JSON: HeaderValue = HeaderValue::from_static("application/json");
 const APPLICATION_OCTET_STREAM: HeaderValue = HeaderValue::from_static("application/octet-stream");
+const ACCEPT_WILDCARD: HeaderValue = HeaderValue::from_static("*/*");
 const X_RESTATE_SERDES_PROTOCOL: HeaderName = HeaderName::from_static("x-restate-serdes-protocol");
 const X_RESTATE_SERDES_PROTOCOL_V1: HeaderValue = HeaderValue::from_static("v1");
 
@@ -76,7 +77,7 @@ impl SerdesClient {
 
         let headers = HeaderMap::from_iter([
             (CONTENT_TYPE, APPLICATION_JSON),
-            (ACCEPT, APPLICATION_OCTET_STREAM),
+            (ACCEPT, ACCEPT_WILDCARD),
             (X_RESTATE_SERDES_PROTOCOL, X_RESTATE_SERDES_PROTOCOL_V1),
         ]);
 
