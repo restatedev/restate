@@ -25,14 +25,13 @@ use tokio::sync::mpsc;
 use tracing::trace;
 
 use restate_futures_util::concurrency::Concurrency;
-use restate_limiter::{Level, LimitKey, RuleHandle};
 use restate_memory::{MemoryPool, NonZeroByteCount};
 use restate_storage_api::StorageError;
 use restate_storage_api::lock_table::LoadLocks;
 use restate_storage_api::vqueue_table::{EntryKey, EntryMetadata};
 use restate_types::vqueues::EntryKind;
 use restate_types::{LockName, Scope};
-use restate_util_string::ReString;
+use restate_worker_api::ResourceKind;
 
 use self::invoker::InvokerConcurrencyLimiter;
 use self::invoker_memory::InvokerMemoryLimiter;
@@ -60,33 +59,6 @@ pub struct ResourceManager {
     // We need to keep this alive to:
     // - Keep the receiver alive even if we don't have any resource permits handed out
     tx: mpsc::UnboundedSender<ResourceManagerUpdate>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ResourceKind {
-    /// Waiting to acquire a lock of a VO.
-    Lock {
-        scope: Option<Scope>,
-        lock_name: LockName,
-    },
-    /// Waiting to acquire invoker concurrency capacity
-    InvokerConcurrency,
-    /// Waiting to acquire invoker being throttled
-    InvokerThrottling,
-    /// Invoker needs to allocate memory for an invocation
-    InvokerMemory,
-    /// Waiting for deployment-level concurrency tokens to be available
-    DeploymentConcurrency,
-    /// Waiting for user-defined concurrency to be acquired.
-    /// Carries routing info so the eligibility tracker can return it for waiter removal.
-    LimitKeyConcurrency {
-        scope: Scope,
-        limit_key: LimitKey<ReString>,
-        blocked_level: Level,
-        /// Handle to the blocking rule. Resolve via the rules store for display.
-        /// May be stale if the rule was removed since blocking.
-        blocked_rule: Option<RuleHandle>,
-    },
 }
 
 #[allow(dead_code)]

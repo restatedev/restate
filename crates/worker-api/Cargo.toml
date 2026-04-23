@@ -10,8 +10,12 @@ publish = false
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
+restate-clock = { workspace = true }
 restate-core = { workspace = true }
+restate-limiter = { workspace = true }
+restate-storage-api = { workspace = true }
 restate-types = { workspace = true }
+restate-util-string = { workspace = true }
 
 thiserror = { workspace = true }
 tokio = { workspace = true }
