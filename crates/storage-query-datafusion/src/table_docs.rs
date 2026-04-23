@@ -10,7 +10,7 @@
 
 use crate::{
     deployment, idempotency, inbox, invocation_state, invocation_status, journal, journal_events,
-    keyed_service_status, promise, service, state,
+    keyed_service_status, promise, service, state, vqueue_meta,
 };
 use std::borrow::Cow;
 
@@ -18,15 +18,16 @@ use std::borrow::Cow;
 /// this array. This will ensure that the table docs will be included in the automatic
 /// table docs generation process.
 pub const ALL_TABLE_DOCS: &[StaticTableDocs] = &[
-    state::schema::TABLE_DOCS,
+    deployment::schema::TABLE_DOCS,
+    idempotency::schema::TABLE_DOCS,
+    inbox::schema::TABLE_DOCS,
     journal::schema::TABLE_DOCS,
     journal_events::schema::TABLE_DOCS,
     keyed_service_status::schema::TABLE_DOCS,
-    inbox::schema::TABLE_DOCS,
-    idempotency::schema::TABLE_DOCS,
     promise::schema::TABLE_DOCS,
     service::schema::TABLE_DOCS,
-    deployment::schema::TABLE_DOCS,
+    state::schema::TABLE_DOCS,
+    vqueue_meta::schema::TABLE_DOCS,
 ];
 
 pub trait TableDocs {
