@@ -362,7 +362,7 @@ where
     /// Panics if called without a prior successful [`poll_ready`].
     pub fn call<B>(&mut self, request: http::Request<B>) -> ResponseFuture<B>
     where
-        B: Body<Data = Bytes> + Send + Sync + 'static,
+        B: Body<Data = Bytes> + Send + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
         let mut conn = self

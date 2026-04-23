@@ -95,7 +95,7 @@ where
         request: http::Request<B>,
     ) -> impl Future<Output = Result<Response<PermittedRecvStream>, Error>> + Send + 'static
     where
-        B: Body<Data = Bytes> + Unpin + Send + Sync + 'static,
+        B: Body<Data = Bytes> + Unpin + Send + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>> + Send,
     {
         trace!("(h2 pool) requesting ({})", request.uri());

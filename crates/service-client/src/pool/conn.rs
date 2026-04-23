@@ -292,7 +292,7 @@ where
     /// Panics if called without a prior successful [`poll_ready`](Self::poll_ready) call.
     pub fn request<B>(&mut self, request: http::Request<B>) -> ResponseFuture<B>
     where
-        B: Body<Data = Bytes> + Send + Sync + 'static,
+        B: Body<Data = Bytes> + Send + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
         // we should already have a permit.
@@ -517,7 +517,7 @@ impl<B> Drop for ResponseFuture<B> {
 
 impl<B> Future for ResponseFuture<B>
 where
-    B: Body<Data = Bytes> + Unpin + Send + Sync + 'static,
+    B: Body<Data = Bytes> + Unpin + Send + 'static,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>> + Send,
 {
     type Output = Result<Response<PermittedRecvStream>, ConnectionError<http::Request<B>>>;

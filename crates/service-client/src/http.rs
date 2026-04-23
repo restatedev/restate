@@ -61,7 +61,7 @@ static TLS_CLIENT_CONFIG: LazyLock<ClientConfig> = LazyLock::new(|| {
 //  for the time being we use BoxBody here to simplify the migration to hyper 1.0.
 //  We should consider replacing this with some concrete type that makes sense.
 type BoxError = Box<dyn Error + Send + Sync + 'static>;
-type BoxBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
+type BoxBody = http_body_util::combinators::UnsyncBoxBody<Bytes, BoxError>;
 
 #[derive(Clone)]
 pub struct HttpClient {
@@ -168,7 +168,7 @@ impl HttpClient {
         headers: HeaderMap<HeaderValue>,
     ) -> Result<Request<BoxBody>, http::Error>
     where
-        B: Body<Data = Bytes> + Send + Sync + Sized + 'static,
+        B: Body<Data = Bytes> + Send + Sized + 'static,
         <B as Body>::Error: Error + Send + Sync + 'static,
     {
         let mut uri_parts = uri.into_parts();
@@ -218,7 +218,7 @@ impl HttpClient {
         headers: HeaderMap<HeaderValue>,
     ) -> impl Future<Output = Result<Response<ResponseBody>, HttpError>> + Send + 'static
     where
-        B: Body<Data = Bytes> + Send + Sync + Sized + 'static,
+        B: Body<Data = Bytes> + Send + Sized + 'static,
         B::Error: std::error::Error + Send + Sync + 'static,
     {
         let request = match Self::build_request(uri, version, body, method, path, headers) {
