@@ -23,6 +23,7 @@ restate-serde-util = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-types = { workspace = true }
 restate-util-string = { workspace = true }
+restate-worker-api = { workspace = true }
 
 arrayvec = { workspace = true }
 bilrost = { workspace = true, features = ["smallvec"] }

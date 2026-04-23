@@ -15,19 +15,18 @@ use std::pin::Pin;
 use std::future::poll_fn;
 use std::task::Poll;
 
-use restate_clock::RoughTimestamp;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::scheduler::{RunAction, SchedulerAction, YieldAction};
-use restate_storage_api::vqueue_table::{EntryKey, ScanVQueueTable, VQueueStore, stats::WaitStats};
-use restate_types::time::MillisSinceEpoch;
+use restate_storage_api::vqueue_table::{EntryKey, ScanVQueueTable, VQueueStore};
 use restate_types::vqueues::VQueueId;
+use restate_worker_api::{SchedulingStatus, VQueueSchedulerStatus};
 
 use crate::VQueueEvent;
 use crate::VQueuesMetaCache;
 use crate::metric_definitions::publish_scheduler_decision_metrics;
 
 use self::drr::DRRScheduler;
-use self::resource_manager::{PermitBuilder, ReservedResources, ResourceKind};
+use self::resource_manager::{PermitBuilder, ReservedResources};
 use self::vqueue_state::DetailedEligibility;
 
 mod clock;
@@ -46,77 +45,14 @@ type UnconfirmedAssignments = hashbrown::HashMap<EntryKey, PermitBuilder>;
 
 slotmap::new_key_type! { pub(crate) struct VQueueHandle; }
 
-/// A public view of the scheduler's status of a single vqueue.
-///
-/// This struct provides introspection into the current scheduling state, and
-/// wait statistics for a vqueue.
-#[derive(Debug, Clone, Default)]
-pub struct VQueueSchedulerStatus {
-    /// Statistics about the wait time experienced by the head item in the vqueue.
-    pub wait_stats: WaitStats,
-    /// Number of items remaining in the running stage.
-    pub remaining_running: u32,
-    /// Number of items waiting in the inbox stage.
-    pub waiting_inbox: u64,
-    /// The current scheduling status of this vqueue.
-    pub status: SchedulingStatus,
-}
-
-/// The current scheduling status of a vqueue.
-///
-/// This enum represents the various states a vqueue can be in from the
-/// scheduler's perspective.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum SchedulingStatus {
-    #[default]
-    /// The vqueue is not tracked by the scheduler (e.g., it has no items).
-    Dormant,
-    /// The vqueue is empty.
-    Empty,
-    /// The vqueue head is ready to be scheduled and it's in the inbox/running stage.
-    Ready,
-    /// The vqueue is throttled until the specified time.
-    Throttled {
-        /// When the throttle expires.
-        until: MillisSinceEpoch,
-        /// The scope of throttling (global or per-vqueue).
-        scope: ThrottleScope,
-    },
-    /// The vqueue is scheduled to be woken up at the given time because the head
-    /// item is scheduled to run at that time.
-    Scheduled {
-        /// When the head item becomes visible.
-        at: RoughTimestamp,
-    },
-    /// The vqueue is blocked on invoker global capacity.
-    BlockedOn(ResourceKind),
-    /// The vqueue is waiting to acquire a lock of a VO.
-    BlockedOnLock,
-    /// The vqueue is waiting for concurrency tokens. Concurrency tokens are released
-    /// when currently running items are completed or (in some cases) when running items
-    /// are parked.
-    WaitingConcurrencyTokens,
-}
-
-impl From<DetailedEligibility> for SchedulingStatus {
-    fn from(value: DetailedEligibility) -> Self {
-        match value {
-            DetailedEligibility::EligibleRunning | DetailedEligibility::EligibleInbox => {
-                SchedulingStatus::Ready
-            }
-            DetailedEligibility::Scheduled(ts) => SchedulingStatus::Scheduled { at: ts },
-            DetailedEligibility::Empty => SchedulingStatus::Empty,
+fn status_from_detailed_eligibility(value: DetailedEligibility) -> SchedulingStatus {
+    match value {
+        DetailedEligibility::EligibleRunning | DetailedEligibility::EligibleInbox => {
+            SchedulingStatus::Ready
         }
+        DetailedEligibility::Scheduled(ts) => SchedulingStatus::Scheduled { at: ts },
+        DetailedEligibility::Empty => SchedulingStatus::Empty,
     }
-}
-
-/// The scope at which throttling is applied.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ThrottleScope {
-    /// Throttling is applied globally across all vqueues.
-    Global,
-    /// Throttling is applied to a specific vqueue.
-    VQueue,
 }
 
 #[derive(Default, Debug)]
