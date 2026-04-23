@@ -34,7 +34,7 @@ metrics = { workspace = true }
 pin-project = { workspace = true }
 sha2 = { workspace = true }
 slotmap = { workspace = true }
-smallvec = { workspace = true }
+smallvec = { workspace = true, features = ["const_new"] }
 tokio = { workspace = true, features = ["sync"] }
 tokio-util = { workspace = true, features = ["time"] }
 tracing = { workspace = true }
