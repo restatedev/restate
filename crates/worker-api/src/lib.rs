@@ -10,6 +10,8 @@
 
 mod partition_processor_manager;
 mod partition_processor_rpc_client;
+mod scheduler_status;
 
 pub use partition_processor_manager::*;
 pub use partition_processor_rpc_client::*;
+pub use scheduler_status::*;
