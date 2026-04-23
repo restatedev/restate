@@ -14,6 +14,8 @@ use std::range::RangeInclusiveIter;
 
 use restate_platform::network::NetSerde;
 
+use crate::PartitionKey;
+
 /// An inclusive range of partition keys `[start, end]`.
 ///
 /// This is a compact, `Copy` representation of an inclusive key range backed by
@@ -22,7 +24,7 @@ use restate_platform::network::NetSerde;
 /// Wire-format compatible with `std::ops::RangeInclusive<u64>` for both serde and bilrost.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(transparent)]
-pub struct KeyRange(std::range::RangeInclusive<u64>);
+pub struct KeyRange(std::range::RangeInclusive<PartitionKey>);
 
 impl NetSerde for KeyRange {}
 
@@ -47,6 +49,28 @@ impl KeyRange {
         self.0.last
     }
 
+    /// Returns the ceil midpoint key of this inclusive range.
+    ///
+    /// For odd key counts, the right side gets one extra key.
+    #[inline]
+    pub const fn midpoint(&self) -> PartitionKey {
+        let midpoint = (self.0.start as u128 + self.0.last as u128).div_ceil(2);
+        debug_assert!(midpoint <= u64::MAX as u128);
+        midpoint as PartitionKey
+    }
+
+    #[inline]
+    pub const fn num_keys(&self) -> u128 {
+        (self.end() as u128) - (self.start() as u128) + 1
+    }
+
+    #[inline]
+    pub fn intersect(&self, other: &Self) -> Option<KeyRange> {
+        let start = self.0.start.max(other.0.start);
+        let end = self.0.last.min(other.0.last);
+        (start <= end).then_some(KeyRange::new(start, end))
+    }
+
     /// Returns an iterator over all keys in this range.
     #[inline]
     pub fn iter(&self) -> RangeInclusiveIter<u64> {
@@ -57,21 +81,6 @@ impl KeyRange {
     #[inline]
     pub const fn is_overlapping(&self, other: &KeyRange) -> bool {
         self.start() <= other.end() && other.start() <= self.end()
-    }
-
-    /// Splits this range into two roughly equal halves at the midpoint.
-    ///
-    /// Returns `None` if the range contains a single key (cannot be split).
-    /// Otherwise returns `(left, right)` where `left.end() + 1 == right.start()`.
-    pub const fn split(&self) -> Option<(KeyRange, KeyRange)> {
-        if self.start() == self.end() {
-            return None;
-        }
-        let mid = self.start() + (self.end() - self.start()) / 2;
-        Some((
-            KeyRange::new(self.start(), mid),
-            KeyRange::new(mid + 1, self.end()),
-        ))
     }
 }
 
@@ -323,33 +332,35 @@ mod tests {
     }
 
     #[test]
-    fn split() {
-        // Even range [0, 9] → [0, 4] and [5, 9]
-        let r = KeyRange::new(0, 9);
-        let (left, right) = r.split().unwrap();
-        assert_eq!(left, KeyRange::new(0, 4));
-        assert_eq!(right, KeyRange::new(5, 9));
+    fn intersect() {
+        let a = KeyRange::new(0, 10);
 
-        // Odd range [0, 10] → [0, 5] and [6, 10]
-        let r = KeyRange::new(0, 10);
-        let (left, right) = r.split().unwrap();
-        assert_eq!(left, KeyRange::new(0, 5));
-        assert_eq!(right, KeyRange::new(6, 10));
-
-        // Two-element range [5, 6] → [5, 5] and [6, 6]
-        let r = KeyRange::new(5, 6);
-        let (left, right) = r.split().unwrap();
-        assert_eq!(left, KeyRange::new(5, 5));
-        assert_eq!(right, KeyRange::new(6, 6));
-
-        // Single element cannot be split
-        assert!(KeyRange::new(42, 42).split().is_none());
-
-        // Full range
-        let (left, right) = KeyRange::FULL.split().unwrap();
-        assert_eq!(left.start(), 0);
-        assert_eq!(right.end(), u64::MAX);
-        assert_eq!(left.end() + 1, right.start());
+        // Overlapping in the middle.
+        assert_eq!(
+            a.intersect(&KeyRange::new(5, 15)),
+            Some(KeyRange::new(5, 10))
+        );
+        // Containment: smaller range wins.
+        assert_eq!(a.intersect(&KeyRange::new(2, 8)), Some(KeyRange::new(2, 8)));
+        // Single-key overlap at the boundary.
+        assert_eq!(
+            a.intersect(&KeyRange::new(10, 20)),
+            Some(KeyRange::new(10, 10))
+        );
+        // Same range.
+        assert_eq!(a.intersect(&a), Some(a));
+        // Disjoint: adjacent (no shared key).
+        assert_eq!(a.intersect(&KeyRange::new(11, 20)), None);
+        // Disjoint: far apart.
+        assert_eq!(a.intersect(&KeyRange::new(100, 200)), None);
+        // Commutativity on a representative pair.
+        let b = KeyRange::new(5, 15);
+        assert_eq!(a.intersect(&b), b.intersect(&a));
+        // Boundary values.
+        assert_eq!(
+            KeyRange::FULL.intersect(&KeyRange::new(u64::MAX, u64::MAX)),
+            Some(KeyRange::new(u64::MAX, u64::MAX))
+        );
     }
 
     #[test]
