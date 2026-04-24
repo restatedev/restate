@@ -16,6 +16,7 @@ restate-workspace-hack = { workspace = true }
 restate-clock = { workspace = true }
 restate-limiter = { workspace = true, features = ["bilrost"] }
 restate-memory = { workspace = true }
+restate-sharding = { workspace = true }
 restate-types = { workspace = true }
 restate-util-string = { workspace = true, features = ["bilrost", "bytes"] }
 
