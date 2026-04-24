@@ -22,6 +22,7 @@ use datafusion::physical_expr_common::physical_expr::snapshot_physical_expr;
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::expressions::{BinaryExpr, Column, InListExpr, Literal};
 
+use restate_storage_api::vqueue_table::Stage;
 use restate_types::PartitionedResourceId;
 use restate_types::identifiers::partitioner::HashPartitioner;
 use restate_types::identifiers::{InvocationId, PartitionKey, ResourceId, WithPartitionKey};
@@ -261,6 +262,78 @@ fn extract_column_literal<'a>(
 }
 
 #[derive(Debug, Clone)]
+pub struct VQueueFilter {
+    pub partition_keys: KeyRange,
+    pub stages: Option<BTreeSet<Stage>>,
+}
+
+impl ScanLocalPartitionFilter for VQueueFilter {
+    fn new(range: KeyRange, predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
+        let mut stages: Option<BTreeSet<Stage>> = None;
+
+        if let Some(predicate) = predicate
+            && let Ok(predicate) = snapshot_physical_expr(predicate)
+        {
+            for conjunct in split_conjunction(&predicate) {
+                let Some(conjunct_stages) = parse_vqueue_stages("stage", conjunct) else {
+                    continue;
+                };
+
+                stages = Some(match stages {
+                    Some(current) => current.intersection(&conjunct_stages).copied().collect(),
+                    None => conjunct_stages,
+                });
+            }
+        }
+
+        Self {
+            partition_keys: range,
+            stages,
+        }
+    }
+}
+
+fn parse_vqueue_stages(
+    column_name: &str,
+    predicate: &Arc<dyn PhysicalExpr>,
+) -> Option<BTreeSet<Stage>> {
+    // OR-chain recursion depth; enough for `stage = a OR stage = b OR ...` over all stages.
+    let in_list = InList::parse(predicate, 5)?;
+
+    if in_list.col.name() != column_name || in_list.negated {
+        return None;
+    }
+
+    let mut stages = BTreeSet::new();
+    for literal in in_list.list {
+        let Some(Some(stage_str)) = literal.try_as_str() else {
+            continue;
+        };
+
+        if let Some(stage) = parse_stage_literal(stage_str) {
+            stages.insert(stage);
+        }
+    }
+
+    if stages.is_empty() {
+        None
+    } else {
+        Some(stages)
+    }
+}
+
+fn parse_stage_literal(value: &str) -> Option<Stage> {
+    match value.to_ascii_lowercase().as_str() {
+        "inbox" => Some(Stage::Inbox),
+        "run" | "running" => Some(Stage::Running),
+        "suspended" => Some(Stage::Suspended),
+        "paused" => Some(Stage::Paused),
+        "finished" => Some(Stage::Finished),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct InvocationIdFilter {
     pub partition_keys: KeyRange,
     pub invocation_ids: Option<RangeInclusive<InvocationId>>,
@@ -325,12 +398,13 @@ mod tests {
     use datafusion::physical_plan::PhysicalExpr;
     use datafusion::physical_plan::expressions::{BinaryExpr, Column, InListExpr, Literal};
 
+    use restate_storage_api::vqueue_table::Stage;
     use restate_types::identifiers::{InvocationId, ServiceId, WithPartitionKey};
     use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType};
     use restate_types::sharding::KeyRange;
 
     use crate::filter::{
-        FirstMatchingPartitionKeyExtractor, InvocationIdFilter, PartitionKeyExtractor,
+        FirstMatchingPartitionKeyExtractor, InvocationIdFilter, PartitionKeyExtractor, VQueueFilter,
     };
     use crate::partition_store_scanner::ScanLocalPartitionFilter;
 
@@ -653,5 +727,81 @@ mod tests {
 
         let filter = InvocationIdFilter::new(FULL_RANGE, Some(predicate));
         assert!(filter.invocation_ids.is_none());
+    }
+
+    #[test]
+    fn vqueue_filter_single_stage_eq() {
+        let predicate = eq(col("stage"), utf8_lit("running"));
+
+        let filter = VQueueFilter::new(FULL_RANGE, Some(predicate));
+        assert_eq!(
+            filter.stages,
+            Some(std::collections::BTreeSet::from([Stage::Running]))
+        );
+    }
+
+    #[test]
+    fn vqueue_filter_in_list() {
+        let predicate = in_list("stage", vec![utf8_lit("running"), utf8_lit("paused")]);
+
+        let filter = VQueueFilter::new(FULL_RANGE, Some(predicate));
+        assert_eq!(
+            filter.stages,
+            Some(std::collections::BTreeSet::from([
+                Stage::Running,
+                Stage::Paused,
+            ]))
+        );
+    }
+
+    #[test]
+    fn vqueue_filter_or_expression() {
+        let predicate = or(
+            eq(col("stage"), utf8_lit("finished")),
+            eq(col("stage"), utf8_lit("inbox")),
+        );
+
+        let filter = VQueueFilter::new(FULL_RANGE, Some(predicate));
+        assert_eq!(
+            filter.stages,
+            Some(std::collections::BTreeSet::from([
+                Stage::Finished,
+                Stage::Inbox,
+            ]))
+        );
+    }
+
+    #[test]
+    fn vqueue_filter_conjunction_intersection() {
+        let predicate = and(
+            in_list(
+                "stage",
+                vec![utf8_lit("running"), utf8_lit("paused"), utf8_lit("inbox")],
+            ),
+            eq(col("stage"), utf8_lit("paused")),
+        );
+
+        let filter = VQueueFilter::new(FULL_RANGE, Some(predicate));
+        assert_eq!(
+            filter.stages,
+            Some(std::collections::BTreeSet::from([Stage::Paused]))
+        );
+    }
+
+    #[test]
+    fn vqueue_filter_invalid_stage_falls_back() {
+        let predicate = eq(col("stage"), utf8_lit("not-a-stage"));
+
+        let filter = VQueueFilter::new(FULL_RANGE, Some(predicate));
+        assert!(filter.stages.is_none());
+        assert_eq!(filter.partition_keys, FULL_RANGE);
+    }
+
+    #[test]
+    fn vqueue_filter_no_predicate() {
+        let filter = VQueueFilter::new(FULL_RANGE, None);
+
+        assert!(filter.stages.is_none());
+        assert_eq!(filter.partition_keys, FULL_RANGE);
     }
 }
