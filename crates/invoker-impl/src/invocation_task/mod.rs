@@ -12,8 +12,6 @@ mod retry_after;
 mod service_protocol_runner;
 mod service_protocol_runner_v4;
 
-use super::Notification;
-
 use std::collections::HashSet;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
@@ -34,10 +32,6 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::task::AbortOnDropHandle;
 use tracing::{debug, instrument};
 
-use restate_invoker_api::invocation_reader::{
-    EagerState, InvocationReader, InvocationReaderTransaction, JournalKind,
-};
-use restate_invoker_api::{EntryEnricher, InvocationReaderError};
 use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_serde_util::{ByteCount, NonZeroByteCount};
 use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClientError};
@@ -52,7 +46,12 @@ use restate_types::live::Live;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_worker_api::invoker::invocation_reader::{
+    EagerState, InvocationReader, InvocationReaderTransaction, JournalKind,
+};
+use restate_worker_api::invoker::{EntryEnricher, InvocationReaderError};
 
+use super::Notification;
 use crate::TokenBucket;
 use crate::error::{InvocationMemoryExhausted, InvokerError};
 use crate::invocation_task::service_protocol_runner::ServiceProtocolRunner;
@@ -704,15 +703,16 @@ impl Stream for ResponseStream {
 
 #[cfg(test)]
 mod tests {
-    use bytes::Bytes;
-    use futures::stream;
     use std::convert::Infallible;
     use std::sync::LazyLock;
 
-    use super::collect_eager_state;
-    use restate_invoker_api::InvocationReaderError;
-    use restate_invoker_api::invocation_reader::EagerState;
+    use bytes::Bytes;
+    use futures::stream;
+
     use restate_memory::{LocalMemoryLease, LocalMemoryPool};
+    use restate_worker_api::invoker::{InvocationReaderError, invocation_reader::EagerState};
+
+    use super::collect_eager_state;
 
     #[derive(Debug, derive_more::Display)]
     struct TestError;

@@ -27,7 +27,6 @@ use tracing::{debug, error, trace};
 use restate_bifrost::CommitToken;
 use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{Metadata, MetadataKind, TaskCenter, TaskHandle, TaskId};
-use restate_invoker_api::InvokerHandle;
 use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
 use restate_partition_store::PartitionDb;
 use restate_storage_api::vqueue_table::scheduler::SchedulerDecisions;
@@ -48,6 +47,7 @@ use restate_vqueues::VQueueEvent;
 use restate_vqueues::scheduler::Decisions;
 use restate_wal_protocol::Command;
 use restate_wal_protocol::control::UpsertSchema;
+use restate_worker_api::invoker::InvokerHandle;
 use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
 
 use crate::metric_definitions::{PARTITION_HANDLE_LEADER_ACTIONS, USAGE_LEADER_ACTION_COUNT};

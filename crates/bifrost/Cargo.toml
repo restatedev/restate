@@ -67,7 +67,7 @@ restate-storage-api = { workspace = true }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
 restate-wal-protocol = { workspace = true }
-restate-invoker-api = { workspace = true }
+restate-worker-api = { workspace = true }
 
 bytestring = { workspace = true }
 criterion = { workspace = true, features = ["async_tokio"] }

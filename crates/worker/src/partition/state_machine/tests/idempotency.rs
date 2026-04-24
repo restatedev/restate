@@ -11,7 +11,6 @@
 use super::*;
 
 use crate::partition::state_machine::tests::matchers::actions::invocation_response_to_partition_processor;
-use restate_invoker_api::Effect;
 use restate_storage_api::idempotency_table::{
     IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
 };
@@ -24,6 +23,7 @@ use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, InvocationTarget, PurgeInvocationRequest,
     SubmitNotificationSink,
 };
+use restate_worker_api::invoker::Effect;
 use rstest::*;
 use std::time::Duration;
 
@@ -370,7 +370,7 @@ async fn attach_with_service_invocation_command_while_executing() {
 #[case(false)]
 #[restate_core::test]
 async fn attach_with_send_service_invocation(#[case] use_same_request_id: bool) {
-    use restate_invoker_api::Effect;
+    use restate_worker_api::invoker::Effect;
 
     let mut test_env = TestEnv::create().await;
 

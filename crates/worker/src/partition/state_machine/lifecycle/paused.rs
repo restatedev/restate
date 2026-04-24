@@ -116,13 +116,16 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use googletest::prelude::*;
+
     use restate_storage_api::invocation_status_table::{
         InFlightInvocationMetadata, InvocationStatusDiscriminants, ReadInvocationStatusTable,
     };
     use restate_types::journal_events::{Event, PausedEvent, TransientErrorEvent};
     use restate_wal_protocol::Command;
+
+    use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
+    use crate::partition::types::InvokerEffectKind;
 
     #[restate_core::test]
     async fn paused_with_pinned_deployment() {
@@ -145,9 +148,9 @@ mod tests {
         // Check we just pause
         let _ = test_env
             .apply(Command::InvokerEffect(Box::new(
-                restate_invoker_api::Effect {
+                restate_worker_api::invoker::Effect {
                     invocation_id,
-                    kind: restate_invoker_api::EffectKind::Paused {
+                    kind: InvokerEffectKind::Paused {
                         paused_event: paused_event.clone().into(),
                     },
                 },
@@ -196,9 +199,9 @@ mod tests {
         // Check we just pause
         let _ = test_env
             .apply(Command::InvokerEffect(Box::new(
-                restate_invoker_api::Effect {
+                restate_worker_api::invoker::Effect {
                     invocation_id,
-                    kind: restate_invoker_api::EffectKind::Paused { paused_event },
+                    kind: InvokerEffectKind::Paused { paused_event },
                 },
             )))
             .await;

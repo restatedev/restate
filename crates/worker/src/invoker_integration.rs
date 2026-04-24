@@ -145,7 +145,7 @@ where
     }
 }
 
-impl<Schemas, Codec> restate_invoker_api::EntryEnricher for EntryEnricher<Schemas, Codec>
+impl<Schemas, Codec> restate_worker_api::invoker::EntryEnricher for EntryEnricher<Schemas, Codec>
 where
     Schemas: InvocationTargetResolver,
     Codec: RawEntryCodec,
