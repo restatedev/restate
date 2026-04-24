@@ -16,9 +16,10 @@ mod util;
 // Re-exports
 pub use cache::{VQueuesMeta, VQueuesMetaCache};
 pub use metric_definitions::describe_metrics;
-pub use scheduler::{
-    ResourceManager, SchedulerService, SchedulingStatus, ThrottleScope, VQueueSchedulerStatus,
+pub use restate_worker_api::{
+    ResourceKind, SchedulingStatus, ThrottleScope, VQueueSchedulerStatus,
 };
+pub use scheduler::{ResourceManager, SchedulerService};
 use smallvec::SmallVec;
 use tracing::debug;
 pub use util::*;
