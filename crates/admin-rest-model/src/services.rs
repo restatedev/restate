@@ -107,6 +107,13 @@ pub struct ModifyServiceStateRequest {
     /// To what virtual object key to apply this change
     pub object_key: String,
 
+    /// # Scope
+    ///
+    /// Optional scope for the virtual object instance. When set, targets the scoped
+    /// instance instead of the unscoped one. Since v1.7.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+
     /// # New State
     ///
     /// The new state to replace the previous state with
