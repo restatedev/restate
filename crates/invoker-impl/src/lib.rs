@@ -1262,7 +1262,7 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        mut future: UnresolvedFuture,
+        future: UnresolvedFuture,
     ) {
         if let Some((sender, _, ism)) = self
             .invocation_state_machine_manager
@@ -1292,10 +1292,8 @@ where
             } else {
                 trace!(
                     restate.invocation.target = %ism.invocation_target,
-                    "Suspending invocation"
+                    "Suspending invocation: {future:?}"
                 );
-
-                future.normalize();
 
                 let _ = sender
                     .send(Box::new(Effect {
