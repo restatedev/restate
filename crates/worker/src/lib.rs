@@ -38,9 +38,8 @@ use restate_core::{Metadata, TaskKind};
 use restate_core::{MetadataWriter, TaskCenter};
 use restate_ingestion_client::IngestionClient;
 use restate_ingress_kafka::Service as IngressKafkaService;
-use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
+use restate_partition_store::PartitionStoreManager;
 use restate_partition_store::snapshots::SnapshotRepository;
-use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
 use restate_storage_query_datafusion::remote_query_scanner_manager::RemoteScannerManager;
 use restate_types::Version;
@@ -54,7 +53,6 @@ use restate_types::schema::kafka::KafkaClusterResolver;
 use restate_types::schema::subscriptions::SubscriptionResolver;
 use restate_worker_api::ProcessorsManagerHandle;
 
-use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition_processor_manager::PartitionProcessorManager;
 
 pub use self::error::*;
@@ -62,9 +60,7 @@ pub use self::handle::*;
 pub use crate::subscription_controller::SubscriptionController;
 pub use crate::subscription_integration::SubscriptionControllerHandle;
 
-type PartitionProcessorBuilder = partition::PartitionProcessorBuilder<
-    InvokerChannelServiceHandle<InvokerStorageReader<PartitionStore>>,
->;
+type PartitionProcessorBuilder = partition::PartitionProcessorBuilder;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 #[error("failed creating worker: {0}")]
@@ -184,7 +180,7 @@ where
             &config.admin.query_engine,
             SelectPartitionsFromMetadata,
             partition_store_manager,
-            Some(partition_processor_manager.invokers_status_reader()),
+            Some(partition_processor_manager.leader_handles_registry()),
             schema,
             remote_scanner_manager,
         )
