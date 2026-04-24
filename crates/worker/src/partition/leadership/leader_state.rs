@@ -48,6 +48,7 @@ use restate_vqueues::scheduler::Decisions;
 use restate_wal_protocol::Command;
 use restate_wal_protocol::control::UpsertSchema;
 use restate_worker_api::invoker::InvokerHandle;
+use restate_worker_api::resources::ReservedResources;
 use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
 
 use crate::metric_definitions::{PARTITION_HANDLE_LEADER_ACTIONS, USAGE_LEADER_ACTION_COUNT};
@@ -697,20 +698,16 @@ impl LeaderState {
                     .to_invocation_id(qid.partition_key())
                     .unwrap();
 
-                let mut run_permit = self.scheduler.confirm_run_attempt(&qid, &key).unwrap_or_else(|| {
+                let run_permit = self.scheduler.confirm_run_attempt(&qid, &key).unwrap_or_else(|| {
                     tracing::error!(
                         vqueue = %qid,
                         restate.invocation.id = %invocation_id,
                         "Cannot find a permit for entry key {key:?} in scheduler. Will not respect the invoker limit for this invocation"
                     );
-                    unimplemented!()
-                    // todo: RunPermit::new_empty()
+                    ReservedResources::new_empty()
                 });
-                // todo: This is temporary until we wrap the returned permit into an InvokePermit
-                // that invoker permit will carry the inner permit as opaque type.
-                let (permit, memory_lease) = run_permit.take_invoker_permit();
                 self.invoker_handle
-                    .vqueue_invoke(qid, permit, invocation_id, invocation_target, memory_lease)
+                    .vqueue_invoke(qid, run_permit, invocation_id, invocation_target)
                     .map_err(Error::Invoker)?
             }
         }
