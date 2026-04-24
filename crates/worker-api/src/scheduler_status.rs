@@ -44,13 +44,6 @@ pub enum SchedulingStatus {
     Empty,
     /// The vqueue head is ready to be scheduled and it's in the inbox/running stage.
     Ready,
-    /// The vqueue is throttled until the specified time.
-    Throttled {
-        /// When the throttle expires.
-        until: MillisSinceEpoch,
-        /// The scope of throttling (global or per-vqueue).
-        scope: ThrottleScope,
-    },
     /// The vqueue is scheduled to be woken up at the given time because the head
     /// item is scheduled to run at that time.
     Scheduled {
@@ -59,21 +52,6 @@ pub enum SchedulingStatus {
     },
     /// The vqueue is blocked on invoker global capacity.
     BlockedOn(ResourceKind),
-    /// The vqueue is waiting to acquire a lock of a VO.
-    BlockedOnLock,
-    /// The vqueue is waiting for concurrency tokens. Concurrency tokens are released
-    /// when currently running items are completed or (in some cases) when running items
-    /// are parked.
-    WaitingConcurrencyTokens,
-}
-
-/// The scope at which throttling is applied.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ThrottleScope {
-    /// Throttling is applied globally across all vqueues.
-    Global,
-    /// Throttling is applied to a specific vqueue.
-    VQueue,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,8 +63,13 @@ pub enum ResourceKind {
     },
     /// Waiting to acquire invoker concurrency capacity
     InvokerConcurrency,
-    /// Waiting to acquire invoker being throttled
-    InvokerThrottling,
+    /// Waiting to acquire invoker throttling tokens.
+    InvokerThrottling {
+        /// Best-effort estimate for when this queue can retry token acquisition.
+        ///
+        /// `None` means no estimate is currently available.
+        estimated_retry_at: Option<MillisSinceEpoch>,
+    },
     /// Invoker needs to allocate memory for an invocation
     InvokerMemory,
     /// Waiting for deployment-level concurrency tokens to be available
