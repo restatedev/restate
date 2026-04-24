@@ -16,9 +16,9 @@ use hashbrown::HashMap;
 use tokio_util::time::{DelayQueue, delay_queue};
 
 use restate_types::time::MillisSinceEpoch;
+use restate_worker_api::resources::ThrottlingToken;
 
 use super::Waiters;
-use super::permit::ThrottlingToken;
 use crate::GlobalTokenBucket;
 use crate::scheduler::VQueueHandle;
 use crate::scheduler::clock::SchedulerClock;
