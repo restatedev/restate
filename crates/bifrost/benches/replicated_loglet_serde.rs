@@ -25,7 +25,6 @@ use rand::{Rng, RngCore, random};
 use restate_bifrost::InputRecord;
 use restate_core::network::protobuf::network::message::Body;
 use restate_core::network::protobuf::network::{Datagram, Message, datagram};
-use restate_invoker_api::{Effect, EffectKind};
 use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber, ProducerId};
 use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionProcessorRpcRequestId};
 use restate_types::invocation::{
@@ -41,6 +40,7 @@ use restate_types::net::{RpcRequest, Service};
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{GenerationalNodeId, RestateVersion};
 use restate_wal_protocol::{Command, Destination, Envelope};
+use restate_worker_api::invoker::{Effect, EffectKind};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]

@@ -125,7 +125,6 @@ mod tests {
     use crate::partition::types::InvokerEffectKind;
     use assert2::assert;
     use googletest::prelude::*;
-    use restate_invoker_api::Effect;
     use restate_storage_api::invocation_status_table::{
         InvocationStatus, ReadInvocationStatusTable,
     };
@@ -146,6 +145,7 @@ mod tests {
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{RESTATE_VERSION_1_6_0, SemanticRestateVersion};
     use restate_wal_protocol::Command;
+    use restate_worker_api::invoker::Effect;
 
     #[restate_core::test]
     async fn cancel_invoked_invocation() {

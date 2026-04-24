@@ -31,7 +31,6 @@ use bytestring::ByteString;
 use futures::{StreamExt, TryStreamExt};
 use googletest::{all, assert_that, pat};
 use restate_core::TaskCenter;
-use restate_invoker_api::{Effect, EffectKind};
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
@@ -66,6 +65,7 @@ use restate_types::journal_v2::raw::TryFromEntry;
 use restate_types::logs::SequenceNumber;
 use restate_types::partitions::Partition;
 use restate_types::state_mut::ExternalStateMutation;
+use restate_worker_api::invoker::{Effect, EffectKind, YieldReason};
 use std::collections::{HashMap, HashSet};
 use test_log::test;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -1251,7 +1251,7 @@ async fn yield_effect_resumes_invocation() {
     let actions = test_env
         .apply(Command::InvokerEffect(Box::new(Effect {
             invocation_id,
-            kind: EffectKind::Yield(restate_invoker_api::YieldReason::ExhaustedMemoryBudget {
+            kind: EffectKind::Yield(YieldReason::ExhaustedMemoryBudget {
                 needed_memory: restate_memory::NonZeroByteCount::new(
                     NonZeroUsize::new(32768).unwrap(),
                 ),

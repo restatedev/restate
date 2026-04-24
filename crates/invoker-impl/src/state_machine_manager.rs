@@ -9,13 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use tokio::sync::mpsc;
+use tracing::trace;
 
-use restate_invoker_api::Effect;
-use restate_invoker_api::invocation_reader::InvocationReader;
 use restate_platform::hash::HashMap;
 use restate_types::identifiers::InvocationId;
 use restate_types::sharding::KeyRange;
-use tracing::trace;
+use restate_worker_api::invoker::{Effect, invocation_reader::InvocationReader};
 
 use crate::InvocationStateMachine;
 

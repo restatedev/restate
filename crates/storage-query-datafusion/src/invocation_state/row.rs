@@ -8,10 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_invoker_api::InvocationStatusReport;
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::time::MillisSinceEpoch;
+use restate_worker_api::invoker::InvocationStatusReport;
 
 use crate::invocation_state::schema::SysInvocationStateBuilder;
 use crate::log_data_corruption_error;

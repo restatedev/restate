@@ -17,7 +17,6 @@ restate-workspace-hack = { workspace = true }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-futures-util = { workspace = true }
-restate-invoker-api = { workspace = true }
 restate-memory = { workspace = true }
 restate-platform = { workspace = true }
 restate-queue = { workspace = true }
@@ -28,6 +27,7 @@ restate-service-protocol-v4 = { workspace = true, features = ["message-codec", "
 restate-time-util = { workspace = true }
 restate-types = { workspace = true }
 restate-util-string = { workspace = true }
+restate-worker-api = { workspace = true }
 
 anyhow = { workspace = true }
 bytes = { workspace = true }
@@ -56,7 +56,6 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
-restate-invoker-api = { workspace = true, features = ["test-util"] }
 restate-service-protocol = { workspace = true }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true }
