@@ -11,15 +11,13 @@
 use tokio::sync::mpsc;
 
 use restate_errors::NotRunningError;
-use restate_futures_util::concurrency::Permit;
-use restate_memory::MemoryLease;
 use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::VQueueId;
-
 use restate_worker_api::invoker::{InvocationStatusReport, StatusHandle};
+use restate_worker_api::resources::ReservedResources;
 // -- Input messages
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -32,11 +30,9 @@ pub(crate) struct InvokeCommand {
 pub(crate) struct VQueueInvokeCommand {
     pub(super) qid: VQueueId,
     #[debug(skip)]
-    pub(super) permit: Permit,
+    pub(super) permit: ReservedResources,
     pub(super) invocation_id: InvocationId,
     pub(super) invocation_target: InvocationTarget,
-    #[debug(skip)]
-    pub(super) initial_memory_lease: MemoryLease,
 }
 
 #[derive(Debug)]
@@ -102,10 +98,9 @@ impl restate_worker_api::invoker::InvokerHandle for InvokerHandle {
     fn vqueue_invoke(
         &mut self,
         qid: VQueueId,
-        permit: Permit,
+        permit: ReservedResources,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
-        initial_memory_lease: MemoryLease,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::VQInvoke(Box::new(VQueueInvokeCommand {
@@ -113,7 +108,6 @@ impl restate_worker_api::invoker::InvokerHandle for InvokerHandle {
                 permit,
                 invocation_id,
                 invocation_target,
-                initial_memory_lease,
             })))
             .map_err(|_| NotRunningError)
     }
