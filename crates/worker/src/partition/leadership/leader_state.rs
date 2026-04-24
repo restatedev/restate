@@ -29,7 +29,7 @@ use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{Metadata, MetadataKind, TaskCenter, TaskHandle, TaskId};
 use restate_invoker_api::InvokerHandle;
 use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
-use restate_partition_store::{PartitionDb, PartitionStore};
+use restate_partition_store::PartitionDb;
 use restate_storage_api::vqueue_table::scheduler::SchedulerDecisions;
 use restate_types::identifiers::{
     LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
@@ -52,7 +52,6 @@ use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
 
 use crate::metric_definitions::{PARTITION_HANDLE_LEADER_ACTIONS, USAGE_LEADER_ACTION_COUNT};
 use crate::partition::cleaner::{CleanerEffect, CleanerHandle};
-use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::self_proposer::SelfProposer;
 use crate::partition::leadership::{ActionEffect, Error, InvokerStream, TimerService};
 use crate::partition::shuffle;
@@ -80,7 +79,7 @@ pub struct LeaderState {
     shuffle_task_handle: Option<TaskHandle<anyhow::Result<()>>>,
     pub timer_service: Pin<Box<TimerService>>,
     scheduler: SchedulerService<PartitionDb>,
-    invoker_handle: InvokerChannelServiceHandle<InvokerStorageReader<PartitionStore>>,
+    invoker_handle: InvokerChannelServiceHandle,
     invoker_task_handle: Option<TaskHandle<()>>,
     self_proposer: SelfProposer,
 
@@ -110,7 +109,7 @@ impl LeaderState {
         shuffle_hint_tx: HintSender,
         timer_service: TimerService,
         scheduler: SchedulerService<PartitionDb>,
-        invoker_handle: InvokerChannelServiceHandle<InvokerStorageReader<PartitionStore>>,
+        invoker_handle: InvokerChannelServiceHandle,
         invoker_task_handle: TaskHandle<()>,
         self_proposer: SelfProposer,
         invoker_rx: InvokerStream,
@@ -284,9 +283,7 @@ impl LeaderState {
         // It's ok to not check the abort_result because either it succeeded or the invoker
         // is not running. If the invoker is not running, and we are not shutting down, then
         // we will fail the next time we try to invoke.
-        let _ = self
-            .invoker_handle
-            .abort_all_partition((self.partition_id, self.leader_epoch));
+        let _ = self.invoker_handle.abort_all();
         let (shuffle_result, cleaner_result, invoker_result) =
             tokio::join!(shuffle_handle, cleaner_handle, invoker_task_handle);
 
@@ -541,14 +538,13 @@ impl LeaderState {
     }
 
     fn handle_action(&mut self, action: Action) -> Result<(), Error> {
-        let partition_leader_epoch = (self.partition_id, self.leader_epoch);
         match action {
             Action::Invoke {
                 invocation_id,
                 invocation_target,
             } => self
                 .invoker_handle
-                .invoke(partition_leader_epoch, invocation_id, invocation_target)
+                .invoke(invocation_id, invocation_target)
                 .map_err(Error::Invoker)?,
             Action::NewOutboxMessage {
                 seq_number,
@@ -567,7 +563,7 @@ impl LeaderState {
                 command_index,
             } => {
                 self.invoker_handle
-                    .notify_stored_command_ack(partition_leader_epoch, invocation_id, command_index)
+                    .notify_stored_command_ack(invocation_id, command_index)
                     .map_err(Error::Invoker)?;
             }
             Action::ForwardCompletion {
@@ -575,11 +571,11 @@ impl LeaderState {
                 entry_index,
             } => self
                 .invoker_handle
-                .notify_completion(partition_leader_epoch, invocation_id, entry_index)
+                .notify_completion(invocation_id, entry_index)
                 .map_err(Error::Invoker)?,
             Action::AbortInvocation { invocation_id } => self
                 .invoker_handle
-                .abort_invocation(partition_leader_epoch, invocation_id)
+                .abort_invocation(invocation_id)
                 .map_err(Error::Invoker)?,
             Action::IngressResponse {
                 request_id,
@@ -623,12 +619,7 @@ impl LeaderState {
                 notification_id,
             } => {
                 self.invoker_handle
-                    .notify_notification(
-                        partition_leader_epoch,
-                        invocation_id,
-                        entry_index,
-                        notification_id,
-                    )
+                    .notify_notification(invocation_id, entry_index, notification_id)
                     .map_err(Error::Invoker)?;
             }
             Action::ForwardKillResponse {
@@ -719,14 +710,7 @@ impl LeaderState {
                 // that invoker permit will carry the inner permit as opaque type.
                 let (permit, memory_lease) = run_permit.take_invoker_permit();
                 self.invoker_handle
-                    .vqueue_invoke(
-                        partition_leader_epoch,
-                        qid,
-                        permit,
-                        invocation_id,
-                        invocation_target,
-                        memory_lease,
-                    )
+                    .vqueue_invoke(qid, permit, invocation_id, invocation_target, memory_lease)
                     .map_err(Error::Invoker)?
             }
         }
@@ -734,9 +718,7 @@ impl LeaderState {
         Ok(())
     }
 
-    pub fn invoker_handle(
-        &mut self,
-    ) -> &mut InvokerChannelServiceHandle<InvokerStorageReader<PartitionStore>> {
+    pub fn invoker_handle(&mut self) -> &mut InvokerChannelServiceHandle {
         &mut self.invoker_handle
     }
 

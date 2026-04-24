@@ -13,21 +13,18 @@ use tokio::sync::mpsc;
 use restate_errors::NotRunningError;
 use restate_futures_util::concurrency::Permit;
 use restate_memory::MemoryLease;
-use restate_types::identifiers::{EntryIndex, InvocationId, PartitionLeaderEpoch};
+use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::VQueueId;
 
-use restate_invoker_api::{Effect, InvocationStatusReport, StatusHandle};
+use restate_invoker_api::{InvocationStatusReport, StatusHandle};
 // -- Input messages
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct InvokeCommand {
-    pub(super) partition: PartitionLeaderEpoch,
     pub(super) invocation_id: InvocationId,
-    // removed in v1.6
-    // pub(super) invocation_epoch: InvocationEpoch,
     pub(super) invocation_target: InvocationTarget,
 }
 
@@ -36,7 +33,6 @@ pub(crate) struct VQueueInvokeCommand {
     pub(super) qid: VQueueId,
     #[debug(skip)]
     pub(super) permit: Permit,
-    pub(super) partition: PartitionLeaderEpoch,
     pub(super) invocation_id: InvocationId,
     pub(super) invocation_target: InvocationTarget,
     #[debug(skip)]
@@ -44,77 +40,59 @@ pub(crate) struct VQueueInvokeCommand {
 }
 
 #[derive(Debug)]
-pub(crate) enum InputCommand<SR> {
+pub(crate) enum InputCommand {
     Invoke(Box<InvokeCommand>),
     VQInvoke(Box<VQueueInvokeCommand>),
     // TODO remove this when we remove journal v1
     // Journal V1 doesn't support epochs nor trim and restart
     Completion {
-        partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         entry_index: EntryIndex,
     },
     Notification {
-        partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         entry_index: EntryIndex,
         notification_id: NotificationId,
     },
     StoredCommandAck {
-        partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         command_index: CommandIndex,
     },
 
     /// Abort specific invocation id
     Abort {
-        partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
     },
 
     /// Retry now specific invocation id
     RetryNow {
-        partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
     },
 
     /// Pause specific invocation id
     Pause {
-        partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
     },
 
     /// Command used to clean up internal state when a partition leader is going away
-    AbortAllPartition {
-        partition: PartitionLeaderEpoch,
-    },
-
-    // needed for dynamic registration at Invoker
-    RegisterPartition {
-        partition: PartitionLeaderEpoch,
-        partition_key_range: KeyRange,
-        storage_reader: SR,
-        sender: mpsc::Sender<Box<Effect>>,
-    },
+    AbortAll,
 }
 
 // -- Handles implementations. This is just glue code between the Input<Command> and the interfaces
 
 #[derive(Debug, Clone)]
-pub struct InvokerHandle<SR> {
-    pub(super) input: mpsc::UnboundedSender<InputCommand<SR>>,
+pub struct InvokerHandle {
+    pub(super) input: mpsc::UnboundedSender<InputCommand>,
 }
 
-impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
+impl restate_invoker_api::InvokerHandle for InvokerHandle {
     fn invoke(
         &mut self,
-        partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::Invoke(Box::new(InvokeCommand {
-                partition,
                 invocation_id,
                 invocation_target,
             })))
@@ -123,7 +101,6 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
 
     fn vqueue_invoke(
         &mut self,
-        partition: PartitionLeaderEpoch,
         qid: VQueueId,
         permit: Permit,
         invocation_id: InvocationId,
@@ -134,7 +111,6 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
             .send(InputCommand::VQInvoke(Box::new(VQueueInvokeCommand {
                 qid,
                 permit,
-                partition,
                 invocation_id,
                 invocation_target,
                 initial_memory_lease,
@@ -144,13 +120,11 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
 
     fn notify_completion(
         &mut self,
-        partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         entry_index: EntryIndex,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::Completion {
-                partition,
                 invocation_id,
                 entry_index,
             })
@@ -159,14 +133,12 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
 
     fn notify_notification(
         &mut self,
-        partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         entry_index: EntryIndex,
         notification_id: NotificationId,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::Notification {
-                partition,
                 invocation_id,
                 entry_index,
                 notification_id,
@@ -176,81 +148,38 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
 
     fn notify_stored_command_ack(
         &mut self,
-        partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         command_index: CommandIndex,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::StoredCommandAck {
-                partition,
                 invocation_id,
                 command_index,
             })
             .map_err(|_| NotRunningError)
     }
 
-    fn abort_all_partition(
-        &mut self,
-        partition: PartitionLeaderEpoch,
-    ) -> Result<(), NotRunningError> {
+    fn abort_all(&mut self) -> Result<(), NotRunningError> {
         self.input
-            .send(InputCommand::AbortAllPartition { partition })
+            .send(InputCommand::AbortAll)
             .map_err(|_| NotRunningError)
     }
 
-    fn abort_invocation(
-        &mut self,
-        partition: PartitionLeaderEpoch,
-        invocation_id: InvocationId,
-    ) -> Result<(), NotRunningError> {
+    fn abort_invocation(&mut self, invocation_id: InvocationId) -> Result<(), NotRunningError> {
         self.input
-            .send(InputCommand::Abort {
-                partition,
-                invocation_id,
-            })
+            .send(InputCommand::Abort { invocation_id })
             .map_err(|_| NotRunningError)
     }
 
-    fn retry_invocation_now(
-        &mut self,
-        partition: PartitionLeaderEpoch,
-        invocation_id: InvocationId,
-    ) -> Result<(), NotRunningError> {
+    fn retry_invocation_now(&mut self, invocation_id: InvocationId) -> Result<(), NotRunningError> {
         self.input
-            .send(InputCommand::RetryNow {
-                partition,
-                invocation_id,
-            })
+            .send(InputCommand::RetryNow { invocation_id })
             .map_err(|_| NotRunningError)
     }
 
-    fn pause_invocation(
-        &mut self,
-        partition: PartitionLeaderEpoch,
-        invocation_id: InvocationId,
-    ) -> Result<(), NotRunningError> {
+    fn pause_invocation(&mut self, invocation_id: InvocationId) -> Result<(), NotRunningError> {
         self.input
-            .send(InputCommand::Pause {
-                partition,
-                invocation_id,
-            })
-            .map_err(|_| NotRunningError)
-    }
-
-    fn register_partition(
-        &mut self,
-        partition: PartitionLeaderEpoch,
-        partition_key_range: KeyRange,
-        storage_reader: SR,
-        sender: mpsc::Sender<Box<Effect>>,
-    ) -> Result<(), NotRunningError> {
-        self.input
-            .send(InputCommand::RegisterPartition {
-                partition,
-                partition_key_range,
-                sender,
-                storage_reader,
-            })
+            .send(InputCommand::Pause { invocation_id })
             .map_err(|_| NotRunningError)
     }
 }
