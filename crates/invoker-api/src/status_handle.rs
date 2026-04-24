@@ -17,6 +17,7 @@ use restate_types::errors::InvocationError;
 use restate_types::identifiers::{DeploymentId, InvocationId};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
 use restate_types::journal::{EntryIndex, EntryType};
+use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::sharding::KeyRange;
 
@@ -28,6 +29,7 @@ pub struct InvocationStatusReportInner {
     pub start_count: usize,
     pub last_start_at: SystemTime,
     pub last_retry_attempt_failure: Option<InvocationErrorReport>,
+    pub last_awaiting_on_unresolved_future: Option<UnresolvedFuture>,
     pub next_retry_at: Option<SystemTime>,
     pub last_attempt_deployment_id: Option<DeploymentId>,
     pub last_attempt_protocol_version: Option<ServiceProtocolVersion>,
@@ -41,6 +43,7 @@ impl Default for InvocationStatusReportInner {
             start_count: 0,
             last_start_at: SystemTime::now(),
             last_retry_attempt_failure: None,
+            last_awaiting_on_unresolved_future: None,
             next_retry_at: None,
             last_attempt_deployment_id: None,
             last_attempt_protocol_version: None,
@@ -95,6 +98,9 @@ impl InvocationStatusReport {
 
     pub fn last_retry_attempt_failure(&self) -> Option<&InvocationErrorReport> {
         self.2.last_retry_attempt_failure.as_ref()
+    }
+    pub fn last_awaiting_on_unresolved_future(&self) -> Option<&UnresolvedFuture> {
+        self.2.last_awaiting_on_unresolved_future.as_ref()
     }
 
     pub fn last_attempt_deployment_id(&self) -> Option<&DeploymentId> {

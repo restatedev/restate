@@ -233,6 +233,9 @@ pub fn sys_invocation_table_docs() -> OwnedTableDocs {
         sys_invocation_state
             .remove("last_failure_related_command_type")
             .expect("last_failure_related_command_type should exist"),
+        sys_invocation_state
+            .remove("last_awaiting_on_future_json")
+            .expect("last_awaiting_on_future_json should exist"),
         TableColumn {
             name: "status",
             column_type: "Utf8",

@@ -89,6 +89,7 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
             sis.last_failure_related_command_index,
             sis.last_failure_related_command_name,
             sis.last_failure_related_command_type,
+            sis.last_awaiting_on_future_json,
 
             arrow_cast(CASE
                 WHEN ss.status = 'inboxed' THEN 'pending'

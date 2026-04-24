@@ -76,4 +76,7 @@ define_table!(sys_invocation_state(
     /// available entry types in [`entries.rs`](https://github.com/restatedev/restate/blob/main/crates/types/src/journal/entries.rs).
     /// DEPRECATED: you should not use this field anymore, but last_failure_related_command_type instead.
     last_failure_related_entry_type: DataType::LargeUtf8,
+
+    /// Last known future the SDK was awaiting on, if `in_flight = true`.
+    last_awaiting_on_future_json: DataType::LargeUtf8,
 ));
