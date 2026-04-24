@@ -16,7 +16,7 @@ use restate_futures_util::command::{Command, UnboundedCommandReceiver, Unbounded
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::VQueueId;
 
-use crate::VQueueSchedulerStatus;
+use crate::{UserLimitCounterEntry, VQueueSchedulerStatus};
 
 /// Queries that route through the partition processor's main `select!` loop.
 ///
@@ -49,6 +49,7 @@ pub type SchedulerStatusEntry = (VQueueId, VQueueSchedulerStatus);
 #[derive(Debug, Clone)]
 pub enum LeaderQueryResponse {
     SchedulerStatus(Vec<SchedulerStatusEntry>),
+    UserLimitCounters(Vec<UserLimitCounterEntry>),
     NotLeader(LeaderQueryKind),
 }
 
