@@ -740,6 +740,11 @@ impl<T> LeadershipState<T> {
                     leader_state.read_scheduler_status(keys),
                 ));
             }
+            (State::Leader(leader_state), LeaderQueryRequest::UserLimitCounters { keys }) => {
+                let _ = response_tx.send(LeaderQueryResponse::UserLimitCounters(
+                    leader_state.read_user_limit_counters(keys),
+                ));
+            }
             (_, request) => {
                 let _ = response_tx.send(LeaderQueryResponse::NotLeader(request.kind()));
             }
