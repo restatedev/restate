@@ -15,7 +15,6 @@ use codederror::Code;
 
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{DeploymentId, InvocationId};
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
 use restate_types::journal::{EntryIndex, EntryType};
 use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::service_protocol::ServiceProtocolVersion;
@@ -53,66 +52,50 @@ impl Default for InvocationStatusReportInner {
 }
 
 #[derive(Debug, Clone)]
-pub struct InvocationStatusReport(
-    InvocationId,
-    PartitionLeaderEpoch,
-    InvocationStatusReportInner,
-);
+pub struct InvocationStatusReport(InvocationId, InvocationStatusReportInner);
 
 impl InvocationStatusReport {
-    pub fn new(
-        invocation_id: InvocationId,
-        partition: PartitionLeaderEpoch,
-        report: InvocationStatusReportInner,
-    ) -> Self {
-        Self(invocation_id, partition, report)
+    pub fn new(invocation_id: InvocationId, report: InvocationStatusReportInner) -> Self {
+        Self(invocation_id, report)
     }
 
     pub fn invocation_id(&self) -> &InvocationId {
         &self.0
     }
 
-    pub fn partition_id(&self) -> PartitionId {
-        self.1.0
-    }
-
-    pub fn leader_epoch(&self) -> LeaderEpoch {
-        self.1.1
-    }
-
     pub fn in_flight(&self) -> bool {
-        self.2.in_flight
+        self.1.in_flight
     }
 
     pub fn retry_count(&self) -> usize {
-        self.2.start_count
+        self.1.start_count
     }
 
     pub fn last_start_at(&self) -> SystemTime {
-        self.2.last_start_at
+        self.1.last_start_at
     }
 
     pub fn next_retry_at(&self) -> Option<SystemTime> {
-        self.2.next_retry_at
+        self.1.next_retry_at
     }
 
     pub fn last_retry_attempt_failure(&self) -> Option<&InvocationErrorReport> {
-        self.2.last_retry_attempt_failure.as_ref()
+        self.1.last_retry_attempt_failure.as_ref()
     }
     pub fn last_awaiting_on_unresolved_future(&self) -> Option<&UnresolvedFuture> {
-        self.2.last_awaiting_on_unresolved_future.as_ref()
+        self.1.last_awaiting_on_unresolved_future.as_ref()
     }
 
     pub fn last_attempt_deployment_id(&self) -> Option<&DeploymentId> {
-        self.2.last_attempt_deployment_id.as_ref()
+        self.1.last_attempt_deployment_id.as_ref()
     }
 
     pub fn last_attempt_service_protocol_version(&self) -> Option<&ServiceProtocolVersion> {
-        self.2.last_attempt_protocol_version.as_ref()
+        self.1.last_attempt_protocol_version.as_ref()
     }
 
     pub fn last_attempt_server(&self) -> Option<&str> {
-        self.2.last_attempt_server.as_deref()
+        self.1.last_attempt_server.as_deref()
     }
 }
 
