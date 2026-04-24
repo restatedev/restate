@@ -8611,6 +8611,7 @@ dependencies = [
  "restate-util-string",
  "restate-workspace-hack",
  "serde",
+ "smallvec",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

@@ -20,6 +20,7 @@ use restate_storage_api::vqueue_table::scheduler::{RunAction, SchedulerAction, Y
 use restate_storage_api::vqueue_table::{EntryKey, ScanVQueueTable, VQueueStore};
 use restate_types::identifiers::PartitionKey;
 use restate_types::vqueues::VQueueId;
+use restate_worker_api::resources::ReservedResources;
 use restate_worker_api::{SchedulingStatus, UserLimitCounterEntry, VQueueSchedulerStatus};
 
 use crate::VQueueEvent;
@@ -27,7 +28,7 @@ use crate::VQueuesMetaCache;
 use crate::metric_definitions::publish_scheduler_decision_metrics;
 
 use self::drr::DRRScheduler;
-use self::resource_manager::{PermitBuilder, ReservedResources};
+use self::resource_manager::PermitBuilder;
 use self::vqueue_state::DetailedEligibility;
 
 mod clock;
