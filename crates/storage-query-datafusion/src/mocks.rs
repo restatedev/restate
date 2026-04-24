@@ -38,7 +38,7 @@ use restate_types::schema::deployment::{Deployment, DeploymentResolver};
 use restate_types::schema::service::test_util::MockServiceMetadataResolver;
 use restate_types::schema::service::{ServiceMetadata, ServiceMetadataResolver};
 use restate_types::sharding::KeyRange;
-use restate_worker_api::SchedulerStatusEntry;
+use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
 
 use super::context::QueryContext;
 use crate::context::{PartitionLeaderStatusHandle, SelectPartitions};
@@ -79,7 +79,7 @@ impl PartitionLeaderStatusHandle for MockStatusHandle {
     type SchedulerStatus = SchedulerStatusEntry;
     type SchedulerStatusIterator = std::iter::Empty<Self::SchedulerStatus>;
 
-    type UserLimitCounter = ();
+    type UserLimitCounter = UserLimitCounterEntry;
     type UserLimitCounterIterator = std::iter::Empty<Self::UserLimitCounter>;
 
     fn read_scheduler_status(
@@ -172,7 +172,10 @@ impl PartitionLocator for AlwaysLocalPartitionLocator {
 
 impl MockQueryEngine {
     pub async fn create_with(
-        status: impl PartitionLeaderStatusHandle<SchedulerStatus = SchedulerStatusEntry>,
+        status: impl PartitionLeaderStatusHandle<
+            SchedulerStatus = SchedulerStatusEntry,
+            UserLimitCounter = UserLimitCounterEntry,
+        >,
         schemas: impl DeploymentResolver
         + ServiceMetadataResolver
         + Send
