@@ -19,6 +19,7 @@ restate-errors = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-invoker-api = { workspace = true }
 restate-memory = { workspace = true }
+restate-platform = { workspace = true }
 restate-queue = { workspace = true }
 restate-serde-util = { workspace = true }
 restate-service-client = { workspace = true }
