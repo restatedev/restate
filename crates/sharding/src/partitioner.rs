@@ -8,67 +8,74 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroU16;
+
+use crate::subsharding::ShardPlan;
 use crate::{KeyRange, PartitionId};
 
 #[derive(Debug)]
 pub struct EqualSizedPartitionPartitioner {
-    num_partitions: u16,
-    next_partition_id: PartitionId,
+    plan: Option<ShardPlan>,
 }
 
 impl EqualSizedPartitionPartitioner {
-    const PARTITION_KEY_RANGE_END: u128 = 1 << 64;
-
+    /// Creates a partitioner for the full key space.
+    ///
+    /// `num_partitions == 0` yields an empty iterator.
     pub fn new(num_partitions: u16) -> Self {
         Self {
-            num_partitions,
-            next_partition_id: PartitionId::MIN,
+            plan: NonZeroU16::new(num_partitions)
+                .map(|num_partitions| ShardPlan::new(KeyRange::FULL, num_partitions)),
         }
-    }
-
-    pub fn partition_id_to_partition_range(
-        num_partitions: u16,
-        partition_id: PartitionId,
-    ) -> KeyRange {
-        let num_partitions = u128::from(num_partitions);
-        let partition_id = u128::from(*partition_id);
-
-        assert!(
-            partition_id < num_partitions,
-            "There cannot be a partition id which is larger than the number of partitions \
-                '{num_partitions}', when using the fixed consecutive partitioning scheme."
-        );
-
-        // adding num_partitions - 1 to dividend is equivalent to applying ceil function to result
-        let start = (partition_id * Self::PARTITION_KEY_RANGE_END).div_ceil(num_partitions);
-        let end = ((partition_id + 1) * Self::PARTITION_KEY_RANGE_END).div_ceil(num_partitions) - 1;
-
-        let start = u64::try_from(start)
-            .expect("Resulting partition start '{start}' should be <= u64::MAX.");
-        let end =
-            u64::try_from(end).expect("Resulting partition end '{end}' should be <= u64::MAX.");
-
-        KeyRange::new(start, end)
     }
 }
 
-impl Iterator for EqualSizedPartitionPartitioner {
+impl IntoIterator for EqualSizedPartitionPartitioner {
+    type Item = (PartitionId, KeyRange);
+    type IntoIter = EqualSizedPartitions;
+
+    fn into_iter(self) -> Self::IntoIter {
+        EqualSizedPartitions {
+            plan: self.plan,
+            next: 0,
+        }
+    }
+}
+
+/// Iterator of `(PartitionId, KeyRange)` pairs produced by
+/// [`EqualSizedPartitionPartitioner::into_iter`].
+#[derive(Debug)]
+pub struct EqualSizedPartitions {
+    plan: Option<ShardPlan>,
+    next: u16,
+}
+
+impl Iterator for EqualSizedPartitions {
     type Item = (PartitionId, KeyRange);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if *self.next_partition_id < self.num_partitions {
-            let partition_id = self.next_partition_id;
-            self.next_partition_id = self.next_partition_id.next();
+        let plan = self.plan.as_ref()?;
 
-            let partition_range =
-                Self::partition_id_to_partition_range(self.num_partitions, partition_id);
-
-            Some((partition_id, partition_range))
+        if self.next < plan.shard_count() {
+            let idx = self.next;
+            self.next += 1;
+            let range = *plan.find_shard_unchecked(idx).key_range();
+            Some((PartitionId::new_unchecked(idx), range))
         } else {
             None
         }
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let Some(plan) = self.plan.as_ref() else {
+            return (0, Some(0));
+        };
+        let remaining = (plan.shard_count() - self.next) as usize;
+        (remaining, Some(remaining))
+    }
 }
+
+impl ExactSizeIterator for EqualSizedPartitions {}
 
 #[cfg(test)]
 mod tests {
@@ -100,5 +107,11 @@ mod tests {
         }
 
         assert_eq!(previous_end, Some(PartitionKey::MAX));
+    }
+
+    #[test]
+    fn zero_partitions_is_empty() {
+        let partitioner = EqualSizedPartitionPartitioner::new(0);
+        assert_eq!(partitioner.into_iter().count(), 0);
     }
 }
