@@ -37,6 +37,7 @@ restate-memory = { workspace = true }
 restate-metadata-server = { workspace = true }
 restate-metadata-store = { workspace = true }
 restate-partition-store = { workspace = true }
+restate-platform = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["codec", "message"] }
 restate-service-protocol-v4 = { workspace = true, features = ["entry-codec"] }
