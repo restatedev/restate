@@ -20,11 +20,11 @@ use tracing::trace;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::VQueueStore;
 use restate_types::time::MillisSinceEpoch;
+use restate_worker_api::{ResourceKind, SchedulingStatus, ThrottleScope};
 
+use super::VQueueHandle;
 use super::clock::SchedulerClock;
-use super::resource_manager::ResourceKind;
 use super::vqueue_state::VQueueState;
-use super::{SchedulingStatus, ThrottleScope, VQueueHandle};
 use crate::scheduler::vqueue_state::Eligibility;
 
 #[derive(Debug, Copy, Clone)]
@@ -80,7 +80,7 @@ impl EligibilityTracker {
     pub fn get_status<S: VQueueStore>(&self, qstate: &VQueueState<S>) -> SchedulingStatus {
         match self.states.get(qstate.handle) {
             None | Some(State::NeedsPoll) | Some(State::Ready) => {
-                SchedulingStatus::from(qstate.check_eligibility())
+                super::status_from_detailed_eligibility(qstate.check_eligibility())
             }
             Some(State::Throttled { wake_up, scope }) => SchedulingStatus::Throttled {
                 until: wake_up.ts,

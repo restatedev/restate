@@ -18,6 +18,7 @@ use restate_clock::RoughTimestamp;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{EntryKey, EntryValue, VQueueStore, stats::WaitStats};
 use restate_types::vqueues::VQueueId;
+use restate_worker_api::{ResourceKind, ThrottleScope};
 
 use crate::metric_definitions::{
     VQUEUE_CONCURRENCY_RULES_WAIT_MS, VQUEUE_DEPLOYMENT_CONCURRENCY_WAIT_MS,
@@ -30,10 +31,8 @@ use super::clock::SchedulerClock;
 use super::queue::Queue;
 use super::queue_meta::MetaLiteUpdate;
 pub use super::queue_meta::VQueueMetaLite;
-use super::resource_manager::{AcquireOutcome, PermitBuilder, ResourceKind};
-use super::{
-    ResourceManager, RunAction, ThrottleScope, UnconfirmedAssignments, VQueueHandle, YieldAction,
-};
+use super::resource_manager::{AcquireOutcome, PermitBuilder};
+use super::{ResourceManager, RunAction, UnconfirmedAssignments, VQueueHandle, YieldAction};
 
 const QUANTUM: i32 = 1;
 
