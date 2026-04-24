@@ -282,7 +282,7 @@ where
             metadata::Action::Move {
                 prev_stage: None,
                 next_stage: Stage::Inbox,
-                metrics: Self::build_move_metrics(&stats),
+                metrics: Self::build_move_metrics(&stats, None),
             },
         );
 
@@ -376,8 +376,9 @@ where
                 prev_stage: Some(Stage::Inbox),
                 next_stage: Stage::Running,
                 // Use the stats before updating the entry to measure stage exit durations and
-                // first-run wait correctly.
-                metrics: Self::build_move_metrics(header.stats()),
+                // first-run wait correctly. Pass the head's `wait_stats` so the
+                // vqueue-level EMAs can sample per-bucket blocking time.
+                metrics: Self::build_move_metrics(header.stats(), Some(wait_stats)),
             },
         );
 
@@ -487,7 +488,7 @@ where
             metadata::Action::Move {
                 prev_stage: Some(header.stage()),
                 next_stage: Stage::Inbox,
-                metrics: Self::build_move_metrics(header.stats()),
+                metrics: Self::build_move_metrics(header.stats(), None),
             },
         );
 
@@ -600,7 +601,7 @@ where
             metadata::Action::Move {
                 prev_stage: Some(header.stage()),
                 next_stage,
-                metrics: Self::build_move_metrics(header.stats()),
+                metrics: Self::build_move_metrics(header.stats(), None),
             },
         );
 
@@ -684,7 +685,7 @@ where
             metadata::Action::Move {
                 prev_stage: Some(header.stage()),
                 next_stage: Stage::Inbox,
-                metrics: Self::build_move_metrics(header.stats()),
+                metrics: Self::build_move_metrics(header.stats(), None),
             },
         );
 
@@ -796,7 +797,7 @@ where
             metadata::Action::Move {
                 prev_stage: Some(header.stage()),
                 next_stage: Stage::Finished,
-                metrics: Self::build_move_metrics(header.stats()),
+                metrics: Self::build_move_metrics(header.stats(), None),
             },
         );
 
@@ -918,7 +919,10 @@ where
             metadata::Action::Move {
                 prev_stage: Some(Stage::Inbox),
                 next_stage: Stage::Running,
-                metrics: Self::build_move_metrics(header.stats()),
+                // Pass wait_stats so the vqueue-level EMAs sample state
+                // mutations too — the head truly did wait for those resources,
+                // regardless of whether it's an invocation or a state mutation.
+                metrics: Self::build_move_metrics(header.stats(), Some(wait_stats)),
             },
         );
 
@@ -932,7 +936,7 @@ where
             metadata::Action::Move {
                 prev_stage: Some(Stage::Running),
                 next_stage: Stage::Finished,
-                metrics: Self::build_move_metrics(&stats),
+                metrics: Self::build_move_metrics(&stats, None),
             },
         );
 
@@ -1010,11 +1014,29 @@ where
     }
 
     #[inline]
-    fn build_move_metrics(stats: &EntryStatistics) -> metadata::MoveMetrics {
+    fn build_move_metrics(
+        stats: &EntryStatistics,
+        wait_stats: Option<&WaitStats>,
+    ) -> metadata::MoveMetrics {
+        // The two `*_ms` fields below are only meaningful on Inbox → Running
+        // moves (where the scheduler actually observed the head waiting). For
+        // every other transition we pass `None` and leave them zero — the
+        // receiving EMA code only reads them inside the `Stage::Running` arm,
+        // so the zero samples are never consumed.
+        let (concurrency_rules_ms, blocked_on_invoker_throttling_ms) = wait_stats
+            .map(|w| {
+                (
+                    w.blocked_on_concurrency_rules_ms,
+                    w.blocked_on_invoker_throttling_ms,
+                )
+            })
+            .unwrap_or_default();
         metadata::MoveMetrics {
             last_transition_at: stats.transitioned_at,
             has_started: stats.num_attempts > 0,
             first_runnable_at: stats.first_runnable_at,
+            blocked_on_concurrency_rules_ms: concurrency_rules_ms,
+            blocked_on_invoker_throttling_ms,
         }
     }
 
@@ -1030,7 +1052,10 @@ where
     fn mark_run_attempt(
         at: UniqueTimestamp,
         stats: &EntryStatistics,
-        // todo: use wait stats for cumulative per-entry wait times.
+        // `WaitStats` is consumed at the vqueue level (EMAs in
+        // `VQueueStatistics`) via `build_move_metrics`; it is intentionally not
+        // accumulated per-entry to avoid persisting stale blocking signal that
+        // decays in relevance as the system evolves.
         _wait_stats: &WaitStats,
     ) -> EntryStatistics {
         EntryStatistics {
