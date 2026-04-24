@@ -18,7 +18,7 @@ use restate_clock::RoughTimestamp;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{EntryKey, EntryValue, VQueueStore, stats::WaitStats};
 use restate_types::vqueues::VQueueId;
-use restate_worker_api::{ResourceKind, ThrottleScope};
+use restate_worker_api::ResourceKind;
 
 use crate::metric_definitions::{
     VQUEUE_CONCURRENCY_RULES_WAIT_MS, VQUEUE_DEPLOYMENT_CONCURRENCY_WAIT_MS,
@@ -44,19 +44,6 @@ pub(super) enum Pop {
     /// Yielding can place back an item from the run queue to inbox, or from inbox to inbox
     /// but with a different run_at time.
     Yield(YieldAction),
-    // may get used in the future if per-vqueue throttling is implemented through the
-    // same delayed queue of eligibility tracker.
-    //
-    // When this is generated, also call
-    // `head_stats.set_wait(Some(WaitBucket::ThrottlingRules))` (or
-    // `InvokerThrottling`, depending on `scope`) so the throttle wait time is
-    // attributed correctly. The segment is closed lazily on the next `try_pop`.
-    #[allow(dead_code)]
-    Throttle {
-        delay: Duration,
-        /// the reason for throttling
-        scope: ThrottleScope,
-    },
     /// Queue needs to be moved out of the ready ring. The queue will be woken up
     /// by the resource manager.
     Blocked(ResourceKind),
@@ -99,10 +86,8 @@ impl DetailedEligibility {
 /// bucket. The match is exhaustive, so adding a new `ResourceKind` is a compile
 /// error until a bucket is assigned.
 ///
-/// The throttling buckets (`ThrottlingRules`, `InvokerThrottling`)
-/// will be entered when `Pop::Throttle` starts being emitted — that path is not
-/// wired up yet — and exited lazily on the next `try_pop` call (which resolves
-/// to acquire, block, or re-throttle).
+/// The throttling buckets (`ThrottlingRules`, `InvokerThrottling`) are entered
+/// through normal `BlockedOn(ResourceKind)` outcomes.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Enum)]
 #[repr(u8)]
 enum WaitBucket {
@@ -112,9 +97,7 @@ enum WaitBucket {
     InvokerMemory,
     DeploymentConcurrency,
     ThrottlingRules,
-    /// Node-level invoker throttling — entered whenever the item is either
-    /// `BlockedOn(ResourceKind::InvokerThrottling)` or delayed on the global
-    /// "run" token bucket (same underlying concept, observed from two sides).
+    /// Node-level invoker throttling.
     InvokerThrottling,
 }
 
@@ -142,7 +125,7 @@ impl WaitBucket {
             ResourceKind::LimitKeyConcurrency { .. } => WaitBucket::ConcurrencyRules,
             ResourceKind::InvokerConcurrency => WaitBucket::InvokerConcurrency,
             ResourceKind::InvokerMemory => WaitBucket::InvokerMemory,
-            ResourceKind::InvokerThrottling => WaitBucket::InvokerThrottling,
+            ResourceKind::InvokerThrottling { .. } => WaitBucket::InvokerThrottling,
             ResourceKind::DeploymentConcurrency => WaitBucket::DeploymentConcurrency,
         }
     }
