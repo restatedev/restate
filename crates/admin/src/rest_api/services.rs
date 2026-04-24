@@ -22,10 +22,11 @@ use restate_core::network::TransportConnect;
 use restate_errors::warn_it;
 use restate_types::config::Configuration;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
-use restate_types::schema;
 use restate_types::schema::registry::MetadataService;
 use restate_types::schema::service::ServiceMetadata;
 use restate_types::state_mut::ExternalStateMutation;
+use restate_types::{Scope, schema};
+use restate_util_string::RestrictedValue;
 use restate_wal_protocol::{Command, Envelope};
 
 use super::create_envelope_header;
@@ -208,6 +209,7 @@ pub async fn modify_service_state<Metadata, Discovery, Telemetry, Invocations, T
     Json(ModifyServiceStateRequest {
         version,
         object_key,
+        scope,
         new_state,
     }): Json<ModifyServiceStateRequest>,
 ) -> Result<StatusCode, MetaApiError>
@@ -229,8 +231,17 @@ where
         return Err(MetaApiError::ServiceNotFound(service_name));
     }
 
-    // todo(tillrohrmann) allow modify service state to specify scope
-    let service_id = ServiceId::new(None, service_name, object_key);
+    let scope = if let Some(scope) = scope {
+        Some(Scope::new(
+            RestrictedValue::new(scope)
+                .map_err(MetaApiError::BadScope)?
+                .as_str(),
+        ))
+    } else {
+        None
+    };
+
+    let service_id = ServiceId::new(scope, service_name, object_key);
 
     let new_state = new_state
         .into_iter()

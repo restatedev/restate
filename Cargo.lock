@@ -7077,6 +7077,7 @@ dependencies = [
  "restate-storage-query-datafusion",
  "restate-time-util",
  "restate-types",
+ "restate-util-string",
  "restate-wal-protocol",
  "restate-web-ui",
  "restate-workspace-hack",

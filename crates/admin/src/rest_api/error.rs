@@ -16,6 +16,7 @@ use restate_core::ShutdownError;
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use restate_types::invocation::ServiceType;
 use restate_types::schema::registry::SchemaRegistryError;
+use restate_util_string::RestrictedValueError;
 use serde::Serialize;
 use std::ops::RangeInclusive;
 // --- Few helpers to define Admin API errors.
@@ -288,6 +289,8 @@ pub enum MetaApiError {
     Conflict(String),
     #[error("PUT deployment is deprecated, use PATCH instead")]
     DeprecatedPutDeployment,
+    #[error("bad scope: {0}")]
+    BadScope(RestrictedValueError),
 }
 
 /// # Error description response
