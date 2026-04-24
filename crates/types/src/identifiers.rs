@@ -120,7 +120,7 @@ fn deterministic_partition_key(
 /// pick one key out of a bounded, service-specific set.
 ///
 /// This can be configurable in the future and it wouldn't affect correctness if users want to change it.
-const UNSCOPED_SERVICE_PARTITION_KEY_FANOUT: u8 = 8;
+const UNSCOPED_SERVICE_PARTITION_KEY_FANOUT: u8 = 255;
 
 /// Computes one of the deterministic partition keys assigned to an unscoped service.
 ///
