@@ -12,6 +12,8 @@ restate-workspace-hack = { workspace = true }
 
 restate-clock = { workspace = true }
 restate-core = { workspace = true }
+restate-futures-util = { workspace = true }
+restate-invoker-api = { workspace = true }
 restate-limiter = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-types = { workspace = true }

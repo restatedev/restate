@@ -16,7 +16,6 @@ use tracing::debug;
 use ulid::Ulid;
 
 use restate_core::network::ShardSender;
-use restate_invoker_impl::ChannelStatusReader;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
 use restate_types::identifiers::LeaderEpoch;
 use restate_types::net::partition_processor::PartitionLeaderService;
@@ -327,7 +326,6 @@ pub struct StartedProcessor {
     cancellation_token: CancellationToken,
     key_range: KeyRange,
     control_tx: watch::Sender<TargetLeaderState>,
-    status_reader: ChannelStatusReader,
     rpc_shard_tx: ShardSender<PartitionLeaderService>,
     watch_rx: watch::Receiver<PartitionProcessorStatus>,
 }
@@ -337,7 +335,6 @@ impl StartedProcessor {
         cancellation_token: CancellationToken,
         key_range: KeyRange,
         control_tx: watch::Sender<TargetLeaderState>,
-        status_reader: ChannelStatusReader,
         rpc_shard_tx: ShardSender<PartitionLeaderService>,
         watch_rx: watch::Receiver<PartitionProcessorStatus>,
     ) -> Self {
@@ -345,7 +342,6 @@ impl StartedProcessor {
             cancellation_token,
             key_range,
             control_tx,
-            status_reader,
             rpc_shard_tx,
             watch_rx,
         }
@@ -391,11 +387,6 @@ impl StartedProcessor {
     #[inline]
     pub fn key_range(&self) -> KeyRange {
         self.key_range
-    }
-
-    #[inline]
-    pub fn invoker_status_reader(&self) -> &ChannelStatusReader {
-        &self.status_reader
     }
 
     pub fn rpc_shard_sender(&self) -> ShardSender<PartitionLeaderService> {
