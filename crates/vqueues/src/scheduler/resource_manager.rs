@@ -35,7 +35,7 @@ use restate_worker_api::ResourceKind;
 
 use self::invoker::InvokerConcurrencyLimiter;
 use self::invoker_memory::InvokerMemoryLimiter;
-use self::invoker_throttle::InvokerThrottlingLimiter;
+use self::invoker_throttle::{InvokerThrottlingLimiter, ThrottlingAcquire};
 use self::locks::Locks;
 use self::permit::{ProvisionalPermit, UserPermitKind};
 use self::user_limiter::UserLimiter;
@@ -104,7 +104,7 @@ impl ResourceManager {
             ResourceKind::InvokerConcurrency => {
                 self.invoker_concurrency.remove_from_waiters(handle);
             }
-            ResourceKind::InvokerThrottling => {
+            ResourceKind::InvokerThrottling { .. } => {
                 self.invoker_throttling.remove_from_waiters(handle);
             }
             ResourceKind::InvokerMemory => {
@@ -267,12 +267,16 @@ impl ResourceManager {
 
                 // If we have the concurrency permit, let's see if we need to wait for throttling
                 if !current_permit.has_invoker_throttling_token() {
-                    // poll for one or die trying
-                    let Some(throttling_token) = self.invoker_throttling.poll_acquire(cx, vqueue)
-                    else {
-                        return AcquireOutcome::BlockedOn(ResourceKind::InvokerThrottling);
-                    };
-                    current_permit.set_throttling_permit(throttling_token);
+                    match self.invoker_throttling.poll_acquire(cx, vqueue) {
+                        ThrottlingAcquire::Acquired(throttling_token) => {
+                            current_permit.set_throttling_permit(throttling_token);
+                        }
+                        ThrottlingAcquire::Blocked { estimated_retry_at } => {
+                            return AcquireOutcome::BlockedOn(ResourceKind::InvokerThrottling {
+                                estimated_retry_at,
+                            });
+                        }
+                    }
                 }
             }
             EntryKind::StateMutation => {
@@ -317,6 +321,13 @@ impl ResourceManager {
             // still valid.
             tracing::trace!(
                 "waking up vqueue {queue:?} because invoker concurrency permit was acquired"
+            );
+            eligible.wake_up_queue(queue);
+        }
+
+        while let Poll::Ready(Some(queue)) = self.invoker_throttling.poll_head(cx) {
+            tracing::trace!(
+                "waking up vqueue {queue:?} because invoker throttling token became available"
             );
             eligible.wake_up_queue(queue);
         }
