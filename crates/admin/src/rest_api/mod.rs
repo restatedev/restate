@@ -103,7 +103,6 @@ where
             .routes(routes!(handlers::list_service_handlers))
             .routes(routes!(handlers::get_service_handler))
             // Invocation endpoints
-            .routes(routes!(invocations::delete_invocation))
             .routes(routes!(invocations::kill_invocation))
             .routes(routes!(invocations::cancel_invocation))
             .routes(routes!(invocations::purge_invocation))
@@ -135,6 +134,12 @@ where
         .route(
             "/deployments/{deployment}",
             axum::routing::put(deployments::update_deployment),
+        )
+        // Deprecated DELETE invocation
+        .route(
+            "/invocations/{invocation_id}",
+            #[allow(deprecated)]
+            axum::routing::delete(invocations::delete_invocation),
         )
         // Internal batch operation routes (for UI only, not documented in OpenAPI)
         .route(
