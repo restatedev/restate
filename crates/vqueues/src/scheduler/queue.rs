@@ -84,7 +84,6 @@ impl<S: VQueueStore> Queue<S> {
         matches!(self.head, Head::Empty)
     }
 
-    // todo: consider seeking the underlying iterator (or advancing) instead of invalidating it.
     pub fn remove(&mut self, key_to_remove: &EntryKey) -> bool {
         // Can this be the known head?
         // Yes. Perhaps it expired/ended externally.
@@ -135,6 +134,11 @@ impl<S: VQueueStore> Queue<S> {
                     // Ensure that next advance would re-seek to the newly added item
                     self.reader = Reader::Closed;
                     return true;
+                } else {
+                    // This is a temporary fix to ensure that we perform a re-seek
+                    // to fix the issue where the iterator wouldn't see the newly added
+                    // items if the memtable was flushed prior the seek.
+                    self.reader = Reader::Closed;
                 }
             }
         }
