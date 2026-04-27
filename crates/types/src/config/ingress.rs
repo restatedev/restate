@@ -53,6 +53,19 @@ pub struct IngressOptions {
     /// Settings for the ingestion client
     /// Currently only used by the Kafka ingress and the admin API.
     pub ingestion: IngestionOptions,
+
+    /// # Agent audit
+    ///
+    /// When `true`, `x-restate-audit-triggered-by` and `x-restate-audit-conversation-id`
+    /// headers are forwarded to handlers, enabling agent audit context propagation.
+    /// When `false` (default), these headers are stripped at ingress to prevent
+    /// untrusted clients from injecting fake audit context.
+    ///
+    /// See [`restate_types::invocation::audit`] for the well-known header constants.
+    ///
+    /// Since v1.7.0
+    #[serde(default)]
+    pub agent_audit: bool,
 }
 
 impl IngressOptions {
