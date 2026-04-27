@@ -25,19 +25,17 @@ pub use status_handle::{InvocationErrorReport, InvocationStatusReport, StatusHan
 pub mod test_util {
     use super::*;
     use std::convert::Infallible;
-    use std::marker::PhantomData;
 
     use bytes::Bytes;
-    use tokio::sync::mpsc::Sender;
 
     use restate_errors::NotRunningError;
     use restate_futures_util::concurrency::Permit;
     use restate_memory::{
         IgnorePinnableMemoryStream, LocalMemoryLease, LocalMemoryPool, MemoryLease,
     };
-    use restate_types::identifiers::{EntryIndex, InvocationId, PartitionLeaderEpoch, ServiceId};
+    use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId};
     use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
-    use restate_types::sharding::KeyRange;
+    use restate_types::journal_v2::CommandIndex;
     use restate_types::time::MillisSinceEpoch;
     use restate_types::vqueues::VQueueId;
 
@@ -45,7 +43,7 @@ pub mod test_util {
         EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry, JournalKind,
     };
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, Default)]
     pub struct EmptyStorageReader;
 
     impl InvocationReader for EmptyStorageReader {
@@ -139,23 +137,12 @@ pub mod test_util {
         }
     }
 
-    #[derive(Debug)]
-    pub struct MockInvokerHandle<SR> {
-        phantom_data: PhantomData<SR>,
-    }
+    #[derive(Debug, Default)]
+    pub struct MockInvokerHandle;
 
-    impl<SR> Default for MockInvokerHandle<SR> {
-        fn default() -> Self {
-            Self {
-                phantom_data: PhantomData,
-            }
-        }
-    }
-
-    impl<SR: Send> InvokerHandle<SR> for MockInvokerHandle<SR> {
+    impl InvokerHandle for MockInvokerHandle {
         fn invoke(
             &mut self,
-            _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
             _invocation_target: InvocationTarget,
         ) -> Result<(), NotRunningError> {
@@ -164,7 +151,6 @@ pub mod test_util {
 
         fn vqueue_invoke(
             &mut self,
-            _partition: PartitionLeaderEpoch,
             _qid: VQueueId,
             _permit: Permit,
             _invocation_id: InvocationId,
@@ -176,7 +162,6 @@ pub mod test_util {
 
         fn notify_completion(
             &mut self,
-            _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
             _entry_index: EntryIndex,
         ) -> Result<(), NotRunningError> {
@@ -185,7 +170,6 @@ pub mod test_util {
 
         fn notify_notification(
             &mut self,
-            _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
             _entry_index: EntryIndex,
             _notification_id: restate_types::journal_v2::NotificationId,
@@ -195,23 +179,18 @@ pub mod test_util {
 
         fn notify_stored_command_ack(
             &mut self,
-            _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
-            _entry_index: EntryIndex,
+            _command_index: CommandIndex,
         ) -> Result<(), NotRunningError> {
             Ok(())
         }
 
-        fn abort_all_partition(
-            &mut self,
-            _partition: PartitionLeaderEpoch,
-        ) -> Result<(), NotRunningError> {
+        fn abort_all(&mut self) -> Result<(), NotRunningError> {
             Ok(())
         }
 
         fn abort_invocation(
             &mut self,
-            _partition_leader_epoch: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
         ) -> Result<(), NotRunningError> {
             Ok(())
@@ -219,7 +198,6 @@ pub mod test_util {
 
         fn retry_invocation_now(
             &mut self,
-            _partition_leader_epoch: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
         ) -> Result<(), NotRunningError> {
             Ok(())
@@ -227,18 +205,7 @@ pub mod test_util {
 
         fn pause_invocation(
             &mut self,
-            _partition_leader_epoch: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
-        ) -> Result<(), NotRunningError> {
-            Ok(())
-        }
-
-        fn register_partition(
-            &mut self,
-            _partition: PartitionLeaderEpoch,
-            _partition_key_range: KeyRange,
-            _storage_reader: SR,
-            _sender: Sender<Box<Effect>>,
         ) -> Result<(), NotRunningError> {
             Ok(())
         }

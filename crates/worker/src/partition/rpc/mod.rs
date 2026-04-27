@@ -114,19 +114,17 @@ where
     }
 
     fn notify_invoker_to_retry_now(&mut self, invocation_id: InvocationId) {
-        let Some((partition_leader_epoch, invoker_handle)) = LeadershipState::invoker_handle(self)
-        else {
+        let Some(invoker_handle) = LeadershipState::invoker_handle(self) else {
             return;
         };
-        let _ = invoker_handle.retry_invocation_now(partition_leader_epoch, invocation_id);
+        let _ = invoker_handle.retry_invocation_now(invocation_id);
     }
 
     fn notify_invoker_to_pause(&mut self, invocation_id: InvocationId) {
-        let Some((partition_leader_epoch, invoker_handle)) = LeadershipState::invoker_handle(self)
-        else {
+        let Some(invoker_handle) = LeadershipState::invoker_handle(self) else {
             return;
         };
-        let _ = invoker_handle.pause_invocation(partition_leader_epoch, invocation_id);
+        let _ = invoker_handle.pause_invocation(invocation_id);
     }
 
     fn is_leader(&self) -> bool {
