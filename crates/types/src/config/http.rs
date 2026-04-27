@@ -62,6 +62,24 @@ pub struct HttpOptions {
     /// recommended value from HTTP2 specs
     pub initial_max_send_streams: Option<NonZeroU32>,
 
+    /// Upper bound on the per-connection max-send-streams.
+    ///
+    /// Once the HTTP/2 Connection Preface completes, `initial_max_send_streams`
+    /// is replaced by the peer's `max_concurrent_streams` from its SETTINGS
+    /// frame, or by `usize::MAX` if the peer advertises no value.
+    ///
+    /// We then clamp that effective limit to
+    /// `min(peer.max_concurrent_streams, cap_max_send_streams)` so the pool
+    /// keeps opening new connections instead of funneling every request through
+    /// a single one. Without this cap, a single connection can saturate its
+    /// flow-control window and interacts poorly with load balancers, especially
+    /// with end-to-end HTTP/2.
+    ///
+    /// Since v1.7.0
+    ///
+    /// Default: 128
+    pub cap_max_send_streams: NonZeroUsize,
+
     /// # Max HTTP2 Connections
     ///
     /// Sets the maximum number of open HTTP/2 connections per
@@ -87,6 +105,7 @@ impl Default for HttpOptions {
             no_proxy: None,
             connect_timeout: NonZeroFriendlyDuration::from_secs_unchecked(10),
             initial_max_send_streams: None,
+            cap_max_send_streams: NonZeroUsize::new(128).unwrap(),
             max_http2_connections: NonZeroUsize::new(20).unwrap(),
             idle_pool_timeout: Some(NonZeroFriendlyDuration::from_secs_unchecked(300)),
         }
