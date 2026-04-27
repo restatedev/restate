@@ -84,7 +84,6 @@ impl<S: VQueueStore> Queue<S> {
         matches!(self.head, Head::Empty)
     }
 
-    // todo: consider seeking the underlying iterator (or advancing) instead of invalidating it.
     pub fn remove(&mut self, key_to_remove: &EntryKey) -> bool {
         // Can this be the known head?
         // Yes. Perhaps it expired/ended externally.
