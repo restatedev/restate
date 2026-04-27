@@ -1824,7 +1824,8 @@ where
         );
 
         // Transition the state machine, and store it
-        self.status_store.on_start(partition, invocation_id);
+        self.status_store
+            .on_start(partition, invocation_id, ism.invocation_target.clone());
         ism.start(abort_handle, completions_tx);
         trace!(
             restate.invocation.target = %ism.invocation_target,

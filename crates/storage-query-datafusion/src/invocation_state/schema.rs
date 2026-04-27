@@ -21,6 +21,23 @@ define_table!(sys_invocation_state(
     /// [Invocation ID](/operate/invocation#invocation-identifier).
     id: DataType::LargeUtf8,
 
+    /// Invocation Target. Format for plain services: `ServiceName/HandlerName`, e.g.
+    /// `Greeter/greet`. Format for virtual objects/workflows: `VirtualObjectName/Key/HandlerName`,
+    /// e.g. `Greeter/Francesco/greet`.
+    target: DataType::LargeUtf8,
+
+    /// The name of the invoked service.
+    target_service_name: DataType::LargeUtf8,
+
+    /// The key of the virtual object or the workflow ID. Null for regular services.
+    target_service_key: DataType::LargeUtf8,
+
+    /// The invoked handler.
+    target_handler_name: DataType::LargeUtf8,
+
+    /// The service type. Either `service` or `virtual_object` or `workflow`.
+    target_service_ty: DataType::LargeUtf8,
+
     /// If true, the invocation is currently in-flight
     in_flight: DataType::Boolean,
 
