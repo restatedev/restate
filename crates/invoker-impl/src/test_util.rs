@@ -13,8 +13,7 @@ use std::convert::Infallible;
 use bytes::Bytes;
 
 use restate_errors::NotRunningError;
-use restate_futures_util::concurrency::Permit;
-use restate_memory::{IgnorePinnableMemoryStream, LocalMemoryLease, LocalMemoryPool, MemoryLease};
+use restate_memory::{IgnorePinnableMemoryStream, LocalMemoryLease, LocalMemoryPool};
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{EntryIndex, InvocationId, InvocationUuid, ServiceId};
 use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
@@ -29,6 +28,7 @@ use restate_worker_api::invoker::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry, JournalKind,
 };
 use restate_worker_api::invoker::{EntryEnricher, InvokerHandle, JournalMetadata};
+use restate_worker_api::resources::ReservedResources;
 
 #[derive(Debug, Clone, Default)]
 pub struct EmptyStorageReader;
@@ -139,10 +139,9 @@ impl InvokerHandle for MockInvokerHandle {
     fn vqueue_invoke(
         &mut self,
         _qid: VQueueId,
-        _permit: Permit,
+        _permit: ReservedResources,
         _invocation_id: InvocationId,
         _invocation_target: InvocationTarget,
-        _initial_memory_lease: MemoryLease,
     ) -> Result<(), NotRunningError> {
         Ok(())
     }
