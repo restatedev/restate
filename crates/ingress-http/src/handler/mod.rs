@@ -12,6 +12,7 @@ mod awakeables;
 mod error;
 mod health;
 mod invocation;
+mod openapi;
 mod path_parsing;
 mod responses;
 mod service_handler;
@@ -76,10 +77,7 @@ where
         async move {
             match res? {
                 RequestType::Health => this.handle_health(req),
-                RequestType::OpenAPI => {
-                    // TODO
-                    Err(HandlerError::NotImplemented)
-                }
+                RequestType::OpenAPI => this.handle_openapi(req),
                 RequestType::Awakeable(awakeable_request) => {
                     this.handle_awakeable(req, awakeable_request).await
                 }

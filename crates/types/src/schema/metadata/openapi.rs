@@ -41,6 +41,14 @@ impl ServiceOpenAPI {
     ) -> Self {
         let mut schemas_collector = Vec::new();
 
+        // Schema component names are prefixed to be unique across services.
+        // Uses `dev.restate.openapi.prefix` metadata if set, otherwise PascalCase(service_name).
+        let schema_prefix = service_metadata
+            .get(OPENAPI_PREFIX_METADATA_KEY)
+            .filter(|p| !p.is_empty())
+            .cloned()
+            .unwrap_or_else(|| to_pascal_case(service_name));
+
         let root_path = if service_type.is_keyed() {
             format!("/{service_name}/{{key}}/")
         } else {
@@ -66,6 +74,18 @@ impl ServiceOpenAPI {
         for (handler_name, handler_schemas) in handlers {
             let operation_id = handler_name;
             let summary = Some(handler_name.clone());
+            // Schema ID includes a prefix so names are globally unique.
+            // Handler-level metadata overrides the service-level prefix if set.
+            // e.g. service "greeter" + handler "greet" -> "GreeterGreetRequest"
+            // but if handler sets dev.restate.openapi.prefix = "Hello" -> "HelloGreetRequest"
+            let handler_prefix = handler_schemas
+                .metadata
+                .get(OPENAPI_PREFIX_METADATA_KEY)
+                .filter(|p| !p.is_empty());
+            let schema_id = match handler_prefix {
+                Some(prefix) => format!("{prefix}{}", to_pascal_case(handler_name)),
+                None => format!("{schema_prefix}{}", to_pascal_case(handler_name)),
+            };
 
             if !handler_schemas.public.unwrap_or(true) {
                 // We don't generate the OpenAPI route for that.
@@ -73,9 +93,9 @@ impl ServiceOpenAPI {
             }
 
             let request_body =
-                infer_handler_request_body(operation_id, handler_schemas, &mut schemas_collector);
+                infer_handler_request_body(&schema_id, handler_schemas, &mut schemas_collector);
             let response =
-                infer_handler_response(operation_id, handler_schemas, &mut schemas_collector);
+                infer_handler_response(&schema_id, handler_schemas, &mut schemas_collector);
 
             let extensions = if !handler_schemas.metadata.is_empty() {
                 Some(
@@ -312,10 +332,13 @@ impl ServiceOpenAPI {
         }
     }
 
-    /// Returns the OpenAPI contract of this individual service
+    /// Returns the OpenAPI contract of this individual service.
+    /// If the service metadata contains `dev.restate.openapi.prefix`, it is used
+    /// as the `info.title`; otherwise the service name is used.
     pub(super) fn to_openapi_contract(
         &self,
         service_name: &str,
+        service_metadata: &HashMap<String, String>,
         ingress_url: AdvertisedAddress<HttpIngressPort>,
         documentation: Option<&str>,
         revision: ServiceRevision,
@@ -346,11 +369,17 @@ impl ServiceOpenAPI {
             ]),
         };
 
+        let title = service_metadata
+            .get(OPENAPI_PREFIX_METADATA_KEY)
+            .filter(|p| !p.is_empty())
+            .cloned()
+            .unwrap_or_else(|| service_name.to_owned());
+
         serde_json::to_value(
             OpenApi::builder()
                 .info(
                     Info::builder()
-                        .title(service_name.to_owned())
+                        .title(title)
                         .version(revision.to_string())
                         .description(documentation)
                         .extensions(self.extensions.clone())
@@ -366,8 +395,10 @@ impl ServiceOpenAPI {
     }
 }
 
+const OPENAPI_PREFIX_METADATA_KEY: &str = "dev.restate.openapi.prefix";
+
 fn request_schema_name(operation_id: &str) -> String {
-    format!("{operation_id}Request")
+    format!("{}Request", to_pascal_case(operation_id))
 }
 
 fn request_schema_ref(operation_id: &str) -> Ref {
@@ -378,7 +409,7 @@ fn request_schema_ref(operation_id: &str) -> Ref {
 }
 
 fn response_schema_name(operation_id: &str) -> String {
-    format!("{operation_id}Response")
+    format!("{}Response", to_pascal_case(operation_id))
 }
 
 fn response_schema_ref(operation_id: &str) -> Ref {
@@ -386,6 +417,20 @@ fn response_schema_ref(operation_id: &str) -> Ref {
         "#/components/schemas/{}",
         response_schema_name(operation_id)
     ))
+}
+
+/// Convert a string to PascalCase by splitting on `_` and capitalizing each segment.
+/// e.g. `claude_sonnet` -> `ClaudeSonnet`, `greet` -> `Greet`.
+fn to_pascal_case(s: &str) -> String {
+    s.split('_')
+        .map(|segment| {
+            let mut chars = segment.chars();
+            match chars.next() {
+                Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect()
 }
 
 fn infer_handler_request_body(
@@ -433,7 +478,11 @@ fn infer_handler_request_body(
                     schema.0 = Value::Object(Default::default());
                 }
 
-                schemas_collector.push((request_schema_name(operation_id), schema));
+                let schema_name = request_schema_name(operation_id);
+                if let Some(title) = schema.0.get_mut("title") {
+                    *title = Value::String(schema_name.clone());
+                }
+                schemas_collector.push((schema_name, schema));
 
                 Some((
                     content_type.to_string(),
@@ -481,8 +530,12 @@ fn infer_handler_response(
             )
             .build(),
         (Some(schema), OutputContentTypeRule::Set { content_type, .. }) => {
-            let schema = Schema::new(schema.clone());
-            schemas_collector.push((response_schema_name(operation_id), schema));
+            let mut schema = Schema::new(schema.clone());
+            let schema_name = response_schema_name(operation_id);
+            if let Some(title) = schema.0.get_mut("title") {
+                *title = Value::String(schema_name.clone());
+            }
+            schemas_collector.push((schema_name, schema));
 
             Response::builder()
                 .content(
