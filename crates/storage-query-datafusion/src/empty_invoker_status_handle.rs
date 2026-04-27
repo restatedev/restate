@@ -13,7 +13,7 @@ use std::{future, iter};
 
 use restate_invoker_api::{InvocationStatusReport, StatusHandle};
 use restate_types::sharding::KeyRange;
-use restate_worker_api::SchedulerStatusEntry;
+use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
 
 use crate::context::PartitionLeaderStatusHandle;
 
@@ -32,7 +32,7 @@ impl PartitionLeaderStatusHandle for EmptyInvokerStatusHandle {
     type SchedulerStatus = SchedulerStatusEntry;
     type SchedulerStatusIterator = std::iter::Empty<Self::SchedulerStatus>;
 
-    type UserLimitCounter = ();
+    type UserLimitCounter = UserLimitCounterEntry;
     type UserLimitCounterIterator = std::iter::Empty<Self::UserLimitCounter>;
 
     fn read_scheduler_status(

@@ -24,8 +24,10 @@ use tracing::{info, trace, warn};
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::EntryKey;
 use restate_storage_api::vqueue_table::VQueueStore;
+use restate_types::identifiers::PartitionKey;
 use restate_types::vqueues::VQueueId;
 use restate_types::{LockName, Scope};
+use restate_worker_api::UserLimitCounterEntry;
 
 use crate::EventDetails;
 use crate::VQueueEvent;
@@ -403,12 +405,16 @@ impl<S: VQueueStore> DRRScheduler<S> {
     }
 
     pub fn iter_status(&self) -> impl Iterator<Item = (VQueueId, VQueueSchedulerStatus)> {
+        // Resolver shared across every queue's status snapshot in this sweep —
+        // the rule store doesn't change while we hold `&self`.
+        let resolve_rule = |handle| self.resource_manager.resolve_user_rule(handle);
         self.q.iter().map(move |(_handle, qstate)| {
             let status = VQueueSchedulerStatus {
                 wait_stats: qstate.get_head_wait_stats(),
                 remaining_running: qstate.num_remaining_in_running_stage(),
                 waiting_inbox: qstate.num_waiting_inbox(),
-                status: self.eligible.get_status(qstate),
+                status: self.eligible.get_status(qstate, &resolve_rule),
+                head_entry_id: qstate.head_entry_id(),
             };
 
             (qstate.qid.clone(), status)
@@ -424,12 +430,24 @@ impl<S: VQueueStore> DRRScheduler<S> {
             return VQueueSchedulerStatus::default();
         };
 
+        let resolve_rule = |handle| self.resource_manager.resolve_user_rule(handle);
         VQueueSchedulerStatus {
             wait_stats: qstate.get_head_wait_stats(),
             remaining_running: qstate.num_remaining_in_running_stage(),
             waiting_inbox: qstate.num_waiting_inbox(),
-            status: self.eligible.get_status(qstate),
+            status: self.eligible.get_status(qstate, &resolve_rule),
+            head_entry_id: qstate.head_entry_id(),
         }
+    }
+
+    /// Snapshot of every user-limit counter currently tracked by this scheduler's
+    /// resource manager. Stamped with the owning partition's key.
+    pub fn scan_user_limit_counters(
+        &self,
+        partition_key: PartitionKey,
+    ) -> Vec<UserLimitCounterEntry> {
+        self.resource_manager
+            .scan_user_limit_counters(partition_key)
     }
 
     fn wake_up(&mut self) {
@@ -464,7 +482,7 @@ mod tests {
     use restate_types::sharding::KeyRange;
     use restate_types::vqueues::VQueueId;
     use restate_types::vqueues::{EntryId, EntryKind};
-    use restate_worker_api::ResourceKind;
+    use restate_worker_api::BlockedResource;
 
     use crate::cache::VQueuesMetaCache;
     use crate::{GlobalTokenBucket, SchedulingStatus, VQueue, VQueueEvent};
@@ -825,7 +843,7 @@ mod tests {
         );
         assert_eq!(
             scheduler.get_status(&qids[0]).status,
-            SchedulingStatus::BlockedOn(ResourceKind::InvokerConcurrency),
+            SchedulingStatus::BlockedOn(BlockedResource::InvokerConcurrency),
         );
 
         let mut scheduler = pin!(scheduler);
@@ -898,7 +916,7 @@ mod tests {
         let blocked_qid = if running_qid == qid1 { qid2 } else { qid1 };
 
         let blocked_status = scheduler.get_status(&blocked_qid).status;
-        let SchedulingStatus::BlockedOn(ResourceKind::InvokerThrottling { estimated_retry_at }) =
+        let SchedulingStatus::BlockedOn(BlockedResource::InvokerThrottling { estimated_retry_at }) =
             blocked_status
         else {
             panic!("expected invoker throttling blocked status");
@@ -968,7 +986,7 @@ mod tests {
         let mut none_estimate = 0;
 
         for qid in &qids {
-            if let SchedulingStatus::BlockedOn(ResourceKind::InvokerThrottling {
+            if let SchedulingStatus::BlockedOn(BlockedResource::InvokerThrottling {
                 estimated_retry_at,
             }) = scheduler.get_status(qid).status
             {
@@ -1115,7 +1133,7 @@ mod tests {
         let status = scheduler.get_status(&qid1);
         assert_eq!(
             status.status,
-            SchedulingStatus::BlockedOn(ResourceKind::InvokerConcurrency)
+            SchedulingStatus::BlockedOn(BlockedResource::InvokerConcurrency)
         );
         assert_eq!(status.waiting_inbox, 1);
         assert_eq!(status.remaining_running, 0);

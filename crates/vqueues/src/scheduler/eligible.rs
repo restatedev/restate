@@ -15,9 +15,11 @@ use slotmap::secondary::Entry;
 use slotmap::{SecondaryMap, SlotMap};
 use tokio_util::time::{DelayQueue, delay_queue};
 
+use restate_limiter::RuleHandle;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::VQueueStore;
 use restate_types::time::MillisSinceEpoch;
+use restate_util_string::ReString;
 use restate_worker_api::{ResourceKind, SchedulingStatus};
 
 use super::VQueueHandle;
@@ -69,7 +71,11 @@ impl EligibilityTracker {
         self.ready_ring.push_back(handle);
     }
 
-    pub fn get_status<S: VQueueStore>(&self, qstate: &VQueueState<S>) -> SchedulingStatus {
+    pub fn get_status<S, R>(&self, qstate: &VQueueState<S>, resolve_rule: &R) -> SchedulingStatus
+    where
+        S: VQueueStore,
+        R: Fn(RuleHandle) -> Option<ReString>,
+    {
         match self.states.get(qstate.handle) {
             None | Some(State::NeedsPoll) | Some(State::Ready) => {
                 super::status_from_detailed_eligibility(qstate.check_eligibility())
@@ -77,7 +83,11 @@ impl EligibilityTracker {
             Some(State::Scheduled { wake_up }) => SchedulingStatus::Scheduled {
                 at: wake_up.ts.into(),
             },
-            Some(State::BlockedOn(resource)) => SchedulingStatus::BlockedOn(resource.clone()),
+            Some(State::BlockedOn(resource)) => {
+                // Resolve the rule handle to a pattern string once, at status-
+                // construction time, so external consumers don't need the store.
+                SchedulingStatus::BlockedOn(resource.to_blocked_resource(resolve_rule))
+            }
         }
     }
 

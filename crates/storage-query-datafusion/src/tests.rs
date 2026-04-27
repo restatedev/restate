@@ -8,12 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::future::Future;
 use std::time::{Duration, SystemTime};
 
+use crate::context::PartitionLeaderStatusHandle;
 use crate::mocks::*;
 use crate::row;
 use datafusion::arrow::array::{
-    ArrayRef, LargeStringArray, ListArray, TimestampMillisecondArray, UInt32Array, UInt64Array,
+    ArrayRef, DurationMillisecondArray, LargeStringArray, ListArray, StringArray,
+    TimestampMillisecondArray, UInt32Array, UInt64Array,
 };
 use datafusion::arrow::record_batch::RecordBatch;
 use futures::StreamExt;
@@ -21,20 +24,151 @@ use googletest::prelude::{all, assert_that, eq};
 use googletest::unordered_elements_are;
 use restate_invoker_api::status_handle::InvocationStatusReportInner;
 use restate_invoker_api::status_handle::test_util::MockStatusHandle;
-use restate_invoker_api::{InvocationErrorReport, InvocationStatusReport};
+use restate_invoker_api::{InvocationErrorReport, InvocationStatusReport, StatusHandle};
+use restate_limiter::{Level, LimitKey};
 use restate_storage_api::Transaction;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InvocationStatus, WriteInvocationStatusTable,
 };
+use restate_storage_api::vqueue_table::stats::WaitStats;
+use restate_types::Scope;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::PartitionId;
-use restate_types::identifiers::{DeploymentId, InvocationId};
+use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey};
 use restate_types::identifiers::{InvocationUuid, LeaderEpoch};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::EntryType;
 use restate_types::journal_v2::NotificationId;
 use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_types::sharding::KeyRange;
+use restate_types::vqueues::EntryId;
+use restate_types::vqueues::VQueueId;
+use restate_util_string::{ReString, RestrictedValue};
+use restate_worker_api::{
+    BlockedResource, SchedulerStatusEntry, SchedulingStatus, UserLimitCounterEntry,
+    VQueueSchedulerStatus,
+};
+
+#[derive(Clone, Debug)]
+struct MockPartitionLeaderStatusHandle {
+    scheduler_statuses: Vec<SchedulerStatusEntry>,
+}
+
+impl StatusHandle for MockPartitionLeaderStatusHandle {
+    type Iterator = std::iter::Empty<InvocationStatusReport>;
+
+    fn read_status(&self, _keys: KeyRange) -> impl Future<Output = Self::Iterator> + Send {
+        std::future::ready(std::iter::empty())
+    }
+}
+
+impl PartitionLeaderStatusHandle for MockPartitionLeaderStatusHandle {
+    type SchedulerStatus = SchedulerStatusEntry;
+    type SchedulerStatusIterator = std::vec::IntoIter<Self::SchedulerStatus>;
+
+    type UserLimitCounter = UserLimitCounterEntry;
+    type UserLimitCounterIterator = std::iter::Empty<Self::UserLimitCounter>;
+
+    fn read_scheduler_status(
+        &self,
+        _keys: KeyRange,
+    ) -> impl Future<Output = Self::SchedulerStatusIterator> + Send {
+        std::future::ready(self.scheduler_statuses.clone().into_iter())
+    }
+
+    fn read_user_limit_counters(
+        &self,
+        _keys: KeyRange,
+    ) -> impl Future<Output = Self::UserLimitCounterIterator> + Send {
+        std::future::ready(std::iter::empty())
+    }
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_sys_scheduler() {
+    let qid = VQueueId::custom(PartitionKey::MIN, "scheduler-row");
+    let head_invocation_id = InvocationId::mock_random();
+    let head_entry_id = EntryId::from(head_invocation_id);
+    let expected_head_entry_display = head_entry_id.display(qid.partition_key()).to_string();
+
+    // A BlockedOn(LimitKeyConcurrency) row exercises both the resolved rule
+    // pattern (feedback #2) and the structured Display impl (feedback #1).
+    let scope = Scope::from_static("svc-A");
+    let tenant = RestrictedValue::<ReString>::new(ReString::new_owned("tenant-1")).unwrap();
+    let limit_key = LimitKey::L1(tenant);
+    let blocked_resource = BlockedResource::LimitKeyConcurrency {
+        scope,
+        limit_key,
+        blocked_level: Level::Level1,
+        blocked_rule: Some(ReString::new_owned("svc-A/tenant-*")),
+    };
+    let expected_blocked_display = blocked_resource.to_string();
+
+    let engine = MockQueryEngine::create_with(
+        MockPartitionLeaderStatusHandle {
+            scheduler_statuses: vec![(
+                qid.clone(),
+                VQueueSchedulerStatus {
+                    wait_stats: WaitStats {
+                        blocked_on_invoker_concurrency_ms: 15,
+                        blocked_on_throttling_rules_ms: 20,
+                        blocked_on_invoker_throttling_ms: 25,
+                        blocked_on_invoker_memory_ms: 30,
+                        blocked_on_concurrency_rules_ms: 35,
+                        blocked_on_lock_ms: 40,
+                        blocked_on_deployment_concurrency_ms: 45,
+                    },
+                    remaining_running: 3,
+                    waiting_inbox: 7,
+                    status: SchedulingStatus::BlockedOn(blocked_resource),
+                    head_entry_id: Some(head_entry_id),
+                },
+            )],
+        },
+        MockSchemas::default(),
+    )
+    .await;
+
+    let records = engine
+        .execute(
+            "SELECT
+                id,
+                status,
+                head_entry_id,
+                num_inbox,
+                blocked_on,
+                invoker_concurrency_block_duration,
+                concurrency_rules_block_duration,
+                deployment_concurrency_block_duration
+            FROM sys_scheduler
+            LIMIT 1",
+        )
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_that!(
+        records,
+        all!(row!(
+            0,
+            {
+                "id" => StringArray: eq(qid.to_string()),
+                "status" => StringArray: eq("blocked"),
+                "head_entry_id" => StringArray: eq(expected_head_entry_display),
+                "num_inbox" => UInt64Array: eq(7),
+                "blocked_on" => StringArray: eq(expected_blocked_display),
+                "invoker_concurrency_block_duration" => DurationMillisecondArray: eq(15),
+                "concurrency_rules_block_duration" => DurationMillisecondArray: eq(35),
+                "deployment_concurrency_block_duration" => DurationMillisecondArray: eq(45),
+            }
+        ))
+    );
+}
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn query_sys_invocation() {

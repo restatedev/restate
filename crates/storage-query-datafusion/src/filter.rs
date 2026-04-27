@@ -24,7 +24,9 @@ use datafusion::physical_plan::expressions::{BinaryExpr, Column, InListExpr, Lit
 
 use restate_types::PartitionedResourceId;
 use restate_types::identifiers::partitioner::HashPartitioner;
-use restate_types::identifiers::{InvocationId, PartitionKey, ResourceId, WithPartitionKey};
+use restate_types::identifiers::{
+    InvocationId, PartitionKey, ResourceId, StateMutationId, WithPartitionKey,
+};
 use restate_types::sharding::KeyRange;
 
 use crate::partition_store_scanner::ScanLocalPartitionFilter;
@@ -104,6 +106,26 @@ impl FirstMatchingPartitionKeyExtractor {
                 .context("unexpected null invocation id")?;
             let invocation_id = InvocationId::from_str(value).context("non valid invocation id")?;
             Ok(invocation_id.partition_key())
+        });
+        self.append(e)
+    }
+
+    pub fn with_vqueue_entry_id(self, column_name: impl Into<String>) -> Self {
+        let e = MatchingColumnExtractor::new(column_name, |value: &ScalarValue| {
+            let value = value
+                .try_as_str()
+                .context("expected string entry id")?
+                .context("unexpected null entry id")?;
+
+            if let Ok(invocation_id) = InvocationId::from_str(value) {
+                return Ok(invocation_id.partition_key());
+            }
+
+            if let Ok(state_mutation_id) = StateMutationId::from_str(value) {
+                return Ok(WithPartitionKey::partition_key(&state_mutation_id));
+            }
+
+            anyhow::bail!("non valid entry id")
         });
         self.append(e)
     }
@@ -325,7 +347,7 @@ mod tests {
     use datafusion::physical_plan::PhysicalExpr;
     use datafusion::physical_plan::expressions::{BinaryExpr, Column, InListExpr, Literal};
 
-    use restate_types::identifiers::{InvocationId, ServiceId, WithPartitionKey};
+    use restate_types::identifiers::{InvocationId, ServiceId, StateMutationId, WithPartitionKey};
     use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType};
     use restate_types::sharding::KeyRange;
 
@@ -549,6 +571,46 @@ mod tests {
         let mut got_keys = got_keys.into_iter();
         assert_eq!(expected_key_1, got_keys.next().unwrap());
         assert_eq!(expected_key_2, got_keys.next().unwrap());
+    }
+
+    #[test]
+    fn test_vqueue_entry_id_invocation_id() {
+        let extractor =
+            FirstMatchingPartitionKeyExtractor::default().with_vqueue_entry_id("head_entry_id");
+
+        let invocation_id = make_invocation_id("key-2");
+        let expected_key = invocation_id.partition_key();
+
+        let got_keys = extractor
+            .try_extract(&[eq(
+                col("head_entry_id"),
+                utf8_lit(invocation_id.to_string()),
+            )])
+            .expect("extract")
+            .expect("to find a value");
+
+        assert_eq!(1, got_keys.len());
+        assert_eq!(expected_key, got_keys.into_iter().next().unwrap());
+    }
+
+    #[test]
+    fn test_vqueue_entry_id_state_mutation_id() {
+        let extractor =
+            FirstMatchingPartitionKeyExtractor::default().with_vqueue_entry_id("head_entry_id");
+
+        let state_mutation_id = StateMutationId::generate(42);
+        let expected_key = state_mutation_id.partition_key();
+
+        let got_keys = extractor
+            .try_extract(&[eq(
+                col("head_entry_id"),
+                utf8_lit(state_mutation_id.to_string()),
+            )])
+            .expect("extract")
+            .expect("to find a value");
+
+        assert_eq!(1, got_keys.len());
+        assert_eq!(expected_key, got_keys.into_iter().next().unwrap());
     }
 
     #[test]
