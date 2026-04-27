@@ -178,9 +178,6 @@ impl<S: VQueueStore> DRRScheduler<S> {
                     // necessary schedules when we poll the queue again.
                     this.eligible.front_needs_poll();
                 }
-                Pop::Throttle { delay, scope } => {
-                    this.eligible.front_throttled(delay, scope);
-                }
                 Pop::Blocked(resource) => {
                     trace!("VQueue {:?} is blocked on {resource:?}", qstate.qid);
                     this.eligible.front_blocked(resource);
@@ -206,6 +203,15 @@ impl<S: VQueueStore> DRRScheduler<S> {
 
     fn mark_vqueue_as_dormant(&mut self, qid: &VQueueId, handle: VQueueHandle) {
         trace!("VQueue {qid} is no longer observed by the scheduler");
+
+        // A dormant queue can still sit in a resource wait-list (for example invoker
+        // throttling). Remove it first to avoid leaving a stale head that can block
+        // progress for waiters behind it.
+        if let Some(blocked_resource) = self.eligible.find_blocking_resource(handle).cloned() {
+            self.resource_manager
+                .remove_vqueue(handle, &blocked_resource);
+        }
+
         self.id_lookup.remove(qid);
         self.q.remove(handle);
         self.eligible.remove(handle);
@@ -433,7 +439,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
 
 #[cfg(test)]
 mod tests {
-    use std::num::{NonZeroU16, NonZeroUsize};
+    use std::num::{NonZeroU16, NonZeroU32, NonZeroUsize};
     use std::pin::pin;
     use std::task::Poll;
 
@@ -461,7 +467,7 @@ mod tests {
     use restate_worker_api::ResourceKind;
 
     use crate::cache::VQueuesMetaCache;
-    use crate::{SchedulingStatus, VQueue, VQueueEvent};
+    use crate::{GlobalTokenBucket, SchedulingStatus, VQueue, VQueueEvent};
 
     use super::*;
 
@@ -574,19 +580,27 @@ mod tests {
         vqueue.run_entry(at, &header, &WaitStats::default())
     }
 
-    async fn create_resource_manager(
+    async fn create_resource_manager_with_throttling(
         db: &PartitionDb,
         concurrency: Concurrency,
+        global_throttling: Option<GlobalTokenBucket>,
     ) -> ResourceManager {
         ResourceManager::create(
             db.clone(),
             concurrency,
-            None,
+            global_throttling,
             MemoryPool::unlimited(),
             NonZeroByteCount::new(NonZeroUsize::MIN),
         )
         .await
         .expect("resource manager creation should succeed")
+    }
+
+    async fn create_resource_manager(
+        db: &PartitionDb,
+        concurrency: Concurrency,
+    ) -> ResourceManager {
+        create_resource_manager_with_throttling(db, concurrency, None).await
     }
 
     async fn create_scheduler(
@@ -834,6 +848,140 @@ mod tests {
             SchedulingStatus::Dormant,
         );
         assert_eq!(scheduler.get_status(&qid2).status, SchedulingStatus::Empty,);
+    }
+
+    #[restate_core::test]
+    async fn test_get_status_reports_invoker_throttling_retry_estimate() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty();
+        let qid1 = test_qid(21_101);
+        let qid2 = test_qid(21_102);
+
+        let mut txn = rocksdb.transaction();
+        enqueue_entry(&mut txn, &mut cache, &qid1, 1, 0, None).await;
+        enqueue_entry(&mut txn, &mut cache, &qid2, 2, 0, None).await;
+        txn.commit().await.expect("commit should succeed");
+
+        let throttling_bucket = GlobalTokenBucket::new(
+            gardal::Limit::per_second_and_burst(
+                NonZeroU32::new(1).unwrap(),
+                NonZeroU32::new(1).unwrap(),
+            ),
+            gardal::TokioClock,
+        );
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = DRRScheduler::new(
+            NonZeroU16::new(100).unwrap(),
+            NonZeroU16::new(100).unwrap(),
+            create_resource_manager_with_throttling(
+                db,
+                Concurrency::new_unlimited(),
+                Some(throttling_bucket),
+            )
+            .await,
+            db.clone(),
+            cache.view(),
+        );
+
+        let Poll::Ready(Ok(decision)) = poll_scheduler(pin!(&mut scheduler)) else {
+            panic!("expected decision");
+        };
+        assert_eq!(decision.num_run(), 1);
+
+        let running_qid = decision
+            .qids
+            .keys()
+            .next()
+            .cloned()
+            .expect("a single queue should be scheduled");
+        let blocked_qid = if running_qid == qid1 { qid2 } else { qid1 };
+
+        let blocked_status = scheduler.get_status(&blocked_qid).status;
+        let SchedulingStatus::BlockedOn(ResourceKind::InvokerThrottling { estimated_retry_at }) =
+            blocked_status
+        else {
+            panic!("expected invoker throttling blocked status");
+        };
+        assert!(estimated_retry_at.is_some());
+
+        assert_eq!(
+            scheduler.get_status(&running_qid).status,
+            SchedulingStatus::Empty
+        );
+    }
+
+    #[restate_core::test]
+    async fn test_waiters_outside_throttling_window_report_no_estimate() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty();
+
+        let qids = [
+            test_qid(22_001),
+            test_qid(22_002),
+            test_qid(22_003),
+            test_qid(22_004),
+            test_qid(22_005),
+        ];
+
+        let mut txn = rocksdb.transaction();
+        for (idx, qid) in qids.iter().enumerate() {
+            enqueue_entry(
+                &mut txn,
+                &mut cache,
+                qid,
+                u8::try_from(idx + 1).unwrap(),
+                0,
+                None,
+            )
+            .await;
+        }
+        txn.commit().await.expect("commit should succeed");
+
+        let throttling_bucket = GlobalTokenBucket::new(
+            gardal::Limit::per_second_and_burst(
+                NonZeroU32::new(1).unwrap(),
+                NonZeroU32::new(2).unwrap(),
+            ),
+            gardal::TokioClock,
+        );
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = DRRScheduler::new(
+            NonZeroU16::new(100).unwrap(),
+            NonZeroU16::new(100).unwrap(),
+            create_resource_manager_with_throttling(
+                db,
+                Concurrency::new_unlimited(),
+                Some(throttling_bucket),
+            )
+            .await,
+            db.clone(),
+            cache.view(),
+        );
+
+        let Poll::Ready(Ok(_decision)) = poll_scheduler(pin!(&mut scheduler)) else {
+            panic!("expected decision");
+        };
+
+        let mut some_estimate = 0;
+        let mut none_estimate = 0;
+
+        for qid in &qids {
+            if let SchedulingStatus::BlockedOn(ResourceKind::InvokerThrottling {
+                estimated_retry_at,
+            }) = scheduler.get_status(qid).status
+            {
+                if estimated_retry_at.is_some() {
+                    some_estimate += 1;
+                } else {
+                    none_estimate += 1;
+                }
+            }
+        }
+
+        assert!(some_estimate >= 1);
+        assert!(none_estimate >= 1);
     }
 
     #[restate_core::test]
