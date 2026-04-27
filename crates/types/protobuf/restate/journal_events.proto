@@ -48,3 +48,7 @@ message TransientErrorEvent {
 message PausedEvent {
   TransientErrorEvent last_failure = 1;
 }
+
+message KilledEvent {
+  TransientErrorEvent last_failure = 1;
+}

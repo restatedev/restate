@@ -77,6 +77,7 @@ fn decode(ty: EventType, value: Bytes) -> Result<Event, EventDecodingError> {
             pb::TransientErrorEvent::decode(value)?.try_into()?,
         )),
         EventType::Paused => Ok(Event::Paused(pb::PausedEvent::decode(value)?.try_into()?)),
+        EventType::Killed => Ok(Event::Killed(pb::KilledEvent::decode(value)?.try_into()?)),
         EventType::Unknown => Ok(Event::Unknown),
     }
 }
@@ -90,6 +91,10 @@ fn encode(event: Event) -> RawEvent {
         Event::Paused(e) => RawEvent::new(
             EventType::Paused,
             pb::PausedEvent::from(e).encode_to_vec().into(),
+        ),
+        Event::Killed(e) => RawEvent::new(
+            EventType::Killed,
+            pb::KilledEvent::from(e).encode_to_vec().into(),
         ),
         Event::Unknown => RawEvent::unknown(),
     }
@@ -229,6 +234,24 @@ mod pb {
 
         fn try_from(PausedEvent { last_failure }: PausedEvent) -> Result<Self, Self::Error> {
             Ok(event::PausedEvent {
+                last_failure: last_failure.map(|f| f.try_into()).transpose()?,
+            })
+        }
+    }
+
+    impl From<event::KilledEvent> for KilledEvent {
+        fn from(event::KilledEvent { last_failure }: event::KilledEvent) -> Self {
+            KilledEvent {
+                last_failure: last_failure.map(Into::into),
+            }
+        }
+    }
+
+    impl TryFrom<KilledEvent> for event::KilledEvent {
+        type Error = anyhow::Error;
+
+        fn try_from(KilledEvent { last_failure }: KilledEvent) -> Result<Self, Self::Error> {
+            Ok(event::KilledEvent {
                 last_failure: last_failure.map(|f| f.try_into()).transpose()?,
             })
         }

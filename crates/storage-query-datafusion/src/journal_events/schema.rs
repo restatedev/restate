@@ -27,7 +27,7 @@ define_table!(sys_journal_events (
     /// When the entry was appended to the journal.
     appended_at: TimestampMillisecond,
 
-    /// The event type.
+    /// The event type. Possible values: `TransientError`, `Paused`, `Killed`.
     event_type: DataType::LargeUtf8,
 
     /// The event serialized as a JSON string.

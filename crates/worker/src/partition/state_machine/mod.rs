@@ -43,7 +43,7 @@ use restate_storage_api::invocation_status_table::{
     WriteInvocationStatusTable,
 };
 use restate_storage_api::invocation_status_table::{InvocationStatus, ScheduledInvocation};
-use restate_storage_api::journal_events::WriteJournalEventsTable;
+use restate_storage_api::journal_events::{EventView, WriteJournalEventsTable};
 use restate_storage_api::journal_table::ReadJournalTable;
 use restate_storage_api::journal_table::{JournalEntry, WriteJournalTable};
 use restate_storage_api::lock_table::WriteLockTable;
@@ -95,6 +95,8 @@ use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader,
 };
 use restate_types::journal::raw::{EntryHeader, RawEntryCodec, RawEntryCodecError};
+use restate_types::journal_events::raw::RawEvent;
+use restate_types::journal_events::{Event, KilledEvent};
 use restate_types::journal_v2::command::{OutputCommand, OutputResult};
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::journal_v2::{
@@ -2035,6 +2037,12 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteLockTable
             + WriteJournalEventsTable,
     {
+        let after_journal_entry_index = metadata
+            .journal_metadata
+            .length
+            .checked_sub(1)
+            .unwrap_or_default();
+
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
 
@@ -2044,6 +2052,18 @@ impl<S> StateMachineApplyContext<'_, S> {
             Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
         )
         .await?;
+
+        // Write after end_invocation so journal cleanup (do_drop_journal) doesn't delete it
+        self.storage.put_journal_event(
+            invocation_id,
+            EventView {
+                append_time: self.record_created_at,
+                after_journal_entry_index,
+                event: RawEvent::from(Event::Killed(KilledEvent { last_failure: None })),
+            },
+            self.record_lsn.as_u64(),
+        )?;
+
         self.do_send_abort_invocation_to_invoker(invocation_id);
         Ok(())
     }
@@ -2072,6 +2092,12 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteLockTable
             + WriteJournalEventsTable,
     {
+        let after_journal_entry_index = metadata
+            .journal_metadata
+            .length
+            .checked_sub(1)
+            .unwrap_or_default();
+
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
 
@@ -2081,6 +2107,18 @@ impl<S> StateMachineApplyContext<'_, S> {
             Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
         )
         .await?;
+
+        // Write after end_invocation so journal cleanup (do_drop_journal) doesn't delete it
+        self.storage.put_journal_event(
+            invocation_id,
+            EventView {
+                append_time: self.record_created_at,
+                after_journal_entry_index,
+                event: RawEvent::from(Event::Killed(KilledEvent { last_failure: None })),
+            },
+            self.record_lsn.as_u64(),
+        )?;
+
         self.do_send_abort_invocation_to_invoker(invocation_id);
         Ok(())
     }
@@ -2626,6 +2664,32 @@ impl<S> StateMachineApplyContext<'_, S> {
                     Some(ResponseResult::Failure(e)),
                 )
                 .await?;
+            }
+            InvokerEffectKind::KilledAfterMaxAttempts { killed_event } => {
+                let metadata = invocation_status
+                    .into_invocation_metadata()
+                    .expect("Must be present if status is invoked");
+                let after_journal_entry_index = metadata
+                    .journal_metadata
+                    .length
+                    .checked_sub(1)
+                    .unwrap_or_default();
+                self.end_invocation(
+                    effect.invocation_id,
+                    metadata,
+                    Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
+                )
+                .await?;
+                // Write after end_invocation so journal cleanup (do_drop_journal) doesn't delete it
+                self.storage.put_journal_event(
+                    effect.invocation_id,
+                    EventView {
+                        append_time: self.record_created_at,
+                        after_journal_entry_index,
+                        event: killed_event,
+                    },
+                    self.record_lsn.as_u64(),
+                )?;
             }
             InvokerEffectKind::Yield(ref reason) => {
                 let invocation_metadata = invocation_status

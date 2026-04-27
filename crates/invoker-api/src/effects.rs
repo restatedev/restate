@@ -84,6 +84,12 @@ pub enum EffectKind {
     End,
     /// This is sent when the invoker exhausted all its attempts to make progress on the specific invocation.
     Failed(InvocationError),
+    /// This is sent when the invoker exhausted all its retry attempts and the on_max_attempts policy is Kill.
+    /// Unlike [`Self::Failed`], this carries the last error as a killed journal event so the UI can
+    /// distinguish a kill-after-max-retries from a plain failure.
+    KilledAfterMaxAttempts {
+        killed_event: RawEvent,
+    },
     // New journal entry v2 which only carries the raw entry.
     // Introduced in v1.6.0
     // Start writing in v1.7.0
