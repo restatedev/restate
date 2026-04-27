@@ -29,17 +29,12 @@ use restate_core::network::{Oneshot, Reciprocal, TransportConnect};
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskKind, my_node_id};
 use restate_errors::NotRunningError;
 use restate_ingestion_client::IngestionClient;
-
-use restate_invoker_api::InvokerHandle;
-use restate_invoker_api::capacity::InvokerCapacity;
 use restate_invoker_impl::{
     InvokerHandle as InvokerChannelServiceHandle, Service as InvokerService,
 };
 use restate_partition_store::PartitionStore;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::StorageError;
-use restate_vqueues::scheduler::{self};
-
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
 use restate_storage_api::fsm_table::ReadFsmTable;
 use restate_storage_api::invocation_status_table::{
@@ -68,10 +63,13 @@ use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use restate_types::{
     GenerationalNodeId, RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, SemanticRestateVersion,
 };
+use restate_vqueues::scheduler::{self};
 use restate_vqueues::{ResourceManager, SchedulerService, VQueuesMetaCache};
 use restate_wal_protocol::control::{AnnounceLeader, PartitionDurability, VersionBarrier};
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::{Command, Envelope};
+use restate_worker_api::invoker::capacity::InvokerCapacity;
+use restate_worker_api::invoker::{Effect, InvokerHandle};
 use restate_worker_api::{
     LeaderQueryCommand, LeaderQueryRequest, LeaderQueryResponse, LeaderQuerySender,
 };
@@ -146,7 +144,7 @@ pub(crate) enum TaskTermination {
 #[derive(Debug)]
 pub(crate) enum ActionEffect {
     Scheduler(scheduler::Decisions),
-    Invoker(Box<restate_invoker_api::Effect>),
+    Invoker(Box<Effect>),
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerKeyValue),
     Cleaner(cleaner::CleanerEffect),
@@ -855,7 +853,6 @@ mod tests {
     use restate_core::partitions::PartitionRouting;
     use restate_core::{TaskCenter, TestCoreEnv};
     use restate_ingestion_client::IngestionClient;
-    use restate_invoker_api::capacity::InvokerCapacity;
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
@@ -868,6 +865,7 @@ mod tests {
     use restate_vqueues::VQueuesMetaCache;
     use restate_wal_protocol::Command;
     use restate_wal_protocol::Envelope;
+    use restate_worker_api::invoker::capacity::InvokerCapacity;
     use std::num::NonZeroUsize;
     use std::sync::Arc;
     use test_log::test;

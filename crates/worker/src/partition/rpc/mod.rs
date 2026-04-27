@@ -20,9 +20,10 @@ mod purge_journal;
 mod restart_as_new_invocation;
 mod resume_invocation;
 
-use crate::partition::leadership::LeadershipState;
+use std::marker::PhantomData;
+use std::sync::Arc;
+
 use restate_core::network::{Oneshot, Reciprocal, TransportConnect};
-use restate_invoker_api::InvokerHandle;
 use restate_storage_api::idempotency_table::ReadOnlyIdempotencyTable;
 use restate_storage_api::invocation_status_table::ReadInvocationStatusTable;
 use restate_storage_api::journal_table as journal_table_v1;
@@ -38,8 +39,9 @@ use restate_types::net::partition_processor::{
 };
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_wal_protocol::Command;
-use std::marker::PhantomData;
-use std::sync::Arc;
+use restate_worker_api::invoker::InvokerHandle;
+
+use crate::partition::leadership::LeadershipState;
 
 #[cfg_attr(test, mockall::automock)]
 pub(super) trait Actuator {

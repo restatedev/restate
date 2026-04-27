@@ -30,7 +30,6 @@ restate-futures-util = { workspace = true }
 restate-ingestion-client = { workspace = true }
 restate-ingress-http = { workspace = true }
 restate-ingress-kafka = { workspace = true }
-restate-invoker-api = { workspace = true }
 restate-invoker-impl = { workspace = true }
 restate-limiter = { workspace = true }
 restate-memory = { workspace = true }
@@ -80,7 +79,6 @@ ulid = { workspace = true }
 [dev-dependencies]
 restate-bifrost = { workspace = true, features = ["test-util"] }
 restate-core = { workspace = true, features = ["test-util"] }
-restate-invoker-api = { workspace = true, features = ["test-util"] }
 restate-rocksdb = { workspace = true, features = ["test-util"] }
 restate-service-protocol = { workspace = true, features = ["test-util"] }
 restate-storage-api = { workspace = true, features = ["test-util"] }

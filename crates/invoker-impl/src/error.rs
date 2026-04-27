@@ -15,10 +15,8 @@ use std::ops::RangeInclusive;
 use std::time::Duration;
 
 use http::{HeaderName, HeaderValue};
-use restate_util_string::RestrictedValueError;
 use tokio::task::JoinError;
 
-use restate_invoker_api::{InvocationErrorReport, InvocationReaderError};
 use restate_memory::OutOfMemoryKind;
 use restate_serde_util::NonZeroByteCount;
 use restate_service_client::ServiceClientError;
@@ -34,6 +32,8 @@ use restate_types::service_protocol::{
     MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION, MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION,
     ServiceProtocolVersion,
 };
+use restate_util_string::RestrictedValueError;
+use restate_worker_api::invoker::{InvocationErrorReport, InvocationReaderError};
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 pub(crate) enum InvokerError {

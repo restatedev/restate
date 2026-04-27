@@ -47,9 +47,6 @@ use restate_core::{
 };
 use restate_core::{RuntimeTaskHandle, TaskCenter};
 use restate_ingestion_client::IngestionClient;
-use restate_invoker_api::capacity::InvokerCapacity;
-use restate_worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
-
 use restate_metadata_server::{MetadataStoreClient, ReadModifyWriteError};
 use restate_metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};
 use restate_partition_store::PartitionStoreManager;
@@ -83,6 +80,8 @@ use restate_types::protobuf::common::WorkerStatus;
 use restate_types::retries::with_jitter;
 use restate_types::{GenerationalNodeId, SharedString};
 use restate_wal_protocol::Envelope;
+use restate_worker_api::invoker::capacity::InvokerCapacity;
+use restate_worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 
 use crate::metric_definitions::{
     ERROR_STOP, FLARE_REASON_SNAPSHOT_UNAVAILABLE, GAP_STOP, PARTITION_BLOCKED_FLARE,

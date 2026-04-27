@@ -20,10 +20,10 @@ use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::{PhysicalExpr, SendableRecordBatchStream};
 use tokio::sync::mpsc::Sender;
 
-use restate_invoker_api::{InvocationStatusReport, StatusHandle};
 use restate_partition_store::PartitionStoreManager;
 use restate_types::identifiers::PartitionId;
 use restate_types::sharding::KeyRange;
+use restate_worker_api::invoker::{InvocationStatusReport, StatusHandle};
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::filter::FirstMatchingPartitionKeyExtractor;
