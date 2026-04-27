@@ -4,13 +4,12 @@ export RESTATE_TEST_PORTS_POOL := "/tmp/restate_tests_ports_pool"
 
 dev_tools_image := "ghcr.io/restatedev/dev-tools:latest"
 
-# Docker image name. The tag is computed at recipe-execution time via the
-# `_docker-tag` recipe below rather than as a top-level `:=` assignment, because
-# just evaluates all top-level backticks eagerly on every invocation — including
-# `just chef-prepare`/`chef-cook`/`build`/... called inside the docker build. In
-# a git worktree, `.git` is a pointer file with an absolute host path, so running
-# `git rev-parse` inside the container fails with "not a git repository".
+# Docker image name & tag. The backtick falls back to "unknown" when git fails,
+# so evaluation doesn't crash inside the docker build context where the
+# worktree's `.git` pointer references a non-existent host path.
 docker_repo := "localhost/restatedev/restate"
+docker_tag := `if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo "$(git rev-parse --abbrev-ref HEAD | sed 's|/|.|g').$(git rev-parse --short HEAD)"; else echo unknown; fi`
+docker_image := docker_repo + ":" + docker_tag
 
 features := ""
 libc := "gnu"
@@ -166,42 +165,21 @@ doctest:
 # Runs lints and tests
 verify: lint test doctest
 
-# Print the docker tag derived from git state on the host, or "unknown".
-_docker-tag:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if git -C "{{justfile_directory()}}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        branch=$(git -C "{{justfile_directory()}}" rev-parse --abbrev-ref HEAD | sed 's|/|.|g')
-        sha=$(git -C "{{justfile_directory()}}" rev-parse --short HEAD)
-        echo "${branch}.${sha}"
-    else
-        echo "unknown"
-    fi
-
 docker:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    tag="$(just _docker-tag)"
     # podman builds do not work without --platform set, even though it claims to default to host arch
-    docker buildx build . --platform "linux/{{ _docker_arch }}" --file docker/Dockerfile --tag="{{ docker_repo }}:${tag}" --progress="{{ DOCKER_PROGRESS }}" --build-arg RESTATE_FEATURES="{{ features }}" --load
+    docker buildx build . --platform linux/{{ _docker_arch }} --file docker/Dockerfile --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}' --build-arg RESTATE_FEATURES={{ features }} --load
 
 docker-debug:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    tag="$(just _docker-tag)"
     # podman builds do not work without --platform set, even though it claims to default to host arch
-    docker buildx build . --platform "linux/{{ _docker_arch }}" --file docker/debug.Dockerfile --tag="{{ docker_repo }}:${tag}" --progress="{{ DOCKER_PROGRESS }}" --build-arg RESTATE_FEATURES="{{ features }}" --load
+    docker buildx build . --platform linux/{{ _docker_arch }} --file docker/debug.Dockerfile --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}' --build-arg RESTATE_FEATURES={{ features }} --load
 
 docker-local-fedora:
-    #!/usr/bin/env bash
-    set -euo pipefail
     # Build the restate-server binary locally
-    just arch="{{ _arch }}" features="{{ features }}" build -p restate-server
+    just arch={{ _arch }} features={{ features }} build -p restate-server
     # Move the binary to the location expected by the Dockerfile
     cp target/debug/restate-server restate-server
-    tag="$(just _docker-tag)"
     # Build the Docker image using the local.Dockerfile
-    docker buildx build . --platform "linux/{{ _docker_arch }}" --file docker/local-fedora.Dockerfile --tag="{{ docker_repo }}:${tag}" --progress="{{ DOCKER_PROGRESS }}" --load
+    docker buildx build . --platform linux/{{ _docker_arch }} --file docker/local-fedora.Dockerfile --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}' --load
 
 notice-file:
     cargo license -d -a --avoid-build-deps --avoid-dev-deps {{ _features }} | (echo "Restate Runtime\nCopyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH <code@restate.dev>\n" && cat) > NOTICE
