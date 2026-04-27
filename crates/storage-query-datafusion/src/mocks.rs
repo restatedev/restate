@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
+use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -20,7 +21,6 @@ use datafusion::common::DataFusionError;
 use googletest::matcher::{Matcher, MatcherResult};
 use serde_json::Value;
 
-use restate_invoker_api::StatusHandle;
 use restate_invoker_api::status_handle::test_util::MockStatusHandle;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
@@ -38,9 +38,10 @@ use restate_types::schema::deployment::{Deployment, DeploymentResolver};
 use restate_types::schema::service::test_util::MockServiceMetadataResolver;
 use restate_types::schema::service::{ServiceMetadata, ServiceMetadataResolver};
 use restate_types::sharding::KeyRange;
+use restate_worker_api::SchedulerStatusEntry;
 
 use super::context::QueryContext;
-use crate::context::SelectPartitions;
+use crate::context::{PartitionLeaderStatusHandle, SelectPartitions};
 use crate::remote_query_scanner_client::{RemoteScanner, RemoteScannerService};
 use crate::remote_query_scanner_manager::{
     PartitionLocation, PartitionLocator, RemoteScannerManager,
@@ -71,6 +72,28 @@ impl ServiceMetadataResolver for MockSchemas {
 
     fn list_service_names(&self) -> Vec<String> {
         self.0.list_service_names()
+    }
+}
+
+impl PartitionLeaderStatusHandle for MockStatusHandle {
+    type SchedulerStatus = SchedulerStatusEntry;
+    type SchedulerStatusIterator = std::iter::Empty<Self::SchedulerStatus>;
+
+    type UserLimitCounter = ();
+    type UserLimitCounterIterator = std::iter::Empty<Self::UserLimitCounter>;
+
+    fn read_scheduler_status(
+        &self,
+        _keys: KeyRange,
+    ) -> impl Future<Output = Self::SchedulerStatusIterator> + Send {
+        std::future::ready(std::iter::empty())
+    }
+
+    fn read_user_limit_counters(
+        &self,
+        _keys: KeyRange,
+    ) -> impl Future<Output = Self::UserLimitCounterIterator> + Send {
+        std::future::ready(std::iter::empty())
     }
 }
 
@@ -149,7 +172,7 @@ impl PartitionLocator for AlwaysLocalPartitionLocator {
 
 impl MockQueryEngine {
     pub async fn create_with(
-        status: impl StatusHandle + Send + Sync + Debug + Clone + 'static,
+        status: impl PartitionLeaderStatusHandle<SchedulerStatus = SchedulerStatusEntry>,
         schemas: impl DeploymentResolver
         + ServiceMetadataResolver
         + Send
