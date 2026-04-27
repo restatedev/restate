@@ -15,12 +15,11 @@ mod locks;
 mod permit;
 mod user_limiter;
 
-pub use self::permit::{PermitBuilder, ReservedResources};
+pub use self::permit::PermitBuilder;
 
 use std::collections::VecDeque;
 use std::task::Poll;
 
-use smallvec::SmallVec;
 use tokio::sync::mpsc;
 use tracing::trace;
 
@@ -34,13 +33,14 @@ use restate_types::identifiers::PartitionKey;
 use restate_types::vqueues::EntryKind;
 use restate_types::{LockName, Scope};
 use restate_util_string::ReString;
+use restate_worker_api::resources::{ResourceManagerUpdate, UserPermitKind};
 use restate_worker_api::{ResourceKind, UserLimitCounterEntry};
 
 use self::invoker::InvokerConcurrencyLimiter;
 use self::invoker_memory::InvokerMemoryLimiter;
 use self::invoker_throttle::{InvokerThrottlingLimiter, ThrottlingAcquire};
 use self::locks::Locks;
-use self::permit::{ProvisionalPermit, UserPermitKind};
+use self::permit::ProvisionalPermit;
 use self::user_limiter::UserLimiter;
 use super::VQueueHandle;
 use super::eligible::EligibilityTracker;
@@ -62,12 +62,6 @@ pub struct ResourceManager {
     // We need to keep this alive to:
     // - Keep the receiver alive even if we don't have any resource permits handed out
     tx: mpsc::UnboundedSender<ResourceManagerUpdate>,
-}
-
-#[allow(dead_code)]
-enum ResourceManagerUpdate {
-    PermitReleased(SmallVec<[UserPermitKind; 1]>),
-    RulesUpdated(user_limiter::RuleUpdate),
 }
 
 pub(super) enum AcquireOutcome {
