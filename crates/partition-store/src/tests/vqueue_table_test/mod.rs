@@ -632,6 +632,190 @@ async fn tailing_iterator_sees_inserted_ahead_without_reseek(rocksdb: &mut Parti
     assert_eq!(*reader.peek().unwrap().unwrap().0.entry_id(), entry_id(5));
 }
 
+/// Test: Tailing iterator sees flushed insertions while mid-iteration without re-seek.
+///
+/// Scenario: the cursor advances a couple of times and still has items to read.
+/// New entries are inserted ahead of the current position, but before the next
+/// existing item (splicing), and memtables are flushed.
+/// Continuing with `advance()`/`peek()` (without seek) should surface the flushed items.
+async fn tailing_iterator_sees_flushed_insertions_mid_iteration(rocksdb: &mut PartitionStore) {
+    let qid = VQueueId::custom(7_250, "1");
+
+    let entry1 = entry(1, false, 10, 1);
+    let entry3 = entry(3, false, 30, 3);
+    let entry6 = entry(6, false, 60, 6);
+    let entry9 = entry(9, false, 90, 9);
+    {
+        let mut txn = rocksdb.transaction();
+        txn.put_vqueue_inbox(&qid, Stage::Inbox, &entry1.0, &entry1.1);
+        txn.put_vqueue_inbox(&qid, Stage::Inbox, &entry3.0, &entry3.1);
+        txn.put_vqueue_inbox(&qid, Stage::Inbox, &entry6.0, &entry6.1);
+        txn.put_vqueue_inbox(&qid, Stage::Inbox, &entry9.0, &entry9.1);
+        txn.commit().await.expect("commit should succeed");
+    }
+
+    let db = rocksdb.partition_db();
+    let mut reader = db.new_inbox_reader(&qid);
+    reader.seek_to_first();
+
+    assert_eq!(*reader.peek().unwrap().unwrap().0.entry_id(), entry_id(1));
+    reader.advance();
+    assert_eq!(*reader.peek().unwrap().unwrap().0.entry_id(), entry_id(3));
+
+    // Splice entries between current position (3) and next existing item (6).
+    let entry4 = entry(4, false, 40, 4);
+    let entry5 = entry(5, false, 50, 5);
+    {
+        let mut txn = rocksdb.transaction();
+        txn.put_vqueue_inbox(&qid, Stage::Inbox, &entry4.0, &entry4.1);
+        txn.put_vqueue_inbox(&qid, Stage::Inbox, &entry5.0, &entry5.1);
+        txn.commit().await.expect("commit should succeed");
+    }
+
+    rocksdb
+        .partition_db()
+        .flush_memtables(true)
+        .await
+        .expect("flush memtables should succeed");
+
+    // Continue from current position without seek.
+    reader.advance();
+    let mut remaining_ids = Vec::new();
+    while let Ok(Some(item)) = reader.peek() {
+        remaining_ids.push(*item.0.entry_id());
+        reader.advance();
+    }
+
+    assert_eq!(
+        remaining_ids,
+        vec![entry_id(4), entry_id(5), entry_id(6), entry_id(9)],
+        "Spliced flushed items should be visible and not skipped without re-seek"
+    );
+}
+
+/// Test: Seeked tailing iterator sees flushed spliced insertions without another seek.
+///
+/// Scenario: perform one seek to position the cursor on the item immediately
+/// before the splice point, then insert and flush a new item in the middle.
+/// Advancing from that seeked position should return the new spliced item first.
+async fn seeked_tailing_iterator_sees_flushed_spliced_insertions(rocksdb: &mut PartitionStore) {
+    let qid = VQueueId::custom(7_255, "1");
+
+    let entry1 = entry(1, false, 10, 1);
+    let entry3 = entry(3, false, 30, 3);
+    let entry6 = entry(6, false, 60, 6);
+    let entry9 = entry(9, false, 90, 9);
+    {
+        let mut txn = rocksdb.transaction();
+        txn.put_vqueue_inbox(&qid, Stage::Inbox, &entry1.0, &entry1.1);
+        txn.put_vqueue_inbox(&qid, Stage::Inbox, &entry3.0, &entry3.1);
+        txn.put_vqueue_inbox(&qid, Stage::Inbox, &entry6.0, &entry6.1);
+        txn.put_vqueue_inbox(&qid, Stage::Inbox, &entry9.0, &entry9.1);
+        txn.commit().await.expect("commit should succeed");
+    }
+
+    let db = rocksdb.partition_db();
+    let mut reader = db.new_inbox_reader(&qid);
+
+    // Single seek before inserting new items: land on entry3.
+    reader.seek_after(&qid, &entry1.0);
+    assert_eq!(*reader.peek().unwrap().unwrap().0.entry_id(), entry_id(3));
+
+    // Splice one entry between current position (3) and next existing item (6).
+    let entry4 = entry(4, false, 40, 4);
+    {
+        let mut txn = rocksdb.transaction();
+        txn.put_vqueue_inbox(&qid, Stage::Inbox, &entry4.0, &entry4.1);
+        txn.commit().await.expect("commit should succeed");
+    }
+
+    rocksdb
+        .partition_db()
+        .flush_memtables(true)
+        .await
+        .expect("flush memtables should succeed");
+
+    // Continue from the seeked position without another seek.
+    reader.advance();
+
+    assert_eq!(
+        *reader.peek().unwrap().unwrap().0.entry_id(),
+        entry_id(4),
+        "advance from seeked predecessor should surface the spliced item first"
+    );
+
+    reader.advance();
+    let mut tail_ids = Vec::new();
+    while let Ok(Some(item)) = reader.peek() {
+        tail_ids.push(*item.0.entry_id());
+        reader.advance();
+    }
+
+    assert_eq!(
+        tail_ids,
+        vec![entry_id(6), entry_id(9)],
+        "Remaining tail after the spliced item should keep original order"
+    );
+}
+
+/// Test: Seeked tailing iterator sees flushed append-at-end insertions.
+///
+/// Scenario: perform one seek, then insert and flush new items that are strictly
+/// after the existing tail. Continuing with `advance()`/`peek()` from that seeked
+/// position should eventually surface the appended items.
+async fn seeked_tailing_iterator_sees_flushed_appended_insertions(rocksdb: &mut PartitionStore) {
+    let qid = VQueueId::custom(7_256, "1");
+
+    let entry1 = entry(1, false, 10, 1);
+    let entry3 = entry(3, false, 30, 3);
+    let entry6 = entry(6, false, 60, 6);
+    let entry9 = entry(9, false, 90, 9);
+    {
+        let mut txn = rocksdb.transaction();
+        txn.put_vqueue_inbox(&qid, Stage::Inbox, &entry1.0, &entry1.1);
+        txn.put_vqueue_inbox(&qid, Stage::Inbox, &entry3.0, &entry3.1);
+        txn.put_vqueue_inbox(&qid, Stage::Inbox, &entry6.0, &entry6.1);
+        txn.put_vqueue_inbox(&qid, Stage::Inbox, &entry9.0, &entry9.1);
+        txn.commit().await.expect("commit should succeed");
+    }
+
+    let db = rocksdb.partition_db();
+    let mut reader = db.new_inbox_reader(&qid);
+
+    // Single seek before appending new tail items: land on entry3.
+    reader.seek_after(&qid, &entry1.0);
+    assert_eq!(*reader.peek().unwrap().unwrap().0.entry_id(), entry_id(3));
+
+    let entry10 = entry(10, false, 100, 10);
+    let entry11 = entry(11, false, 110, 11);
+    {
+        let mut txn = rocksdb.transaction();
+        txn.put_vqueue_inbox(&qid, Stage::Inbox, &entry10.0, &entry10.1);
+        txn.put_vqueue_inbox(&qid, Stage::Inbox, &entry11.0, &entry11.1);
+        txn.commit().await.expect("commit should succeed");
+    }
+
+    rocksdb
+        .partition_db()
+        .flush_memtables(true)
+        .await
+        .expect("flush memtables should succeed");
+
+    // Continue from the seeked position without another seek.
+    reader.advance();
+    let mut remaining_ids = Vec::new();
+    while let Ok(Some(item)) = reader.peek() {
+        remaining_ids.push(*item.0.entry_id());
+        reader.advance();
+    }
+
+    assert_eq!(
+        remaining_ids,
+        vec![entry_id(6), entry_id(9), entry_id(10), entry_id(11)],
+        "Appended flushed items should be visible after traversing existing tail"
+    );
+}
+
 /// Test: Tailing iterator sees items inserted after reaching the end without re-seek.
 ///
 /// Scenario (2): after the cursor reaches end-of-iteration, if a new item is inserted,
@@ -933,6 +1117,9 @@ pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     reseek_shows_new_higher_order_items(&mut rocksdb).await;
     tailing_iterator_sees_new_items_on_seek_after(&mut rocksdb).await;
     tailing_iterator_sees_inserted_ahead_without_reseek(&mut rocksdb).await;
+    tailing_iterator_sees_flushed_insertions_mid_iteration(&mut rocksdb).await;
+    seeked_tailing_iterator_sees_flushed_spliced_insertions(&mut rocksdb).await;
+    seeked_tailing_iterator_sees_flushed_appended_insertions(&mut rocksdb).await;
     tailing_iterator_sees_item_added_after_end_without_reseek(&mut rocksdb).await;
     deleted_items_not_visible_after_reseek(&mut rocksdb).await;
     deleted_items_not_visible_after_seek_after(&mut rocksdb).await;
