@@ -38,6 +38,8 @@ use restate_types::clock::UniqueTimestamp;
 pub enum KeyKind {
     Deduplication,
     Fsm,
+    /// Retired in 1.7 - kept to reserve the `b"ip"` byte encoding.
+    #[deprecated(note = "Idempotency was retired in 1.7 and should not be used")]
     Idempotency,
     Inbox,
     /// Retired in 1.6 - kept to reserve the `b"is"` byte encoding.

@@ -125,16 +125,15 @@ pub mod v1 {
         use super::{
             BackgroundCallResolutionResult, DedupSequenceNumber, Duration, EnrichedEntryHeader,
             Entry, EntryResult, EpochSequenceNumber, FailureMetadata, Header, IdempotencyId,
-            IdempotencyMetadata, InboxEntry, InvocationId, InvocationResolutionResult,
-            InvocationStatusV2, InvocationTarget, InvocationV2Lite, JournalCompletionTarget,
-            JournalEntry, JournalEntryIndex, JournalMeta, KvPair, OutboxMessage,
-            PartitionDurability, Promise, ResponseResult, RestateVersion, SequenceNumber,
-            ServiceId, ServiceInvocation, ServiceInvocationResponseSink, Source, SpanContext,
-            SpanRelation, StateMutation, SubmitNotificationSink, Timer, VirtualObjectStatus,
-            enriched_entry_header, entry, entry_result, inbox_entry, invocation_resolution_result,
-            invocation_status_v2, invocation_target, journal_entry, outbox_message, promise,
-            response_result, source, span_relation, submit_notification_sink, timer,
-            virtual_object_status,
+            InboxEntry, InvocationId, InvocationResolutionResult, InvocationStatusV2,
+            InvocationTarget, InvocationV2Lite, JournalCompletionTarget, JournalEntry,
+            JournalEntryIndex, JournalMeta, KvPair, OutboxMessage, PartitionDurability, Promise,
+            ResponseResult, RestateVersion, SequenceNumber, ServiceId, ServiceInvocation,
+            ServiceInvocationResponseSink, Source, SpanContext, SpanRelation, StateMutation,
+            SubmitNotificationSink, Timer, VirtualObjectStatus, enriched_entry_header, entry,
+            entry_result, inbox_entry, invocation_resolution_result, invocation_status_v2,
+            invocation_target, journal_entry, outbox_message, promise, response_result, source,
+            span_relation, submit_notification_sink, timer, virtual_object_status,
         };
         use crate::invocation_status_table::{
             PreFlightInvocationArgument, PreFlightInvocationInput, PreFlightInvocationJournal,
@@ -3781,29 +3780,6 @@ pub mod v1 {
 
             fn try_from(value: Duration) -> Result<Self, ConversionError> {
                 Ok(std::time::Duration::new(value.secs, value.nanos))
-            }
-        }
-
-        impl From<crate::idempotency_table::IdempotencyMetadata> for IdempotencyMetadata {
-            fn from(value: crate::idempotency_table::IdempotencyMetadata) -> Self {
-                IdempotencyMetadata {
-                    invocation_id: Some(InvocationId::from(value.invocation_id)),
-                }
-            }
-        }
-
-        impl TryFrom<IdempotencyMetadata> for crate::idempotency_table::IdempotencyMetadata {
-            type Error = ConversionError;
-
-            fn try_from(value: IdempotencyMetadata) -> Result<Self, ConversionError> {
-                Ok(crate::idempotency_table::IdempotencyMetadata {
-                    invocation_id: restate_types::identifiers::InvocationId::try_from(
-                        value
-                            .invocation_id
-                            .ok_or(ConversionError::missing_field("invocation_id"))?,
-                    )
-                    .map_err(ConversionError::invalid_data)?,
-                })
             }
         }
 
