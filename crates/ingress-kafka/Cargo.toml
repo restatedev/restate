@@ -18,7 +18,6 @@ oidc = ["rdkafka/curl-static", "rdkafka/gssapi-vendored"]
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
-restate-bifrost = { workspace = true }
 restate-core = { workspace = true }
 restate-ingestion-client = { workspace = true }
 restate-storage-api = { workspace = true }

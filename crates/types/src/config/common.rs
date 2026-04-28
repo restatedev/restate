@@ -494,29 +494,6 @@ pub struct CommonOptions {
     #[serde(default)]
     hlc_max_drift: FriendlyDuration,
 
-    /// # Experimental Kafka batch ingestion
-    ///
-    /// Use the new experimental kafka ingestion path which leverages batching
-    /// for a faster kafka ingestion.
-    ///
-    /// Set to `true` to enable the experimental ingestion mechanism.
-    ///
-    /// The legacy path will be removed in v1.7.
-    ///
-    /// Defaults to `false` in v1.6.
-    pub experimental_kafka_batch_ingestion: bool,
-
-    /// # Experimental Shuffler batch ingestion
-    ///
-    /// Use the new experimental batch ingestion path.
-    ///
-    /// Set to `true` to enable the experimental ingestion mechanism.
-    ///
-    /// The legacy path will be removed in v1.7.
-    ///
-    /// Defaults to `false` in v1.6.
-    pub experimental_shuffler_batch_ingestion: bool,
-
     /// # Enables service protocol v7
     ///
     /// Introduced in Restate v1.7
@@ -766,8 +743,6 @@ impl Default for CommonOptions {
             experimental_enable_vqueues: false,
             experimental_enable_invoker_yield: false,
             hlc_max_drift: FriendlyDuration::from_millis(5000),
-            experimental_kafka_batch_ingestion: false,
-            experimental_shuffler_batch_ingestion: false,
             experimental_allow_protocol_v7: false,
         }
     }

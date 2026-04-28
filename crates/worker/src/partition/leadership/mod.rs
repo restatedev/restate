@@ -491,7 +491,6 @@ where
                 OutboxReader::from(partition_store.clone()),
                 shuffle_tx,
                 config.worker.internal_queue_length(),
-                &self.bifrost,
                 self.ingestion_client.clone(),
             );
 
