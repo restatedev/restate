@@ -6034,6 +6034,48 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
+name = "pp-bench"
+version = "1.6.3-dev"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bytes",
+ "clap",
+ "codederror",
+ "comfy-table",
+ "hdrhistogram",
+ "indexmap 2.14.0",
+ "libc",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "rand 0.9.4",
+ "restate-cli-util",
+ "restate-core",
+ "restate-errors",
+ "restate-log-server",
+ "restate-partition-store",
+ "restate-rocksdb",
+ "restate-serde-util",
+ "restate-storage-api",
+ "restate-time-util",
+ "restate-tracing-instrumentation",
+ "restate-types",
+ "restate-vqueues",
+ "restate-wal-protocol",
+ "restate-worker",
+ "restate-workspace-hack",
+ "rlimit",
+ "rust-rocksdb",
+ "serde",
+ "serde_json",
+ "tikv-jemalloc-ctl",
+ "tikv-jemallocator",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "ppmd-rust"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
