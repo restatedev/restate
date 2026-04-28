@@ -956,7 +956,7 @@ mod tests {
         builder.chain(LogId::new(2)).unwrap().append_segment(
             Lsn::OLDEST,
             ProviderKind::Replicated,
-            loglet2_params.clone(),
+            loglet2_params,
         )?;
 
         let found2 = builder

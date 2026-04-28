@@ -332,7 +332,7 @@ impl<V> DecoratedNodeSet<V> {
                 .and_modify(|existing| {
                     existing.merge(v.clone());
                 })
-                .or_insert(v.clone());
+                .or_insert_with(|| v.clone());
         });
     }
 }

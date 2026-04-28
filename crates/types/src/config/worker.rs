@@ -440,7 +440,7 @@ impl InvokerOptions {
         self.per_invocation_memory_limit
             .and_then(|v| NonZeroUsize::new(v.as_usize()))
             .map(NonZeroByteCount::new)
-            .unwrap_or(NonZeroByteCount::new(self.message_size_limit()))
+            .unwrap_or_else(|| NonZeroByteCount::new(self.message_size_limit()))
     }
 
     /// Resolved eager state size limit in bytes. After `merge()`, this is guaranteed
@@ -448,7 +448,7 @@ impl InvokerOptions {
     pub fn eager_state_size_limit(&self) -> usize {
         self.eager_state_size_limit
             .map(|v| v.as_usize())
-            .unwrap_or(self.message_size_limit().get())
+            .unwrap_or_else(|| self.message_size_limit().get())
     }
 
     pub(crate) fn merge(&mut self, opts: &NetworkingOptions) {
@@ -462,7 +462,7 @@ impl InvokerOptions {
         self.per_invocation_memory_limit = Some(
             self.per_invocation_memory_limit
                 .map(|limit| limit.min(opts.message_size_limit.into()))
-                .unwrap_or(opts.message_size_limit.into()),
+                .unwrap_or_else(|| opts.message_size_limit.into()),
         );
 
         // Fuse deprecated disable_eager_state into eager_state_size_limit
@@ -483,7 +483,7 @@ impl InvokerOptions {
         // because that's the maximum amount of memory used for the outbound/inbound direction.
         self.eager_state_size_limit = Some(
             self.eager_state_size_limit
-                .unwrap_or(opts.message_size_limit.into()),
+                .unwrap_or_else(|| opts.message_size_limit.into()),
         )
         .map(|limit| {
             limit

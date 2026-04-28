@@ -498,7 +498,7 @@ impl<Attr: Eq + Hash + Clone + std::fmt::Debug> NodeSetChecker<Attr> {
                 .as_mut_ref()
                 .per_attribute_counter
                 .entry(attr.clone())
-                .or_insert(Count::default());
+                .or_insert_with(Count::default);
             counters.increment(storage_state);
             let counters_num_authoritative_nodes = counters.num_authoritative_nodes;
             let counters_num_readable_nodes = counters.num_readable_nodes;
