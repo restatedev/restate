@@ -100,6 +100,14 @@ pub struct ReservedResources {
 }
 
 impl ReservedResources {
+    pub fn new_empty() -> Self {
+        Self {
+            resources: SmallVec::new(),
+            system_permit: SystemPermit::default(),
+            manager_tx: None,
+        }
+    }
+
     pub const fn new(
         resources: SmallVec<[UserPermitKind; 1]>,
         system_permit: SystemPermit,
@@ -112,12 +120,9 @@ impl ReservedResources {
         }
     }
 
-    // A temporary shortcut until plumbing for a new permit type is implemented
-    pub fn take_invoker_permit(&mut self) -> (Permit, MemoryLease) {
-        (
-            self.system_permit.invoker_permit.split(1).unwrap(),
-            self.system_permit.memory_lease.take(),
-        )
+    // Moves the initial memory budget and hands it over to the caller.
+    pub fn take_memory_budget(&mut self) -> MemoryLease {
+        self.system_permit.memory_lease.take()
     }
 
     pub fn is_empty(&self) -> bool {
