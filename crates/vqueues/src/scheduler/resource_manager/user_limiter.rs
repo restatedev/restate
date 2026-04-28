@@ -169,7 +169,9 @@ use restate_limiter::{
     Level, Limit, LimitKey, Pattern, RuleHandle, RulePattern, Rules, StructuredLimits,
 };
 use restate_types::Scope;
+use restate_types::identifiers::PartitionKey;
 use restate_util_string::{ReString, RestrictedValue};
+use restate_worker_api::UserLimitCounterEntry;
 use restate_worker_api::resources::{RuleUpdate, UserLimits};
 
 use crate::scheduler::VQueueHandle;
@@ -306,6 +308,88 @@ impl UserLimiter {
     #[allow(dead_code)]
     pub fn resolve_rule(&self, handle: RuleHandle) -> Option<&RulePattern<ReString>> {
         self.rules.get_pattern(handle)
+    }
+
+    /// Walks the entire counter trie (scope → L1 → L2) and emits one
+    /// [`UserLimitCounterEntry`] per non-empty node, tagging each with the
+    /// rule currently governing it (if any) and its waiter depth.
+    ///
+    /// The emitted rows are what the `sys_user_limits` DataFusion table
+    /// surfaces; callers stamp the `partition_key` from the owning partition
+    /// before handing the rows back.
+    pub fn scan_counters(&self, partition_key: PartitionKey) -> Vec<UserLimitCounterEntry> {
+        let mut out = Vec::new();
+        for (scope, scope_node) in &self.state.scopes {
+            let scope_name = scope.as_str().to_owned();
+
+            // Scope-level row
+            let scope_limits = self.rules.lookup(scope.as_str(), &LimitKey::None);
+            let (scope_limit, scope_rule) =
+                limit_and_pattern(scope_limits.limit_at(Level::Scope), &self.rules);
+            out.push(UserLimitCounterEntry {
+                partition_key,
+                scope: scope_name.clone(),
+                l1: None,
+                l2: None,
+                level: Level::Scope,
+                usage: scope_node.value.concurrency,
+                concurrency_limit: scope_limit,
+                rule_pattern: scope_rule,
+                num_waiters: scope_node.waiters.len() as u64,
+            });
+
+            for (l1_key, l1_node) in &scope_node.l1 {
+                let l1_limit_key = LimitKey::L1(l1_key.clone());
+                let l1_limits = self.rules.lookup(scope.as_str(), &l1_limit_key);
+                let (l1_limit, l1_rule) =
+                    limit_and_pattern(l1_limits.limit_at(Level::Level1), &self.rules);
+                out.push(UserLimitCounterEntry {
+                    partition_key,
+                    scope: scope_name.clone(),
+                    l1: Some(l1_key.as_str().to_owned()),
+                    l2: None,
+                    level: Level::Level1,
+                    usage: l1_node.value.concurrency,
+                    concurrency_limit: l1_limit,
+                    rule_pattern: l1_rule,
+                    num_waiters: l1_node.waiters.len() as u64,
+                });
+
+                for (l2_key, l2_leaf) in &l1_node.l2 {
+                    let l2_limit_key = LimitKey::L2(l1_key.clone(), l2_key.clone());
+                    let l2_limits = self.rules.lookup(scope.as_str(), &l2_limit_key);
+                    let (l2_limit, l2_rule) =
+                        limit_and_pattern(l2_limits.limit_at(Level::Level2), &self.rules);
+                    out.push(UserLimitCounterEntry {
+                        partition_key,
+                        scope: scope_name.clone(),
+                        l1: Some(l1_key.as_str().to_owned()),
+                        l2: Some(l2_key.as_str().to_owned()),
+                        level: Level::Level2,
+                        usage: l2_leaf.value.concurrency,
+                        concurrency_limit: l2_limit,
+                        rule_pattern: l2_rule,
+                        num_waiters: l2_leaf.waiters.len() as u64,
+                    });
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Resolve a `Limit<&UserLimits>` into its concrete (limit_value, pattern_display) pair.
+fn limit_and_pattern(
+    limit: &Limit<&UserLimits>,
+    rules: &Rules<ReString, UserLimits>,
+) -> (Option<u64>, Option<String>) {
+    match limit {
+        Limit::Undefined => (None, None),
+        Limit::Defined(handle, user_limits) => {
+            let value = user_limits.action_concurrency.map(NonZeroU64::get);
+            let pattern = rules.get_pattern(*handle).map(ToString::to_string);
+            (value, pattern)
+        }
     }
 }
 
