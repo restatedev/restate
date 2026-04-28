@@ -9,21 +9,15 @@
 // by the Apache License, Version 2.0.
 
 use smallvec::SmallVec;
-use tokio::sync::mpsc;
+
+use restate_worker_api::resources::{
+    ReservedResources, SystemPermit, ThrottlingToken, UserPermitKind,
+};
 
 use restate_futures_util::concurrency::Permit;
-use restate_limiter::LimitKey;
-use restate_memory::MemoryLease;
 use restate_types::{LockName, Scope};
-use restate_util_string::ReString;
 
-use super::{ResourceManager, ResourceManagerUpdate};
-
-#[allow(dead_code)]
-pub enum UserPermitKind {
-    // todo: DeploymentConcurrency,
-    LimitKeyConcurrency(Scope, LimitKey<ReString>),
-}
+use super::ResourceManager;
 
 // Holds incrementally secured resources
 #[derive(Default)]
@@ -65,11 +59,11 @@ impl PermitBuilder {
     }
 
     pub(crate) fn build(self, resource_manager: &ResourceManager) -> ReservedResources {
-        ReservedResources {
-            resources: self.user_permit.expect("user permit must be set").resources,
-            system_permit: self.system_permit,
-            manager_tx: Some(resource_manager.tx.clone()),
-        }
+        ReservedResources::new(
+            self.user_permit.expect("user permit must be set").resources,
+            self.system_permit,
+            resource_manager.tx.clone(),
+        )
     }
 
     pub(crate) fn set_user_permit(&mut self, user_permit: UserPermit) {
@@ -89,68 +83,11 @@ pub(crate) struct UserPermit {
     pub(super) resources: SmallVec<[UserPermitKind; 1]>,
 }
 
-#[derive(Default, Clone, Copy)]
-pub struct ThrottlingToken;
-
-/// Resources reserved from global limiters for a single invocation.
-///
-/// Bundles a concurrency [`Permit`] and a [`MemoryLease`] so they travel
-/// together through the scheduler → leader handoff.
-pub(crate) struct SystemPermit {
-    invoker_permit: Permit,
-    throttling_permit: Option<ThrottlingToken>,
-    memory_lease: MemoryLease,
-}
-
-impl Default for SystemPermit {
-    fn default() -> Self {
-        Self {
-            invoker_permit: Permit::new_empty(),
-            throttling_permit: None,
-            memory_lease: MemoryLease::unlinked(),
-        }
-    }
-}
-
-impl SystemPermit {
-    pub fn take(&mut self) -> SystemPermit {
-        SystemPermit {
-            invoker_permit: self.invoker_permit.split(1).unwrap_or(Permit::new_empty()),
-            throttling_permit: self.throttling_permit.take(),
-            memory_lease: self.memory_lease.take(),
-        }
-    }
-}
-
 // Use this to stage the resources needed to create a user permit as a transaction
 #[derive(Default)]
 pub(crate) struct ProvisionalPermit {
     lock: Option<CanonicalLock>,
     resources: SmallVec<[UserPermitKind; 1]>,
-}
-
-// A compound permit holds a set of resources and provides remote termination access
-// and signaling.
-#[must_use]
-#[clippy::has_significant_drop]
-pub struct ReservedResources {
-    resources: SmallVec<[UserPermitKind; 1]>,
-    system_permit: SystemPermit,
-    manager_tx: Option<mpsc::UnboundedSender<ResourceManagerUpdate>>,
-}
-
-impl ReservedResources {
-    // A temporary shortcut until plumbing for a new permit type is implemented
-    pub fn take_invoker_permit(&mut self) -> (Permit, MemoryLease) {
-        (
-            self.system_permit.invoker_permit.split(1).unwrap(),
-            self.system_permit.memory_lease.take(),
-        )
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.resources.is_empty()
-    }
 }
 
 impl ProvisionalPermit {
@@ -187,19 +124,6 @@ impl ProvisionalPermit {
         UserPermit {
             lock: self.lock,
             resources: self.resources,
-        }
-    }
-}
-
-// Release the resources via a channel with the resource manager
-impl Drop for ReservedResources {
-    fn drop(&mut self) {
-        if let Some(manager_tx) = self.manager_tx.take()
-            && !self.is_empty()
-        {
-            let _ = manager_tx.send(ResourceManagerUpdate::PermitReleased(
-                self.resources.drain(..).collect(),
-            ));
         }
     }
 }
