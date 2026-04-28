@@ -17,7 +17,7 @@ use tokio::time::Instant;
 use restate_clock::RoughTimestamp;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{EntryKey, EntryValue, VQueueStore, stats::WaitStats};
-use restate_types::vqueues::VQueueId;
+use restate_types::vqueues::{EntryId, VQueueId};
 use restate_worker_api::ResourceKind;
 
 use crate::metric_definitions::{
@@ -387,6 +387,18 @@ impl<S: VQueueStore> VQueueState<S> {
 
     pub fn get_head_wait_stats(&self) -> WaitStats {
         self.head_stats.snapshot()
+    }
+
+    /// Returns the `EntryId` of the queue's current head if it has already been
+    /// advanced, without performing any storage IO.
+    ///
+    /// Returns `None` when the head has not yet been read (brand-new queue) or
+    /// the queue is known to be empty.
+    pub fn head_entry_id(&self) -> Option<EntryId> {
+        match self.queue.head()? {
+            QueueItem::Inbox { key, .. } | QueueItem::Running { key, .. } => Some(*key.entry_id()),
+            QueueItem::None => None,
+        }
     }
 
     /// How many items left in the running stage
