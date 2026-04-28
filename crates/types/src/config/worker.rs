@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::{NonZeroU8, NonZeroU32, NonZeroU64, NonZeroUsize};
+use std::num::{NonZero, NonZeroU8, NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -793,9 +793,9 @@ pub struct SnapshotsOptions {
     /// A retry policy for dealing with retryable object store errors.
     pub object_store_retry_policy: RetryPolicy,
 
-    /// # Experimental: Snapshot retention count
+    /// # Snapshot retention count
     ///
-    /// EXPERIMENTAL (v1.6): Number of most recent snapshots to retain. Older snapshots will be
+    /// Number of most recent snapshots to retain. Older snapshots will be
     /// deleted automatically. Only snapshots created after this setting is enabled will
     /// be considered for pruning.
     ///
@@ -803,15 +803,10 @@ pub struct SnapshotsOptions {
     /// oldest retained snapshot. Therefore, retaining multiple snapshots will cause increased disk
     /// usage on log-server nodes.
     ///
-    /// WARNING: Enabling this feature upgrades the snapshot tracking format. Only enable if all
-    /// cluster nodes run a compatible version. Downgrading will forget the tracked snapshots and
-    /// revert to v1.5.x behavior.
-    ///
-    /// Default: `None` (feature is disabled, older snapshots will accumulate in repository)
-    // todo(v1.7): Drop the experimental prefix; make it non-optional with default value `1`
+    /// Default: `1`
     #[cfg_attr(feature = "schemars", schemars(skip))]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub experimental_num_retained: Option<NonZeroU8>,
+    #[serde(default = "default_num_retained")]
+    pub num_retained: NonZeroU8,
 
     /// # Export concurrency limit
     ///
@@ -827,6 +822,10 @@ pub struct SnapshotsOptions {
     pub enable_cleanup: bool,
 }
 
+fn default_num_retained() -> NonZero<u8> {
+    NonZeroU8::new(1).unwrap()
+}
+
 impl Default for SnapshotsOptions {
     fn default() -> Self {
         Self {
@@ -835,7 +834,7 @@ impl Default for SnapshotsOptions {
             snapshot_interval_num_records: None,
             object_store: Default::default(),
             object_store_retry_policy: Self::default_retry_policy(),
-            experimental_num_retained: None,
+            num_retained: default_num_retained(),
             export_concurrency_limit: None,
             #[cfg(any(test, feature = "test-util"))]
             enable_cleanup: true,
