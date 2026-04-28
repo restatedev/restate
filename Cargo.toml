@@ -11,6 +11,7 @@ members = [
     "benchmarks",
     "tools/bifrost-benchpress",
     "tools/logserver-bench",
+    "tools/pp-bench",
     "tools/mock-service-endpoint",
     "tools/restate-doctor",
     "tools/restatectl",
