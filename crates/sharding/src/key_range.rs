@@ -26,6 +26,18 @@ use crate::PartitionKey;
 #[repr(transparent)]
 pub struct KeyRange(std::range::RangeInclusive<PartitionKey>);
 
+impl PartialOrd for KeyRange {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for KeyRange {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (self.start(), self.end()).cmp(&(other.start(), other.end()))
+    }
+}
+
 impl NetSerde for KeyRange {}
 
 impl KeyRange {
