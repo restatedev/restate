@@ -12,7 +12,7 @@ use std::num::{NonZeroU32, NonZeroUsize};
 use std::time::Duration;
 
 /// Configuration for an [`AuthorityPool`].
-#[derive(Debug, Clone, derive_builder::Builder)]
+#[derive(Debug, Clone, Copy, derive_builder::Builder)]
 #[builder(
     pattern = "owned",
     build_fn(name = "build_inner", private),
@@ -43,8 +43,28 @@ pub struct PoolConfig {
     /// limiting the number of requests queued behind a single pending connection.
     /// Once the connection is established, it discovers the remote peer's actual
     /// max-concurrent-streams and adjusts accordingly.
+    ///
+    /// Default: 50
     #[builder(default = NonZeroU32::new(50).unwrap())]
     pub(crate) initial_max_send_streams: NonZeroU32,
+
+    /// Upper bound on the per-connection max-send-streams.
+    ///
+    /// Once the HTTP/2 Connection Preface completes, `initial_max_send_streams`
+    /// is replaced by the peer's `max_concurrent_streams` from its SETTINGS
+    /// frame, or by `usize::MAX` if the peer advertises no value.
+    ///
+    /// We then clamp that effective limit to
+    /// `min(peer.max_concurrent_streams, streams_per_connection_limit)` so the pool
+    /// keeps opening new connections instead of funneling every request through
+    /// a single one. Without this cap, a single connection can saturate its
+    /// flow-control window and interacts poorly with load balancers, especially
+    /// with end-to-end HTTP/2.
+    ///
+    /// Default: 128
+    #[builder(default = NonZeroUsize::new(128).unwrap())]
+    pub(crate) streams_per_connection_limit: NonZeroUsize,
+
     /// Maximum time to wait for an HTTP/2 PING response before declaring the
     /// connection dead and returning [`ConnectionError::KeepAliveTimeout`].
     /// Only meaningful when `keep_alive_interval` is `Some`. Defaults to 20 s.
@@ -63,6 +83,7 @@ impl Default for PoolConfig {
             max_connections: NonZeroUsize::new(1).unwrap(),
             connection_saturation_threshold: Some(0.7f64),
             initial_max_send_streams: NonZeroU32::new(50).unwrap(),
+            streams_per_connection_limit: NonZeroUsize::new(128).unwrap(),
             keep_alive_interval: None,
             keep_alive_timeout: Duration::from_secs(20),
             idle_authority_timeout: Some(Duration::from_secs(300)),
