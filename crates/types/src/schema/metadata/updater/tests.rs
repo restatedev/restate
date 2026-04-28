@@ -352,7 +352,7 @@ mod routing_header {
 
         // Update providing the same routing header-> conflict
         let ((result, expected_dp_id_2), schema) =
-            SchemaUpdater::update_and_return(schema.clone(), |updater| {
+            SchemaUpdater::update_and_return(schema, |updater| {
                 updater.add_deployment(AddDeploymentRequest {
                     additional_headers: [(
                         HeaderName::from_static("x-routing"),

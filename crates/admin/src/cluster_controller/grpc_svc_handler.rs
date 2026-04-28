@@ -141,10 +141,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
 
         let chain = logs
             .chain(&log_id)
-            .ok_or(Status::not_found(format!(
-                "Log id {} not found",
-                request.log_id
-            )))?
+            .ok_or_else(|| Status::not_found(format!("Log id {} not found", request.log_id)))?
             .clone();
 
         let (trim_point, nodes_config) = tokio::join!(
@@ -163,7 +160,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
                     "Failed to get nodes configuration metadata: {error:?}"
                 ))
             })?
-            .ok_or(Status::not_found("Missing nodes configuration"))?;
+            .ok_or_else(|| Status::not_found("Missing nodes configuration"))?;
 
         Ok(Response::new(DescribeLogResponse {
             log_id: log_id.into(),

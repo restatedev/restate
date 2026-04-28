@@ -49,7 +49,7 @@ const X_RESTATE_CLUSTER_NAME: http::HeaderName =
 static HOSTNAME: LazyLock<String> = LazyLock::new(|| {
     hostname::get()
         .map(|h| h.into_string().expect("hostname is valid unicode"))
-        .unwrap_or("INVALID_HOSTANAME".to_owned())
+        .unwrap_or_else(|_| "INVALID_HOSTANAME".to_owned())
 });
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,7 +151,7 @@ impl<P: ListenerPort + 'static> ListenerOptions<P> {
         }
 
         if self.advertised_host.is_none() && self.advertised_address.is_none() {
-            self.advertised_host = other.advertised_host.clone();
+            self.advertised_host.clone_from(&other.advertised_host);
         }
     }
 
@@ -641,16 +641,17 @@ impl CommonOptions {
 
     pub fn storage_high_priority_bg_threads(&self) -> NonZeroUsize {
         self.storage_high_priority_bg_threads
-            .unwrap_or((*CPU_COUNT).try_into().unwrap())
+            .unwrap_or_else(|| (*CPU_COUNT).try_into().unwrap())
     }
 
     pub fn default_thread_pool_size(&self) -> usize {
-        self.default_thread_pool_size.unwrap_or(CPU_COUNT.get()) as usize
+        self.default_thread_pool_size
+            .unwrap_or_else(|| CPU_COUNT.get()) as usize
     }
 
     pub fn storage_low_priority_bg_threads(&self) -> NonZeroUsize {
         self.storage_low_priority_bg_threads
-            .unwrap_or((*CPU_COUNT).try_into().unwrap())
+            .unwrap_or_else(|| (*CPU_COUNT).try_into().unwrap())
     }
 
     pub fn rocksdb_high_priority_bg_threads(&self) -> NonZeroU32 {
@@ -668,7 +669,7 @@ impl CommonOptions {
     pub fn rocksdb_low_priority_bg_threads(&self) -> NonZeroU32 {
         // Gives us 1/2 the core count unless the user wants to override it.
         self.rocksdb_bg_threads
-            .unwrap_or(CPU_COUNT.div_ceil(NonZeroU32::new(2).unwrap()))
+            .unwrap_or_else(|| CPU_COUNT.div_ceil(NonZeroU32::new(2).unwrap()))
     }
 
     /// set derived values if they are not configured to reduce verbose configurations

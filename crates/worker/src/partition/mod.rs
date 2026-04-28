@@ -11,7 +11,10 @@
 // When expose-internals makes this module `pub`, some internal types referenced
 // by `PartitionProcessor` and `ProcessorError` become visible but remain
 // `pub(crate)`. This is expected -- benchmarks only use `state_machine`.
-#![cfg_attr(feature = "expose-internals", allow(private_interfaces, private_bounds))]
+#![cfg_attr(
+    feature = "expose-internals",
+    allow(private_interfaces, private_bounds)
+)]
 
 mod cleaner;
 pub mod invoker_storage_reader;

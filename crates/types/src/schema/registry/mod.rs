@@ -350,7 +350,7 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                 ) => (
                     DeploymentAddress::Lambda(LambdaDeploymentAddress::new(
                         arn,
-                        update_assume_role_arn.or(assume_role_arn.map(Into::into)),
+                        update_assume_role_arn.or_else(|| assume_role_arn.map(Into::into)),
                     )),
                     false,
                 ),

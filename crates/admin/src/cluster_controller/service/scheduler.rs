@@ -606,7 +606,7 @@ impl<T: TransportConnect> Scheduler<T> {
                         if epoch_metadata
                             .next()
                             .map(|next| next.version())
-                            .unwrap_or(epoch_metadata.current().version())
+                            .unwrap_or_else(|| epoch_metadata.current().version())
                             <= expected_next_version
                         {
                             Ok(epoch_metadata.reconfigure(next.clone()))
