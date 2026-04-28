@@ -238,12 +238,14 @@ jobs:
       actions: read
     secrets: inherit
     needs: docker
-    uses: restatedev/sdk-typescript/.github/workflows/integration.yaml@main
+    # TODO(slinkydeveloper) revert this once we merge the sdk changes to main
+    uses: restatedev/sdk-typescript/.github/workflows/integration.yaml@new-shared-core
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
       envVars: |
         RESTATE_experimental_allow_protocol_v7=true
       testArtifactOutput: sdk-typescript-protocol-v7
+      sdkRepoRef: 'new-shared-core'
   
   sdk-rust:
     name: Run SDK-Rust integration tests
