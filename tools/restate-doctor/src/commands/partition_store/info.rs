@@ -439,6 +439,7 @@ fn key_kind_abbrev(kind: restate_partition_store::keys::KeyKind) -> &'static str
     match kind {
         KeyKind::Deduplication => "Dedup",
         KeyKind::Fsm => "FSM",
+        #[allow(deprecated)]
         KeyKind::Idempotency => "Idemp",
         KeyKind::Inbox => "Inbox",
         #[allow(deprecated)]

@@ -356,6 +356,7 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
                 &["scope", "service_name", "service_key", "promise_key"],
             );
         }
+        #[allow(deprecated)]
         KeyKind::Idempotency => {
             // service_name (var) + service_key (var) + service_handler (var) + idempotency_key (var)
             parse_variable_fields(

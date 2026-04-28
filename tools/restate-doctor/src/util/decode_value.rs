@@ -20,7 +20,6 @@ use restate_partition_store::keys::{DecodeTableKey, KeyKind};
 use restate_partition_store::vqueue_table::{EntryStatusKey, InputPayloadKey, StatusHeaderRaw};
 use restate_storage_api::deduplication_table::DedupSequenceNumber;
 use restate_storage_api::fsm_table::{PartitionDurability, SequenceNumber};
-use restate_storage_api::idempotency_table::IdempotencyMetadata;
 use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_storage_api::journal_table::JournalEntry as JournalEntryV1;
@@ -170,8 +169,9 @@ pub fn decode_value(key_kind: KeyKind, key: &[u8], value: &[u8]) -> DecodedValue
 
         // Protobuf-encoded with StorageCodec
         KeyKind::Deduplication => decode_protobuf::<DedupSequenceNumber>(value),
-        KeyKind::Idempotency => decode_protobuf::<IdempotencyMetadata>(value),
         KeyKind::Inbox => decode_protobuf::<InboxEntry>(value),
+        #[allow(deprecated)]
+        KeyKind::Idempotency => decode_with_codec_info(value),
         #[allow(deprecated)]
         KeyKind::InvocationStatus | KeyKind::InvocationStatusV1 => {
             decode_protobuf::<InvocationStatus>(value)
