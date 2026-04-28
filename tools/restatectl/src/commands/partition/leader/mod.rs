@@ -17,7 +17,6 @@ mod unpin;
 use anyhow::bail;
 use cling::prelude::*;
 
-use crate::connection::ConnectionInfo;
 use restate_cli_util::CliContext;
 use restate_core::protobuf::cluster_ctrl_svc::{SyncEpochMetadataRequest, new_cluster_ctrl_client};
 use restate_metadata_store::MetadataStoreClient;
@@ -31,6 +30,8 @@ use restate_types::identifiers::PartitionId;
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::nodes_config::Role;
 use restate_types::storage::StorageCodec;
+
+use crate::connection::ConnectionInfo;
 
 #[derive(Run, Subcommand, Clone)]
 pub enum Leader {

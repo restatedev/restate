@@ -100,7 +100,6 @@ mod tests {
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use crate::partition::types::InvokerEffectKind;
     use googletest::prelude::{all, assert_that, contains, eq, pat};
-    use restate_invoker_api::Effect;
     use restate_storage_api::invocation_status_table::{
         InvocationStatusDiscriminants, ReadInvocationStatusTable,
     };
@@ -110,6 +109,7 @@ mod tests {
     use restate_types::journal_v2::{NotificationId, SleepCommand};
     use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_wal_protocol::Command;
+    use restate_worker_api::invoker::Effect;
     use std::time::{Duration, SystemTime};
 
     #[restate_core::test]

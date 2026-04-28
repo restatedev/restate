@@ -23,8 +23,6 @@ use restate_types::journal_v2::{self, UnresolvedFuture};
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
 
-use crate::EffectKind::JournalEntryV2;
-
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Effect {
@@ -99,7 +97,7 @@ impl EffectKind {
         raw_entry: impl Into<RawEntry>,
         command_index_to_ack: Option<CommandIndex>,
     ) -> Self {
-        JournalEntryV2 {
+        Self::JournalEntryV2 {
             entry: StoredRawEntry::new(
                 StoredRawEntryHeader::new(MillisSinceEpoch::now()),
                 raw_entry.into(),
