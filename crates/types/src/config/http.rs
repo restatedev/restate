@@ -80,14 +80,6 @@ pub struct HttpOptions {
     /// Default: 128
     pub streams_per_connection_limit: NonZeroUsize,
 
-    /// # Max HTTP2 Connections
-    ///
-    /// Sets the maximum number of open HTTP/2 connections per
-    /// client for a single host.
-    ///
-    /// Default: 20
-    pub max_http2_connections: NonZeroUsize,
-
     /// # Idle Pool Timeout
     ///
     /// How long a per-host connection pool can be idle before it is evicted
@@ -106,7 +98,6 @@ impl Default for HttpOptions {
             connect_timeout: NonZeroFriendlyDuration::from_secs_unchecked(10),
             initial_max_send_streams: None,
             streams_per_connection_limit: NonZeroUsize::new(128).unwrap(),
-            max_http2_connections: NonZeroUsize::new(20).unwrap(),
             idle_pool_timeout: Some(NonZeroFriendlyDuration::from_secs_unchecked(300)),
         }
     }
