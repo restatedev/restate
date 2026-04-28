@@ -1068,7 +1068,7 @@ mod tests {
         ));
 
         // Now, regenerating...
-        let options = SelectorOptions::new(partition_id).with_preferred_nodes(nodeset1.clone());
+        let options = SelectorOptions::new(partition_id).with_preferred_nodes(nodeset1);
         let nodeset2 = BalancedSpreadSelector::select(
             &nodes_config,
             &replication,

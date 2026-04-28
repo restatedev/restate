@@ -366,8 +366,6 @@ impl SchemaUpdater {
             // We pick max_by created_at, because with force the user wants to override the last deployment version, and not old ones.
             .max_by(|(_, x), (_, y)| x.created_at.cmp(&y.created_at));
 
-        let mut services_to_remove = Vec::default();
-
         let deployment_id = if let Some((existing_deployment_id, existing_deployment)) =
             existing_deployment
         {
@@ -381,7 +379,6 @@ impl SchemaUpdater {
                             "Going to remove service {} due to a forced deployment update",
                             service.name
                         );
-                        services_to_remove.push(service.name.clone());
                     }
                 }
 
@@ -531,10 +528,12 @@ impl SchemaUpdater {
 
         macro_rules! resolve_optional_config_option {
             ($get_from_current:expr, $name_from_previous:ident) => {
-                $get_from_current.or(if service_level_settings_behavior.preserve() {
-                    previous_service_revision.and_then(|old_svc| old_svc.$name_from_previous)
-                } else {
-                    None
+                $get_from_current.or_else(|| {
+                    if service_level_settings_behavior.preserve() {
+                        previous_service_revision.and_then(|old_svc| old_svc.$name_from_previous)
+                    } else {
+                        None
+                    }
                 })
             };
         }
@@ -542,20 +541,22 @@ impl SchemaUpdater {
         let public = service
             .ingress_private
             .map(bool::not)
-            .or(if service_level_settings_behavior.preserve() {
-                previous_service_revision.map(|old_svc| old_svc.public)
-            } else {
-                None
+            .or_else(|| {
+                if service_level_settings_behavior.preserve() {
+                    previous_service_revision.map(|old_svc| old_svc.public)
+                } else {
+                    None
+                }
             })
             .unwrap_or(true);
-        let idempotency_retention = service.idempotency_retention_duration().or(
+        let idempotency_retention = service.idempotency_retention_duration().or_else(|| {
             if service_level_settings_behavior.preserve() {
                 previous_service_revision.and_then(|old_svc| old_svc.idempotency_retention)
             } else {
                 // TODO(slinydeveloper) Remove this in Restate 1.6, no need for this defaulting anymore!
                 Some(DEFAULT_IDEMPOTENCY_RETENTION)
-            },
-        );
+            }
+        });
         let journal_retention = resolve_optional_config_option!(
             service.journal_retention_duration(),
             journal_retention
@@ -662,7 +663,7 @@ impl SchemaUpdater {
             return Err(SchemaError::Deployment(
                 DeploymentError::DifferentSupportedProtocolVersions(
                     existing_deployment.supported_protocol_versions.clone(),
-                    discovery_response.supported_protocol_versions.clone(),
+                    discovery_response.supported_protocol_versions,
                 ),
             ));
         };

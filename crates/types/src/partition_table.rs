@@ -501,9 +501,11 @@ impl TryFrom<PartitionTableShadow> for PartitionTable {
     fn try_from(value: PartitionTableShadow) -> Result<Self, Self::Error> {
         let mut builder = PartitionTableBuilder::new(value.version);
         // replication strategy is unset if data has been written with version <= v1.1.3
-        builder.set_partition_replication(value.replication.unwrap_or(
-            PartitionReplication::Limit(ReplicationProperty::new_unchecked(1)),
-        ));
+        builder.set_partition_replication(
+            value.replication.unwrap_or_else(|| {
+                PartitionReplication::Limit(ReplicationProperty::new_unchecked(1))
+            }),
+        );
 
         match value.partitions {
             Some(partitions) => {

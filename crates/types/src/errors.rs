@@ -436,7 +436,7 @@ mod tests {
     #[test]
     fn test_simple_status_from_tonic() {
         let tonic_status = tonic::Status::new(Code::Internal, "Internal error");
-        let simple_status: SimpleStatus = tonic_status.clone().into();
+        let simple_status: SimpleStatus = tonic_status.into();
         assert_eq!(simple_status.to_string(), "Internal error: Internal error");
     }
 

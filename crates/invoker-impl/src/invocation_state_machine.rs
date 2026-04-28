@@ -410,8 +410,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
                 notifications_tx,
                 ..
             } => {
-                journal_tracker
-                    .notify_acked_notification_from_partition_processor(notification_id.clone());
+                journal_tracker.notify_acked_notification_from_partition_processor(notification_id);
 
                 Self::try_send_notification(notifications_tx, Notification::Entry(entry_index));
             }
