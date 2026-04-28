@@ -30,6 +30,7 @@ use restate_storage_query_datafusion::context::PartitionLeaderStatusHandle;
 use restate_types::sharding::KeyRange;
 use restate_worker_api::{
     LeaderQueryRequest, LeaderQueryResponse, LeaderQuerySender, SchedulerStatusEntry,
+    UserLimitCounterEntry,
 };
 
 /// Monotonically increasing counter stamping each registration.
@@ -235,6 +236,29 @@ impl PartitionLeaderHandlesRegistry {
         result.sort_by(|(qid_a, _), (qid_b, _)| qid_a.cmp(qid_b));
         result.into_iter()
     }
+
+    async fn collect_user_limit_counters(
+        &self,
+        keys: KeyRange,
+    ) -> std::vec::IntoIter<UserLimitCounterEntry> {
+        let senders = self.overlapping_leader_query_senders(keys);
+
+        let mut result = Vec::new();
+        for sender in senders {
+            let (command, response_rx) = restate_futures_util::command::Command::prepare(
+                LeaderQueryRequest::UserLimitCounters { keys },
+            );
+            if sender.send(command).is_err() {
+                continue;
+            }
+
+            if let Ok(LeaderQueryResponse::UserLimitCounters(mut counters)) = response_rx.await {
+                result.append(&mut counters);
+            }
+        }
+
+        result.into_iter()
+    }
 }
 
 impl StatusHandle for PartitionLeaderHandlesRegistry {
@@ -258,15 +282,15 @@ impl StatusHandle for PartitionLeaderHandlesRegistry {
 impl PartitionLeaderStatusHandle for PartitionLeaderHandlesRegistry {
     type SchedulerStatus = SchedulerStatusEntry;
     type SchedulerStatusIterator = std::vec::IntoIter<Self::SchedulerStatus>;
-    type UserLimitCounter = ();
-    type UserLimitCounterIterator = std::iter::Empty<Self::UserLimitCounter>;
+    type UserLimitCounter = UserLimitCounterEntry;
+    type UserLimitCounterIterator = std::vec::IntoIter<Self::UserLimitCounter>;
 
     async fn read_scheduler_status(&self, keys: KeyRange) -> Self::SchedulerStatusIterator {
         self.collect_scheduler_status(keys).await
     }
 
-    async fn read_user_limit_counters(&self, _keys: KeyRange) -> Self::UserLimitCounterIterator {
-        std::iter::empty()
+    async fn read_user_limit_counters(&self, keys: KeyRange) -> Self::UserLimitCounterIterator {
+        self.collect_user_limit_counters(keys).await
     }
 }
 

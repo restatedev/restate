@@ -48,7 +48,7 @@ use restate_vqueues::VQueueEvent;
 use restate_vqueues::scheduler::Decisions;
 use restate_wal_protocol::Command;
 use restate_wal_protocol::control::UpsertSchema;
-use restate_worker_api::SchedulerStatusEntry;
+use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
 
 use crate::metric_definitions::{PARTITION_HANDLE_LEADER_ACTIONS, USAGE_LEADER_ACTION_COUNT};
 use crate::partition::cleaner::{CleanerEffect, CleanerHandle};
@@ -149,6 +149,13 @@ impl LeaderState {
             .flatten()
             .filter(|(qid, _)| keys.contains(&qid.partition_key()))
             .collect()
+    }
+
+    pub fn read_user_limit_counters(&self, keys: KeyRange) -> Vec<UserLimitCounterEntry> {
+        // Stamp counters with a key inside this partition's range so DataFusion's
+        // partition-aware scan accepts the row. Use the range start — counters are
+        // partition-scoped, not per-item, so any key in range is fine.
+        self.scheduler.scan_user_limit_counters(keys.start())
     }
 
     /// Runs the leader specific task which is the awaiting of action effects and the monitoring
