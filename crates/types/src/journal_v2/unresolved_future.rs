@@ -88,6 +88,7 @@ impl From<SignalId> for UnresolvedFuture {
     }
 }
 
+/// See [UnresolvedFuture::resolve] below
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ResolveResult {
     Pending,
@@ -103,15 +104,19 @@ impl ResolveResult {
     }
 }
 
-pub trait NotificationResultVariantReader {
-    fn read_notification_result_variant(
+/// See [UnresolvedFuture::resolve] below
+struct Indeterminable;
+
+/// Used by the [UnresolvedFuture::resolve] algorithm to read the result variant of a notification.
+pub trait NotificationResultVariantLookup {
+    fn read_result_variant(
         &self,
         notification_id: &NotificationId,
     ) -> Option<RawNotificationResultVariant>;
 }
 
-impl NotificationResultVariantReader for &HashMap<NotificationId, RawNotificationResultVariant> {
-    fn read_notification_result_variant(
+impl NotificationResultVariantLookup for &HashMap<NotificationId, RawNotificationResultVariant> {
+    fn read_result_variant(
         &self,
         notification_id: &NotificationId,
     ) -> Option<RawNotificationResultVariant> {
@@ -119,8 +124,8 @@ impl NotificationResultVariantReader for &HashMap<NotificationId, RawNotificatio
     }
 }
 
-impl NotificationResultVariantReader for &RawNotification {
-    fn read_notification_result_variant(
+impl NotificationResultVariantLookup for &RawNotification {
+    fn read_result_variant(
         &self,
         notification_id: &NotificationId,
     ) -> Option<RawNotificationResultVariant> {
@@ -263,9 +268,9 @@ impl UnresolvedFuture {
     ///   QED
     pub fn resolve(
         &mut self,
-        notification_variant_reader: impl NotificationResultVariantReader,
+        notification_result_variant_lookup: impl NotificationResultVariantLookup,
     ) -> bool {
-        self.resolve_inner(&notification_variant_reader)
+        self.resolve_inner(&notification_result_variant_lookup)
             // In case of shortcircuit, we always want to resume
             .unwrap_or(ResolveResult::Success)
             .is_completed()
@@ -275,12 +280,11 @@ impl UnresolvedFuture {
     // For example, an UNKNOWN is deeply nested inside a FIRST_SUCCEEDED_OR_ALL_FAILED.
     fn resolve_inner(
         &mut self,
-        notification_variant_reader: &impl NotificationResultVariantReader,
-    ) -> Result<ResolveResult, ()> {
+        notification_result_variant_lookup: &impl NotificationResultVariantLookup,
+    ) -> Result<ResolveResult, Indeterminable> {
         match self {
             Self::Single(inner) => Ok(
-                if let Some(variant) =
-                    notification_variant_reader.read_notification_result_variant(inner)
+                if let Some(variant) = notification_result_variant_lookup.read_result_variant(inner)
                 {
                     variant.into()
                 } else {
@@ -292,7 +296,7 @@ impl UnresolvedFuture {
                 // because it cannot determine whether it will resolve as success or failure only from the ResolveResult of its child.
                 for fut in futures.iter_mut() {
                     if fut
-                        .resolve_inner(notification_variant_reader)?
+                        .resolve_inner(notification_result_variant_lookup)?
                         .is_completed()
                     {
                         return Ok(ResolveResult::SuccessOrFailure);
@@ -304,7 +308,7 @@ impl UnresolvedFuture {
             Self::FirstCompleted(futures) => {
                 // FirstCompleted is different from Unknown because it propagates upward the ResolveResult of its first completed child.
                 for fut in futures.iter_mut() {
-                    let inner_result = fut.resolve_inner(notification_variant_reader)?;
+                    let inner_result = fut.resolve_inner(notification_result_variant_lookup)?;
                     if inner_result.is_completed() {
                         return Ok(inner_result);
                     }
@@ -317,7 +321,7 @@ impl UnresolvedFuture {
                 let mut i = 0;
                 while i < futures.len() {
                     if futures[i]
-                        .resolve_inner(notification_variant_reader)?
+                        .resolve_inner(notification_result_variant_lookup)?
                         .is_completed()
                     {
                         futures.swap_remove(i);
@@ -334,7 +338,7 @@ impl UnresolvedFuture {
             Self::FirstSucceededOrAllFailed(futures) => {
                 let mut i = 0;
                 while i < futures.len() {
-                    match futures[i].resolve_inner(notification_variant_reader)? {
+                    match futures[i].resolve_inner(notification_result_variant_lookup)? {
                         ResolveResult::Success => {
                             return Ok(ResolveResult::Success);
                         }
@@ -345,7 +349,7 @@ impl UnresolvedFuture {
                         ResolveResult::SuccessOrFailure => {
                             // I can't determine if one of the children is success or failure,
                             // so the only thing left to do here is to shortcircuit and let the SDK decide how to deal with this.
-                            return Err(());
+                            return Err(Indeterminable);
                         }
                     }
                 }
@@ -362,7 +366,7 @@ impl UnresolvedFuture {
             Self::AllSucceededOrFirstFailed(futures) => {
                 let mut i = 0;
                 while i < futures.len() {
-                    match futures[i].resolve_inner(notification_variant_reader)? {
+                    match futures[i].resolve_inner(notification_result_variant_lookup)? {
                         ResolveResult::Success => {
                             futures.swap_remove(i);
                         }
@@ -371,7 +375,7 @@ impl UnresolvedFuture {
                         ResolveResult::SuccessOrFailure => {
                             // I can't determine if one of the children is success or failure,
                             // so the only thing left to do here is to shortcircuit and let the SDK decide how to deal with this.
-                            return Err(());
+                            return Err(Indeterminable);
                         }
                     }
                 }
