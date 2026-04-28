@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::io;
-use std::num::{NonZeroU32, NonZeroUsize};
+use std::num::NonZeroU32;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -167,9 +167,8 @@ impl Service<Uri> for HyperUtilConnector {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn make_custom_pool(max_connections: usize) -> restate_service_client::pool::Pool<TestConnector> {
+fn make_custom_pool() -> restate_service_client::pool::Pool<TestConnector> {
     PoolBuilder::default()
-        .max_connections(NonZeroUsize::new(max_connections).unwrap())
         .initial_max_send_streams(NonZeroU32::new(MAX_CONCURRENT_STREAMS).unwrap())
         .build(TestConnector::new(MAX_CONCURRENT_STREAMS))
 }
@@ -242,7 +241,7 @@ fn bench_sequential_requests(c: &mut Criterion) {
     group.bench_function("custom-pool", |b| {
         // Warm up: establish H2 connection
         let pool = rt.block_on(async {
-            let pool = make_custom_pool(1);
+            let pool = make_custom_pool();
             let resp = pool
                 .request(empty_request("http://bench-host:80"))
                 .await
@@ -318,7 +317,7 @@ fn bench_concurrent_requests(c: &mut Criterion) {
             |b, &n| {
                 // Warm up
                 let pool = rt.block_on(async {
-                    let pool = make_custom_pool(1);
+                    let pool = make_custom_pool();
                     let resp = pool
                         .request(empty_request("http://bench-host:80"))
                         .await
@@ -424,7 +423,7 @@ fn bench_body_throughput(c: &mut Criterion) {
             let payload = payload.clone();
             // Warm up
             let pool = rt.block_on(async {
-                let pool = make_custom_pool(1);
+                let pool = make_custom_pool();
                 let resp = pool
                     .request(body_request("http://bench-host:80", payload.clone()))
                     .await
