@@ -29,7 +29,7 @@ use tower::Service;
 use tracing::trace;
 
 use crate::pool::PoolConfig;
-use crate::pool::conn::ConnectionConfigBuilder;
+use crate::pool::conn::{ConnectionConfig, ConnectionConfigBuilder};
 
 use super::Error;
 use super::conn::{Connection, ResponseFuture};
@@ -38,6 +38,25 @@ use super::conn::{Connection, ResponseFuture};
 struct AuthorityPoolInner<C> {
     epoch: usize,
     connections: Vec<Connection<C>>,
+}
+
+struct AuthorityPoolShared<C> {
+    connector: C,
+    config: PoolConfig,
+    connection_config: ConnectionConfig,
+    inner: Arc<RwLock<AuthorityPoolInner<C>>>,
+    last_used: AtomicU64,
+}
+
+enum AuthorityPoolState<C> {
+    ExpandCandidates {
+        polled: Vec<Connection<C>>,
+        unpolled: Vec<Connection<C>>,
+    },
+    PollCandidates {
+        candidates: Vec<Connection<C>>,
+    },
+    Ready(Connection<C>),
 }
 
 /// A pool of HTTP/2 connections to a single HTTP authority.
@@ -49,29 +68,15 @@ struct AuthorityPoolInner<C> {
 /// Cloning an `AuthorityPool` shares the underlying connection set; each clone
 /// maintains its own per-handle state for the `poll_ready`/`call` cycle.
 pub struct AuthorityPool<C> {
-    connector: C,
-    config: PoolConfig,
-    inner: Arc<RwLock<AuthorityPoolInner<C>>>,
-    /// Timestamp of the last request routed through this pool. Updated
-    /// atomically without holding the inner lock.
-    last_used: Arc<AtomicU64>,
-    /// The readied connection (permit acquired). Consumed by [`call`].
-    ready: Option<Connection<C>>,
-    /// Connections being polled for readiness. When all connections are at
-    /// capacity, we poll all of them so we're woken no matter which one
-    /// frees up a stream.
-    candidates: Vec<Connection<C>>,
+    shared: Arc<AuthorityPoolShared<C>>,
+    state: Option<AuthorityPoolState<C>>,
 }
 
 impl<C: Clone> Clone for AuthorityPool<C> {
     fn clone(&self) -> Self {
         Self {
-            connector: self.connector.clone(),
-            config: self.config.clone(),
-            inner: Arc::clone(&self.inner),
-            last_used: Arc::clone(&self.last_used),
-            ready: None,
-            candidates: Vec::default(),
+            shared: Arc::clone(&self.shared),
+            state: None,
         }
     }
 }
@@ -79,23 +84,25 @@ impl<C: Clone> Clone for AuthorityPool<C> {
 impl<C> AuthorityPool<C> {
     /// Updates the last-used timestamp to the current time.
     pub(crate) fn touch(&self) {
-        self.last_used
+        self.shared
+            .last_used
             .store(MillisSinceEpoch::now().as_u64(), Ordering::Relaxed);
     }
 
     /// Returns the last-used timestamp.
     pub(crate) fn last_used(&self) -> MillisSinceEpoch {
-        MillisSinceEpoch::from(self.last_used.load(Ordering::Relaxed))
+        MillisSinceEpoch::from(self.shared.last_used.load(Ordering::Relaxed))
     }
 
     #[cfg(test)]
     pub(crate) fn set_last_used(&self, ts: MillisSinceEpoch) {
-        self.last_used.store(ts.as_u64(), Ordering::Relaxed);
+        self.shared.last_used.store(ts.as_u64(), Ordering::Relaxed);
     }
 
     /// Returns `true` if any connection has in-flight H2 streams.
     pub(crate) fn has_inflight(&self) -> bool {
-        self.inner
+        self.shared
+            .inner
             .read()
             .connections
             .iter()
@@ -111,16 +118,28 @@ where
     C::Error: Into<Error>,
 {
     pub fn new(connector: C, config: PoolConfig) -> Self {
-        Self {
+        let connection_config = ConnectionConfigBuilder::default()
+            .initial_max_send_streams(config.initial_max_send_streams.get())
+            .streams_per_connection_limit(config.streams_per_connection_limit.get())
+            .keep_alive_interval(config.keep_alive_interval)
+            .keep_alive_timeout(config.keep_alive_timeout)
+            .build()
+            .unwrap();
+
+        let shared = AuthorityPoolShared {
             connector,
             config,
+            connection_config,
+            last_used: AtomicU64::new(MillisSinceEpoch::now().as_u64()),
             inner: Arc::new(RwLock::new(AuthorityPoolInner {
                 epoch: 0,
                 connections: Vec::new(),
             })),
-            last_used: Arc::new(AtomicU64::new(MillisSinceEpoch::now().as_u64())),
-            ready: None,
-            candidates: Vec::default(),
+        };
+
+        Self {
+            shared: Arc::new(shared),
+            state: None,
         }
     }
 
@@ -129,231 +148,256 @@ where
     /// Returns `Ready(Ok(()))` once a permit has been acquired on one connection,
     /// after which [`call`](Self::call) may be invoked exactly once.
     ///
-    /// The algorithm runs in a loop:
-    /// 1. If a permit was already acquired in a previous poll, return immediately.
-    /// 2. Poll all current candidates. Closed candidates are evicted. The first
-    ///    to return `Ready(Ok)` wins and the candidate list is cleared. Candidates
-    ///    that error are evicted. Pending candidates register wakers so we're
-    ///    woken when any of them frees up a stream.
-    /// 3. Expand the candidate set with connections from the shared pool that
-    ///    aren't already candidates. Additionally, if the ratio of available H2
-    ///    streams to total capacity falls below
-    ///    [`eager_connection_threshold_percent`](PoolConfig::eager_connection_threshold_percent),
-    ///    proactively create a new connection (capacity permitting). If candidates
-    ///    were added, randomize their order for load balancing and loop back to
-    ///    step 2.
-    /// 4. If no new candidates were found, create a new connection (after
-    ///    evicting closed ones from the shared pool) provided we're under
-    ///    [`max_connections`](PoolConfig::max_connections), and poll it.
-    /// 5. If at the connection limit with all candidates pending, return
-    ///    `Pending`. Wakers were already registered in step 2.
+    /// Internally driven by the [`AuthorityPoolState`] machine. Each iteration
+    /// of the loop dispatches on the current state:
+    ///
+    /// - **`Ready`** — a connection was already selected by a previous poll.
+    ///   Return `Ready(Ok(()))` immediately; the next [`call`](Self::call)
+    ///   will consume it.
+    /// - **`PollCandidates { candidates }`** — poll each candidate. Closed
+    ///   candidates are evicted; the first to return `Ready(Ok)` wins and the
+    ///   state transitions to `Ready`. Candidates that error are evicted; for
+    ///   the ones that return `Pending` a waker has been registered with `cx`.
+    ///   When the loop finishes without a winner, the surviving candidates
+    ///   carry over into `ExpandCandidates` as `polled` so we can decide
+    ///   whether to bring in more connections or expand.
+    /// - **`ExpandCandidates { polled, unpolled }`** — walk the shared pool's
+    ///   connection list, accumulating live-stream totals and pushing any
+    ///   connection we haven't already seen onto `unpolled`. Then:
+    ///   1. **Decide whether to expand.** The pool is allowed to grow when
+    ///      there are no live connections at all (cold start), when every
+    ///      live stream is currently in use (`total_available_streams == 0`),
+    ///      or when the available-stream ratio falls below
+    ///      `1.0 - connection_saturation_threshold`. The first two conditions
+    ///      force expansion even when the threshold is `None`, so callers
+    ///      cannot accidentally wedge themselves on full saturation by
+    ///      disabling proactive expansion.
+    ///   2. **If expansion was decided**, call [`Self::try_expand_pool`].
+    ///      - On success, poll the new candidate. `Ready(Ok)` → transition
+    ///        to `Ready`; `Pending` → push onto `polled`; `Ready(Err)`
+    ///        propagates only if there is nothing else worth polling
+    ///        (`unpolled` is empty), otherwise the failed candidate is
+    ///        dropped and we continue with the rest.
+    ///      - On race-loss (epoch bumped by another writer), re-enter
+    ///        `ExpandCandidates` with the same `polled`/`unpolled`. The next
+    ///        iteration picks up the connection added by the winning thread
+    ///        and re-evaluates `scaleup`.
+    ///   3. **If `unpolled` is non-empty**, transition to `PollCandidates`
+    ///      with `polled ∪ unpolled` and loop back to poll them.
+    ///   4. **Otherwise**, every reachable candidate is in `polled` (already
+    ///      polled to `Pending` with a waker registered on `cx`) — return
+    ///      `Poll::Pending`.
+    ///
+    /// **Back-pressure.** A new connection is created at most once per
+    /// `ExpandCandidates` step, gated by the saturation check. Because a
+    /// freshly-created (still-connecting) connection contributes its nominal
+    /// `initial_max_send_streams` to both `available` and `max_concurrent`
+    /// totals, a single in-flight connect drives the available-stream ratio
+    /// near 1.0 and suppresses further expansion until callers actually start
+    /// acquiring permits against it. This is the spiral guard against
+    /// concurrent cold-start callers each opening their own connection.
+    ///
+    /// **Termination.** `Ready` and `PollCandidates` are one-shot transitions.
+    /// `ExpandCandidates` either returns, transitions to `PollCandidates`, or
+    /// re-enters itself on race-loss. The race-loss loop converges because
+    /// every concurrent winner grows `inner.connections`, which we re-read on
+    /// re-entry — so saturation eventually relaxes or we pick up the winner's
+    /// connection into `unpolled`.
+    ///
+    /// **No deadlock.** When `Poll::Pending` is returned, at least one
+    /// candidate had a waker registered on `cx`: the empty-candidates case
+    /// would have driven `total_max == 0`, which forces expansion and either
+    /// produces a candidate (waker registered via the new connection's
+    /// `poll_ready`) or surfaces an error.
     pub fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
-        if self.ready.is_some() {
-            return Poll::Ready(Ok(()));
-        }
-
-        let mut pool_expanded = false;
         loop {
-            let mut i = 0;
-            let mut current_ids = HashSet::new();
+            let state = self
+                .state
+                .take()
+                .unwrap_or_else(|| AuthorityPoolState::ExpandCandidates {
+                    polled: Vec::default(),
+                    unpolled: Vec::default(),
+                });
 
-            while i < self.candidates.len() {
-                let candidate = &mut self.candidates[i];
-                if candidate.is_closed() {
-                    self.candidates.swap_remove(i);
-                    continue;
+            match state {
+                AuthorityPoolState::Ready(ready) => {
+                    self.state = Some(AuthorityPoolState::Ready(ready));
+                    return Poll::Ready(Ok(()));
                 }
+                AuthorityPoolState::PollCandidates { mut candidates } => {
+                    let mut i = 0;
+                    while i < candidates.len() {
+                        let candidate = &mut candidates[i];
+                        if candidate.is_closed() {
+                            candidates.swap_remove(i);
+                            continue;
+                        }
 
-                match candidate.poll_ready(cx) {
-                    Poll::Ready(Ok(_)) => {
-                        self.ready = Some(self.candidates.swap_remove(i));
-                        self.candidates.clear();
-                        return Poll::Ready(Ok(()));
+                        match candidate.poll_ready(cx) {
+                            Poll::Ready(Ok(_)) => {
+                                self.state =
+                                    Some(AuthorityPoolState::Ready(candidates.swap_remove(i)));
+                                return Poll::Ready(Ok(()));
+                            }
+                            Poll::Ready(Err(err)) => {
+                                // keep trying other candidates. If all candidates
+                                // have been evicted, we try the remaining connections
+                                // in the pool (after eviction).
+                                candidates.swap_remove(i);
+                                trace!("connection evicted from candidates due to error: {err}")
+                            }
+                            Poll::Pending => {
+                                // Waker registered inside conn.poll_ready — we'll
+                                // be woken when this connection frees a stream.
+                                i += 1;
+                            }
+                        }
                     }
-                    Poll::Ready(Err(err)) => {
-                        // keep trying other candidates. If all candidates
-                        // have been evicted, we try the remaining connections
-                        // in the pool (after eviction).
-                        self.candidates.swap_remove(i);
-                        trace!("connection evicted from the pool due to error: {err}")
+
+                    // none has finished or all has been evicted due to being closed.
+                    // try to expand.
+                    self.state = Some(AuthorityPoolState::ExpandCandidates {
+                        polled: candidates,
+                        unpolled: Vec::default(),
+                    })
+                }
+                AuthorityPoolState::ExpandCandidates {
+                    mut polled,
+                    mut unpolled,
+                } => {
+                    let current_ids: HashSet<_> = polled
+                        .iter()
+                        .chain(unpolled.iter())
+                        .map(|c| c.id())
+                        .collect();
+
+                    // try to expand the list of the candidates from the shared pool
+                    let mut inner = self.shared.inner.upgradable_read();
+
+                    let mut total_available_streams = 0usize;
+                    let mut total_max_concurrent_streams = 0usize;
+
+                    for candidate in &inner.connections {
+                        if candidate.is_closed() {
+                            continue;
+                        }
+
+                        total_available_streams =
+                            total_available_streams.saturating_add(candidate.available_streams());
+                        total_max_concurrent_streams = total_max_concurrent_streams
+                            .saturating_add(candidate.max_concurrent_streams());
+
+                        if current_ids.contains(&candidate.id()) {
+                            continue;
+                        }
+
+                        unpolled.push(candidate.clone());
                     }
-                    Poll::Pending => {
-                        // Waker registered inside conn.poll_ready — we'll
-                        // be woken when this connection frees a stream.
-                        current_ids.insert(candidate.id());
-                        i += 1;
+
+                    // We are allowed to create new connections and effectively expand
+                    // the pool in the following conditions:
+                    // - No more available streams (fully saturated or no connections)
+                    // - Pool has zero streams (no connections)
+                    // - available streams ratio (available/total) < 1.0 - saturation_threshold
+                    let scaleup = total_available_streams == 0
+                        || total_max_concurrent_streams == 0
+                        || self
+                            .shared
+                            .config
+                            .connection_saturation_threshold
+                            .is_some_and(|connection_saturation_threshold| {
+                                let available_ratio = total_available_streams as f64
+                                    / total_max_concurrent_streams as f64;
+
+                                available_ratio
+                                    < 1.0 - connection_saturation_threshold.clamp(0.0, 1.0)
+                            });
+
+                    if scaleup {
+                        match self.try_expand_pool(&mut inner) {
+                            Some(mut candidate) => {
+                                drop(inner);
+
+                                match candidate.poll_ready(cx) {
+                                    Poll::Ready(Ok(_)) => {
+                                        self.state = Some(AuthorityPoolState::Ready(candidate));
+                                        return Poll::Ready(Ok(()));
+                                    }
+                                    Poll::Pending => {
+                                        // Add the connection to the list of polled candidates
+                                        polled.push(candidate);
+                                    }
+                                    Poll::Ready(Err(err)) if unpolled.is_empty() => {
+                                        return Poll::Ready(Err(err));
+                                    }
+                                    Poll::Ready(Err(_)) => {
+                                        // there is a chance that one of the new candidates might succeed.
+                                        // we can try to poll them again
+                                    }
+                                }
+                            }
+                            None => {
+                                // another caller beat us to it. lets try again to pick up
+                                // the new candidate
+                                self.state =
+                                    Some(AuthorityPoolState::ExpandCandidates { polled, unpolled });
+                                continue;
+                            }
+                        }
+                    }
+
+                    // Here we can have two cases:
+                    //   - `unpolled` is non-empty: we picked up connections
+                    //     from the shared pool that haven't been polled yet —
+                    //     transition to `PollCandidates` to drive them.
+                    //   - `unpolled` is empty: every reachable candidate is
+                    //     already in `polled` and was polled to `Pending`
+                    //     with a waker registered on `cx`, so we just wait.
+                    //
+                    // The assert guards against an impossible empty state:
+                    // `scaleup` would have been forced true if there are
+                    // no candidates available.
+                    assert!(!polled.is_empty() || !unpolled.is_empty());
+                    if !unpolled.is_empty() {
+                        polled.extend(unpolled);
+                        self.state =
+                            Some(AuthorityPoolState::PollCandidates { candidates: polled });
+                    } else {
+                        return Poll::Pending;
                     }
                 }
             }
-
-            // Remaining candidates are all pending (or the list is empty if
-            // all errored). Try to expand with connections from the shared pool
-            // that we haven't polled yet this iteration.
-            let mut inner = self.inner.upgradable_read();
-
-            let mut has_some_closed = false;
-            let mut candidates_expanded = false;
-
-            let mut total_available_streams = 0;
-            let mut total_max_concurrent_streams = 0;
-
-            for candidate in &inner.connections {
-                if candidate.is_closed() {
-                    has_some_closed = true;
-                    continue;
-                }
-
-                total_available_streams += candidate.available_streams();
-                total_max_concurrent_streams += candidate.max_concurrent_streams();
-
-                if current_ids.contains(&candidate.id()) {
-                    continue;
-                }
-
-                candidates_expanded = true;
-                self.candidates.push(candidate.clone());
-            }
-
-            let should_expand = if total_max_concurrent_streams == 0 {
-                // No live connections — definitely create one
-                true
-            } else {
-                self.config.connection_saturation_threshold.is_some_and(
-                    |connection_saturation_threshold| {
-                        let available_ratio =
-                            total_available_streams as f64 / total_max_concurrent_streams as f64;
-
-                        available_ratio < 1.0 - connection_saturation_threshold.clamp(0.0, 1.0)
-                    },
-                )
-            };
-
-            if should_expand && !pool_expanded {
-                // Eagerly add new connection to the candidates since the pool
-                // is running low on free h2 sessions.
-                if let Some(candidate) = self.try_new_connection(has_some_closed, &mut inner) {
-                    // no need to hold the lock any longer during the
-                    // polling of the new candidate
-                    drop(inner);
-
-                    pool_expanded = true;
-                    // if polling new connection failed, don't shadow other candidates
-                    // that might be able to succeed.
-                    match self.poll_new_candidate(cx, candidate) {
-                        // Don't propagate the error if existing candidates
-                        // (or the ones that has been added from the pool)
-                        // haven't been polled yet. they may still succeed.
-                        Poll::Ready(Err(_)) if !self.candidates.is_empty() => continue,
-                        result => return result,
-                    }
-                }
-            }
-
-            if candidates_expanded {
-                // Candidate list was expanded with existing pool connections and/or
-                // a newly created connection. Restart the polling loop.
-                //
-                // Rotate by a random offset to roughly balance load
-                // across connections. rotate_left is cheaper than shuffle.
-                if self.candidates.len() > 1 {
-                    let mid = rand::random_range(0..self.candidates.len());
-                    self.candidates.rotate_left(mid);
-                }
-
-                drop(inner);
-                continue;
-            }
-
-            // Fallback pool expansion, in case eager expansion was completely disabled.
-            // Only hit this scenario when all candidates are pending and no more candidates to add.
-            // Try to create a fresh connection if there are closed connections to evict or we're under the limit.
-            if let Some(candidate) = self.try_new_connection(has_some_closed, &mut inner) {
-                // no need to hold the lock any longer during the
-                // polling of the new candidate
-                drop(inner);
-
-                return self.poll_new_candidate(cx, candidate);
-            }
-
-            // We only reach here when `!has_some_closed && len >= max`, so the
-            // connection limit is saturated. All candidates are pending with
-            // wakers registered — wait for any to free a stream.
-            debug_assert!(inner.connections.len() >= self.config.max_connections.get());
-            return Poll::Pending;
         }
     }
 
-    /// Polls a new candidate connection for readiness. If not yet ready, queues it
-    /// for later polling; if ready, select it and discards other candidates.
-    fn poll_new_candidate(
-        &mut self,
-        cx: &mut Context<'_>,
-        mut candidate: Connection<C>,
-    ) -> Poll<Result<(), Error>> {
-        match candidate.poll_ready(cx) {
-            Poll::Pending => {
-                // New connections should be immediately ready
-                // Unless its all its permits has been already taken!
-                // (or the inner connector is not ready)
-                // This **should** not happen unless the pool is heavily
-                // under contention.
-                self.candidates.push(candidate);
-                Poll::Pending
-            }
-            Poll::Ready(Ok(_)) => {
-                self.ready = Some(candidate);
-                self.candidates.clear();
-                Poll::Ready(Ok(()))
-            }
-            Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
-        }
-    }
-
-    /// Try to add a new connection to the underlying shared pool.
+    /// Add a new connection to the underlying shared pool.
     ///
-    /// A new connection is attempted when either closed connections were detected
-    /// (and need to be reaped) or the pool is below its max connection limit.
-    ///
-    /// The actual insertion upgrades to a write lock and rechecks the epoch to
-    /// guard against concurrent modifications, so this may return `None` even
-    /// when the preconditions appeared to hold.
-    fn try_new_connection(
+    /// Called only by [`Self::poll_ready`] after the saturation threshold has
+    /// been crossed. Upgrades to a write lock, reaps closed connections, and
+    /// pushes a new one. Returns `None` only if the epoch was bumped by a
+    /// concurrent writer in between (defensive — concurrent writers are
+    /// already serialized by the upgradable read lock).
+    fn try_expand_pool(
         &self,
-        has_some_closed: bool,
         inner: &mut RwLockUpgradableReadGuard<'_, AuthorityPoolInner<C>>,
     ) -> Option<Connection<C>> {
-        if has_some_closed || inner.connections.len() < self.config.max_connections.get() {
-            // only try to open new connection if we still under the limit
-            let epoch = inner.epoch;
-            inner.with_upgraded(|inner| {
-                inner.connections.retain(|c| !c.is_closed());
+        let epoch = inner.epoch;
+        inner.with_upgraded(|inner| {
+            inner.connections.retain(|c| !c.is_closed());
 
-                if epoch != inner.epoch
-                    || inner.connections.len() >= self.config.max_connections.get()
-                {
-                    // List of connections has been updated by a different thread,
-                    // or expansion will cause number of connections to go above the limit.
-                    return None;
-                }
+            if epoch != inner.epoch {
+                // List of connections has been updated by a different thread.
+                return None;
+            }
 
-                inner.epoch = inner.epoch.wrapping_add(1);
+            inner.epoch = inner.epoch.wrapping_add(1);
 
-                let candidate = Connection::new(
-                    self.connector.clone(),
-                    ConnectionConfigBuilder::default()
-                        .initial_max_send_streams(self.config.initial_max_send_streams.get())
-                        .keep_alive_interval(self.config.keep_alive_interval)
-                        .keep_alive_timeout(self.config.keep_alive_timeout)
-                        .build()
-                        .unwrap(),
-                );
-                inner.connections.push(candidate.clone());
+            let candidate =
+                Connection::new(self.shared.connector.clone(), self.shared.connection_config);
+            inner.connections.push(candidate.clone());
 
-                Some(candidate)
-            })
-        } else {
-            None
-        }
+            Some(candidate)
+        })
     }
 
     /// Sends a request over a connection selected by [`poll_ready`].
@@ -365,18 +409,17 @@ where
         B: Body<Data = Bytes> + Send + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
-        let mut conn = self
-            .ready
-            .take()
-            .expect("poll_ready() was called until ready");
+        let Some(AuthorityPoolState::Ready(mut conn)) = self.state.take() else {
+            panic!("expect poll_ready() was called until ready");
+        };
+
         conn.request(request)
     }
 }
 
 #[cfg(test)]
 mod test {
-    use std::num::{NonZeroU32, NonZeroUsize};
-    use std::task::Poll;
+    use std::num::NonZeroU32;
 
     use bytes::Bytes;
     use http::Request;
@@ -387,14 +430,10 @@ mod test {
 
     use super::{AuthorityPool, PoolConfig};
 
-    fn make_pool(
-        max_concurrent_streams: u32,
-        max_connections: usize,
-    ) -> AuthorityPool<TestConnector> {
+    fn make_pool(max_concurrent_streams: u32) -> AuthorityPool<TestConnector> {
         AuthorityPool::new(
             TestConnector::new(max_concurrent_streams),
             PoolConfig {
-                max_connections: NonZeroUsize::new(max_connections).unwrap(),
                 initial_max_send_streams: NonZeroU32::new(max_concurrent_streams).unwrap(),
                 ..Default::default()
             },
@@ -420,92 +459,44 @@ mod test {
     /// First request creates a connection; the pool starts empty.
     #[tokio::test]
     async fn creates_connection_on_demand() {
-        let mut pool = make_pool(10, 4);
+        let mut pool = make_pool(10);
 
         {
-            let inner = pool.inner.read();
+            let inner = pool.shared.inner.read();
             assert_eq!(inner.connections.len(), 0);
         }
 
         let body = send_empty_request(&mut pool).await;
 
         {
-            let inner = pool.inner.read();
+            let inner = pool.shared.inner.read();
             assert_eq!(inner.connections.len(), 1);
         }
 
         drop(body);
     }
 
-    /// When all streams on existing connections are busy, a new connection is
-    /// created (up to max_connections).
+    /// When all streams on existing connections are busy, the pool grows
+    /// without any cap. With 1 stream per connection, holding N response
+    /// bodies forces N connections to exist.
     #[tokio::test]
-    async fn scales_up_when_streams_exhausted() {
-        // 1 stream per connection, max 3 connections.
-        let mut pool = make_pool(1, 3);
+    async fn scales_up_without_cap() {
+        let mut pool = make_pool(1);
 
-        // Hold response bodies to keep streams occupied.
-        let b1 = send_empty_request(&mut pool).await;
-
-        // Second request should trigger a second connection.
-        let b2 = send_empty_request(&mut pool).await;
-
-        {
-            let inner = pool.inner.read();
-            assert_eq!(inner.connections.len(), 2);
+        let mut bodies = Vec::new();
+        for expected_len in 1..=5 {
+            bodies.push(send_empty_request(&mut pool).await);
+            let inner = pool.shared.inner.read();
+            assert_eq!(inner.connections.len(), expected_len);
         }
 
-        // Third request -> third connection.
-        let b3 = send_empty_request(&mut pool).await;
-
-        {
-            let inner = pool.inner.read();
-            assert_eq!(inner.connections.len(), 3);
-        }
-
-        drop((b1, b2, b3));
-    }
-
-    /// The pool does not create more connections than max_connections.
-    /// When at capacity and all streams busy, poll_ready returns Pending.
-    /// Dropping a held response body frees a stream and unblocks poll_ready.
-    #[tokio::test]
-    async fn respects_max_connections() {
-        // 1 stream per connection, max 2 connections.
-        let mut pool = make_pool(1, 2);
-
-        let b1 = send_empty_request(&mut pool).await;
-        let b2 = send_empty_request(&mut pool).await;
-
-        {
-            let inner = pool.inner.read();
-            assert_eq!(inner.connections.len(), 2);
-        }
-
-        // Third poll_ready should return Pending (no capacity).
-        let mut pool_clone = pool.clone();
-        let result = futures::future::poll_fn(|cx| match pool_clone.poll_ready(cx) {
-            Poll::Ready(r) => Poll::Ready(Some(r)),
-            Poll::Pending => Poll::Ready(None),
-        })
-        .await;
-        assert!(result.is_none(), "expected Pending when at max capacity");
-
-        // Drop one body, freeing a stream.
-        drop(b1);
-
-        // Now poll_ready should succeed (wakers were registered on all connections).
-        futures::future::poll_fn(|cx| pool_clone.poll_ready(cx))
-            .await
-            .unwrap();
-
-        drop(b2);
+        drop(bodies);
     }
 
     /// Cloned pools share the same connection set.
     #[tokio::test]
     async fn clones_share_connections() {
-        let pool = make_pool(10, 4);
+        let pool = make_pool(10);
         let mut p1 = pool.clone();
         let mut p2 = pool.clone();
 
@@ -513,7 +504,7 @@ mod test {
 
         // p2 should see the connection created by p1.
         {
-            let inner = p2.inner.read();
+            let inner = p2.shared.inner.read();
             assert_eq!(inner.connections.len(), 1);
         }
 
@@ -521,15 +512,56 @@ mod test {
 
         // Still 1 connection (10 streams available, only 2 used).
         {
-            let inner = p1.inner.read();
+            let inner = p1.shared.inner.read();
             assert_eq!(inner.connections.len(), 1);
         }
+    }
+
+    /// Concurrent cold-start callers should not each open their own connection.
+    /// With 10 streams per connection and 200 in-flight callers, the pool should
+    /// open ~ceil(200/10) = 20 connections, not 200. The saturation-gated
+    /// once-per-`poll_ready` rule provides the back-pressure.
+    #[tokio::test]
+    async fn back_pressure_under_concurrent_cold_start() {
+        let streams_per_conn = 10u32;
+        let concurrent_holds = 200usize;
+        let pool = make_pool(streams_per_conn);
+
+        let mut handles = tokio::task::JoinSet::default();
+        for _ in 0..concurrent_holds {
+            let mut p = pool.clone();
+            handles.spawn(async move { send_empty_request(&mut p).await });
+        }
+
+        let bodies: Vec<_> = handles.join_all().await;
+
+        let connections = pool.shared.inner.read().connections.len();
+        let ideal = concurrent_holds.div_ceil(streams_per_conn as usize);
+        // Allow some slack: the pool may temporarily race ahead while a
+        // connection is still in CONNECTING and clones see the old totals.
+        // The important invariant is "much less than `concurrent_holds`".
+        assert!(
+            connections <= ideal * 2,
+            "expected at most {} connections, got {}",
+            ideal * 2,
+            connections,
+        );
+        assert!(
+            connections >= ideal,
+            "expected at least {} connections to satisfy {} concurrent holds with {} streams each, got {}",
+            ideal,
+            concurrent_holds,
+            streams_per_conn,
+            connections,
+        );
+
+        drop(bodies);
     }
 
     /// Concurrent requests with body echo work correctly through the pool.
     #[tokio::test]
     async fn concurrent_requests_with_echo() {
-        let pool = make_pool(10, 4);
+        let pool = make_pool(10);
         let mut handles = tokio::task::JoinSet::default();
 
         for i in 0u8..200 {

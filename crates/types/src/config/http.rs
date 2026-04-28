@@ -56,19 +56,26 @@ pub struct HttpOptions {
     /// This value will be overwritten by the value included in the initial
     /// SETTINGS frame received from the peer as part of a [connection preface].
     ///
+    /// Note: This value is capped by [`Self::streams_per_connection_limit`]
+    ///
     /// Default: None
     ///
     /// **NOTE**: Setting this value to None (default) users the default
     /// recommended value from HTTP2 specs
     pub initial_max_send_streams: Option<NonZeroU32>,
 
-    /// # Max HTTP2 Connections
+    /// Upper bound on the per-connection max-send-streams.
     ///
-    /// Sets the maximum number of open HTTP/2 connections per
-    /// client for a single host.
+    /// Caps the remote server's advertised `max_concurrent_streams`.
     ///
-    /// Default: 20
-    pub max_http2_connections: NonZeroUsize,
+    /// A high number of concurrent streams per connection works
+    /// poorly with L4 load balancers because streams are not balanced across
+    /// backends.
+    ///
+    /// Since v1.7.0
+    ///
+    /// Default: 128
+    pub streams_per_connection_limit: NonZeroUsize,
 
     /// # Idle Pool Timeout
     ///
@@ -87,7 +94,7 @@ impl Default for HttpOptions {
             no_proxy: None,
             connect_timeout: NonZeroFriendlyDuration::from_secs_unchecked(10),
             initial_max_send_streams: None,
-            max_http2_connections: NonZeroUsize::new(20).unwrap(),
+            streams_per_connection_limit: NonZeroUsize::new(128).unwrap(),
             idle_pool_timeout: Some(NonZeroFriendlyDuration::from_secs_unchecked(300)),
         }
     }
