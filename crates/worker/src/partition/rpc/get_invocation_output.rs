@@ -10,7 +10,6 @@
 
 use super::*;
 use restate_storage_api::StorageError;
-use restate_storage_api::idempotency_table::ReadOnlyIdempotencyTable;
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
 use restate_storage_api::service_status_table::{
     ReadVirtualObjectStatusTable, VirtualObjectStatus,
@@ -35,7 +34,7 @@ pub(super) struct Request {
 impl<'a, TActuator, TSchemas, TStorage> RpcContext<'a, TActuator, TSchemas, TStorage>
 where
     TActuator: Actuator,
-    TStorage: ReadInvocationStatusTable + ReadVirtualObjectStatusTable + ReadOnlyIdempotencyTable,
+    TStorage: ReadInvocationStatusTable + ReadVirtualObjectStatusTable,
 {
     async fn get_invocation_output(
         &mut self,
@@ -46,7 +45,6 @@ where
         let invocation_id = match invocation_query {
             InvocationQuery::Invocation(iid) => iid,
             ref q @ InvocationQuery::Workflow(ref sid) => {
-                // TODO We need this query for backward compatibility, remove when we remove the idempotency table
                 match self.storage.get_virtual_object_status(sid).await? {
                     VirtualObjectStatus::Locked(iid) => iid,
                     VirtualObjectStatus::Unlocked => {
@@ -55,16 +53,7 @@ where
                     }
                 }
             }
-            ref q @ InvocationQuery::IdempotencyId(ref iid) => {
-                // TODO We need this query for backward compatibility, remove when we remove the idempotency table
-                match self.storage.get_idempotency_metadata(iid).await? {
-                    Some(idempotency_metadata) => idempotency_metadata.invocation_id,
-                    None => {
-                        // Try the deterministic id
-                        q.to_invocation_id()
-                    }
-                }
-            }
+            ref q @ InvocationQuery::IdempotencyId(_) => q.to_invocation_id(),
         };
 
         let invocation_status = self.storage.get_invocation_status(&invocation_id).await?;
@@ -95,7 +84,7 @@ where
 impl<'a, Proposer: Actuator, TSchemas, Storage> RpcHandler<Request>
     for RpcContext<'a, Proposer, TSchemas, Storage>
 where
-    Storage: ReadInvocationStatusTable + ReadVirtualObjectStatusTable + ReadOnlyIdempotencyTable,
+    Storage: ReadInvocationStatusTable + ReadVirtualObjectStatusTable,
 {
     type Output = PartitionProcessorRpcResponse;
     type Error = ();

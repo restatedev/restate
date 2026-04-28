@@ -760,12 +760,6 @@ message DedupSequenceNumber {
   }
 }
 
-// ---------------------------------------------------------------------
-// Idempotency
-// ---------------------------------------------------------------------
-
-message IdempotencyMetadata { InvocationId invocation_id = 1; }
-
 message SubmitNotificationSink {
   message Ingress {
     reserved 1;

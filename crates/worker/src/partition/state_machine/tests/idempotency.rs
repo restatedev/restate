@@ -11,17 +11,11 @@
 use super::*;
 
 use crate::partition::state_machine::tests::matchers::actions::invocation_response_to_partition_processor;
-use restate_storage_api::idempotency_table::{
-    IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
-};
 use restate_storage_api::inbox_table::{InboxEntry, ReadInboxTable, SequenceNumberInboxEntry};
-use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, JournalMetadata, StatusTimestamps,
-};
-use restate_types::identifiers::{IdempotencyId, PartitionProcessorRpcRequestId};
+use restate_storage_api::invocation_status_table::CompletedInvocation;
+use restate_types::identifiers::PartitionProcessorRpcRequestId;
 use restate_types::invocation::{
-    AttachInvocationRequest, InvocationQuery, InvocationTarget, PurgeInvocationRequest,
-    SubmitNotificationSink,
+    AttachInvocationRequest, InvocationQuery, InvocationTarget, SubmitNotificationSink,
 };
 use restate_worker_api::invoker::Effect;
 use rstest::*;
@@ -35,8 +29,6 @@ async fn start_and_complete_idempotent_invocation() {
     let retention = Duration::from_secs(60) * 60 * 24;
     let invocation_target = InvocationTarget::mock_virtual_object();
     let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
-    let idempotency_id =
-        IdempotencyId::combine(invocation_id, &invocation_target, idempotency_key.clone());
     let request_id = PartitionProcessorRpcRequestId::default();
 
     // Send fresh invocation with idempotency key
@@ -55,16 +47,6 @@ async fn start_and_complete_idempotent_invocation() {
         contains(pat!(Action::Invoke {
             invocation_id: eq(invocation_id),
         }))
-    );
-
-    // Assert we don't write idempotency metadata, the table is deprecated
-    assert_that!(
-        test_env
-            .storage()
-            .get_idempotency_metadata(&idempotency_id)
-            .await
-            .unwrap(),
-        none()
     );
 
     // Send output, then end
@@ -111,165 +93,6 @@ async fn start_and_complete_idempotent_invocation() {
         pat!(InvocationStatus::Completed(pat!(CompletedInvocation {
             response_result: eq(ResponseResult::Success(response_bytes))
         })))
-    );
-    test_env.shutdown().await;
-}
-
-#[restate_core::test]
-async fn start_and_complete_idempotent_invocation_neo_table() {
-    let mut test_env = TestEnv::create().await;
-
-    let idempotency_key = ByteString::from_static("my-idempotency-key");
-    let retention = Duration::from_secs(60) * 60 * 24;
-    let invocation_target = InvocationTarget::mock_virtual_object();
-    let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
-    let idempotency_id =
-        IdempotencyId::combine(invocation_id, &invocation_target, idempotency_key.clone());
-    let request_id = PartitionProcessorRpcRequestId::default();
-
-    // Send fresh invocation with idempotency key
-    let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
-            invocation_id,
-            invocation_target: invocation_target.clone(),
-            response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
-            idempotency_key: Some(idempotency_key),
-            completion_retention_duration: retention,
-            ..ServiceInvocation::mock()
-        })))
-        .await;
-    assert_that!(
-        actions,
-        contains(pat!(Action::Invoke {
-            invocation_id: eq(invocation_id),
-        }))
-    );
-
-    // Assert we don't write idempotency metadata, the table is deprecated
-    assert_that!(
-        test_env
-            .storage()
-            .get_idempotency_metadata(&idempotency_id)
-            .await
-            .unwrap(),
-        none()
-    );
-
-    // Send output, then end
-    let response_bytes = Bytes::from_static(b"123");
-    let actions = test_env
-        .apply_multiple([
-            Command::InvokerEffect(Box::new(Effect {
-                invocation_id,
-                kind: InvokerEffectKind::JournalEntry {
-                    entry_index: 1,
-                    entry: ProtobufRawEntryCodec::serialize_enriched(Entry::output(
-                        EntryResult::Success(response_bytes.clone()),
-                    )),
-                },
-            })),
-            Command::InvokerEffect(Box::new(Effect {
-                invocation_id,
-                kind: InvokerEffectKind::End,
-            })),
-        ])
-        .await;
-
-    // Assert response and timeout
-    assert_that!(
-        actions,
-        contains(pat!(Action::IngressResponse {
-            request_id: eq(request_id),
-            invocation_id: some(eq(invocation_id)),
-            response: eq(InvocationOutputResponse::Success(
-                invocation_target.clone(),
-                response_bytes.clone()
-            ))
-        }))
-    );
-
-    // InvocationStatus contains completed
-    let invocation_status = test_env
-        .storage()
-        .get_invocation_status(&invocation_id)
-        .await
-        .unwrap();
-    let_assert!(InvocationStatus::Completed(completed_invocation) = invocation_status);
-    assert_eq!(
-        completed_invocation.response_result,
-        ResponseResult::Success(response_bytes)
-    );
-    assert!(
-        completed_invocation
-            .timestamps
-            .completed_transition_time()
-            .is_some()
-    );
-    assert_eq!(
-        completed_invocation.completion_retention_duration,
-        retention
-    );
-    test_env.shutdown().await;
-}
-
-#[restate_core::test]
-async fn complete_already_completed_invocation() {
-    let mut test_env = TestEnv::create().await;
-
-    let idempotency_key = ByteString::from_static("my-idempotency-key");
-    let invocation_target = InvocationTarget::mock_virtual_object();
-    let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
-    let idempotency_id =
-        IdempotencyId::combine(invocation_id, &invocation_target, idempotency_key.clone());
-
-    let response_bytes = Bytes::from_static(b"123");
-
-    // Prepare idempotency metadata and completed status
-    let mut txn = test_env.storage().transaction();
-    txn.put_idempotency_metadata(&idempotency_id, &IdempotencyMetadata { invocation_id })
-        .await
-        .unwrap();
-    txn.put_invocation_status(
-        &invocation_id,
-        &InvocationStatus::Completed(CompletedInvocation {
-            invocation_target: invocation_target.clone(),
-            created_using_restate_version: RestateVersion::current(),
-            source: Source::Ingress(PartitionProcessorRpcRequestId::new()),
-            execution_time: None,
-            idempotency_key: Some(idempotency_key.clone()),
-            timestamps: StatusTimestamps::mock(),
-            response_result: ResponseResult::Success(response_bytes.clone()),
-            completion_retention_duration: Default::default(),
-            journal_retention_duration: Default::default(),
-            journal_metadata: JournalMetadata::empty(),
-            pinned_deployment: None,
-            random_seed: None,
-        }),
-    )
-    .unwrap();
-    txn.commit().await.unwrap();
-
-    // Send a request, should be completed immediately with result
-    let request_id = PartitionProcessorRpcRequestId::default();
-    let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
-            invocation_id,
-            invocation_target: invocation_target.clone(),
-            response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
-            idempotency_key: Some(idempotency_key),
-            ..ServiceInvocation::mock()
-        })))
-        .await;
-    assert_that!(
-        actions,
-        contains(pat!(Action::IngressResponse {
-            request_id: eq(request_id),
-            invocation_id: some(eq(invocation_id)),
-            response: eq(InvocationOutputResponse::Success(
-                invocation_target.clone(),
-                response_bytes.clone()
-            ))
-        }))
     );
     test_env.shutdown().await;
 }
@@ -726,57 +549,5 @@ async fn attach_command_without_blocking_inflight() {
         )
     );
 
-    test_env.shutdown().await;
-}
-
-#[restate_core::test]
-async fn purge_completed_idempotent_invocation() {
-    let mut test_env = TestEnv::create().await;
-
-    let idempotency_key = ByteString::from_static("my-idempotency-key");
-    let invocation_target = InvocationTarget::mock_virtual_object();
-    let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
-    let idempotency_id =
-        IdempotencyId::combine(invocation_id, &invocation_target, idempotency_key.clone());
-
-    // Prepare idempotency metadata and completed status
-    let mut txn = test_env.storage().transaction();
-    txn.put_idempotency_metadata(&idempotency_id, &IdempotencyMetadata { invocation_id })
-        .await
-        .unwrap();
-    txn.put_invocation_status(
-        &invocation_id,
-        &InvocationStatus::Completed(CompletedInvocation {
-            invocation_target,
-            idempotency_key: Some(idempotency_key.clone()),
-            ..CompletedInvocation::mock_neo()
-        }),
-    )
-    .unwrap();
-    txn.commit().await.unwrap();
-
-    // Send purge command
-    let _ = test_env
-        .apply(Command::PurgeInvocation(PurgeInvocationRequest {
-            invocation_id,
-            response_sink: None,
-        }))
-        .await;
-    assert_that!(
-        test_env
-            .storage()
-            .get_invocation_status(&invocation_id)
-            .await
-            .unwrap(),
-        pat!(InvocationStatus::Free)
-    );
-    assert_that!(
-        test_env
-            .storage()
-            .get_idempotency_metadata(&idempotency_id)
-            .await
-            .unwrap(),
-        none()
-    );
     test_env.shutdown().await;
 }
