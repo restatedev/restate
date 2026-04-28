@@ -12,7 +12,7 @@ use std::num::{NonZeroU32, NonZeroUsize};
 use std::time::Duration;
 
 /// Configuration for an [`AuthorityPool`].
-#[derive(Debug, Clone, derive_builder::Builder)]
+#[derive(Debug, Clone, Copy, derive_builder::Builder)]
 #[builder(
     pattern = "owned",
     build_fn(name = "build_inner", private),
@@ -43,8 +43,25 @@ pub struct PoolConfig {
     /// limiting the number of requests queued behind a single pending connection.
     /// Once the connection is established, it discovers the remote peer's actual
     /// max-concurrent-streams and adjusts accordingly.
+    ///
+    /// This value is also capped by [`Self::streams_per_connection_limit`]
+    ///
+    /// Default: 50
     #[builder(default = NonZeroU32::new(50).unwrap())]
     pub(crate) initial_max_send_streams: NonZeroU32,
+
+    /// Upper bound on the per-connection max-send-streams.
+    ///
+    /// Caps the remote server's advertised `max_concurrent_streams`.
+    ///
+    /// A high number of concurrent streams per connection works
+    /// poorly with L4 load balancers because streams are not balanced across
+    /// backends.
+    ///
+    /// Default: 128
+    #[builder(default = NonZeroUsize::new(128).unwrap())]
+    pub(crate) streams_per_connection_limit: NonZeroUsize,
+
     /// Maximum time to wait for an HTTP/2 PING response before declaring the
     /// connection dead and returning [`ConnectionError::KeepAliveTimeout`].
     /// Only meaningful when `keep_alive_interval` is `Some`. Defaults to 20 s.
@@ -63,6 +80,7 @@ impl Default for PoolConfig {
             max_connections: NonZeroUsize::new(1).unwrap(),
             connection_saturation_threshold: Some(0.7f64),
             initial_max_send_streams: NonZeroU32::new(50).unwrap(),
+            streams_per_connection_limit: NonZeroUsize::new(128).unwrap(),
             keep_alive_interval: None,
             keep_alive_timeout: Duration::from_secs(20),
             idle_authority_timeout: Some(Duration::from_secs(300)),
