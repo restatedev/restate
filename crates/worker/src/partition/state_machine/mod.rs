@@ -1011,8 +1011,6 @@ impl<S> StateMachineApplyContext<'_, S> {
     where
         S: ReadInvocationStatusTable
             + WriteInvocationStatusTable
-            + ReadVirtualObjectStatusTable
-            + WriteVirtualObjectStatusTable
             + WriteOutboxTable
             + WriteFsmTable,
     {
@@ -1026,31 +1024,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             has_idempotency_key = false;
         }
 
-        let previous_invocation_status = async {
-            let mut invocation_status = self.get_invocation_status(&invocation_id).await?;
-            if invocation_status != InvocationStatus::Free {
-                // Deduplicated invocation with the new deterministic invocation id
-              Ok::<_, Error>(invocation_status)
-            } else {
-                // Or on lock status for workflow runs with old invocation ids
-                // TODO get rid of this code when we remove the usage of the virtual object table for workflows
-                if is_workflow_run {
-                    let keyed_service_id = service_invocation
-                        .invocation_target
-                        .as_keyed_service_id()
-                        .expect("When the handler type is Workflow, the invocation target must have a key");
-
-                    if let VirtualObjectStatus::Locked(locked_invocation_id) = self
-                        .storage
-                        .get_virtual_object_status(&keyed_service_id)
-                        .await? {
-                        invocation_status = self.get_invocation_status(&locked_invocation_id).await?;
-                    }
-                }
-                Ok(invocation_status)
-            }
-
-        }.await?;
+        let previous_invocation_status = self.get_invocation_status(&invocation_id).await?;
 
         if previous_invocation_status == InvocationStatus::Free {
             // --- New invocation
@@ -4259,7 +4233,6 @@ impl<S> StateMachineApplyContext<'_, S> {
     where
         S: ReadInvocationStatusTable
             + WriteInvocationStatusTable
-            + ReadVirtualObjectStatusTable
             + WriteOutboxTable
             + WriteFsmTable,
     {
@@ -4271,19 +4244,9 @@ impl<S> StateMachineApplyContext<'_, S> {
             self.partition_key_range
         );
 
-        let invocation_id = match attach_invocation_request.invocation_query {
-            InvocationQuery::Invocation(iid) => iid,
-            ref q @ InvocationQuery::Workflow(ref sid) => {
-                match self.storage.get_virtual_object_status(sid).await? {
-                    VirtualObjectStatus::Locked(iid) => iid,
-                    VirtualObjectStatus::Unlocked => {
-                        // Try the deterministic id
-                        q.to_invocation_id()
-                    }
-                }
-            }
-            ref q @ InvocationQuery::IdempotencyId(_) => q.to_invocation_id(),
-        };
+        let invocation_id = attach_invocation_request
+            .invocation_query
+            .to_invocation_id();
         match self.get_invocation_status(&invocation_id).await? {
             InvocationStatus::Free => self.send_response_to_sinks(
                 vec![attach_invocation_request.response_sink],
@@ -4752,23 +4715,6 @@ impl<S> StateMachineApplyContext<'_, S> {
             seq_number,
             message,
         });
-
-        Ok(())
-    }
-
-    async fn do_unlock_service(&mut self, service_id: ServiceId) -> Result<(), Error>
-    where
-        S: WriteVirtualObjectStatusTable,
-    {
-        debug_if_leader!(
-            self.is_leader,
-            rpc.service = %service_id.service_name,
-            "Effect: Unlock service id",
-        );
-
-        self.storage
-            .put_virtual_object_status(&service_id, &VirtualObjectStatus::Unlocked)
-            .map_err(Error::Storage)?;
 
         Ok(())
     }
