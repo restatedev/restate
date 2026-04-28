@@ -170,6 +170,7 @@ use restate_limiter::{
 };
 use restate_types::Scope;
 use restate_util_string::{ReString, RestrictedValue};
+use restate_worker_api::resources::{RuleUpdate, UserLimits};
 
 use crate::scheduler::VQueueHandle;
 
@@ -199,20 +200,6 @@ impl Usage {
 
     fn is_zero(&self) -> bool {
         self.concurrency == 0
-    }
-}
-
-// This lives here temporarily until it finds a proper home
-#[derive(Debug, Default, Clone)]
-pub struct UserLimits {
-    // None means unlimited
-    action_concurrency: Option<NonZeroU64>,
-}
-
-impl UserLimits {
-    #[cfg(test)]
-    pub fn new(action_concurrency: Option<NonZeroU64>) -> Self {
-        Self { action_concurrency }
     }
 }
 
@@ -320,18 +307,6 @@ impl UserLimiter {
     pub fn resolve_rule(&self, handle: RuleHandle) -> Option<&RulePattern<ReString>> {
         self.rules.get_pattern(handle)
     }
-}
-
-/// Describes a rule mutation.
-#[allow(dead_code)]
-pub enum RuleUpdate {
-    /// Insert a new rule or update an existing one with the same pattern.
-    Upsert {
-        pattern: RulePattern<ReString>,
-        limit: UserLimits,
-    },
-    /// Remove a rule by its pattern.
-    Remove { pattern: RulePattern<ReString> },
 }
 
 #[derive(Debug, Default)]
