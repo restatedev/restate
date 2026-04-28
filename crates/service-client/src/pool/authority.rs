@@ -29,7 +29,7 @@ use tower::Service;
 use tracing::trace;
 
 use crate::pool::PoolConfig;
-use crate::pool::conn::ConnectionConfigBuilder;
+use crate::pool::conn::{ConnectionConfig, ConnectionConfigBuilder};
 
 use super::Error;
 use super::conn::{Connection, ResponseFuture};
@@ -51,6 +51,7 @@ struct AuthorityPoolInner<C> {
 pub struct AuthorityPool<C> {
     connector: C,
     config: PoolConfig,
+    connection_config: ConnectionConfig,
     inner: Arc<RwLock<AuthorityPoolInner<C>>>,
     /// Timestamp of the last request routed through this pool. Updated
     /// atomically without holding the inner lock.
@@ -67,7 +68,8 @@ impl<C: Clone> Clone for AuthorityPool<C> {
     fn clone(&self) -> Self {
         Self {
             connector: self.connector.clone(),
-            config: self.config.clone(),
+            config: self.config,
+            connection_config: self.connection_config,
             inner: Arc::clone(&self.inner),
             last_used: Arc::clone(&self.last_used),
             ready: None,
@@ -111,9 +113,18 @@ where
     C::Error: Into<Error>,
 {
     pub fn new(connector: C, config: PoolConfig) -> Self {
+        let connection_config = ConnectionConfigBuilder::default()
+            .initial_max_send_streams(config.initial_max_send_streams.get())
+            .streams_per_connection_limit(config.streams_per_connection_limit.get())
+            .keep_alive_interval(config.keep_alive_interval)
+            .keep_alive_timeout(config.keep_alive_timeout)
+            .build()
+            .unwrap();
+
         Self {
             connector,
             config,
+            connection_config,
             inner: Arc::new(RwLock::new(AuthorityPoolInner {
                 epoch: 0,
                 connections: Vec::new(),
@@ -194,8 +205,8 @@ where
             let mut has_some_closed = false;
             let mut candidates_expanded = false;
 
-            let mut total_available_streams = 0;
-            let mut total_max_concurrent_streams = 0;
+            let mut total_available_streams = 0usize;
+            let mut total_max_concurrent_streams = 0usize;
 
             for candidate in &inner.connections {
                 if candidate.is_closed() {
@@ -203,8 +214,10 @@ where
                     continue;
                 }
 
-                total_available_streams += candidate.available_streams();
-                total_max_concurrent_streams += candidate.max_concurrent_streams();
+                total_available_streams =
+                    total_available_streams.saturating_add(candidate.available_streams());
+                total_max_concurrent_streams =
+                    total_max_concurrent_streams.saturating_add(candidate.max_concurrent_streams());
 
                 if current_ids.contains(&candidate.id()) {
                     continue;
@@ -338,15 +351,7 @@ where
 
                 inner.epoch = inner.epoch.wrapping_add(1);
 
-                let candidate = Connection::new(
-                    self.connector.clone(),
-                    ConnectionConfigBuilder::default()
-                        .initial_max_send_streams(self.config.initial_max_send_streams.get())
-                        .keep_alive_interval(self.config.keep_alive_interval)
-                        .keep_alive_timeout(self.config.keep_alive_timeout)
-                        .build()
-                        .unwrap(),
-                );
+                let candidate = Connection::new(self.connector.clone(), self.connection_config);
                 inner.connections.push(candidate.clone());
 
                 Some(candidate)

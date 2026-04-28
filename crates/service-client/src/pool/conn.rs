@@ -85,7 +85,12 @@ struct ConnectionShared {
 
 impl ConnectionShared {
     fn new(config: ConnectionConfig) -> Self {
-        let concurrency = Concurrency::new(config.initial_max_send_streams as usize);
+        let concurrency = Concurrency::new(
+            config
+                .streams_per_connection_limit
+                .min(config.initial_max_send_streams as usize),
+        );
+
         Self {
             id: next_connection_id(),
             config,
@@ -117,6 +122,8 @@ impl Drop for ConnectionShared {
 #[builder(pattern = "owned", default)]
 pub struct ConnectionConfig {
     initial_max_send_streams: u32,
+    // upper bound applied to the peer's advertised max-concurrent-streams
+    streams_per_connection_limit: usize,
     keep_alive_timeout: Duration,
     keep_alive_interval: Option<Duration>,
 }
@@ -125,6 +132,7 @@ impl Default for ConnectionConfig {
     fn default() -> Self {
         Self {
             initial_max_send_streams: 50,
+            streams_per_connection_limit: 128,
             keep_alive_timeout: Duration::from_secs(20),
             keep_alive_interval: None,
         }
@@ -262,9 +270,12 @@ where
 
                 // this is a good synchronization point to update the permits
                 // to the last known size known by the send_request object.
-                self.shared
-                    .concurrency
-                    .resize(h2.send_request.current_max_send_streams());
+                self.shared.concurrency.resize(
+                    self.shared
+                        .config
+                        .streams_per_connection_limit
+                        .min(h2.send_request.current_max_send_streams()),
+                );
             }
             STATE_CONNECTING => {}
             _ => unreachable!(),
@@ -564,6 +575,26 @@ where
                             continue;
                         }
                     };
+
+                    // Sync the semaphore to the peer's advertised limit, clamped
+                    // by the configured cap.
+                    //
+                    // If the peer's SETTINGS frame hasn't arrived yet,
+                    // `current_max_send_streams()` still reflects the initial
+                    // value which is fine, every later `poll_ready()` re-runs
+                    // this resize.
+                    //
+                    // If the new size is smaller than what's currently in use,
+                    // permits are reclaimed: waiters drop their permits and retry again
+                    // (can land on different connection). That's wasted work, but preferable
+                    // to blocking them waiting on streams on this connection to free
+                    // up.
+                    this.shared.concurrency.resize(
+                        this.shared
+                            .config
+                            .streams_per_connection_limit
+                            .min(send_request.current_max_send_streams()),
+                    );
 
                     this.state = ResponseFutureState::PreFlight {
                         send_request: send_request.clone(),
@@ -882,6 +913,51 @@ mod test {
         );
 
         // Drop all held bodies, permits are released
+        drop(held_bodies);
+    }
+
+    /// Server advertises max_concurrent_streams=50, but the connection is
+    /// configured with cap_max_send_streams=3. After the handshake, the
+    /// semaphore must be clamped to the cap (not the server-advertised value)
+    /// so the pool keeps opening new connections instead of funneling every
+    /// request through this one.
+    #[tokio::test]
+    async fn permits_clamped_to_cap_max_send_streams() {
+        let mut connection = Connection::new(
+            TestConnector::new(50),
+            ConnectionConfigBuilder::default()
+                .initial_max_send_streams(10)
+                .streams_per_connection_limit(3)
+                .build()
+                .unwrap(),
+        );
+
+        // First request triggers the handshake. Drop the body to release the permit.
+        drop(send_request(&mut connection).await);
+
+        // Second ready() hits the Connected arm which resizes the semaphore
+        // to min(cap=3, server=50)=3. Drop the body to release the permit.
+        drop(send_request(&mut connection).await);
+
+        // Hold exactly 3 response bodies to exhaust the cap.
+        let mut held_bodies = Vec::new();
+        for _ in 0..3 {
+            let mut c = connection.clone();
+            held_bodies.push(send_request(&mut c).await);
+        }
+
+        // 4th try_ready must fail — the cap is the active limit even though
+        // the server would happily accept up to 50 concurrent streams.
+        let mut c4 = connection.clone();
+        assert!(
+            c4.try_ready().is_none(),
+            "expected try_ready to return None at cap"
+        );
+
+        // Releasing one held body frees a permit under the cap.
+        drop(held_bodies.pop());
+        c4.ready().await.unwrap();
+
         drop(held_bodies);
     }
 
