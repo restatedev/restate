@@ -84,10 +84,10 @@ mod tests {
     use crate::partition::state_machine::tests::{TestEnv, fixtures};
     use crate::partition::types::InvokerEffectKind;
     use googletest::prelude::*;
-    use restate_invoker_api::Effect;
     use restate_types::journal_events::raw::RawEvent;
     use restate_types::journal_events::{Event, TransientErrorEvent};
     use restate_wal_protocol::Command;
+    use restate_worker_api::invoker::Effect;
 
     #[restate_core::test]
     async fn store_event() {

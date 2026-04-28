@@ -10,8 +10,6 @@
 
 use std::time::{Duration, SystemTime};
 
-use crate::mocks::*;
-use crate::row;
 use datafusion::arrow::array::{
     ArrayRef, LargeStringArray, ListArray, TimestampMillisecondArray, UInt32Array, UInt64Array,
 };
@@ -19,9 +17,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use futures::StreamExt;
 use googletest::prelude::{all, assert_that, eq};
 use googletest::unordered_elements_are;
-use restate_invoker_api::status_handle::InvocationStatusReportInner;
-use restate_invoker_api::status_handle::test_util::MockStatusHandle;
-use restate_invoker_api::{InvocationErrorReport, InvocationStatusReport};
+
 use restate_storage_api::Transaction;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InvocationStatus, WriteInvocationStatusTable,
@@ -34,6 +30,11 @@ use restate_types::journal::EntryType;
 use restate_types::journal_v2::NotificationId;
 use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_worker_api::invoker::status_handle::InvocationStatusReportInner;
+use restate_worker_api::invoker::{InvocationErrorReport, InvocationStatusReport};
+
+use crate::mocks::*;
+use crate::row;
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn query_sys_invocation() {

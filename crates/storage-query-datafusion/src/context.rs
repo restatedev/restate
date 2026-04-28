@@ -28,7 +28,6 @@ use datafusion::sql::TableReference;
 
 use codederror::CodedError;
 use restate_core::{Metadata, TaskCenter};
-use restate_invoker_api::StatusHandle;
 use restate_partition_store::PartitionStoreManager;
 use restate_sharding::KeyRange;
 use restate_types::cluster::cluster_state::LegacyClusterState;
@@ -41,6 +40,7 @@ use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 use restate_worker_api::SchedulerStatusEntry;
+use restate_worker_api::invoker::StatusHandle;
 
 use crate::node_fan_out::NodeWarnings;
 use crate::remote_query_scanner_manager::RemoteScannerManager;

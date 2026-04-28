@@ -10,7 +10,6 @@
 
 mod error;
 mod input_command;
-mod invocation_memory;
 mod invocation_state_machine;
 mod invocation_task;
 mod metric_definitions;
@@ -33,16 +32,15 @@ use gardal::{PaddedAtomicSharedStorage, StreamExt as GardalStreamExt, TokioClock
 use metrics::counter;
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
+use tokio_util::time::DelayQueue;
+use tokio_util::time::delay_queue::Key as RetryTimerKey;
 use tracing::instrument;
 use tracing::{debug, trace, warn};
 
 use restate_core::cancellation_token;
 use restate_errors::warn_it;
 use restate_futures_util::concurrency::Permit;
-use restate_invoker_api::capacity::TokenBucket;
-use restate_invoker_api::invocation_reader::InvocationReader;
-use restate_invoker_api::{Effect, EffectKind, EntryEnricher, InvocationStatusReport, YieldReason};
-use restate_memory::{ByteCount, LocalMemoryPool, MemoryLease, MemoryPool};
+use restate_memory::{ByteCount, LocalMemoryPool, MemoryLease, MemoryPool, OutOfMemoryKind};
 use restate_queue::SegmentQueue;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_time_util::DurationExt;
@@ -61,14 +59,16 @@ use restate_types::live::{Live, LiveLoad};
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::sharding::KeyRange;
-use tokio_util::time::DelayQueue;
-use tokio_util::time::delay_queue::Key as RetryTimerKey;
+use restate_worker_api::invoker::capacity::TokenBucket;
+use restate_worker_api::invoker::invocation_reader::InvocationReader;
+use restate_worker_api::invoker::{
+    Effect, EffectKind, EntryEnricher, InvocationStatusReport, YieldReason,
+};
 
 use crate::error::InvocationMemoryExhausted;
 use crate::error::InvokerError;
 use crate::error::SdkInvocationErrorV2;
 use crate::input_command::{InputCommand, InvokeCommand};
-use crate::invocation_memory::OutOfMemoryKind;
 use crate::invocation_state_machine::InvocationStateMachine;
 use crate::invocation_state_machine::OnTaskError;
 use crate::invocation_task::InvocationTask;
@@ -1741,6 +1741,10 @@ where
     }
 }
 
+// Test helpers and mocks
+#[cfg(test)]
+pub mod test_util;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1754,10 +1758,12 @@ mod tests {
     use bytes::Bytes;
     use gardal::StreamExt as GardalStreamExt;
     use googletest::prelude::*;
+    use tempfile::tempdir;
+    use test_log::test;
+    use tokio::sync::mpsc;
+
     use restate_core::{TaskCenter, TaskKind};
-    use restate_invoker_api::InvokerHandle;
-    use restate_invoker_api::entry_enricher;
-    use restate_invoker_api::test_util::EmptyStorageReader;
+    use restate_memory::OutOfMemoryKind;
     use restate_serde_util::NonZeroByteCount;
     use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
     use restate_test_util::check;
@@ -1780,14 +1786,11 @@ mod tests {
     use restate_types::schema::service::ServiceMetadata;
     use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_types::vqueues::VQueueId;
-    use tempfile::tempdir;
-    use test_log::test;
-    use tokio::sync::mpsc;
-
-    use restate_memory::OutOfMemoryKind;
+    use restate_worker_api::invoker::InvokerHandle;
 
     use crate::error::{InvocationMemoryExhausted, InvokerError, SdkInvocationErrorV2};
     use crate::quota::{ConcurrencySlot, InvokerConcurrencyQuota};
+    use crate::test_util::EmptyStorageReader;
 
     // -- Mocks
 
@@ -2056,7 +2059,7 @@ mod tests {
                 AssumeRoleCacheMode::None,
             )
             .unwrap(),
-            entry_enricher::test_util::MockEntryEnricher,
+            test_util::MockEntryEnricher,
             None,
             None,
             MemoryPool::unlimited(),

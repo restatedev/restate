@@ -19,7 +19,6 @@ use restate_bifrost::Bifrost;
 use restate_core::network::{ShardSender, TransportConnect};
 use restate_core::{RuntimeTaskHandle, TaskCenter, TaskKind, cancellation_token};
 use restate_ingestion_client::IngestionClient;
-use restate_invoker_api::capacity::InvokerCapacity;
 use restate_partition_store::PartitionStoreManager;
 use restate_types::SharedString;
 use restate_types::cluster::cluster_state::PartitionProcessorStatus;
@@ -27,6 +26,7 @@ use restate_types::logs::Lsn;
 use restate_types::partitions::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_wal_protocol::Envelope;
+use restate_worker_api::invoker::capacity::InvokerCapacity;
 
 use crate::PartitionProcessorBuilder;
 use crate::partition::{ProcessorError, TargetLeaderState};

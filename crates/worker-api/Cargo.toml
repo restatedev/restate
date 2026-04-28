@@ -7,18 +7,28 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = []
+serde = ["dep:serde"]
+
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
 restate-clock = { workspace = true }
 restate-core = { workspace = true }
+restate-errors = { workspace = true }
 restate-futures-util = { workspace = true }
-restate-invoker-api = { workspace = true }
 restate-limiter = { workspace = true }
+restate-memory = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-types = { workspace = true }
 restate-util-string = { workspace = true }
 
+codederror = { workspace = true }
+gardal = { workspace = true, features = ["tokio"] }
+bytes = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

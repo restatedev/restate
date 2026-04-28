@@ -10,12 +10,14 @@
 
 use std::time::SystemTime;
 
-use restate_invoker_api::InvocationErrorReport;
-use restate_invoker_api::status_handle::{InvocationStatusReport, InvocationStatusReportInner};
 use restate_platform::hash::HashMap;
 use restate_types::identifiers::{DeploymentId, InvocationId};
 use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_worker_api::invoker::{
+    InvocationErrorReport,
+    status_handle::{InvocationStatusReport, InvocationStatusReportInner},
+};
 
 #[derive(Default, Debug)]
 pub(super) struct InvocationStatusStore(HashMap<InvocationId, InvocationStatusReportInner>);

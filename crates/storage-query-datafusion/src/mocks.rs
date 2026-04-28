@@ -21,7 +21,6 @@ use datafusion::common::DataFusionError;
 use googletest::matcher::{Matcher, MatcherResult};
 use serde_json::Value;
 
-use restate_invoker_api::status_handle::test_util::MockStatusHandle;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_types::NodeId;
@@ -39,6 +38,7 @@ use restate_types::schema::service::test_util::MockServiceMetadataResolver;
 use restate_types::schema::service::{ServiceMetadata, ServiceMetadataResolver};
 use restate_types::sharding::KeyRange;
 use restate_worker_api::SchedulerStatusEntry;
+use restate_worker_api::invoker::{InvocationStatusReport, StatusHandle};
 
 use super::context::QueryContext;
 use crate::context::{PartitionLeaderStatusHandle, SelectPartitions};
@@ -46,6 +46,24 @@ use crate::remote_query_scanner_client::{RemoteScanner, RemoteScannerService};
 use crate::remote_query_scanner_manager::{
     PartitionLocation, PartitionLocator, RemoteScannerManager,
 };
+
+#[derive(Debug, Clone, Default)]
+pub struct MockStatusHandle(Vec<InvocationStatusReport>);
+
+impl MockStatusHandle {
+    pub fn with(mut self, invocation_status_report: InvocationStatusReport) -> Self {
+        self.0.push(invocation_status_report);
+        self
+    }
+}
+
+impl StatusHandle for MockStatusHandle {
+    type Iterator = std::vec::IntoIter<InvocationStatusReport>;
+
+    async fn read_status(&self, _keys: KeyRange) -> Self::Iterator {
+        self.0.clone().into_iter()
+    }
+}
 
 #[derive(Default, Clone, Debug)]
 pub(crate) struct MockSchemas(

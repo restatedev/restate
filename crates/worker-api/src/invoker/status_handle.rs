@@ -118,26 +118,3 @@ pub trait StatusHandle {
     /// The data returned by this method is eventually consistent.
     fn read_status(&self, keys: KeyRange) -> impl Future<Output = Self::Iterator> + Send;
 }
-
-#[cfg(any(test, feature = "test-util"))]
-pub mod test_util {
-    use super::*;
-
-    #[derive(Debug, Clone, Default)]
-    pub struct MockStatusHandle(Vec<InvocationStatusReport>);
-
-    impl MockStatusHandle {
-        pub fn with(mut self, invocation_status_report: InvocationStatusReport) -> Self {
-            self.0.push(invocation_status_report);
-            self
-        }
-    }
-
-    impl StatusHandle for MockStatusHandle {
-        type Iterator = std::vec::IntoIter<InvocationStatusReport>;
-
-        async fn read_status(&self, _keys: KeyRange) -> Self::Iterator {
-            self.0.clone().into_iter()
-        }
-    }
-}

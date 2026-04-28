@@ -8,10 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Re-exports from [`restate_memory::local_pool`].
+pub mod capacity;
+mod effects;
+pub mod entry_enricher;
+mod handle;
+pub mod invocation_reader;
+pub mod status_handle;
 
-// Re-exports for use by other modules within invoker-impl.
-#[allow(unused_imports)]
-pub use restate_memory::local_pool::{
-    LocalMemoryLease, LocalMemoryPool, OutOfMemory, OutOfMemoryKind,
-};
+pub use effects::*;
+pub use entry_enricher::EntryEnricher;
+pub use handle::*;
+pub use invocation_reader::{InvocationReaderError, JournalKind, JournalMetadata};
+pub use status_handle::{InvocationErrorReport, InvocationStatusReport, StatusHandle};

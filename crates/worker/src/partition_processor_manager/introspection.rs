@@ -23,11 +23,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use tracing::debug;
 
-use restate_invoker_api::{InvocationStatusReport, StatusHandle};
 use restate_invoker_impl::ChannelStatusReader;
 use restate_platform::sync::Mutex;
 use restate_storage_query_datafusion::context::PartitionLeaderStatusHandle;
 use restate_types::sharding::KeyRange;
+use restate_worker_api::invoker::{InvocationStatusReport, StatusHandle};
 use restate_worker_api::{
     LeaderQueryRequest, LeaderQueryResponse, LeaderQuerySender, SchedulerStatusEntry,
 };

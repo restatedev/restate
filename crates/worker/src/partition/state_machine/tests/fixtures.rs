@@ -11,7 +11,6 @@
 use bytes::Bytes;
 use googletest::prelude::*;
 
-use restate_invoker_api::Effect;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::journal_table::JournalEntry;
 use restate_types::deployment::PinnedDeployment;
@@ -27,6 +26,7 @@ use restate_types::journal::enriched::{
 use restate_types::journal_v2::{Entry, UnresolvedFuture};
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_wal_protocol::Command;
+use restate_worker_api::invoker::Effect;
 
 use crate::partition::state_machine::Action;
 use crate::partition::state_machine::tests::TestEnv;
