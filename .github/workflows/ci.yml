@@ -239,6 +239,7 @@ jobs:
     secrets: inherit
     needs: docker
     # TODO(slinkydeveloper) revert this once we merge the sdk changes to main
+    # test test test
     uses: restatedev/sdk-typescript/.github/workflows/integration.yaml@new-shared-core
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
