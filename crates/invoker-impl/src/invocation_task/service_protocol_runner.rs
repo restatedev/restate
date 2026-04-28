@@ -21,11 +21,6 @@ use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
 
 use restate_errors::warn_it;
-use restate_invoker_api::invocation_reader::{
-    EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
-    JournalKind,
-};
-use restate_invoker_api::{EntryEnricher, JournalMetadata};
 use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_service_client::{Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
@@ -43,6 +38,11 @@ use restate_types::journal_v2;
 use restate_types::journal_v2::EntryMetadata;
 use restate_types::schema::deployment::{Deployment, ProtocolType};
 use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_worker_api::invoker::invocation_reader::{
+    EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
+    JournalKind,
+};
+use restate_worker_api::invoker::{EntryEnricher, JournalMetadata};
 
 use crate::Notification;
 use crate::error::{InvocationErrorRelatedEntry, InvokerError, SdkInvocationError};

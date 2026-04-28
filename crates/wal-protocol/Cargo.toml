@@ -10,9 +10,9 @@ publish = false
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
-restate-invoker-api = { workspace = true, features = ["serde"] }
 restate-storage-api = { workspace = true }
 restate-types = { workspace = true }
+restate-worker-api = { workspace = true, features = ["serde"] }
 
 bilrost = { workspace = true }
 bytes = { workspace = true }

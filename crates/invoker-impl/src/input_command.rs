@@ -19,7 +19,7 @@ use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::VQueueId;
 
-use restate_invoker_api::{InvocationStatusReport, StatusHandle};
+use restate_worker_api::invoker::{InvocationStatusReport, StatusHandle};
 // -- Input messages
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -85,7 +85,7 @@ pub struct InvokerHandle {
     pub(super) input: mpsc::UnboundedSender<InputCommand>,
 }
 
-impl restate_invoker_api::InvokerHandle for InvokerHandle {
+impl restate_worker_api::invoker::InvokerHandle for InvokerHandle {
     fn invoke(
         &mut self,
         invocation_id: InvocationId,

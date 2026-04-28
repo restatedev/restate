@@ -38,7 +38,6 @@ use restate_core::{
     Metadata, ShutdownError, TaskCenter, TaskKind, cancellation_watcher, my_node_id,
 };
 use restate_ingestion_client::IngestionClient;
-use restate_invoker_api::capacity::InvokerCapacity;
 use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
 use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, ProducerId, ReadDeduplicationTable,
@@ -75,6 +74,7 @@ use restate_wal_protocol::control::{
     AnnounceLeader, CurrentReplicaSetConfiguration, NextReplicaSetConfiguration,
 };
 use restate_wal_protocol::{Command, Destination, Envelope, Header};
+use restate_worker_api::invoker::capacity::InvokerCapacity;
 use restate_worker_api::{LeaderQueryCommand, LeaderQueryReceiver};
 
 use self::leadership::trim_queue::TrimQueue;
