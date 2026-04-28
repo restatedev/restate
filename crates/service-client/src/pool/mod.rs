@@ -357,23 +357,17 @@ mod test {
     use crate::pool::PoolBuilder;
     use crate::pool::test_util::TestConnector;
 
-    fn make_pool(
-        max_concurrent_streams: u32,
-        max_connections: usize,
-    ) -> super::Pool<TestConnector> {
+    fn make_pool(max_concurrent_streams: u32) -> super::Pool<TestConnector> {
         PoolBuilder::default()
-            .max_connections(std::num::NonZeroUsize::new(max_connections).unwrap())
             .initial_max_send_streams(std::num::NonZeroU32::new(max_concurrent_streams).unwrap())
             .build(TestConnector::new(max_concurrent_streams))
     }
 
     fn make_pool_with_eviction(
         max_concurrent_streams: u32,
-        max_connections: usize,
         idle_timeout: Duration,
     ) -> super::Pool<TestConnector> {
         PoolBuilder::default()
-            .max_connections(std::num::NonZeroUsize::new(max_connections).unwrap())
             .initial_max_send_streams(std::num::NonZeroU32::new(max_concurrent_streams).unwrap())
             .idle_authority_timeout(Some(idle_timeout))
             .build(TestConnector::new(max_concurrent_streams))
@@ -382,7 +376,7 @@ mod test {
     /// Requests to different hosts create separate authority pools.
     #[tokio::test]
     async fn routes_to_separate_authorities() {
-        let pool = make_pool(10, 4);
+        let pool = make_pool(10);
 
         assert_eq!(pool.authorities.len(), 0);
 
@@ -412,7 +406,7 @@ mod test {
     /// Multiple requests to the same authority reuse the same pool entry.
     #[tokio::test]
     async fn same_authority_shares_pool() {
-        let pool = make_pool(10, 4);
+        let pool = make_pool(10);
 
         for _ in 0..3 {
             pool.request(
@@ -431,7 +425,7 @@ mod test {
     /// Requests to multiple authorities with echo payloads all resolve correctly.
     #[tokio::test]
     async fn multi_authority_echo() {
-        let pool = make_pool(10, 4);
+        let pool = make_pool(10);
 
         for (i, host) in ["host-a", "host-b", "host-c"].iter().enumerate() {
             let uri: Uri = format!("http://{}:80", host).parse().unwrap();
@@ -462,7 +456,7 @@ mod test {
     #[tokio::test]
     async fn evicts_idle_authority_pools() {
         let idle_timeout = Duration::from_secs(10);
-        let pool = make_pool_with_eviction(10, 4, idle_timeout);
+        let pool = make_pool_with_eviction(10, idle_timeout);
 
         // Send requests to two authorities to create their pools.
         for host in ["host-a", "host-b"] {
@@ -522,7 +516,7 @@ mod test {
     /// list until streams complete, then dropped (closing connections via Drop).
     #[tokio::test]
     async fn draining_waits_for_inflight_streams() {
-        let pool = make_pool_with_eviction(10, 4, Duration::from_secs(10));
+        let pool = make_pool_with_eviction(10, Duration::from_secs(10));
 
         // Send a request and hold the response body to keep the stream alive.
         let body = pool

@@ -20,19 +20,10 @@ use std::time::Duration;
     default
 )]
 pub struct PoolConfig {
-    /// Maximum number of connections to open to a single authority.
-    ///
-    /// Note: the number of connections per authority may temporarily exceed the
-    /// configured limit during connection draining. This can happen when
-    /// [`Self::idle_authority_timeout`] is reached and connections are being
-    /// evicted, and a new request for the same authority arrives. In that case,
-    /// a new connection may be initiated before the draining connections have
-    /// fully closed.
-    pub(crate) max_connections: NonZeroUsize,
-
-    /// When available H2 stream capacity across all connections goes above
-    /// this percentage, proactively open a new connection (if under
-    /// `max_connections`). Set to None to disable. Defaults is 0.7
+    /// When available H2 stream capacity across all connections falls below
+    /// `1.0 - threshold`, [`AuthorityPool::poll_ready`] proactively opens one
+    /// new connection. Set to `None` to disable proactive expansion. Default
+    /// is 0.7.
     #[builder(default = Some(0.7f64))]
     pub(crate) connection_saturation_threshold: Option<f64>,
 
@@ -80,7 +71,6 @@ pub struct PoolConfig {
 impl Default for PoolConfig {
     fn default() -> Self {
         Self {
-            max_connections: NonZeroUsize::new(1).unwrap(),
             connection_saturation_threshold: Some(0.7f64),
             initial_max_send_streams: NonZeroU32::new(50).unwrap(),
             streams_per_connection_limit: NonZeroUsize::new(128).unwrap(),
