@@ -14,12 +14,12 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 
-use restate_futures_util::concurrency::Permit;
 use restate_memory::LocalMemoryPool;
 use restate_types::identifiers::EntryIndex;
 use restate_types::retries;
 use restate_types::schema::invocation_target::OnMaxAttempts;
 use restate_types::vqueues::VQueueId;
+use restate_worker_api::resources::ReservedResources;
 
 use crate::quota::ConcurrencySlot;
 
@@ -42,7 +42,8 @@ pub(super) struct InvocationStateMachine<K: TimerKey = tokio_util::time::delay_q
     #[allow(dead_code)]
     pub(super) qid: Option<VQueueId>,
     #[allow(dead_code)]
-    pub(super) _permit: Permit,
+    #[debug(skip)]
+    pub(super) _permit: ReservedResources,
     pub(super) invocation_target: InvocationTarget,
     pub(super) last_transient_error_event: Option<TransientErrorEvent>,
     invocation_state: AttemptState<K>,
@@ -203,7 +204,7 @@ struct RetryPolicyState {
 impl<K: TimerKey> InvocationStateMachine<K> {
     pub(super) fn create(
         qid: Option<VQueueId>,
-        permit: Permit,
+        permit: ReservedResources,
         invocation_target: InvocationTarget,
         retry_iter: retries::RetryIter<'static>,
         on_max_attempts: OnMaxAttempts,
@@ -623,7 +624,7 @@ mod tests {
     fn create_test_invocation_state_machine() -> InvocationStateMachine<u64> {
         InvocationStateMachine::create(
             None,
-            Permit::new_empty(),
+            ReservedResources::new_empty(),
             InvocationTarget::mock_virtual_object(),
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
             OnMaxAttempts::Kill,

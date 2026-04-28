@@ -39,7 +39,6 @@ use tracing::{debug, trace, warn};
 
 use restate_core::cancellation_token;
 use restate_errors::warn_it;
-use restate_futures_util::concurrency::Permit;
 use restate_memory::{ByteCount, LocalMemoryPool, MemoryLease, MemoryPool, OutOfMemoryKind};
 use restate_queue::SegmentQueue;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
@@ -64,6 +63,7 @@ use restate_worker_api::invoker::invocation_reader::InvocationReader;
 use restate_worker_api::invoker::{
     Effect, EffectKind, EntryEnricher, InvocationStatusReport, YieldReason,
 };
+use restate_worker_api::resources::ReservedResources;
 
 use crate::error::InvocationMemoryExhausted;
 use crate::error::InvokerError;
@@ -625,7 +625,7 @@ where
             restate.invocation.target = %command.invocation_target,
         )
     )]
-    fn handle_vqueue_invoke(&mut self, options: &InvokerOptions, command: VQueueInvokeCommand) {
+    fn handle_vqueue_invoke(&mut self, options: &InvokerOptions, mut command: VQueueInvokeCommand) {
         let (retry_iter, on_max_attempts) =
             self.schemas.live_load().resolve_invocation_retry_policy(
                 None,
@@ -638,7 +638,7 @@ where
 
         // VQueue path: the vqueue scheduler supplies a pre-acquired MemoryLease
         // used as the initial memory for the outbound budget.
-        let budget = self.create_outbound_budget(options, command.initial_memory_lease);
+        let budget = self.create_outbound_budget(options, command.permit.take_memory_budget());
         self.start_invocation_task(
             options,
             storage_reader.clone(),
@@ -681,13 +681,14 @@ where
 
         let storage_reader = self.invocation_state_machine_manager.storage_reader();
         let concurrency_slot = self.quota.acquire_slot();
+        let fake_permit = ReservedResources::new_empty();
         self.start_invocation_task(
             options,
             storage_reader.clone(),
             invocation_id,
             InvocationStateMachine::create(
                 None,
-                Permit::new_empty(),
+                fake_permit,
                 invocation_target,
                 retry_iter,
                 on_max_attempts,
@@ -2306,7 +2307,7 @@ mod tests {
                 invocation_id.partition_key(),
                 invocation_id.to_string(),
             )),
-            Permit::new_empty(),
+            ReservedResources::new_empty(),
             invocation_target.clone(),
             RetryPolicy::fixed_delay(Duration::from_millis(100), None).into_iter(),
             OnMaxAttempts::Kill,

@@ -9,12 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use restate_errors::NotRunningError;
-use restate_futures_util::concurrency::Permit;
-use restate_memory::MemoryLease;
 use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::vqueues::VQueueId;
+
+use crate::resources::ReservedResources;
 
 pub trait InvokerHandle {
     fn invoke(
@@ -26,10 +26,9 @@ pub trait InvokerHandle {
     fn vqueue_invoke(
         &mut self,
         qid: VQueueId,
-        permit: Permit,
+        permit: ReservedResources,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
-        initial_memory_lease: MemoryLease,
     ) -> Result<(), NotRunningError>;
 
     fn notify_completion(
