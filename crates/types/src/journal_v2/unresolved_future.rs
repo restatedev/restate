@@ -266,11 +266,8 @@ impl UnresolvedFuture {
     ///      If any child resolves to SuccessOrFailure, we shortcircuit as above.
     ///   Recursion
     ///   QED
-    pub fn resolve(
-        &mut self,
-        notification_result_variant_lookup: impl NotificationResultVariantLookup,
-    ) -> bool {
-        self.resolve_inner(&notification_result_variant_lookup)
+    pub fn resolve(&mut self, result_variant_lookup: impl NotificationResultVariantLookup) -> bool {
+        self.resolve_inner(&result_variant_lookup)
             // In case of shortcircuit, we always want to resume
             .unwrap_or(ResolveResult::Success)
             .is_completed()
@@ -280,12 +277,11 @@ impl UnresolvedFuture {
     // For example, an UNKNOWN is deeply nested inside a FIRST_SUCCEEDED_OR_ALL_FAILED.
     fn resolve_inner(
         &mut self,
-        notification_result_variant_lookup: &impl NotificationResultVariantLookup,
+        result_variant_lookup: &impl NotificationResultVariantLookup,
     ) -> Result<ResolveResult, Indeterminable> {
         match self {
             Self::Single(inner) => Ok(
-                if let Some(variant) = notification_result_variant_lookup.read_result_variant(inner)
-                {
+                if let Some(variant) = result_variant_lookup.read_result_variant(inner) {
                     variant.into()
                 } else {
                     ResolveResult::Pending
@@ -295,10 +291,7 @@ impl UnresolvedFuture {
                 // Unknown on the first completed future returns ResolveResult::SuccessOrFailure,
                 // because it cannot determine whether it will resolve as success or failure only from the ResolveResult of its child.
                 for fut in futures.iter_mut() {
-                    if fut
-                        .resolve_inner(notification_result_variant_lookup)?
-                        .is_completed()
-                    {
+                    if fut.resolve_inner(result_variant_lookup)?.is_completed() {
                         return Ok(ResolveResult::SuccessOrFailure);
                     }
                 }
@@ -308,7 +301,7 @@ impl UnresolvedFuture {
             Self::FirstCompleted(futures) => {
                 // FirstCompleted is different from Unknown because it propagates upward the ResolveResult of its first completed child.
                 for fut in futures.iter_mut() {
-                    let inner_result = fut.resolve_inner(notification_result_variant_lookup)?;
+                    let inner_result = fut.resolve_inner(result_variant_lookup)?;
                     if inner_result.is_completed() {
                         return Ok(inner_result);
                     }
@@ -321,7 +314,7 @@ impl UnresolvedFuture {
                 let mut i = 0;
                 while i < futures.len() {
                     if futures[i]
-                        .resolve_inner(notification_result_variant_lookup)?
+                        .resolve_inner(result_variant_lookup)?
                         .is_completed()
                     {
                         futures.swap_remove(i);
@@ -338,7 +331,7 @@ impl UnresolvedFuture {
             Self::FirstSucceededOrAllFailed(futures) => {
                 let mut i = 0;
                 while i < futures.len() {
-                    match futures[i].resolve_inner(notification_result_variant_lookup)? {
+                    match futures[i].resolve_inner(result_variant_lookup)? {
                         ResolveResult::Success => {
                             return Ok(ResolveResult::Success);
                         }
@@ -366,7 +359,7 @@ impl UnresolvedFuture {
             Self::AllSucceededOrFirstFailed(futures) => {
                 let mut i = 0;
                 while i < futures.len() {
-                    match futures[i].resolve_inner(notification_result_variant_lookup)? {
+                    match futures[i].resolve_inner(result_variant_lookup)? {
                         ResolveResult::Success => {
                             futures.swap_remove(i);
                         }
