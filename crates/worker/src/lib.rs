@@ -14,6 +14,9 @@ mod error;
 mod handle;
 mod invoker_integration;
 mod metric_definitions;
+#[cfg(feature = "expose-internals")]
+pub mod partition;
+#[cfg(not(feature = "expose-internals"))]
 mod partition;
 mod partition_processor_manager;
 mod subscription_controller;
