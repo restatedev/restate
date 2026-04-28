@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashMap;
+
 use tracing::{debug, trace};
 
 use restate_clock::UniqueTimestamp;
@@ -49,21 +51,20 @@ where
         // down to the rocksdb iterator so that we can stop iterating as soon as we find
         // any match.
 
-        let notifications = ctx
+        let notifications: HashMap<_, _> = ctx
             .storage
             .get_notifications_index(self.invocation_id)
-            .await?;
-
-        let available_notifications = notifications
-            .iter()
-            .map(|(notification_id, index)| (notification_id, index.result_variant));
+            .await?
+            .into_iter()
+            .map(|(notification_id, index)| (notification_id, index.result_variant))
+            .collect();
 
         let mut invocation_status = self.invocation_status;
         debug!(
-            "Try resolving combinator {:?} with all available notifications",
+            "Try resolving future {:?} with all available notifications",
             self.awaiting_on
         );
-        if self.awaiting_on.resolve_all(available_notifications) {
+        if self.awaiting_on.resolve(&notifications) {
             trace!(
                 "Resuming instead of suspending service because a notification is already available."
             );
@@ -80,7 +81,7 @@ where
                 .expect("Must be present unless status is killed or invoked");
 
             trace!(
-                "Suspending invocation waiting for notifications {:?}",
+                "Suspending invocation waiting future {:?}",
                 self.awaiting_on
             );
 
@@ -129,6 +130,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     use crate::partition::state_machine::Action;
     use crate::partition::state_machine::tests::fixtures::{
         invoker_entry_effect, invoker_suspended,
@@ -137,7 +140,7 @@ mod tests {
         has_commands, has_journal_length, in_flight_metadata, is_variant,
     };
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
-    use bytestring::ByteString;
+    use assert2::let_assert;
     use googletest::prelude::*;
     use restate_storage_api::invocation_status_table::{
         InFlightInvocationMetadata, InvocationStatusDiscriminants, ReadInvocationStatusTable,
@@ -146,13 +149,15 @@ mod tests {
     use restate_types::invocation::NotifySignalRequest;
     use restate_types::journal_v2::{
         CommandType, Entry, EntryMetadata, EntryType, Failure, NotificationId, Signal, SignalId,
-        SignalResult, SleepCommand, SleepCompletion, UnresolvedFutureBuilder,
+        SignalResult, SleepCommand, SleepCompletion, UnresolvedFuture, all_completed,
+        all_succeeded_or_first_failed, first_completed, first_succeeded_or_all_failed, unknown,
     };
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{RESTATE_VERSION_1_6_0, SemanticRestateVersion};
     use restate_wal_protocol::Command;
     use restate_wal_protocol::timer::TimerKeyValue;
     use std::time::{Duration, SystemTime};
+    use tracing::info;
 
     #[restate_core::test]
     async fn sleep_then_suspend_then_resume() {
@@ -343,273 +348,301 @@ mod tests {
         test_env.shutdown().await;
     }
 
-    fn notify_signal_command(
+    struct SuspendTest {
+        test_env: TestEnv,
         invocation_id: InvocationId,
-        index: u32,
-        result: SignalResult,
-    ) -> Command {
-        Command::NotifySignal(NotifySignalRequest {
-            invocation_id,
-            signal: Signal {
-                id: SignalId::for_index(index),
-                result,
-            },
-        })
     }
 
-    // SignalId::for_index(1) is reserved for BuiltInSignal::Cancel, so we use
-    // indices >= 10 to avoid hitting the cancel path in OnNotifySignalCommand.
-    const SIG_A: u32 = 10;
-    const SIG_B: u32 = 11;
-    const SIG_C: u32 = 12;
-    const SIG_D: u32 = 13;
+    impl SuspendTest {
+        async fn given_suspended_on(fut: UnresolvedFuture) -> Self {
+            let mut test_env = TestEnv::create().await;
+            let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+            fixtures::mock_pinned_deployment_v7(&mut test_env, invocation_id).await;
 
-    #[restate_core::test]
-    async fn suspend_waiting_on_nested_all_of_race() {
-        // all_succeeded(first_completed(A, B), first_completed(C, D)) — resumes only once each inner race has
-        // absorbed at least one signal.
-        let mut test_env = TestEnv::create().await;
-        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+            let _ = test_env
+                .apply(invoker_suspended(invocation_id, fut.clone()))
+                .await;
 
-        let awaiting_on = UnresolvedFutureBuilder::all_succeeded()
-            .future(
-                UnresolvedFutureBuilder::first_completed()
-                    .future(NotificationId::for_signal(SignalId::for_index(SIG_A)))
-                    .future(NotificationId::for_signal(SignalId::for_index(SIG_B)))
-                    .must_build(),
-            )
-            .future(
-                UnresolvedFutureBuilder::first_completed()
-                    .future(NotificationId::for_signal(SignalId::for_index(SIG_C)))
-                    .future(NotificationId::for_signal(SignalId::for_index(SIG_D)))
-                    .must_build(),
-            )
-            .must_build();
-
-        let _ = test_env
-            .apply(invoker_suspended(invocation_id, awaiting_on))
-            .await;
-        assert_that!(
-            test_env
-                .storage()
-                .get_invocation_status(&invocation_id)
-                .await,
-            ok(is_variant(InvocationStatusDiscriminants::Suspended))
-        );
-
-        // sig(B) resolves the first inner race; the second race is still pending.
-        let actions = test_env
-            .apply(notify_signal_command(
+            Self {
+                test_env,
                 invocation_id,
-                SIG_B,
-                SignalResult::Void,
-            ))
-            .await;
-        assert_that!(
-            actions,
-            not(contains(matchers::actions::invoke_for_id(invocation_id)))
-        );
-        assert_that!(
-            test_env
-                .storage()
-                .get_invocation_status(&invocation_id)
-                .await,
-            ok(is_variant(InvocationStatusDiscriminants::Suspended))
-        );
+            }
+            .assert_suspended_on(fut)
+            .await
+        }
 
-        // sig(C) resolves the second inner race; the outer `all` now succeeds.
-        let actions = test_env
-            .apply(notify_signal_command(
-                invocation_id,
-                SIG_C,
-                SignalResult::Void,
-            ))
-            .await;
-        assert_that!(
-            actions,
-            contains(matchers::actions::invoke_for_id(invocation_id))
-        );
-        assert_that!(
-            test_env
-                .storage()
-                .get_invocation_status(&invocation_id)
-                .await,
-            ok(is_variant(InvocationStatusDiscriminants::Invoked))
-        );
+        async fn when_signal_notified_then_suspends(
+            mut self,
+            signal_id: SignalId,
+            signal_result: SignalResult,
+            remaining: UnresolvedFuture,
+        ) -> Self {
+            let actions = self
+                .test_env
+                .apply(Command::NotifySignal(NotifySignalRequest {
+                    invocation_id: self.invocation_id,
+                    signal: Signal {
+                        id: signal_id,
+                        result: signal_result,
+                    },
+                }))
+                .await;
+            self.log_invocation_status().await;
 
-        test_env.shutdown().await;
+            assert_that!(
+                actions,
+                not(contains(matchers::actions::invoke_for_id(
+                    self.invocation_id
+                )))
+            );
+            assert_that!(
+                self.test_env
+                    .storage()
+                    .get_invocation_status(&self.invocation_id)
+                    .await,
+                ok(is_variant(InvocationStatusDiscriminants::Suspended))
+            );
+            self.assert_suspended_on(remaining).await
+        }
+
+        async fn when_signal_notified_then_resumes(
+            mut self,
+            signal_id: SignalId,
+            signal_result: SignalResult,
+        ) -> Self {
+            let actions = self
+                .test_env
+                .apply(Command::NotifySignal(NotifySignalRequest {
+                    invocation_id: self.invocation_id,
+                    signal: Signal {
+                        id: signal_id,
+                        result: signal_result,
+                    },
+                }))
+                .await;
+            self.log_invocation_status().await;
+
+            assert_that!(
+                actions,
+                contains(matchers::actions::invoke_for_id(self.invocation_id))
+            );
+            assert_that!(
+                self.test_env
+                    .storage()
+                    .get_invocation_status(&self.invocation_id)
+                    .await,
+                ok(is_variant(InvocationStatusDiscriminants::Invoked))
+            );
+            self
+        }
+
+        async fn end(self) {
+            self.test_env.shutdown().await;
+        }
+
+        async fn log_invocation_status(&mut self) {
+            let inv_status = self
+                .test_env
+                .storage()
+                .get_invocation_status(&self.invocation_id)
+                .await
+                .unwrap();
+
+            info!(
+                "Invocation status for {}: {:#?}",
+                self.invocation_id, inv_status
+            )
+        }
+
+        async fn assert_suspended_on(mut self, expected_awaiting_on: UnresolvedFuture) -> Self {
+            let invocation_status = self
+                .test_env
+                .storage
+                .get_invocation_status(&self.invocation_id)
+                .await
+                .unwrap();
+
+            let_assert!(InvocationStatus::Suspended { awaiting_on, .. } = invocation_status);
+            assert_eq!(awaiting_on, expected_awaiting_on);
+
+            self
+        }
     }
 
+    // Indices <= 16 are reserved for Built-in Signals.
+    const A: SignalId = SignalId::for_index(17);
+    const B: SignalId = SignalId::for_index(18);
+    const C: SignalId = SignalId::for_index(19);
+    const D: SignalId = SignalId::for_index(20);
+
+    const SUCCESS: SignalResult = SignalResult::Void;
+    const FAILURE: SignalResult = SignalResult::Failure(Failure::mock());
+
     #[restate_core::test]
-    async fn suspend_waiting_on_nested_race_of_all() {
-        // first_completed(all_succeeded_or_first_failed(A, B), all_succeeded_or_first_failed(C, D))
-        // resumes only once an entire inner `all_succeeded_or_first_failed` has completed;
-        // a single signal into each branch is not enough.
-        let mut test_env = TestEnv::create().await;
-        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
-
-        let awaiting_on = UnresolvedFutureBuilder::first_completed()
-            .future(
-                UnresolvedFutureBuilder::all_succeeded()
-                    .future(NotificationId::for_signal(SignalId::for_index(SIG_A)))
-                    .future(NotificationId::for_signal(SignalId::for_index(SIG_B)))
-                    .must_build(),
-            )
-            .future(
-                UnresolvedFutureBuilder::all_succeeded()
-                    .future(NotificationId::for_signal(SignalId::for_index(SIG_C)))
-                    .future(NotificationId::for_signal(SignalId::for_index(SIG_D)))
-                    .must_build(),
-            )
-            .must_build();
-
-        let _ = test_env
-            .apply(invoker_suspended(invocation_id, awaiting_on))
-            .await;
-
-        // Partial progress on the first inner `all` — still suspended.
-        let actions = test_env
-            .apply(notify_signal_command(
-                invocation_id,
-                SIG_A,
-                SignalResult::Void,
-            ))
-            .await;
-        assert_that!(
-            actions,
-            not(contains(matchers::actions::invoke_for_id(invocation_id)))
-        );
-
-        // Partial progress on the second inner `all` too — still suspended.
-        let actions = test_env
-            .apply(notify_signal_command(
-                invocation_id,
-                SIG_C,
-                SignalResult::Void,
-            ))
-            .await;
-        assert_that!(
-            actions,
-            not(contains(matchers::actions::invoke_for_id(invocation_id)))
-        );
-        assert_that!(
-            test_env
-                .storage()
-                .get_invocation_status(&invocation_id)
-                .await,
-            ok(is_variant(InvocationStatusDiscriminants::Suspended))
-        );
-
-        // sig(B) completes the first inner `all`, which resolves the outer race.
-        let actions = test_env
-            .apply(notify_signal_command(
-                invocation_id,
-                SIG_B,
-                SignalResult::Void,
-            ))
-            .await;
-        assert_that!(
-            actions,
-            contains(matchers::actions::invoke_for_id(invocation_id))
-        );
-        assert_that!(
-            test_env
-                .storage()
-                .get_invocation_status(&invocation_id)
-                .await,
-            ok(is_variant(InvocationStatusDiscriminants::Invoked))
-        );
-
-        test_env.shutdown().await;
+    async fn asff_of_first_completed_resumes_when_all_succeed() {
+        SuspendTest::given_suspended_on(all_succeeded_or_first_failed!(
+            first_completed!(A, B),
+            first_completed!(C, D)
+        ))
+        .await
+        .when_signal_notified_then_suspends(
+            B,
+            SUCCESS,
+            all_succeeded_or_first_failed!(first_completed!(C, D)),
+        )
+        .await
+        .when_signal_notified_then_resumes(C, SUCCESS)
+        .await
+        .end()
+        .await;
     }
 
     #[restate_core::test]
-    async fn suspend_waiting_on_nested_any_of_all_with_mixed_results() {
-        // first_succeeded(all_succeeded(A, B), all_succeeded(C, D)) — failing the first inner `all` short-circuits
-        // it to failure and lets the outer `any` evict it; the invocation only
-        // resumes once the second inner `all` reaches a terminal state.
-        let mut test_env = TestEnv::create().await;
-        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+    async fn asff_of_first_completed_short_circuits_on_failure() {
+        SuspendTest::given_suspended_on(all_succeeded_or_first_failed!(
+            first_completed!(A, B),
+            first_completed!(C, D)
+        ))
+        .await
+        .when_signal_notified_then_resumes(B, FAILURE)
+        .await
+        .end()
+        .await;
+    }
 
-        let awaiting_on = UnresolvedFutureBuilder::first_succeeded()
-            .future(
-                UnresolvedFutureBuilder::all_succeeded()
-                    .future(NotificationId::for_signal(SignalId::for_index(SIG_A)))
-                    .future(NotificationId::for_signal(SignalId::for_index(SIG_B)))
-                    .must_build(),
+    #[restate_core::test]
+    async fn first_completed_of_asff_resumes_when_any_inner_asff_succeeds() {
+        SuspendTest::given_suspended_on(first_completed!(
+            all_succeeded_or_first_failed!(A, B),
+            all_succeeded_or_first_failed!(C, D),
+        ))
+        .await
+        .when_signal_notified_then_suspends(
+            A,
+            SUCCESS,
+            first_completed!(
+                all_succeeded_or_first_failed!(B),
+                all_succeeded_or_first_failed!(C, D),
+            ),
+        )
+        .await
+        .when_signal_notified_then_suspends(
+            C,
+            SUCCESS,
+            first_completed!(
+                all_succeeded_or_first_failed!(B),
+                all_succeeded_or_first_failed!(D),
+            ),
+        )
+        .await
+        .when_signal_notified_then_resumes(B, SUCCESS)
+        .await
+        .end()
+        .await;
+    }
+
+    #[restate_core::test]
+    async fn fsaf_of_asff_resumes_when_one_inner_asff_succeeds_after_other_failed() {
+        SuspendTest::given_suspended_on(first_succeeded_or_all_failed!(
+            all_succeeded_or_first_failed!(A, B),
+            all_succeeded_or_first_failed!(C, D),
+        ))
+        .await
+        // sig(A) fails
+        //  -> inner all_succeeded_or_first_failed(A, B) short-circuits to failure
+        //  -> outer first_succeeded_or_all_failed evicts it but still has all_succeeded_or_first_failed(C, D) pending.
+        .when_signal_notified_then_suspends(
+            A,
+            FAILURE,
+            first_succeeded_or_all_failed!(all_succeeded_or_first_failed!(C, D)),
+        )
+        .await
+        .when_signal_notified_then_suspends(
+            C,
+            SUCCESS,
+            first_succeeded_or_all_failed!(all_succeeded_or_first_failed!(D)),
+        )
+        .await
+        .when_signal_notified_then_resumes(D, SUCCESS)
+        .await
+        .end()
+        .await;
+    }
+
+    #[restate_core::test]
+    async fn unknown_of_all_completed_resumes_when_first_inner_all_completes() {
+        SuspendTest::given_suspended_on(unknown!(all_completed!(A, B), all_completed!(C, D),))
+            .await
+            // sig(A) completes
+            //  -> we don't wake up yet
+            .when_signal_notified_then_suspends(
+                A,
+                FAILURE,
+                unknown!(all_completed!(B), all_completed!(C, D)),
             )
-            .future(
-                UnresolvedFutureBuilder::all_succeeded()
-                    .future(NotificationId::for_signal(SignalId::for_index(SIG_C)))
-                    .future(NotificationId::for_signal(SignalId::for_index(SIG_D)))
-                    .must_build(),
+            .await
+            .when_signal_notified_then_resumes(B, SUCCESS)
+            .await
+            .end()
+            .await;
+    }
+
+    #[restate_core::test]
+    async fn asff_of_all_completed_resumes_when_all_inner_complete_regardless_of_status() {
+        SuspendTest::given_suspended_on(all_succeeded_or_first_failed!(
+            all_completed!(A, B),
+            all_completed!(C, D)
+        ))
+        .await
+        .when_signal_notified_then_suspends(
+            A,
+            FAILURE,
+            all_succeeded_or_first_failed!(all_completed!(B), all_completed!(C, D)),
+        )
+        .await
+        .when_signal_notified_then_suspends(
+            B,
+            FAILURE,
+            all_succeeded_or_first_failed!(all_completed!(C, D)),
+        )
+        .await
+        .when_signal_notified_then_suspends(
+            C,
+            FAILURE,
+            all_succeeded_or_first_failed!(all_completed!(D)),
+        )
+        .await
+        .when_signal_notified_then_resumes(D, SUCCESS)
+        .await
+        .end()
+        .await;
+    }
+
+    #[restate_core::test]
+    async fn asff_short_circuits_on_unknown_child_completion() {
+        SuspendTest::given_suspended_on(all_succeeded_or_first_failed!(unknown!(A), unknown!(B)))
+            .await
+            .when_signal_notified_then_resumes(A, SUCCESS)
+            .await
+            .end()
+            .await;
+    }
+
+    #[restate_core::test]
+    async fn all_completed_of_unknowns_resumes_when_all_inner_complete() {
+        SuspendTest::given_suspended_on(all_completed!(unknown!(A), unknown!(B), unknown!(C)))
+            .await
+            .when_signal_notified_then_suspends(
+                C,
+                FAILURE,
+                all_completed!(unknown!(A), unknown!(B)),
             )
-            .must_build();
-
-        let _ = test_env
-            .apply(invoker_suspended(invocation_id, awaiting_on))
+            .await
+            .when_signal_notified_then_suspends(A, SUCCESS, all_completed!(unknown!(B)))
+            .await
+            .when_signal_notified_then_resumes(B, SUCCESS)
+            .await
+            .end()
             .await;
-
-        let failure = Failure {
-            code: 500u16.into(),
-            message: ByteString::from_static("boom"),
-            metadata: vec![],
-        };
-
-        // sig(A) fails -> inner all_succeeded(A, B) short-circuits to failure -> outer first_succeeded
-        // evicts it but still has all_succeeded(C, D) pending.
-        let actions = test_env
-            .apply(notify_signal_command(
-                invocation_id,
-                SIG_A,
-                SignalResult::Failure(failure),
-            ))
-            .await;
-        assert_that!(
-            actions,
-            not(contains(matchers::actions::invoke_for_id(invocation_id)))
-        );
-
-        // sig(C) only partially resolves all_succeeded(C, D) — still suspended.
-        let actions = test_env
-            .apply(notify_signal_command(
-                invocation_id,
-                SIG_C,
-                SignalResult::Void,
-            ))
-            .await;
-        assert_that!(
-            actions,
-            not(contains(matchers::actions::invoke_for_id(invocation_id)))
-        );
-        assert_that!(
-            test_env
-                .storage()
-                .get_invocation_status(&invocation_id)
-                .await,
-            ok(is_variant(InvocationStatusDiscriminants::Suspended))
-        );
-
-        // sig(D) completes all_succeeded(C, D) with success -> outer any succeeds.
-        let actions = test_env
-            .apply(notify_signal_command(
-                invocation_id,
-                SIG_D,
-                SignalResult::Void,
-            ))
-            .await;
-        assert_that!(
-            actions,
-            contains(matchers::actions::invoke_for_id(invocation_id))
-        );
-        assert_that!(
-            test_env
-                .storage()
-                .get_invocation_status(&invocation_id)
-                .await,
-            ok(is_variant(InvocationStatusDiscriminants::Invoked))
-        );
-
-        test_env.shutdown().await;
     }
 }

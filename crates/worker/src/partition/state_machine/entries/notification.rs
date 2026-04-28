@@ -156,12 +156,12 @@ where
         match self.invocation_status {
             InvocationStatus::Suspended { awaiting_on, .. } => {
                 debug!(
-                    "Resolving combinator '{awaiting_on:?}' with ({}, result: {:?})",
+                    "Trying to resolve future '{awaiting_on:?}' with ({}, result: {:?})",
                     self.entry.id(),
                     self.entry.result_variant()
                 );
 
-                if awaiting_on.resolve(&self.entry.id(), self.entry.result_variant()) {
+                if awaiting_on.resolve(self.entry) {
                     ResumeInvocationCommand {
                         invocation_id: self.invocation_id,
                         invocation_status: self.invocation_status,

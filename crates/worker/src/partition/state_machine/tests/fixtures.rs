@@ -179,3 +179,9 @@ pub async fn mock_pinned_deployment_v5(state_machine: &mut TestEnv, invocation_i
         .apply(pinned_deployment(invocation_id, ServiceProtocolVersion::V5))
         .await;
 }
+
+pub async fn mock_pinned_deployment_v7(state_machine: &mut TestEnv, invocation_id: InvocationId) {
+    let _ = state_machine
+        .apply(pinned_deployment(invocation_id, ServiceProtocolVersion::V7))
+        .await;
+}

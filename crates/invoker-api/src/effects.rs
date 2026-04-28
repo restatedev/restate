@@ -62,6 +62,8 @@ pub enum EffectKind {
     JournalEvent {
         event: RawEvent,
     },
+    // TODO stop writing this from >= v1.8, just use SuspendedV3 anyway even with service protocol < 7
+    // todo remove once we no longer support Bifrost commands written by <= v1.7
     SuspendedV2 {
         /// Flattened set of notification ids
         /// can be thought of as `UnresolvedFuture::unknown(waiting_for_notifications)`
