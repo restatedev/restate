@@ -7526,6 +7526,7 @@ dependencies = [
  "restate-futures-util",
  "restate-invoker-api",
  "restate-memory",
+ "restate-platform",
  "restate-queue",
  "restate-serde-util",
  "restate-service-client",

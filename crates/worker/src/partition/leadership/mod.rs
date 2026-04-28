@@ -51,7 +51,7 @@ use restate_timer::TokioClock;
 use restate_types::cluster::cluster_state::RunMode;
 use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
+use restate_types::identifiers::{LeaderEpoch, PartitionId};
 use restate_types::identifiers::{PartitionKey, PartitionProcessorRpcRequestId};
 use restate_types::live::LiveLoadExt;
 use restate_types::logs::Keys;
@@ -406,12 +406,19 @@ where
         } = &mut self.state
         {
             let schema = Metadata::with_current(|m| m.updateable_schema());
+
+            let (invoker_tx, invoker_rx) = mpsc::channel(config.worker.internal_queue_length());
+            let invoker_rx = ReceiverStream::new(invoker_rx);
+
             let invoker: InvokerService<
                 InvokerStorageReader<PartitionStore>,
                 EntryEnricher<Schema, ProtobufRawEntryCodec>,
                 Schema,
             > = InvokerService::from_options(
                 self.partition.partition_id,
+                self.partition.key_range,
+                InvokerStorageReader::new(partition_store.clone()),
+                invoker_tx,
                 &config.common.service_client,
                 &config.worker.invoker,
                 EntryEnricher::new(schema.clone()),
@@ -451,19 +458,6 @@ where
                 })?
                 .into_guard();
 
-            let (invoker_tx, invoker_rx) = mpsc::channel(config.worker.internal_queue_length());
-            let invoker_rx = ReceiverStream::new(invoker_rx);
-
-            // todo: Remove this once the invoker is partition-id-key-range aware.
-            invoker_handle
-                .register_partition(
-                    (self.partition.partition_id, *leader_epoch),
-                    self.partition.key_range,
-                    InvokerStorageReader::new(partition_store.clone()),
-                    invoker_tx,
-                )
-                .map_err(Error::Invoker)?;
-
             let scheduler_service = if config.common.experimental_enable_vqueues {
                 SchedulerService::create(
                     ResourceManager::create(
@@ -480,12 +474,7 @@ where
                 .await?
             } else {
                 // we only perform the mass-resumption if vqueues are disabled
-                Self::resume_invoked_invocations(
-                    &mut invoker_handle,
-                    (self.partition.partition_id, *leader_epoch),
-                    partition_store,
-                )
-                .await?;
+                Self::resume_invoked_invocations(&mut invoker_handle, partition_store).await?;
 
                 // noop scheduler if vqueues are disabled
                 SchedulerService::new_disabled()
@@ -613,8 +602,7 @@ where
     }
 
     async fn resume_invoked_invocations(
-        invoker_handle: &mut InvokerChannelServiceHandle<InvokerStorageReader<PartitionStore>>,
-        partition_leader_epoch: PartitionLeaderEpoch,
+        invoker_handle: &mut InvokerChannelServiceHandle,
         partition_store: &mut PartitionStore,
     ) -> Result<(), Error> {
         {
@@ -632,7 +620,7 @@ where
                     invocation_target,
                 } = invoked_invocation?;
                 invoker_handle
-                    .invoke(partition_leader_epoch, invocation_id, invocation_target)
+                    .invoke(invocation_id, invocation_target)
                     .map_err(Error::Invoker)?;
                 count += 1;
             }
@@ -714,17 +702,9 @@ where
     }
 
     // This is returned only if we're leaders (otherwise there's no messages to be sent to the invoker)
-    pub fn invoker_handle(
-        &mut self,
-    ) -> Option<(
-        PartitionLeaderEpoch,
-        &mut InvokerChannelServiceHandle<InvokerStorageReader<PartitionStore>>,
-    )> {
+    pub fn invoker_handle(&mut self) -> Option<&mut InvokerChannelServiceHandle> {
         match &mut self.state {
-            State::Leader(leader_state) => {
-                let partition_leader_epoch = (leader_state.partition_id, leader_state.leader_epoch);
-                Some((partition_leader_epoch, leader_state.invoker_handle()))
-            }
+            State::Leader(leader_state) => Some(leader_state.invoker_handle()),
             _ => None,
         }
     }

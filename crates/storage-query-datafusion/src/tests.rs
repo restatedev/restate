@@ -27,9 +27,8 @@ use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InvocationStatus, WriteInvocationStatusTable,
 };
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::PartitionId;
+use restate_types::identifiers::InvocationUuid;
 use restate_types::identifiers::{DeploymentId, InvocationId};
-use restate_types::identifiers::{InvocationUuid, LeaderEpoch};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::EntryType;
 use restate_types::journal_v2::NotificationId;
@@ -45,7 +44,6 @@ async fn query_sys_invocation() {
     let mut engine = MockQueryEngine::create_with(
         MockStatusHandle::default().with(InvocationStatusReport::new(
             invocation_id,
-            (PartitionId::MIN, LeaderEpoch::INITIAL),
             InvocationStatusReportInner {
                 in_flight: false,
                 start_count: 1,
@@ -180,7 +178,6 @@ async fn query_sys_invocation_with_protocol_v4() {
     let mut engine = MockQueryEngine::create_with(
         MockStatusHandle::default().with(InvocationStatusReport::new(
             invocation_id,
-            (PartitionId::MIN, LeaderEpoch::INITIAL),
             InvocationStatusReportInner {
                 in_flight: false,
                 start_count: 1,

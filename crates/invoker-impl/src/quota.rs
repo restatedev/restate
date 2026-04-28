@@ -21,7 +21,7 @@ use metrics::{Counter, counter, gauge};
 use crate::{
     InvokerId,
     metric_definitions::{
-        ID_LOOKUP, INVOKER_CONCURRENCY_LIMIT, INVOKER_CONCURRENCY_SLOTS_ACQUIRED,
+        INVOKER_CONCURRENCY_LIMIT, INVOKER_CONCURRENCY_SLOTS_ACQUIRED,
         INVOKER_CONCURRENCY_SLOTS_RELEASED,
     },
 };
@@ -51,14 +51,15 @@ pub(super) struct InvokerConcurrencyQuota {
 impl InvokerConcurrencyQuota {
     pub(super) fn new(invoker_id: impl Into<InvokerId>, quota: Option<NonZeroUsize>) -> Self {
         let invoker_id = invoker_id.into();
+        let invoker_id: Arc<str> = Arc::from(invoker_id.0.to_string());
 
         let inner = match quota {
             Some(available_slots) => {
-                gauge!(INVOKER_CONCURRENCY_LIMIT, "invoker_id" => ID_LOOKUP.get(invoker_id))
+                gauge!(INVOKER_CONCURRENCY_LIMIT, "invoker_id" => invoker_id.clone())
                     .set(available_slots.get() as f64);
 
-                let acquired_counter = counter!(INVOKER_CONCURRENCY_SLOTS_ACQUIRED, "invoker_id" => ID_LOOKUP.get(invoker_id));
-                let released_counter = counter!(INVOKER_CONCURRENCY_SLOTS_RELEASED, "invoker_id" => ID_LOOKUP.get(invoker_id));
+                let acquired_counter = counter!(INVOKER_CONCURRENCY_SLOTS_ACQUIRED, "invoker_id" => invoker_id.clone());
+                let released_counter = counter!(INVOKER_CONCURRENCY_SLOTS_RELEASED, "invoker_id" => invoker_id.clone());
 
                 InvokerConcurrencyQuotaInner::Limited {
                     slots: Arc::new(LimitedSlots {
@@ -69,8 +70,7 @@ impl InvokerConcurrencyQuota {
                 }
             }
             None => {
-                gauge!(INVOKER_CONCURRENCY_LIMIT, "invoker_id" => ID_LOOKUP.get(invoker_id))
-                    .set(f64::INFINITY);
+                gauge!(INVOKER_CONCURRENCY_LIMIT, "invoker_id" => invoker_id).set(f64::INFINITY);
 
                 InvokerConcurrencyQuotaInner::Unlimited
             }

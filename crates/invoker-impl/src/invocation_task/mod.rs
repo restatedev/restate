@@ -29,7 +29,6 @@ use http::{HeaderName, HeaderValue, Response};
 use http_body::{Body, Frame};
 use http_body_util::StreamBody;
 use metrics::{counter, histogram};
-use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::task::AbortOnDropHandle;
@@ -39,10 +38,11 @@ use restate_invoker_api::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderTransaction, JournalKind,
 };
 use restate_invoker_api::{EntryEnricher, InvocationReaderError};
+use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_serde_util::{ByteCount, NonZeroByteCount};
 use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClientError};
 use restate_types::deployment::PinnedDeployment;
-use restate_types::identifiers::{InvocationId, PartitionLeaderEpoch};
+use restate_types::identifiers::InvocationId;
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::EntryIndex;
 use restate_types::journal::enriched::EnrichedRawEntry;
@@ -56,7 +56,7 @@ use restate_types::service_protocol::ServiceProtocolVersion;
 use crate::TokenBucket;
 use crate::error::{InvocationMemoryExhausted, InvokerError};
 use crate::invocation_task::service_protocol_runner::ServiceProtocolRunner;
-use crate::metric_definitions::{ID_LOOKUP, INVOKER_EAGER_STATE_TRUNCATED, INVOKER_TASK_DURATION};
+use crate::metric_definitions::{INVOKER_EAGER_STATE_TRUNCATED, INVOKER_TASK_DURATION};
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256
@@ -148,7 +148,6 @@ where
 }
 
 pub(super) struct InvocationTaskOutput {
-    pub(super) partition: PartitionLeaderEpoch,
     pub(super) invocation_id: InvocationId,
     pub(super) inner: InvocationTaskOutputInner,
 }
@@ -247,7 +246,6 @@ pub(super) struct InvocationTask<EE, DMR> {
     client: ServiceClient,
 
     // Connection params
-    partition: PartitionLeaderEpoch,
     invocation_id: InvocationId,
     invocation_target: InvocationTarget,
     inactivity_timeout: Duration,
@@ -330,7 +328,6 @@ where
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         client: ServiceClient,
-        partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
         default_inactivity_timeout: Duration,
@@ -348,7 +345,6 @@ where
     ) -> Self {
         Self {
             client,
-            partition,
             invocation_id,
             invocation_target,
             inactivity_timeout: default_inactivity_timeout,
@@ -423,8 +419,7 @@ where
         };
 
         self.send_invoker_tx(inner);
-        histogram!(INVOKER_TASK_DURATION, "partition_id" => ID_LOOKUP.get(self.partition.0))
-            .record(start.elapsed());
+        histogram!(INVOKER_TASK_DURATION).record(start.elapsed());
     }
 
     async fn select_protocol_version_and_run<IR>(
@@ -597,7 +592,6 @@ impl<EE, Schemas> InvocationTask<EE, Schemas> {
     /// Send a non-terminal message to the invoker main loop.
     pub(crate) fn send_invoker_tx(&self, invocation_task_output_inner: InvocationTaskOutputInner) {
         let _ = self.invoker_tx.send(InvocationTaskOutput {
-            partition: self.partition,
             invocation_id: self.invocation_id,
             inner: invocation_task_output_inner,
         });
