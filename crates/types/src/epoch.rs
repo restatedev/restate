@@ -119,7 +119,7 @@ impl EpochMetadata {
         next.version = self
             .next
             .map(|next| next.version())
-            .unwrap_or(self.current.version())
+            .unwrap_or_else(|| self.current.version())
             .next();
 
         Self {

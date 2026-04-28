@@ -238,7 +238,7 @@ mod record_encoding {
             EncodedRecord {
                 created_at: self.created_at,
                 keys: self.keys.clone(),
-                body: body.clone(),
+                body,
             }
         }
     }

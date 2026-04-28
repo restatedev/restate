@@ -338,3 +338,17 @@ inherits = "release"
 # Temporarily allow unused assignments until https://github.com/rust-lang/rust/issues/147648 has been fixed.
 # The problem is that error fields used by thiserror::error attribute generate false positives for unused_assignments.
 unused_assignments = "allow"
+
+[workspace.lints.clippy]
+or_fun_call = "deny"
+clear_with_drain = "deny"
+collection_is_never_read = "deny"
+naive_bytecount = "deny"
+stable_sort_primitive = "deny"
+large_stack_frames = "deny"
+large_types_passed_by_value = "deny"
+redundant_clone = "deny"
+assigning_clones = "deny"
+large_futures = "warn"
+mutex_atomic = "deny"
+to_string_in_format_args = "deny"

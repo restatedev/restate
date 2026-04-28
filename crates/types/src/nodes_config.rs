@@ -101,9 +101,9 @@ impl FromStr for ClusterFingerprint {
                 .context("malformed cluster fingerprint")?,
         );
 
-        Ok(Self(NonZero::new(out).ok_or(anyhow::anyhow!(
-            "cluster fingerprint must be a non-zero value"
-        ))?))
+        Ok(Self(NonZero::new(out).ok_or_else(|| {
+            anyhow::anyhow!("cluster fingerprint must be a non-zero value")
+        })?))
     }
 }
 
@@ -830,7 +830,7 @@ mod tests {
             name: "node2".to_owned(),
             current_generation: GenerationalNodeId::new(2, 1),
             location: "region1.zone1".parse().unwrap(),
-            address: address.clone(),
+            address,
             ctrl_address: None,
             roles: Role::Worker.into(),
             log_server_config: LogServerConfig::default(),

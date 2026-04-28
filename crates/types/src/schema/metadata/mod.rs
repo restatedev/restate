@@ -391,12 +391,12 @@ impl ServiceRevision {
         }
 
         let (journal_retention, got_journal_retention_clamped) = configuration
-            .clamp_journal_retention(
-                self.journal_retention.or(configuration
+            .clamp_journal_retention(self.journal_retention.or_else(|| {
+                configuration
                     .invocation
                     .default_journal_retention
-                    .to_non_zero_std()),
-            );
+                    .to_non_zero_std()
+            }));
         if got_journal_retention_clamped {
             info.push(SchemaInfo::new_with_code(
                 &restate_errors::RT0022,
