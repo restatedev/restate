@@ -11,9 +11,6 @@
 use super::*;
 use restate_storage_api::StorageError;
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
-use restate_storage_api::service_status_table::{
-    ReadVirtualObjectStatusTable, VirtualObjectStatus,
-};
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::invocation;
 use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
@@ -34,7 +31,7 @@ pub(super) struct Request {
 impl<'a, TActuator, TSchemas, TStorage> RpcContext<'a, TActuator, TSchemas, TStorage>
 where
     TActuator: Actuator,
-    TStorage: ReadInvocationStatusTable + ReadVirtualObjectStatusTable,
+    TStorage: ReadInvocationStatusTable,
 {
     async fn get_invocation_output(
         &mut self,
@@ -42,20 +39,7 @@ where
         invocation_query: InvocationQuery,
     ) -> Result<PartitionProcessorRpcResponse, StorageError> {
         // We can handle this immediately by querying the partition store, no need to go through proposals
-        let invocation_id = match invocation_query {
-            InvocationQuery::Invocation(iid) => iid,
-            ref q @ InvocationQuery::Workflow(ref sid) => {
-                match self.storage.get_virtual_object_status(sid).await? {
-                    VirtualObjectStatus::Locked(iid) => iid,
-                    VirtualObjectStatus::Unlocked => {
-                        // Try the deterministic id
-                        q.to_invocation_id()
-                    }
-                }
-            }
-            ref q @ InvocationQuery::IdempotencyId(_) => q.to_invocation_id(),
-        };
-
+        let invocation_id = invocation_query.to_invocation_id();
         let invocation_status = self.storage.get_invocation_status(&invocation_id).await?;
 
         match invocation_status {
@@ -84,7 +68,7 @@ where
 impl<'a, Proposer: Actuator, TSchemas, Storage> RpcHandler<Request>
     for RpcContext<'a, Proposer, TSchemas, Storage>
 where
-    Storage: ReadInvocationStatusTable + ReadVirtualObjectStatusTable,
+    Storage: ReadInvocationStatusTable,
 {
     type Output = PartitionProcessorRpcResponse;
     type Error = ();

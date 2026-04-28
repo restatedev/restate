@@ -308,7 +308,7 @@ async fn purge_completed_workflow() {
     let invocation_target = InvocationTarget::mock_workflow();
     let invocation_id = InvocationId::mock_random();
 
-    // Prepare idempotency metadata and completed status
+    // Prepare a completed workflow invocation
     let mut txn = test_env.storage().transaction();
     txn.put_invocation_status(
         &invocation_id,
@@ -319,14 +319,8 @@ async fn purge_completed_workflow() {
         }),
     )
     .unwrap();
-    txn.put_virtual_object_status(
-        &invocation_target.as_keyed_service_id().unwrap(),
-        &VirtualObjectStatus::Locked(invocation_id),
-    )
-    .unwrap();
     txn.commit().await.unwrap();
 
-    // Send timer fired command
     let request_id = PartitionProcessorRpcRequestId::new();
     let actions = test_env
         .apply(Command::PurgeInvocation(PurgeInvocationRequest {
@@ -350,14 +344,6 @@ async fn purge_completed_workflow() {
             .await
             .unwrap(),
         pat!(InvocationStatus::Free)
-    );
-    assert_that!(
-        test_env
-            .storage()
-            .get_virtual_object_status(&invocation_target.as_keyed_service_id().unwrap())
-            .await
-            .unwrap(),
-        pat!(VirtualObjectStatus::Unlocked)
     );
     test_env.shutdown().await;
 }
