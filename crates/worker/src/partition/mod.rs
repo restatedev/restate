@@ -8,11 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+// When expose-internals makes this module `pub`, some internal types referenced
+// by `PartitionProcessor` and `ProcessorError` become visible but remain
+// `pub(crate)`. This is expected -- benchmarks only use `state_machine`.
+#![cfg_attr(
+    feature = "expose-internals",
+    allow(private_interfaces, private_bounds)
+)]
+
 mod cleaner;
 pub mod invoker_storage_reader;
 mod leadership;
 mod rpc;
 pub mod shuffle;
+#[cfg(feature = "expose-internals")]
+pub mod state_machine;
+#[cfg(not(feature = "expose-internals"))]
 mod state_machine;
 pub mod types;
 
