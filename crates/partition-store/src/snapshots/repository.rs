@@ -37,7 +37,6 @@ use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::{LogId, Lsn};
 use restate_types::nodes_config::ClusterFingerprint;
 use restate_types::time::MillisSinceEpoch;
-use restate_types::{RESTATE_VERSION_1_7_0, SemanticRestateVersion};
 
 use super::{LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion};
 
@@ -61,7 +60,7 @@ pub struct SnapshotRepository {
     destination: Url,
     prefix: ObjectPath,
     staging_dir: PathBuf,
-    num_retained: Option<std::num::NonZeroU8>,
+    num_retained: std::num::NonZeroU8,
     #[cfg(any(test, feature = "test-util"))]
     enable_cleanup: bool,
 }
@@ -75,9 +74,9 @@ const DOWNLOAD_CONCURRENCY_LIMIT: usize = 8;
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum LatestSnapshotVersion {
-    #[default]
     V1,
     /// V2 adds support for retained snapshots. Introduced in v1.6.
+    #[default]
     V2,
 }
 
@@ -141,22 +140,6 @@ impl SnapshotReference {
 }
 
 impl LatestSnapshot {
-    pub fn from_snapshot(snapshot: &PartitionSnapshotMetadata) -> Self {
-        LatestSnapshot {
-            version: LatestSnapshotVersion::V1,
-            cluster_name: snapshot.cluster_name.clone(),
-            cluster_fingerprint: snapshot.cluster_fingerprint,
-            node_name: snapshot.node_name.clone(),
-            partition_id: snapshot.partition_id,
-            log_id: Some(snapshot.log_id),
-            snapshot_id: snapshot.snapshot_id,
-            created_at: snapshot.created_at,
-            min_applied_lsn: snapshot.min_applied_lsn,
-            path: UniqueSnapshotKey::from_metadata(snapshot).padded_key(),
-            retained_snapshots: vec![],
-        }
-    }
-
     /// We ensure that retained snapshots is in descending order of archived LSN, most recent snapshot first.
     fn effective_retained_snapshots(&self) -> Vec<SnapshotReference> {
         if self.retained_snapshots.is_empty() {
@@ -344,7 +327,7 @@ impl SnapshotRepository {
             destination,
             prefix: ObjectPath::from(prefix),
             staging_dir,
-            num_retained: snapshots_options.experimental_num_retained,
+            num_retained: snapshots_options.num_retained,
             #[cfg(any(test, feature = "test-util"))]
             enable_cleanup: snapshots_options.enable_cleanup,
         }))
@@ -419,41 +402,9 @@ impl SnapshotRepository {
         );
 
         let mut progress = SnapshotUploadProgress::with_snapshot_path(snapshot_prefix);
-        let mut buf = BytesMut::new();
-        for file in &snapshot.files {
-            let filename = strip_leading_slash(&file.name);
-            let key = self.snapshot_file_path(snapshot, filename);
 
-            let put_result = put_snapshot_object(
-                local_snapshot_path.join(filename).as_path(),
-                &key,
-                &self.object_store,
-                &mut buf,
-            )
-            .await
-            .map_err(|e| PutSnapshotError::from(e, progress.clone()))?;
-
-            debug!(etag = %put_result.e_tag.unwrap_or_default(), %key, "Put snapshot object completed");
-            progress.push(file.name.clone());
-        }
-
-        let metadata_key = self.snapshot_file_path(snapshot, "metadata.json");
-        let metadata_json_payload = PutPayload::from(
-            serde_json::to_string_pretty(snapshot).expect("Can always serialize JSON"),
-        );
-
-        let put_result = self
-            .object_store
-            .put(&metadata_key, metadata_json_payload)
-            .await
-            .map_err(|e| PutSnapshotError::from(e, progress.clone()))?;
-        progress.push("/metadata.json".to_owned());
-
-        debug!(
-            key = %metadata_key,
-            etag = %put_result.e_tag.unwrap_or_default(),
-            "Successfully published snapshot metadata",
-        );
+        self.upload_snapshot(snapshot, local_snapshot_path, &mut progress)
+            .await?;
 
         let latest_path = self.latest_snapshot_pointer_path(snapshot.partition_id);
 
@@ -490,13 +441,9 @@ impl SnapshotRepository {
                 .map_err(|e| PutSnapshotError::from(e, progress.clone()));
         }
 
-        let format_version = self.determine_format_version(maybe_stored.as_ref().map(|(l, _)| l));
-        let (new_latest, evicted_snapshots) = match format_version {
-            LatestSnapshotVersion::V1 => (self.build_latest_v1(snapshot), vec![]),
-            LatestSnapshotVersion::V2 => self
-                .build_latest_v2(snapshot, maybe_stored.as_ref().map(|(l, _)| l))
-                .map_err(|e| PutSnapshotError::from(e, progress.clone()))?,
-        };
+        let (new_latest, evicted_snapshots) = self
+            .build_latest_v2(snapshot, maybe_stored.as_ref().map(|(l, _)| l))
+            .map_err(|e| PutSnapshotError::from(e, progress.clone()))?;
 
         let latest_payload = PutPayload::from(
             serde_json::to_string_pretty(&new_latest)
@@ -531,26 +478,49 @@ impl SnapshotRepository {
             .map_err(|e| PutSnapshotError::from(e, progress.clone()))
     }
 
-    fn determine_format_version(&self, current: Option<&LatestSnapshot>) -> LatestSnapshotVersion {
-        // V2 is the default from 1.7.0, including pre-releases
-        if SemanticRestateVersion::current().is_equal_or_newer_than(&RESTATE_VERSION_1_7_0)
-            || self.num_retained.is_some()
-        {
-            if let Some(latest) = current
-                && latest.version == LatestSnapshotVersion::V1
-            {
-                debug!("Upgrading latest snapshot format from V1 to V2");
-            }
-            LatestSnapshotVersion::V2
-        } else {
-            current
-                .map(|l| l.version)
-                .unwrap_or(LatestSnapshotVersion::V1)
-        }
-    }
+    async fn upload_snapshot(
+        &self,
+        snapshot: &PartitionSnapshotMetadata,
+        local_snapshot_path: &Path,
+        progress: &mut SnapshotUploadProgress,
+    ) -> Result<(), PutSnapshotError> {
+        let mut buf = BytesMut::new();
+        for file in &snapshot.files {
+            let filename = strip_leading_slash(&file.name);
+            let key = self.snapshot_file_path(snapshot, filename);
 
-    fn build_latest_v1(&self, snapshot: &PartitionSnapshotMetadata) -> LatestSnapshot {
-        LatestSnapshot::from_snapshot(snapshot)
+            let put_result = put_snapshot_object(
+                local_snapshot_path.join(filename).as_path(),
+                &key,
+                &self.object_store,
+                &mut buf,
+            )
+            .await
+            .map_err(|e| PutSnapshotError::from(e, progress.clone()))?;
+
+            debug!(etag = %put_result.e_tag.unwrap_or_default(), %key, "Put snapshot object completed");
+            progress.push(file.name.clone());
+        }
+
+        let metadata_key = self.snapshot_file_path(snapshot, "metadata.json");
+        let metadata_json_payload = PutPayload::from(
+            serde_json::to_string_pretty(snapshot).expect("Can always serialize JSON"),
+        );
+
+        let put_result = self
+            .object_store
+            .put(&metadata_key, metadata_json_payload)
+            .await
+            .map_err(|e| PutSnapshotError::from(e, progress.clone()))?;
+        progress.push("/metadata.json".to_owned());
+
+        debug!(
+            key = %metadata_key,
+            etag = %put_result.e_tag.unwrap_or_default(),
+            "Successfully published snapshot metadata",
+        );
+
+        Ok(())
     }
 
     /// Builds V2 latest snapshot metadata.
@@ -565,22 +535,15 @@ impl SnapshotRepository {
     ) -> anyhow::Result<(LatestSnapshot, Vec<SnapshotReference>)> {
         let new_snapshot_ref = SnapshotReference::from_metadata(snapshot);
 
-        let (retained_snapshots, evicted_snapshots) = match self.num_retained {
-            None => (vec![], vec![]), // tracking is only enabled if num-retained is set
-            Some(num_retained) => {
-                let mut retained_snapshots = current
-                    .map(|l| l.effective_retained_snapshots())
-                    .unwrap_or_default();
+        let mut retained_snapshots = current
+            .map(|l| l.effective_retained_snapshots())
+            .unwrap_or_default();
 
-                // List will be in correct descending order if we insert the newest snapshot first
-                retained_snapshots.insert(0, new_snapshot_ref.clone());
+        // List will be in correct descending order if we insert the newest snapshot first
+        retained_snapshots.insert(0, new_snapshot_ref.clone());
 
-                let evicted_snapshots = retained_snapshots
-                    .split_off((num_retained.get() as usize).min(retained_snapshots.len()));
-
-                (retained_snapshots, evicted_snapshots)
-            }
-        };
+        let evicted_snapshots = retained_snapshots
+            .split_off((self.num_retained.get() as usize).min(retained_snapshots.len()));
 
         let latest = LatestSnapshot {
             version: LatestSnapshotVersion::V2,
@@ -1034,6 +997,8 @@ impl SnapshotUploadProgress {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("failed to upload snapshot to {full_snapshot_path}: {error}")]
 struct PutSnapshotError {
     pub full_snapshot_path: ObjectPath,
     pub uploaded_files: Vec<String>,
@@ -1124,8 +1089,8 @@ mod tests {
     use bytes::Bytes;
     use futures::TryStreamExt;
     use jiff::Timestamp;
-    use object_store::ObjectStoreExt;
     use object_store::path::Path as ObjectPath;
+    use object_store::{ObjectStoreExt, PutPayload};
     use tempfile::TempDir;
     use tokio::io::AsyncWriteExt;
     use tracing::info;
@@ -1140,7 +1105,7 @@ mod tests {
     use restate_types::retries::RetryPolicy;
     use restate_types::sharding::KeyRange;
 
-    use crate::snapshots::repository::LatestSnapshotVersion;
+    use crate::snapshots::repository::{LatestSnapshotVersion, SnapshotUploadProgress};
 
     use super::{LatestSnapshot, SnapshotReference, SnapshotRepository, UniqueSnapshotKey};
     use super::{PartitionSnapshotMetadata, SnapshotFormatVersion};
@@ -1283,7 +1248,8 @@ mod tests {
             .get(&partition_prefix.clone().join("latest.json"))
             .await?;
         let latest: LatestSnapshot = serde_json::from_slice(&latest.bytes().await?)?;
-        assert_eq!(LatestSnapshot::from_snapshot(&snapshot1), latest);
+        let (expected_latest, _) = repository.build_latest_v2(&snapshot1, None)?;
+        assert_eq!(expected_latest, latest);
 
         let snapshot_source = TempDir::new()?;
         let source_dir = snapshot_source.path().to_path_buf();
@@ -1306,7 +1272,8 @@ mod tests {
             .get(&partition_prefix.join("latest.json"))
             .await?;
         let latest: LatestSnapshot = serde_json::from_slice(&latest.bytes().await?)?;
-        assert_eq!(LatestSnapshot::from_snapshot(&snapshot2,), latest);
+        let (expected_latest2, _) = repository.build_latest_v2(&snapshot2, None)?;
+        assert_eq!(expected_latest2, latest);
 
         let latest = repository.get_latest(PartitionId::MIN).await?.unwrap();
         assert_eq!(latest.min_applied_lsn, snapshot2.min_applied_lsn);
@@ -1388,7 +1355,7 @@ mod tests {
 
         let opts = SnapshotsOptions {
             destination: Some(destination.clone()),
-            experimental_num_retained: Some(std::num::NonZeroU8::new(3).unwrap()),
+            num_retained: std::num::NonZeroU8::new(3).unwrap(),
             ..SnapshotsOptions::default()
         };
 
@@ -1449,17 +1416,6 @@ mod tests {
             .unwrap()
             .to_string();
 
-        let opts_v1 = SnapshotsOptions {
-            destination: Some(destination.clone()),
-            experimental_num_retained: None,
-            ..SnapshotsOptions::default()
-        };
-
-        let repository_v1 =
-            SnapshotRepository::new_from_config(&opts_v1, TempDir::new().unwrap().keep())
-                .await?
-                .unwrap();
-
         let snapshot_source = TempDir::new()?;
         let source_dir = snapshot_source.path().to_path_buf();
         let data = b"snapshot-data-v1";
@@ -1467,14 +1423,12 @@ mod tests {
         data_file.write_all(data).await?;
         data_file.shutdown().await?;
 
-        let mut snapshot_v1 = mock_snapshot_metadata(
+        let mut snapshot = mock_snapshot_metadata(
             "/data.sst".to_owned(),
             source_dir.to_string_lossy().to_string(),
             data.len(),
         );
-        snapshot_v1.min_applied_lsn = Lsn::new(1000);
-
-        repository_v1.put(&snapshot_v1, source_dir.clone()).await?;
+        snapshot.min_applied_lsn = Lsn::new(1000);
 
         let object_store = create_object_store_client(
             Url::parse(&destination)?,
@@ -1483,24 +1437,45 @@ mod tests {
         )
         .await?;
 
-        let latest_path = ObjectPath::from(Url::parse(&destination)?.path().to_string())
-            .join(PartitionId::MIN.to_string())
-            .join("latest.json");
-
-        let latest_data = object_store.get(&latest_path).await?;
-        let latest: LatestSnapshot = serde_json::from_slice(&latest_data.bytes().await?)?;
-        assert_eq!(latest.version, LatestSnapshotVersion::V1);
-
-        let opts_v2 = SnapshotsOptions {
+        let opts = SnapshotsOptions {
             destination: Some(destination.clone()),
-            experimental_num_retained: Some(std::num::NonZeroU8::new(2).unwrap()),
+            num_retained: std::num::NonZeroU8::new(2).unwrap(),
             ..SnapshotsOptions::default()
         };
 
-        let repository_v2 =
-            SnapshotRepository::new_from_config(&opts_v2, TempDir::new().unwrap().keep())
-                .await?
-                .unwrap();
+        let repository = SnapshotRepository::new_from_config(&opts, TempDir::new().unwrap().keep())
+            .await?
+            .unwrap();
+
+        let mut progress =
+            SnapshotUploadProgress::with_snapshot_path(repository.base_prefix(&snapshot));
+        // upload the snapshot data
+        repository
+            .upload_snapshot(&snapshot, source_dir.as_path(), &mut progress)
+            .await?;
+
+        // store v1 latest snapshot pointer
+        let latest_snapshot_v1 = LatestSnapshot {
+            version: LatestSnapshotVersion::V1,
+            cluster_name: snapshot.cluster_name.clone(),
+            cluster_fingerprint: snapshot.cluster_fingerprint,
+            node_name: snapshot.node_name.clone(),
+            partition_id: snapshot.partition_id,
+            log_id: Some(snapshot.log_id),
+            snapshot_id: snapshot.snapshot_id,
+            created_at: snapshot.created_at,
+            min_applied_lsn: snapshot.min_applied_lsn,
+            path: UniqueSnapshotKey::from_metadata(&snapshot).padded_key(),
+            retained_snapshots: vec![],
+        };
+
+        let latest_path = repository.latest_snapshot_pointer_path(snapshot.partition_id);
+        object_store
+            .put(
+                &latest_path,
+                PutPayload::from(serde_json::to_string(&latest_snapshot_v1)?),
+            )
+            .await?;
 
         let snapshot_source_2 = TempDir::new()?;
         let source_dir_2 = snapshot_source_2.path().to_path_buf();
@@ -1516,7 +1491,7 @@ mod tests {
         );
         snapshot_v2.min_applied_lsn = Lsn::new(2000);
 
-        repository_v2.put(&snapshot_v2, source_dir_2).await?;
+        repository.put(&snapshot_v2, source_dir_2).await?;
 
         let latest_data = object_store.get(&latest_path).await?;
         let latest: LatestSnapshot = serde_json::from_slice(&latest_data.bytes().await?)?;
@@ -1537,7 +1512,7 @@ mod tests {
 
         let opts = SnapshotsOptions {
             destination: Some(destination.clone()),
-            experimental_num_retained: Some(std::num::NonZeroU8::new(3).unwrap()),
+            num_retained: std::num::NonZeroU8::new(3).unwrap(),
             ..SnapshotsOptions::default()
         };
 
@@ -1587,7 +1562,7 @@ mod tests {
 
         let opts = SnapshotsOptions {
             destination: Some(destination.clone()),
-            experimental_num_retained: Some(std::num::NonZeroU8::new(3).unwrap()),
+            num_retained: std::num::NonZeroU8::new(3).unwrap(),
             enable_cleanup: true,
             ..SnapshotsOptions::default()
         };
