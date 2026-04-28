@@ -24,11 +24,12 @@ restate-util-string = { workspace = true }
 restate-memory = { workspace = true }
 restate-errors = { workspace = true }
 
-codederror = { workspace = true }
-gardal = { workspace = true, features = ["tokio"] }
 bytes = { workspace = true }
+codederror = { workspace = true }
 futures = { workspace = true }
+gardal = { workspace = true, features = ["tokio"] }
 serde = { workspace = true, optional = true }
+smallvec = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
