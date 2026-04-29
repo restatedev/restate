@@ -32,7 +32,9 @@ impl VQueueWaitingReader {
         // this is not the place to be concerned about corruption, we favor speed
         // over safety for this particular use-case.
         readopts.set_verify_checksums(false);
-        readopts.set_tailing(true);
+        // We re-create this reader on every refill, so a fresh snapshot is what
+        // we want. A tailing iterator would see new writes but is unsafe across
+        // memtable flushes.
         // use prefix extractors for efficient filtering.
         readopts.set_prefix_same_as_start(true);
 

@@ -8,20 +8,121 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::VecDeque;
+
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{EntryKey, EntryValue, VQueueCursor, VQueueStore};
 use restate_types::vqueues::VQueueId;
 
 use super::UnconfirmedAssignments;
 
+/// The number of entries we are willing to keep in cache
+const INBOX_CACHE_CAPACITY: usize = 24;
+
 #[derive(Debug)]
-enum Head {
-    /// We need a seek+read to know the head.
-    Unknown,
-    /// The current cursor's head
-    Known { key: EntryKey, value: EntryValue },
-    /// We know that we've reached the end of the vqueue
-    Empty,
+struct InboxCache {
+    /// Sorted ascending by EntryKey. Front = current head.
+    items: VecDeque<(EntryKey, EntryValue)>,
+    /// `seek_after` anchor for the next refill, and the upper bound used to
+    /// decide whether to accept a `notify_enqueued`. Items currently in the
+    /// cache, items previously consumed from the cache, and items in the
+    /// caller's skip set together account for every inbox key
+    /// `<= refill_anchor`. Keys `> refill_anchor` are undiscovered and will
+    /// appear on the next refill via `seek_after(refill_anchor)`.
+    refill_anchor: Option<EntryKey>,
+}
+
+impl Default for InboxCache {
+    fn default() -> Self {
+        Self {
+            items: VecDeque::with_capacity(INBOX_CACHE_CAPACITY),
+            refill_anchor: None,
+        }
+    }
+}
+
+impl InboxCache {
+    /// Inserts `(key, value)` into the sorted cache.
+    ///
+    /// Returns `true` iff the item became the new front (head). Returns
+    /// `false` if the item was rejected because its key falls strictly above
+    /// the cache's coverage zone (`> refill_anchor`); in that case the item
+    /// will be discovered on the next refill.
+    fn enqueue(&mut self, key: &EntryKey, value: &EntryValue) -> bool {
+        // Priority-queue rule: ignore items strictly above our coverage zone.
+        // The bound is `refill_anchor`, NOT `cache.back`. After consuming the
+        // back of the cache, `cache.back` can be lower than `refill_anchor`,
+        // and items in `(cache.back, refill_anchor]` would be lost (the next
+        // refill seek_after(refill_anchor) only returns keys strictly greater
+        // than the anchor).
+        if let Some(ref anchor) = self.refill_anchor
+            && key > anchor
+        {
+            return false;
+        }
+        let pos = match self.items.binary_search_by(|(k, _)| k.cmp(key)) {
+            Ok(_) => {
+                debug_assert!(false, "duplicate enqueue for key {key:?}");
+                return false;
+            }
+            Err(pos) => pos,
+        };
+
+        // At-cap fast path: avoid the VecDeque grow/shrink that would happen
+        // if we inserted first and evicted afterwards.
+        if self.items.len() >= INBOX_CACHE_CAPACITY {
+            if pos == self.items.len() {
+                // The new key would land at the back and be evicted on the
+                // very next step (matches the post-insert `pop_back` from
+                // the original implementation). Skip the insert, but still
+                // lower the anchor to the current back so the next refill
+                // can re-discover `key` via `seek_after(anchor)`.
+                self.refill_anchor = self.items.back().map(|(k, _)| *k);
+                return false;
+            }
+            // Make room first; `pos` is unaffected because pos < old_len in
+            // this branch (we shift elements right of `pos` regardless).
+            debug_assert!(pos < self.items.len());
+            self.items.pop_back();
+            self.items.insert(pos, (*key, value.clone()));
+            self.refill_anchor = self.items.back().map(|(k, _)| *k);
+            return pos == 0;
+        }
+
+        // Normal path: cache below capacity.
+        self.items.insert(pos, (*key, value.clone()));
+        // Anchor maintenance: if it was None (very first insert), set it to
+        // this key. Otherwise the precondition above guarantees
+        // `key <= anchor`, so the anchor stays put.
+        if self.refill_anchor.is_none() {
+            self.refill_anchor = Some(*key);
+        }
+        pos == 0
+    }
+
+    /// Returns `true` iff the removed key was the current front (head).
+    fn remove(&mut self, key: &EntryKey) -> bool {
+        let Ok(pos) = self.items.binary_search_by(|(k, _)| k.cmp(key)) else {
+            return false;
+        };
+        self.items.remove(pos);
+        // The anchor stays put — even if we removed the back, the entry was
+        // also removed from storage, so `seek_after(anchor)` will skip it
+        // naturally on the next refill.
+        pos == 0
+    }
+
+    fn front(&self) -> Option<&(EntryKey, EntryValue)> {
+        self.items.front()
+    }
+
+    fn pop_front(&mut self) {
+        self.items.pop_front();
+    }
+
+    fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
 }
 
 #[derive(Debug)]
@@ -38,25 +139,30 @@ pub enum QueueItem<'a> {
 }
 
 #[derive(derive_more::Debug)]
-pub(crate) enum Reader<S: VQueueStore> {
-    /// Reader was never opened and might need to scan running items
+enum Stage<S: VQueueStore> {
+    /// Brand-new queue; running items still need to be drained first.
     New { already_running: u32 },
+    /// In running stage. Single-item head, single-shot reader.
     #[debug("Running")]
     Running {
-        remaining: u32,
+        head: (EntryKey, EntryValue),
         reader: S::RunningReader,
+        remaining: u32,
     },
-    #[debug("Inbox")]
-    Inbox(S::InboxReader),
-    // We can transition back to Reader::Inbox if new items have been added to the inbox
-    // but we should never return to `Running`.
-    #[debug("Closed")]
-    Closed,
+    /// In inbox stage. The queue's `inbox_cache` is the source of truth
+    /// between refills.
+    Inbox,
+    /// Inbox is fully drained.
+    Empty,
 }
 
 pub(crate) struct Queue<S: VQueueStore> {
-    head: Head,
-    reader: Reader<S>,
+    stage: Stage<S>,
+    /// Backing cache for the inbox stage.
+    /// Meaningful only when `stage` is `Inbox` or `Empty`; for
+    /// other stages it must be empty (invariant maintained by `advance` /
+    /// `remove` / `enqueue`).
+    inbox_cache: InboxCache,
 }
 
 impl<S: VQueueStore> Queue<S> {
@@ -64,99 +170,66 @@ impl<S: VQueueStore> Queue<S> {
     /// before it switches to reading the waiting inbox.
     pub fn new(num_running: u32) -> Self {
         Self {
-            head: Head::Unknown,
-            reader: Reader::New {
+            stage: Stage::New {
                 already_running: num_running,
             },
+            inbox_cache: InboxCache::default(),
         }
     }
 
     /// Creates an empty queue
     pub fn new_closed() -> Self {
         Self {
-            head: Head::Empty,
-            reader: Reader::Closed,
+            stage: Stage::Empty,
+            inbox_cache: InboxCache::default(),
         }
     }
 
     /// If the queue is known to be empty (no more items to dequeue)
     pub fn is_empty(&self) -> bool {
-        matches!(self.head, Head::Empty)
+        matches!(self.stage, Stage::Empty)
     }
 
+    /// Returns `true` iff the removed key was the head of the queue.
+    ///
+    /// While the queue is still in the running stage, this is a no-op: the
+    /// scheduler may still yield a running item after the state machine has
+    /// declared it removed, and the state machine must ignore that yield.
     pub fn remove(&mut self, key_to_remove: &EntryKey) -> bool {
-        // Can this be the known head?
-        // Yes. Perhaps it expired/ended externally.
-        // We do not do anything if the reader is still at the running stage,
-        //
-        // This means that the scheduler might still yield the "running" item after
-        // the state machine has declared it as completed/removed. The state machine
-        // must be able to handle this case and "ignore" the yield command of this item.
-        if matches!(self.reader, Reader::Closed | Reader::Inbox(..))
-            && let Head::Known { ref key, .. } = self.head
-            && key == key_to_remove
-        {
-            self.head = Head::Unknown;
-            // Ensure that next advance would re-seek to the newly added item
-            self.reader = Reader::Closed;
-            true
-        } else {
-            false
+        match self.stage {
+            Stage::New { .. } | Stage::Running { .. } | Stage::Empty => false,
+            Stage::Inbox => self.inbox_cache.remove(key_to_remove),
         }
     }
 
-    /// Returns true if the head was changed
+    /// Returns `true` iff the new item became the head of the queue.
     pub fn enqueue(&mut self, key: &EntryKey, value: &EntryValue) -> bool {
-        match (&self.head, &self.reader) {
-            // we are only unknown if we are new and didn't read the running list yet,
-            // we might also be in a limbo state if advance() failed.
-            (_, Reader::New { .. } | Reader::Running { .. }) => { /* do nothing */ }
-            (Head::Unknown, _) => { /* do nothing */ }
-            (Head::Empty, _) => {
-                self.reader = Reader::Closed;
-                self.head = Head::Known {
-                    key: *key,
-                    value: value.clone(),
-                };
-                return true;
+        match self.stage {
+            Stage::New { .. } | Stage::Running { .. } => false,
+            Stage::Empty => {
+                // The cache is already allocated and empty (kept around
+                // across the previous `Inbox -> Empty` transition). Just
+                // re-seed it and flip the marker.
+                debug_assert!(self.inbox_cache.items.is_empty());
+                self.inbox_cache.items.push_back((*key, value.clone()));
+                self.inbox_cache.refill_anchor = Some(*key);
+                self.stage = Stage::Inbox;
+                true
             }
-            (
-                Head::Known {
-                    key: current_key, ..
-                },
-                Reader::Inbox(_) | Reader::Closed,
-            ) => {
-                if key < current_key {
-                    self.head = Head::Known {
-                        key: *key,
-                        value: value.clone(),
-                    };
-                    // Ensure that next advance would re-seek to the newly added item
-                    self.reader = Reader::Closed;
-                    return true;
-                } else {
-                    // This is a temporary fix to ensure that we perform a re-seek
-                    // to fix the issue where the iterator wouldn't see the newly added
-                    // items if the memtable was flushed prior the seek.
-                    self.reader = Reader::Closed;
-                }
-            }
+            Stage::Inbox => self.inbox_cache.enqueue(key, value),
         }
-        false
     }
 
-    /// Returns the head if known, or None if the queue needs advancing
+    /// Returns the head if known, or `None` if the queue needs advancing.
     pub fn head(&self) -> Option<QueueItem<'_>> {
-        match (&self.head, &self.reader) {
-            (Head::Unknown, _) => None,
-            (_, Reader::New { .. }) => None,
-            (Head::Known { key, value }, Reader::Running { .. }) => {
-                Some(QueueItem::Running { key, value })
-            }
-            (Head::Known { key, value }, Reader::Inbox(_) | Reader::Closed) => {
-                Some(QueueItem::Inbox { key, value })
-            }
-            (Head::Empty, _) => Some(QueueItem::None),
+        match &self.stage {
+            Stage::New { .. } => None,
+            Stage::Running { head: (k, v), .. } => Some(QueueItem::Running { key: k, value: v }),
+            Stage::Inbox => self
+                .inbox_cache
+                .front()
+                .map(|(k, v)| QueueItem::Inbox { key: k, value: v }),
+            Stage::Empty => Some(QueueItem::None),
         }
     }
 
@@ -166,160 +239,145 @@ impl<S: VQueueStore> Queue<S> {
         skip: &UnconfirmedAssignments,
         qid: &VQueueId,
     ) -> Result<QueueItem<'_>, StorageError> {
-        // Keep advancing until the head is known
-        while matches!(self.head, Head::Unknown) {
+        loop {
+            let needs_advance = match self.stage {
+                Stage::New { .. } => true,
+                Stage::Inbox => self.inbox_cache.is_empty(),
+                _ => false,
+            };
+            if !needs_advance {
+                break;
+            }
             self.advance(storage, skip, qid)?;
         }
 
-        match (&self.head, &self.reader) {
-            (Head::Unknown, _) => unreachable!("head must be known"),
-            (_, Reader::New { .. }) => unreachable!("reader cannot be new after poll"),
-            (Head::Known { key, value }, Reader::Running { .. }) => {
-                Ok(QueueItem::Running { key, value })
+        Ok(match &self.stage {
+            Stage::New { .. } => unreachable!("head must be resolved after advance_if_needed"),
+            Stage::Running { head: (k, v), .. } => QueueItem::Running { key: k, value: v },
+            Stage::Inbox => {
+                let (k, v) = self
+                    .inbox_cache
+                    .front()
+                    .expect("inbox cache must have a head after advance_if_needed");
+                QueueItem::Inbox { key: k, value: v }
             }
-            (Head::Known { key, value }, Reader::Inbox(_) | Reader::Closed) => {
-                Ok(QueueItem::Inbox { key, value })
-            }
-            (Head::Empty, _) => Ok(QueueItem::None),
-        }
+            Stage::Empty => QueueItem::None,
+        })
     }
 
     /// Advances the queue to the next item.
     ///
-    /// The queue reader will skip over items in `skip` when reading the inbox stage. When reading
-    /// the running stage, the `skip` set is ignored.
+    /// In the inbox stage this consumes the current head (if any) and exposes
+    /// the next cached item; the cache is refilled from storage in batches of
+    /// up to [`INBOX_CACHE_CAPACITY`] when it empties. The `skip` set is
+    /// consulted only when reading the inbox stage; it is ignored when
+    /// reading the running stage.
     pub fn advance(
         &mut self,
         storage: &S,
         skip: &UnconfirmedAssignments,
         qid: &VQueueId,
     ) -> Result<(), StorageError> {
+        // Split into disjoint borrows so the `Stage::Inbox` arm below can
+        // mutate both `stage` and `inbox_cache` without fighting the
+        // borrow checker.
+        let Self { stage, inbox_cache } = self;
         loop {
-            match self.reader {
-                Reader::New { already_running } if already_running > 0 => {
+            match stage {
+                Stage::New { already_running } if *already_running > 0 => {
+                    let already_running = *already_running;
                     let mut reader = storage.new_run_reader(qid);
                     reader.seek_to_first();
-                    let item = reader.peek()?;
-                    if let Some((key, value)) = item {
-                        self.head = Head::Known { key, value };
-                        self.reader = Reader::Running {
-                            remaining: already_running,
+                    if let Some((key, value)) = reader.peek()? {
+                        *stage = Stage::Running {
+                            head: (key, value),
                             reader,
+                            remaining: already_running,
                         };
-                        break;
-                    } else {
-                        assert!(
-                            already_running > 0,
-                            "vqueue {qid:?} has no running items but its metadata says that it has {already_running} running items",
-                        );
-                        // move to inbox reading
-                        self.head = Head::Unknown;
-                        self.reader = Reader::Closed;
+                        return Ok(());
                     }
+                    debug_assert!(
+                        false,
+                        "vqueue {qid:?} has no running items but its metadata says it has {already_running}",
+                    );
+                    *stage = Stage::Inbox;
                 }
-                Reader::New { .. } => {
-                    // create new inbox reader
-                    self.reader = Reader::Closed;
+                Stage::New { .. } => {
+                    *stage = Stage::Inbox;
                 }
-                Reader::Running {
-                    ref mut reader,
-                    ref mut remaining,
+                Stage::Running {
+                    reader,
+                    remaining,
+                    head,
                 } => {
                     reader.advance();
                     *remaining = remaining.saturating_sub(1);
-                    let item = reader.peek()?;
-                    if let Some((key, value)) = item {
-                        debug_assert!(*remaining > 0);
-                        self.head = Head::Known { key, value };
-                        break;
-                    } else {
-                        debug_assert_eq!(0, *remaining);
-                        // move to inbox reading
-                        self.head = Head::Unknown;
-                        self.reader = Reader::Closed;
-                    }
-                }
-                Reader::Inbox(ref mut reader) => {
-                    reader.advance();
-                    let key = reader.current_key()?;
-                    if let Some(key) = key {
-                        if skip.contains_key(&key) {
-                            continue;
-                        }
-                        self.head = Head::Known {
-                            key,
-                            value: reader.current_value()?.unwrap(),
-                        };
-                        break;
-                    } else {
-                        // we are done reading inbox
-                        self.head = Head::Empty;
-                        self.reader = Reader::Closed;
-                        break;
-                    }
-                }
-                Reader::Closed => {
-                    match self.head {
-                        Head::Unknown => {
-                            let mut reader = storage.new_inbox_reader(qid);
-                            reader.seek_to_first();
-                            let key = reader.current_key()?;
-                            if let Some(key) = key {
-                                if skip.contains_key(&key) {
-                                    self.reader = Reader::Inbox(reader);
-                                    continue;
-                                }
-                                self.head = Head::Known {
-                                    key,
-                                    value: reader.current_value()?.unwrap(),
-                                };
-                                self.reader = Reader::Inbox(reader);
-                                break;
-                            } else {
-                                self.head = Head::Empty;
-                                self.reader = Reader::Closed;
-                            }
-                        }
-                        Head::Known { ref key, .. } => {
-                            // seek to known head first, then advance.
-                            let mut reader = storage.new_inbox_reader(qid);
-                            reader.seek_after(qid, key);
-                            let next_key = reader.current_key()?;
-                            if let Some(next_key) = next_key {
-                                if skip.contains_key(&next_key) {
-                                    self.reader = Reader::Inbox(reader);
-                                    continue;
-                                }
-                                self.head = Head::Known {
-                                    key: next_key,
-                                    value: reader.current_value()?.unwrap(),
-                                };
-                                self.reader = Reader::Inbox(reader);
-                                break;
-                            } else {
-                                self.head = Head::Empty;
-                                self.reader = Reader::Closed;
-                            }
-                        }
-                        Head::Empty => {
-                            // do nothing.
+                    match reader.peek()? {
+                        Some(next) => {
+                            debug_assert!(*remaining > 0);
+                            *head = next;
                             return Ok(());
                         }
+                        None => {
+                            debug_assert_eq!(0, *remaining);
+                            *stage = Stage::Inbox;
+                        }
                     }
                 }
+                Stage::Inbox => {
+                    inbox_cache.pop_front();
+                    if inbox_cache.is_empty() && !refill_inbox(storage, qid, skip, inbox_cache)? {
+                        *stage = Stage::Empty;
+                    }
+                    return Ok(());
+                }
+                Stage::Empty => return Ok(()),
             }
         }
-        Ok(())
     }
 
     pub(crate) fn remaining_in_running_stage(&self) -> u32 {
-        match self.reader {
-            Reader::New { already_running } => already_running,
-            Reader::Running { remaining, .. } => remaining,
-            Reader::Inbox(..) => 0,
-            Reader::Closed => 0,
+        match &self.stage {
+            Stage::New { already_running } => *already_running,
+            Stage::Running { remaining, .. } => *remaining,
+            Stage::Inbox | Stage::Empty => 0,
         }
     }
+}
+
+/// Refills `cache` with up to [`INBOX_CACHE_CAPACITY`] items from storage,
+/// starting at `cache.refill_anchor` (or the very first key if no anchor is
+/// set yet). Returns true if items were added. Items in the `skip` set are
+/// not added to the cache, but the anchor advances past them so they are not
+/// reconsidered on the next refill.
+fn refill_inbox<S: VQueueStore>(
+    storage: &S,
+    qid: &VQueueId,
+    skip: &UnconfirmedAssignments,
+    cache: &mut InboxCache,
+) -> Result<bool, StorageError> {
+    let mut reader = storage.new_inbox_reader(qid);
+    match cache.refill_anchor.as_ref() {
+        Some(anchor) => reader.seek_after(qid, anchor),
+        None => reader.seek_to_first(),
+    }
+    let mut loaded = false;
+    while cache.items.len() < INBOX_CACHE_CAPACITY {
+        let Some(key) = reader.current_key()? else {
+            break;
+        };
+        if !skip.contains_key(&key) {
+            // we can safely unwrap the option here because we know that the key
+            // exists.
+            cache
+                .items
+                .push_back((key, reader.current_value()?.unwrap()));
+            loaded = true;
+        }
+        cache.refill_anchor = Some(cache.refill_anchor.map_or(key, |a| a.max(key)));
+        reader.advance();
+    }
+    Ok(loaded)
 }
 
 #[cfg(test)]
@@ -565,43 +623,56 @@ mod tests {
 
     #[restate_core::test]
     async fn test_remove() {
+        // Verifies that `remove` of the front key drops it from the cache
+        // and that the next item (also already in cache) becomes the head.
+        // `remove` is paired with a storage delete in production
+        // (`notify_removed`), so the cache must not re-fetch the removed
+        // entry on subsequent advances.
         let mut rocksdb = storage_test_environment().await;
 
         let qid = test_qid(4000);
-        let entry = default_entry(1);
+        let entry1 = default_entry(1);
+        let entry2 = default_entry(2);
 
         insert_entries(
             &mut rocksdb,
             &qid,
             Stage::Inbox,
-            std::slice::from_ref(&entry),
+            &[entry1.clone(), entry2.clone()],
         )
         .await;
 
         let db = rocksdb.partition_db();
         let mut queue: Queue<PartitionDb> = Queue::new(0);
-        let mut skip = UnconfirmedAssignments::new();
+        let skip = UnconfirmedAssignments::new();
 
+        // Load both entries into the cache via the first advance.
         queue.advance(db, &skip, &qid).unwrap();
         let head_key = match queue.head() {
             Some(QueueItem::Inbox { key, .. }) => *key,
             _ => panic!("expected inbox head"),
         };
 
+        // Removing a key that is not in the cache is a no-op.
         assert!(!queue.remove(&default_entry(99).0));
-        assert!(queue.remove(&head_key));
-        assert!(queue.head().is_none());
-        assert!(
-            matches!(queue.advance_if_needed(db, &skip, &qid).unwrap(), QueueItem::Inbox { key, .. } if *key == entry.0)
-        );
 
-        skip.insert(entry.0, Default::default());
+        // Removing the front key returns true and exposes the next cached
+        // item as the new head — no storage round-trip required.
         assert!(queue.remove(&head_key));
+        assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == entry2.0));
+
+        // Removing the new front empties the cache.
+        assert!(queue.remove(&entry2.0));
         assert!(queue.head().is_none());
+
+        // The next advance refills via `seek_after(refill_anchor)`. The
+        // anchor sits at `entry2.0`, so storage has nothing further to
+        // return and the queue transitions to Empty.
         assert!(matches!(
             queue.advance_if_needed(db, &skip, &qid).unwrap(),
             QueueItem::None
         ));
+        assert!(queue.is_empty());
     }
 
     #[restate_core::test]
@@ -716,5 +787,205 @@ mod tests {
 
         assert!(queue.remove(&inbox_entry.0));
         assert!(queue.head().is_none());
+    }
+
+    #[restate_core::test]
+    async fn test_inbox_refill_reads_in_batches() {
+        // Stage > INBOX_CACHE_CAPACITY items in storage, then drive the queue to completion.
+        // The cache should be loaded in two batches (INBOX_CACHE_CAPACITY then the remainder),
+        // not item-by-item.
+        const TOTAL: u8 = 100;
+        let mut rocksdb = storage_test_environment().await;
+        let qid = test_qid(8000);
+
+        let entries: Vec<_> = (0..TOTAL).map(default_entry).collect();
+        insert_entries(&mut rocksdb, &qid, Stage::Inbox, &entries).await;
+
+        let db = rocksdb.partition_db();
+        let mut queue: Queue<PartitionDb> = Queue::new(0);
+        let skip = UnconfirmedAssignments::new();
+
+        // First advance loads the first INBOX_CACHE_CAPACITY items. The cache is sorted by
+        // EntryKey; with `default_entry(id)` the ordering matches `id` (no
+        // locks, identical run_at, distinct seq).
+        queue.advance(db, &skip, &qid).unwrap();
+        let mut produced = 0u32;
+        while !queue.is_empty() {
+            assert!(queue.head().is_some());
+            queue.advance(db, &skip, &qid).unwrap();
+            produced += 1;
+        }
+        assert_eq!(produced, TOTAL as u32);
+    }
+
+    #[restate_core::test]
+    async fn test_enqueue_within_range_inserts_in_sorted_position() {
+        // The cache is sorted; an enqueue with a key between front and back
+        // must land at the right position and be served on subsequent
+        // advances without any storage round-trip.
+        let mut rocksdb = storage_test_environment().await;
+        let qid = test_qid(8100);
+
+        let low = default_entry(1);
+        let high = default_entry(5);
+        insert_entries(
+            &mut rocksdb,
+            &qid,
+            Stage::Inbox,
+            &[low.clone(), high.clone()],
+        )
+        .await;
+
+        let db = rocksdb.partition_db();
+        let mut queue: Queue<PartitionDb> = Queue::new(0);
+        let skip = UnconfirmedAssignments::new();
+
+        queue.advance(db, &skip, &qid).unwrap();
+        assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == low.0));
+
+        // Enqueue a key that sorts between `low` and `high`.
+        let middle = default_entry(3);
+        assert!(!queue.enqueue(&middle.0, &middle.1));
+        // Head unchanged.
+        assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == low.0));
+
+        // Advance through the cache: low, middle, high.
+        queue.advance(db, &skip, &qid).unwrap();
+        assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == middle.0));
+        queue.advance(db, &skip, &qid).unwrap();
+        assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == high.0));
+    }
+
+    #[restate_core::test]
+    async fn test_enqueue_above_anchor_is_ignored_then_picked_up_on_refill() {
+        // Items > refill_anchor are dropped at enqueue time. They must still
+        // be discovered by the next refill via seek_after(anchor).
+        let mut rocksdb = storage_test_environment().await;
+        let qid = test_qid(8200);
+
+        let entry1 = default_entry(1);
+        let entry2 = default_entry(2);
+        insert_entries(
+            &mut rocksdb,
+            &qid,
+            Stage::Inbox,
+            std::slice::from_ref(&entry1),
+        )
+        .await;
+
+        let mut queue: Queue<PartitionDb> = Queue::new(0);
+        let skip = UnconfirmedAssignments::new();
+
+        // First advance loads entry1; the anchor is now `entry1.0`.
+        {
+            let db = rocksdb.partition_db();
+            queue.advance(db, &skip, &qid).unwrap();
+            assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == entry1.0));
+            // entry2 sorts after entry1 (lower priority) and is therefore
+            // above the current anchor. notify_enqueued must reject it.
+            assert!(!queue.enqueue(&entry2.0, &entry2.1));
+            assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == entry1.0));
+        }
+
+        // Persist entry2 to storage now that the immutable borrow has ended.
+        insert_entries(
+            &mut rocksdb,
+            &qid,
+            Stage::Inbox,
+            std::slice::from_ref(&entry2),
+        )
+        .await;
+
+        // Drain entry1 from the cache; the refill picks up entry2 via
+        // seek_after(entry1.0).
+        let db = rocksdb.partition_db();
+        queue.advance(db, &skip, &qid).unwrap();
+        assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == entry2.0));
+    }
+
+    #[restate_core::test]
+    async fn test_enqueue_below_cache_front_replaces_head() {
+        let mut rocksdb = storage_test_environment().await;
+        let qid = test_qid(8300);
+
+        let mid = default_entry(5);
+        let high = default_entry(8);
+        insert_entries(
+            &mut rocksdb,
+            &qid,
+            Stage::Inbox,
+            &[mid.clone(), high.clone()],
+        )
+        .await;
+
+        let db = rocksdb.partition_db();
+        let mut queue: Queue<PartitionDb> = Queue::new(0);
+        let skip = UnconfirmedAssignments::new();
+
+        queue.advance(db, &skip, &qid).unwrap();
+        assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == mid.0));
+
+        // Higher-priority key arrives via notify_enqueued.
+        let new_head = default_entry(2);
+        assert!(queue.enqueue(&new_head.0, &new_head.1));
+        assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == new_head.0));
+
+        // The other two items remain in the cache and are served in order
+        // without further storage reads.
+        queue.advance(db, &skip, &qid).unwrap();
+        assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == mid.0));
+        queue.advance(db, &skip, &qid).unwrap();
+        assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == high.0));
+    }
+
+    #[restate_core::test]
+    async fn test_remove_middle_does_not_force_reseek() {
+        let mut rocksdb = storage_test_environment().await;
+        let qid = test_qid(8400);
+
+        let a = default_entry(1);
+        let b = default_entry(2);
+        let c = default_entry(3);
+        insert_entries(
+            &mut rocksdb,
+            &qid,
+            Stage::Inbox,
+            &[a.clone(), b.clone(), c.clone()],
+        )
+        .await;
+
+        let db = rocksdb.partition_db();
+        let mut queue: Queue<PartitionDb> = Queue::new(0);
+        let skip = UnconfirmedAssignments::new();
+
+        queue.advance(db, &skip, &qid).unwrap();
+        assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == a.0));
+
+        // Removing the middle item leaves the head unchanged.
+        assert!(!queue.remove(&b.0));
+        assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == a.0));
+
+        // After advancing past `a`, the next head is `c` (b was removed).
+        queue.advance(db, &skip, &qid).unwrap();
+        assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == c.0));
+    }
+
+    #[restate_core::test]
+    async fn test_empty_queue_resumes_on_enqueue() {
+        let rocksdb = storage_test_environment().await;
+        let qid = test_qid(8500);
+
+        let db = rocksdb.partition_db();
+        let mut queue: Queue<PartitionDb> = Queue::new(0);
+        let skip = UnconfirmedAssignments::new();
+
+        // Empty storage → first advance lands in Empty.
+        queue.advance(db, &skip, &qid).unwrap();
+        assert!(queue.is_empty());
+
+        let entry = default_entry(1);
+        assert!(queue.enqueue(&entry.0, &entry.1));
+        assert!(!queue.is_empty());
+        assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == entry.0));
     }
 }
