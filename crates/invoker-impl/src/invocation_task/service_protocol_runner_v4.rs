@@ -50,8 +50,8 @@ use restate_types::journal_v2::command::{
 };
 use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawNotification};
 use restate_types::journal_v2::{
-    CommandIndex, CommandType, Entry, EntryMetadata, EntryType, RunCompletion, RunResult,
-    UnresolvedFuture,
+    CommandIndex, CommandType, Entry, EntryMetadata, EntryType, RunCommand, RunCompletion,
+    RunResult, SleepCommand, UnresolvedFuture,
 };
 use restate_types::limit_key::LimitKey;
 use restate_types::schema::deployment::{Deployment, DeploymentType, ProtocolType};
@@ -312,7 +312,7 @@ where
             // budget. The per-entry leases are merged into a single lease that
             // accompanies the start message frame.
             let state = if let Some(ref service_id) = keyed_service_id {
-                Some(crate::shortcircuit!(
+                Some(shortcircuit!(
                     txn.read_state_budgeted(service_id, outbound_budget)
                         .map_err(InvokerError::from_state_reader)
                 ))
@@ -321,7 +321,7 @@ where
             };
 
             // Send start message with state (leases are merged inside write_start)
-            crate::shortcircuit!(
+            shortcircuit!(
                 self.write_start(
                     &mut http_stream_tx,
                     journal_size,
@@ -335,7 +335,7 @@ where
 
             // Read journal stream from storage and execute the replay.
             // LocalMemoryPool-gated: each entry acquires a lease before it's sent.
-            let journal_stream = crate::shortcircuit!(
+            let journal_stream = shortcircuit!(
                 txn.read_journal_budgeted(
                     &self.invocation_task.invocation_id,
                     journal_size,
@@ -344,7 +344,7 @@ where
                 )
                 .map_err(InvokerError::from_journal_reader)
             );
-            crate::shortcircuit!(
+            shortcircuit!(
                 self.replay_loop(
                     &mut http_stream_tx,
                     decoder_stream,
@@ -367,7 +367,7 @@ where
         // then we can use the bidi_stream loop reading the invoker_rx and the http_stream_rx
         if protocol_type == ProtocolType::BidiStream {
             trace!("Protocol is in bidi stream mode, will now start the send/receive loop");
-            crate::shortcircuit!(
+            shortcircuit!(
                 self.bidi_stream_loop(
                     http_stream_tx,
                     decoder_stream,
@@ -491,12 +491,12 @@ where
                     // The reason we want to poll headers in this function is
                     // to exit early in case an error is returned during replays.
                     got_headers = true;
-                    match crate::shortcircuit!(got_headers_res.transpose()) {
+                    match shortcircuit!(got_headers_res.transpose()) {
                         None => {
                             return TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2::unknown()))
                         },
                         Some(DecoderStreamItem::Parts(headers)) => {
-                            crate::shortcircuit!(self.handle_response_headers(headers));
+                            shortcircuit!(self.handle_response_headers(headers));
                         }
                         Some(DecoderStreamItem::Message(_, _)) => {
                             panic!("Unexpected poll after the headers have been resolved already")
@@ -507,12 +507,12 @@ where
                     match opt_je {
                         Some(Ok((JournalEntry::JournalV2(entry), lease))) => {
                             sent_entries += 1;
-                            crate::shortcircuit!(self.write_entry_with_lease(http_stream_tx, entry.inner, Some(lease)));
+                            shortcircuit!(self.write_entry_with_lease(http_stream_tx, entry.inner, Some(lease)));
                         }
                         Some(Ok((JournalEntry::JournalV1(old_entry), lease))) => {
                             sent_entries += 1;
-                            if let journal::Entry::Input(input_entry) = crate::shortcircuit!(old_entry.deserialize_entry::<ProtobufRawEntryCodec>()) {
-                                crate::shortcircuit!(self.write_entry_with_lease(
+                            if let journal::Entry::Input(input_entry) = shortcircuit!(old_entry.deserialize_entry::<ProtobufRawEntryCodec>()) {
+                                shortcircuit!(self.write_entry_with_lease(
                                     http_stream_tx,
                                     Entry::Command(InputCommand {
                                         headers: input_entry.headers,
@@ -576,7 +576,7 @@ where
                     match opt_completion {
                         Some(Notification::Entry(entry_index)) => {
                             trace!(restate.journal.index = entry_index, "Reading entry from storage");
-                            let (journal_entry, lease) = crate::shortcircuit!(
+                            let (journal_entry, lease) = shortcircuit!(
                                 invocation_reader
                                     .read_journal_entry_budgeted(
                                         &self.invocation_task.invocation_id,
@@ -599,14 +599,14 @@ where
                                 }
                             };
                             trace!("Sending the entry to the wire");
-                            crate::shortcircuit!(self.write_entry_with_lease(&mut http_stream_tx, raw_entry, Some(lease)));
+                            shortcircuit!(self.write_entry_with_lease(&mut http_stream_tx, raw_entry, Some(lease)));
                         }
                         Some(Notification::Completion(_)) => {
                             panic!("We don't expect to receive Notification::Completion in v4+, this is an invoker bug.")
                         },
                         Some(Notification::Ack(entry_index)) => {
                             trace!("Sending the ack to the wire");
-                            crate::shortcircuit!(self.write(&mut http_stream_tx, Message::new_command_ack(entry_index)));
+                            shortcircuit!(self.write(&mut http_stream_tx, Message::new_command_ack(entry_index)));
                         },
                         None => {
                             // Completion channel is closed,
@@ -619,13 +619,13 @@ where
                     inactivity_timeout.as_mut().reset(tokio::time::Instant::now() + self.invocation_task.inactivity_timeout);
                 },
                 chunk = http_stream_rx.next() => {
-                    match crate::shortcircuit!(chunk.transpose()) {
+                    match shortcircuit!(chunk.transpose()) {
                         None => {
                             return TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2::unknown()));
                         }
-                        Some(DecoderStreamItem::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
+                        Some(DecoderStreamItem::Parts(parts)) => shortcircuit!(self.handle_response_headers(parts)),
                         Some(DecoderStreamItem::Message(message_header, message)) => {
-                            crate::shortcircuit!(self.handle_message(message_header, message, attempt_span));
+                            shortcircuit!(self.handle_message(message_header, message, attempt_span));
                         }
                     }
 
@@ -658,13 +658,13 @@ where
                     // don't read again until all buffered messages has been consumed
                     // to force a back pressure on the read stream
 
-                    match crate::shortcircuit!(chunk.transpose()) {
+                    match shortcircuit!(chunk.transpose()) {
                         None => {
                             return TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2::unknown()));
                         }
-                        Some(DecoderStreamItem::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
+                        Some(DecoderStreamItem::Parts(parts)) => shortcircuit!(self.handle_response_headers(parts)),
                         Some(DecoderStreamItem::Message(message_header, message)) => {
-                            crate::shortcircuit!(self.handle_message(message_header, message, attempt_span));
+                            shortcircuit!(self.handle_message(message_header, message, attempt_span));
                         }
                     }
                 },
@@ -882,14 +882,25 @@ where
         mh: MessageHeader,
         command: RawCommand,
         attempt_span: &mut ServiceSpan,
+        cmd_name: Option<ByteString>,
     ) {
-        attempt_span.add_event(
-            restate_tracing_instrumentation::semconv::event::RESTATE_INVOCATION_LIFECYCLE_NEW_COMMAND,
-            vec![KeyValue::new(
+        if attempt_span.is_recording() {
+            let mut attributes = vec![KeyValue::new(
                 restate_tracing_instrumentation::semconv::attribute::RESTATE_JOURNAL_COMMAND_TYPE,
                 command.ty().prometheus_label(),
-            )],
-        );
+            )];
+            if let Some(cmd_name) = cmd_name {
+                attributes.push(KeyValue::new(
+                    restate_tracing_instrumentation::semconv::attribute::RESTATE_JOURNAL_COMMAND_NAME,
+                    cmd_name.to_string(),
+                ));
+            }
+
+            attempt_span.add_event(
+                restate_tracing_instrumentation::semconv::event::RESTATE_INVOCATION_LIFECYCLE_NEW_COMMAND,
+                attributes
+            );
+        }
         self.invocation_task
             .send_invoker_tx(InvocationTaskOutputInner::NewCommand {
                 command_index: self.command_index,
@@ -929,7 +940,7 @@ where
             Message::ProposeRunCompletion(run_completion) => {
                 let notification: Entry = RunCompletion {
                     completion_id: run_completion.result_completion_id,
-                    result: match crate::shortcircuit!(
+                    result: match shortcircuit!(
                         run_completion
                             .result
                             .ok_or(InvokerError::MalformedProposeRunCompletion)
@@ -971,11 +982,17 @@ where
                     mh,
                     RawCommand::new(CommandType::Output, cmd),
                     attempt_span,
+                    None,
                 );
                 TerminalLoopState::Continue(())
             }
             Message::InputCommand(cmd) => {
-                self.handle_new_command(mh, RawCommand::new(CommandType::Input, cmd), attempt_span);
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::Input, cmd),
+                    attempt_span,
+                    None,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::GetInvocationOutputCommand(cmd) => {
@@ -1018,12 +1035,22 @@ where
                 TerminalLoopState::Continue(())
             }
             Message::RunCommand(cmd) => {
-                self.handle_new_command(mh, RawCommand::new(CommandType::Run, cmd), attempt_span);
+                // Get the name
+                let run_cmd: RunCommand = shortcircuit!(
+                    RawCommand::new(CommandType::Run, cmd.clone())
+                        .decode::<ServiceProtocolV4Codec, _>()
+                );
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::Run, cmd),
+                    attempt_span,
+                    Some(run_cmd.name),
+                );
                 TerminalLoopState::Continue(())
             }
             Message::SendSignalCommand(cmd) => {
                 // Verify the provided InvocationId is valid
-                let _: Entry = crate::shortcircuit!(
+                let _: Entry = shortcircuit!(
                     RawCommand::new(CommandType::SendSignal, cmd.clone())
                         .decode::<ServiceProtocolV4Codec, _>()
                 );
@@ -1031,12 +1058,14 @@ where
                     mh,
                     RawCommand::new(CommandType::SendSignal, cmd),
                     attempt_span,
+                    None,
                 );
                 TerminalLoopState::Continue(())
             }
             Message::OneWayCallCommand(cmd) => {
+                let name: ByteString = cmd.name.into();
                 let entry: Entry = OneWayCallCommand {
-                    request: crate::shortcircuit!(
+                    request: shortcircuit!(
                         resolve_call_request(
                             self.invocation_task.schemas.live_load(),
                             InvokeRequest {
@@ -1061,7 +1090,7 @@ where
                     ),
                     invoke_time: cmd.invoke_time.into(),
                     invocation_id_completion_id: cmd.invocation_id_notification_idx,
-                    name: cmd.name.into(),
+                    name: name.clone(),
                 }
                 .into();
                 self.handle_new_command(
@@ -1071,12 +1100,14 @@ where
                         .try_into()
                         .expect("a raw command"),
                     attempt_span,
+                    Some(name),
                 );
                 TerminalLoopState::Continue(())
             }
             Message::CallCommand(cmd) => {
+                let name: ByteString = cmd.name.into();
                 let entry: Entry = CallCommand {
-                    request: crate::shortcircuit!(
+                    request: shortcircuit!(
                         resolve_call_request(
                             self.invocation_task.schemas.live_load(),
                             InvokeRequest {
@@ -1101,7 +1132,7 @@ where
                     ),
                     invocation_id_completion_id: cmd.invocation_id_notification_idx,
                     result_completion_id: cmd.result_completion_id,
-                    name: cmd.name.into(),
+                    name: name.clone(),
                 }
                 .into();
                 self.handle_new_command(
@@ -1111,15 +1142,26 @@ where
                         .try_into()
                         .expect("a raw command"),
                     attempt_span,
+                    Some(name),
                 );
                 TerminalLoopState::Continue(())
             }
             Message::SleepCommand(cmd) => {
-                self.handle_new_command(mh, RawCommand::new(CommandType::Sleep, cmd), attempt_span);
+                // Get the name
+                let sleep_cmd: SleepCommand = shortcircuit!(
+                    RawCommand::new(CommandType::Sleep, cmd.clone())
+                        .decode::<ServiceProtocolV4Codec, _>()
+                );
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::Sleep, cmd),
+                    attempt_span,
+                    Some(sleep_cmd.name),
+                );
                 TerminalLoopState::Continue(())
             }
             Message::CompletePromiseCommand(cmd) => {
-                crate::shortcircuit!(check_workflow_type(
+                shortcircuit!(check_workflow_type(
                     self.command_index,
                     &EntryType::Command(CommandType::CompletePromise),
                     &self.invocation_task.invocation_target.service_ty(),
@@ -1128,11 +1170,12 @@ where
                     mh,
                     RawCommand::new(CommandType::CompletePromise, cmd),
                     attempt_span,
+                    None,
                 );
                 TerminalLoopState::Continue(())
             }
             Message::PeekPromiseCommand(cmd) => {
-                crate::shortcircuit!(check_workflow_type(
+                shortcircuit!(check_workflow_type(
                     self.command_index,
                     &EntryType::Command(CommandType::PeekPromise),
                     &self.invocation_task.invocation_target.service_ty(),
@@ -1141,11 +1184,12 @@ where
                     mh,
                     RawCommand::new(CommandType::PeekPromise, cmd),
                     attempt_span,
+                    None,
                 );
                 TerminalLoopState::Continue(())
             }
             Message::GetPromiseCommand(cmd) => {
-                crate::shortcircuit!(check_workflow_type(
+                shortcircuit!(check_workflow_type(
                     self.command_index,
                     &EntryType::Command(CommandType::GetPromise),
                     &self.invocation_task.invocation_target.service_ty(),
@@ -1154,11 +1198,12 @@ where
                     mh,
                     RawCommand::new(CommandType::GetPromise, cmd),
                     attempt_span,
+                    None,
                 );
                 TerminalLoopState::Continue(())
             }
             Message::GetEagerStateKeysCommand(cmd) => {
-                crate::shortcircuit!(can_read_state(
+                shortcircuit!(can_read_state(
                     self.command_index,
                     &EntryType::Command(CommandType::GetEagerStateKeys),
                     &self
@@ -1170,11 +1215,12 @@ where
                     mh,
                     RawCommand::new(CommandType::GetEagerStateKeys, cmd),
                     attempt_span,
+                    None,
                 );
                 TerminalLoopState::Continue(())
             }
             Message::GetEagerStateCommand(cmd) => {
-                crate::shortcircuit!(can_read_state(
+                shortcircuit!(can_read_state(
                     self.command_index,
                     &EntryType::Command(CommandType::GetEagerState),
                     &self
@@ -1186,11 +1232,12 @@ where
                     mh,
                     RawCommand::new(CommandType::GetEagerState, cmd),
                     attempt_span,
+                    None,
                 );
                 TerminalLoopState::Continue(())
             }
             Message::GetLazyStateKeysCommand(cmd) => {
-                crate::shortcircuit!(can_read_state(
+                shortcircuit!(can_read_state(
                     self.command_index,
                     &EntryType::Command(CommandType::GetLazyStateKeys),
                     &self
@@ -1202,11 +1249,12 @@ where
                     mh,
                     RawCommand::new(CommandType::GetLazyStateKeys, cmd),
                     attempt_span,
+                    None,
                 );
                 TerminalLoopState::Continue(())
             }
             Message::ClearAllStateCommand(cmd) => {
-                crate::shortcircuit!(can_write_state(
+                shortcircuit!(can_write_state(
                     self.command_index,
                     &EntryType::Command(CommandType::ClearAllState),
                     &self
@@ -1218,11 +1266,12 @@ where
                     mh,
                     RawCommand::new(CommandType::ClearAllState, cmd),
                     attempt_span,
+                    None,
                 );
                 TerminalLoopState::Continue(())
             }
             Message::ClearStateCommand(cmd) => {
-                crate::shortcircuit!(can_write_state(
+                shortcircuit!(can_write_state(
                     self.command_index,
                     &EntryType::Command(CommandType::ClearState),
                     &self
@@ -1234,11 +1283,12 @@ where
                     mh,
                     RawCommand::new(CommandType::ClearState, cmd),
                     attempt_span,
+                    None,
                 );
                 TerminalLoopState::Continue(())
             }
             Message::SetStateCommand(cmd) => {
-                crate::shortcircuit!(can_write_state(
+                shortcircuit!(can_write_state(
                     self.command_index,
                     &EntryType::Command(CommandType::SetState),
                     &self
@@ -1250,11 +1300,12 @@ where
                     mh,
                     RawCommand::new(CommandType::SetState, cmd),
                     attempt_span,
+                    None,
                 );
                 TerminalLoopState::Continue(())
             }
             Message::GetLazyStateCommand(cmd) => {
-                crate::shortcircuit!(can_read_state(
+                shortcircuit!(can_read_state(
                     self.command_index,
                     &EntryType::Command(CommandType::GetLazyState),
                     &self
@@ -1266,12 +1317,13 @@ where
                     mh,
                     RawCommand::new(CommandType::GetLazyState, cmd),
                     attempt_span,
+                    None,
                 );
                 TerminalLoopState::Continue(())
             }
             Message::CompleteAwakeableCommand(cmd) => {
                 // Verify the provided InvocationId is valid
-                let _: Entry = crate::shortcircuit!(
+                let _: Entry = shortcircuit!(
                     RawCommand::new(CommandType::CompleteAwakeable, cmd.clone())
                         .decode::<ServiceProtocolV4Codec, _>()
                 );
@@ -1279,6 +1331,7 @@ where
                     mh,
                     RawCommand::new(CommandType::CompleteAwakeable, cmd),
                     attempt_span,
+                    None,
                 );
                 TerminalLoopState::Continue(())
             }
