@@ -11,11 +11,13 @@
 use tokio::sync::mpsc;
 
 use restate_errors::NotRunningError;
+use restate_types::LimitKey;
 use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::VQueueId;
+use restate_util_string::ReString;
 use restate_worker_api::invoker::{InvocationStatusReport, StatusHandle};
 use restate_worker_api::resources::ReservedResources;
 // -- Input messages
@@ -33,6 +35,8 @@ pub(crate) struct VQueueInvokeCommand {
     pub(super) permit: ReservedResources,
     pub(super) invocation_id: InvocationId,
     pub(super) invocation_target: InvocationTarget,
+    pub(super) limit_key: LimitKey<ReString>,
+    pub(super) idempotency_key: Option<ReString>,
 }
 
 #[derive(Debug)]
@@ -101,6 +105,8 @@ impl restate_worker_api::invoker::InvokerHandle for InvokerHandle {
         permit: ReservedResources,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
+        limit_key: LimitKey<ReString>,
+        idempotency_key: Option<ReString>,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::VQInvoke(Box::new(VQueueInvokeCommand {
@@ -108,6 +114,8 @@ impl restate_worker_api::invoker::InvokerHandle for InvokerHandle {
                 permit,
                 invocation_id,
                 invocation_target,
+                limit_key,
+                idempotency_key,
             })))
             .map_err(|_| NotRunningError)
     }

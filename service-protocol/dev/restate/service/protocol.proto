@@ -39,12 +39,11 @@ enum ServiceProtocolVersion {
   V6 = 6;
   // Added:
   // * Future & AwaitingOnMessage + Changed the SuspensionMessage
-  // * CallCommandMessage.scope
-  // * CallCommandMessage.limit_key
-  // * OneWayCallCommandMessage.scope
-  // * OneWayCallCommandMessage.limit_key
+  // * CallCommandMessage.scope and CallCommandMessage.limit_key
+  // * OneWayCallCommandMessage.scope and OneWayCallCommandMessage.limit_key
   // * WorkflowTarget.scope
   // * IdempotentRequestTarget.scope
+  // * StartMessage.scope, StartMessage.limit_key and StartMessage.idempotency_key
   V7 = 7;
 }
 
@@ -91,6 +90,18 @@ message StartMessage {
   // Random seed to use to seed the deterministic RNG exposed in the context API.
   // This will be stable across restarts.
   uint64 random_seed = 9;
+
+  // If this invocation was called within a scope, returns the scope
+  // Since V7
+  optional string scope = 10;
+
+  // If this invocation was called with a limit key, returns the limit key
+  // Since V7
+  optional string limit_key = 11;
+
+  // If this invocation was called with an idempotency key, returns the idempotency key
+  // Since V7
+  optional string idempotency_key = 12;
 }
 
 // Defines how a set of child futures are combined.

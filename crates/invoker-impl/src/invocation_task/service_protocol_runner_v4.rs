@@ -667,9 +667,7 @@ where
         )
         .await?;
 
-        // Send the invoke frame with the merged state lease
-        self.write_with_lease(
-            http_stream_tx,
+        let start_message = if self.service_protocol_version >= ServiceProtocolVersion::V7 {
             Message::new_start_message(
                 Bytes::copy_from_slice(&self.invocation_task.invocation_id.to_bytes()),
                 self.invocation_task.invocation_id.to_string(),
@@ -683,9 +681,33 @@ where
                 retry_count_since_last_stored_entry,
                 duration_since_last_stored_entry,
                 random_seed,
-            ),
-            state_lease,
-        )
+                self.invocation_task.invocation_target.scope(),
+                &self.invocation_task.limit_key,
+                self.invocation_task.idempotency_key.as_ref(),
+            )
+        } else {
+            Message::new_start_message(
+                Bytes::copy_from_slice(&self.invocation_task.invocation_id.to_bytes()),
+                self.invocation_task.invocation_id.to_string(),
+                self.invocation_task
+                    .invocation_target
+                    .key()
+                    .map(|bs| bs.as_bytes().clone()),
+                journal_size,
+                partial_state,
+                state_map,
+                retry_count_since_last_stored_entry,
+                duration_since_last_stored_entry,
+                random_seed,
+                // those fields were only introduced with service protocol V7
+                None,
+                &LimitKey::None,
+                None,
+            )
+        };
+
+        // Send the invoke frame with the merged state lease
+        self.write_with_lease(http_stream_tx, start_message, state_lease)
     }
 
     fn write_entry_with_lease(

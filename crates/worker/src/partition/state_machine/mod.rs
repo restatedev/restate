@@ -1229,6 +1229,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         invocation_id: InvocationId,
         mut in_flight_invocation_metadata: InFlightInvocationMetadata,
         invocation_input: Option<InvocationInput>,
+        limit_key: LimitKey<ReString>,
     ) -> Result<(), Error>
     where
         S: WriteJournalTable + WriteInvocationStatusTable + journal_table_v2::WriteJournalTable,
@@ -1252,7 +1253,13 @@ impl<S> StateMachineApplyContext<'_, S> {
             )?;
         }
 
-        self.vqueue_invoke(qid, key, invocation_id, in_flight_invocation_metadata)
+        self.vqueue_invoke(
+            qid,
+            key,
+            invocation_id,
+            in_flight_invocation_metadata,
+            limit_key,
+        )
     }
 
     /// Inits the journal if invocation_input is `Some` and invokes the invocation. If
@@ -1365,6 +1372,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         key: &EntryKey,
         invocation_id: InvocationId,
         in_flight_invocation_metadata: InFlightInvocationMetadata,
+        limit_key: LimitKey<ReString>,
     ) -> Result<(), Error>
     where
         S: WriteInvocationStatusTable,
@@ -1378,11 +1386,14 @@ impl<S> StateMachineApplyContext<'_, S> {
             .map_err(Error::Storage)?;
 
         if self.is_leader {
-            let invocation_target = status.into_invocation_metadata().unwrap().invocation_target;
+            let invocation_metadata = status.into_invocation_metadata().unwrap();
+            let invocation_target = invocation_metadata.invocation_target;
             self.action_collector.push(Action::VQInvoke {
                 qid: qid.clone(),
                 key: *key,
                 invocation_target,
+                limit_key,
+                idempotency_key: invocation_metadata.idempotency_key.map(ReString::new_owned),
             });
         }
 
@@ -3014,21 +3025,30 @@ impl<S> StateMachineApplyContext<'_, S> {
             info!("Resuming invocation {invocation_id}, scheduler stats: {wait_stats:?}");
 
             let status = self.get_invocation_status(&invocation_id).await?;
-            VQueue::get(
+            let mut vqueue = VQueue::get(
                 qid,
                 self.storage,
                 self.vqueues_cache,
                 self.is_leader.then_some(self.action_collector),
             )
             .await?
-            .unwrap()
-            .run_entry(record_unique_ts, &header, wait_stats);
+            .unwrap();
+
+            vqueue.run_entry(record_unique_ts, &header, wait_stats);
+
+            let limit_key = vqueue.meta().limit_key().clone();
 
             if self.is_leader {
                 self.action_collector.push(Action::VQInvoke {
                     qid: qid.clone(),
                     key: *entry_key,
                     invocation_target: status.invocation_target().unwrap().clone(),
+                    limit_key,
+                    // todo(tillrohrmann) avoid the transformation from ByteString to ReString by
+                    //  storing the idempotency key as ReString in the first place
+                    idempotency_key: status
+                        .idempotency_key()
+                        .map(|value| ReString::new_shared(value.as_ref())),
                 });
             }
             return Ok(());
@@ -3081,15 +3101,18 @@ impl<S> StateMachineApplyContext<'_, S> {
                     );
 
                 info!("Starting invocation {invocation_id}, scheduler stats: {wait_stats:?}");
-                VQueue::get(
+                let mut vqueue = VQueue::get(
                     qid,
                     self.storage,
                     self.vqueues_cache,
                     self.is_leader.then_some(self.action_collector),
                 )
                 .await?
-                .unwrap()
-                .run_entry(record_unique_ts, &header, wait_stats);
+                .unwrap();
+
+                vqueue.run_entry(record_unique_ts, &header, wait_stats);
+
+                let limit_key = vqueue.meta().limit_key().clone();
 
                 self.init_journal_and_vqueue_invoke(
                     qid,
@@ -3097,6 +3120,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     invocation_id,
                     metadata,
                     invocation_input,
+                    limit_key,
                 )?;
             }
             _ => {

@@ -11,6 +11,7 @@
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::TimerKey;
 use restate_storage_api::vqueue_table::EntryKey;
+use restate_types::LimitKey;
 use restate_types::identifiers::{EntryIndex, InvocationId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::InvocationTarget;
 use restate_types::invocation::client::{
@@ -21,6 +22,7 @@ use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::message::MessageIndex;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::VQueueId;
+use restate_util_string::ReString;
 use restate_vqueues::VQueueEvent;
 use restate_wal_protocol::timer::TimerKeyValue;
 
@@ -35,6 +37,8 @@ pub enum Action {
         qid: VQueueId,
         key: EntryKey,
         invocation_target: InvocationTarget,
+        limit_key: LimitKey<ReString>,
+        idempotency_key: Option<ReString>,
     },
     Invoke {
         invocation_id: InvocationId,

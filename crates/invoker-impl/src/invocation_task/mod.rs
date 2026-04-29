@@ -35,6 +35,7 @@ use tracing::{debug, instrument};
 use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_serde_util::{ByteCount, NonZeroByteCount};
 use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClientError};
+use restate_types::LimitKey;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::InvocationTarget;
@@ -46,6 +47,7 @@ use restate_types::live::Live;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_util_string::ReString;
 use restate_worker_api::invoker::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderTransaction, JournalKind,
 };
@@ -247,6 +249,8 @@ pub(super) struct InvocationTask<EE, DMR> {
     // Connection params
     invocation_id: InvocationId,
     invocation_target: InvocationTarget,
+    limit_key: LimitKey<ReString>,
+    idempotency_key: Option<ReString>,
     inactivity_timeout: Duration,
     abort_timeout: Duration,
     eager_state_size_limit: usize,
@@ -340,6 +344,8 @@ where
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         action_token_bucket: Option<TokenBucket>,
+        limit_key: LimitKey<ReString>,
+        idempotency_key: Option<ReString>,
         allow_protocol_v7: bool,
     ) -> Self {
         Self {
@@ -358,6 +364,8 @@ where
             retry_count_since_last_stored_entry,
             action_token_bucket,
             allow_protocol_v7,
+            limit_key,
+            idempotency_key,
         }
     }
 

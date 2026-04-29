@@ -690,6 +690,8 @@ impl LeaderState {
                 qid,
                 key,
                 invocation_target,
+                limit_key,
+                idempotency_key,
             } => {
                 // state mutations should not create Invoke actions. At least for now.
                 assert!(matches!(key.kind(), vqueues::EntryKind::Invocation));
@@ -707,7 +709,14 @@ impl LeaderState {
                     ReservedResources::new_empty()
                 });
                 self.invoker_handle
-                    .vqueue_invoke(qid, run_permit, invocation_id, invocation_target)
+                    .vqueue_invoke(
+                        qid,
+                        run_permit,
+                        invocation_id,
+                        invocation_target,
+                        limit_key,
+                        idempotency_key,
+                    )
                     .map_err(Error::Invoker)?
             }
         }

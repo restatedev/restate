@@ -329,6 +329,9 @@ mod tests {
             10,
             Duration::ZERO,
             10,
+            None,
+            &LimitKey::None,
+            None,
         );
 
         let expected_msg_1 = Message::InputCommand(Bytes::from_static(b"123"));
