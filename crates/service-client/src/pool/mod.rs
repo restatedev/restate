@@ -10,6 +10,7 @@
 pub mod authority;
 mod config;
 pub mod conn;
+mod metric_definitions;
 #[cfg(any(test, feature = "test_util"))]
 pub mod test_util;
 pub mod tls;
@@ -29,6 +30,7 @@ use dashmap::DashMap;
 use futures::future::{BoxFuture, poll_fn};
 use http::{Response, Uri};
 use http_body::Body;
+use metrics::histogram;
 use restate_types::time::MillisSinceEpoch;
 use rustls::pki_types::{DnsName, ServerName};
 use tokio::{
@@ -38,7 +40,10 @@ use tokio::{
 use tower::Service;
 use tracing::{debug, trace};
 
-use crate::pool::{authority::AuthorityPool, conn::PermittedRecvStream};
+use crate::pool::{
+    authority::AuthorityPool, conn::PermittedRecvStream,
+    metric_definitions::CONNECTION_POOL_ACQUIRE_STREAM_DURATION,
+};
 
 pub use config::PoolBuilder;
 use config::PoolConfig;
@@ -66,6 +71,8 @@ pub struct Pool<C> {
 
 impl<C: Clone + Send + Sync + 'static> Pool<C> {
     fn new(connector: C, config: PoolConfig) -> Self {
+        metric_definitions::describe_metrics();
+
         let authorities = Arc::new(DashMap::default());
 
         if let Some(idle_timeout) = config.idle_authority_timeout {
@@ -112,7 +119,10 @@ where
         async move {
             let mut request = request;
             loop {
+                let start_time = MillisSinceEpoch::now();
                 poll_fn(|cx| authority_pool.poll_ready(cx)).await?;
+                histogram!(CONNECTION_POOL_ACQUIRE_STREAM_DURATION).record(start_time.elapsed());
+
                 match authority_pool.call(request).await {
                     Ok(result) => return Ok(result),
                     Err(conn::ConnectionError::Error(err)) => return Err(err),
