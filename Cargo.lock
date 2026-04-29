@@ -8298,6 +8298,7 @@ dependencies = [
  "restate-service-client",
  "restate-test-util",
  "restate-types",
+ "restate-util-string",
  "restate-workspace-hack",
  "serde_json",
  "strum",

@@ -106,6 +106,10 @@ impl VQueuesMetaCache {
         VQueuesMeta::new(self)
     }
 
+    pub fn get(&self, key: VQueueCacheKey) -> Option<&Slot> {
+        self.slab.get(key)
+    }
+
     pub fn get_mut(&mut self, key: VQueueCacheKey) -> Option<&mut Slot> {
         self.slab.get_mut(key)
     }

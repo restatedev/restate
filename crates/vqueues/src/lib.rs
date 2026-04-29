@@ -117,6 +117,10 @@ where
     A: From<VQueueEvent> + 'static,
     S: WriteVQueueTable + ReadVQueueTable + WriteLockTable,
 {
+    pub fn meta(&self) -> &VQueueMeta {
+        self.cache.get(self.cache_key).unwrap().meta()
+    }
+
     /// The entry has completed execution and it needs to be removed from the vqueue.
     ///
     /// Does nothing if the entry was not found in the previous stage.

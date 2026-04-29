@@ -45,6 +45,8 @@ pub(super) struct InvocationStateMachine<K: TimerKey = tokio_util::time::delay_q
     #[debug(skip)]
     pub(super) _permit: ReservedResources,
     pub(super) invocation_target: InvocationTarget,
+    pub(super) limit_key: LimitKey<ReString>,
+    pub(super) idempotency_key: Option<ReString>,
     pub(super) last_transient_error_event: Option<TransientErrorEvent>,
     invocation_state: AttemptState<K>,
     retry_policy_state: RetryPolicyState,
@@ -202,10 +204,13 @@ struct RetryPolicyState {
 }
 
 impl<K: TimerKey> InvocationStateMachine<K> {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn create(
         qid: Option<VQueueId>,
         permit: ReservedResources,
         invocation_target: InvocationTarget,
+        limit_key: LimitKey<ReString>,
+        idempotency_key: Option<ReString>,
         retry_iter: retries::RetryIter<'static>,
         on_max_attempts: OnMaxAttempts,
         concurrency_slot: ConcurrencySlot,
@@ -214,6 +219,8 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             qid,
             _permit: permit,
             invocation_target,
+            limit_key,
+            idempotency_key,
             last_transient_error_event: None,
             invocation_state: AttemptState::New,
             retry_policy_state: RetryPolicyState {
@@ -625,6 +632,8 @@ mod tests {
             None,
             ReservedResources::new_empty(),
             InvocationTarget::mock_virtual_object(),
+            LimitKey::None,
+            None,
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
             OnMaxAttempts::Kill,
             ConcurrencySlot::empty(),

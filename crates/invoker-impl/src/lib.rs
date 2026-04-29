@@ -79,11 +79,12 @@ use crate::metric_definitions::{
 };
 use crate::status_store::InvocationStatusStore;
 
-pub use input_command::ChannelStatusReader;
-pub use input_command::InvokerHandle;
-
 use self::input_command::VQueueInvokeCommand;
 use self::state_machine_manager::InvocationStateMachineManager;
+pub use input_command::ChannelStatusReader;
+pub use input_command::InvokerHandle;
+use restate_types::LimitKey;
+use restate_util_string::ReString;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Notification {
@@ -104,6 +105,8 @@ trait InvocationTaskRunner<SR> {
         options: &InvokerOptions,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
+        limit_key: LimitKey<ReString>,
+        idempotency_key: Option<ReString>,
         retry_count_since_last_stored_entry: u32,
         storage_reader: SR,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
@@ -132,6 +135,8 @@ where
         opts: &InvokerOptions,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
+        limit_key: LimitKey<ReString>,
+        idempotency_key: Option<ReString>,
         retry_count_since_last_stored_entry: u32,
         storage_reader: IR,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
@@ -158,6 +163,8 @@ where
                     invoker_tx,
                     invoker_rx,
                     self.action_token_bucket.clone(),
+                    limit_key,
+                    idempotency_key,
                     self.allow_protocol_v7,
                 )
                 .run(storage_reader, budget),
@@ -647,6 +654,8 @@ where
                 Some(command.qid),
                 command.permit,
                 command.invocation_target,
+                command.limit_key,
+                command.idempotency_key,
                 retry_iter,
                 on_max_attempts,
                 concurrency_slot,
@@ -690,6 +699,8 @@ where
                 None,
                 fake_permit,
                 invocation_target,
+                LimitKey::None,
+                None,
                 retry_iter,
                 on_max_attempts,
                 concurrency_slot,
@@ -1675,6 +1686,8 @@ where
             options,
             invocation_id,
             ism.invocation_target.clone(),
+            ism.limit_key.clone(),
+            ism.idempotency_key.clone(),
             ism.start_message_retry_count_since_last_stored_command,
             storage_reader,
             self.invocation_tasks_tx.clone(),
@@ -1895,6 +1908,8 @@ mod tests {
             _options: &InvokerOptions,
             invocation_id: InvocationId,
             invocation_target: InvocationTarget,
+            _limit_key: LimitKey<ReString>,
+            _idempotency_key: Option<ReString>,
             _retry_count_since_last_stored_entry: u32,
             storage_reader: IR,
             invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
@@ -1926,6 +1941,8 @@ mod tests {
             _options: &InvokerOptions,
             _invocation_id: InvocationId,
             _invocation_target: InvocationTarget,
+            _limit_key: LimitKey<ReString>,
+            _idempotency_key: Option<ReString>,
             _retry_count_since_last_stored_entry: u32,
             _storage_reader: SR,
             _invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
@@ -1946,6 +1963,8 @@ mod tests {
             _options: &InvokerOptions,
             _invocation_id: InvocationId,
             _invocation_target: InvocationTarget,
+            _limit_key: LimitKey<ReString>,
+            _idempotency_key: Option<ReString>,
             _retry_count_since_last_stored_entry: u32,
             _storage_reader: SR,
             _invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
@@ -2309,6 +2328,8 @@ mod tests {
             )),
             ReservedResources::new_empty(),
             invocation_target.clone(),
+            LimitKey::None,
+            None,
             RetryPolicy::fixed_delay(Duration::from_millis(100), None).into_iter(),
             OnMaxAttempts::Kill,
             ConcurrencySlot::empty(),
