@@ -104,7 +104,7 @@ where
         let mut authority_pool = self
             .authorities
             .entry(key)
-            .or_insert_with(|| AuthorityPool::new(self.connector.clone(), self.config.clone()))
+            .or_insert_with(|| AuthorityPool::new(self.connector.clone(), self.config))
             .value()
             .clone();
         authority_pool.touch();
