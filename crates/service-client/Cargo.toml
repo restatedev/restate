@@ -41,6 +41,7 @@ jsonwebtoken = { workspace = true }
 parking_lot = { workspace = true }
 pem = { version = "3.0.6" }
 pin-project = { workspace = true }
+metrics = { workspace = true }
 rand = { workspace = true }
 ring = { version = "0.17.14" }
 rustls = { workspace = true }
