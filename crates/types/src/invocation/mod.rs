@@ -992,6 +992,18 @@ impl From<ServiceInvocationSpanContext> for SpanContextDef {
     }
 }
 
+impl From<ServiceInvocationSpanContext> for SpanContext {
+    fn from(value: ServiceInvocationSpanContext) -> Self {
+        value.span_context.into()
+    }
+}
+
+impl From<&ServiceInvocationSpanContext> for SpanContext {
+    fn from(value: &ServiceInvocationSpanContext) -> Self {
+        value.span_context.clone().into()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Header {
     pub name: ByteString,

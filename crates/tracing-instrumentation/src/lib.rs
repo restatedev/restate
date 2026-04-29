@@ -13,12 +13,17 @@ mod pretty;
 #[cfg(feature = "prometheus")]
 pub mod prometheus_metrics;
 
+use std::borrow::Cow;
 use std::env;
 use std::fmt::Display;
 use std::sync::OnceLock;
 
-use exporter::RuntimeModifierSpanExporter;
-use opentelemetry::trace::TracerProvider;
+use opentelemetry::global::{BoxedSpan, BoxedTracer};
+use opentelemetry::trace::{SpanContext, Status, TracerProvider};
+use opentelemetry::{
+    Context, trace,
+    trace::{Link, TraceContextExt, Tracer},
+};
 use opentelemetry::{InstrumentationScope, KeyValue, global};
 use opentelemetry_contrib::trace::exporter::jaeger_json::JaegerJsonExporter;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
@@ -27,6 +32,7 @@ use opentelemetry_sdk::trace::{SdkTracerProvider, TraceError};
 use pretty::Pretty;
 use tracing::{Level, warn};
 use tracing_opentelemetry::OpenTelemetryLayer;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::filter::{Filtered, ParseError};
 use tracing_subscriber::fmt::time::SystemTime;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
@@ -35,18 +41,86 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
 
 use restate_types::config::{CommonOptions, LogFormat};
+use restate_types::identifiers::{DeploymentId, InvocationId};
+use restate_types::invocation::SpanRelation;
+use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
+use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_types::time::MillisSinceEpoch;
 
-use crate::exporter::UserServiceModifierSpanExporter;
 use crate::pretty::PrettyFields;
 
 pub use exporter::ExporterBuilder;
 pub use exporter::set_global_node_id;
 
-const SERVICE_INSTANCE_NAME: &str = "service.instance.name";
-const RESTATE_INVOCATION_ID: &str = "restate.invocation.id";
-const RESTATE_INVOCATION_TARGET: &str = "restate.invocation.target";
-const RESTATE_ERROR_CODE: &str = "restate.error.code";
-const RESTATE_INVOCATION_ERROR_STACKTRACE: &str = "restate.invocation.error.stacktrace";
+/// Semantic conventions used by Restate tracing.
+pub mod semconv {
+
+    pub mod attribute {
+        pub use opentelemetry_semantic_conventions::attribute::{
+            ERROR_MESSAGE, RPC_METHOD, RPC_SERVICE, RPC_SYSTEM,
+        };
+
+        /// Restate invocation id. Set on every span scoped to one invocation;
+        /// used by Jaeger query templates and the Restate UI to deep-link.
+        pub const RESTATE_INVOCATION_ID: &str = "restate.invocation.id";
+
+        /// Fully-qualified invocation target (service / key / handler).
+        pub const RESTATE_INVOCATION_TARGET: &str = "restate.invocation.target";
+
+        /// Final invocation result on the invocation `end` span
+        pub const RESTATE_INVOCATION_RESULT: &str = "restate.invocation.result";
+        pub const RESTATE_INVOCATION_RESULT_SUCCESS: &str = "success";
+        pub const RESTATE_INVOCATION_RESULT_FAILURE: &str = "failure";
+
+        /// Restate-coded error category (RT0001 etc).
+        pub const RESTATE_ERROR_CODE: &str = "restate.error.code";
+
+        /// InvocationError.code.
+        pub const RESTATE_INVOCATION_ERROR_CODE: &str = "restate.invocation.error.code";
+
+        /// InvocationError.stacktrace.
+        pub const RESTATE_INVOCATION_ERROR_STACKTRACE: &str = "restate.invocation.error.stacktrace";
+
+        /// Command.ty()
+        pub const RESTATE_JOURNAL_COMMAND_TYPE: &str = "restate.journal.command.type";
+
+        /// Command.name()
+        pub const RESTATE_JOURNAL_COMMAND_NAME: &str = "restate.journal.command.name";
+
+        /// NotificationId
+        pub const RESTATE_JOURNAL_NOTIFICATION_ID: &str = "restate.journal.notification.id";
+
+        /// Used in links to indicate the link refers to a runtime internal span.
+        pub const RESTATE_RUNTIME: &str = "restate.runtime";
+
+        pub const RESTATE_DEPLOYMENT_ID: &str = "restate.deployment.id";
+
+        pub const RESTATE_DEPLOYMENT_ADDRESS: &str = "restate.deployment.address";
+
+        pub const RESTATE_DEPLOYMENT_SERVICE_PROTOCOL_VERSION: &str =
+            "restate.deployment.service_protocol_version";
+    }
+
+    pub mod resource {
+        pub use opentelemetry_semantic_conventions::resource::{
+            SERVICE_INSTANCE_ID, SERVICE_NAME, SERVICE_NAMESPACE, SERVICE_VERSION,
+        };
+    }
+
+    pub mod event {
+        pub const RESTATE_INVOCATION_LIFECYCLE_NEW_COMMAND: &str =
+            "restate.invocation.lifecycle.new_command";
+
+        pub const RESTATE_INVOCATION_LIFECYCLE_RUN_ENDED: &str =
+            "restate.invocation.lifecycle.run_ended";
+
+        pub const RESTATE_INVOCATION_LIFECYCLE_SUSPENDED: &str =
+            "restate.invocation.lifecycle.suspended";
+
+        pub const RESTATE_INVOCATION_LIFECYCLE_YIELDED: &str =
+            "restate.invocation.lifecycle.yielded";
+    }
+}
 
 static SERVICE_TRACING_INITIALIZED: OnceLock<()> = OnceLock::new();
 
@@ -140,39 +214,27 @@ fn install_opentelemetry_tracer_provider(
         .set(())
         .expect("service tracing not set");
 
-    // Parse the endpoint and headers to build the exporter.
-    //     let exporter = parse_tracing_endpoint(endpoint, common_opts.tracing.tracing_headers.clone())?;
-    let exporter = UserServiceModifierSpanExporter::new(
-        endpoint,
-        common_opts.tracing.tracing_headers.clone(),
-    )?;
-
-    // Build the processor.
-    // let processor = BatchSpanProcessor::builder(exporter).build();
-
     // Build the tracer provider.
     let resource = opentelemetry_sdk::Resource::builder_empty()
         .with_attributes(otel_resource_attributes_from_env())
         .with_service_name("services")
         .with_attributes(vec![
+            KeyValue::new(semconv::resource::SERVICE_NAME, "Restate"),
+            KeyValue::new(semconv::resource::SERVICE_NAMESPACE, "Restate"),
             KeyValue::new(
-                opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                "Restate",
-            ),
-            KeyValue::new(
-                opentelemetry_semantic_conventions::resource::SERVICE_NAMESPACE,
-                "Restate",
-            ),
-            KeyValue::new(
-                opentelemetry_semantic_conventions::resource::SERVICE_INSTANCE_ID,
+                semconv::resource::SERVICE_INSTANCE_ID,
                 format!("{}/{}", common_opts.cluster_name(), common_opts.node_name()),
             ),
             KeyValue::new(
-                opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
+                semconv::resource::SERVICE_VERSION,
                 env!("CARGO_PKG_VERSION"),
             ),
         ])
         .build();
+
+    // Parse the endpoint and headers to build the exporter.
+    let exporter =
+        ExporterBuilder::new(endpoint, common_opts.tracing.tracing_headers.clone())?.build()?;
 
     // Using async runtime for OpenTelemetry span processing
     //
@@ -226,16 +288,13 @@ where
         .with_attributes(otel_resource_attributes_from_env())
         .with_service_name(format!("{}@{}", service_name, common_opts.node_name()))
         .with_attributes(vec![
+            KeyValue::new(semconv::resource::SERVICE_NAMESPACE, "Restate"),
             KeyValue::new(
-                opentelemetry_semantic_conventions::resource::SERVICE_NAMESPACE,
-                "Restate",
-            ),
-            KeyValue::new(
-                SERVICE_INSTANCE_NAME,
+                semconv::resource::SERVICE_INSTANCE_ID,
                 format!("{}/{}", common_opts.cluster_name(), common_opts.node_name()),
             ),
             KeyValue::new(
-                opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
+                semconv::resource::SERVICE_VERSION,
                 env!("CARGO_PKG_VERSION"),
             ),
         ])
@@ -258,8 +317,6 @@ where
             service_name,
             opentelemetry_sdk::runtime::Tokio,
         );
-
-        let exporter = RuntimeModifierSpanExporter::new(exporter);
 
         tracer_provider_builder = tracer_provider_builder.with_batch_exporter(exporter);
     }
@@ -461,12 +518,13 @@ macro_rules! invocation_span {
     (level= $lvl:expr, relation = $relation:expr, prefix= $prefix:expr, id= $id:expr, target= $target:expr, tags=($($($key:ident).+ = $value:expr),*), fields=($($field:ident = $field_value:expr),*)) => {
         {
             use ::opentelemetry::KeyValue;
+            use $crate::semconv;
 
             let attributes = vec![
-                KeyValue::new("rpc.service", $target.service_name().to_string()),
-                KeyValue::new("rpc.method", $target.handler_name().to_string()),
-                KeyValue::new("restate.invocation.id", $id.to_string()),
-                KeyValue::new("restate.invocation.target", $target.to_string()),
+                KeyValue::new(semconv::attribute::RPC_SERVICE, $target.service_name().to_string()),
+                KeyValue::new(semconv::attribute::RPC_METHOD, $target.handler_name().to_string()),
+                KeyValue::new(semconv::attribute::RESTATE_INVOCATION_ID, $id.to_string()),
+                KeyValue::new(semconv::attribute::RESTATE_INVOCATION_TARGET, $target.to_string()),
                 $(KeyValue::new(stringify!($($key).+), $value),)*
             ];
 
@@ -482,9 +540,10 @@ macro_rules! invocation_span {
     (level= $lvl:expr, relation = $relation:expr, id= $id:expr, name= $name:expr, tags=($($($key:ident).+ = $value:expr),*), fields=($($field:ident = $field_value:expr),*)) => {
         {
             use ::opentelemetry::KeyValue;
+            use $crate::semconv;
 
             let attributes = vec![
-                KeyValue::new("restate.invocation.id", $id.to_string()),
+                KeyValue::new(semconv::attribute::RESTATE_INVOCATION_ID, $id.to_string()),
                 $(KeyValue::new(stringify!($($key).+), $value),)*
             ];
 
@@ -503,6 +562,7 @@ macro_rules! invocation_span {
             use ::tracing_opentelemetry::OpenTelemetrySpanExt;
 
             use ::restate_types::invocation::SpanRelation;
+            use $crate::semconv;
 
             let tracer = opentelemetry::global::tracer_provider().tracer_with_scope(opentelemetry::InstrumentationScope::builder("services").build());
 
@@ -524,7 +584,7 @@ macro_rules! invocation_span {
                     builder.with_links(links).start(&tracer)
                 }
                 SpanRelation::Linked(ctx) => {
-                     links.push(Link::new(ctx.into(), vec![KeyValue::new("restate.runtime", true)], 0));
+                     links.push(Link::new(ctx.into(), vec![KeyValue::new(semconv::attribute::RESTATE_RUNTIME, true)], 0));
                      builder.with_links(links).start(&tracer)
                 }
                 SpanRelation::Parent(ctx) => builder.with_links(links).start_with_context(&tracer,&Context::new().with_remote_span_context(ctx.into())),
@@ -602,6 +662,273 @@ macro_rules! info_invocation_span {
             fields = ()
         )
     };
+}
+
+/// Wrapper type to avoid doing work when not recording.
+/// Ideally, we could have used NoopSpan, but can't find the API to box it to just use BoxedSpan :shrug:
+pub struct ServiceSpan(Option<BoxedSpan>);
+
+impl ServiceSpan {
+    pub const fn noop() -> Self {
+        ServiceSpan(None)
+    }
+}
+
+impl Default for ServiceSpan {
+    fn default() -> Self {
+        Self::noop()
+    }
+}
+
+impl From<BoxedSpan> for ServiceSpan {
+    fn from(span: BoxedSpan) -> Self {
+        ServiceSpan(Some(span))
+    }
+}
+
+impl trace::Span for ServiceSpan {
+    fn add_event_with_timestamp<T>(
+        &mut self,
+        name: T,
+        timestamp: std::time::SystemTime,
+        attributes: Vec<KeyValue>,
+    ) where
+        T: Into<Cow<'static, str>>,
+    {
+        if let Some(span) = &mut self.0 {
+            span.add_event_with_timestamp(name, timestamp, attributes);
+        }
+    }
+
+    fn span_context(&self) -> &SpanContext {
+        if let Some(span) = &self.0 {
+            span.span_context()
+        } else {
+            &SpanContext::NONE
+        }
+    }
+
+    fn is_recording(&self) -> bool {
+        if let Some(span) = &self.0 {
+            span.is_recording()
+        } else {
+            false
+        }
+    }
+
+    fn set_attribute(&mut self, attribute: KeyValue) {
+        if let Some(span) = &mut self.0 {
+            span.set_attribute(attribute);
+        }
+    }
+
+    fn set_status(&mut self, status: Status) {
+        if let Some(span) = &mut self.0 {
+            span.set_status(status);
+        }
+    }
+
+    fn update_name<T>(&mut self, new_name: T)
+    where
+        T: Into<Cow<'static, str>>,
+    {
+        if let Some(span) = &mut self.0 {
+            span.update_name(new_name);
+        }
+    }
+
+    fn add_link(&mut self, span_context: SpanContext, attributes: Vec<KeyValue>) {
+        if let Some(span) = &mut self.0 {
+            span.add_link(span_context, attributes);
+        }
+    }
+
+    fn end_with_timestamp(&mut self, timestamp: std::time::SystemTime) {
+        if let Some(span) = &mut self.0 {
+            span.end_with_timestamp(timestamp);
+        }
+    }
+}
+
+pub fn create_invocation_start_span(
+    invocation_id: &InvocationId,
+    invocation_target: &InvocationTarget,
+    span_ctx: &ServiceInvocationSpanContext,
+    start_time: MillisSinceEpoch,
+) -> ServiceSpan {
+    if !is_service_tracing_enabled() {
+        return ServiceSpan::noop();
+    }
+
+    use crate::semconv;
+
+    let tracer = get_services_tracer();
+
+    let builder = tracer
+        .span_builder(format!("invocation-start {}", invocation_target.short()))
+        .with_start_time(start_time)
+        .with_trace_id(span_ctx.span_context().trace_id())
+        .with_span_id(span_ctx.span_context().span_id())
+        .with_attributes(vec![
+            KeyValue::new(
+                semconv::attribute::RPC_SERVICE,
+                invocation_target.service_name().to_string(),
+            ),
+            KeyValue::new(
+                semconv::attribute::RPC_METHOD,
+                invocation_target.handler_name().to_string(),
+            ),
+            KeyValue::new(
+                semconv::attribute::RESTATE_INVOCATION_ID,
+                invocation_id.to_string(),
+            ),
+            KeyValue::new(
+                semconv::attribute::RESTATE_INVOCATION_TARGET,
+                invocation_target.to_string(),
+            ),
+        ]);
+
+    // Link to the runtime span, in case both runtime tracing and services tracing are enabled
+    let mut links = vec![Link::with_context(
+        ::tracing::Span::current()
+            .context()
+            .span()
+            .span_context()
+            .clone(),
+    )];
+
+    match span_ctx.causing_span_relation() {
+        SpanRelation::None => builder.with_links(links).start(&tracer),
+        SpanRelation::Linked(ctx) => {
+            links.push(Link::new(
+                ctx.into(),
+                vec![KeyValue::new(semconv::attribute::RESTATE_RUNTIME, true)],
+                0,
+            ));
+            builder.with_links(links).start(&tracer)
+        }
+        SpanRelation::Parent(ctx) => builder.with_links(links).start_with_context(
+            &tracer,
+            &Context::new().with_remote_span_context(ctx.into()),
+        ),
+    }
+    .into()
+}
+
+pub fn create_invocation_attempt_span(
+    invocation_id: &InvocationId,
+    invocation_target: &InvocationTarget,
+    deployment_id: DeploymentId,
+    deployment_address: &str,
+    service_protocol_version: ServiceProtocolVersion,
+    span_ctx: &SpanContext,
+) -> ServiceSpan {
+    if !is_service_tracing_enabled() {
+        return ServiceSpan::noop();
+    }
+
+    use crate::semconv;
+
+    let tracer = get_services_tracer();
+
+    tracer
+        .span_builder(format!("invocation-attempt {}", invocation_target.short()))
+        .with_start_time(std::time::SystemTime::now())
+        .with_attributes(vec![
+            KeyValue::new(semconv::attribute::RPC_SYSTEM, "restate"),
+            KeyValue::new(
+                semconv::attribute::RPC_SERVICE,
+                invocation_target.service_name().to_string(),
+            ),
+            KeyValue::new(
+                semconv::attribute::RPC_METHOD,
+                invocation_target.handler_name().to_string(),
+            ),
+            KeyValue::new(
+                semconv::attribute::RESTATE_INVOCATION_ID,
+                invocation_id.to_string(),
+            ),
+            KeyValue::new(
+                semconv::attribute::RESTATE_INVOCATION_TARGET,
+                invocation_target.to_string(),
+            ),
+            KeyValue::new(
+                semconv::attribute::RESTATE_DEPLOYMENT_ID,
+                deployment_id.to_string(),
+            ),
+            KeyValue::new(
+                semconv::attribute::RESTATE_DEPLOYMENT_ADDRESS,
+                deployment_address.to_string(),
+            ),
+            KeyValue::new(
+                semconv::attribute::RESTATE_DEPLOYMENT_SERVICE_PROTOCOL_VERSION,
+                i64::from(service_protocol_version.as_repr()),
+            ),
+        ])
+        // Link to the runtime span, in case both runtime tracing and services tracing are enabled
+        .with_links(vec![Link::with_context(
+            ::tracing::Span::current()
+                .context()
+                .span()
+                .span_context()
+                .clone(),
+        )])
+        .start_with_context(
+            &tracer,
+            &Context::new().with_remote_span_context(span_ctx.clone()),
+        )
+        .into()
+}
+
+pub fn create_invocation_end_span(
+    invocation_id: &InvocationId,
+    invocation_target: &InvocationTarget,
+    start_span_ctx: &ServiceInvocationSpanContext,
+) -> ServiceSpan {
+    if !is_service_tracing_enabled() {
+        return ServiceSpan::noop();
+    }
+
+    use crate::semconv;
+
+    let tracer = get_services_tracer();
+
+    tracer
+        .span_builder(format!("invocation-end {}", invocation_target.short()))
+        .with_attributes(vec![
+            KeyValue::new(
+                semconv::attribute::RPC_SERVICE,
+                invocation_target.service_name().to_string(),
+            ),
+            KeyValue::new(
+                semconv::attribute::RPC_METHOD,
+                invocation_target.handler_name().to_string(),
+            ),
+            KeyValue::new(
+                semconv::attribute::RESTATE_INVOCATION_ID,
+                invocation_id.to_string(),
+            ),
+            KeyValue::new(
+                semconv::attribute::RESTATE_INVOCATION_TARGET,
+                invocation_target.to_string(),
+            ),
+        ])
+        .with_links(vec![Link::with_context(
+            ::tracing::Span::current()
+                .context()
+                .span()
+                .span_context()
+                .clone(),
+        )])
+        .start_with_context(
+            &tracer,
+            &Context::new().with_remote_span_context(start_span_ctx.span_context().clone().into()),
+        )
+        .into()
+}
+
+pub fn get_services_tracer() -> BoxedTracer {
+    global::tracer_provider().tracer_with_scope(InstrumentationScope::builder("services").build())
 }
 
 #[cfg(test)]

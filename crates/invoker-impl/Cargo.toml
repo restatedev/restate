@@ -25,6 +25,7 @@ restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["message", "codec"] }
 restate-service-protocol-v4 = { workspace = true, features = ["message-codec", "entry-codec"] }
 restate-time-util = { workspace = true }
+restate-tracing-instrumentation = { workspace = true }
 restate-types = { workspace = true }
 restate-util-string = { workspace = true }
 restate-worker-api = { workspace = true }
@@ -34,7 +35,6 @@ bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
 chrono = { workspace = true }
-dashmap = { workspace = true }
 derive_more = { workspace = true, features = ["debug"] }
 futures = { workspace = true }
 gardal = { workspace = true , features = ["async"]}
@@ -46,7 +46,6 @@ metrics = { workspace = true }
 opentelemetry = { workspace = true }
 pin-project-lite = { workspace = true }
 prost = { workspace = true }
-schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

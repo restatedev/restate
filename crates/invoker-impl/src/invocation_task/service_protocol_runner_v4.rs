@@ -20,7 +20,8 @@ use futures::{Stream, StreamExt};
 use gardal::futures::StreamExt as GardalStreamExt;
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
-use opentelemetry::trace::TraceFlags;
+use opentelemetry::KeyValue;
+use opentelemetry::trace::{Span, SpanContext, Status, TraceFlags};
 use prost::Message as ProstMessage;
 use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
@@ -34,6 +35,7 @@ use restate_service_protocol_v4::message_codec::{
     Decoder, Encoder, Message, MessageHeader, MessageType, StateEntry, proto,
 };
 use restate_service_protocol_v4::proto_lite;
+use restate_tracing_instrumentation::ServiceSpan;
 use restate_types::Scope;
 use restate_types::errors::{GenericError, InvocationError};
 use restate_types::identifiers::InvocationId;
@@ -48,7 +50,8 @@ use restate_types::journal_v2::command::{
 };
 use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawNotification};
 use restate_types::journal_v2::{
-    CommandIndex, CommandType, Entry, EntryType, RunCompletion, RunResult, UnresolvedFuture,
+    CommandIndex, CommandType, Entry, EntryMetadata, EntryType, RunCompletion, RunResult,
+    UnresolvedFuture,
 };
 use restate_types::limit_key::LimitKey;
 use restate_types::schema::deployment::{Deployment, DeploymentType, ProtocolType};
@@ -136,6 +139,16 @@ where
         Txn: InvocationReaderTransaction,
         IR: InvocationReader,
     {
+        let mut attempt_span = restate_tracing_instrumentation::create_invocation_attempt_span(
+            &self.invocation_task.invocation_id,
+            &self.invocation_task.invocation_target,
+            deployment.id,
+            &deployment.address_display().to_string(),
+            self.service_protocol_version,
+            // The attempt span has as parent the invocation start span created by the PP.
+            &journal_metadata.span_context.span_context().clone().into(),
+        );
+
         // Figure out the protocol type. Force RequestResponse if inactivity_timeout is zero
         let protocol_type = if self.invocation_task.inactivity_timeout.is_zero() {
             ProtocolType::RequestResponse
@@ -164,9 +177,6 @@ where
             "Executing invocation at deployment"
         );
 
-        // Create an arc of the parent SpanContext.
-        // We send this with every journal entry to correctly link new spans generated from journal entries.
-
         let deployment_id = deployment.id;
         // Prepare the request
         let (http_stream_tx, request) = Self::prepare_request(
@@ -174,7 +184,7 @@ where
             deployment,
             self.service_protocol_version,
             &self.invocation_task.invocation_id,
-            &journal_metadata.span_context,
+            attempt_span.span_context(),
         );
 
         // Initialize the response stream state
@@ -200,6 +210,7 @@ where
                 &mut decoder_stream,
                 invocation_reader,
                 outbound_budget,
+                &mut attempt_span,
             )
             .await;
 
@@ -243,6 +254,35 @@ where
             );
         }
 
+        // End attempt span
+        match &result {
+            TerminalLoopState::Closed => {
+                attempt_span.set_status(Status::Ok);
+            }
+            TerminalLoopState::Suspended(_)
+            | TerminalLoopState::SuspendedV2(_)
+            | TerminalLoopState::SuspendedV3(_) => {
+                attempt_span.add_event(
+                    restate_tracing_instrumentation::semconv::event::RESTATE_INVOCATION_LIFECYCLE_SUSPENDED,
+                    vec![],
+                );
+                attempt_span.set_status(Status::Unset);
+            }
+            TerminalLoopState::Failed(_) => {
+                attempt_span.set_status(Status::Error {
+                    description: "transient failure".into(),
+                });
+            }
+            TerminalLoopState::ShouldYield(_) => {
+                attempt_span.add_event(
+                    restate_tracing_instrumentation::semconv::event::RESTATE_INVOCATION_LIFECYCLE_YIELDED,
+                    vec![],
+                );
+                attempt_span.set_status(Status::Unset);
+            }
+            _ => {}
+        }
+
         result
     }
 
@@ -257,6 +297,7 @@ where
         decoder_stream: &mut S,
         invocation_reader: IR,
         outbound_budget: &mut LocalMemoryPool,
+        attempt_span: &mut ServiceSpan,
     ) -> TerminalLoopState<()>
     where
         Txn: InvocationReaderTransaction,
@@ -264,7 +305,6 @@ where
         IR: InvocationReader,
     {
         let journal_size = journal_metadata.length;
-        let service_invocation_span_context = journal_metadata.span_context;
         // === Replay phase (transaction alive) ===
         {
             // Read state if needed (state is collected for the START message).
@@ -329,7 +369,6 @@ where
             trace!("Protocol is in bidi stream mode, will now start the send/receive loop");
             crate::shortcircuit!(
                 self.bidi_stream_loop(
-                    &service_invocation_span_context,
                     http_stream_tx,
                     decoder_stream,
                     invocation_reader,
@@ -338,6 +377,7 @@ where
                     // todo remove once we drop support for journal v1
                     JournalKind::V2,
                     outbound_budget,
+                    attempt_span
                 )
                 .await
             );
@@ -353,7 +393,7 @@ where
         // We don't have the invoker_rx, so we simply consume the response
         trace!("Sender side of the request has been dropped, now processing the response");
 
-        self.response_stream_loop(&service_invocation_span_context, decoder_stream)
+        self.response_stream_loop(decoder_stream, attempt_span)
             .await
     }
 
@@ -362,7 +402,7 @@ where
         deployment_metadata: Deployment,
         service_protocol_version: ServiceProtocolVersion,
         invocation_id: &InvocationId,
-        parent_span_context: &ServiceInvocationSpanContext,
+        parent_span_context: &SpanContext,
     ) -> (InvokerBodySender, Request<InvokerBodyType>) {
         // Use an unbounded channel: backpressure is provided by the memory budget
         // (each frame's Bytes embeds a LocalMemoryLease via from_owner) rather than
@@ -384,30 +424,24 @@ where
             (INVOCATION_ID_HEADER_NAME, invocation_id_header_value),
         ]);
 
-        // Inject OpenTelemetry context into the headers
-        // The parent span as seen by the SDK will be the service invocation span context
-        // which is emitted at INFO level representing the invocation, *not* the DEBUG level
-        // `invoker_invocation_task` which wraps this code. This is so that headers will be sent
-        // when in INFO level, not just in DEBUG level.
-        {
-            let span_context = parent_span_context.span_context();
-            if span_context.is_valid() {
-                const SUPPORTED_VERSION: u8 = 0;
-                let header_value = format!(
-                    "{:02x}-{}-{}-{:02x}",
-                    SUPPORTED_VERSION,
-                    span_context.trace_id(),
-                    span_context.span_id(),
-                    span_context.trace_flags() & TraceFlags::SAMPLED
-                );
-                if let Ok(header_value) = HeaderValue::try_from(header_value) {
-                    headers.insert("traceparent", header_value);
-                }
-                if let Ok(tracestate) =
-                    HeaderValue::from_str(span_context.trace_state().header().as_ref())
-                {
-                    headers.insert("tracestate", tracestate);
-                }
+        // Inject OpenTelemetry context into the headers so the SDK sees the
+        // per-attempt span as its parent.
+        if parent_span_context.is_valid() {
+            const SUPPORTED_VERSION: u8 = 0;
+            let header_value = format!(
+                "{:02x}-{}-{}-{:02x}",
+                SUPPORTED_VERSION,
+                parent_span_context.trace_id(),
+                parent_span_context.span_id(),
+                parent_span_context.trace_flags() & TraceFlags::SAMPLED
+            );
+            if let Ok(header_value) = HeaderValue::try_from(header_value) {
+                headers.insert("traceparent", header_value);
+            }
+            if let Ok(tracestate) =
+                HeaderValue::from_str(parent_span_context.trace_state().header().as_ref())
+            {
+                headers.insert("tracestate", tracestate);
             }
         }
 
@@ -521,12 +555,12 @@ where
     /// This loop concurrently reads the http response stream and journal completions from the invoker.
     async fn bidi_stream_loop<S, IR>(
         &mut self,
-        parent_span_context: &ServiceInvocationSpanContext,
         mut http_stream_tx: InvokerBodySender,
         http_stream_rx: &mut S,
         mut invocation_reader: IR,
         journal_kind: JournalKind,
         outbound_budget: &mut LocalMemoryPool,
+        attempt_span: &mut ServiceSpan,
     ) -> TerminalLoopState<()>
     where
         S: Stream<Item = Result<DecoderStreamItem, InvokerError>> + Unpin,
@@ -591,7 +625,7 @@ where
                         }
                         Some(DecoderStreamItem::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
                         Some(DecoderStreamItem::Message(message_header, message)) => {
-                            crate::shortcircuit!(self.handle_message(parent_span_context, message_header, message));
+                            crate::shortcircuit!(self.handle_message(message_header, message, attempt_span));
                         }
                     }
 
@@ -612,8 +646,8 @@ where
 
     async fn response_stream_loop<S>(
         &mut self,
-        parent_span_context: &ServiceInvocationSpanContext,
         http_stream_rx: &mut S,
+        attempt_span: &mut ServiceSpan,
     ) -> TerminalLoopState<()>
     where
         S: Stream<Item = Result<DecoderStreamItem, InvokerError>> + Unpin,
@@ -630,7 +664,7 @@ where
                         }
                         Some(DecoderStreamItem::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
                         Some(DecoderStreamItem::Message(message_header, message)) => {
-                            crate::shortcircuit!(self.handle_message(parent_span_context, message_header, message));
+                            crate::shortcircuit!(self.handle_message(message_header, message, attempt_span));
                         }
                     }
                 },
@@ -843,7 +877,19 @@ where
         Ok(())
     }
 
-    fn handle_new_command(&mut self, mh: MessageHeader, command: RawCommand) {
+    fn handle_new_command(
+        &mut self,
+        mh: MessageHeader,
+        command: RawCommand,
+        attempt_span: &mut ServiceSpan,
+    ) {
+        attempt_span.add_event(
+            restate_tracing_instrumentation::semconv::event::RESTATE_INVOCATION_LIFECYCLE_NEW_COMMAND,
+            vec![KeyValue::new(
+                restate_tracing_instrumentation::semconv::attribute::RESTATE_JOURNAL_COMMAND_TYPE,
+                command.ty().prometheus_label(),
+            )],
+        );
         self.invocation_task
             .send_invoker_tx(InvocationTaskOutputInner::NewCommand {
                 command_index: self.command_index,
@@ -857,9 +903,9 @@ where
 
     fn handle_message(
         &mut self,
-        parent_span_context: &ServiceInvocationSpanContext,
         mh: MessageHeader,
         message: Message,
+        attempt_span: &mut ServiceSpan,
     ) -> TerminalLoopState<()> {
         trace!(
             restate.protocol.message_header = ?mh,
@@ -902,6 +948,13 @@ where
                     .encode::<ServiceProtocolV4Codec>()
                     .try_into()
                     .expect("a raw notification");
+                attempt_span.add_event(
+                    restate_tracing_instrumentation::semconv::event::RESTATE_INVOCATION_LIFECYCLE_RUN_ENDED,
+                    vec![KeyValue::new(
+                        restate_tracing_instrumentation::semconv::attribute::RESTATE_JOURNAL_NOTIFICATION_ID,
+                        raw_notification.id().to_string(),
+                    )],
+                );
 
                 self.invocation_task.send_invoker_tx(
                     InvocationTaskOutputInner::NewNotificationProposal {
@@ -914,11 +967,15 @@ where
 
             // Commands
             Message::OutputCommand(cmd) => {
-                self.handle_new_command(mh, RawCommand::new(CommandType::Output, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::Output, cmd),
+                    attempt_span,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::InputCommand(cmd) => {
-                self.handle_new_command(mh, RawCommand::new(CommandType::Input, cmd));
+                self.handle_new_command(mh, RawCommand::new(CommandType::Input, cmd), attempt_span);
                 TerminalLoopState::Continue(())
             }
             Message::GetInvocationOutputCommand(cmd) => {
@@ -961,7 +1018,7 @@ where
                 TerminalLoopState::Continue(())
             }
             Message::RunCommand(cmd) => {
-                self.handle_new_command(mh, RawCommand::new(CommandType::Run, cmd));
+                self.handle_new_command(mh, RawCommand::new(CommandType::Run, cmd), attempt_span);
                 TerminalLoopState::Continue(())
             }
             Message::SendSignalCommand(cmd) => {
@@ -970,7 +1027,11 @@ where
                     RawCommand::new(CommandType::SendSignal, cmd.clone())
                         .decode::<ServiceProtocolV4Codec, _>()
                 );
-                self.handle_new_command(mh, RawCommand::new(CommandType::SendSignal, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::SendSignal, cmd),
+                    attempt_span,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::OneWayCallCommand(cmd) => {
@@ -987,7 +1048,9 @@ where
                                 idempotency_key: cmd.idempotency_key.map(|s| s.into()),
                                 scope: cmd.scope,
                                 limit_key: cmd.limit_key,
-                                span_relation: parent_span_context.as_linked()
+                                span_relation: SpanRelation::Linked(
+                                    attempt_span.span_context().clone().into()
+                                )
                             }
                         )
                         .map_err(|e| InvokerError::CommandPrecondition(
@@ -1007,6 +1070,7 @@ where
                         .encode::<ServiceProtocolV4Codec>()
                         .try_into()
                         .expect("a raw command"),
+                    attempt_span,
                 );
                 TerminalLoopState::Continue(())
             }
@@ -1024,7 +1088,9 @@ where
                                 idempotency_key: cmd.idempotency_key.map(|s| s.into()),
                                 scope: cmd.scope,
                                 limit_key: cmd.limit_key,
-                                span_relation: parent_span_context.as_parent()
+                                span_relation: SpanRelation::Parent(
+                                    attempt_span.span_context().clone().into()
+                                )
                             }
                         )
                         .map_err(|e| InvokerError::CommandPrecondition(
@@ -1044,11 +1110,12 @@ where
                         .encode::<ServiceProtocolV4Codec>()
                         .try_into()
                         .expect("a raw command"),
+                    attempt_span,
                 );
                 TerminalLoopState::Continue(())
             }
             Message::SleepCommand(cmd) => {
-                self.handle_new_command(mh, RawCommand::new(CommandType::Sleep, cmd));
+                self.handle_new_command(mh, RawCommand::new(CommandType::Sleep, cmd), attempt_span);
                 TerminalLoopState::Continue(())
             }
             Message::CompletePromiseCommand(cmd) => {
@@ -1057,7 +1124,11 @@ where
                     &EntryType::Command(CommandType::CompletePromise),
                     &self.invocation_task.invocation_target.service_ty(),
                 ));
-                self.handle_new_command(mh, RawCommand::new(CommandType::CompletePromise, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::CompletePromise, cmd),
+                    attempt_span,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::PeekPromiseCommand(cmd) => {
@@ -1066,7 +1137,11 @@ where
                     &EntryType::Command(CommandType::PeekPromise),
                     &self.invocation_task.invocation_target.service_ty(),
                 ));
-                self.handle_new_command(mh, RawCommand::new(CommandType::PeekPromise, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::PeekPromise, cmd),
+                    attempt_span,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::GetPromiseCommand(cmd) => {
@@ -1075,7 +1150,11 @@ where
                     &EntryType::Command(CommandType::GetPromise),
                     &self.invocation_task.invocation_target.service_ty(),
                 ));
-                self.handle_new_command(mh, RawCommand::new(CommandType::GetPromise, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::GetPromise, cmd),
+                    attempt_span,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::GetEagerStateKeysCommand(cmd) => {
@@ -1087,7 +1166,11 @@ where
                         .invocation_target
                         .invocation_target_ty(),
                 ));
-                self.handle_new_command(mh, RawCommand::new(CommandType::GetEagerStateKeys, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::GetEagerStateKeys, cmd),
+                    attempt_span,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::GetEagerStateCommand(cmd) => {
@@ -1099,7 +1182,11 @@ where
                         .invocation_target
                         .invocation_target_ty(),
                 ));
-                self.handle_new_command(mh, RawCommand::new(CommandType::GetEagerState, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::GetEagerState, cmd),
+                    attempt_span,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::GetLazyStateKeysCommand(cmd) => {
@@ -1111,7 +1198,11 @@ where
                         .invocation_target
                         .invocation_target_ty(),
                 ));
-                self.handle_new_command(mh, RawCommand::new(CommandType::GetLazyStateKeys, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::GetLazyStateKeys, cmd),
+                    attempt_span,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::ClearAllStateCommand(cmd) => {
@@ -1123,7 +1214,11 @@ where
                         .invocation_target
                         .invocation_target_ty(),
                 ));
-                self.handle_new_command(mh, RawCommand::new(CommandType::ClearAllState, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::ClearAllState, cmd),
+                    attempt_span,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::ClearStateCommand(cmd) => {
@@ -1135,7 +1230,11 @@ where
                         .invocation_target
                         .invocation_target_ty(),
                 ));
-                self.handle_new_command(mh, RawCommand::new(CommandType::ClearState, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::ClearState, cmd),
+                    attempt_span,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::SetStateCommand(cmd) => {
@@ -1147,7 +1246,11 @@ where
                         .invocation_target
                         .invocation_target_ty(),
                 ));
-                self.handle_new_command(mh, RawCommand::new(CommandType::SetState, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::SetState, cmd),
+                    attempt_span,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::GetLazyStateCommand(cmd) => {
@@ -1159,7 +1262,11 @@ where
                         .invocation_target
                         .invocation_target_ty(),
                 ));
-                self.handle_new_command(mh, RawCommand::new(CommandType::GetLazyState, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::GetLazyState, cmd),
+                    attempt_span,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::CompleteAwakeableCommand(cmd) => {
@@ -1168,7 +1275,11 @@ where
                     RawCommand::new(CommandType::CompleteAwakeable, cmd.clone())
                         .decode::<ServiceProtocolV4Codec, _>()
                 );
-                self.handle_new_command(mh, RawCommand::new(CommandType::CompleteAwakeable, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::CompleteAwakeable, cmd),
+                    attempt_span,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::SignalNotification(_) => TerminalLoopState::Failed(

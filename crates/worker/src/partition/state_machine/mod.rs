@@ -15,7 +15,6 @@ mod utils;
 
 pub use actions::{Action, ActionCollector};
 
-use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
@@ -28,7 +27,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures::{StreamExt, TryStreamExt};
 use metrics::{counter, histogram};
-use tracing::{Instrument, Span, debug, error, info, trace, warn};
+use tracing::{Instrument, debug, error, info, trace, warn};
 
 use restate_limiter::LimitKey;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
@@ -65,9 +64,9 @@ use restate_tracing_instrumentation as instrumentation;
 use restate_types::clock::UniqueTimestamp;
 use restate_types::config::Configuration;
 use restate_types::errors::{
-    ALREADY_COMPLETED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, GenericError,
-    InvocationErrorCode, KILLED_INVOCATION_ERROR, NOT_FOUND_INVOCATION_ERROR,
-    NOT_READY_INVOCATION_ERROR, WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
+    ALREADY_COMPLETED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, GenericError, InvocationError,
+    KILLED_INVOCATION_ERROR, NOT_FOUND_INVOCATION_ERROR, NOT_READY_INVOCATION_ERROR,
+    WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::identifiers::{
@@ -85,7 +84,6 @@ use restate_types::invocation::{
     ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
     SubmitNotificationSink, TerminationFlavor, VirtualObjectHandlerType, WorkflowHandlerType,
 };
-use restate_types::invocation::{InvocationInput, SpanRelation};
 use restate_types::journal::Completion;
 use restate_types::journal::CompletionResult;
 use restate_types::journal::EntryType;
@@ -323,6 +321,8 @@ impl<S> StateMachineApplyContext<'_, S> {
     where
         S: ReadInvocationStatusTable,
     {
+        use tracing::Span;
+
         Span::current().record_invocation_id(invocation_id);
         let status = self.storage.get_invocation_status(invocation_id).await?;
 
@@ -739,9 +739,13 @@ impl<S> StateMachineApplyContext<'_, S> {
             self.partition_key_range
         );
 
-        let invocation_span = Span::current();
-        invocation_span.record_invocation_id(&invocation_id);
-        invocation_span.record_invocation_target(&service_invocation.invocation_target);
+        {
+            use tracing::Span;
+            let invocation_span = Span::current();
+            invocation_span.record_invocation_id(&invocation_id);
+            invocation_span.record_invocation_target(&service_invocation.invocation_target);
+        }
+
         // Phases of an invocation
         // 1. Try deduplicate it first
         // 2. Check if we need to schedule it
@@ -1253,6 +1257,15 @@ impl<S> StateMachineApplyContext<'_, S> {
             )?;
         }
 
+        // Emit the trace anchor span for the invocation.
+        if self.is_leader {
+            let _start = instrumentation::create_invocation_start_span(
+                &invocation_id,
+                &in_flight_invocation_metadata.invocation_target,
+                &in_flight_invocation_metadata.journal_metadata.span_context,
+                in_flight_invocation_metadata.timestamps.creation_time(),
+            );
+        }
         self.vqueue_invoke(
             qid,
             key,
@@ -1292,6 +1305,16 @@ impl<S> StateMachineApplyContext<'_, S> {
                 &mut in_flight_invocation_metadata,
                 invocation_input,
             )?;
+        }
+
+        // Emit the trace anchor span for the invocation.
+        if self.is_leader {
+            let _start = instrumentation::create_invocation_start_span(
+                &invocation_id,
+                &in_flight_invocation_metadata.invocation_target,
+                &in_flight_invocation_metadata.journal_metadata.span_context,
+                in_flight_invocation_metadata.timestamps.creation_time(),
+            );
         }
 
         self.invoke(invocation_id, in_flight_invocation_metadata)
@@ -1863,8 +1886,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             &invocation_id,
             &invocation_target,
             input.span_context(),
-            MillisSinceEpoch::now(),
-            Err((error.code(), error.to_string())),
+            Err(&error),
         );
 
         Ok(())
@@ -1982,8 +2004,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             &invocation_id,
             &invocation_target,
             input.span_context(),
-            MillisSinceEpoch::now(),
-            Err((error.code(), error.to_string())),
+            Err(&error),
         );
 
         Ok(())
@@ -2733,10 +2754,9 @@ impl<S> StateMachineApplyContext<'_, S> {
                 &invocation_id,
                 &invocation_metadata.invocation_target,
                 &invocation_metadata.journal_metadata.span_context,
-                invocation_metadata.timestamps.creation_time(),
                 match &response_result {
                     ResponseResult::Success(_) => Ok(()),
-                    ResponseResult::Failure(err) => Err((err.code(), err.message().to_owned())),
+                    ResponseResult::Failure(err) => Err(err),
                 },
             );
 
@@ -2760,7 +2780,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                 &invocation_id,
                 &invocation_target,
                 &invocation_metadata.journal_metadata.span_context,
-                invocation_metadata.timestamps.creation_time(),
                 Ok(()),
             );
         }
@@ -3287,19 +3306,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                         journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                 );
 
-                let _span = instrumentation::info_invocation_span!(
-                    relation = invocation_metadata
-                        .journal_metadata
-                        .span_context
-                        .as_parent(),
-                    id = invocation_id,
-                    name = format!("set-state {key:?}"),
-                    tags = (rpc.service = invocation_metadata
-                        .invocation_target
-                        .service_name()
-                        .to_string())
-                );
-
                 if let Some(service_id) =
                     invocation_metadata.invocation_target.as_keyed_service_id()
                 {
@@ -3318,19 +3324,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                         journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                 );
 
-                let _span = instrumentation::info_invocation_span!(
-                    relation = invocation_metadata
-                        .journal_metadata
-                        .span_context
-                        .as_parent(),
-                    id = invocation_id,
-                    name = "clear-state",
-                    tags = (rpc.service = invocation_metadata
-                        .invocation_target
-                        .service_name()
-                        .to_string())
-                );
-
                 if let Some(service_id) =
                     invocation_metadata.invocation_target.as_keyed_service_id()
                 {
@@ -3343,19 +3336,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                 }
             }
             EnrichedEntryHeader::ClearAllState { .. } => {
-                let _span = instrumentation::info_invocation_span!(
-                    relation = invocation_metadata
-                        .journal_metadata
-                        .span_context
-                        .as_parent(),
-                    id = invocation_id,
-                    name = "clear-all-state",
-                    tags = (rpc.service = invocation_metadata
-                        .invocation_target
-                        .service_name()
-                        .to_string())
-                );
-
                 if let Some(service_id) =
                     invocation_metadata.invocation_target.as_keyed_service_id()
                 {
@@ -3587,19 +3567,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                 }
             }
             EnrichedEntryHeader::Sleep { is_completed, .. } => {
-                let _span = instrumentation::info_invocation_span!(
-                    relation = invocation_metadata
-                        .journal_metadata
-                        .span_context
-                        .as_parent(),
-                    id = invocation_id,
-                    name = "sleep",
-                    tags = (rpc.service = invocation_metadata
-                        .invocation_target
-                        .service_name()
-                        .to_string())
-                );
-
                 debug_assert!(!is_completed, "Sleep entry must not be completed.");
                 let_assert!(
                     Entry::Sleep(SleepEntry { wake_up_time, .. }) =
@@ -3683,22 +3650,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                 } else {
                     Some(MillisSinceEpoch::new(invoke_time))
                 };
-
-                use opentelemetry::trace::Span;
-                let mut span = instrumentation::info_invocation_span!(
-                    relation = invocation_metadata
-                        .journal_metadata
-                        .span_context
-                        .as_parent(),
-                    prefix = "oneway-call",
-                    id = callee_invocation_id,
-                    target = callee_invocation_target,
-                    tags = ()
-                );
-
-                if let SpanRelation::Linked(ctx) = span_context.causing_span_relation() {
-                    span.add_link(ctx.into(), Vec::default());
-                }
 
                 let service_invocation = Box::new(ServiceInvocation {
                     invocation_id: *callee_invocation_id,
@@ -3792,25 +3743,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                 };
             }
             EnrichedEntryHeader::Run { .. } => {
-                let _span = instrumentation::info_invocation_span!(
-                    relation = invocation_metadata
-                        .journal_metadata
-                        .span_context
-                        .as_parent(),
-                    id = invocation_id,
-                    name = match journal_entry
-                        .deserialize_name::<ProtobufRawEntryCodec>()?
-                        .as_deref()
-                    {
-                        None | Some("") => Cow::Borrowed("run"),
-                        Some(name) => Cow::Owned(format!("run {name}")),
-                    },
-                    tags = (rpc.service = invocation_metadata
-                        .invocation_target
-                        .service_name()
-                        .to_string())
-                );
-
                 // We just store it
             }
             EnrichedEntryHeader::Custom { .. } => {
@@ -4212,31 +4144,49 @@ impl<S> StateMachineApplyContext<'_, S> {
         invocation_id: &InvocationId,
         invocation_target: &InvocationTarget,
         span_context: &ServiceInvocationSpanContext,
-        creation_time: MillisSinceEpoch,
-        result: Result<(), (InvocationErrorCode, String)>,
+        invocation_result: Result<(), &InvocationError>,
     ) {
-        let (result, error) = match result {
-            Ok(_) => ("Success", false),
-            Err(_) => ("Failure", true),
-        };
+        // Emit a per-termination "end" span as a child of the invocation-start span.
+        if self.is_leader {
+            use opentelemetry::KeyValue;
+            use opentelemetry::trace::{Span, Status};
 
-        if self.is_leader && span_context.is_sampled() {
-            instrumentation::info_invocation_span!(
-                relation = span_context.causing_span_relation(),
-                prefix = "invoke",
-                id = invocation_id,
-                target = invocation_target,
-                tags = (
-                    restate.invocation.result = result,
-                    error = error,
-                    restate.span.context = format!("{:?}", span_context)
-                ),
-                fields = (
-                    with_start_time = creation_time,
-                    with_trace_id = span_context.span_context().trace_id(),
-                    with_span_id = span_context.span_context().span_id()
-                )
+            let mut end_span = instrumentation::create_invocation_end_span(
+                invocation_id,
+                invocation_target,
+                span_context,
             );
+
+            if end_span.is_recording() {
+                match invocation_result {
+                    Err(err) => {
+                        end_span.set_attributes([
+                            KeyValue::new(
+                                instrumentation::semconv::attribute::RESTATE_INVOCATION_RESULT,
+                                instrumentation::semconv::attribute::RESTATE_INVOCATION_RESULT_FAILURE
+                            ),
+                            KeyValue::new(
+                                instrumentation::semconv::attribute::ERROR_MESSAGE,
+                                err.message.clone()
+                            ),
+                            KeyValue::new(
+                                instrumentation::semconv::attribute::RESTATE_INVOCATION_ERROR_CODE,
+                                err.code().to_string()
+                            ),
+                        ]);
+                        end_span.set_status(Status::Error {
+                            description: err.message.clone(),
+                        });
+                    }
+                    Ok(_) => {
+                        end_span.set_attribute(KeyValue::new(
+                            instrumentation::semconv::attribute::RESTATE_INVOCATION_RESULT,
+                            instrumentation::semconv::attribute::RESTATE_INVOCATION_RESULT_SUCCESS,
+                        ));
+                        end_span.set_status(Status::Ok);
+                    }
+                }
+            }
         }
     }
 
