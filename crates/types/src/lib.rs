@@ -12,8 +12,8 @@
 
 pub mod limit_key;
 
-mod base62_util;
-mod id_util;
+pub mod base62_util;
+pub mod id_util;
 mod locking;
 mod macros;
 mod node_id;
@@ -60,7 +60,7 @@ pub mod storage;
 pub mod timer;
 pub mod vqueues;
 
-pub use id_util::IdResourceType;
+pub use id_util::{IdDecoder, IdEncoder, IdResourceType};
 pub use identifiers::PartitionedResourceId;
 pub use limit_key::LimitKey;
 pub use locking::*;
