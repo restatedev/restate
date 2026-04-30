@@ -271,6 +271,11 @@ impl PeerNetAddress {
     pub fn is_http(&self) -> bool {
         matches!(self, PeerNetAddress::Http(_))
     }
+
+    /// Returns true if this address uses the `https` scheme (TLS).
+    pub fn is_tls(&self) -> bool {
+        matches!(self, PeerNetAddress::Http(uri) if uri.scheme() == Some(&http::uri::Scheme::HTTPS))
+    }
 }
 
 #[derive(
@@ -360,15 +365,20 @@ impl<P: ListenerPort> Default for AdvertisedAddress<P> {
 
 impl<P: ListenerPort> AdvertisedAddress<P> {
     pub fn derive_from_bind_address(address: SocketAddress, advertised_host: Option<&str>) -> Self {
+        Self::derive_from_bind_address_with_tls(address, advertised_host, false)
+    }
+
+    pub fn derive_from_bind_address_with_tls(
+        address: SocketAddress,
+        advertised_host: Option<&str>,
+        tls: bool,
+    ) -> Self {
+        let scheme = if tls { "https" } else { "http" };
         let inner = match address {
             SocketAddress::Socket(address) => {
                 let routable_ip = || {
                     if address.ip().is_loopback() {
-                        // If we are binding to loopback, we shouldn't use the public route-able IP
-                        // since we are confident that it'll not be reachable. If this guess doesn't
-                        // work for the user, they can always pass an explicit advertised address.
                         if address.ip().is_ipv4() {
-                            // mirror the ip version of the bind address
                             "127.0.0.1"
                         } else {
                             "[::1]"
@@ -377,24 +387,16 @@ impl<P: ListenerPort> AdvertisedAddress<P> {
                         guess_my_routable_ip()
                     }
                 };
-                // do we have an input hostname?
                 let hostname = advertised_host.unwrap_or_else(|| routable_ip());
                 PeerNetAddress::Http(
-                    format!("http://{hostname}:{}", address.port())
+                    format!("{scheme}://{hostname}:{}", address.port())
                         .parse()
                         .expect("valid uri"),
                 )
             }
-            SocketAddress::Uds(path) => {
-                // it's a UDS address, we'll use the path.
-                PeerNetAddress::Uds(path)
-            }
+            SocketAddress::Uds(path) => PeerNetAddress::Uds(path),
             SocketAddress::Anonymous => {
-                // In case this is an anonymous unix-socket, we'll fallback to a generic
-                // localhost-based address without a port. The assumption is the caller
-                // will proxy their request through the unix-socket and the host+scheme
-                // part of the URI will be ignored by the server.
-                PeerNetAddress::Http("http://localhost".parse().expect("valid uri"))
+                PeerNetAddress::Http(format!("{scheme}://localhost").parse().expect("valid uri"))
             }
         };
 

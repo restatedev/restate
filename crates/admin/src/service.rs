@@ -212,7 +212,7 @@ where
             TaskCenter::with_current(|tc| opts.advertised_address(tc.address_book()))
         );
 
-        net_util::run_hyper_server(self.listeners, service, || ())
+        net_util::run_hyper_server(self.listeners, service, || (), None)
             .await
             .map_err(Into::into)
     }

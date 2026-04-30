@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use restate_serde_util::NonZeroByteCount;
@@ -103,6 +104,16 @@ pub struct NetworkingOptions {
         skip_serializing_if = "is_default_fabric_memory_limit"
     )]
     fabric_memory_limit: NonZeroByteCount,
+
+    /// # TLS Configuration
+    ///
+    /// Optional TLS/mTLS configuration for inter-node fabric communication.
+    /// When set, the fabric port uses TLS for both inbound and outbound connections.
+    /// Without this section, fabric communication remains plaintext (default behavior).
+    ///
+    /// Since v1.3.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls: Option<FabricTlsOptions>,
 }
 
 const fn default_message_size_limit() -> NonZeroByteCount {
@@ -159,6 +170,108 @@ impl Default for NetworkingOptions {
             ),
             message_size_limit: default_message_size_limit(),
             fabric_memory_limit: default_fabric_memory_limit(),
+            tls: None,
         }
     }
+}
+
+/// TLS mode for fabric inter-node communication.
+///
+/// Since v1.3.0
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum TlsMode {
+    /// Only TLS connections are accepted; plaintext is rejected.
+    #[default]
+    Strict,
+    /// Both TLS and plaintext connections are accepted. Use during rolling upgrades.
+    Optional,
+}
+
+/// TLS configuration for fabric inter-node communication.
+///
+/// Since v1.3.0
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct FabricTlsOptions {
+    /// TLS enforcement mode. Default: `strict`.
+    #[serde(default)]
+    pub mode: TlsMode,
+
+    /// Path to the PEM-encoded server certificate.
+    pub cert_file: PathBuf,
+
+    /// Path to the PEM-encoded private key.
+    pub key_file: PathBuf,
+
+    /// Paths to PEM-encoded CA certificates for verifying peer certificates.
+    pub ca_files: Vec<PathBuf>,
+
+    /// Require clients to present a valid certificate (mTLS). Default: `true`.
+    #[serde(default = "default_require_client_auth")]
+    pub require_client_auth: bool,
+
+    /// How often to reload certificates from disk. Default: `1h`.
+    #[serde(default = "default_refresh_interval")]
+    pub refresh_interval: NonZeroFriendlyDuration,
+
+    /// Optional separate TLS configuration for outbound connections to peer nodes.
+    /// If omitted, the server cert/key/ca are used for outbound connections as well.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<FabricTlsClientOptions>,
+}
+
+/// Separate client TLS config for outbound fabric connections.
+/// Fields that are `None` inherit from the parent [`FabricTlsOptions`].
+///
+/// Since v1.3.0
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct FabricTlsClientOptions {
+    /// Client certificate for outbound connections. Inherits from parent if omitted.
+    pub cert_file: Option<PathBuf>,
+
+    /// Client private key for outbound connections. Inherits from parent if omitted.
+    pub key_file: Option<PathBuf>,
+
+    /// Root CA files for verifying server certificates. Inherits from parent if omitted.
+    pub root_ca_files: Option<Vec<PathBuf>>,
+}
+
+impl FabricTlsOptions {
+    pub fn client_cert_file(&self) -> &PathBuf {
+        self.client
+            .as_ref()
+            .and_then(|c| c.cert_file.as_ref())
+            .unwrap_or(&self.cert_file)
+    }
+
+    pub fn client_key_file(&self) -> &PathBuf {
+        self.client
+            .as_ref()
+            .and_then(|c| c.key_file.as_ref())
+            .unwrap_or(&self.key_file)
+    }
+
+    pub fn client_ca_files(&self) -> &[PathBuf] {
+        self.client
+            .as_ref()
+            .and_then(|c| c.root_ca_files.as_deref())
+            .unwrap_or(&self.ca_files)
+    }
+
+    pub fn is_strict(&self) -> bool {
+        self.mode == TlsMode::Strict
+    }
+}
+
+fn default_require_client_auth() -> bool {
+    true
+}
+
+fn default_refresh_interval() -> NonZeroFriendlyDuration {
+    NonZeroFriendlyDuration::from_secs_unchecked(3600)
 }

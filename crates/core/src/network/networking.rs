@@ -38,10 +38,10 @@ impl<T: Clone> Clone for Networking<T> {
 }
 
 impl Networking<GrpcConnector> {
-    pub fn with_grpc_connector() -> Self {
+    pub fn with_grpc_connector(tls: Option<super::tls::TlsCertResolver>) -> Self {
         Self {
             connections: ConnectionManager::default(),
-            connector: GrpcConnector::default(),
+            connector: GrpcConnector::new(tls),
         }
     }
 }
