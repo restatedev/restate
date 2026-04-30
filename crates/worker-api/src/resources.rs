@@ -22,7 +22,10 @@ pub use restate_limiter::{RuleUpdate, UserLimits};
 
 pub enum ResourceManagerUpdate {
     PermitReleased(SmallVec<[UserPermitKind; 1]>),
-    RulesUpdated(RuleUpdate),
+    /// A batch of rule mutations to apply in order. Carries `Vec` rather
+    /// than a single `RuleUpdate` so initial seeding and bulk rule-book
+    /// diffs can ship as one channel message.
+    RulesUpdated(Vec<RuleUpdate>),
 }
 
 pub enum UserPermitKind {

@@ -305,8 +305,8 @@ impl ResourceManager {
                         }
                     }
                 }
-                ResourceManagerUpdate::RulesUpdated(update) => {
-                    let woken = self.user_limiter.apply_rule_update(update);
+                ResourceManagerUpdate::RulesUpdated(updates) => {
+                    let woken = self.user_limiter.apply_rule_updates(updates);
                     eligible.wake_up_queues(woken);
                 }
             }
