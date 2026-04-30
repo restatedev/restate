@@ -12,6 +12,7 @@ mod awakeables;
 mod error;
 mod health;
 mod invocation;
+mod lookup;
 mod path_parsing;
 mod responses;
 mod service_handler;
@@ -30,6 +31,7 @@ use http_body_util::Full;
 use hyper::http::HeaderValue;
 use hyper::{Request, Response};
 use path_parsing::RequestType;
+use restate_types::invocation::InvocationQuery;
 use restate_types::live::Live;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
@@ -92,6 +94,18 @@ where
                 RequestType::Workflow(workflow_request) => {
                     this.handle_workflow(req, workflow_request).await
                 }
+                RequestType::Attach(invocation_id) => {
+                    this.handle_invocation_attach(req, InvocationQuery::Invocation(invocation_id))
+                        .await
+                }
+                RequestType::Output(invocation_id) => {
+                    this.handle_invocation_get_output(
+                        req,
+                        InvocationQuery::Invocation(invocation_id),
+                    )
+                    .await
+                }
+                RequestType::Lookup => this.handle_lookup(req).await,
             }
         }
         .map(|r| Ok::<_, Infallible>(r.unwrap_or_else(|e| e.into_response())))

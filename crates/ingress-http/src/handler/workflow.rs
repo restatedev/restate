@@ -14,7 +14,6 @@ use super::path_parsing::WorkflowRequestType;
 
 use crate::RequestDispatcher;
 use bytes::Bytes;
-use bytestring::ByteString;
 use http::{Method, Request, Response};
 use http_body_util::Full;
 use restate_types::identifiers::ServiceId;
@@ -37,27 +36,14 @@ where
         <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
     {
         match workflow_request_type {
-            WorkflowRequestType::Attach(name, key, scope) => {
-                let scope = scope.map(|s| restate_types::Scope::new(s.as_str()));
-                self.handle_workflow_attach(
-                    req,
-                    ServiceId::new(
-                        scope,
-                        ByteString::from(name.as_str()),
-                        ByteString::from(key.as_str()),
-                    ),
-                )
-                .await
+            WorkflowRequestType::Attach(name, key) => {
+                self.handle_workflow_attach(req, ServiceId::new(None, name.as_str(), key.as_str()))
+                    .await
             }
-            WorkflowRequestType::GetOutput(name, key, scope) => {
-                let scope = scope.map(|s| restate_types::Scope::new(s.as_str()));
+            WorkflowRequestType::GetOutput(name, key) => {
                 self.handle_workflow_get_output(
                     req,
-                    ServiceId::new(
-                        scope,
-                        ByteString::from(name.as_str()),
-                        ByteString::from(key.as_str()),
-                    ),
+                    ServiceId::new(None, name.as_str(), key.as_str()),
                 )
                 .await
             }

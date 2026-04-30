@@ -55,9 +55,9 @@ pub(crate) enum HandlerError {
     #[error("bad path: {0}")]
     BadPath(String),
     #[error(
-        "bad path, expected /api/v1/call/:service/:handler, /api/v1/send/:service/:handler, or /api/v1/scope/:scope/call/:service/:handler"
+        "bad path, expected /restate/call/:service/:handler, /restate/send/:service/:handler, /restate/scope/:scope/call/:service/:handler, /restate/attach/:invocation_id, /restate/output/:invocation_id, or /restate/lookup"
     )]
-    BadApiV1Path,
+    BadRestateApiPath,
     #[error("limit-key requires a scope to be set")]
     LimitKeyWithoutScope,
     #[error("invalid limit-key: {0}")]
@@ -150,7 +150,7 @@ impl HandlerError {
             | HandlerError::UnsupportedIdempotencyKey
             | HandlerError::UnsupportedGetOutput
             | HandlerError::DeploymentDeprecated(_, _)
-            | HandlerError::BadApiV1Path
+            | HandlerError::BadRestateApiPath
             | HandlerError::LimitKeyWithoutScope
             | HandlerError::InvalidLimitKey(_)
             | HandlerError::BadScopeValue(_)
