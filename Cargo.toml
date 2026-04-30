@@ -218,6 +218,7 @@ prost-dto = { version = "0.0.4" }
 prost-types = { version = "0.14.1" }
 quote = "1"
 rand = "0.9.3"
+rcgen = "0.13"
 regex = { version = "1.12" }
 reqwest = { version = "0.12", default-features = false, features = [
     "json",
