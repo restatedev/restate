@@ -8,7 +8,7 @@ The shape of services tracing has changed:
 - The single long-running invocation span is gone. In its place, the partition processor emits three spans per invocation: one at start, one at the end, and one per attempt (emitted by the invoker). 
 - These spans will be emitted **as soon as they're ready**, giving real-time feedback of the running invocations in your tracing infrastructure. No more spans emitted just at the end of the invocation.
 - Per-command spans are gone. Commands are now recorded as events on the relevant attempt span.
-- The OTel `Resource` rewriting on exported spans has been removed. Spans are now exported with the actual process resource (Restate), as the OTel spec requires.
+- Spans created by Restate are now exported with the resource name `Restate`, instead than the service name, as the OTel spec requires.
 
 Ingress spans are unchanged.
 
