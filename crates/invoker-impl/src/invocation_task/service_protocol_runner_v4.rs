@@ -889,7 +889,9 @@ where
                 restate_tracing_instrumentation::semconv::attribute::RESTATE_JOURNAL_COMMAND_TYPE,
                 command.ty().prometheus_label(),
             )];
-            if let Some(cmd_name) = cmd_name {
+            if let Some(cmd_name) = cmd_name
+                && !cmd_name.is_empty()
+            {
                 attributes.push(KeyValue::new(
                     restate_tracing_instrumentation::semconv::attribute::RESTATE_JOURNAL_COMMAND_NAME,
                     cmd_name.to_string(),
