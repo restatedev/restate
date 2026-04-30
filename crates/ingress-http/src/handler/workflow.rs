@@ -14,6 +14,7 @@ use super::path_parsing::WorkflowRequestType;
 
 use crate::RequestDispatcher;
 use bytes::Bytes;
+use bytestring::ByteString;
 use http::{Method, Request, Response};
 use http_body_util::Full;
 use restate_types::identifiers::ServiceId;
@@ -37,14 +38,28 @@ where
     {
         match workflow_request_type {
             WorkflowRequestType::Attach(name, key, scope) => {
-                let scope = scope.map(|s| restate_types::Scope::new(&s));
-                self.handle_workflow_attach(req, ServiceId::new(scope, name, key))
-                    .await
+                let scope = scope.map(|s| restate_types::Scope::new(s.as_str()));
+                self.handle_workflow_attach(
+                    req,
+                    ServiceId::new(
+                        scope,
+                        ByteString::from(name.as_str()),
+                        ByteString::from(key.as_str()),
+                    ),
+                )
+                .await
             }
             WorkflowRequestType::GetOutput(name, key, scope) => {
-                let scope = scope.map(|s| restate_types::Scope::new(&s));
-                self.handle_workflow_get_output(req, ServiceId::new(scope, name, key))
-                    .await
+                let scope = scope.map(|s| restate_types::Scope::new(s.as_str()));
+                self.handle_workflow_get_output(
+                    req,
+                    ServiceId::new(
+                        scope,
+                        ByteString::from(name.as_str()),
+                        ByteString::from(key.as_str()),
+                    ),
+                )
+                .await
             }
         }
     }
