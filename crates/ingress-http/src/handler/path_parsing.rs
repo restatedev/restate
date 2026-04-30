@@ -13,12 +13,13 @@ use super::HandlerError;
 use http::Uri;
 use restate_types::ServiceName;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
+use restate_util_string::{ReString, ToReString};
 
 pub(crate) enum WorkflowRequestType {
     /// (name, key, scope)
-    Attach(String, String, Option<String>),
+    Attach(ReString, ReString, Option<ReString>),
     /// (name, key, scope)
-    GetOutput(String, String, Option<String>),
+    GetOutput(ReString, ReString, Option<ReString>),
 }
 
 impl WorkflowRequestType {
@@ -26,14 +27,12 @@ impl WorkflowRequestType {
     fn from_path_chunks<'a>(
         mut path_parts: impl Iterator<Item = &'a str>,
     ) -> Result<Self, HandlerError> {
-        let workflow_name = path_parts
-            .next()
-            .ok_or(HandlerError::BadWorkflowPath)?
-            .to_owned();
-        let workflow_key =
+        let workflow_name =
+            ReString::new_owned(path_parts.next().ok_or(HandlerError::BadWorkflowPath)?);
+        let workflow_key = ReString::new_owned(
             urlencoding::decode(path_parts.next().ok_or(HandlerError::BadWorkflowPath)?)
-                .map_err(HandlerError::UrlDecodingError)?
-                .into_owned();
+                .map_err(HandlerError::UrlDecodingError)?,
+        );
 
         match path_parts.next().ok_or(HandlerError::BadWorkflowPath)? {
             "output" => Ok(WorkflowRequestType::GetOutput(
@@ -54,16 +53,14 @@ impl WorkflowRequestType {
     /// Expects: `{name}/{key}/attach|output`
     fn from_v1_path_chunks<'a>(
         mut path_parts: impl Iterator<Item = &'a str>,
-        scope: Option<String>,
+        scope: Option<ReString>,
     ) -> Result<Self, HandlerError> {
-        let workflow_name = path_parts
-            .next()
-            .ok_or(HandlerError::BadApiV1Path)?
-            .to_owned();
-        let workflow_key =
+        let workflow_name =
+            ReString::new_owned(path_parts.next().ok_or(HandlerError::BadApiV1Path)?);
+        let workflow_key = ReString::new_owned(
             urlencoding::decode(path_parts.next().ok_or(HandlerError::BadApiV1Path)?)
-                .map_err(HandlerError::UrlDecodingError)?
-                .into_owned();
+                .map_err(HandlerError::UrlDecodingError)?,
+        );
 
         let action = path_parts.next().ok_or(HandlerError::BadApiV1Path)?;
 
@@ -206,7 +203,7 @@ pub(crate) struct ServiceRequestType {
     pub(crate) target: TargetType,
     pub(crate) invoke_ty: InvokeType,
     /// Scope from the `/api/v1/scope/{scopeKey}/...` path prefix.
-    pub(crate) scope: Option<String>,
+    pub(crate) scope: Option<ReString>,
 }
 
 impl ServiceRequestType {
@@ -295,7 +292,7 @@ where
             let scope_key =
                 urlencoding::decode(path_parts.next().ok_or(HandlerError::BadApiV1Path)?)
                     .map_err(HandlerError::UrlDecodingError)?
-                    .into_owned();
+                    .to_restring();
             let verb = path_parts.next().ok_or(HandlerError::BadApiV1Path)?;
             parse_api_v1_verb(verb, Some(scope_key), path_parts, schemas)
         }
@@ -306,7 +303,7 @@ where
 /// Dispatch a v1 API verb (`call`, `send`, or `workflow`) with an optional scope.
 fn parse_api_v1_verb<'a, Schemas>(
     verb: &str,
-    scope: Option<String>,
+    scope: Option<ReString>,
     mut path_parts: impl Iterator<Item = &'a str>,
     schemas: &Schemas,
 ) -> Result<RequestType, HandlerError>
@@ -316,7 +313,7 @@ where
     // Workflow verb returns a WorkflowRequestType instead of ServiceRequestType
     if verb == "workflow" {
         return Ok(RequestType::Workflow(
-            WorkflowRequestType::from_v1_path_chunks(path_parts, scope)?,
+            WorkflowRequestType::from_v1_path_chunks(path_parts, scope.map(ReString::new_owned))?,
         ));
     }
 

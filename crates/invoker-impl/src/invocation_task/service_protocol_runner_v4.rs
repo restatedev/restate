@@ -924,43 +924,45 @@ where
                 TerminalLoopState::Continue(())
             }
             Message::GetInvocationOutputCommand(cmd) => {
-                if let Some(target) = &cmd.target {
+                // The macro registers `GetInvocationOutput Command` as `noparse`, so `cmd` is
+                // the raw bytes from the wire. We decode it once to validate the target, then
+                // forward the original bytes to avoid a re-encode round trip.
+                let parsed = crate::shortcircuit!(
+                    proto::GetInvocationOutputCommandMessage::decode(cmd.clone())
+                        .map_err(|err| InvokerError::EncodingV2(GenericError::from(err).into()))
+                );
+                if let Some(target) = parsed.target.as_ref() {
                     crate::shortcircuit!(
-                        Self::validate_get_invocation_output_target(
-                            self.invocation_task.schemas.live_load(),
-                            target
-                        )
-                        .map_err(|err| InvokerError::CommandPrecondition(
-                            self.command_index,
-                            EntryType::Command(CommandType::GetInvocationOutput),
-                            err
-                        ))
+                        Self::validate_get_invocation_output_target(target).map_err(|err| {
+                            InvokerError::CommandPrecondition(
+                                self.command_index,
+                                EntryType::Command(CommandType::GetInvocationOutput),
+                                err,
+                            )
+                        })
                     );
                 }
-                self.handle_new_command(
-                    mh,
-                    RawCommand::new(CommandType::GetInvocationOutput, cmd.encode_to_vec()),
-                );
+                self.handle_new_command(mh, RawCommand::new(CommandType::GetInvocationOutput, cmd));
                 TerminalLoopState::Continue(())
             }
             Message::AttachInvocationCommand(cmd) => {
-                if let Some(target) = &cmd.target {
-                    crate::shortcircuit!(
-                        Self::validate_attach_invocation_target(
-                            self.invocation_task.schemas.live_load(),
-                            target
-                        )
-                        .map_err(|err| InvokerError::CommandPrecondition(
-                            self.command_index,
-                            EntryType::Command(CommandType::AttachInvocation),
-                            err
-                        ))
-                    );
-                }
-                self.handle_new_command(
-                    mh,
-                    RawCommand::new(CommandType::AttachInvocation, cmd.encode_to_vec()),
+                // See `Message::GetInvocationOutputCommand` above for why we decode-then-forward.
+                let parsed = crate::shortcircuit!(
+                    proto::AttachInvocationCommandMessage::decode(cmd.clone())
+                        .map_err(|err| InvokerError::EncodingV2(GenericError::from(err).into()))
                 );
+                if let Some(target) = parsed.target.as_ref() {
+                    crate::shortcircuit!(Self::validate_attach_invocation_target(target).map_err(
+                        |err| {
+                            InvokerError::CommandPrecondition(
+                                self.command_index,
+                                EntryType::Command(CommandType::AttachInvocation),
+                                err,
+                            )
+                        }
+                    ));
+                }
+                self.handle_new_command(mh, RawCommand::new(CommandType::AttachInvocation, cmd));
                 TerminalLoopState::Continue(())
             }
             Message::RunCommand(cmd) => {
@@ -1300,8 +1302,13 @@ where
         }))
     }
 
+    /// Validates the target of a `GetInvocationOutput` command.
+    ///
+    /// We only validate the syntactic shape of the target (invocation id parses, scope is a
+    /// valid `RestrictedValue`). We do not check that the service/handler/workflow currently
+    /// exists in the schema, because the user may legitimately query the output of an invocation
+    /// whose service has since been removed from the registry.
     fn validate_get_invocation_output_target(
-        invocation_target_resolver: &impl InvocationTargetResolver,
         target: &get_invocation_output_command_message::Target,
     ) -> Result<(), CommandPreconditionError> {
         match target {
@@ -1313,36 +1320,13 @@ where
             get_invocation_output_command_message::Target::IdempotentRequestTarget(
                 idempotent_request_target,
             ) => {
-                // check whether we know the service/handler
-                invocation_target_resolver
-                    .resolve_latest_invocation_target(
-                        &idempotent_request_target.service_name,
-                        &idempotent_request_target.handler_name,
-                    )
-                    .ok_or_else(|| {
-                        CommandPreconditionError::ServiceHandlerNotFound(
-                            idempotent_request_target.service_name.clone(),
-                            idempotent_request_target.handler_name.clone(),
-                        )
-                    })?;
                 if let Some(scope) = idempotent_request_target.scope.as_ref() {
-                    // check whether the scope value is restricted
                     let _ = RestrictedValue::new(scope.as_str())
                         .map_err(CommandPreconditionError::InvalidScope)?;
                 }
             }
             get_invocation_output_command_message::Target::WorkflowTarget(workflow_target) => {
-                // check whether we know the workflow
-                invocation_target_resolver
-                    // the "run" handler must always be present for a workflow
-                    .resolve_latest_invocation_target(&workflow_target.workflow_name, "run")
-                    .ok_or_else(|| {
-                        CommandPreconditionError::WorkflowNotFound(
-                            workflow_target.workflow_name.clone(),
-                        )
-                    })?;
                 if let Some(scope) = workflow_target.scope.as_ref() {
-                    // check whether the scope value is restricted
                     let _ = RestrictedValue::new(scope.as_str())
                         .map_err(CommandPreconditionError::InvalidScope)?;
                 }
@@ -1352,8 +1336,9 @@ where
         Ok(())
     }
 
+    /// Validates the target of an `AttachInvocation` command. See
+    /// [`Self::validate_get_invocation_output_target`] for the validation contract.
     fn validate_attach_invocation_target(
-        invocation_target_resolver: &impl InvocationTargetResolver,
         target: &attach_invocation_command_message::Target,
     ) -> Result<(), CommandPreconditionError> {
         match target {
@@ -1365,36 +1350,13 @@ where
             attach_invocation_command_message::Target::IdempotentRequestTarget(
                 idempotent_request_target,
             ) => {
-                // check whether we know the service/handler
-                invocation_target_resolver
-                    .resolve_latest_invocation_target(
-                        &idempotent_request_target.service_name,
-                        &idempotent_request_target.handler_name,
-                    )
-                    .ok_or_else(|| {
-                        CommandPreconditionError::ServiceHandlerNotFound(
-                            idempotent_request_target.service_name.clone(),
-                            idempotent_request_target.handler_name.clone(),
-                        )
-                    })?;
                 if let Some(scope) = idempotent_request_target.scope.as_ref() {
-                    // check whether the scope value is restricted
                     let _ = RestrictedValue::new(scope.as_str())
                         .map_err(CommandPreconditionError::InvalidScope)?;
                 }
             }
             attach_invocation_command_message::Target::WorkflowTarget(workflow_target) => {
-                // check whether we know the workflow
-                invocation_target_resolver
-                    // the "run" handler must always be present for a workflow
-                    .resolve_latest_invocation_target(&workflow_target.workflow_name, "run")
-                    .ok_or_else(|| {
-                        CommandPreconditionError::WorkflowNotFound(
-                            workflow_target.workflow_name.clone(),
-                        )
-                    })?;
                 if let Some(scope) = workflow_target.scope.as_ref() {
-                    // check whether the scope value is restricted
                     let _ = RestrictedValue::new(scope.as_str())
                         .map_err(CommandPreconditionError::InvalidScope)?;
                 }

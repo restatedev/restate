@@ -391,9 +391,6 @@ pub(crate) enum CommandPreconditionError {
     InvalidScope(RestrictedValueError),
     #[error("invalid invocation id {0}: {1}")]
     InvalidInvocationId(String, IdDecodeError),
-    #[error("workflow {0} not found")]
-    #[code(restate_errors::RT0018)]
-    WorkflowNotFound(String),
 }
 
 #[derive(Debug)]
