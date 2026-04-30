@@ -231,6 +231,7 @@ rocksdb = { version = "0.46.1", package = "rust-rocksdb", features = [
 ], git = "https://github.com/restatedev/rust-rocksdb", rev = "dcfba7946697d740e60f0b1060b6624dc1c7e94a" }
 rstest = "0.26.1"
 rustls = { version = "0.23.35", default-features = false, features = ["ring"] }
+rustls-pemfile = "2"
 schemars = { version = "1.2", features = ["bytes1"] }
 semver = { version = "1.0", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -258,6 +259,7 @@ tokio = { version = "1.48.0", default-features = false, features = [
     "macros",
     "parking_lot",
 ] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 tokio-stream = "0.1.17"
 tokio-util = { version = "0.7.17" }
 toml = { version = "0.9" }

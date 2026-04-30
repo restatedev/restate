@@ -62,9 +62,12 @@ static_assertions = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["tracing"] }
+tokio-rustls = { workspace = true }
 tokio-stream = { workspace = true, features = ["net"] }
 tokio-util = { workspace = true, features = ["net"] }
 tonic = { workspace = true, features = ["transport", "codegen", "gzip", "zstd", "router"] }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
 tonic-prost = { workspace = true }
 tonic-reflection = { workspace = true }
 tower = { workspace = true }
@@ -81,6 +84,7 @@ restate-metadata-store = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true }
 
 googletest = { workspace = true }
+tempfile = { workspace = true }
 test-log = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }
