@@ -378,7 +378,11 @@ impl<P: ListenerPort> AdvertisedAddress<P> {
             SocketAddress::Socket(address) => {
                 let routable_ip = || {
                     if address.ip().is_loopback() {
+                        // If we are binding to loopback, we shouldn't use the public route-able IP
+                        // since we are confident that it'll not be reachable. If this guess doesn't
+                        // work for the user, they can always pass an explicit advertised address.
                         if address.ip().is_ipv4() {
+                            // mirror the ip version of the bind address
                             "127.0.0.1"
                         } else {
                             "[::1]"
@@ -387,6 +391,7 @@ impl<P: ListenerPort> AdvertisedAddress<P> {
                         guess_my_routable_ip()
                     }
                 };
+                // do we have an input hostname?
                 let hostname = advertised_host.unwrap_or_else(|| routable_ip());
                 PeerNetAddress::Http(
                     format!("{scheme}://{hostname}:{}", address.port())
@@ -394,8 +399,13 @@ impl<P: ListenerPort> AdvertisedAddress<P> {
                         .expect("valid uri"),
                 )
             }
+            // it's a UDS address, we'll use the path.
             SocketAddress::Uds(path) => PeerNetAddress::Uds(path),
             SocketAddress::Anonymous => {
+                // In case this is an anonymous unix-socket, we'll fallback to a generic
+                // localhost-based address without a port. The assumption is the caller
+                // will proxy their request through the unix-socket and the host+scheme
+                // part of the URI will be ignored by the server.
                 PeerNetAddress::Http(format!("{scheme}://localhost").parse().expect("valid uri"))
             }
         };
@@ -744,5 +754,50 @@ mod tests {
         let input = "";
         let result = input.parse::<AdvertisedAddress<FabricPort>>();
         assert!(result.is_err(), "Expected an error for empty input");
+    }
+
+    #[test]
+    fn test_peer_net_address_is_tls() {
+        // https scheme is TLS
+        let addr: AdvertisedAddress<FabricPort> = "https://10.0.0.1:5122".parse().unwrap();
+        let peer = addr.into_address().unwrap();
+        assert!(peer.is_tls());
+
+        // http scheme is not TLS
+        let addr: AdvertisedAddress<FabricPort> = "http://10.0.0.1:5122".parse().unwrap();
+        let peer = addr.into_address().unwrap();
+        assert!(!peer.is_tls());
+
+        // bare host (defaults to http) is not TLS
+        let addr: AdvertisedAddress<FabricPort> = "10.0.0.1:5122".parse().unwrap();
+        let peer = addr.into_address().unwrap();
+        assert!(!peer.is_tls());
+
+        // UDS is not TLS
+        let addr: AdvertisedAddress<FabricPort> = "unix:/tmp/fabric.sock".parse().unwrap();
+        let peer = addr.into_address().unwrap();
+        assert!(!peer.is_tls());
+    }
+
+    #[test]
+    fn test_derive_from_bind_address_with_tls() {
+        let socket = SocketAddress::Socket("192.168.1.1:5122".parse().unwrap());
+
+        // Without TLS — should produce http://
+        let addr = AdvertisedAddress::<FabricPort>::derive_from_bind_address_with_tls(
+            socket.clone(),
+            None,
+            false,
+        );
+        let peer = addr.into_address().unwrap();
+        assert!(!peer.is_tls());
+        assert!(peer.to_string().starts_with("http://"));
+
+        // With TLS — should produce https://
+        let addr =
+            AdvertisedAddress::<FabricPort>::derive_from_bind_address_with_tls(socket, None, true);
+        let peer = addr.into_address().unwrap();
+        assert!(peer.is_tls());
+        assert!(peer.to_string().starts_with("https://"));
     }
 }

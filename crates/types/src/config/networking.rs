@@ -275,3 +275,101 @@ fn default_require_client_auth() -> bool {
 fn default_refresh_interval() -> NonZeroFriendlyDuration {
     NonZeroFriendlyDuration::from_secs_unchecked(3600)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tls_config_minimal_parsing() {
+        let toml_str = r#"
+            cert-file = "/certs/node.crt"
+            key-file = "/certs/node.key"
+            ca-files = ["/certs/ca.crt"]
+        "#;
+        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
+
+        assert_eq!(opts.mode, TlsMode::Strict); // default
+        assert_eq!(opts.cert_file, PathBuf::from("/certs/node.crt"));
+        assert_eq!(opts.key_file, PathBuf::from("/certs/node.key"));
+        assert_eq!(opts.ca_files, vec![PathBuf::from("/certs/ca.crt")]);
+        assert!(opts.require_client_auth); // default true
+        assert_eq!(*opts.refresh_interval, Duration::from_secs(3600)); // default 1h
+        assert!(opts.client.is_none());
+    }
+
+    #[test]
+    fn test_tls_config_full_parsing() {
+        let toml_str = r#"
+            mode = "optional"
+            cert-file = "/certs/server.crt"
+            key-file = "/certs/server.key"
+            ca-files = ["/certs/ca1.crt", "/certs/ca2.crt"]
+            require-client-auth = false
+            refresh-interval = "15m"
+
+            [client]
+            cert-file = "/certs/client.crt"
+            key-file = "/certs/client.key"
+            root-ca-files = ["/certs/client-ca.crt"]
+        "#;
+        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
+
+        assert_eq!(opts.mode, TlsMode::Optional);
+        assert!(!opts.require_client_auth);
+        assert_eq!(*opts.refresh_interval, Duration::from_secs(900));
+        assert!(!opts.is_strict());
+
+        let client = opts.client.as_ref().unwrap();
+        assert_eq!(client.cert_file, Some(PathBuf::from("/certs/client.crt")));
+        assert_eq!(client.key_file, Some(PathBuf::from("/certs/client.key")));
+        assert_eq!(
+            client.root_ca_files,
+            Some(vec![PathBuf::from("/certs/client-ca.crt")])
+        );
+    }
+
+    #[test]
+    fn test_tls_client_inheritance() {
+        let toml_str = r#"
+            cert-file = "/certs/node.crt"
+            key-file = "/certs/node.key"
+            ca-files = ["/certs/ca.crt"]
+        "#;
+        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
+
+        // Without [client] section, client methods inherit from parent
+        assert_eq!(opts.client_cert_file(), &PathBuf::from("/certs/node.crt"));
+        assert_eq!(opts.client_key_file(), &PathBuf::from("/certs/node.key"));
+        assert_eq!(opts.client_ca_files(), &[PathBuf::from("/certs/ca.crt")]);
+    }
+
+    #[test]
+    fn test_tls_client_override() {
+        let toml_str = r#"
+            cert-file = "/certs/server.crt"
+            key-file = "/certs/server.key"
+            ca-files = ["/certs/server-ca.crt"]
+
+            [client]
+            cert-file = "/certs/client.crt"
+            key-file = "/certs/client.key"
+            root-ca-files = ["/certs/client-ca.crt"]
+        "#;
+        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
+
+        // Client methods should return overridden values
+        assert_eq!(opts.client_cert_file(), &PathBuf::from("/certs/client.crt"));
+        assert_eq!(opts.client_key_file(), &PathBuf::from("/certs/client.key"));
+        assert_eq!(
+            opts.client_ca_files(),
+            &[PathBuf::from("/certs/client-ca.crt")]
+        );
+    }
+
+    #[test]
+    fn test_networking_options_tls_none_by_default() {
+        let opts = NetworkingOptions::default();
+        assert!(opts.tls.is_none());
+    }
+}

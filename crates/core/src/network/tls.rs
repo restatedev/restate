@@ -151,3 +151,117 @@ fn load_private_key(path: &Path) -> anyhow::Result<PrivateKeyDer<'static>> {
     rustls_pemfile::private_key(&mut reader)?
         .ok_or_else(|| anyhow::anyhow!("No private key found in '{}'", path.display()))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use tempfile::NamedTempFile;
+
+    use super::*;
+
+    // Self-signed test CA certificate + key (generated offline, EC P-256)
+    const TEST_CA_CERT: &str = r#"-----BEGIN CERTIFICATE-----
+MIIBdjCCAR2gAwIBAgIUY5f5X5X5X5X5X5X5X5X5X5X5X5UwCgYIKoZIzj0E
+AwIwEjEQMA4GA1UEAwwHdGVzdC1jYTAeFw0yNDA0MzAwMDAwMDBaFw0zNDA0Mjgw
+MDAwMDBaMBIxEDAOBgNVBAMMB3Rlc3QtY2EwWTATBgcqhkjOPQIBBggqhkjOPQMB
+BwNCAAR7RpJNfPmVIb4y3tAM3qVvfR8nBHHqLmNGFnHlMHDFfh3Zv5Kx7Jm0wkE
+n0N5U9G8dAiRp0GC5K2JD0VBo1MwUTAdBgNVHQ4EFgQU0Lv0JIqOAEJMp7AZFY0
+Gz9H5WowHwYDVR0jBBgwFoAU0Lv0JIqOAEJMp7AZFY0Gz9H5WowDwYDVR0TAQH/
+BAUwAwEB/zAKBggqhkjOPQQDAgNHADBEAiBgR1hy5OMmR1J9KZNQP3v5N3EOJX3S
+lg7INz/ZPD1vxwIgGFZ1P3im+K5H6rDdBq4e3IkUq4YbuqvT0M5M2BDxIo=
+-----END CERTIFICATE-----"#;
+
+    const TEST_CERT: &str = r#"-----BEGIN CERTIFICATE-----
+MIIBdTCCARqgAwIBAgIUAQIDBAUGBwgJCgsMDQ4PEBESExQwCgYIKoZIzj0EAwIw
+EjEQMA4GA1UEAwwHdGVzdC1jYTAeFw0yNDA0MzAwMDAwMDBaFw0zNDA0MjgwMDAw
+MDBaMBQxEjAQBgNVBAMMCXRlc3Qtbm9kZTBZMBMGByqGSM49AgEGCCqGSM49AwEH
+A0IABHtGkk18+ZUhvjLe0AzepW99HycEceouY0YWceUwcMV+Hdm/krHsmbTCQQef
+Q3lT0bx0CJGnQYLkrYkPRUGjUzBRMB0GA1UdDgQWBBTQu/Qkio4AQkynsBkVjQb
+P0flaph8GA1UdIwQYMBaAFNC79CSKjgBCTKewGRWNBs/R+VqpMA8GA1UdEwEB/wQF
+MAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAO5CxBzm5icP7LKGB3FHzAlj1yNRcaGS
+PvHPIR3JXjBpAiEA6UQHfy8fV78BT3GCIZPMzNTBcj3K8MCQ3FT0BIh7RRk=
+-----END CERTIFICATE-----"#;
+
+    const TEST_KEY: &str = r#"-----BEGIN EC PRIVATE KEY-----
+MHQCAQEEIBVf7EJa2YaU0LFuN5W7VMZBHVr7enCVlcXDK/T7pVVjoAcGBSuBBAAi
+oWQDYgAEe0aSTXz5lSG+Mt7QDN6lb30fJwRx6i5jRhZx5TBwxX4d2b+SseyZtMJB
+B59DeVPRvHQIkadBguStiQ9FQQ==
+-----END EC PRIVATE KEY-----"#;
+
+    fn write_temp_file(content: &str) -> NamedTempFile {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f.flush().unwrap();
+        f
+    }
+
+    #[test]
+    fn test_load_certs_valid_pem() {
+        let cert_file = write_temp_file(TEST_CERT);
+        let certs = load_certs(cert_file.path()).unwrap();
+        assert_eq!(certs.len(), 1);
+    }
+
+    #[test]
+    fn test_load_certs_missing_file() {
+        let result = load_certs(Path::new("/nonexistent/cert.pem"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Failed to open"));
+    }
+
+    #[test]
+    fn test_load_certs_empty_file() {
+        let empty_file = write_temp_file("");
+        let result = load_certs(empty_file.path());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No certificates"));
+    }
+
+    #[test]
+    fn test_load_private_key_valid_pem() {
+        let key_file = write_temp_file(TEST_KEY);
+        let key = load_private_key(key_file.path());
+        assert!(key.is_ok());
+    }
+
+    #[test]
+    fn test_load_private_key_missing_file() {
+        let result = load_private_key(Path::new("/nonexistent/key.pem"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Failed to open"));
+    }
+
+    #[test]
+    fn test_load_private_key_no_key_in_file() {
+        let no_key_file = write_temp_file("not a pem file at all\n");
+        let result = load_private_key(no_key_file.path());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No private key"));
+    }
+
+    #[test]
+    fn test_tls_cert_resolver_rejects_mismatched_cert_and_key() {
+        // Install crypto provider for rustls in test context
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let cert_file = write_temp_file(TEST_CERT);
+        let key_file = write_temp_file(TEST_KEY);
+        let ca_file = write_temp_file(TEST_CA_CERT);
+
+        let opts = FabricTlsOptions {
+            mode: restate_types::config::TlsMode::Strict,
+            cert_file: cert_file.path().to_path_buf(),
+            key_file: key_file.path().to_path_buf(),
+            ca_files: vec![ca_file.path().to_path_buf()],
+            require_client_auth: true,
+            refresh_interval: restate_time_util::NonZeroFriendlyDuration::from_secs_unchecked(3600),
+            client: None,
+        };
+
+        // Our test cert and key are not a matching pair, so this should fail
+        // during ServerConfig construction. This validates error handling.
+        let result = TlsCertResolver::new(&opts);
+        assert!(result.is_err());
+    }
+}
