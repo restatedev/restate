@@ -13,6 +13,8 @@ use http::Uri;
 use hyper_util::rt::TokioIo;
 use tokio::io;
 use tokio::net::UnixStream;
+use rustls::pki_types::ServerName;
+use tokio_rustls::TlsConnector;
 use tokio_stream::StreamExt;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Endpoint;
@@ -26,13 +28,26 @@ use restate_types::net::connect_opts::GrpcConnectionOptions;
 use crate::network::grpc::DEFAULT_GRPC_COMPRESSION;
 use crate::network::protobuf::core_node_svc::core_node_svc_client::CoreNodeSvcClient;
 use crate::network::protobuf::network::Message;
+use crate::network::tls::TlsCertResolver;
 use crate::network::transport_connector::find_node;
 use crate::network::{ConnectError, Destination, Swimlane, TransportConnect};
 use crate::{Metadata, TaskCenter, TaskKind};
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct GrpcConnector {
-    _private: (),
+    tls: Option<TlsCertResolver>,
+}
+
+impl Default for GrpcConnector {
+    fn default() -> Self {
+        Self { tls: None }
+    }
+}
+
+impl GrpcConnector {
+    pub fn new(tls: Option<TlsCertResolver>) -> Self {
+        Self { tls }
+    }
 }
 
 impl TransportConnect for GrpcConnector {
@@ -53,7 +68,7 @@ impl TransportConnect for GrpcConnector {
 
         debug!("Connecting to {} at {}", destination, address);
         let networking = &Configuration::pinned().networking;
-        let channel = create_channel(address, swimlane, networking);
+        let channel = create_channel(address, swimlane, networking, &self.tls);
 
         // Establish the connection
         let client = CoreNodeSvcClient::new(channel)
@@ -85,8 +100,11 @@ fn create_channel<P: ListenerPort + GrpcPort>(
     address: AdvertisedAddress<P>,
     _swimlane: Swimlane,
     options: &NetworkingOptions,
+    tls: &Option<TlsCertResolver>,
 ) -> Channel {
     let address = address.into_address().expect("valid address");
+    let use_tls = address.is_tls() && tls.is_some();
+
     let endpoint = match &address {
         PeerNetAddress::Uds(_) => {
             // dummy endpoint required to specify an uds connector, it is not used anywhere
@@ -108,7 +126,6 @@ fn create_channel<P: ListenerPort + GrpcPort>(
         .initial_stream_window_size(options.stream_window_size())
         .initial_connection_window_size(options.connection_window_size())
         .keep_alive_while_idle(true)
-        // this true by default, but this is to guard against any change in defaults
         .tcp_nodelay(true);
 
     match address {
@@ -120,7 +137,27 @@ fn create_channel<P: ListenerPort + GrpcPort>(
                 }
             }))
         }
-        PeerNetAddress::Http(_) => endpoint.connect_lazy()
+        PeerNetAddress::Http(uri) if use_tls => {
+            let resolver = tls.as_ref().unwrap().clone();
+            endpoint.connect_with_connector_lazy(tower::service_fn(move |_: Uri| {
+                let resolver = resolver.clone();
+                let host = uri.host().unwrap_or("localhost").to_owned();
+                let port = uri.port_u16().unwrap_or(5122);
+                async move {
+                    let addr = format!("{host}:{port}");
+                    let tcp_stream = tokio::net::TcpStream::connect(&addr).await?;
+                    tcp_stream.set_nodelay(true)?;
+
+                    let client_config = resolver.client_config();
+                    let connector = TlsConnector::from(client_config);
+                    let server_name = ServerName::try_from(host)
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+                    let tls_stream = connector.connect(server_name, tcp_stream).await?;
+                    Ok::<_, io::Error>(TokioIo::new(tls_stream))
+                }
+            }))
+        }
+        PeerNetAddress::Http(_) => endpoint.connect_lazy(),
     }
 }
 

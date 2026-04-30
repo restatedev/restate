@@ -26,7 +26,7 @@ use tokio_util::either::Either;
 use tonic::transport::{Channel, Endpoint};
 use tracing::{Instrument, Span, debug, error_span, info, instrument, trace};
 
-use restate_types::config::Configuration;
+use restate_types::config::{Configuration, TlsMode};
 use restate_types::errors::GenericError;
 use restate_types::net::address::{AdvertisedAddress, GrpcPort};
 use restate_types::net::address::{ListenerPort, PeerNetAddress};
@@ -34,6 +34,7 @@ use restate_types::net::connect_opts::CommonClientConnectionOptions;
 use restate_types::net::listener::Listeners;
 
 use crate::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
+use crate::network::tls::TlsCertResolver;
 
 pub enum DNSResolution {
     // use whatever order getaddressinfo returns (http connector will use the first v4 and v6 ips it finds)
@@ -129,6 +130,7 @@ pub async fn run_hyper_server<P: ListenerPort, S, B>(
     listeners: Listeners<P>,
     service: S,
     on_stop: impl Fn(),
+    tls: Option<TlsCertResolver>,
 ) -> Result<(), Error>
 where
     S: hyper::service::Service<http::Request<Incoming>, Response = hyper::Response<B>>
@@ -150,8 +152,12 @@ where
         Span::current().record("server.port", socket_addr.port());
     }
 
-    info!("Server listening");
-    run_listener_loop(listeners, service, P::NAME).await?;
+    if tls.is_some() {
+        info!("Server listening with TLS enabled");
+    } else {
+        info!("Server listening");
+    }
+    run_listener_loop(listeners, service, P::NAME, tls).await?;
     on_stop();
 
     info!("Stopped listening");
@@ -163,6 +169,7 @@ async fn run_listener_loop<P: ListenerPort, S, B>(
     mut listeners: Listeners<P>,
     service: S,
     server_name: &'static str,
+    tls: Option<TlsCertResolver>,
 ) -> Result<(), Error>
 where
     S: hyper::service::Service<http::Request<Incoming>, Response = hyper::Response<B>>
@@ -179,6 +186,16 @@ where
     let mut shutdown = std::pin::pin!(cancellation_watcher());
     let graceful_shutdown = GracefulShutdown::new();
     let task_name: Arc<str> = Arc::from(format!("{server_name}-socket"));
+
+    let tls_mode = tls.as_ref().map(|_| {
+        configuration
+            .live_load()
+            .networking
+            .tls
+            .as_ref()
+            .map(|t| t.mode.clone())
+            .unwrap_or(TlsMode::Strict)
+    });
 
     loop {
         tokio::select! {
@@ -205,29 +222,123 @@ where
 
                 match stream {
                     Either::Left(tcp_stream) => {
-                        // TCP SOCKET
-                        let io = TokioIo::new(tcp_stream);
-                        let connection = graceful_shutdown.watch(builder
-                            .serve_connection(io, service.clone()).into_owned());
-                        TaskCenter::spawn(TaskKind::SocketHandler, task_name.clone(), async move {
-                            trace!("New tcp connection accepted");
-                            if let Err(e) = connection.await {
-                                if let Some(hyper_error) = e.downcast_ref::<hyper::Error>() {
-                                    if hyper_error.is_incomplete_message() {
-                                        debug!("Connection closed before request completed");
-                                    }
-                                } else {
-                                    debug!("Connection terminated due to error: {e}");
-                                }
-                            } else {
-                                trace!("Connection completed cleanly");
-                            }
-                            Ok(())
-                        }.instrument(socket_span))?;
+                        let tls_resolver = tls.clone();
+                        let tls_mode = tls_mode.clone();
+                        let service = service.clone();
+                        let graceful_shutdown = &graceful_shutdown;
+                        let task_name = task_name.clone();
 
+                        match (&tls_resolver, &tls_mode) {
+                            (Some(resolver), Some(TlsMode::Strict)) => {
+                                // TLS strict: all connections must be TLS
+                                let acceptor = resolver.tls_acceptor();
+                                let connection = match acceptor.accept(tcp_stream).await {
+                                    Ok(tls_stream) => {
+                                        let io = TokioIo::new(tls_stream);
+                                        graceful_shutdown.watch(builder.serve_connection(io, service).into_owned())
+                                    }
+                                    Err(e) => {
+                                        debug!("TLS handshake failed: {e}");
+                                        continue;
+                                    }
+                                };
+                                TaskCenter::spawn(TaskKind::SocketHandler, task_name, async move {
+                                    trace!("New TLS tcp connection accepted");
+                                    if let Err(e) = connection.await {
+                                        if let Some(hyper_error) = e.downcast_ref::<hyper::Error>() {
+                                            if hyper_error.is_incomplete_message() {
+                                                debug!("Connection closed before request completed");
+                                            }
+                                        } else {
+                                            debug!("Connection terminated due to error: {e}");
+                                        }
+                                    } else {
+                                        trace!("Connection completed cleanly");
+                                    }
+                                    Ok(())
+                                }.instrument(socket_span))?;
+                            }
+                            (Some(resolver), Some(TlsMode::Optional)) => {
+                                // TLS optional: peek first byte to detect TLS ClientHello
+                                let mut tcp_stream = tcp_stream;
+                                let mut peek_buf = [0u8; 1];
+                                match tcp_stream.peek(&mut peek_buf).await {
+                                    Ok(1) if peek_buf[0] == 0x16 => {
+                                        // TLS ClientHello detected
+                                        let acceptor = resolver.tls_acceptor();
+                                        let connection = match acceptor.accept(tcp_stream).await {
+                                            Ok(tls_stream) => {
+                                                let io = TokioIo::new(tls_stream);
+                                                graceful_shutdown.watch(builder.serve_connection(io, service).into_owned())
+                                            }
+                                            Err(e) => {
+                                                debug!("TLS handshake failed: {e}");
+                                                continue;
+                                            }
+                                        };
+                                        TaskCenter::spawn(TaskKind::SocketHandler, task_name, async move {
+                                            trace!("New TLS tcp connection accepted (optional mode)");
+                                            if let Err(e) = connection.await {
+                                                if let Some(hyper_error) = e.downcast_ref::<hyper::Error>() {
+                                                    if hyper_error.is_incomplete_message() {
+                                                        debug!("Connection closed before request completed");
+                                                    }
+                                                } else {
+                                                    debug!("Connection terminated due to error: {e}");
+                                                }
+                                            } else {
+                                                trace!("Connection completed cleanly");
+                                            }
+                                            Ok(())
+                                        }.instrument(socket_span))?;
+                                    }
+                                    _ => {
+                                        // Plaintext connection
+                                        let io = TokioIo::new(tcp_stream);
+                                        let connection = graceful_shutdown.watch(builder.serve_connection(io, service).into_owned());
+                                        TaskCenter::spawn(TaskKind::SocketHandler, task_name, async move {
+                                            trace!("New plaintext tcp connection accepted (optional mode)");
+                                            if let Err(e) = connection.await {
+                                                if let Some(hyper_error) = e.downcast_ref::<hyper::Error>() {
+                                                    if hyper_error.is_incomplete_message() {
+                                                        debug!("Connection closed before request completed");
+                                                    }
+                                                } else {
+                                                    debug!("Connection terminated due to error: {e}");
+                                                }
+                                            } else {
+                                                trace!("Connection completed cleanly");
+                                            }
+                                            Ok(())
+                                        }.instrument(socket_span))?;
+                                    }
+                                }
+                            }
+                            _ => {
+                                // No TLS: plaintext (current behavior)
+                                let io = TokioIo::new(tcp_stream);
+                                let connection = graceful_shutdown.watch(builder
+                                    .serve_connection(io, service).into_owned());
+                                TaskCenter::spawn(TaskKind::SocketHandler, task_name, async move {
+                                    trace!("New tcp connection accepted");
+                                    if let Err(e) = connection.await {
+                                        if let Some(hyper_error) = e.downcast_ref::<hyper::Error>() {
+                                            if hyper_error.is_incomplete_message() {
+                                                debug!("Connection closed before request completed");
+                                            }
+                                        } else {
+                                            debug!("Connection terminated due to error: {e}");
+                                        }
+                                    } else {
+                                        trace!("Connection completed cleanly");
+                                    }
+                                    Ok(())
+                                }.instrument(socket_span))?;
+                            }
+                        }
                     },
                     Either::Right(unix_stream) => {
-                        // UNIX SOCKET
+                        // UNIX SOCKET — TLS never applies to UDS
                         let io = TokioIo::new(unix_stream);
                         let connection = graceful_shutdown.watch(builder
                             .serve_connection(io, service.clone()).into_owned());

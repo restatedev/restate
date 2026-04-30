@@ -221,7 +221,21 @@ impl Node {
             })
         });
         let mut router_builder = MessageRouterBuilder::with_default_pool(default_pool);
-        let networking = Networking::with_grpc_connector();
+
+        // Initialize fabric TLS if configured
+        let tls_resolver = config
+            .networking
+            .tls
+            .as_ref()
+            .map(|tls_opts| {
+                let resolver = restate_core::network::tls::TlsCertResolver::new(tls_opts)
+                    .expect("Failed to initialize fabric TLS");
+                resolver.spawn_reloader(tls_opts.clone(), *tls_opts.refresh_interval);
+                resolver
+            });
+
+        server_builder.set_tls(tls_resolver.clone());
+        let networking = Networking::with_grpc_connector(tls_resolver);
         metadata_manager.register_in_message_router(&mut router_builder);
         let replica_set_states = PartitionReplicaSetStates::default();
 
