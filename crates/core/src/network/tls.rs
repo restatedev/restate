@@ -106,7 +106,9 @@ fn build_server_config(opts: &FabricTlsOptions) -> anyhow::Result<ServerConfig> 
         }
         let webpki_verifier = WebPkiClientVerifier::builder(Arc::new(root_store)).build()?;
 
-        if opts.allowed_subject_names.is_empty() {
+        let ca_only_trust = opts.allowed_subject_names.is_empty()
+            || (opts.allowed_subject_names.len() == 1 && opts.allowed_subject_names[0] == "*");
+        if ca_only_trust {
             builder.with_client_cert_verifier(webpki_verifier)
         } else {
             let san_verifier = SubjectNameVerifier {

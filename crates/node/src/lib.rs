@@ -224,6 +224,9 @@ impl Node {
 
         // Initialize fabric TLS if configured
         let tls_resolver = config.networking.tls.as_ref().map(|tls_opts| {
+            tls_opts
+                .validate()
+                .expect("Invalid fabric TLS configuration");
             let resolver = restate_core::network::tls::TlsCertResolver::new(tls_opts)
                 .expect("Failed to initialize fabric TLS");
             resolver.spawn_reloader(tls_opts.clone(), *tls_opts.refresh_interval);
