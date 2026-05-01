@@ -106,12 +106,12 @@ fn build_server_config(opts: &FabricTlsOptions) -> anyhow::Result<ServerConfig> 
         }
         let webpki_verifier = WebPkiClientVerifier::builder(Arc::new(root_store)).build()?;
 
-        if opts.allowed_sans.is_empty() {
+        if opts.allowed_subject_names.is_empty() {
             builder.with_client_cert_verifier(webpki_verifier)
         } else {
-            let san_verifier = SanCheckingVerifier {
+            let san_verifier = SubjectNameVerifier {
                 inner: webpki_verifier,
-                allowed_patterns: opts.allowed_sans.clone(),
+                allowed_patterns: opts.allowed_subject_names.clone(),
             };
             builder.with_client_cert_verifier(Arc::new(san_verifier))
         }
@@ -124,20 +124,32 @@ fn build_server_config(opts: &FabricTlsOptions) -> anyhow::Result<ServerConfig> 
 }
 
 /// Wraps a standard certificate verifier and additionally checks that the peer
-/// certificate's Subject Alternative Names match at least one allowed pattern.
-/// This provides authorization on top of mTLS authentication.
+/// certificate's Subject Common Name (CN) or Subject Alternative Names (DNS/URI)
+/// match at least one allowed pattern. This provides authorization on top of mTLS.
 #[derive(Debug)]
-struct SanCheckingVerifier {
+struct SubjectNameVerifier {
     inner: Arc<dyn ClientCertVerifier>,
     allowed_patterns: Vec<String>,
 }
 
-impl SanCheckingVerifier {
-    fn cert_san_matches(&self, cert_der: &CertificateDer<'_>) -> bool {
+impl SubjectNameVerifier {
+    fn cert_subject_matches(&self, cert_der: &CertificateDer<'_>) -> bool {
         let Ok((_, cert)) = X509Certificate::from_der(cert_der.as_ref()) else {
             return false;
         };
 
+        // Check Subject CN
+        if let Some(cn) = cert.subject().iter_common_name().next()
+            && let Ok(cn_str) = cn.as_str()
+        {
+            for pattern in &self.allowed_patterns {
+                if glob_match(pattern, cn_str) {
+                    return true;
+                }
+            }
+        }
+
+        // Check SANs (DNS names and URIs)
         let Some(san_ext) = cert
             .extensions()
             .iter()
@@ -167,7 +179,7 @@ impl SanCheckingVerifier {
     }
 }
 
-impl ClientCertVerifier for SanCheckingVerifier {
+impl ClientCertVerifier for SubjectNameVerifier {
     fn offer_client_auth(&self) -> bool {
         self.inner.offer_client_auth()
     }
@@ -190,9 +202,9 @@ impl ClientCertVerifier for SanCheckingVerifier {
             .inner
             .verify_client_cert(end_entity, intermediates, now)?;
 
-        if !self.cert_san_matches(end_entity) {
+        if !self.cert_subject_matches(end_entity) {
             return Err(rustls::Error::General(
-                "peer certificate SAN does not match any allowed pattern".into(),
+                "peer certificate subject does not match any allowed pattern".into(),
             ));
         }
 
@@ -396,7 +408,7 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
             ca_files: vec![ca_file.path().to_path_buf()],
             require_client_auth: true,
             refresh_interval: restate_time_util::NonZeroFriendlyDuration::from_secs_unchecked(3600),
-            allowed_sans: vec![],
+            allowed_subject_names: vec![],
             client: None,
         };
 
@@ -443,11 +455,11 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
         ));
     }
 
-    fn generate_cert_with_san(san_uris: &[&str], san_dns: &[&str]) -> CertificateDer<'static> {
+    fn generate_cert(cn: &str, san_uris: &[&str], san_dns: &[&str]) -> CertificateDer<'static> {
         let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
         params
             .distinguished_name
-            .push(rcgen::DnType::CommonName, "test-node");
+            .push(rcgen::DnType::CommonName, cn);
 
         let mut alt_names = Vec::new();
         for uri in san_uris {
@@ -463,93 +475,91 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
         cert.der().clone()
     }
 
-    fn generate_cert_without_san() -> CertificateDer<'static> {
-        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
-        params
-            .distinguished_name
-            .push(rcgen::DnType::CommonName, "test-node-no-san");
-        params.subject_alt_names = vec![];
-
-        let key_pair = rcgen::KeyPair::generate().unwrap();
-        let cert = params.self_signed(&key_pair).unwrap();
-        cert.der().clone()
+    fn make_verifier(patterns: &[&str]) -> SubjectNameVerifier {
+        SubjectNameVerifier {
+            inner: Arc::new(rustls::server::NoClientAuth),
+            allowed_patterns: patterns.iter().map(|s| (*s).to_owned()).collect(),
+        }
     }
 
     #[test]
-    fn test_san_verifier_accepts_matching_uri() {
-        let verifier = SanCheckingVerifier {
-            inner: Arc::new(rustls::server::NoClientAuth),
-            allowed_patterns: vec!["spiffe://svc.pin220.com/restate-agents/*".into()],
-        };
-
-        let cert = generate_cert_with_san(
+    fn test_subject_verifier_accepts_matching_san_uri() {
+        let verifier = make_verifier(&["spiffe://svc.pin220.com/restate-agents/*"]);
+        let cert = generate_cert(
+            "irrelevant-cn",
             &["spiffe://svc.pin220.com/restate-agents/staging/admin"],
             &[],
         );
-        assert!(verifier.cert_san_matches(&cert));
+        assert!(verifier.cert_subject_matches(&cert));
     }
 
     #[test]
-    fn test_san_verifier_accepts_matching_dns() {
-        let verifier = SanCheckingVerifier {
-            inner: Arc::new(rustls::server::NoClientAuth),
-            allowed_patterns: vec!["restate-*.internal".into()],
-        };
-
-        let cert = generate_cert_with_san(&[], &["restate-node1.internal"]);
-        assert!(verifier.cert_san_matches(&cert));
+    fn test_subject_verifier_accepts_matching_san_dns() {
+        let verifier = make_verifier(&["restate-*.internal"]);
+        let cert = generate_cert("irrelevant-cn", &[], &["restate-node1.internal"]);
+        assert!(verifier.cert_subject_matches(&cert));
     }
 
     #[test]
-    fn test_san_verifier_rejects_non_matching_san() {
-        let verifier = SanCheckingVerifier {
-            inner: Arc::new(rustls::server::NoClientAuth),
-            allowed_patterns: vec!["spiffe://svc.pin220.com/restate-agents/*".into()],
-        };
+    fn test_subject_verifier_accepts_matching_cn() {
+        let verifier = make_verifier(&["restate-*"]);
+        let cert = generate_cert("restate-admin", &[], &[]);
+        assert!(verifier.cert_subject_matches(&cert));
+    }
 
-        let cert = generate_cert_with_san(
+    #[test]
+    fn test_subject_verifier_rejects_non_matching() {
+        let verifier = make_verifier(&["spiffe://svc.pin220.com/restate-agents/*"]);
+        let cert = generate_cert(
+            "other-service",
             &["spiffe://svc.pin220.com/other-service/staging/worker"],
             &[],
         );
-        assert!(!verifier.cert_san_matches(&cert));
+        assert!(!verifier.cert_subject_matches(&cert));
     }
 
     #[test]
-    fn test_san_verifier_rejects_cert_without_san() {
-        let verifier = SanCheckingVerifier {
-            inner: Arc::new(rustls::server::NoClientAuth),
-            allowed_patterns: vec!["spiffe://svc.pin220.com/restate-agents/*".into()],
-        };
-
-        let cert = generate_cert_without_san();
-        assert!(!verifier.cert_san_matches(&cert));
+    fn test_subject_verifier_rejects_no_match_anywhere() {
+        let verifier = make_verifier(&["spiffe://svc.pin220.com/restate-agents/*"]);
+        let cert = generate_cert("unrelated-cn", &[], &[]);
+        assert!(!verifier.cert_subject_matches(&cert));
     }
 
     #[test]
-    fn test_san_verifier_multiple_patterns() {
-        let verifier = SanCheckingVerifier {
-            inner: Arc::new(rustls::server::NoClientAuth),
-            allowed_patterns: vec![
-                "spiffe://svc.pin220.com/restate-agents/*/admin".into(),
-                "spiffe://svc.pin220.com/restate-agents/*/worker".into(),
-            ],
-        };
+    fn test_subject_verifier_multiple_patterns() {
+        let verifier = make_verifier(&[
+            "spiffe://svc.pin220.com/restate-agents/*/admin",
+            "spiffe://svc.pin220.com/restate-agents/*/worker",
+        ]);
 
-        let admin_cert = generate_cert_with_san(
+        let admin_cert = generate_cert(
+            "node",
             &["spiffe://svc.pin220.com/restate-agents/staging/admin"],
             &[],
         );
-        let worker_cert = generate_cert_with_san(
+        let worker_cert = generate_cert(
+            "node",
             &["spiffe://svc.pin220.com/restate-agents/staging/worker"],
             &[],
         );
-        let other_cert = generate_cert_with_san(
+        let other_cert = generate_cert(
+            "node",
             &["spiffe://svc.pin220.com/restate-agents/staging/ingress"],
             &[],
         );
 
-        assert!(verifier.cert_san_matches(&admin_cert));
-        assert!(verifier.cert_san_matches(&worker_cert));
-        assert!(!verifier.cert_san_matches(&other_cert));
+        assert!(verifier.cert_subject_matches(&admin_cert));
+        assert!(verifier.cert_subject_matches(&worker_cert));
+        assert!(!verifier.cert_subject_matches(&other_cert));
+    }
+
+    #[test]
+    fn test_subject_verifier_cn_fallback_when_no_san() {
+        let verifier = make_verifier(&["restate-node-*"]);
+        let cert = generate_cert("restate-node-1", &[], &[]);
+        assert!(verifier.cert_subject_matches(&cert));
+
+        let bad_cert = generate_cert("kafka-broker-1", &[], &[]);
+        assert!(!verifier.cert_subject_matches(&bad_cert));
     }
 }

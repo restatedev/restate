@@ -217,14 +217,15 @@ pub struct FabricTlsOptions {
     #[serde(default = "default_refresh_interval")]
     pub refresh_interval: NonZeroFriendlyDuration,
 
-    /// Allowed Subject Alternative Names (SANs) on peer certificates. After mTLS
-    /// authentication succeeds, the peer's SANs (DNS names and URIs) are checked
-    /// against these patterns. Supports `*` glob wildcards (e.g., `spiffe://domain/*`).
+    /// Allowed subject names on peer certificates. After mTLS authentication
+    /// succeeds, the peer certificate's Subject Common Name (CN) and Subject
+    /// Alternative Names (DNS names and URIs) are checked against these patterns.
+    /// Supports `*` glob wildcards (e.g., `spiffe://domain/*`, `restate-*`).
     /// When empty (default), any authenticated peer is allowed (CA-only trust).
     ///
     /// Since v1.3.0
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allowed_sans: Vec<String>,
+    pub allowed_subject_names: Vec<String>,
 
     /// Optional separate TLS configuration for outbound connections to peer nodes.
     /// If omitted, the server cert/key/ca are used for outbound connections as well.
@@ -383,12 +384,12 @@ mod tests {
     }
 
     #[test]
-    fn test_tls_config_with_allowed_sans() {
+    fn test_tls_config_with_allowed_subject_names() {
         let toml_str = r#"
             cert-file = "/certs/node.crt"
             key-file = "/certs/node.key"
             ca-files = ["/certs/ca.crt"]
-            allowed-sans = [
+            allowed-subject-names = [
                 "spiffe://svc.pin220.com/restate-agents/*/admin",
                 "spiffe://svc.pin220.com/restate-agents/*/worker",
                 "spiffe://svc.pin220.com/restate-agents/*/ingress",
@@ -396,22 +397,22 @@ mod tests {
         "#;
         let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
 
-        assert_eq!(opts.allowed_sans.len(), 3);
+        assert_eq!(opts.allowed_subject_names.len(), 3);
         assert_eq!(
-            opts.allowed_sans[0],
+            opts.allowed_subject_names[0],
             "spiffe://svc.pin220.com/restate-agents/*/admin"
         );
         assert!(opts.require_client_auth);
     }
 
     #[test]
-    fn test_tls_config_allowed_sans_empty_by_default() {
+    fn test_tls_config_allowed_subject_names_empty_by_default() {
         let toml_str = r#"
             cert-file = "/certs/node.crt"
             key-file = "/certs/node.key"
             ca-files = ["/certs/ca.crt"]
         "#;
         let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
-        assert!(opts.allowed_sans.is_empty());
+        assert!(opts.allowed_subject_names.is_empty());
     }
 }
