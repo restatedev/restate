@@ -100,6 +100,7 @@ fn configure_tls_nodes(
             ca_files: vec![ca_path],
             require_client_auth: true,
             refresh_interval: restate_time_util::NonZeroFriendlyDuration::from_secs_unchecked(3600),
+            allowed_subject_names: vec!["*".into()],
             client: None,
         });
     }

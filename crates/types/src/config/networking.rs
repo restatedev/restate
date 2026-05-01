@@ -221,7 +221,10 @@ pub struct FabricTlsOptions {
     /// succeeds, the peer certificate's Subject Common Name (CN) and Subject
     /// Alternative Names (DNS names and URIs) are checked against these patterns.
     /// Supports `*` glob wildcards (e.g., `spiffe://domain/*`, `restate-*`).
-    /// When empty (default), any authenticated peer is allowed (CA-only trust).
+    ///
+    /// Required when `require-client-auth` is `true`. Use `["*"]` to explicitly
+    /// allow any authenticated peer (CA-only trust). An empty list is a
+    /// configuration error to prevent accidental fail-open.
     ///
     /// Since v1.3.0
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -275,6 +278,17 @@ impl FabricTlsOptions {
 
     pub fn is_strict(&self) -> bool {
         self.mode == TlsMode::Strict
+    }
+
+    pub fn validate(&self) -> Result<(), anyhow::Error> {
+        if self.require_client_auth && self.allowed_subject_names.is_empty() {
+            anyhow::bail!(
+                "[networking.tls] require-client-auth is true but allowed-subject-names is empty. \
+                 Specify allowed patterns (e.g., [\"spiffe://domain/*\"]) or set [\"*\"] \
+                 to explicitly allow any authenticated peer."
+            );
+        }
+        Ok(())
     }
 }
 
@@ -414,5 +428,61 @@ mod tests {
         "#;
         let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
         assert!(opts.allowed_subject_names.is_empty());
+    }
+
+    #[test]
+    fn test_validate_rejects_empty_allowed_subject_names_with_client_auth() {
+        let toml_str = r#"
+            cert-file = "/certs/node.crt"
+            key-file = "/certs/node.key"
+            ca-files = ["/certs/ca.crt"]
+            require-client-auth = true
+        "#;
+        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
+        let result = opts.validate();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("allowed-subject-names is empty")
+        );
+    }
+
+    #[test]
+    fn test_validate_accepts_wildcard_allowed_subject_names() {
+        let toml_str = r#"
+            cert-file = "/certs/node.crt"
+            key-file = "/certs/node.key"
+            ca-files = ["/certs/ca.crt"]
+            require-client-auth = true
+            allowed-subject-names = ["*"]
+        "#;
+        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
+        assert!(opts.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_accepts_empty_when_no_client_auth() {
+        let toml_str = r#"
+            cert-file = "/certs/node.crt"
+            key-file = "/certs/node.key"
+            ca-files = ["/certs/ca.crt"]
+            require-client-auth = false
+        "#;
+        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
+        assert!(opts.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_accepts_specific_patterns() {
+        let toml_str = r#"
+            cert-file = "/certs/node.crt"
+            key-file = "/certs/node.key"
+            ca-files = ["/certs/ca.crt"]
+            allowed-subject-names = ["spiffe://domain/restate-*"]
+        "#;
+        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
+        assert!(opts.validate().is_ok());
     }
 }
