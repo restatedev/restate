@@ -287,6 +287,7 @@ utoipa = { version = "5.4" }
 utoipa-axum = "0.2"
 uuid = { version = "1.19.0", features = ["v7", "serde"] }
 vergen = { version = "8.0.0", default-features = false }
+x509-parser = "0.16"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zstd = { version = "0.13" }
 
