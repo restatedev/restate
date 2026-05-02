@@ -148,6 +148,175 @@ mod legacy {
     include!(concat!(env!("OUT_DIR"), "/dev.restate.service.legacy.rs"));
 }
 
+/// Shadow types matching a subset of the wire format of the full `proto`
+/// messages, used for partial deserialization on the validation hot path.
+/// Each type only declares the field tags relevant to validation; prost
+/// silently skips the remaining wire bytes during decoding.
+///
+/// # Important
+/// These messages need to be kept in sync with the protobuf messages from
+/// [`super::proto`]. Whenever the service protocol messages change, check
+/// these shadow types.
+pub mod proto_lite {
+    /// Shadow of [`super::proto::AttachInvocationCommandMessage`] that only
+    /// decodes the `target` oneof.
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct AttachInvocationCommandMessageLite {
+        #[prost(oneof = "TargetLite", tags = "1, 3, 4")]
+        pub target: Option<TargetLite>,
+    }
+
+    /// Shadow of [`super::proto::get_invocation_output_command_message::Target`] and
+    /// [`super::proto::attach_invocation_command_message::Target`] that only decodes the target
+    /// parts that need validation.
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum TargetLite {
+        #[prost(string, tag = "1")]
+        InvocationId(String),
+        #[prost(message, tag = "3")]
+        IdempotentRequestTarget(IdempotentRequestTargetScopeLite),
+        #[prost(message, tag = "4")]
+        WorkflowTarget(WorkflowTargetScopeLite),
+    }
+
+    /// Shadow of [`super::proto::GetInvocationOutputCommandMessage`] that only
+    /// decodes the `target` oneof.
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct GetInvocationOutputCommandMessageLite {
+        #[prost(oneof = "TargetLite", tags = "1, 3, 4")]
+        pub target: Option<TargetLite>,
+    }
+
+    /// Shadow of [`super::proto::WorkflowTarget`]. Only the `scope` field is
+    /// decoded since it is the only field validated at the invoker boundary.
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct WorkflowTargetScopeLite {
+        #[prost(string, optional, tag = "3")]
+        pub scope: Option<String>,
+    }
+
+    /// Shadow of [`super::proto::IdempotentRequestTarget`]. Only the `scope`
+    /// field is decoded since it is the only field validated at the invoker
+    /// boundary.
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct IdempotentRequestTargetScopeLite {
+        #[prost(string, optional, tag = "5")]
+        pub scope: Option<String>,
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use prost::Message as _;
+
+        use super::{
+            AttachInvocationCommandMessageLite, GetInvocationOutputCommandMessageLite, TargetLite,
+        };
+        use crate::proto::{
+            AttachInvocationCommandMessage, GetInvocationOutputCommandMessage,
+            IdempotentRequestTarget, WorkflowTarget, attach_invocation_command_message,
+            get_invocation_output_command_message,
+        };
+
+        #[test]
+        fn attach_invocation_lite_decodes_invocation_id() {
+            let full = AttachInvocationCommandMessage {
+                target: Some(attach_invocation_command_message::Target::InvocationId(
+                    "inv_test".into(),
+                )),
+                result_completion_id: 42,
+                name: "ignored".into(),
+            };
+
+            let bytes = full.encode_to_vec();
+            let lite = AttachInvocationCommandMessageLite::decode(bytes.as_slice()).unwrap();
+
+            assert_eq!(
+                lite.target,
+                Some(TargetLite::InvocationId("inv_test".into()))
+            );
+        }
+
+        #[test]
+        fn attach_invocation_lite_decodes_idempotent_request_scope() {
+            let full = AttachInvocationCommandMessage {
+                target: Some(
+                    attach_invocation_command_message::Target::IdempotentRequestTarget(
+                        IdempotentRequestTarget {
+                            service_name: "svc".into(),
+                            service_key: Some("key".into()),
+                            handler_name: "handler".into(),
+                            idempotency_key: "idem".into(),
+                            scope: Some("scope-1".into()),
+                        },
+                    ),
+                ),
+                result_completion_id: 7,
+                name: "ignored".into(),
+            };
+
+            let bytes = full.encode_to_vec();
+            let lite = AttachInvocationCommandMessageLite::decode(bytes.as_slice()).unwrap();
+
+            match lite.target {
+                Some(TargetLite::IdempotentRequestTarget(inner)) => {
+                    assert_eq!(inner.scope.as_deref(), Some("scope-1"))
+                }
+                other => panic!("unexpected target: {other:?}"),
+            }
+        }
+
+        #[test]
+        fn get_invocation_output_lite_decodes_workflow_target_scope() {
+            let full = GetInvocationOutputCommandMessage {
+                target: Some(
+                    get_invocation_output_command_message::Target::WorkflowTarget(WorkflowTarget {
+                        workflow_name: "wf".into(),
+                        workflow_key: "key".into(),
+                        scope: Some("scope-2".into()),
+                    }),
+                ),
+                result_completion_id: 11,
+                name: "ignored".into(),
+            };
+
+            let bytes = full.encode_to_vec();
+            let lite = GetInvocationOutputCommandMessageLite::decode(bytes.as_slice()).unwrap();
+
+            match lite.target {
+                Some(TargetLite::WorkflowTarget(inner)) => {
+                    assert_eq!(inner.scope.as_deref(), Some("scope-2"))
+                }
+                other => panic!("unexpected target: {other:?}"),
+            }
+        }
+
+        #[test]
+        fn get_invocation_output_lite_decodes_workflow_target_without_scope() {
+            let full = GetInvocationOutputCommandMessage {
+                target: Some(
+                    get_invocation_output_command_message::Target::WorkflowTarget(WorkflowTarget {
+                        workflow_name: "wf".into(),
+                        workflow_key: "key".into(),
+                        scope: None,
+                    }),
+                ),
+                result_completion_id: 11,
+                name: "ignored".into(),
+            };
+
+            let bytes = full.encode_to_vec();
+            let lite = GetInvocationOutputCommandMessageLite::decode(bytes.as_slice()).unwrap();
+
+            match lite.target {
+                Some(TargetLite::WorkflowTarget(inner)) => {
+                    assert_eq!(inner.scope, None)
+                }
+                other => panic!("unexpected target: {other:?}"),
+            }
+        }
+    }
+}
+
 #[cfg(feature = "message-codec")]
 mod dto {
     use prost::Message;
