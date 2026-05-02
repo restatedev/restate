@@ -33,9 +33,7 @@ use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_service_protocol_v4::message_codec::{
     Decoder, Encoder, Message, MessageHeader, MessageType, StateEntry, proto,
 };
-use restate_service_protocol_v4::proto::{
-    attach_invocation_command_message, get_invocation_output_command_message,
-};
+use restate_service_protocol_v4::proto_lite;
 use restate_types::Scope;
 use restate_types::errors::{GenericError, InvocationError};
 use restate_types::identifiers::InvocationId;
@@ -925,22 +923,21 @@ where
             }
             Message::GetInvocationOutputCommand(cmd) => {
                 // The macro registers `GetInvocationOutput Command` as `noparse`, so `cmd` is
-                // the raw bytes from the wire. We decode it once to validate the target, then
-                // forward the original bytes to avoid a re-encode round trip.
+                // the raw bytes from the wire. We decode a lite shadow type that only
+                // covers the fields we actually validate (target/scope) and forward the
+                // original bytes downstream to avoid a re-encode round trip.
                 let parsed = crate::shortcircuit!(
-                    proto::GetInvocationOutputCommandMessage::decode(cmd.clone())
+                    proto_lite::GetInvocationOutputCommandMessageLite::decode(cmd.as_ref())
                         .map_err(|err| InvokerError::EncodingV2(GenericError::from(err).into()))
                 );
                 if let Some(target) = parsed.target.as_ref() {
-                    crate::shortcircuit!(
-                        Self::validate_get_invocation_output_target(target).map_err(|err| {
-                            InvokerError::CommandPrecondition(
-                                self.command_index,
-                                EntryType::Command(CommandType::GetInvocationOutput),
-                                err,
-                            )
-                        })
-                    );
+                    crate::shortcircuit!(Self::validate_target(target).map_err(|err| {
+                        InvokerError::CommandPrecondition(
+                            self.command_index,
+                            EntryType::Command(CommandType::GetInvocationOutput),
+                            err,
+                        )
+                    }));
                 }
                 self.handle_new_command(mh, RawCommand::new(CommandType::GetInvocationOutput, cmd));
                 TerminalLoopState::Continue(())
@@ -948,19 +945,17 @@ where
             Message::AttachInvocationCommand(cmd) => {
                 // See `Message::GetInvocationOutputCommand` above for why we decode-then-forward.
                 let parsed = crate::shortcircuit!(
-                    proto::AttachInvocationCommandMessage::decode(cmd.clone())
+                    proto_lite::AttachInvocationCommandMessageLite::decode(cmd.as_ref())
                         .map_err(|err| InvokerError::EncodingV2(GenericError::from(err).into()))
                 );
                 if let Some(target) = parsed.target.as_ref() {
-                    crate::shortcircuit!(Self::validate_attach_invocation_target(target).map_err(
-                        |err| {
-                            InvokerError::CommandPrecondition(
-                                self.command_index,
-                                EntryType::Command(CommandType::AttachInvocation),
-                                err,
-                            )
-                        }
-                    ));
+                    crate::shortcircuit!(Self::validate_target(target).map_err(|err| {
+                        InvokerError::CommandPrecondition(
+                            self.command_index,
+                            EntryType::Command(CommandType::AttachInvocation),
+                            err,
+                        )
+                    }));
                 }
                 self.handle_new_command(mh, RawCommand::new(CommandType::AttachInvocation, cmd));
                 TerminalLoopState::Continue(())
@@ -1308,54 +1303,20 @@ where
     /// valid `RestrictedValue`). We do not check that the service/handler/workflow currently
     /// exists in the schema, because the user may legitimately query the output of an invocation
     /// whose service has since been removed from the registry.
-    fn validate_get_invocation_output_target(
-        target: &get_invocation_output_command_message::Target,
-    ) -> Result<(), CommandPreconditionError> {
+    fn validate_target(target: &proto_lite::TargetLite) -> Result<(), CommandPreconditionError> {
         match target {
-            get_invocation_output_command_message::Target::InvocationId(invocation_id) => {
+            proto_lite::TargetLite::InvocationId(invocation_id) => {
                 invocation_id.parse::<InvocationId>().map_err(|err| {
                     CommandPreconditionError::InvalidInvocationId(invocation_id.clone(), err)
                 })?;
             }
-            get_invocation_output_command_message::Target::IdempotentRequestTarget(
-                idempotent_request_target,
-            ) => {
+            proto_lite::TargetLite::IdempotentRequestTarget(idempotent_request_target) => {
                 if let Some(scope) = idempotent_request_target.scope.as_ref() {
                     let _ = RestrictedValue::new(scope.as_str())
                         .map_err(CommandPreconditionError::InvalidScope)?;
                 }
             }
-            get_invocation_output_command_message::Target::WorkflowTarget(workflow_target) => {
-                if let Some(scope) = workflow_target.scope.as_ref() {
-                    let _ = RestrictedValue::new(scope.as_str())
-                        .map_err(CommandPreconditionError::InvalidScope)?;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Validates the target of an `AttachInvocation` command. See
-    /// [`Self::validate_get_invocation_output_target`] for the validation contract.
-    fn validate_attach_invocation_target(
-        target: &attach_invocation_command_message::Target,
-    ) -> Result<(), CommandPreconditionError> {
-        match target {
-            attach_invocation_command_message::Target::InvocationId(invocation_id) => {
-                invocation_id.parse::<InvocationId>().map_err(|err| {
-                    CommandPreconditionError::InvalidInvocationId(invocation_id.clone(), err)
-                })?;
-            }
-            attach_invocation_command_message::Target::IdempotentRequestTarget(
-                idempotent_request_target,
-            ) => {
-                if let Some(scope) = idempotent_request_target.scope.as_ref() {
-                    let _ = RestrictedValue::new(scope.as_str())
-                        .map_err(CommandPreconditionError::InvalidScope)?;
-                }
-            }
-            attach_invocation_command_message::Target::WorkflowTarget(workflow_target) => {
+            proto_lite::TargetLite::WorkflowTarget(workflow_target) => {
                 if let Some(scope) = workflow_target.scope.as_ref() {
                     let _ = RestrictedValue::new(scope.as_str())
                         .map_err(CommandPreconditionError::InvalidScope)?;
