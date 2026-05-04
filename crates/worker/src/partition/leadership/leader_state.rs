@@ -13,6 +13,7 @@ use std::collections::hash_map::Entry;
 use std::future::Future;
 use std::ops::RangeBounds;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll, ready};
 
 use bytes::BytesMut;
@@ -28,8 +29,10 @@ use restate_bifrost::CommitToken;
 use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{Metadata, MetadataKind, TaskCenter, TaskHandle, TaskId};
 use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
+use restate_limiter::RuleBook;
 use restate_partition_store::PartitionDb;
 use restate_storage_api::vqueue_table::scheduler::SchedulerDecisions;
+use restate_types::config::Configuration;
 use restate_types::identifiers::{
     LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
@@ -90,6 +93,7 @@ pub struct LeaderState {
     invoker_stream: InvokerStream,
     shuffle_stream: ReceiverStream<shuffle::OutboxTruncation>,
     schema_stream: WatchStream<Version>,
+    rule_book_stream: WatchStream<Arc<RuleBook>>,
     cleaner_handle: CleanerHandle,
     trimmer_task_id: TaskId,
     durability_tracker: DurabilityTracker,
@@ -117,6 +121,7 @@ impl LeaderState {
         shuffle_rx: tokio::sync::mpsc::Receiver<shuffle::OutboxTruncation>,
         durability_tracker: DurabilityTracker,
         leader_query_guard: LeaderQueryGuard,
+        rule_book_rx: tokio::sync::watch::Receiver<Arc<RuleBook>>,
     ) -> Self {
         LeaderState {
             partition_id,
@@ -129,6 +134,7 @@ impl LeaderState {
             schema_stream: Metadata::with_current(|m| {
                 WatchStream::new(m.watch(MetadataKind::Schema))
             }),
+            rule_book_stream: WatchStream::new(rule_book_rx),
             timer_service: Box::pin(timer_service),
             scheduler,
             invoker_handle,
@@ -201,6 +207,15 @@ impl LeaderState {
             )
         });
 
+        let rule_book_stream = (&mut self.rule_book_stream).filter_map(|book| {
+            // Only propose iff the cache holds a rule book that's
+            // newer than the partition's current in-memory book.
+            let current_version = state_machine.rule_book.version();
+            std::future::ready(
+                (book.version() > current_version).then(|| ActionEffect::UpsertRuleBook(book)),
+            )
+        });
+
         let invoker_stream = (&mut self.invoker_stream).map(ActionEffect::Invoker);
         let shuffle_stream = (&mut self.shuffle_stream).map(ActionEffect::Shuffle);
         let cleaner_stream = self.cleaner_handle.effects().map(ActionEffect::Cleaner);
@@ -219,7 +234,8 @@ impl LeaderState {
             cleaner_stream,
             awaiting_rpc_self_propose_stream,
             dur_tracker_stream,
-            schema_stream
+            schema_stream,
+            rule_book_stream
         );
         let mut all_streams = all_streams.ready_chunks(BATCH_READY_UP_TO);
 
@@ -426,6 +442,25 @@ impl LeaderState {
                                     ),
                                     schema,
                                 }),
+                            )
+                            .await?;
+                    }
+                }
+                ActionEffect::UpsertRuleBook(book) => {
+                    // todo(tillrohrmann) also enable the feature once the partition has been migrated
+                    //  to use vqueues and then rolling back to v1.7
+                    if Configuration::pinned().common.experimental_enable_vqueues {
+                        self.self_proposer
+                            .self_propose(
+                                self.partition_key_range.start(),
+                                Command::UpsertRuleBook(
+                                    restate_wal_protocol::control::UpsertRuleBook {
+                                        partition_key_range: Keys::RangeInclusive(
+                                            self.partition_key_range.into(),
+                                        ),
+                                        rule_book: book.bilrost_encode_to_bytes(),
+                                    },
+                                ),
                             )
                             .await?;
                     }

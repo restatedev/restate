@@ -23,6 +23,7 @@ mod http;
 mod ingress;
 mod invocation;
 mod kafka;
+mod limits;
 mod log_server;
 mod metadata_server;
 mod networking;
@@ -43,6 +44,7 @@ pub use http::*;
 pub use ingress::*;
 pub use invocation::*;
 pub use kafka::*;
+pub use limits::*;
 pub use log_server::*;
 pub use metadata_server::*;
 pub use networking::*;
@@ -276,6 +278,7 @@ pub struct Configuration {
     pub metadata_server: MetadataServerOptions,
     pub networking: NetworkingOptions,
     pub log_server: LogServerOptions,
+    pub limits: LimitsOptions,
 }
 
 impl Configuration {

@@ -32,7 +32,7 @@ use crate::{RulePattern, RuleUpdate, UserLimits};
 /// metadata-store value-size limit (~32 MB). At the planned cap of ~100k
 /// rules in a book the encoded size stays well under that ceiling. Exposed
 /// here as a constant for now — Step 6 makes this configurable via
-/// `worker.rule_book.max_rules`.
+/// `limits.rule_book.max_rules`.
 pub const MAX_RULES_PER_BOOK: usize = 10_000;
 
 /// Deterministic identifier for a rule. Derived from the rule's

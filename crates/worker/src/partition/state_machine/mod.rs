@@ -20,6 +20,7 @@ use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::ops::{RangeBounds, RangeInclusive};
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Instant;
 
 use assert2::let_assert;
@@ -31,6 +32,8 @@ use tracing::{Instrument, debug, error, info, trace, warn};
 
 use restate_limiter::LimitKey;
 use restate_limiter::RuleBook;
+
+use crate::rule_book_cache::RuleBookCacheHandle;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::WriteFsmTable;
@@ -153,8 +156,15 @@ pub struct StateMachine {
     /// Consistent schema
     pub(crate) schema: Option<Schema>,
     /// Cluster-global rule book, kept consistent across replicas via
-    /// `Command::UpsertRuleBook` log entries.
-    pub(crate) rule_book: RuleBook,
+    /// `Command::UpsertRuleBook` log entries. `Arc` because the apply
+    /// path also pushes the same value into the node-level
+    /// `RuleBookCache` (one allocation, cheap clones).
+    pub(crate) rule_book: Arc<RuleBook>,
+    /// Handle into the node-level rule-book cache. The apply path
+    /// notifies the cache when it learns about a newer book from
+    /// Bifrost replay, so leader-state subscribers on the same node
+    /// see it without waiting for the next metadata-store poll.
+    pub(crate) rule_book_cache: RuleBookCacheHandle,
 
     pub(crate) partition_key_range: KeyRange,
 }
@@ -243,7 +253,8 @@ impl StateMachine {
         partition_key_range: KeyRange,
         min_restate_version: SemanticRestateVersion,
         schema: Option<Schema>,
-        rule_book: RuleBook,
+        rule_book: Arc<RuleBook>,
+        rule_book_cache: RuleBookCacheHandle,
     ) -> Self {
         Self {
             inbox_seq_number,
@@ -253,6 +264,7 @@ impl StateMachine {
             min_restate_version,
             schema,
             rule_book,
+            rule_book_cache,
         }
     }
 }
@@ -268,7 +280,8 @@ pub(crate) struct StateMachineApplyContext<'a, S> {
     outbox_head_seq_number: &'a mut Option<MessageIndex>,
     min_restate_version: &'a mut SemanticRestateVersion,
     schema: &'a mut Option<Schema>,
-    rule_book: &'a mut RuleBook,
+    rule_book: &'a mut Arc<RuleBook>,
+    rule_book_cache: &'a RuleBookCacheHandle,
     partition_key_range: KeyRange,
     is_leader: bool,
 }
@@ -310,6 +323,7 @@ impl StateMachine {
                 vqueues_cache,
                 schema: &mut self.schema,
                 rule_book: &mut self.rule_book,
+                rule_book_cache: &self.rule_book_cache,
                 partition_key_range: self.partition_key_range,
                 is_leader,
             }
@@ -743,6 +757,16 @@ impl<S> StateMachineApplyContext<'_, S> {
 
                 // Persist within the apply transaction.
                 self.storage.put_rule_book(&new_book)?;
+
+                // Single Arc allocation per UpsertRuleBook apply; cheap
+                // clones for the in-memory field and the cache notify.
+                let new_book = Arc::new(new_book);
+
+                // Push the freshly-applied book into the node-level
+                // cache so other PP-leaders on this node see the new
+                // version on their next watch tick — without waiting
+                // for the metadata-store poll cadence.
+                self.rule_book_cache.notify_observed(&new_book);
 
                 // Update in-memory state.
                 *self.rule_book = new_book;

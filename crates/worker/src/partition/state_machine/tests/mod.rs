@@ -97,7 +97,8 @@ impl TestEnv {
             KeyRange::FULL,
             min_restate_version,
             None, /* schema */
-            RuleBook::default(),
+            Arc::new(RuleBook::default()),
+            RuleBookCacheHandle::detached(),
         ))
         .await
     }
@@ -1058,7 +1059,8 @@ async fn truncate_outbox_with_gap() -> Result<(), Error> {
         KeyRange::FULL,
         SemanticRestateVersion::unknown().clone(),
         None, /* schema */
-        RuleBook::default(),
+        Arc::new(RuleBook::default()),
+        RuleBookCacheHandle::detached(),
     ))
     .await;
 

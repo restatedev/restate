@@ -97,6 +97,7 @@ use crate::metric_definitions::{
 use crate::partition::leadership::LeadershipState;
 use crate::partition::state_machine::{ActionCollector, StateMachine};
 use crate::partition_processor_manager::PartitionLeaderHandlesRegistry;
+use crate::rule_book_cache::RuleBookCacheHandle;
 
 /// Information needed to run as leader, including the epoch and partition configurations.
 #[derive(Clone, Debug)]
@@ -135,6 +136,7 @@ pub(super) struct PartitionProcessorBuilder {
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
     invoker_capacity: InvokerCapacity,
     leader_handles_registry: PartitionLeaderHandlesRegistry,
+    rule_book_cache: RuleBookCacheHandle,
 }
 
 impl PartitionProcessorBuilder {
@@ -146,6 +148,7 @@ impl PartitionProcessorBuilder {
         status_watch_tx: watch::Sender<PartitionProcessorStatus>,
         invoker_capacity: InvokerCapacity,
         leader_handles_registry: PartitionLeaderHandlesRegistry,
+        rule_book_cache: RuleBookCacheHandle,
     ) -> Self {
         Self {
             status,
@@ -154,6 +157,7 @@ impl PartitionProcessorBuilder {
             status_watch_tx,
             invoker_capacity,
             leader_handles_registry,
+            rule_book_cache,
         }
     }
 
@@ -174,10 +178,12 @@ impl PartitionProcessorBuilder {
             status,
             invoker_capacity,
             leader_handles_registry,
+            rule_book_cache,
         } = self;
 
         let partition_id_str = SharedString::from(partition_store.partition_id().to_string());
-        let state_machine = Self::create_state_machine(&mut partition_store).await?;
+        let state_machine =
+            Self::create_state_machine(&mut partition_store, rule_book_cache.clone()).await?;
 
         let trim_queue = TrimQueue::default();
         if let Some(ref partition_durability) = partition_store.get_partition_durability().await? {
@@ -223,6 +229,7 @@ impl PartitionProcessorBuilder {
             trim_queue.clone(),
             leader_query_tx,
             leader_handles_registry,
+            rule_book_cache,
         );
 
         let last_applied_log_lsn_watch = watch::Sender::new(Lsn::INVALID);
@@ -247,13 +254,14 @@ impl PartitionProcessorBuilder {
 
     async fn create_state_machine(
         partition_store: &mut PartitionStore,
+        rule_book_cache: RuleBookCacheHandle,
     ) -> Result<StateMachine, state_machine::Error> {
         let inbox_seq_number = partition_store.get_inbox_seq_number().await?;
         let outbox_seq_number = partition_store.get_outbox_seq_number().await?;
         let outbox_head_seq_number = partition_store.get_outbox_head_seq_number().await?;
         let min_restate_version = partition_store.get_min_restate_version().await?;
         let schema = partition_store.get_schema().await?;
-        let rule_book = partition_store.get_rule_book().await?.unwrap_or_default();
+        let rule_book = Arc::new(partition_store.get_rule_book().await?.unwrap_or_default());
 
         if !SemanticRestateVersion::current().is_equal_or_newer_than(&min_restate_version) {
             gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL =>
@@ -267,6 +275,12 @@ impl PartitionProcessorBuilder {
             });
         }
 
+        // Seed the cache with whatever we just loaded from the FSM
+        // table, so a freshly-restarted PP doesn't briefly serve the
+        // empty default to subscribers between PP boot and the first
+        // metadata-store poll.
+        rule_book_cache.notify_observed(&rule_book);
+
         let state_machine = StateMachine::new(
             inbox_seq_number,
             outbox_seq_number,
@@ -275,6 +289,7 @@ impl PartitionProcessorBuilder {
             min_restate_version,
             schema,
             rule_book,
+            rule_book_cache,
         );
 
         Ok(state_machine)
@@ -655,7 +670,8 @@ where
                                 &mut partition_store,
                                 &self.replica_set_states,
                                 config,
-                                &mut vqueues
+                                &mut vqueues,
+                                &self.state_machine.rule_book,
                             ).await?;
 
                             Span::current().record("is_leader", is_leader);

@@ -28,6 +28,8 @@ use std::time::Instant;
 
 use hdrhistogram::Histogram;
 
+use std::sync::Arc;
+
 use restate_cli_util::{c_println, c_success};
 use restate_limiter::RuleBook;
 use restate_partition_store::PartitionStoreManager;
@@ -42,6 +44,7 @@ use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
 use restate_vqueues::VQueuesMetaCache;
 use restate_worker::partition::state_machine::{ActionCollector, StateMachine};
+use restate_worker::rule_book_cache::RuleBookCacheHandle;
 
 use crate::RunOpts;
 use crate::command_gen;
@@ -100,8 +103,9 @@ pub async fn run(
         None, /* outbox_head_seq_number */
         KeyRange::FULL,
         SemanticRestateVersion::unknown(),
-        None,                /* schema */
-        RuleBook::default(), /* rule_book */
+        None, /* schema */
+        Arc::new(RuleBook::default()),
+        RuleBookCacheHandle::detached(),
     );
 
     // Initialize the vqueue cache from the (empty) partition store — this follows
