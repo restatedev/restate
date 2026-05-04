@@ -24,6 +24,7 @@ use h2::{Reason, RecvStream, SendStream};
 use http::{HeaderMap, Request, Response, Uri};
 use http_body::{Body, Frame};
 use http_body_util::BodyExt;
+use metrics::{counter, histogram};
 use parking_lot::Mutex;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::sync::{CancellationToken, DropGuard};
@@ -31,9 +32,16 @@ use tower::Service;
 use tracing::debug;
 
 use restate_types::errors::GenericError;
+use restate_types::time::MillisSinceEpoch;
 
 use super::Error;
 use crate::pool::conn::concurrency::{Concurrency, Permit, PermitFuture};
+use crate::pool::metric_definitions::{
+    CONNECTION_POOL_CONNECTION_CLOSED, CONNECTION_POOL_CONNECTION_DURATION,
+    CONNECTION_POOL_CONNECTION_OPEN_FAILED, CONNECTION_POOL_CONNECTION_OPENED,
+    CONNECTION_POOL_STREAM_CLOSED, CONNECTION_POOL_STREAM_DURATION,
+    CONNECTION_POOL_STREAM_OPEN_FAILED, CONNECTION_POOL_STREAM_OPENED,
+};
 
 mod concurrency;
 
@@ -377,12 +385,20 @@ where
         let shared = Arc::clone(&self.shared);
         let connect = self.connector.call(request.uri().clone());
         ResponseFutureState::drive(async move {
-            let stream = connect.await.map_err(Into::into)?;
+            let stream = connect.await.map_err(Into::into).inspect_err(|_| {
+                counter!(CONNECTION_POOL_CONNECTION_OPEN_FAILED).increment(1);
+            })?;
 
             let (send_request, mut connection) = h2::client::Builder::new()
                 .initial_max_send_streams(shared.config.initial_max_send_streams as usize)
                 .handshake::<_, Bytes>(stream)
-                .await?;
+                .await
+                .inspect_err(|_| {
+                    counter!(CONNECTION_POOL_CONNECTION_OPEN_FAILED).increment(1);
+                })?;
+
+            let connection_start_time = MillisSinceEpoch::now();
+            counter!(CONNECTION_POOL_CONNECTION_OPENED).increment(1);
 
             let ping_pong = connection.ping_pong().expect("to succeed on first call");
             let cancel = CancellationToken::new();
@@ -413,6 +429,10 @@ where
                             debug!("h2 connection cancelled");
                         }
                     };
+
+                    counter!(CONNECTION_POOL_CONNECTION_CLOSED).increment(1);
+                    histogram!(CONNECTION_POOL_CONNECTION_DURATION)
+                        .record(connection_start_time.elapsed());
 
                     // set state to closed
                     if let Some(shared) = shared_weak.upgrade() {
@@ -681,7 +701,13 @@ where
                     this.state = ResponseFutureState::InFlight { fut };
                 }
                 ResponseFutureState::InFlight { ref mut fut } => {
-                    let resp = ready!(fut.poll_unpin(cx)).map_err(Error::from)?;
+                    let resp = ready!(fut.poll_unpin(cx))
+                        .map_err(Error::from)
+                        .inspect_err(|_| {
+                            counter!(CONNECTION_POOL_STREAM_OPEN_FAILED).increment(1);
+                        })?;
+
+                    counter!(CONNECTION_POOL_STREAM_OPENED).increment(1);
                     let permit = this.permit.take().expect("available permit");
                     let resp = resp.map(|recv| PermittedRecvStream::new(recv, permit));
                     return Poll::Ready(Ok(resp));
@@ -794,7 +820,15 @@ pub struct PermittedRecvStream {
     stream: RecvStream,
     /// Tracks whether all data frames have been consumed and we should poll trailers next.
     data_done: bool,
+    start_time: MillisSinceEpoch,
     _permit: Permit,
+}
+
+impl Drop for PermittedRecvStream {
+    fn drop(&mut self) {
+        histogram!(CONNECTION_POOL_STREAM_DURATION).record(self.start_time.elapsed());
+        counter!(CONNECTION_POOL_STREAM_CLOSED).increment(1);
+    }
 }
 
 impl PermittedRecvStream {
@@ -802,6 +836,7 @@ impl PermittedRecvStream {
         Self {
             stream,
             data_done: false,
+            start_time: MillisSinceEpoch::now(),
             _permit: permit,
         }
     }
