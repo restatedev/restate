@@ -77,6 +77,9 @@ fn decode(ty: EventType, value: Bytes) -> Result<Event, EventDecodingError> {
             pb::TransientErrorEvent::decode(value)?.try_into()?,
         )),
         EventType::Paused => Ok(Event::Paused(pb::PausedEvent::decode(value)?.try_into()?)),
+        EventType::Suspended => Ok(Event::Suspended(
+            pb::SuspendedEvent::decode(value)?.try_into()?,
+        )),
         EventType::Unknown => Ok(Event::Unknown),
     }
 }
@@ -91,6 +94,10 @@ fn encode(event: Event) -> RawEvent {
             EventType::Paused,
             pb::PausedEvent::from(e).encode_to_vec().into(),
         ),
+        Event::Suspended(e) => RawEvent::new(
+            EventType::Suspended,
+            pb::SuspendedEvent::from(e).encode_to_vec().into(),
+        ),
         Event::Unknown => RawEvent::unknown(),
     }
 }
@@ -99,6 +106,7 @@ mod pb {
     use crate::errors::InvocationErrorCode;
     use crate::journal_events as event;
     use crate::journal_v2;
+    use crate::journal_v2::{NotificationId, SignalId, UnresolvedFuture};
     use anyhow::Context;
 
     include!(concat!(env!("OUT_DIR"), "/restate.journal.events.rs"));
@@ -231,6 +239,123 @@ mod pb {
             Ok(event::PausedEvent {
                 last_failure: last_failure.map(|f| f.try_into()).transpose()?,
             })
+        }
+    }
+
+    impl From<event::SuspendedEvent> for SuspendedEvent {
+        fn from(event::SuspendedEvent { awaiting_on }: event::SuspendedEvent) -> Self {
+            SuspendedEvent {
+                awaiting_on: Some(awaiting_on.into()),
+            }
+        }
+    }
+
+    impl TryFrom<SuspendedEvent> for event::SuspendedEvent {
+        type Error = anyhow::Error;
+
+        fn try_from(SuspendedEvent { awaiting_on }: SuspendedEvent) -> Result<Self, Self::Error> {
+            let awaiting_on = awaiting_on
+                .context("missing awaiting_on")?
+                .try_into()
+                .context("invalid awaiting_on")?;
+            Ok(event::SuspendedEvent { awaiting_on })
+        }
+    }
+
+    impl From<journal_v2::CombinatorType> for future::CombinatorType {
+        fn from(value: journal_v2::CombinatorType) -> Self {
+            match value {
+                journal_v2::CombinatorType::Unknown => Self::Unknown,
+                journal_v2::CombinatorType::FirstCompleted => Self::FirstCompleted,
+                journal_v2::CombinatorType::AllCompleted => Self::AllCompleted,
+                journal_v2::CombinatorType::FirstSucceededOrAllFailed => {
+                    Self::FirstSucceededOrAllFailed
+                }
+                journal_v2::CombinatorType::AllSucceededOrFirstFailed => {
+                    Self::AllSucceededOrFirstFailed
+                }
+            }
+        }
+    }
+
+    impl From<future::CombinatorType> for journal_v2::CombinatorType {
+        fn from(value: future::CombinatorType) -> Self {
+            match value {
+                future::CombinatorType::Unknown => Self::Unknown,
+                future::CombinatorType::FirstCompleted => Self::FirstCompleted,
+                future::CombinatorType::AllCompleted => Self::AllCompleted,
+                future::CombinatorType::FirstSucceededOrAllFailed => {
+                    Self::FirstSucceededOrAllFailed
+                }
+                future::CombinatorType::AllSucceededOrFirstFailed => {
+                    Self::AllSucceededOrFirstFailed
+                }
+            }
+        }
+    }
+
+    impl From<UnresolvedFuture> for Future {
+        fn from(value: UnresolvedFuture) -> Self {
+            let (combinator, notifications, nested) = value.split();
+
+            let mut f = Self {
+                combinator_type: future::CombinatorType::from(combinator).into(),
+                nested_futures: nested.into_iter().map(Into::into).collect(),
+                ..Default::default()
+            };
+
+            for notif in notifications {
+                match notif {
+                    NotificationId::CompletionId(v) => f.waiting_completions.push(v),
+                    NotificationId::SignalIndex(v) => f.waiting_signals.push(v),
+                    NotificationId::SignalName(v) => f.waiting_named_signals.push(v.into()),
+                }
+            }
+
+            f
+        }
+    }
+
+    impl TryFrom<Future> for UnresolvedFuture {
+        type Error = anyhow::Error;
+
+        fn try_from(value: Future) -> Result<Self, Self::Error> {
+            let Future {
+                combinator_type,
+                nested_futures,
+                waiting_completions,
+                waiting_named_signals,
+                waiting_signals,
+            } = value;
+
+            let combinator: journal_v2::CombinatorType =
+                future::CombinatorType::try_from(combinator_type)
+                    .context("Unrecognized combinator type")?
+                    .into();
+
+            let notifications = waiting_completions
+                .into_iter()
+                .map(NotificationId::for_completion)
+                .chain(
+                    waiting_signals
+                        .into_iter()
+                        .map(SignalId::for_index)
+                        .map(NotificationId::for_signal),
+                )
+                .chain(
+                    waiting_named_signals
+                        .into_iter()
+                        .map(|s| SignalId::for_name(s.into()))
+                        .map(NotificationId::for_signal),
+                );
+
+            let mut builder = UnresolvedFuture::builder(combinator).futures(notifications);
+
+            for fut in nested_futures {
+                builder = builder.future(UnresolvedFuture::try_from(fut)?);
+            }
+
+            builder.build()
         }
     }
 }
