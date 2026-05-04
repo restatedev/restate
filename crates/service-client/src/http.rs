@@ -131,7 +131,6 @@ impl HttpClient {
             );
 
             let builder = pool::PoolBuilder::default()
-                .max_connections(options.max_http2_connections)
                 .keep_alive_interval(keep_alive_interval)
                 .streams_per_connection_limit(options.streams_per_connection_limit)
                 .keep_alive_timeout(options.http_keep_alive_options.timeout.into())
