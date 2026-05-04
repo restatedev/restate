@@ -16,6 +16,7 @@ use std::time::Duration;
 use anyhow::Result;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
+use hickory_resolver::proto::rr::RData;
 use http::{
     Uri,
     uri::{PathAndQuery, Scheme},
@@ -60,20 +61,30 @@ pub(crate) async fn run_local(
         return Ok(());
     }
 
-    let resolver = hickory_resolver::Resolver::builder_tokio().unwrap().build();
+    let resolver = hickory_resolver::Resolver::builder_tokio()
+        .unwrap()
+        .build()
+        .map_err(|err| ServeError::Connection(err.into()))?;
 
     let tunnel_urls = resolver
         .srv_lookup(environment_info.tunnel_srv)
         .await
         .map_err(|err| ServeError::Connection(err.into()))?
+        .answers()
         .iter()
-        .map(|record| {
-            Uri::builder()
-                .scheme(Scheme::HTTPS)
-                .path_and_query(PathAndQuery::from_static("/"))
-                .authority(format!("{}:{}", record.target(), record.port()).as_str())
-                .build()
-                .map_err(|err| ServeError::Connection(err.into()))
+        .filter_map(|record| {
+            if let RData::SRV(svc) = &record.data {
+                Some(
+                    Uri::builder()
+                        .scheme(Scheme::HTTPS)
+                        .path_and_query(PathAndQuery::from_static("/"))
+                        .authority(format!("{}:{}", svc.target, svc.port).as_str())
+                        .build()
+                        .map_err(|err| ServeError::Connection(err.into())),
+                )
+            } else {
+                None
+            }
         })
         .collect::<std::result::Result<Vec<Uri>, ServeError>>()?;
 
