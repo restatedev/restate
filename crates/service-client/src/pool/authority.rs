@@ -22,14 +22,17 @@ use std::task::{Context, Poll};
 use bytes::Bytes;
 use http::Uri;
 use http_body::Body;
+use metrics::histogram;
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
-use restate_types::time::MillisSinceEpoch;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tower::Service;
 use tracing::trace;
 
+use restate_types::time::MillisSinceEpoch;
+
 use crate::pool::PoolConfig;
 use crate::pool::conn::{ConnectionConfig, ConnectionConfigBuilder};
+use crate::pool::metric_definitions::CONNECTION_POOL_CONNECTION_UTILIZATION;
 
 use super::Error;
 use super::conn::{Connection, ResponseFuture};
@@ -284,10 +287,20 @@ where
                             continue;
                         }
 
+                        let available_streams = candidate.available_streams();
+                        let max_streams = candidate.max_concurrent_streams();
+
+                        // sanity check: Avoid NaN in histograms.
+                        if max_streams != 0 {
+                            histogram!(CONNECTION_POOL_CONNECTION_UTILIZATION).record(
+                                (max_streams - available_streams) as f64 / max_streams as f64,
+                            );
+                        }
+
                         total_available_streams =
-                            total_available_streams.saturating_add(candidate.available_streams());
-                        total_max_concurrent_streams = total_max_concurrent_streams
-                            .saturating_add(candidate.max_concurrent_streams());
+                            total_available_streams.saturating_add(available_streams);
+                        total_max_concurrent_streams =
+                            total_max_concurrent_streams.saturating_add(max_streams);
 
                         if current_ids.contains(&candidate.id()) {
                             continue;

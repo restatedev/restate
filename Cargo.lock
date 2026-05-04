@@ -8227,6 +8227,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "jsonwebtoken 10.3.0",
+ "metrics",
  "parking_lot",
  "pem",
  "pin-project",
