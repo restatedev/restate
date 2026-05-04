@@ -674,12 +674,6 @@ impl ServiceSpan {
     }
 }
 
-impl Default for ServiceSpan {
-    fn default() -> Self {
-        Self::noop()
-    }
-}
-
 impl From<BoxedSpan> for ServiceSpan {
     fn from(span: BoxedSpan) -> Self {
         ServiceSpan(Some(span))

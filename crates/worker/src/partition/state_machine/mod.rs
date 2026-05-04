@@ -1882,7 +1882,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             .await?;
         }
 
-        self.notify_invocation_result(
+        self.emit_invocation_end_span(
             &invocation_id,
             &invocation_target,
             input.span_context(),
@@ -2000,7 +2000,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             .await?;
         }
 
-        self.notify_invocation_result(
+        self.emit_invocation_end_span(
             &invocation_id,
             &invocation_target,
             input.span_context(),
@@ -2750,7 +2750,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             )?;
 
             // Notify invocation result
-            self.notify_invocation_result(
+            self.emit_invocation_end_span(
                 &invocation_id,
                 &invocation_metadata.invocation_target,
                 &invocation_metadata.journal_metadata.span_context,
@@ -2776,7 +2776,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             }
         } else {
             // Just notify Ok, no need to read the output entry
-            self.notify_invocation_result(
+            self.emit_invocation_end_span(
                 &invocation_id,
                 &invocation_target,
                 &invocation_metadata.journal_metadata.span_context,
@@ -4139,52 +4139,53 @@ impl<S> StateMachineApplyContext<'_, S> {
         }
     }
 
-    fn notify_invocation_result(
+    fn emit_invocation_end_span(
         &mut self,
         invocation_id: &InvocationId,
         invocation_target: &InvocationTarget,
         span_context: &ServiceInvocationSpanContext,
         invocation_result: Result<(), &InvocationError>,
     ) {
+        if !self.is_leader {
+            return;
+        }
+        use opentelemetry::KeyValue;
+        use opentelemetry::trace::{Span, Status};
+
         // Emit a per-termination "end" span as a child of the invocation-start span.
-        if self.is_leader {
-            use opentelemetry::KeyValue;
-            use opentelemetry::trace::{Span, Status};
+        let mut end_span = instrumentation::create_invocation_end_span(
+            invocation_id,
+            invocation_target,
+            span_context,
+        );
 
-            let mut end_span = instrumentation::create_invocation_end_span(
-                invocation_id,
-                invocation_target,
-                span_context,
-            );
-
-            if end_span.is_recording() {
-                match invocation_result {
-                    Err(err) => {
-                        end_span.set_attributes([
-                            KeyValue::new(
-                                instrumentation::semconv::attribute::RESTATE_INVOCATION_RESULT,
-                                instrumentation::semconv::attribute::RESTATE_INVOCATION_RESULT_FAILURE
-                            ),
-                            KeyValue::new(
-                                instrumentation::semconv::attribute::ERROR_MESSAGE,
-                                err.message.clone()
-                            ),
-                            KeyValue::new(
-                                instrumentation::semconv::attribute::RESTATE_INVOCATION_ERROR_CODE,
-                                err.code().to_string()
-                            ),
-                        ]);
-                        end_span.set_status(Status::Error {
-                            description: err.message.clone(),
-                        });
-                    }
-                    Ok(_) => {
-                        end_span.set_attribute(KeyValue::new(
+        if end_span.is_recording() {
+            match invocation_result {
+                Err(err) => {
+                    end_span.set_attributes([
+                        KeyValue::new(
                             instrumentation::semconv::attribute::RESTATE_INVOCATION_RESULT,
-                            instrumentation::semconv::attribute::RESTATE_INVOCATION_RESULT_SUCCESS,
-                        ));
-                        end_span.set_status(Status::Ok);
-                    }
+                            instrumentation::semconv::attribute::RESTATE_INVOCATION_RESULT_FAILURE,
+                        ),
+                        KeyValue::new(
+                            instrumentation::semconv::attribute::ERROR_MESSAGE,
+                            err.message.clone(),
+                        ),
+                        KeyValue::new(
+                            instrumentation::semconv::attribute::RESTATE_INVOCATION_ERROR_CODE,
+                            err.code().to_string(),
+                        ),
+                    ]);
+                    end_span.set_status(Status::Error {
+                        description: err.message.clone(),
+                    });
+                }
+                Ok(_) => {
+                    end_span.set_attribute(KeyValue::new(
+                        instrumentation::semconv::attribute::RESTATE_INVOCATION_RESULT,
+                        instrumentation::semconv::attribute::RESTATE_INVOCATION_RESULT_SUCCESS,
+                    ));
+                    end_span.set_status(Status::Ok);
                 }
             }
         }
