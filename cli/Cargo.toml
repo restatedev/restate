@@ -58,7 +58,7 @@ dialoguer = { workspace = true }
 dirs = { version = "6.0" }
 figment = { version = "0.10.19", features = ["env", "toml"] }
 futures = { workspace = true }
-hickory-resolver = "0.25.2"
+hickory-resolver = "0.26.1"
 http = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
