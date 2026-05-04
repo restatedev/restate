@@ -719,6 +719,9 @@ impl LeaderState {
                     )
                     .map_err(Error::Invoker)?
             }
+            Action::RulesUpdated(updates) => {
+                self.scheduler.on_rules_updated(updates);
+            }
         }
 
         Ok(())

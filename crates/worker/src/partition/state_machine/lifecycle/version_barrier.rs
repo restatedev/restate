@@ -46,7 +46,7 @@ where
 #[cfg(test)]
 mod tests {
     use googletest::prelude::*;
-
+    use restate_limiter::RuleBook;
     use restate_storage_api::fsm_table::ReadFsmTable;
     use restate_types::SemanticRestateVersion;
     use restate_types::identifiers::PartitionKey;
@@ -67,7 +67,8 @@ mod tests {
             None, /* outbox_head_seq_number */
             KeyRange::FULL,
             SemanticRestateVersion::unknown().clone(),
-            Default::default(),
+            Default::default(),  /* schema */
+            RuleBook::default(), /* rule_book */
         );
         // this is fine as we are always above the unknown version (current > 0.0.0)
         let mut test_env = TestEnv::create_with_state_machine(state_machine).await;
@@ -109,7 +110,8 @@ mod tests {
             None, /* outbox_head_seq_number */
             KeyRange::FULL,
             SemanticRestateVersion::unknown().clone(),
-            Default::default(),
+            Default::default(),  /* schema */
+            RuleBook::default(), /* rule_book */
         );
         // this is fine as we are always above the unknown version (current > 0.0.0)
         let mut test_env = TestEnv::create_with_state_machine(state_machine).await;

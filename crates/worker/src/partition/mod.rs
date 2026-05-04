@@ -253,6 +253,7 @@ impl PartitionProcessorBuilder {
         let outbox_head_seq_number = partition_store.get_outbox_head_seq_number().await?;
         let min_restate_version = partition_store.get_min_restate_version().await?;
         let schema = partition_store.get_schema().await?;
+        let rule_book = partition_store.get_rule_book().await?.unwrap_or_default();
 
         if !SemanticRestateVersion::current().is_equal_or_newer_than(&min_restate_version) {
             gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL =>
@@ -273,6 +274,7 @@ impl PartitionProcessorBuilder {
             partition_store.partition_key_range(),
             min_restate_version,
             schema,
+            rule_book,
         );
 
         Ok(state_machine)
