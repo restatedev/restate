@@ -8,19 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::Handler;
-use super::HandlerError;
-use super::path_parsing::{InvocationRequestType, InvocationTargetType, TargetType};
-
-use crate::RequestDispatcher;
 use bytes::Bytes;
 use http::{Method, Request, Response};
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full};
+use tracing::warn;
+
 use restate_types::identifiers::IdempotencyId;
 use restate_types::invocation::InvocationQuery;
 use restate_types::invocation::client::{AttachInvocationResponse, GetInvocationOutputResponse};
 use restate_types::schema::invocation_target::InvocationTargetResolver;
-use tracing::warn;
+
+use super::HandlerError;
+use super::path_parsing::{InvocationRequestType, InvocationTargetType, TargetType};
+use super::{Handler, InvocationTargetRequest};
+use crate::RequestDispatcher;
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
@@ -87,12 +88,75 @@ where
     where
         <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
     {
-        // Check HTTP Method
         if req.method() != Method::GET {
             return Err(HandlerError::MethodNotAllowed);
         }
+        self.attach_invocation_query(invocation_query).await
+    }
 
-        // Wait on response
+    pub(crate) async fn handle_invocation_get_output<B: http_body::Body>(
+        self,
+        req: Request<B>,
+        invocation_query: InvocationQuery,
+    ) -> Result<Response<Full<Bytes>>, HandlerError>
+    where
+        <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
+    {
+        if req.method() != Method::GET {
+            return Err(HandlerError::MethodNotAllowed);
+        }
+        self.get_invocation_output_query(invocation_query).await
+    }
+
+    pub(crate) async fn handle_attach_by_target<B: http_body::Body>(
+        self,
+        req: Request<B>,
+    ) -> Result<Response<Full<Bytes>>, HandlerError>
+    where
+        <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
+    {
+        let invocation_query = Self::parse_invocation_target_body(req).await?;
+        self.attach_invocation_query(invocation_query).await
+    }
+
+    pub(crate) async fn handle_output_by_target<B: http_body::Body>(
+        self,
+        req: Request<B>,
+    ) -> Result<Response<Full<Bytes>>, HandlerError>
+    where
+        <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
+    {
+        let invocation_query = Self::parse_invocation_target_body(req).await?;
+        self.get_invocation_output_query(invocation_query).await
+    }
+
+    async fn parse_invocation_target_body<B: http_body::Body>(
+        req: Request<B>,
+    ) -> Result<InvocationQuery, HandlerError>
+    where
+        <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
+    {
+        if req.method() != Method::POST {
+            return Err(HandlerError::MethodNotAllowed);
+        }
+
+        let body_bytes = req
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| HandlerError::Body(e.into()))?
+            .to_bytes();
+
+        let target_request: InvocationTargetRequest = serde_json::from_slice(&body_bytes)
+            .map_err(|e| HandlerError::Body(anyhow::anyhow!("invalid request body: {e}")))?;
+
+        target_request.into_invocation_query()
+    }
+
+    async fn attach_invocation_query(
+        self,
+        invocation_query: InvocationQuery,
+    ) -> Result<Response<Full<Bytes>>, HandlerError> {
         let response = match self
             .dispatcher
             .attach_invocation(invocation_query.clone())
@@ -118,19 +182,10 @@ where
         })
     }
 
-    pub(crate) async fn handle_invocation_get_output<B: http_body::Body>(
+    async fn get_invocation_output_query(
         self,
-        req: Request<B>,
         invocation_query: InvocationQuery,
-    ) -> Result<Response<Full<Bytes>>, HandlerError>
-    where
-        <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
-    {
-        // Check HTTP Method
-        if req.method() != Method::GET {
-            return Err(HandlerError::MethodNotAllowed);
-        }
-
+    ) -> Result<Response<Full<Bytes>>, HandlerError> {
         let response = match self
             .dispatcher
             .get_invocation_output(invocation_query.clone())

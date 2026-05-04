@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::Handler;
 use super::HandlerError;
+use super::{Handler, RequestType};
 use http::Uri;
 use restate_types::ServiceName;
 use restate_types::identifiers::InvocationId;
@@ -223,21 +223,6 @@ impl ServiceRequestType {
     }
 }
 
-pub(crate) enum RequestType {
-    Health,
-    OpenAPI,
-    Awakeable(AwakeableRequestType),
-    Invocation(InvocationRequestType),
-    Service(ServiceRequestType),
-    Workflow(WorkflowRequestType),
-    /// `GET /restate/attach/{invocation_id}`
-    Attach(InvocationId),
-    /// `GET /restate/output/{invocation_id}`
-    Output(InvocationId),
-    /// `POST /restate/lookup`
-    Lookup,
-}
-
 /// Parse the new ingress API verbs under `/restate/...`. The verb has already been
 /// consumed by `parse_path`. Supported shapes:
 ///   - `call/{service}/{handler}` or `call/{service}/{key}/{handler}`
@@ -245,6 +230,7 @@ pub(crate) enum RequestType {
 ///   - `scope/{scopeKey}/call/{service}/{handler}`
 ///   - `scope/{scopeKey}/send/{service}/{key}/{handler}`
 ///   - `attach/{invocation_id}` or `output/{invocation_id}`
+///   - `attach` or `output` (POST with body describing the target)
 ///   - `lookup`
 fn parse_restate_api_verb<'a, Schemas>(
     verb: &str,
@@ -264,20 +250,26 @@ where
             let inner_verb = path_parts.next().ok_or(HandlerError::BadRestateApiPath)?;
             parse_call_or_send(inner_verb, Some(scope_key), path_parts, schemas)
         }
-        "attach" | "output" => {
-            let id_str = path_parts.next().ok_or(HandlerError::BadRestateApiPath)?;
-            if path_parts.next().is_some() {
-                return Err(HandlerError::BadRestateApiPath);
-            }
-            let invocation_id = id_str
-                .parse::<InvocationId>()
-                .map_err(|e| HandlerError::BadInvocationId(id_str.to_owned(), e))?;
-            Ok(if verb == "attach" {
-                RequestType::Attach(invocation_id)
+        "attach" | "output" => match path_parts.next() {
+            None => Ok(if verb == "attach" {
+                RequestType::AttachByTarget
             } else {
-                RequestType::Output(invocation_id)
-            })
-        }
+                RequestType::OutputByTarget
+            }),
+            Some(id_str) => {
+                if path_parts.next().is_some() {
+                    return Err(HandlerError::BadRestateApiPath);
+                }
+                let invocation_id = id_str
+                    .parse::<InvocationId>()
+                    .map_err(|e| HandlerError::BadInvocationId(id_str.to_owned(), e))?;
+                Ok(if verb == "attach" {
+                    RequestType::Attach(invocation_id)
+                } else {
+                    RequestType::Output(invocation_id)
+                })
+            }
+        },
         "lookup" => {
             if path_parts.next().is_some() {
                 return Err(HandlerError::BadRestateApiPath);
@@ -343,7 +335,7 @@ where
     Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
 {
     /// This function takes care of parsing the path of the request, inferring the correct request type
-    pub(crate) fn parse_path(&mut self, uri: &Uri) -> Result<RequestType, HandlerError> {
+    pub(super) fn parse_path(&mut self, uri: &Uri) -> Result<RequestType, HandlerError> {
         let num_segments = uri.path().bytes().filter(|&b| b == b'/').count();
 
         // The minimum number of segments are 2 when calling /service/handler through the old ingress API.

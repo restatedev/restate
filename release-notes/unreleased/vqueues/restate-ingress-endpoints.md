@@ -74,6 +74,17 @@ Idempotency target:
 
 `scope` is optional. The response is `{"invocationId": "..."}`.
 
+### Attach / get output by target (one-shot)
+
+For callers that only have a workflow or idempotency target, `/restate/attach` and `/restate/output` also accept a `POST` with the same body shape as `/restate/lookup`:
+
+```
+POST /restate/attach
+POST /restate/output
+```
+
+The server resolves the target into an invocation id and serves the request in a single round-trip, avoiding the explicit `/restate/lookup` step. The `GET /restate/{attach,output}/{invocation_id}` variants remain unchanged for callers that already have an invocation id.
+
 ### Impact on Users
 
 - **Existing deployments**: No impact. The old unversioned paths (`/{service}/{handler}`, `/restate/invocation/...`, `/restate/workflow/...`, etc.) continue to work unchanged.
