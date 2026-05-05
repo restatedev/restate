@@ -129,7 +129,7 @@ pub async fn create_rule<Metadata, Discovery, Telemetry, Invocations, Transport>
     let new_rule = NewRule {
         pattern: payload.pattern,
         limits: payload.limits,
-        reason: payload.reason,
+        description: payload.description,
         disabled: payload.disabled,
     };
 
@@ -160,9 +160,10 @@ pub async fn create_rule<Metadata, Discovery, Telemetry, Invocations, Transport>
 
 /// Patch a rule.
 ///
-/// JSON Merge Patch on `limits.action_concurrency`/`reason` (omit to
-/// keep, `null` to clear, value to set) and `disabled` (omit to keep,
-/// boolean to set). Pattern cannot be changed — delete and recreate.
+/// JSON Merge Patch on `limits.action_concurrency`/`description` (omit
+/// to keep, `null` to clear, value to set) and `disabled` (omit to
+/// keep, boolean to set). Pattern cannot be changed — delete and
+/// recreate.
 #[utoipa::path(
     patch,
     path = "/limits/rules/{rule_id}",
@@ -184,7 +185,7 @@ pub async fn update_rule<Metadata, Discovery, Telemetry, Invocations, Transport>
 ) -> Result<Json<RuleResponse>, RulesApiError> {
     let patch = RulePatch {
         limits: payload.limits,
-        reason: payload.reason,
+        description: payload.description,
         disabled: payload.disabled,
     };
 

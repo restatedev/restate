@@ -140,7 +140,7 @@ impl<'de> serde::Deserialize<'de> for RuleId {
 /// One persisted rule entry.
 ///
 /// `version` advances on runtime-relevant changes only (`limits`, `disabled`).
-/// Edits to `reason` bump only `last_modified` and the enclosing
+/// Edits to `description` bump only `last_modified` and the enclosing
 /// [`RuleBook::version`]. See the file header for the full version-bump
 /// contract.
 ///
@@ -155,9 +155,9 @@ pub struct PersistedRule {
     pub pattern: RulePattern<ReString>,
     #[bilrost(tag(3))]
     pub limits: UserLimits,
-    /// Operators can leave a reason for why the rule was created/modified.
+    /// Free-form operator-supplied description for the rule.
     #[bilrost(tag(4))]
-    pub reason: Option<String>,
+    pub description: Option<String>,
     /// Soft tombstone. `true` means the rule is parked and the runtime
     /// should treat it as absent. Default `false` means the rule is
     /// active. Can be used to temporarily disable a rule while keeping
@@ -234,7 +234,7 @@ impl RuleBook {
     ///
     /// On success the book version is bumped if anything changed. Per-rule
     /// version is bumped only on runtime-relevant changes (`limits`,
-    /// `disabled`); reason-only edits leave the per-rule version alone.
+    /// `disabled`); description-only edits leave the per-rule version alone.
     /// Pure no-op patches don't move anything.
     pub fn apply_change(&mut self, id: RuleId, change: RuleChange) -> Result<(), RuleBookError> {
         let new_book_version = self.version.next();
@@ -260,7 +260,7 @@ impl RuleBook {
                         version: new_book_version,
                         pattern: new_rule.pattern,
                         limits: new_rule.limits,
-                        reason: new_rule.reason,
+                        description: new_rule.description,
                         disabled: new_rule.disabled,
                         last_modified: now,
                     },
@@ -292,11 +292,11 @@ impl RuleBook {
                     anything_changed = true;
                 }
 
-                // reason
-                if let Some(new_reason) = patch.reason.into_target()
-                    && rule.reason != new_reason
+                // description
+                if let Some(new_description) = patch.description.into_target()
+                    && rule.description != new_description
                 {
-                    rule.reason = new_reason;
+                    rule.description = new_description;
                     anything_changed = true;
                 }
 
@@ -334,7 +334,7 @@ impl RuleBook {
     ///   "anything runtime-relevant changed").
     /// - Visible in both with equal per-rule `version` emits nothing.
     ///
-    /// `last_modified` and `reason` never produce updates on their own.
+    /// `last_modified` and `description` never produce updates on their own.
     pub fn diff(&self, previous: &Self) -> Vec<RuleUpdate> {
         let mut updates = Vec::new();
 
@@ -430,7 +430,7 @@ impl RuleBook {
 #[derive(Debug, Default, Clone)]
 pub struct RulePatch {
     pub limits: LimitsPatch,
-    pub reason: UpdateField<String>,
+    pub description: UpdateField<String>,
     pub disabled: Option<bool>,
 }
 
@@ -448,7 +448,7 @@ pub struct LimitsPatch {
 pub struct NewRule {
     pub pattern: RulePattern<ReString>,
     pub limits: UserLimits,
-    pub reason: Option<String>,
+    pub description: Option<String>,
     /// Default `false` (rule is active). Set to `true` to create a parked
     /// rule that is invisible to the runtime until later toggled.
     pub disabled: bool,
@@ -592,7 +592,7 @@ mod tests {
                 limits: UserLimits {
                     action_concurrency: NonZeroU32::new(1000),
                 },
-                reason: Some("global default".to_owned()),
+                description: Some("global default".to_owned()),
                 disabled: false,
                 last_modified: RoughTimestamp::new(42),
                 version: Version::from(1),
@@ -605,7 +605,7 @@ mod tests {
                 limits: UserLimits {
                     action_concurrency: NonZeroU32::new(10),
                 },
-                reason: None,
+                description: None,
                 disabled: true,
                 last_modified: RoughTimestamp::new(43),
                 version: Version::from(2),
@@ -624,7 +624,7 @@ mod tests {
             limits: UserLimits {
                 action_concurrency: NonZeroU32::new(concurrency),
             },
-            reason: None,
+            description: None,
             disabled: false,
         }
     }
@@ -701,7 +701,7 @@ mod tests {
     }
 
     #[test]
-    fn patch_reason_only_bumps_book_but_not_rule_version() {
+    fn patch_description_only_bumps_book_but_not_rule_version() {
         let mut book = RuleBook::empty();
         book.apply_change(id("*"), RuleChange::Create(new_rule("*", 1000)))
             .unwrap();
@@ -711,13 +711,13 @@ mod tests {
         book.apply_change(
             id("*"),
             RuleChange::Patch(RulePatch {
-                reason: UpdateField::Overwrite("vendor X paused".to_owned()),
+                description: UpdateField::Overwrite("vendor X paused".to_owned()),
                 ..Default::default()
             }),
         )
         .unwrap();
         let r = book.get(&id("*")).unwrap();
-        assert_eq!(r.reason.as_deref(), Some("vendor X paused"));
+        assert_eq!(r.description.as_deref(), Some("vendor X paused"));
         assert_eq!(r.version, v_before_rule, "per-rule version must NOT bump");
         assert_eq!(
             book.version(),
@@ -749,7 +749,7 @@ mod tests {
                     action_concurrency: UpdateField::Overwrite(NonZeroU32::new(1000).unwrap()),
                 },
                 disabled: Some(false),
-                reason: UpdateField::Keep,
+                description: UpdateField::Keep,
             }),
         )
         .unwrap();
@@ -764,27 +764,27 @@ mod tests {
         book.apply_change(
             id("*"),
             RuleChange::Create(NewRule {
-                reason: Some("initial".to_owned()),
+                description: Some("initial".to_owned()),
                 ..new_rule("*", 1000)
             }),
         )
         .unwrap();
 
-        // Clear reason and limits.
+        // Clear description and limits.
         book.apply_change(
             id("*"),
             RuleChange::Patch(RulePatch {
                 limits: LimitsPatch {
                     action_concurrency: UpdateField::Delete,
                 },
-                reason: UpdateField::Delete,
+                description: UpdateField::Delete,
                 disabled: None,
             }),
         )
         .unwrap();
         let r = book.get(&id("*")).unwrap();
         assert!(r.limits.action_concurrency.is_none());
-        assert!(r.reason.is_none());
+        assert!(r.description.is_none());
     }
 
     #[test]
@@ -958,7 +958,7 @@ mod tests {
     }
 
     #[test]
-    fn diff_reason_only_change_emits_nothing() {
+    fn diff_description_only_change_emits_nothing() {
         let mut book = RuleBook::empty();
         book.apply_change(id("*"), RuleChange::Create(new_rule("*", 1000)))
             .unwrap();
@@ -966,7 +966,7 @@ mod tests {
         book.apply_change(
             id("*"),
             RuleChange::Patch(RulePatch {
-                reason: UpdateField::Overwrite("audit note".to_owned()),
+                description: UpdateField::Overwrite("audit note".to_owned()),
                 ..Default::default()
             }),
         )

@@ -20,8 +20,8 @@ pub(crate) fn append_rule_row(builder: &mut SysRulesBuilder, id: &RuleId, rule: 
     if let Some(concurrency) = rule.limits.action_concurrency {
         row.action_concurrency(concurrency.get());
     }
-    if let Some(reason) = rule.reason.as_deref() {
-        row.reason(reason);
+    if let Some(description) = rule.description.as_deref() {
+        row.description(description);
     }
     row.disabled(rule.disabled);
     row.version(rule.version.into());

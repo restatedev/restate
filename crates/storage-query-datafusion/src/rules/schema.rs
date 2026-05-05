@@ -24,7 +24,7 @@ define_table!(sys_rules(
     action_concurrency: DataType::UInt32,
 
     /// Free-form description set by the operator.
-    reason: DataType::Utf8,
+    description: DataType::Utf8,
 
     /// True when the rule is parked (treated as absent at runtime).
     disabled: DataType::Boolean,

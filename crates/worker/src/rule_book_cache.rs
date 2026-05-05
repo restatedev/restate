@@ -206,7 +206,7 @@ mod tests {
             RuleChange::Create(NewRule {
                 pattern,
                 limits: UserLimits::new(NonZeroU32::new(100)),
-                reason: None,
+                description: None,
                 disabled: false,
             }),
         )

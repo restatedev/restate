@@ -31,7 +31,7 @@ pub struct CreateRuleRequest {
     /// Free-form description shown in the rule book; not consulted at
     /// runtime.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
+    pub description: Option<String>,
     /// Soft-tombstone toggle. `true` parks the rule (the runtime treats
     /// it as absent) without removing it.
     #[serde(default)]
@@ -51,7 +51,7 @@ pub struct PatchRuleRequest {
     /// `null` to clear, string to set, omit to leave unchanged.
     #[cfg_attr(feature = "schema", schema(value_type = Option<String>, nullable))]
     #[serde(default)]
-    pub reason: UpdateField<String>,
+    pub description: UpdateField<String>,
     /// `true` parks the rule, `false` reactivates; omit to leave unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled: Option<bool>,
@@ -69,7 +69,7 @@ pub struct RuleResponse {
     pub pattern: RulePattern<ReString>,
     pub limits: UserLimits,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
+    pub description: Option<String>,
     pub disabled: bool,
     /// Per-rule version: bumped on runtime-relevant changes.
     #[cfg_attr(feature = "schema", schema(value_type = u32))]
@@ -84,7 +84,7 @@ impl From<(RuleId, PersistedRule)> for RuleResponse {
             id,
             pattern: rule.pattern,
             limits: rule.limits,
-            reason: rule.reason,
+            description: rule.description,
             disabled: rule.disabled,
             version: rule.version,
             last_modified_seconds_since_epoch: rule.last_modified.as_unix_seconds(),
