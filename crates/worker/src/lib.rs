@@ -128,8 +128,7 @@ where
         let schema = metadata.updateable_schema();
 
         // ingress_kafka
-        let ingress_kafka =
-            IngressKafkaService::new(bifrost.clone(), ingestion_client.clone(), schema.clone());
+        let ingress_kafka = IngressKafkaService::new(ingestion_client.clone(), schema.clone());
 
         let subscription_controller_handle =
             SubscriptionControllerHandle::new(ingress_kafka.create_command_sender());
