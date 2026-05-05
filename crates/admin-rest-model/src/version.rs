@@ -29,7 +29,7 @@ pub enum AdminApiVersion {
     V2 = 2,
     V3 = 3,
     /// Added with v1.7.0. Added scope column to sys_state and sys_promise tables. More changes to
-    /// follow with the vqueues changes.
+    /// follow with the vqueues changes. Removed sys_idempotency table.
     V4 = 4,
 }
 
