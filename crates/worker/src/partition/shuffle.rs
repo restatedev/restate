@@ -90,12 +90,12 @@ fn create_header(
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(super) enum OutboxReaderError {
+pub(crate) enum OutboxReaderError {
     #[error(transparent)]
     Storage(#[from] restate_storage_api::StorageError),
 }
 
-pub(super) trait OutboxReader {
+pub(crate) trait OutboxReader {
     fn get_next_message(
         &mut self,
         next_sequence_number: MessageIndex,
@@ -164,7 +164,7 @@ impl ShuffleMetadata {
     }
 }
 
-pub struct Shuffle<T, OR> {
+pub(crate) struct Shuffle<T, OR> {
     metadata: ShuffleMetadata,
     outbox_reader: OR,
     ingestion_client: IngestionClient<T, Envelope>,
