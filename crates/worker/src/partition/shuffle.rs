@@ -164,7 +164,7 @@ impl ShuffleMetadata {
     }
 }
 
-pub struct Shuffle<T, OR> {
+pub(super) struct Shuffle<T, OR> {
     metadata: ShuffleMetadata,
     outbox_reader: OR,
     ingestion_client: IngestionClient<T, Envelope>,
