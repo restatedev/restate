@@ -406,6 +406,61 @@ fn write_nodes<'a>(
     write!(f, "]")
 }
 
+mod bilrost_impl {
+    use bilrost::{
+        Canonicity,
+        encoding::{DistinguishedProxiable, EmptyState, ForOverwrite, Proxiable},
+    };
+
+    use crate::PlainNodeId;
+
+    use super::NodeSet;
+
+    impl Proxiable for NodeSet {
+        type Proxy = Vec<PlainNodeId>;
+
+        fn encode_proxy(&self) -> Self::Proxy {
+            Vec::from_iter(self.0.iter().cloned())
+        }
+
+        fn decode_proxy(&mut self, proxy: Self::Proxy) -> Result<(), bilrost::DecodeErrorKind> {
+            self.0.extend(proxy.into_iter());
+            Ok(())
+        }
+    }
+
+    impl EmptyState<(), NodeSet> for () {
+        fn clear(val: &mut NodeSet) {
+            val.0.clear();
+        }
+        fn empty() -> NodeSet
+        where
+            NodeSet: Sized,
+        {
+            NodeSet::new()
+        }
+
+        fn is_empty(val: &NodeSet) -> bool {
+            val.is_empty()
+        }
+    }
+
+    impl ForOverwrite<(), NodeSet> for () {
+        fn for_overwrite() -> NodeSet
+        where
+            NodeSet: Sized,
+        {
+            NodeSet::new()
+        }
+    }
+
+    bilrost::delegate_proxied_encoding!(
+        use encoding (bilrost::encoding::GeneralPacked)
+        to encode proxied type (NodeSet)
+        with general encodings
+    );
+}
+
 #[cfg(test)]
 mod test {
     use ahash::HashMap;
