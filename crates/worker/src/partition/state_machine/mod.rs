@@ -78,11 +78,12 @@ use restate_types::invocation::client::{
     PurgeInvocationResponse, ResumeInvocationResponse,
 };
 use restate_types::invocation::{
-    AttachInvocationRequest, IngressInvocationResponseSink, InvocationMutationResponseSink,
-    InvocationQuery, InvocationResponse, InvocationTarget, InvocationTargetType,
-    InvocationTermination, JournalCompletionTarget, NotifySignalRequest, ResponseResult,
-    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
-    SubmitNotificationSink, TerminationFlavor, VirtualObjectHandlerType, WorkflowHandlerType,
+    AttachInvocationRequest, IngressInvocationResponseSink, InvocationInput,
+    InvocationMutationResponseSink, InvocationQuery, InvocationResponse, InvocationTarget,
+    InvocationTargetType, InvocationTermination, JournalCompletionTarget, NotifySignalRequest,
+    ResponseResult, ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
+    Source, SubmitNotificationSink, TerminationFlavor, VirtualObjectHandlerType,
+    WorkflowHandlerType,
 };
 use restate_types::journal::Completion;
 use restate_types::journal::CompletionResult;
