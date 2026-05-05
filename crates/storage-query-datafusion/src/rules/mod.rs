@@ -8,12 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod deployments;
-pub mod handlers;
-pub mod invocations;
-pub mod kafka_clusters;
-pub mod query;
-pub mod rules;
-pub mod services;
-pub mod subscriptions;
-pub mod version;
+mod row;
+pub(crate) mod schema;
+mod table;
+
+pub(crate) use table::register_self;

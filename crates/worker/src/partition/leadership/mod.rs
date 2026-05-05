@@ -32,6 +32,7 @@ use restate_ingestion_client::IngestionClient;
 use restate_invoker_impl::{
     InvokerHandle as InvokerChannelServiceHandle, Service as InvokerService,
 };
+use restate_limiter::RuleBook;
 use restate_partition_store::PartitionStore;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::StorageError;
@@ -74,6 +75,8 @@ use restate_worker_api::{
     LeaderQueryCommand, LeaderQueryRequest, LeaderQueryResponse, LeaderQuerySender,
 };
 
+use self::durability_tracker::DurabilityTracker;
+use self::trim_queue::{LogTrimmer, TrimQueue};
 use crate::invoker_integration::EntryEnricher;
 use crate::partition::LeadershipInfo;
 use crate::partition::cleaner::{self, Cleaner};
@@ -85,9 +88,7 @@ use crate::partition::shuffle::{OutboxReaderError, Shuffle, ShuffleMetadata};
 use crate::partition::state_machine::{Action, StateMachine};
 use crate::partition::types::InvokerEffect;
 use crate::partition_processor_manager::PartitionLeaderHandlesRegistry;
-
-use self::durability_tracker::DurabilityTracker;
-use self::trim_queue::{LogTrimmer, TrimQueue};
+use crate::rule_book_cache::RuleBookCacheHandle;
 
 type TimerService = restate_timer::TimerService<TimerKeyValue, TokioClock, TimerReader>;
 type InvokerStream = ReceiverStream<InvokerEffect>;
@@ -150,6 +151,7 @@ pub(crate) enum ActionEffect {
     Cleaner(cleaner::CleanerEffect),
     PartitionMaintenance(PartitionDurability),
     UpsertSchema(Schema),
+    UpsertRuleBook(Arc<restate_limiter::RuleBook>),
     AwaitingRpcSelfProposeDone,
 }
 enum State {
@@ -183,6 +185,7 @@ pub(crate) struct LeadershipState<T> {
     trim_queue: TrimQueue,
     leader_query_tx: LeaderQuerySender,
     leader_handles_registry: PartitionLeaderHandlesRegistry,
+    rule_book_cache: RuleBookCacheHandle,
 }
 
 impl<T> LeadershipState<T>
@@ -199,6 +202,7 @@ where
         trim_queue: TrimQueue,
         leader_query_tx: LeaderQuerySender,
         leader_handles_registry: PartitionLeaderHandlesRegistry,
+        rule_book_cache: RuleBookCacheHandle,
     ) -> Self {
         Self {
             state: State::Follower,
@@ -210,6 +214,7 @@ where
             trim_queue,
             leader_query_tx,
             leader_handles_registry,
+            rule_book_cache,
         }
     }
 
@@ -334,6 +339,7 @@ where
         replica_set_states: &PartitionReplicaSetStates,
         config: &Configuration,
         vqueues_cache: &mut VQueuesMetaCache,
+        rule_book: &RuleBook,
     ) -> Result<bool, Error> {
         self.last_seen_leader_epoch = Some(announce_leader.leader_epoch);
 
@@ -354,6 +360,7 @@ where
                             replica_set_states.clone(),
                             vqueues_cache,
                             config,
+                            rule_book,
                         )
                         .await?
                     }
@@ -397,6 +404,7 @@ where
         replica_set_states: PartitionReplicaSetStates,
         vqueues_cache: &mut VQueuesMetaCache,
         config: &Configuration,
+        rule_book: &RuleBook,
     ) -> Result<(), Error> {
         if let State::Candidate {
             leader_epoch,
@@ -457,7 +465,7 @@ where
                 .into_guard();
 
             let scheduler_service = if config.common.experimental_enable_vqueues {
-                SchedulerService::create(
+                let scheduler = SchedulerService::create(
                     ResourceManager::create(
                         partition_store.partition_db().clone(),
                         self.invoker_capacity.concurrency.clone(),
@@ -469,7 +477,15 @@ where
                     partition_store.partition_db().clone(),
                     vqueues_cache,
                 )
-                .await?
+                .await?;
+
+                // Seed the scheduler's UserLimiter with whatever rules
+                // have already been applied to this partition.
+                let initial_diff = rule_book.diff_from_empty();
+                if !initial_diff.is_empty() {
+                    scheduler.on_rules_updated(initial_diff);
+                }
+                scheduler
             } else {
                 // we only perform the mass-resumption if vqueues are disabled
                 Self::resume_invoked_invocations(&mut invoker_handle, partition_store).await?;
@@ -590,6 +606,7 @@ where
                 shuffle_rx,
                 durability_tracker,
                 leader_query_guard,
+                self.rule_book_cache.subscribe(),
             )));
 
             Ok(())
@@ -847,11 +864,13 @@ mod tests {
     use crate::partition::leadership::trim_queue::TrimQueue;
     use crate::partition::leadership::{LeadershipState, State};
     use crate::partition_processor_manager::PartitionLeaderHandlesRegistry;
+    use crate::rule_book_cache::RuleBookCacheHandle;
     use assert2::let_assert;
     use restate_bifrost::Bifrost;
     use restate_core::partitions::PartitionRouting;
     use restate_core::{TaskCenter, TestCoreEnv};
     use restate_ingestion_client::IngestionClient;
+    use restate_limiter::RuleBook;
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
@@ -903,6 +922,7 @@ mod tests {
             TrimQueue::default(),
             leader_query_tx,
             PartitionLeaderHandlesRegistry::default(),
+            RuleBookCacheHandle::detached(),
         );
 
         assert!(matches!(state.state, State::Follower));
@@ -936,6 +956,7 @@ mod tests {
         assert!(announce_leader.next_config.is_none());
 
         let mut partition_store = partition_store_manager.open(&PARTITION, None).await?;
+        let rule_book = RuleBook::default();
         state
             .on_announce_leader(
                 &announce_leader,
@@ -943,6 +964,7 @@ mod tests {
                 &replica_set_states,
                 &Configuration::pinned(),
                 &mut VQueuesMetaCache::new_empty(),
+                &rule_book,
             )
             .await?;
 

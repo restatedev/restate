@@ -10,6 +10,8 @@
 
 use restate_core::network::TransportConnect;
 use restate_ingestion_client::IngestionClient;
+use restate_limiter::RuleBookObserver;
+use restate_metadata_store::MetadataStoreClient;
 use restate_service_protocol_v4::serdes::SerdesClient;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::schema::registry::SchemaRegistry;
@@ -21,8 +23,12 @@ pub struct AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transp
     pub serdes_client: SerdesClient,
     pub invocation_client: Invocations,
     pub ingestion_client: IngestionClient<Transport, Envelope>,
+    /// Used by handlers that mutate cluster-global metadata-store keys
+    /// directly (e.g. the rule book) via `read_modify_write`.
+    pub metadata_store_client: MetadataStoreClient,
     // Some value if the query endpoint is activated
     pub query_context: Option<QueryContext>,
+    pub rule_book_observer: Option<RuleBookObserver>,
 }
 
 impl<Metadata, Discovery, Telemetry, Invocations, Transport>
@@ -35,14 +41,18 @@ where
         serdes_client: SerdesClient,
         invocation_client: Invocations,
         ingestion_client: IngestionClient<Transport, Envelope>,
+        metadata_store_client: MetadataStoreClient,
         query_context: Option<QueryContext>,
+        rule_book_observer: Option<RuleBookObserver>,
     ) -> Self {
         Self {
             schema_registry,
             serdes_client,
             invocation_client,
             ingestion_client,
+            metadata_store_client,
             query_context,
+            rule_book_observer,
         }
     }
 }

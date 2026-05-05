@@ -24,6 +24,7 @@ use restate_core::network::TransportConnect;
 use restate_core::partitions::PartitionRouting;
 use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_ingestion_client::IngestionClient;
+use restate_limiter::rule_book::RuleBookObserver;
 use restate_partition_store::PartitionStoreManager;
 use restate_service_client::{AssumeRoleCacheMode, HttpClient, ServiceClient};
 use restate_service_protocol_v4::discovery::ServiceDiscovery;
@@ -93,6 +94,7 @@ impl<T: TransportConnect> AdminRole<T> {
         server_builder: &mut NetworkServerBuilder,
         address_book: &mut AddressBook,
         local_query_context: Option<QueryContext>,
+        local_rule_book_observer: Option<RuleBookObserver>,
     ) -> Result<Self, AdminRoleBuildError> {
         health_status.update(AdminStatus::StartingUp);
         let config = updateable_config.pinned();
@@ -126,12 +128,14 @@ impl<T: TransportConnect> AdminRole<T> {
                 Option::<EmptyInvokerStatusHandle>::None,
                 metadata.updateable_schema(),
                 remote_scanner_manager,
+                metadata_writer.raw_metadata_store_client().clone(),
+                None,
             )
             .await?
         };
 
         let listeners = address_book.take_listeners::<AdminPort>();
-        let admin = AdminService::new(
+        let mut admin = AdminService::new(
             listeners,
             metadata_writer.clone(),
             ingestion_client,
@@ -145,6 +149,10 @@ impl<T: TransportConnect> AdminRole<T> {
             telemetry_http_client,
         )
         .with_query_context(query_context.clone());
+
+        if let Some(observer) = local_rule_book_observer {
+            admin = admin.with_rule_book_observer(observer);
+        }
 
         let controller = if config.admin.is_cluster_controller_enabled() {
             Some(

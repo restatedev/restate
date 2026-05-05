@@ -9,14 +9,21 @@ publish = false
 
 [features]
 default = []
-schema = ["dep:utoipa", "restate-serde-util/utoipa-schema", "restate-types/utoipa-schema"]
+schema = [
+    "dep:utoipa",
+    "restate-limiter/schema",
+    "restate-serde-util/utoipa-schema",
+    "restate-types/utoipa-schema",
+]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
+restate-limiter = { workspace = true, features = ["rule-book"] }
 restate-types = { workspace = true }
 restate-serde-util = { workspace = true }
 restate-time-util = { workspace = true, features = ["serde_with"] }
+restate-util-string = { workspace = true }
 
 bytes = { workspace = true }
 derive_more = { workspace = true, features = ["try_from"] }

@@ -8,17 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::RangeInclusive;
+
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use codederror::{Code, CodedError};
+
 use restate_core::ShutdownError;
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use restate_types::invocation::ServiceType;
 use restate_types::schema::registry::SchemaRegistryError;
 use restate_util_string::RestrictedValueError;
-use serde::Serialize;
-use std::ops::RangeInclusive;
+
+use crate::rest_api::ErrorDescriptionResponse;
+
 // --- Few helpers to define Admin API errors.
 
 /// Macro to generate an Admin API Error enum with the given variants.
@@ -293,18 +297,6 @@ pub enum MetaApiError {
     BadScope(RestrictedValueError),
 }
 
-/// # Error description response
-///
-/// Error details of the response
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub(crate) struct ErrorDescriptionResponse {
-    message: String,
-    /// # Restate code
-    ///
-    /// Restate error code describing this error
-    restate_code: Option<&'static str>,
-}
-
 impl IntoResponse for MetaApiError {
     fn into_response(self) -> Response {
         let status_code = match &self {
@@ -369,7 +361,8 @@ impl utoipa::IntoResponses for MetaApiError {
 
 pub mod meta_api_error {
     //! Those types are only used to generate the corresponding OpenAPI specification for error types
-    //! that are referenced by [`super::MetaApiError`] when calling [`utoipa::IntoResponses`].
+    //! that are referenced by [`crate::rest_api::error::MetaApiError`] and [`crate::rest_api::rules::RulesApiError`]
+    //! when calling [`utoipa::IntoResponses`].
     #![allow(dead_code)]
 
     /// Bad request
@@ -387,6 +380,10 @@ pub mod meta_api_error {
     /// Conflict
     #[derive(utoipa::ToResponse)]
     pub struct Conflict(super::ErrorDescriptionResponse);
+
+    /// Unprocessable entity
+    #[derive(utoipa::ToResponse)]
+    pub struct UnprocessableEntity(super::ErrorDescriptionResponse);
 
     /// Internal server error
     #[derive(utoipa::ToResponse)]

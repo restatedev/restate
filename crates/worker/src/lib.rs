@@ -19,6 +19,7 @@ pub mod partition;
 #[cfg(not(feature = "expose-internals"))]
 mod partition;
 mod partition_processor_manager;
+mod rule_book_cache;
 mod subscription_controller;
 mod subscription_integration;
 
@@ -41,6 +42,7 @@ use restate_core::{Metadata, TaskKind};
 use restate_core::{MetadataWriter, TaskCenter};
 use restate_ingestion_client::IngestionClient;
 use restate_ingress_kafka::Service as IngressKafkaService;
+use restate_limiter::RuleBookObserver;
 use restate_partition_store::PartitionStoreManager;
 use restate_partition_store::snapshots::SnapshotRepository;
 use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
@@ -60,6 +62,7 @@ use crate::partition_processor_manager::PartitionProcessorManager;
 
 pub use self::error::*;
 pub use self::handle::*;
+pub use crate::rule_book_cache::RuleBookCacheHandle;
 pub use crate::subscription_controller::SubscriptionController;
 pub use crate::subscription_integration::SubscriptionControllerHandle;
 
@@ -161,6 +164,8 @@ where
             }),
         );
 
+        let metadata_store_client = metadata_writer.raw_metadata_store_client().clone();
+
         let partition_processor_manager = PartitionProcessorManager::new(
             health_status,
             Configuration::live(),
@@ -178,6 +183,10 @@ where
             ppm_ingestion_client,
         );
 
+        let rule_book_cache_handle = partition_processor_manager.rule_book_cache_handle();
+        let rule_book_observer: RuleBookObserver =
+            Arc::new(move |book| rule_book_cache_handle.notify_observed_owned(book));
+
         let storage_query_context = QueryContext::with_user_tables(
             &config.admin.query_engine,
             SelectPartitionsFromMetadata,
@@ -185,6 +194,8 @@ where
             Some(partition_processor_manager.leader_handles_registry()),
             schema,
             remote_scanner_manager,
+            metadata_store_client,
+            Some(rule_book_observer),
         )
         .await?;
 
@@ -202,6 +213,10 @@ where
 
     pub fn partition_processor_manager_handle(&self) -> ProcessorsManagerHandle {
         self.partition_processor_manager.handle()
+    }
+
+    pub fn rule_book_cache_handle(&self) -> RuleBookCacheHandle {
+        self.partition_processor_manager.rule_book_cache_handle()
     }
 
     pub async fn run(self) -> anyhow::Result<()> {

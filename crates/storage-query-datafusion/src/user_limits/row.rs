@@ -54,7 +54,7 @@ pub(super) fn append_user_limit_row(
     if row.is_available_defined()
         && let Some(limit) = entry.concurrency_limit
     {
-        row.available(limit.saturating_sub(entry.usage as u64));
+        row.available(limit.saturating_sub(entry.usage));
     }
     if row.is_num_waiters_defined() {
         row.num_waiters(entry.num_waiters);

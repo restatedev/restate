@@ -19,6 +19,9 @@ pub mod keys {
     pub static BIFROST_CONFIG_KEY: ByteString = ByteString::from_static("bifrost_config");
     pub static PARTITION_TABLE_KEY: ByteString = ByteString::from_static("partition_table");
     pub static SCHEMA_INFORMATION_KEY: ByteString = ByteString::from_static("schema_registry");
+    /// Cluster-global rule book (limiter rules).
+    /// *Since v1.7.0*
+    pub static RULE_BOOK_KEY: ByteString = ByteString::from_static("rule_book");
     // end todo
 
     pub static PARTITION_PROCESSOR_EPOCH_PREFIX: &str = "pp_epoch";
