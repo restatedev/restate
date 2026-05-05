@@ -189,7 +189,7 @@ async fn poll_once(client: &MetadataStoreClient, handle: &RuleBookCacheHandle) {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU64;
+    use std::num::NonZeroU32;
 
     use restate_limiter::{NewRule, RuleChange, RuleId, RulePatch, UserLimits};
     use restate_types::Version;
@@ -205,7 +205,7 @@ mod tests {
             id,
             RuleChange::Create(NewRule {
                 pattern,
-                limits: UserLimits::new(NonZeroU64::new(100)),
+                limits: UserLimits::new(NonZeroU32::new(100)),
                 reason: None,
                 disabled: false,
             }),

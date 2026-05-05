@@ -373,7 +373,7 @@ impl Node {
             let local_rule_book_observer = worker_role.as_ref().map(|worker_role| {
                 let handle = worker_role.rule_book_cache_handle();
                 Arc::new(move |book| handle.notify_observed_owned(book))
-                    as restate_admin::service::RuleBookObserver
+                    as restate_limiter::rule_book::RuleBookObserver
             });
 
             Some(

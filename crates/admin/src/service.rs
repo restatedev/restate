@@ -23,6 +23,7 @@ use tracing::{Span, debug, info, info_span};
 use restate_admin_rest_model::version::AdminApiVersion;
 use restate_core::network::{TransportConnect, net_util};
 use restate_core::{MetadataWriter, TaskCenter};
+use restate_limiter::RuleBookObserver;
 use restate_metadata_store::MetadataStoreClient;
 use restate_service_client::HttpClient;
 use restate_service_protocol_v4::discovery::ServiceDiscovery;
@@ -38,8 +39,6 @@ use restate_types::schema::registry::SchemaRegistry;
 use crate::rest_api::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
 use crate::schema_registry_integration::{MetadataService, TelemetryClient};
 use crate::{rest_api, state};
-
-pub use crate::state::RuleBookObserver;
 
 #[derive(Debug, thiserror::Error)]
 #[error("could not create the service client: {0}")]

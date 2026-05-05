@@ -160,7 +160,7 @@
 
 use std::collections::VecDeque;
 use std::fmt;
-use std::num::NonZeroU64;
+use std::num::NonZeroU32;
 
 use arrayvec::ArrayVec;
 use hashbrown::HashMap;
@@ -385,11 +385,11 @@ impl UserLimiter {
 fn limit_and_pattern(
     limit: &Limit<&UserLimits>,
     rules: &Rules<ReString, UserLimits>,
-) -> (Option<u64>, Option<String>) {
+) -> (Option<u32>, Option<String>) {
     match limit {
         Limit::Undefined => (None, None),
         Limit::Defined(handle, user_limits) => {
-            let value = user_limits.action_concurrency.map(NonZeroU64::get);
+            let value = user_limits.action_concurrency.map(NonZeroU32::get);
             let pattern = rules.get_pattern(*handle).map(ToString::to_string);
             (value, pattern)
         }
@@ -931,7 +931,7 @@ pub struct LevelStatus {
     /// Current usage at this level.
     pub usage: u32,
     /// The configured limit, or `None` if unlimited.
-    pub limit_value: Option<NonZeroU64>,
+    pub limit_value: Option<NonZeroU32>,
     /// Handle to the rule defining the limit. `None` if unlimited.
     /// Resolve via [`UserLimiter::resolve_rule`] for display.
     pub rule_handle: Option<RuleHandle>,
@@ -942,14 +942,14 @@ impl LevelStatus {
     /// Returns `true` if this level has capacity available.
     pub fn has_capacity(&self) -> bool {
         self.limit_value
-            .map(|limit| (self.usage as u64) < limit.get())
+            .map(|limit| self.usage < limit.get())
             .unwrap_or(true)
     }
 
     /// Returns the available capacity, or `None` if unlimited.
-    pub fn available(&self) -> Option<u64> {
+    pub fn available(&self) -> Option<u32> {
         self.limit_value
-            .map(|limit| limit.get().saturating_sub(self.usage as u64))
+            .map(|limit| limit.get().saturating_sub(self.usage))
     }
 }
 
@@ -982,7 +982,7 @@ fn make_level_status(
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU64;
+    use std::num::NonZeroU32;
 
     use restate_limiter::{LimitKey, RulePattern};
     use restate_util_string::ReString;
@@ -1001,12 +1001,12 @@ mod tests {
         s.parse().unwrap()
     }
 
-    fn limits(concurrency: u64) -> UserLimits {
-        UserLimits::new(NonZeroU64::new(concurrency))
+    fn limits(concurrency: u32) -> UserLimits {
+        UserLimits::new(NonZeroU32::new(concurrency))
     }
 
     /// Creates a UserLimiter with the given rules.
-    fn limiter_with_rules(specs: &[(&str, u64)]) -> UserLimiter {
+    fn limiter_with_rules(specs: &[(&str, u32)]) -> UserLimiter {
         let rules = Rules::from_rules(specs.iter().map(|(pat, limit)| {
             (
                 pat.parse::<RulePattern<ReString>>().unwrap(),

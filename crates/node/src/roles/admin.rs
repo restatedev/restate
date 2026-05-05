@@ -16,7 +16,7 @@ use codederror::CodedError;
 use restate_admin::StorageAccountingTask;
 use restate_admin::cluster_controller;
 use restate_admin::schema_registry_integration::{MetadataService, TelemetryClient};
-use restate_admin::service::{AdminService, RuleBookObserver};
+use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
 use restate_core::network::NetworkServerBuilder;
 use restate_core::network::Networking;
@@ -24,6 +24,7 @@ use restate_core::network::TransportConnect;
 use restate_core::partitions::PartitionRouting;
 use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_ingestion_client::IngestionClient;
+use restate_limiter::rule_book::RuleBookObserver;
 use restate_partition_store::PartitionStoreManager;
 use restate_service_client::{AssumeRoleCacheMode, HttpClient, ServiceClient};
 use restate_service_protocol_v4::discovery::ServiceDiscovery;
@@ -127,6 +128,8 @@ impl<T: TransportConnect> AdminRole<T> {
                 Option::<EmptyInvokerStatusHandle>::None,
                 metadata.updateable_schema(),
                 remote_scanner_manager,
+                metadata_writer.raw_metadata_store_client().clone(),
+                None,
             )
             .await?
         };

@@ -12,8 +12,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::num::NonZeroU64;
+use std::num::NonZeroU32;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use restate_clock::rough_ts::RoughTimestamp;
 use restate_encoding::BilrostNewType;
@@ -174,6 +175,16 @@ pub struct PersistedRule {
     #[bilrost(tag(6))]
     pub last_modified: RoughTimestamp,
 }
+
+/// Fire-and-forget callback that pushes a freshly written rule book
+/// into a co-located worker's `RuleBookCache`. `None` on admin-only
+/// nodes; the worker then learns about updates via its metadata-store
+/// poll loop instead.
+///
+/// Takes the book by value: the cache only allocates an `Arc` for it
+/// on the newer-version branch, so admin handlers don't have to
+/// pre-wrap their result.
+pub type RuleBookObserver = Arc<dyn Fn(RuleBook) + Send + Sync>;
 
 /// The cluster-wide rule book.
 ///
@@ -428,8 +439,8 @@ pub struct RulePatch {
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct LimitsPatch {
     #[cfg_attr(feature = "serde", serde(default))]
-    #[cfg_attr(feature = "schema", schema(value_type = Option<u64>, nullable, minimum = 1))]
-    pub action_concurrency: UpdateField<NonZeroU64>,
+    #[cfg_attr(feature = "schema", schema(value_type = Option<u32>, nullable, minimum = 1))]
+    pub action_concurrency: UpdateField<NonZeroU32>,
 }
 
 /// Body of [`RuleChange::Create`].
@@ -522,8 +533,6 @@ restate_encoding::bilrost_as_display_from_str!(RulePattern<ReString>);
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU64;
-
     use bilrost::{Message, OwnedMessage};
 
     use super::*;
@@ -581,7 +590,7 @@ mod tests {
             PersistedRule {
                 pattern: p1,
                 limits: UserLimits {
-                    action_concurrency: NonZeroU64::new(1000),
+                    action_concurrency: NonZeroU32::new(1000),
                 },
                 reason: Some("global default".to_owned()),
                 disabled: false,
@@ -594,7 +603,7 @@ mod tests {
             PersistedRule {
                 pattern: p2,
                 limits: UserLimits {
-                    action_concurrency: NonZeroU64::new(10),
+                    action_concurrency: NonZeroU32::new(10),
                 },
                 reason: None,
                 disabled: true,
@@ -609,11 +618,11 @@ mod tests {
         assert_eq!(book, decoded);
     }
 
-    fn new_rule(pattern: &str, concurrency: u64) -> NewRule {
+    fn new_rule(pattern: &str, concurrency: u32) -> NewRule {
         NewRule {
             pattern: pat(pattern),
             limits: UserLimits {
-                action_concurrency: NonZeroU64::new(concurrency),
+                action_concurrency: NonZeroU32::new(concurrency),
             },
             reason: None,
             disabled: false,
@@ -644,7 +653,7 @@ mod tests {
         let r = book.get(&id("*")).unwrap();
         assert_eq!(r.version, Version::from(1));
         assert!(!r.disabled);
-        assert_eq!(r.limits.action_concurrency, NonZeroU64::new(1000));
+        assert_eq!(r.limits.action_concurrency, NonZeroU32::new(1000));
     }
 
     #[test]
@@ -679,14 +688,14 @@ mod tests {
             id("*"),
             RuleChange::Patch(RulePatch {
                 limits: LimitsPatch {
-                    action_concurrency: UpdateField::Overwrite(NonZeroU64::new(500).unwrap()),
+                    action_concurrency: UpdateField::Overwrite(NonZeroU32::new(500).unwrap()),
                 },
                 ..Default::default()
             }),
         )
         .unwrap();
         let r = book.get(&id("*")).unwrap();
-        assert_eq!(r.limits.action_concurrency, NonZeroU64::new(500));
+        assert_eq!(r.limits.action_concurrency, NonZeroU32::new(500));
         assert_eq!(r.version, v_before_rule.next());
         assert_eq!(book.version(), v_before_book.next());
     }
@@ -737,7 +746,7 @@ mod tests {
             id("*"),
             RuleChange::Patch(RulePatch {
                 limits: LimitsPatch {
-                    action_concurrency: UpdateField::Overwrite(NonZeroU64::new(1000).unwrap()),
+                    action_concurrency: UpdateField::Overwrite(NonZeroU32::new(1000).unwrap()),
                 },
                 disabled: Some(false),
                 reason: UpdateField::Keep,
@@ -813,13 +822,13 @@ mod tests {
         book.apply_change(id("*"), RuleChange::Create(new_rule("*", 1000)))
             .unwrap();
         // bump the rule a few times
-        for i in 1u64..=3 {
+        for i in 1u32..=3 {
             book.apply_change(
                 id("*"),
                 RuleChange::Patch(RulePatch {
                     limits: LimitsPatch {
                         action_concurrency: UpdateField::Overwrite(
-                            NonZeroU64::new(1000 + i).unwrap(),
+                            NonZeroU32::new(1000 + i).unwrap(),
                         ),
                     },
                     ..Default::default()
@@ -880,7 +889,7 @@ mod tests {
             id("*"),
             RuleChange::Patch(RulePatch {
                 limits: LimitsPatch {
-                    action_concurrency: UpdateField::Overwrite(NonZeroU64::new(500).unwrap()),
+                    action_concurrency: UpdateField::Overwrite(NonZeroU32::new(500).unwrap()),
                 },
                 ..Default::default()
             }),
@@ -889,7 +898,7 @@ mod tests {
         let updates = book.diff(&prev);
         assert_eq!(updates_summary(&updates), vec![("*".to_owned(), "upsert")]);
         if let RuleUpdate::Upsert { limit, .. } = &updates[0] {
-            assert_eq!(limit.action_concurrency, NonZeroU64::new(500));
+            assert_eq!(limit.action_concurrency, NonZeroU32::new(500));
         }
     }
 

@@ -28,6 +28,8 @@ use datafusion::sql::TableReference;
 
 use codederror::CodedError;
 use restate_core::{Metadata, TaskCenter};
+use restate_limiter::RuleBookObserver;
+use restate_metadata_store::MetadataStoreClient;
 use restate_partition_store::PartitionStoreManager;
 use restate_sharding::KeyRange;
 use restate_types::cluster::cluster_state::LegacyClusterState;
@@ -172,15 +174,20 @@ pub struct UserTables<P, S, D> {
     partition_leader_status: Option<S>,
     schemas: Live<D>,
     remote_scanner_manager: RemoteScannerManager,
+    metadata_store_client: MetadataStoreClient,
+    rule_book_observer: Option<RuleBookObserver>,
 }
 
 impl<P, S, D> UserTables<P, S, D> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         partition_selector: P,
         partition_store_manager: Arc<PartitionStoreManager>,
         partition_leader_status: Option<S>,
         schemas: Live<D>,
         remote_scanner_manager: RemoteScannerManager,
+        metadata_store_client: MetadataStoreClient,
+        rule_book_observer: Option<RuleBookObserver>,
     ) -> Self {
         Self {
             partition_selector,
@@ -188,6 +195,8 @@ impl<P, S, D> UserTables<P, S, D> {
             partition_leader_status,
             schemas,
             remote_scanner_manager,
+            metadata_store_client,
+            rule_book_observer,
         }
     }
 }
@@ -205,6 +214,11 @@ where
         // ----- non partitioned tables -----
         crate::deployment::register_self(ctx, self.schemas.clone())?;
         crate::service::register_self(ctx, self.schemas.clone())?;
+        crate::rules::register_self(
+            ctx,
+            self.metadata_store_client.clone(),
+            self.rule_book_observer.clone(),
+        )?;
         // ----- partition-key-based -----
         crate::invocation_state::register_self(
             ctx,
@@ -395,6 +409,8 @@ impl QueryContext {
             impl DeploymentResolver + ServiceMetadataResolver + Send + Sync + Debug + Clone + 'static,
         >,
         remote_scanner_manager: RemoteScannerManager,
+        metadata_store_client: MetadataStoreClient,
+        rule_book_observer: Option<RuleBookObserver>,
     ) -> Result<QueryContext, BuildError> {
         let tables = UserTables::new(
             partition_selector,
@@ -402,6 +418,8 @@ impl QueryContext {
             partition_leader_status,
             schemas,
             remote_scanner_manager,
+            metadata_store_client,
+            rule_book_observer,
         );
 
         Self::create(options, tables).await
