@@ -63,6 +63,23 @@ impl RuleBookCacheHandle {
         });
     }
 
+    /// Owned-input variant of [`Self::notify_observed`] for callers
+    /// that produce a fresh [`RuleBook`] and don't need to retain it
+    /// (e.g. the admin REST handlers after a successful write). The
+    /// `Arc` allocation happens inside the cache only when the
+    /// observed version is strictly newer; on the no-op branch the
+    /// book is simply dropped.
+    pub fn notify_observed_owned(&self, book: RuleBook) {
+        self.sender.send_if_modified(move |current| {
+            if book.version() > current.version() {
+                *current = Arc::new(book);
+                true
+            } else {
+                false
+            }
+        });
+    }
+
     /// Detached handle used by tests and benchmarks. The associated
     /// watch has no polling task, so `notify_observed` and
     /// `subscribe` work but no metadata-store traffic occurs.

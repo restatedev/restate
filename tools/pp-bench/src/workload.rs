@@ -24,11 +24,10 @@
 //! with the apply loop for thread time, which can perturb measurements
 //! slightly compared to the isolated production runtime.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use hdrhistogram::Histogram;
-
-use std::sync::Arc;
 
 use restate_cli_util::{c_println, c_success};
 use restate_limiter::RuleBook;
@@ -43,8 +42,8 @@ use restate_types::partitions::Partition;
 use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
 use restate_vqueues::VQueuesMetaCache;
+use restate_worker::RuleBookCacheHandle;
 use restate_worker::partition::state_machine::{ActionCollector, StateMachine};
-use restate_worker::rule_book_cache::RuleBookCacheHandle;
 
 use crate::RunOpts;
 use crate::command_gen;

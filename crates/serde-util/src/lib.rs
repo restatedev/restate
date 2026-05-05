@@ -17,6 +17,7 @@ pub mod default;
 mod header_name;
 pub mod header_value;
 mod map_as_vec;
+mod update_field;
 mod version;
 
 pub use byte_count::*;
@@ -26,4 +27,5 @@ pub use header_value::HeaderValueSerde;
 pub use map_as_vec::{MapAsVec, MapAsVecItem};
 #[cfg(feature = "proto")]
 pub use proto::ProtobufEncoded;
+pub use update_field::UpdateField;
 pub use version::VersionSerde;

@@ -14,15 +14,21 @@ default = []
 # (LimitKey, RulePattern). Lets external crates put those into bilrost
 # messages without pulling in the rule book.
 bilrost = ["dep:bilrost", "restate-util-string/bilrost"]
+# Enables Serialize/Deserialize derives on the limiter's exposed
+# value/patch types so they can flow through JSON APIs.
+serde = ["dep:serde", "dep:restate-serde-util"]
+# Enables utoipa::ToSchema derives on the limiter's exposed value/patch
+# types so the admin REST model can reuse them in its OpenAPI spec.
+schema = ["dep:utoipa"]
 # Enables the persistent rule book (RuleBook, PersistedRule, RuleId,
-# diff/apply_change machinery). Implies `bilrost`.
+# diff/apply_change machinery). Implies `bilrost` and `serde`.
 rule-book = [
     "bilrost",
+    "serde",
     "dep:bytes",
     "dep:generic-array",
     "dep:restate-clock",
     "dep:restate-encoding",
-    "dep:serde",
     "dep:xxhash-rust",
 ]
 
@@ -31,6 +37,7 @@ restate-workspace-hack = { workspace = true }
 
 restate-clock = { workspace = true, optional = true }
 restate-encoding = { workspace = true, optional = true }
+restate-serde-util = { workspace = true, optional = true }
 restate-types = { workspace = true }
 restate-util-string = { workspace = true }
 
@@ -40,6 +47,7 @@ generic-array = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 slotmap = { workspace = true }
 thiserror = { workspace = true }
+utoipa = { workspace = true, optional = true }
 xxhash-rust = { workspace = true, features = ["xxh3"], optional = true }
 
 [dev-dependencies]

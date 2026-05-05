@@ -16,7 +16,7 @@ use codederror::CodedError;
 use restate_admin::StorageAccountingTask;
 use restate_admin::cluster_controller;
 use restate_admin::schema_registry_integration::{MetadataService, TelemetryClient};
-use restate_admin::service::AdminService;
+use restate_admin::service::{AdminService, RuleBookObserver};
 use restate_bifrost::Bifrost;
 use restate_core::network::NetworkServerBuilder;
 use restate_core::network::Networking;
@@ -93,6 +93,7 @@ impl<T: TransportConnect> AdminRole<T> {
         server_builder: &mut NetworkServerBuilder,
         address_book: &mut AddressBook,
         local_query_context: Option<QueryContext>,
+        local_rule_book_observer: Option<RuleBookObserver>,
     ) -> Result<Self, AdminRoleBuildError> {
         health_status.update(AdminStatus::StartingUp);
         let config = updateable_config.pinned();
@@ -131,7 +132,7 @@ impl<T: TransportConnect> AdminRole<T> {
         };
 
         let listeners = address_book.take_listeners::<AdminPort>();
-        let admin = AdminService::new(
+        let mut admin = AdminService::new(
             listeners,
             metadata_writer.clone(),
             ingestion_client,
@@ -145,6 +146,10 @@ impl<T: TransportConnect> AdminRole<T> {
             telemetry_http_client,
         )
         .with_query_context(query_context.clone());
+
+        if let Some(observer) = local_rule_book_observer {
+            admin = admin.with_rule_book_observer(observer);
+        }
 
         let controller = if config.admin.is_cluster_controller_enabled() {
             Some(

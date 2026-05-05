@@ -17,6 +17,7 @@ use std::str::FromStr;
 
 use restate_clock::rough_ts::RoughTimestamp;
 use restate_encoding::BilrostNewType;
+use restate_serde_util::UpdateField;
 use restate_types::base62_util::base62_max_length_for_type;
 use restate_types::errors::IdDecodeError;
 use restate_types::id_util::{IdDecoder, IdEncoder};
@@ -423,7 +424,11 @@ pub struct RulePatch {
 }
 
 #[derive(Debug, Default, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct LimitsPatch {
+    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<u64>, nullable, minimum = 1))]
     pub action_concurrency: UpdateField<NonZeroU64>,
 }
 
@@ -444,39 +449,6 @@ pub enum RuleChange {
     Create(NewRule),
     Patch(RulePatch),
     Delete,
-}
-
-/// Sparse-update helper used in [`RulePatch`].
-///
-/// Maps to RFC 7396 JSON Merge Patch:
-/// - `Keep` corresponds to an absent field — leave the existing value as-is.
-/// - `Overwrite(v)` corresponds to a JSON value — set the field.
-/// - `Delete` corresponds to a JSON `null` — clear the field (only
-///   meaningful for fields where `None`/absence is a valid state).
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub enum UpdateField<T> {
-    #[default]
-    Keep,
-    Overwrite(T),
-    Delete,
-}
-
-impl<T> UpdateField<T> {
-    /// Resolve a sparse update into the *new* `Option<T>` value, or `None`
-    /// to mean "leave the field unchanged".
-    ///
-    /// This collapses the three-valued `Keep`/`Overwrite`/`Delete` shape
-    /// into the form the writer needs:
-    /// - `Some(Some(v))` → set the field to `v`.
-    /// - `Some(None)` → clear the field.
-    /// - `None` → no change requested.
-    pub fn into_target(self) -> Option<Option<T>> {
-        match self {
-            UpdateField::Keep => None,
-            UpdateField::Overwrite(v) => Some(Some(v)),
-            UpdateField::Delete => Some(None),
-        }
-    }
 }
 
 /// Errors returned from [`RuleBook::apply_change`].

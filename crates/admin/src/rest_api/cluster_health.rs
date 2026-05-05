@@ -17,7 +17,8 @@ use restate_core::{Metadata, my_node_id};
 use restate_types::config::Configuration;
 use restate_types::{NodeId, PlainNodeId};
 
-use crate::rest_api::error::{ErrorDescriptionResponse, GenericRestError};
+use crate::rest_api::ErrorDescriptionResponse;
+use crate::rest_api::error::GenericRestError;
 
 /// Cluster state endpoint
 #[utoipa::path(

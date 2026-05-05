@@ -370,6 +370,12 @@ impl Node {
         };
 
         let admin_role = if config.has_role(Role::Admin) {
+            let local_rule_book_observer = worker_role.as_ref().map(|worker_role| {
+                let handle = worker_role.rule_book_cache_handle();
+                Arc::new(move |book| handle.notify_observed_owned(book))
+                    as restate_admin::service::RuleBookObserver
+            });
+
             Some(
                 AdminRole::create(
                     tc.health().admin_status(),
@@ -388,6 +394,7 @@ impl Node {
                     worker_role
                         .as_ref()
                         .map(|worker_role| worker_role.storage_query_context().clone()),
+                    local_rule_book_observer,
                 )
                 .await?,
             )

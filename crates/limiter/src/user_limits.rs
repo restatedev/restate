@@ -28,14 +28,22 @@ use crate::RulePattern;
 ///
 /// `None` on a field means "unlimited" (no rule constrains this dimension).
 /// Under the `bilrost` feature this type is also the wire shape persisted
-/// inside [`crate::PersistedRule`] — so adding a new limit kind here means
-/// allocating a fresh `bilrost(tag(...))` next to the new field.
+/// inside [`crate::PersistedRule`]; under `serde` it's the JSON wire shape
+/// for the admin REST model — adding a new limit kind here means allocating
+/// a fresh `bilrost(tag(...))` next to the new field.
 #[derive(Debug, Default, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "bilrost", derive(bilrost::Message))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[non_exhaustive]
 pub struct UserLimits {
     /// Maximum concurrent invocations. `None` means unlimited.
     #[cfg_attr(feature = "bilrost", bilrost(tag(1)))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<u64>, minimum = 1))]
     pub action_concurrency: Option<NonZeroU64>,
 }
 

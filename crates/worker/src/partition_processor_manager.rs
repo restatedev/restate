@@ -287,6 +287,10 @@ where
         ProcessorsManagerHandle::new(self.tx.clone())
     }
 
+    pub fn rule_book_cache_handle(&self) -> RuleBookCacheHandle {
+        self.rule_book_cache.clone()
+    }
+
     pub async fn run(mut self) -> anyhow::Result<()> {
         let mut shutdown = std::pin::pin!(cancellation_watcher());
 

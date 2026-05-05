@@ -25,7 +25,7 @@ use restate_types::health::HealthStatus;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_wal_protocol::Envelope;
-use restate_worker::Worker;
+use restate_worker::{RuleBookCacheHandle, Worker};
 use restate_worker_api::ProcessorsManagerHandle;
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -80,6 +80,10 @@ where
 
     pub fn storage_query_context(&self) -> &QueryContext {
         self.worker.storage_query_context()
+    }
+
+    pub fn rule_book_cache_handle(&self) -> RuleBookCacheHandle {
+        self.worker.rule_book_cache_handle()
     }
 
     pub fn start(self) -> anyhow::Result<()> {
