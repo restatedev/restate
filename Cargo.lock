@@ -8372,6 +8372,7 @@ dependencies = [
  "paste",
  "prost",
  "restate-core",
+ "restate-limiter",
  "restate-partition-store",
  "restate-rocksdb",
  "restate-service-protocol",
