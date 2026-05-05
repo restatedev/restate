@@ -51,8 +51,8 @@ pub use key::LimitKey;
 pub use rule::{Pattern, RuleHandle, RulePattern};
 #[cfg(feature = "rule-book")]
 pub use rule_book::{
-    LimitsPatch, NewRule, PersistedRule, PersistedUserLimits, RuleBook, RuleBookError, RuleChange,
-    RuleId, RulePatch, UpdateField,
+    LimitsPatch, NewRule, PersistedRule, RuleBook, RuleBookError, RuleChange, RuleId, RulePatch,
+    UpdateField,
 };
 pub use rule_store::{Limit, Rules, StructuredLimits};
 pub use user_limits::{RuleUpdate, UserLimits};

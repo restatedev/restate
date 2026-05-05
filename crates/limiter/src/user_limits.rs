@@ -10,10 +10,10 @@
 
 //! Runtime-side limits and rule-mutation channel types.
 //!
-//! [`UserLimits`] is the materialised, in-memory shape of a rule's effective
-//! limits — what the runtime actually consumes when checking capacity. It is
-//! produced from [`crate::PersistedUserLimits`] (the on-disk shape) at apply
-//! time.
+//! [`UserLimits`] is the per-rule effective-limits shape used both as the
+//! in-memory value the runtime consumes when checking capacity and (under
+//! the `bilrost` feature) as the on-disk shape stored inside a
+//! [`crate::PersistedRule`]. New limit kinds are added here once.
 //!
 //! [`RuleUpdate`] is the channel-level message the per-PP `UserLimiter`
 //! consumes; it is produced by [`crate::RuleBook::diff`].
@@ -22,34 +22,26 @@ use std::num::NonZeroU64;
 
 use restate_util_string::ReString;
 
-#[cfg(feature = "rule-book")]
-use crate::PersistedUserLimits;
 use crate::RulePattern;
 
-/// Materialised, runtime-side limits for a single rule.
+/// Per-rule effective limits.
 ///
 /// `None` on a field means "unlimited" (no rule constrains this dimension).
-/// New limit kinds are added here together with the corresponding field on
-/// [`crate::PersistedUserLimits`].
-#[derive(Debug, Default, Clone)]
+/// Under the `bilrost` feature this type is also the wire shape persisted
+/// inside [`crate::PersistedRule`] — so adding a new limit kind here means
+/// allocating a fresh `bilrost(tag(...))` next to the new field.
+#[derive(Debug, Default, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "bilrost", derive(bilrost::Message))]
 #[non_exhaustive]
 pub struct UserLimits {
     /// Maximum concurrent invocations. `None` means unlimited.
+    #[cfg_attr(feature = "bilrost", bilrost(tag(1)))]
     pub action_concurrency: Option<NonZeroU64>,
 }
 
 impl UserLimits {
     pub fn new(action_concurrency: Option<NonZeroU64>) -> Self {
         Self { action_concurrency }
-    }
-}
-
-#[cfg(feature = "rule-book")]
-impl From<&PersistedUserLimits> for UserLimits {
-    fn from(persisted: &PersistedUserLimits) -> Self {
-        Self {
-            action_concurrency: persisted.action_concurrency,
-        }
     }
 }
 

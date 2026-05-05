@@ -135,22 +135,6 @@ impl<'de> serde::Deserialize<'de> for RuleId {
     }
 }
 
-/// On-disk shape of [`crate::rule_store::Rules`]'s value type. Sparse: a rule
-/// can omit any field it has no opinion on, in which case the runtime treats
-/// that limit as unset.
-///
-/// This intentionally mirrors `UserLimits` (in `restate-worker-api`) field
-/// for field; the materialization step that produces the runtime
-/// `UserLimits` lives there. Adding a new limit kind happens here first
-/// (with a fresh bilrost tag) and then in the runtime side.
-#[derive(Debug, Default, Clone, PartialEq, Eq, bilrost::Message)]
-pub struct PersistedUserLimits {
-    /// Maximum concurrent invocations. `None` means "rule does not constrain
-    /// concurrency at this scope."
-    #[bilrost(tag(1))]
-    pub action_concurrency: Option<NonZeroU64>,
-}
-
 /// One persisted rule entry.
 ///
 /// `version` advances on runtime-relevant changes only (`limits`, `disabled`).
@@ -168,7 +152,7 @@ pub struct PersistedRule {
     #[bilrost(tag(2))]
     pub pattern: RulePattern<ReString>,
     #[bilrost(tag(3))]
-    pub limits: PersistedUserLimits,
+    pub limits: UserLimits,
     /// Operators can leave a reason for why the rule was created/modified.
     #[bilrost(tag(4))]
     pub reason: Option<String>,
@@ -178,7 +162,14 @@ pub struct PersistedRule {
     /// it stored.
     #[bilrost(tag(5))]
     pub disabled: bool,
-    /// Last time this rule was modified
+    /// Wall-clock time of the last write that touched this entry.
+    ///
+    /// Informational only — runtime semantics depend on `version`, not on
+    /// time. [`RoughTimestamp`] is 4 bytes with second precision (vs 8
+    /// for [`restate_clock::time::MillisSinceEpoch`]); that is more than
+    /// enough for an admin audit trail and `RoughTimestamp::now()` reads
+    /// the cached `WallClock::recent_ms`, so minting one on every write
+    /// is free.
     #[bilrost(tag(6))]
     pub last_modified: RoughTimestamp,
 }
@@ -187,6 +178,15 @@ pub struct PersistedRule {
 ///
 /// Lives under a single key in the metadata store. The
 /// [`crate::rule_store::Rules`] runtime store is materialized from this.
+///
+/// # Why key by [`RuleId`] and not by [`RulePattern`]
+///
+/// `RuleId` is the public-facing handle for admin REST/CLI surfaces
+/// (`DELETE /rules/{rul_…}`): a short, opaque, URL-safe base62 string that
+/// stays stable even if the pattern grammar evolves.
+///
+/// It comes at the cost of storing an additional `std::mem::size_of::<RuleId>()`
+/// (8) bytes per rule entry.
 #[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
 pub struct RuleBook {
     #[bilrost(tag(1))]
@@ -344,7 +344,7 @@ impl RuleBook {
                 (Some(prev_version), true) if prev_version != current.version => {
                     updates.push(RuleUpdate::Upsert {
                         pattern: current.pattern.clone(),
-                        limit: UserLimits::from(&current.limits),
+                        limit: current.limits.clone(),
                     });
                 }
                 (Some(_), true) => {
@@ -360,7 +360,7 @@ impl RuleBook {
                 (None, true) => {
                     updates.push(RuleUpdate::Upsert {
                         pattern: current.pattern.clone(),
-                        limit: UserLimits::from(&current.limits),
+                        limit: current.limits.clone(),
                     });
                 }
                 // Was invisible, still invisible.
@@ -417,7 +417,7 @@ pub struct LimitsPatch {
 #[derive(Debug, Clone)]
 pub struct NewRule {
     pub pattern: RulePattern<ReString>,
-    pub limits: PersistedUserLimits,
+    pub limits: UserLimits,
     pub reason: Option<String>,
     /// Default `false` (rule is active). Set to `true` to create a parked
     /// rule that is invisible to the runtime until later toggled.
@@ -563,7 +563,7 @@ mod tests {
             RuleId::from(&p1),
             PersistedRule {
                 pattern: p1,
-                limits: PersistedUserLimits {
+                limits: UserLimits {
                     action_concurrency: NonZeroU64::new(1000),
                 },
                 reason: Some("global default".to_owned()),
@@ -576,7 +576,7 @@ mod tests {
             RuleId::from(&p2),
             PersistedRule {
                 pattern: p2,
-                limits: PersistedUserLimits {
+                limits: UserLimits {
                     action_concurrency: NonZeroU64::new(10),
                 },
                 reason: None,
@@ -595,7 +595,7 @@ mod tests {
     fn new_rule(pattern: &str, concurrency: u64) -> NewRule {
         NewRule {
             pattern: pat(pattern),
-            limits: PersistedUserLimits {
+            limits: UserLimits {
                 action_concurrency: NonZeroU64::new(concurrency),
             },
             reason: None,
