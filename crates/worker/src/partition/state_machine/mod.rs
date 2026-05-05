@@ -2541,6 +2541,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     invocation_id: effect.invocation_id,
                     invocation_status,
                     awaiting_on,
+                    emit_event: false,
                 }
                 .apply(self)
                 .await?;
@@ -2551,6 +2552,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     invocation_id: effect.invocation_id,
                     invocation_status,
                     awaiting_on,
+                    emit_event: true,
                 }
                 .apply(self)
                 .await?;

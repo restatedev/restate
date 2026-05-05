@@ -14,21 +14,27 @@ use tracing::{debug, trace};
 
 use restate_clock::UniqueTimestamp;
 use restate_storage_api::invocation_status_table::{InvocationStatus, WriteInvocationStatusTable};
+use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table_v2::ReadJournalTable;
 use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::vqueue_table::{EntryStatusHeader, ReadVQueueTable, WriteVQueueTable};
 use restate_types::config::Configuration;
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
+use restate_types::journal_events::raw::RawEvent;
+use restate_types::journal_events::{Event, SuspendedEvent};
 use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::vqueues::EntryId;
 use restate_vqueues::VQueue;
 
+use crate::partition::state_machine::lifecycle::event::ApplyEventCommand;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub struct OnSuspendCommand {
     pub invocation_id: InvocationId,
     pub invocation_status: InvocationStatus,
     pub awaiting_on: UnresolvedFuture,
+    /// When true, append a [`SuspendedEvent`] to the journal events.
+    pub emit_event: bool,
 }
 
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
@@ -36,6 +42,7 @@ impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>
 where
     S: ReadJournalTable
         + WriteInvocationStatusTable
+        + WriteJournalEventsTable
         + WriteVQueueTable
         + ReadVQueueTable
         + WriteLockTable,
@@ -75,7 +82,20 @@ where
             .apply(ctx)
             .await?;
         } else {
-            // Let's transition to suspended
+            // --- Let's transition to suspended
+
+            if self.emit_event {
+                ApplyEventCommand {
+                    invocation_id: self.invocation_id,
+                    invocation_status: &invocation_status,
+                    event: RawEvent::from(Event::Suspended(SuspendedEvent {
+                        awaiting_on: self.awaiting_on.clone(),
+                    })),
+                }
+                .apply(ctx)
+                .await?;
+            }
+
             let mut in_flight_invocation_metadata = invocation_status
                 .into_invocation_metadata()
                 .expect("Must be present unless status is killed or invoked");
@@ -644,5 +664,76 @@ mod tests {
             .await
             .end()
             .await;
+    }
+
+    #[restate_core::test]
+    async fn suspend_v3_records_suspended_event() {
+        use restate_types::journal_events::SuspendedEvent;
+
+        let mut test_env = TestEnv::create().await;
+        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+        fixtures::mock_pinned_deployment_v7(&mut test_env, invocation_id).await;
+
+        // V3 suspension on a non-trivial future records a SuspendedEvent that
+        // mirrors the awaiting_on tree stored on the invocation status.
+        let awaiting_on: UnresolvedFuture = first_completed!(A, B);
+        let _ = test_env
+            .apply(invoker_suspended(invocation_id, awaiting_on.clone()))
+            .await;
+
+        assert_that!(
+            test_env
+                .storage()
+                .get_invocation_status(&invocation_id)
+                .await,
+            ok(is_variant(InvocationStatusDiscriminants::Suspended))
+        );
+        assert_that!(
+            test_env.read_journal_events(invocation_id).await,
+            elements_are![eq(Event::Suspended(SuspendedEvent {
+                awaiting_on: awaiting_on.clone()
+            }))]
+        );
+
+        // Resuming via signal must not emit another SuspendedEvent — the resume
+        // short-circuit branch in OnSuspendCommand skips the append. We provoke
+        // this by making the invoker re-suspend on a notification that's
+        // already available, so resolve() short-circuits.
+        let _ = test_env
+            .apply(Command::NotifySignal(NotifySignalRequest {
+                invocation_id,
+                signal: Signal {
+                    id: A,
+                    result: SUCCESS,
+                },
+            }))
+            .await;
+        assert_that!(
+            test_env
+                .storage()
+                .get_invocation_status(&invocation_id)
+                .await,
+            ok(is_variant(InvocationStatusDiscriminants::Invoked))
+        );
+        let _ = test_env
+            .apply(invoker_suspended(
+                invocation_id,
+                NotificationId::for_signal(A),
+            ))
+            .await;
+        assert_that!(
+            test_env
+                .storage()
+                .get_invocation_status(&invocation_id)
+                .await,
+            ok(is_variant(InvocationStatusDiscriminants::Invoked))
+        );
+        // Still exactly the one event from the first transition.
+        assert_that!(
+            test_env.read_journal_events(invocation_id).await,
+            elements_are![eq(Event::Suspended(SuspendedEvent { awaiting_on }))]
+        );
+
+        test_env.shutdown().await;
     }
 }

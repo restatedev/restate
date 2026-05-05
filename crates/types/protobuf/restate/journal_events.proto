@@ -48,3 +48,25 @@ message TransientErrorEvent {
 message PausedEvent {
   TransientErrorEvent last_failure = 1;
 }
+
+message SuspendedEvent {
+  Future awaiting_on = 1;
+}
+
+// Mirrors dev.restate.service.protocol.Future. Kept independent so this
+// package owns its own wire format.
+message Future {
+  enum CombinatorType {
+    UNKNOWN = 0;
+    FIRST_COMPLETED = 1;
+    ALL_COMPLETED = 2;
+    FIRST_SUCCEEDED_OR_ALL_FAILED = 3;
+    ALL_SUCCEEDED_OR_FIRST_FAILED = 4;
+  }
+
+  repeated uint32 waiting_completions = 1;
+  repeated uint32 waiting_signals = 2;
+  repeated string waiting_named_signals = 3;
+  repeated Future nested_futures = 4;
+  CombinatorType combinator_type = 5;
+}
