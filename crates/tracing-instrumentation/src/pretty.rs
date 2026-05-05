@@ -14,6 +14,10 @@
 
 use super::*;
 
+use crate::semconv::attribute::{
+    RESTATE_ERROR_CODE, RESTATE_INVOCATION_ERROR_STACKTRACE, RESTATE_INVOCATION_ID,
+    RESTATE_INVOCATION_TARGET,
+};
 use nu_ansi_term::{Color, Style};
 use std::fmt;
 use std::fmt::Debug;
