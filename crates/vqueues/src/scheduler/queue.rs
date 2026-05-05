@@ -8,20 +8,197 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::{EntryKey, EntryValue, VQueueCursor, VQueueStore};
+use std::collections::VecDeque;
+use std::num::NonZeroU32;
+use std::pin::Pin;
+use std::task::{Poll, ready};
+
+use itertools::{EitherOrBoth, Itertools as _};
+use tokio::time::Instant;
+use tracing::trace;
+
+use restate_storage_api::vqueue_table::CursorError;
+use restate_storage_api::vqueue_table::{
+    EntryKey, EntryValue, VQueueCursor, VQueueRunningCursor, VQueueStore,
+};
+use restate_storage_api::{StorageError, vqueue_table};
+use restate_time_util::DurationExt;
 use restate_types::vqueues::VQueueId;
 
 use super::UnconfirmedAssignments;
 
-#[derive(Debug)]
-enum Head {
-    /// We need a seek+read to know the head.
-    Unknown,
-    /// The current cursor's head
-    Known { key: EntryKey, value: EntryValue },
-    /// We know that we've reached the end of the vqueue
-    Empty,
+/// The number of entries we are willing to keep in cache
+const INBOX_CACHE_CAPACITY: usize = 24;
+
+enum Overlay {
+    Add(EntryValue),
+    Tombstone,
+}
+
+/// In-flight async refill, plus an overlay of `notify_enqueued` /
+/// `notify_removed` events that arrived while the task was running.
+///
+/// # Storage-write-before-notify invariant
+///
+/// The partition processor commits inbox writes/deletes to RocksDB *before*
+/// dispatching `EnqueuedToInbox` / `RemovedFromInbox` events to the
+/// scheduler. This ordering rule underpins the following overlay reasoning:
+///
+/// 1. **Why tombstones are needed at all.** The refill task's RocksDB
+///    snapshot is fixed at task-start time. A `notify_removed` that arrives
+///    while the task is in flight may correspond to a delete that committed
+///    *before* the task started its scan (snapshot still sees the row) or
+///    *after* (snapshot doesn't). We can't tell from the notification
+///    alone, so we record a tombstone and let `merge_join_by` suppress the
+///    row if it shows up in the result.
+///
+/// 2. **Why `push_added_item` panics on a key it already tombstoned.** A
+///    later add of a key we previously tombstoned would imply the
+///    notifications arrived out-of-order with respect to storage commits,
+///    which the invariant rules out.
+///
+/// 3. **Why cancelling an in-flight task discards the overlay safely** (see
+///    [`RefillState::update_anchor`]). When cancellation kicks in, every
+///    pending notification has already had its storage write committed.
+///    The next fresh refill takes a new snapshot and sees post-commit
+///    state directly, so the overlay would be redundant.
+struct RefillTask {
+    started_at: Instant,
+    refill_anchor: Option<EntryKey>,
+    /// Items that are known to be added or removed while the refill was in-flight
+    /// Sorted ascending by EntryKey.
+    overlay: VecDeque<(EntryKey, Overlay)>,
+    handle: tokio::task::JoinHandle<Result<Vec<(EntryKey, EntryValue)>, StorageError>>,
+    /// Exclusive upper bound on the overlay's coverage. `None` until the
+    /// first at-capacity event; once set, only shrinks.
+    ///
+    /// On overflow we set this (exclusive upper bound) instead of
+    /// evicting from the overlay. Overlay events and merge-time storage rows
+    /// with `key >= horizon` are then dropped; the next refill rediscovers
+    /// them via `seek_after(cache.back)` (always below `horizon`). Avoids
+    /// the silent-drop hazard of back-eviction — a popped tombstone could
+    /// re-admit a deleted row — at the cost of re-fetching some
+    /// already-read storage rows.
+    horizon: Option<EntryKey>,
+}
+impl RefillTask {
+    /// Capacity/horizon handling shared by the `push_*` methods. Caller resolves
+    /// duplicates first; `pos` is insertion position.
+    ///
+    /// Returns `Some(pos)` to insert there, or `None` if the event was dropped.
+    fn prepare_overlay_insert(&mut self, key: EntryKey, pos: usize) -> Option<usize> {
+        if self.horizon.is_some_and(|h| key >= h) {
+            return None;
+        }
+        if self.overlay.len() < INBOX_CACHE_CAPACITY {
+            return Some(pos);
+        }
+        // At capacity: shrink the horizon to seal the affected range.
+        if pos == self.overlay.len() {
+            // New key sorts past every overlay entry — it becomes the
+            // horizon itself and is not tracked.
+            self.horizon = Some(self.horizon.map_or(key, |h| h.min(key)));
+            None
+        } else {
+            // New key displaces the back; the back's key becomes the
+            // horizon (anything at-or-above it is now uncertain).
+            let back_key = self
+                .overlay
+                .back()
+                .expect("overlay at capacity must have a back")
+                .0;
+            self.horizon = Some(self.horizon.map_or(back_key, |h| h.min(back_key)));
+            self.overlay.pop_back();
+            Some(pos)
+        }
+    }
+
+    fn push_tombstone(&mut self, key_to_remove: &EntryKey) {
+        let pos = match self
+            .overlay
+            .binary_search_by_key(key_to_remove, |&(k, _)| k)
+        {
+            Ok(pos) => {
+                // Existing overlay entry → upgrade to Tombstone.
+                self.overlay.get_mut(pos).unwrap().1 = Overlay::Tombstone;
+                return;
+            }
+            Err(pos) => pos,
+        };
+        if let Some(pos) = self.prepare_overlay_insert(*key_to_remove, pos) {
+            self.overlay
+                .insert(pos, (*key_to_remove, Overlay::Tombstone));
+        }
+    }
+
+    fn push_added_item(&mut self, key_to_add: &EntryKey, value: &EntryValue) {
+        let pos = match self.overlay.binary_search_by_key(key_to_add, |&(k, _)| k) {
+            Ok(_) => panic!(
+                "Something went wrong here. We should not see duplicate enqueues or an enqueue after a removal of the same key: {key_to_add:?}"
+            ),
+            Err(pos) => pos,
+        };
+        if let Some(pos) = self.prepare_overlay_insert(*key_to_add, pos) {
+            self.overlay
+                .insert(pos, (*key_to_add, Overlay::Add(value.clone())));
+        }
+    }
+}
+
+#[derive(derive_more::Debug)]
+enum RefillState {
+    #[debug("standby")]
+    Standby {
+        /// `seek_after` anchor for the next refill, and the upper bound used to
+        /// decide whether to accept a `notify_enqueued`. Items currently in the
+        /// cache, items previously consumed from the cache, and items in the
+        /// caller's skip set together account for every inbox key
+        /// `<= refill_anchor`. Keys `> refill_anchor` are undiscovered and will
+        /// appear on the next refill via `seek_after(refill_anchor)`.
+        refill_anchor: Option<EntryKey>,
+    },
+    #[debug("in-flight (age: {})", _0.started_at.elapsed().friendly())]
+    InFlight(Box<RefillTask>),
+}
+
+impl Default for RefillState {
+    fn default() -> Self {
+        Self::Standby {
+            refill_anchor: None,
+        }
+    }
+}
+
+impl RefillState {
+    /// Updates the standby anchor, or cancels an in-flight task and resets
+    /// to standby with the given anchor.
+    ///
+    /// Dropping an in-flight `RefillTask` here also drops its overlay
+    /// (pending `Add` / `Tombstone` records). This is safe per the
+    /// storage-write-before-notify invariant documented on [`RefillTask`]:
+    /// every notification we have observed (and thus every overlay entry)
+    /// has its storage write already committed, so the next fresh refill's
+    /// snapshot reflects them directly without needing the overlay.
+    fn update_anchor(&mut self, new_anchor: Option<EntryKey>) {
+        match self {
+            RefillState::Standby { refill_anchor } => {
+                *refill_anchor = new_anchor;
+            }
+            RefillState::InFlight(_) => {
+                trace!("Refill task was in-flight but no longer needed, cancelling it");
+                // Drop the task; the receiver going away signals the worker
+                // thread to bail. See `RefillTask` doc for why discarding
+                // the overlay is safe here.
+                *self = RefillState::Standby {
+                    refill_anchor: new_anchor,
+                }
+            }
+        }
+    }
+
+    fn is_in_flight(&self) -> bool {
+        matches!(self, Self::InFlight(_))
+    }
 }
 
 #[derive(Debug)]
@@ -38,683 +215,677 @@ pub enum QueueItem<'a> {
 }
 
 #[derive(derive_more::Debug)]
-pub(crate) enum Reader<S: VQueueStore> {
-    /// Reader was never opened and might need to scan running items
-    New { already_running: u32 },
+enum Stage<S: VQueueStore> {
+    /// Brand-new queue; running items still need to be drained first.
+    New {
+        already_running: NonZeroU32,
+        reader: Option<S::RunningReader>,
+    },
+    /// In running stage. Single-item head, single-shot reader.
     #[debug("Running")]
     Running {
-        remaining: u32,
+        head: (EntryKey, EntryValue),
         reader: S::RunningReader,
+        remaining: u32,
     },
-    #[debug("Inbox")]
-    Inbox(S::InboxReader),
-    // We can transition back to Reader::Inbox if new items have been added to the inbox
-    // but we should never return to `Running`.
-    #[debug("Closed")]
-    Closed,
+    /// In inbox stage. The queue's `inbox_cache` is the source of truth
+    /// between refills.
+    Inbox,
+    /// Inbox is fully drained.
+    Empty,
 }
 
 pub(crate) struct Queue<S: VQueueStore> {
-    head: Head,
-    reader: Reader<S>,
+    stage: Stage<S>,
+    /// Backing cache for the inbox stage.
+    /// Meaningful only when `stage` is `Inbox` or `Empty`; for
+    /// other stages it must be empty (invariant maintained by `advance` /
+    /// `remove` / `enqueue`).
+    ///
+    /// Sorted ascending by EntryKey. Front = current head.
+    items: VecDeque<(EntryKey, EntryValue)>,
+    refill_state: RefillState,
 }
 
 impl<S: VQueueStore> Queue<S> {
     /// Creates a new queue that must first go through the given number of running items
     /// before it switches to reading the waiting inbox.
-    pub fn new(num_running: u32) -> Self {
+    pub fn new(num_running: u32, storage: &S, qid: &VQueueId) -> Self {
+        let stage = if num_running > 0 {
+            Stage::New {
+                already_running: NonZeroU32::new(num_running).unwrap(),
+                reader: Some(storage.new_run_reader(qid)),
+            }
+        } else {
+            Stage::Inbox
+        };
+
         Self {
-            head: Head::Unknown,
-            reader: Reader::New {
-                already_running: num_running,
-            },
+            stage,
+            items: VecDeque::with_capacity(INBOX_CACHE_CAPACITY),
+            refill_state: Default::default(),
         }
     }
 
     /// Creates an empty queue
     pub fn new_closed() -> Self {
         Self {
-            head: Head::Empty,
-            reader: Reader::Closed,
+            stage: Stage::Empty,
+            items: VecDeque::with_capacity(INBOX_CACHE_CAPACITY),
+            refill_state: Default::default(),
         }
     }
 
     /// If the queue is known to be empty (no more items to dequeue)
     pub fn is_empty(&self) -> bool {
-        matches!(self.head, Head::Empty)
+        matches!(self.stage, Stage::Empty)
     }
 
+    /// Returns `true` iff the removed key was the head of the queue.
+    ///
+    /// While the queue is still in the running stage, this is a no-op: the
+    /// scheduler may still yield a running item after the state machine has
+    /// declared it removed, and the state machine must ignore that yield.
     pub fn remove(&mut self, key_to_remove: &EntryKey) -> bool {
-        // Can this be the known head?
-        // Yes. Perhaps it expired/ended externally.
-        // We do not do anything if the reader is still at the running stage,
-        //
-        // This means that the scheduler might still yield the "running" item after
-        // the state machine has declared it as completed/removed. The state machine
-        // must be able to handle this case and "ignore" the yield command of this item.
-        if matches!(self.reader, Reader::Closed | Reader::Inbox(..))
-            && let Head::Known { ref key, .. } = self.head
-            && key == key_to_remove
-        {
-            self.head = Head::Unknown;
-            // Ensure that next advance would re-seek to the newly added item
-            self.reader = Reader::Closed;
-            true
-        } else {
-            false
+        if matches!(
+            self.stage,
+            Stage::New { .. } | Stage::Running { .. } | Stage::Empty
+        ) {
+            return false;
         }
-    }
 
-    /// Returns true if the head was changed
-    pub fn enqueue(&mut self, key: &EntryKey, value: &EntryValue) -> bool {
-        match (&self.head, &self.reader) {
-            // we are only unknown if we are new and didn't read the running list yet,
-            // we might also be in a limbo state if advance() failed.
-            (_, Reader::New { .. } | Reader::Running { .. }) => { /* do nothing */ }
-            (Head::Unknown, _) => { /* do nothing */ }
-            (Head::Empty, _) => {
-                self.reader = Reader::Closed;
-                self.head = Head::Known {
-                    key: *key,
-                    value: value.clone(),
-                };
-                return true;
-            }
-            (
-                Head::Known {
-                    key: current_key, ..
-                },
-                Reader::Inbox(_) | Reader::Closed,
-            ) => {
-                if key < current_key {
-                    self.head = Head::Known {
-                        key: *key,
-                        value: value.clone(),
-                    };
-                    // Ensure that next advance would re-seek to the newly added item
-                    self.reader = Reader::Closed;
-                    return true;
-                } else {
-                    // This is a temporary fix to ensure that we perform a re-seek
-                    // to fix the issue where the iterator wouldn't see the newly added
-                    // items if the memtable was flushed prior the seek.
-                    self.reader = Reader::Closed;
+        // We are in Inbox/Waiting stage.
+        let Ok(pos) = self.items.binary_search_by_key(key_to_remove, |&(k, _)| k) else {
+            // This branch handles when we don't have the item in cache.
+            //
+            // The removed item can be:
+            // - Cached
+            // - Unconfirmed (not in cache) || < refill anchor
+            // - > refill anchor
+            //   - We have in-flight refill
+            //   - No in-inflight refills
+            //
+            // Scenarios:
+            // - We have empty cache (or does it matter?), maybe what matters is if we have it in cache or not.
+            //   - We have waiting inbox (inbox > 0)
+            //   - We have waiting inbox but with unconfirmed items in flights, we even out at zero.
+            //     which means that we should not see any removals outside what we have already
+            //     decided to start. We are effectively (empty).
+            //   - No inflight refill yet. Ignore.
+            //   - In flight refill exists. --> Maybe tombstone it.
+            // - We have cached, no in-flight refill.
+            //   - Remove if in cache, otherwise, ignore.
+            // - We have cached items, removal is < the refill anchor, we don't have it in cache. Ignore.
+            // - We have cached items, but the removal is > the refill anchor --> Maybe tombstone it.
+            //
+            // Removed item is beyond the refill anchor
+            match self.refill_state {
+                RefillState::Standby { .. } => {}
+                RefillState::InFlight(ref mut task)
+                    if task
+                        .refill_anchor
+                        .is_none_or(|ref refill| key_to_remove > refill) =>
+                {
+                    // The refill task is in flight. We cannot determine if the key will impact
+                    // its result or not, we'll keep at most INBOX_CACHE_CAPACITY tombstones to
+                    // use as overlay when the refill is complete.
+                    task.push_tombstone(key_to_remove);
+                }
+                RefillState::InFlight(_) => {
+                    // Ignore it. This item has either been shipped (unconfirmed assignment)
+                    // or was never in the inbox to start with.
                 }
             }
-        }
-        false
+
+            return false;
+        };
+        self.items.remove(pos);
+        // The anchor stays put — even if we removed the back, the entry was
+        // also removed from storage, so `seek_after(anchor)` will skip it
+        // naturally on the next refill.
+        pos == 0
     }
 
-    /// Returns the head if known, or None if the queue needs advancing
+    /// Returns `true` iff the new item became the head of the queue.
+    pub fn enqueue(&mut self, key: &EntryKey, value: &EntryValue) -> bool {
+        match self.stage {
+            Stage::New { .. } | Stage::Running { .. } => return false,
+            Stage::Empty => {
+                // The cache is already allocated and empty (kept around
+                // across the previous `Inbox -> Empty` transition). Just
+                // re-seed it and flip the marker.
+                assert!(self.items.is_empty());
+                assert!(!self.refill_state.is_in_flight());
+                self.items.push_back((*key, value.clone()));
+                self.refill_state.update_anchor(Some(*key));
+                self.stage = Stage::Inbox;
+                return true;
+            }
+            Stage::Inbox => { /* fall-through */ }
+        }
+
+        // Insert `(key, value)` into the sorted cache.
+        //
+        // Returns `true` iff the item became the new front (head). Returns
+        // `false` if the item was rejected because its key falls strictly above
+        // the cache's coverage zone (`> refill_anchor`); in that case the item
+        // will be discovered on the next refill.
+
+        // Priority-queue rule: ignore items strictly above our coverage zone.
+        // The bound is `refill_anchor`, NOT `cache.back`. After consuming the
+        // back of the cache, `cache.back` can be lower than `refill_anchor`,
+        // and items in `(cache.back, refill_anchor]` would be lost (the next
+        // refill seek_after(refill_anchor) only returns keys strictly greater
+        // than the anchor).
+        match self.refill_state {
+            RefillState::Standby { refill_anchor, .. }
+                if refill_anchor.is_none_or(|ref refill| key > refill) =>
+            {
+                // We cannot accept items beyond our coverage zone.
+                return false;
+            }
+            RefillState::Standby { .. } => { /* in coverage zone */ }
+            // This enqueue may or may not appear in the in-flight operation and
+            // there is no way to determine that. So, we stage it on the in-flight
+            // task overlay until we receive the result.
+            RefillState::InFlight(ref mut task)
+                if task.refill_anchor.is_none_or(|ref refill| key > refill) =>
+            {
+                task.push_added_item(key, value);
+                return false;
+            }
+            RefillState::InFlight(ref task) => {
+                // the new item is < than what the refill task is interested in. Therefore,
+                // we add it right now.
+                assert!(task.refill_anchor.is_some_and(|ref refill| key <= refill));
+            }
+        }
+
+        let pos = match self.items.binary_search_by_key(key, |&(k, _)| k) {
+            Ok(_) => {
+                // We already know about this key which means that the head has not changed
+                // as a result of this enqueue.
+                return false;
+            }
+            Err(pos) => pos,
+        };
+
+        // We need to be careful about moving the refill anchor if there is an
+        // in-flight refill task.
+        //
+        // let's say we have a refill task in flight, and we are enqueueing smaller
+        // than it's anchor point, we are confident that the task will never return
+        // this item. If as a result of the enqueue we exceeded the cache capacity.
+        //
+        // If there was an in-flight refill, we must cancel it and reset our refill
+        // anchor to point to the back of the cache so that the next refill can
+        // re-discover it. This is an acceptable trade-off because we must be here
+        // because we have sufficiently populated the cache with recently enqueued
+        // items and we wouldn't need the refill immediately anyway.
+
+        // At-cap fast path: avoid the VecDeque grow/shrink that would happen
+        // if we inserted first and evicted afterwards.
+        if self.items.len() >= INBOX_CACHE_CAPACITY {
+            if pos == self.items.len() {
+                // The new key would land at the back and be evicted on the
+                // very next step. Skip the insert, but still lower the anchor
+                // to the current back so the next refill can re-discover `key`
+                // via `seek_after(anchor)`.
+                //
+                // Cancels the in-flight task if exists
+                self.refill_state
+                    .update_anchor(self.items.back().map(|(k, _)| *k));
+                return false;
+            }
+            // Make room first; `pos` is unaffected because pos < old_len in
+            // this branch (we shift elements right of `pos` regardless).
+            debug_assert!(pos < self.items.len());
+            self.items.pop_back();
+            self.items.insert(pos, (*key, value.clone()));
+
+            // Cancels the in-flight task if exists
+            self.refill_state
+                .update_anchor(self.items.back().map(|(k, _)| *k));
+            return pos == 0;
+        }
+
+        // Normal path: cache below capacity.
+        self.items.insert(pos, (*key, value.clone()));
+        // Anchor maintenance: if it was None (very first insert), set it to
+        // this key. Otherwise the precondition above guarantees
+        // `key <= anchor`, so the anchor stays put.
+        if let RefillState::Standby { refill_anchor } = &mut self.refill_state
+            && refill_anchor.is_none()
+        {
+            *refill_anchor = Some(*key);
+        }
+        pos == 0
+    }
+
+    /// Returns the head if known, or `None` if the queue needs advancing.
     pub fn head(&self) -> Option<QueueItem<'_>> {
-        match (&self.head, &self.reader) {
-            (Head::Unknown, _) => None,
-            (_, Reader::New { .. }) => None,
-            (Head::Known { key, value }, Reader::Running { .. }) => {
-                Some(QueueItem::Running { key, value })
-            }
-            (Head::Known { key, value }, Reader::Inbox(_) | Reader::Closed) => {
-                Some(QueueItem::Inbox { key, value })
-            }
-            (Head::Empty, _) => Some(QueueItem::None),
+        match &self.stage {
+            Stage::New { .. } => None,
+            Stage::Running { head: (k, v), .. } => Some(QueueItem::Running { key: k, value: v }),
+            Stage::Inbox => self
+                .items
+                .front()
+                .map(|(k, v)| QueueItem::Inbox { key: k, value: v }),
+            Stage::Empty => Some(QueueItem::None),
         }
     }
 
-    pub fn advance_if_needed(
+    pub fn poll_advance_if_needed(
         &mut self,
+        cx: &mut std::task::Context<'_>,
         storage: &S,
         skip: &UnconfirmedAssignments,
         qid: &VQueueId,
-    ) -> Result<QueueItem<'_>, StorageError> {
-        // Keep advancing until the head is known
-        while matches!(self.head, Head::Unknown) {
-            self.advance(storage, skip, qid)?;
+        effectively_empty: bool,
+        allow_blocking_io: bool,
+    ) -> Poll<Result<QueueItem<'_>, StorageError>> {
+        loop {
+            let needs_advance = match self.stage {
+                Stage::New { .. } => true,
+                Stage::Inbox => self.items.is_empty(),
+                _ => false,
+            };
+            if !needs_advance {
+                break;
+            }
+            if !self.try_advance()? {
+                // We cannot advance without a refill
+                if self.refill_state.is_in_flight() {
+                    ready!(self.poll_refill_task(cx, skip));
+                    // If we ended up also being empty and we can't determine if we are
+                    // empty or not, we should start another refill task and return Pending.
+                    // This happens automatically because in that case we'll "continue"
+                } else {
+                    // Do we need to refill?
+                    // We don't need to refill if we are at Inbox stage and we know no more
+                    // inbox entries are available.
+                    if effectively_empty && matches!(self.stage, Stage::Inbox) {
+                        self.stage = Stage::Empty;
+                        break;
+                    }
+                    // A) try refill immediate refill if allowed
+                    match self.try_refill(storage, qid, skip, allow_blocking_io) {
+                        Ok(_) => {}
+                        Err(CursorError::WouldBlock) => {
+                            // B) start an async refill task
+                            self.start_refill_task(storage, qid)?;
+                        }
+                        Err(CursorError::Other(e)) => {
+                            // C) fail miserably
+                            return Poll::Ready(Err(e));
+                        }
+                    }
+                }
+            }
         }
 
-        match (&self.head, &self.reader) {
-            (Head::Unknown, _) => unreachable!("head must be known"),
-            (_, Reader::New { .. }) => unreachable!("reader cannot be new after poll"),
-            (Head::Known { key, value }, Reader::Running { .. }) => {
-                Ok(QueueItem::Running { key, value })
+        Poll::Ready(Ok(match &self.stage {
+            Stage::New { .. } => unreachable!("head must be resolved after advance_if_needed"),
+            Stage::Running { head: (k, v), .. } => QueueItem::Running { key: k, value: v },
+            Stage::Inbox => {
+                let (k, v) = self
+                    .items
+                    .front()
+                    .expect("inbox cache must have a head after advance_if_needed");
+                QueueItem::Inbox { key: k, value: v }
             }
-            (Head::Known { key, value }, Reader::Inbox(_) | Reader::Closed) => {
-                Ok(QueueItem::Inbox { key, value })
-            }
-            (Head::Empty, _) => Ok(QueueItem::None),
-        }
+            Stage::Empty => QueueItem::None,
+        }))
     }
 
     /// Advances the queue to the next item.
     ///
-    /// The queue reader will skip over items in `skip` when reading the inbox stage. When reading
-    /// the running stage, the `skip` set is ignored.
-    pub fn advance(
-        &mut self,
-        storage: &S,
-        skip: &UnconfirmedAssignments,
-        qid: &VQueueId,
-    ) -> Result<(), StorageError> {
+    /// In the inbox stage this consumes the current head (if any) and exposes
+    /// the next cached item; the cache is refilled from storage in batches of
+    /// up to [`INBOX_CACHE_CAPACITY`] when it empties. The `skip` set is
+    /// consulted only when reading the inbox stage; it is ignored when
+    /// reading the running stage.
+    ///
+    ///
+    /// Returns false if advance was not possible and we need to perform a refill.
+    pub fn try_advance(&mut self) -> Result<bool, StorageError> {
+        // Split into disjoint borrows so the `Stage::Inbox` arm below can
+        // mutate both `stage` and `inbox_cache` without fighting the
+        // borrow checker.
+        let Self { stage, items, .. } = self;
         loop {
-            match self.reader {
-                Reader::New { already_running } if already_running > 0 => {
-                    let mut reader = storage.new_run_reader(qid);
+            match stage {
+                Stage::New {
+                    already_running,
+                    reader,
+                } => {
+                    let mut reader = reader.take().unwrap();
                     reader.seek_to_first();
-                    let item = reader.peek()?;
-                    if let Some((key, value)) = item {
-                        self.head = Head::Known { key, value };
-                        self.reader = Reader::Running {
-                            remaining: already_running,
+                    if let Some((key, value)) = reader.peek()? {
+                        *stage = Stage::Running {
+                            head: (key, value),
                             reader,
+                            remaining: already_running.get(),
                         };
-                        break;
-                    } else {
-                        assert!(
-                            already_running > 0,
-                            "vqueue {qid:?} has no running items but its metadata says that it has {already_running} running items",
-                        );
-                        // move to inbox reading
-                        self.head = Head::Unknown;
-                        self.reader = Reader::Closed;
+                        return Ok(true);
                     }
+                    debug_assert!(
+                        false,
+                        "vqueue has no running items but its metadata says it has {already_running}",
+                    );
+                    *stage = Stage::Inbox;
                 }
-                Reader::New { .. } => {
-                    // create new inbox reader
-                    self.reader = Reader::Closed;
-                }
-                Reader::Running {
-                    ref mut reader,
-                    ref mut remaining,
+                Stage::Running {
+                    reader,
+                    remaining,
+                    head,
                 } => {
                     reader.advance();
                     *remaining = remaining.saturating_sub(1);
-                    let item = reader.peek()?;
-                    if let Some((key, value)) = item {
-                        debug_assert!(*remaining > 0);
-                        self.head = Head::Known { key, value };
-                        break;
-                    } else {
-                        debug_assert_eq!(0, *remaining);
-                        // move to inbox reading
-                        self.head = Head::Unknown;
-                        self.reader = Reader::Closed;
-                    }
-                }
-                Reader::Inbox(ref mut reader) => {
-                    reader.advance();
-                    let key = reader.current_key()?;
-                    if let Some(key) = key {
-                        if skip.contains_key(&key) {
-                            continue;
+                    match reader.peek()? {
+                        Some(next) => {
+                            debug_assert!(*remaining > 0);
+                            *head = next;
+                            return Ok(true);
                         }
-                        self.head = Head::Known {
-                            key,
-                            value: reader.current_value()?.unwrap(),
-                        };
-                        break;
-                    } else {
-                        // we are done reading inbox
-                        self.head = Head::Empty;
-                        self.reader = Reader::Closed;
-                        break;
-                    }
-                }
-                Reader::Closed => {
-                    match self.head {
-                        Head::Unknown => {
-                            let mut reader = storage.new_inbox_reader(qid);
-                            reader.seek_to_first();
-                            let key = reader.current_key()?;
-                            if let Some(key) = key {
-                                if skip.contains_key(&key) {
-                                    self.reader = Reader::Inbox(reader);
-                                    continue;
-                                }
-                                self.head = Head::Known {
-                                    key,
-                                    value: reader.current_value()?.unwrap(),
-                                };
-                                self.reader = Reader::Inbox(reader);
-                                break;
-                            } else {
-                                self.head = Head::Empty;
-                                self.reader = Reader::Closed;
-                            }
-                        }
-                        Head::Known { ref key, .. } => {
-                            // seek to known head first, then advance.
-                            let mut reader = storage.new_inbox_reader(qid);
-                            reader.seek_after(qid, key);
-                            let next_key = reader.current_key()?;
-                            if let Some(next_key) = next_key {
-                                if skip.contains_key(&next_key) {
-                                    self.reader = Reader::Inbox(reader);
-                                    continue;
-                                }
-                                self.head = Head::Known {
-                                    key: next_key,
-                                    value: reader.current_value()?.unwrap(),
-                                };
-                                self.reader = Reader::Inbox(reader);
-                                break;
-                            } else {
-                                self.head = Head::Empty;
-                                self.reader = Reader::Closed;
-                            }
-                        }
-                        Head::Empty => {
-                            // do nothing.
-                            return Ok(());
+                        None => {
+                            debug_assert_eq!(0, *remaining);
+                            *stage = Stage::Inbox;
                         }
                     }
                 }
+                Stage::Inbox => return Ok(items.pop_front().is_some()),
+                Stage::Empty => return Ok(true),
             }
         }
+    }
+
+    /// Refills `cache` with up to [`INBOX_CACHE_CAPACITY`] items from storage if
+    /// it's possible to do so without blocking the thread.
+    ///
+    /// Starting at `cache.refill_anchor` (or the very first key if no anchor is
+    /// set yet). Returns true if items were added. Items in the `skip` set are
+    /// not added to the cache, but the anchor advances past them so they are not
+    /// reconsidered on the next refill.
+    fn try_refill(
+        &mut self,
+        storage: &S,
+        qid: &VQueueId,
+        skip: &UnconfirmedAssignments,
+        allow_blocking_io: bool,
+    ) -> Result<(), CursorError> {
+        let start = Instant::now();
+        let mut reader = storage.new_inbox_reader(qid, vqueue_table::Options { allow_blocking_io });
+        let RefillState::Standby { refill_anchor } = &mut self.refill_state else {
+            panic!("refill state must be standby");
+        };
+
+        match refill_anchor {
+            Some(anchor) => reader.seek_after(anchor),
+            None => reader.seek_to_first(),
+        }
+
+        while self.items.len() < INBOX_CACHE_CAPACITY {
+            let Some((key, value)) = reader.peek()? else {
+                if self.items.is_empty() {
+                    self.stage = Stage::Empty;
+                }
+                break;
+            };
+
+            if !skip.contains_key(&key) {
+                // we can safely unwrap the option here because we know that the key
+                // exists.
+                self.items.push_back((key, value));
+            }
+            *refill_anchor = Some(refill_anchor.map_or(key, |a| a.max(key)));
+            reader.advance();
+        }
+        tracing::debug!(
+            "non-blocking refill finished in {}, cache has {} items",
+            start.elapsed().friendly(),
+            self.items.len()
+        );
         Ok(())
     }
 
+    fn start_refill_task(&mut self, storage: &S, qid: &VQueueId) -> Result<(), StorageError> {
+        assert!(!self.refill_state.is_in_flight());
+        let RefillState::Standby { refill_anchor } = self.refill_state else {
+            panic!("refill state must be standby");
+        };
+
+        let mut reader = storage.new_inbox_reader(
+            qid,
+            vqueue_table::Options {
+                allow_blocking_io: true,
+            },
+        );
+
+        let handle = tokio::task::spawn_blocking(move || {
+            // collect and send the results at the end
+            let mut results = Vec::with_capacity(INBOX_CACHE_CAPACITY);
+
+            match refill_anchor {
+                Some(anchor) => reader.seek_after(&anchor),
+                None => reader.seek_to_first(),
+            }
+
+            while results.len() < INBOX_CACHE_CAPACITY {
+                // In this mode, we don't expect to see WouldBlock
+                match reader.peek() {
+                    Ok(Some((key, value))) => {
+                        results.push((key, value));
+                        reader.advance();
+                    }
+                    Ok(None) => {
+                        // no more items
+                        break;
+                    }
+                    Err(CursorError::WouldBlock) => {
+                        unreachable!("refill task should never see WouldBlock");
+                    }
+                    Err(CursorError::Other(e)) => {
+                        tracing::error!("refill thread failed: {e}");
+                        return Err(e);
+                    }
+                }
+            }
+            // Ship the results
+            tracing::info!("Refill thread completed");
+            Ok(results)
+        });
+
+        let task = Box::new(RefillTask {
+            started_at: Instant::now(),
+            refill_anchor,
+            horizon: None,
+            overlay: VecDeque::with_capacity(INBOX_CACHE_CAPACITY),
+            handle,
+        });
+
+        self.refill_state = RefillState::InFlight(task);
+        Ok(())
+    }
+
+    fn poll_refill_task(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+        skip: &UnconfirmedAssignments,
+    ) -> Poll<()> {
+        let (items, overlay, mut refill_anchor, horizon) = match self.refill_state {
+            RefillState::Standby { .. } => return Poll::Ready(()),
+            RefillState::InFlight(ref mut task) => {
+                match ready!(Pin::new(&mut task.handle).poll(cx)) {
+                    Err(join_err) => {
+                        tracing::error!("refill task panicked: {join_err}");
+                        self.refill_state = RefillState::Standby {
+                            refill_anchor: task.refill_anchor.take(),
+                        };
+                        return Poll::Ready(());
+                    }
+                    Ok(Err(err)) => {
+                        tracing::error!("refill task failed: {err}");
+                        self.refill_state = RefillState::Standby {
+                            refill_anchor: task.refill_anchor.take(),
+                        };
+                        return Poll::Ready(());
+                    }
+                    Ok(Ok(result)) => {
+                        tracing::debug!(
+                            "refill task finished with {} items in  {}",
+                            result.len(),
+                            task.started_at.elapsed().friendly()
+                        );
+                        (
+                            result,
+                            std::mem::take(&mut task.overlay),
+                            task.refill_anchor.take(),
+                            task.horizon.take(),
+                        )
+                    }
+                }
+            }
+        };
+        // If we got less items than what we asked, then this must have been the end of the queue
+        // at the time of the refill.
+        let end_of_queue = items.len() < INBOX_CACHE_CAPACITY;
+
+        // We now need to merge the items we received, apply the overlays, and deduplicate
+        // with existing entries in cache.
+        // At the end, we figure out what's the next anchor to use for the next refill.
+        //
+        //
+        // The strategy here is more complex that the blocking/inline version because
+        // concurrency is hard, who knew!
+        // We need to do all that while keeping the cache capacity in check. We don't
+        // want to re-allocate/resize the cache.
+        //
+        // We navigate both the overlays and the items in together in semi-lockstep.
+        // Technically, this is a LSM-style read/compaction algorithm.
+        for either in items
+            .into_iter()
+            .merge_join_by(overlay, |(key, _), (overlay_key, _)| key.cmp(overlay_key))
+        {
+            // First key at-or-above the horizon ends the merge: overlay
+            // entries are all below it by construction, and the merge
+            // walks ascending, so the rest is storage that the next
+            // refill will rediscover via `seek_after`.
+            let key = match &either {
+                EitherOrBoth::Left((k, _))
+                | EitherOrBoth::Right((k, _))
+                | EitherOrBoth::Both((k, _), _) => *k,
+            };
+            if horizon.is_some_and(|h| key >= h) {
+                break;
+            }
+            // Left is the item from db, right is the overlay
+            match either {
+                // Somewhat similar to a normal enqueue
+                EitherOrBoth::Left((key, value))
+                | EitherOrBoth::Right((key, Overlay::Add(value)))
+                    // overlay always wins.
+                | EitherOrBoth::Both((key, _), (_, Overlay::Add(value))) => {
+                    if skip.contains_key(&key) {
+                            // The key was already dispatched, skip it.
+                        refill_anchor = Some(refill_anchor.map_or(key, |a| a.max(key)));
+                        continue;
+                    }
+                    // Insert sorted in cache and ignore it if we already have it.
+                    // If this item pushes us over the cache capcity, then we ignore it and reset
+                    // the refill anchor to it.
+                    let pos = match self.items.binary_search_by_key(&key, |&(k, _)| k) {
+                        Ok(_) => continue,
+                        Err(pos) => pos,
+                    };
+                    if self.items.len() >= INBOX_CACHE_CAPACITY {
+                        if pos == self.items.len() {
+                            // beyond capacity, ignore the item. Reset the anchor.
+                            refill_anchor = self.items.back().map(|(k, _)| *k);
+                            break;
+                        }
+                        // Make room first;
+                        self.items.pop_back();
+                        self.items.insert(pos, (key, value));
+                        refill_anchor = self.items.back().map(|(k, _)| *k);
+                        break;
+                    }
+
+                    // Normal path: cache below capacity.
+                    self.items.insert(pos, (key, value));
+                    refill_anchor = Some(key);
+                }
+                EitherOrBoth::Right((key, Overlay::Tombstone))
+                    // overlay always wins.
+                | EitherOrBoth::Both((key, _), (_, Overlay::Tombstone)) => {
+                    // In theory, we should never see a tombstone that impacts the existing
+                    // cache.
+                    debug_assert!(self.items.binary_search_by_key(&key, |&(k, _)| k).is_err());
+                    // we should push the anchor to this item.
+                    refill_anchor = Some(key);
+                }
+            }
+        }
+
+        // It's very important is that we must reset the task to standby
+        self.refill_state = RefillState::Standby {
+            refill_anchor: refill_anchor.or(self.items.back().map(|(k, _)| *k)),
+        };
+
+        // at the end, if the cache is empty and end_of_queue is true, then we must
+        // have exhausted the inbox.
+        if self.items.is_empty() && end_of_queue {
+            self.stage = Stage::Empty;
+        }
+
+        Poll::Ready(())
+    }
+
+    // pub fn refill(
+    //     &mut self,
+    //     generation: u16,
+    //     items: Vec<(EntryKey, EntryValue)>,
+    //     skip: &UnconfirmedAssignments,
+    // ) -> bool {
+    //     let mut pushed = false;
+    //     if generation != self.inbox_cache.refill_generation {
+    //         // ignore old refills
+    //         return pushed;
+    //     }
+    //
+    //     // are we at the end?
+    //     let at_end = items.len() < INBOX_CACHE_CAPACITY;
+    //
+    //     for (key, value) in items {
+    //         if !self.has_cache_capacity() {
+    //             // There are items that we won't attempt, so we can't say that
+    //             // the queue is empty.
+    //             self.inbox_cache.refill_generation =
+    //                 self.inbox_cache.refill_generation.wrapping_add(1);
+    //             return pushed;
+    //         }
+    //         pushed = self.inbox_cache.push_back(skip, key, value);
+    //     }
+    //
+    //     self.inbox_cache.refill_generation = self.inbox_cache.refill_generation.wrapping_add(1);
+    //     // todo: we have stuff so, we should switch into ready to poll.
+    //     if self.inbox_cache.is_empty() && at_end {
+    //         self.stage = Stage::Empty;
+    //     }
+    //     pushed
+    // }
+
     pub(crate) fn remaining_in_running_stage(&self) -> u32 {
-        match self.reader {
-            Reader::New { already_running } => already_running,
-            Reader::Running { remaining, .. } => remaining,
-            Reader::Inbox(..) => 0,
-            Reader::Closed => 0,
+        match &self.stage {
+            Stage::New {
+                already_running, ..
+            } => already_running.get(),
+            Stage::Running { remaining, .. } => *remaining,
+            Stage::Inbox | Stage::Empty => 0,
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    use restate_clock::RoughTimestamp;
-    use restate_clock::time::MillisSinceEpoch;
-    use restate_core::TaskCenter;
-    use restate_partition_store::{PartitionDb, PartitionStore, PartitionStoreManager};
-    use restate_rocksdb::RocksDbManager;
-    use restate_storage_api::Transaction;
-    use restate_storage_api::vqueue_table::{
-        EntryId, EntryKey, EntryKind, EntryMetadata, EntryValue, Stage, Status, WriteVQueueTable,
-        stats::EntryStatistics,
-    };
-    use restate_types::clock::UniqueTimestamp;
-    use restate_types::identifiers::{PartitionId, PartitionKey};
-    use restate_types::partitions::Partition;
-    use restate_types::sharding::KeyRange;
-    use restate_types::vqueues::VQueueId;
-
-    const BASE_RUN_AT_MS: u64 = 1_744_000_000_000;
-
-    fn test_entry_at(id: u8, has_lock: bool, run_at: MillisSinceEpoch) -> (EntryKey, EntryValue) {
-        let run_at = RoughTimestamp::from_unix_millis_clamped(run_at);
-        let created_at = UniqueTimestamp::try_from(1_000u64 + id as u64).unwrap();
-        let entry_id = EntryId::new(EntryKind::Invocation, [id; EntryId::REMAINDER_LEN]);
-        let key = EntryKey::new(has_lock, run_at, id as u64, entry_id);
-        let stats = EntryStatistics::new(created_at, run_at);
-        let value = EntryValue {
-            status: if stats.first_runnable_at > created_at.to_unix_millis() {
-                Status::Scheduled
-            } else {
-                Status::New
-            },
-            metadata: EntryMetadata::default(),
-            stats,
-        };
-
-        (key, value)
-    }
-
-    fn test_entry(id: u8, has_lock: bool, run_at_ms: u64) -> (EntryKey, EntryValue) {
-        test_entry_at(
-            id,
-            has_lock,
-            MillisSinceEpoch::new(BASE_RUN_AT_MS + run_at_ms),
-        )
-    }
-
-    fn default_entry(id: u8) -> (EntryKey, EntryValue) {
-        test_entry(id, false, 0)
-    }
-
-    fn test_qid(partition_key: u64) -> VQueueId {
-        VQueueId::custom(partition_key, "1")
-    }
-
-    async fn storage_test_environment() -> PartitionStore {
-        let rocksdb_manager = RocksDbManager::init();
-        TaskCenter::set_on_shutdown(Box::pin(async {
-            rocksdb_manager.shutdown().await;
-        }));
-
-        let manager = PartitionStoreManager::create()
-            .await
-            .expect("DB storage creation succeeds");
-        manager
-            .open(
-                &Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1)),
-                None,
-            )
-            .await
-            .expect("DB storage creation succeeds")
-    }
-
-    async fn insert_entries(
-        rocksdb: &mut PartitionStore,
-        qid: &VQueueId,
-        stage: Stage,
-        entries: &[(EntryKey, EntryValue)],
-    ) {
-        let mut txn = rocksdb.transaction();
-        for (key, value) in entries {
-            txn.put_vqueue_inbox(qid, stage, key, value);
-        }
-        txn.commit().await.expect("commit should succeed");
-    }
-
-    #[restate_core::test]
-    async fn test_queue_running_to_inbox_to_empty() {
-        let mut rocksdb = storage_test_environment().await;
-
-        let qid = test_qid(1000);
-        let running_entry = default_entry(1);
-        let inbox_entry = default_entry(2);
-
-        insert_entries(
-            &mut rocksdb,
-            &qid,
-            Stage::Running,
-            std::slice::from_ref(&running_entry),
-        )
-        .await;
-        insert_entries(
-            &mut rocksdb,
-            &qid,
-            Stage::Inbox,
-            std::slice::from_ref(&inbox_entry),
-        )
-        .await;
-
-        let db = rocksdb.partition_db();
-        let mut queue: Queue<PartitionDb> = Queue::new(1);
-        let mut skip = UnconfirmedAssignments::new();
-
-        assert!(!queue.is_empty());
-
-        let head = queue.advance_if_needed(db, &skip, &qid).unwrap();
-        assert!(matches!(head, QueueItem::Running { key, .. } if *key == running_entry.0));
-        assert!(
-            matches!(queue.head(), Some(QueueItem::Running { key, .. }) if *key == running_entry.0)
-        );
-
-        queue.advance(db, &skip, &qid).unwrap();
-        assert!(
-            matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == inbox_entry.0)
-        );
-        let Some(QueueItem::Inbox { key, .. }) = queue.head() else {
-            panic!("expected inbox head");
-        };
-        skip.insert(*key, Default::default());
-        assert!(!queue.is_empty());
-
-        queue.advance(db, &skip, &qid).unwrap();
-        assert!(queue.is_empty());
-
-        let higher = default_entry(0);
-        assert!(queue.enqueue(&higher.0, &higher.1));
-        let head = queue.advance_if_needed(db, &skip, &qid).unwrap();
-        assert!(matches!(head, QueueItem::Inbox { key, .. } if *key == higher.0));
-    }
-
-    #[restate_core::test]
-    async fn test_entry_key_ordering() {
-        let mut rocksdb = storage_test_environment().await;
-
-        let qid = test_qid(2000);
-        let low = test_entry(1, false, 3_000);
-        let high = test_entry(2, false, 2_000);
-        let highest = test_entry(3, true, 9_000);
-
-        insert_entries(
-            &mut rocksdb,
-            &qid,
-            Stage::Inbox,
-            &[low.clone(), high.clone(), highest.clone()],
-        )
-        .await;
-
-        let db = rocksdb.partition_db();
-        let mut queue: Queue<PartitionDb> = Queue::new(0);
-        let skip = UnconfirmedAssignments::new();
-
-        queue.advance(db, &skip, &qid).unwrap();
-        assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == highest.0));
-
-        queue.advance(db, &skip, &qid).unwrap();
-        assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == high.0));
-
-        queue.advance(db, &skip, &qid).unwrap();
-        assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == low.0));
-    }
-
-    #[restate_core::test]
-    async fn test_run_at_below_now_bumps_entry_higher_in_inbox() {
-        let mut rocksdb = storage_test_environment().await;
-
-        let qid = test_qid(2_500);
-        let now = MillisSinceEpoch::now().as_u64();
-        let future_entry =
-            test_entry_at(1, false, MillisSinceEpoch::new(now.saturating_add(60_000)));
-        let overdue_entry =
-            test_entry_at(2, false, MillisSinceEpoch::new(now.saturating_sub(1_000)));
-
-        insert_entries(
-            &mut rocksdb,
-            &qid,
-            Stage::Inbox,
-            &[future_entry.clone(), overdue_entry.clone()],
-        )
-        .await;
-
-        let db = rocksdb.partition_db();
-        let mut queue: Queue<PartitionDb> = Queue::new(0);
-        let skip = UnconfirmedAssignments::new();
-
-        queue.advance(db, &skip, &qid).unwrap();
-        assert!(
-            matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == overdue_entry.0)
-        );
-
-        queue.advance(db, &skip, &qid).unwrap();
-        assert!(
-            matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == future_entry.0)
-        );
-    }
-
-    #[restate_core::test]
-    async fn test_enqueue_replaces_head_on_smaller_key() {
-        let mut rocksdb = storage_test_environment().await;
-
-        let qid = test_qid(3000);
-        let initial = test_entry(1, false, 3_000);
-
-        insert_entries(
-            &mut rocksdb,
-            &qid,
-            Stage::Inbox,
-            std::slice::from_ref(&initial),
-        )
-        .await;
-
-        let db = rocksdb.partition_db();
-        let mut queue: Queue<PartitionDb> = Queue::new(0);
-        let skip = UnconfirmedAssignments::new();
-
-        queue.advance(db, &skip, &qid).unwrap();
-        assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == initial.0));
-
-        let higher = test_entry(2, false, 2_000);
-        assert!(queue.enqueue(&higher.0, &higher.1));
-        assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == higher.0));
-        assert!(
-            matches!(queue.advance_if_needed(db, &skip, &qid).unwrap(), QueueItem::Inbox { key, .. } if *key == higher.0)
-        );
-
-        let lower = test_entry(3, false, 4_000);
-        assert!(!queue.enqueue(&lower.0, &lower.1));
-        assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == higher.0));
-    }
-
-    #[restate_core::test]
-    async fn test_remove() {
-        let mut rocksdb = storage_test_environment().await;
-
-        let qid = test_qid(4000);
-        let entry = default_entry(1);
-
-        insert_entries(
-            &mut rocksdb,
-            &qid,
-            Stage::Inbox,
-            std::slice::from_ref(&entry),
-        )
-        .await;
-
-        let db = rocksdb.partition_db();
-        let mut queue: Queue<PartitionDb> = Queue::new(0);
-        let mut skip = UnconfirmedAssignments::new();
-
-        queue.advance(db, &skip, &qid).unwrap();
-        let head_key = match queue.head() {
-            Some(QueueItem::Inbox { key, .. }) => *key,
-            _ => panic!("expected inbox head"),
-        };
-
-        assert!(!queue.remove(&default_entry(99).0));
-        assert!(queue.remove(&head_key));
-        assert!(queue.head().is_none());
-        assert!(
-            matches!(queue.advance_if_needed(db, &skip, &qid).unwrap(), QueueItem::Inbox { key, .. } if *key == entry.0)
-        );
-
-        skip.insert(entry.0, Default::default());
-        assert!(queue.remove(&head_key));
-        assert!(queue.head().is_none());
-        assert!(matches!(
-            queue.advance_if_needed(db, &skip, &qid).unwrap(),
-            QueueItem::None
-        ));
-    }
-
-    #[restate_core::test]
-    async fn test_skip_set() {
-        let mut rocksdb = storage_test_environment().await;
-
-        let qid = test_qid(5000);
-        let entry1 = default_entry(1);
-        let entry2 = default_entry(2);
-        let entry3 = default_entry(3);
-
-        insert_entries(
-            &mut rocksdb,
-            &qid,
-            Stage::Inbox,
-            &[entry1.clone(), entry2.clone(), entry3.clone()],
-        )
-        .await;
-
-        let db = rocksdb.partition_db();
-        let mut queue: Queue<PartitionDb> = Queue::new(0);
-        let mut skip = UnconfirmedAssignments::new();
-        skip.insert(entry1.0, Default::default());
-        skip.insert(entry2.0, Default::default());
-
-        queue.advance(db, &skip, &qid).unwrap();
-        assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == entry3.0));
-    }
-
-    #[restate_core::test]
-    async fn test_running_before_inbox_regardless_of_key() {
-        let mut rocksdb = storage_test_environment().await;
-
-        let qid = test_qid(6000);
-        let running_entry = default_entry(1);
-        let inbox_entry = test_entry(2, true, 0);
-
-        insert_entries(
-            &mut rocksdb,
-            &qid,
-            Stage::Running,
-            std::slice::from_ref(&running_entry),
-        )
-        .await;
-        insert_entries(
-            &mut rocksdb,
-            &qid,
-            Stage::Inbox,
-            std::slice::from_ref(&inbox_entry),
-        )
-        .await;
-
-        let db = rocksdb.partition_db();
-        let mut queue: Queue<PartitionDb> = Queue::new(1);
-        let skip = UnconfirmedAssignments::new();
-
-        queue.advance(db, &skip, &qid).unwrap();
-        assert!(matches!(queue.head(), Some(QueueItem::Running { .. })));
-
-        queue.advance(db, &skip, &qid).unwrap();
-        assert!(matches!(queue.head(), Some(QueueItem::Inbox { .. })));
-    }
-
-    #[restate_core::test]
-    async fn test_enqueue_and_remove_ignored_during_running_stage() {
-        let mut rocksdb = storage_test_environment().await;
-
-        let qid = test_qid(7000);
-        let running1 = default_entry(1);
-        let running2 = default_entry(2);
-        let inbox_entry = test_entry(10, true, 0);
-
-        insert_entries(
-            &mut rocksdb,
-            &qid,
-            Stage::Running,
-            &[running1.clone(), running2.clone()],
-        )
-        .await;
-        insert_entries(
-            &mut rocksdb,
-            &qid,
-            Stage::Inbox,
-            std::slice::from_ref(&inbox_entry),
-        )
-        .await;
-
-        let db = rocksdb.partition_db();
-        let mut queue: Queue<PartitionDb> = Queue::new(2);
-        let skip = UnconfirmedAssignments::new();
-
-        queue.advance(db, &skip, &qid).unwrap();
-        assert!(matches!(queue.head(), Some(QueueItem::Running { key, .. }) if *key == running1.0));
-
-        let even_higher = test_entry(11, true, 0);
-        assert!(!queue.enqueue(&even_higher.0, &even_higher.1));
-        assert!(matches!(queue.head(), Some(QueueItem::Running { key, .. }) if *key == running1.0));
-
-        assert!(!queue.remove(&running2.0));
-        assert!(matches!(queue.head(), Some(QueueItem::Running { key, .. }) if *key == running1.0));
-
-        assert!(!queue.remove(&running1.0));
-        assert!(matches!(queue.head(), Some(QueueItem::Running { key, .. }) if *key == running1.0));
-
-        queue.advance(db, &skip, &qid).unwrap();
-        assert!(matches!(queue.head(), Some(QueueItem::Running { key, .. }) if *key == running2.0));
-
-        queue.advance(db, &skip, &qid).unwrap();
-        assert!(
-            matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == inbox_entry.0)
-        );
-
-        assert!(queue.remove(&inbox_entry.0));
-        assert!(queue.head().is_none());
-    }
-}
+#[path = "queue_test.rs"]
+mod queue_test;
