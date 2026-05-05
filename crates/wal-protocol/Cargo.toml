@@ -14,6 +14,7 @@ restate-storage-api = { workspace = true }
 restate-types = { workspace = true }
 restate-worker-api = { workspace = true, features = ["serde"] }
 
+anyhow = { workspace = true }
 bilrost = { workspace = true }
 bytes = { workspace = true }
 derive_more = { workspace = true, features = ["debug"] }
