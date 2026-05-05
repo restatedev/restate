@@ -110,10 +110,13 @@ impl EligibilityTracker {
 
     pub fn next_eligible<S: VQueueStore>(
         &mut self,
+        cx: &mut std::task::Context<'_>,
         storage: &S,
         vqueues: &mut SlotMap<VQueueHandle, VQueueState<S>>,
     ) -> Result<Option<VQueueHandle>, StorageError> {
-        loop {
+        let n = self.ready_ring.len();
+        // avoid rescanning the ready ring multiple rounds
+        for _ in 0..n {
             // what is my current status
             let Some(handle) = self.ready_ring.front().copied() else {
                 return Ok(None);
@@ -137,12 +140,12 @@ impl EligibilityTracker {
             match current_state {
                 State::NeedsPoll => {
                     // update the state based on eligibility.
-                    match qstate.poll_eligibility(storage)?.as_compact() {
-                        Eligibility::Eligible => {
+                    match qstate.poll_eligibility(cx, storage) {
+                        Poll::Ready(Ok(Eligibility::Eligible)) => {
                             *current_state = State::Ready;
                             return Ok(Some(handle));
                         }
-                        Eligibility::EligibleAt(ts) => {
+                        Poll::Ready(Ok(Eligibility::EligibleAt(ts))) => {
                             let ts = ts.as_unix_millis();
                             let duration = ts.duration_since(SchedulerClock.now_millis());
                             let timer_key = self.delayed_eligibility.insert(handle, duration);
@@ -152,24 +155,30 @@ impl EligibilityTracker {
                             self.ready_ring.pop_front();
                             continue;
                         }
-                        Eligibility::NotEligible => {
+                        Poll::Ready(Ok(Eligibility::NotEligible)) => {
                             self.ready_ring.pop_front();
                             self.remove(handle);
                             continue;
                         }
+                        Poll::Ready(Err(err)) => {
+                            return Err(err);
+                        }
+                        Poll::Pending => {
+                            tracing::error!("[ELIGIBLE] WOULD BLOCK, WILL RETRY LATER");
+                            continue;
+                        }
                     }
                 }
-                State::BlockedOn(_) => {
+                State::BlockedOn(_) | State::Scheduled { .. } => {
                     self.ready_ring.pop_front();
                 }
                 State::Ready => {
                     return Ok(Some(handle));
                 }
-                State::Scheduled { .. } => {
-                    self.ready_ring.pop_front();
-                }
             }
         }
+
+        Ok(None)
     }
 
     pub fn remove(&mut self, handle: VQueueHandle) {

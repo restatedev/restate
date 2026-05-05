@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod cache;
+mod handle;
 mod metric_definitions;
 pub mod scheduler;
 mod util;

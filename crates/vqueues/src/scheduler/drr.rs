@@ -68,7 +68,6 @@ pub struct DRRScheduler<S: VQueueStore> {
 }
 
 impl<S: VQueueStore> DRRScheduler<S> {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         limit_qid_per_poll: NonZeroU16,
         max_items_per_decision: NonZeroU16,
@@ -92,6 +91,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
                     qid.clone(),
                     handle,
                     VQueueMetaLite::new(meta),
+                    &storage,
                     meta.num_running(),
                 )
             });
@@ -156,13 +156,13 @@ impl<S: VQueueStore> DRRScheduler<S> {
                 break;
             }
 
-            let Some(handle) = this.eligible.next_eligible(this.storage, this.q)? else {
+            let Some(handle) = this.eligible.next_eligible(cx, this.storage, this.q)? else {
                 break;
             };
 
             let qstate = this.q.get_mut(handle).unwrap();
 
-            match qstate.try_pop(cx, this.storage, this.resource_manager)? {
+            match qstate.try_pop(cx, this.resource_manager)? {
                 Pop::NeedsCredit => {
                     this.eligible.rotate_one();
                 }
