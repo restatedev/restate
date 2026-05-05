@@ -28,8 +28,10 @@ restate-bifrost = { workspace = true, features = ["local-loglet", "replicated-lo
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-ingestion-client = { workspace = true }
+restate-limiter = { workspace = true, features = ["rule-book"] }
 restate-metadata-store = { workspace = true }
 restate-metadata-providers = { workspace = true }
+restate-serde-util = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol-v4 = { workspace = true, features = ["discovery", "serdes"] }
 restate-storage-query-datafusion = { workspace = true }
@@ -63,6 +65,7 @@ prost-dto = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_with = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true, features = ["transport", "codegen", "gzip", "zstd"] }

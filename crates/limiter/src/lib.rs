@@ -41,12 +41,20 @@
 
 mod key;
 mod rule;
+#[cfg(feature = "rule-book")]
+pub mod rule_book;
 mod rule_store;
+mod user_limits;
 
 // Re-exports
 pub use key::LimitKey;
-pub use rule::{Pattern, RuleHandle, RulePattern};
+pub use rule::{ParseError as RulePatternParseError, Pattern, RuleHandle, RulePattern};
+#[cfg(feature = "rule-book")]
+pub use rule_book::{
+    LimitsPatch, NewRule, PersistedRule, RuleBook, RuleBookError, RuleChange, RuleId, RulePatch,
+};
 pub use rule_store::{Limit, Rules, StructuredLimits};
+pub use user_limits::{RuleUpdate, UserLimits};
 
 /// Represents the hierarchy level of counters or rules
 ///

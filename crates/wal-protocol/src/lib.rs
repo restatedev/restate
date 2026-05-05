@@ -21,7 +21,7 @@ use restate_types::logs::{self, HasRecordKeys, Keys, MatchKeyQuery};
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
 
-use crate::control::{AnnounceLeader, UpsertSchema, VersionBarrier};
+use crate::control::{AnnounceLeader, UpsertRuleBook, UpsertSchema, VersionBarrier};
 use crate::timer::TimerKeyValue;
 
 use self::control::PartitionDurability;
@@ -192,6 +192,11 @@ pub enum Command {
     /// Upsert schema for consistent schema across replicas
     /// *Since v1.6.0
     UpsertSchema(UpsertSchema),
+    /// Upsert the cluster-global rule book for consistent rules across
+    /// replicas; the apply path persists it to the partition store and
+    /// notifies the leader's `UserLimiter` of the diff.
+    /// *Since v1.7.0
+    UpsertRuleBook(UpsertRuleBook),
     // # Commands for VQueues management
     // ----------------------------------
     /// A command to attempt a run an entry in the vqueue (invocation, or otherwise)
@@ -251,6 +256,7 @@ impl HasRecordKeys for Envelope {
                 Keys::Single(res.target.partition_key())
             }
             Command::UpsertSchema(schema) => schema.partition_key_range.clone(),
+            Command::UpsertRuleBook(upsert) => upsert.partition_key_range.clone(),
             Command::VQSchedulerDecisions(_) => Keys::Single(self.partition_key()),
         }
     }

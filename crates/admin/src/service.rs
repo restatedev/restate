@@ -23,6 +23,7 @@ use tracing::{Span, debug, info, info_span};
 use restate_admin_rest_model::version::AdminApiVersion;
 use restate_core::network::{TransportConnect, net_util};
 use restate_core::{MetadataWriter, TaskCenter};
+use restate_metadata_store::MetadataStoreClient;
 use restate_service_client::HttpClient;
 use restate_service_protocol_v4::discovery::ServiceDiscovery;
 use restate_service_protocol_v4::serdes::SerdesClient;
@@ -38,6 +39,8 @@ use crate::rest_api::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
 use crate::schema_registry_integration::{MetadataService, TelemetryClient};
 use crate::{rest_api, state};
 
+pub use crate::state::RuleBookObserver;
+
 #[derive(Debug, thiserror::Error)]
 #[error("could not create the service client: {0}")]
 pub struct BuildError(#[from] restate_service_client::BuildError);
@@ -49,8 +52,8 @@ pub struct AdminService<Metadata, Discovery, Telemetry, Invocations, Transport> 
     serdes_client: SerdesClient,
     invocation_client: Invocations,
     query_context: Option<restate_storage_query_datafusion::context::QueryContext>,
-    #[cfg(feature = "metadata-api")]
-    metadata_writer: MetadataWriter,
+    metadata_client: MetadataStoreClient,
+    rule_book_observer: Option<RuleBookObserver>,
 }
 
 impl<Invocations, Transport>
@@ -68,11 +71,10 @@ where
         service_discovery: ServiceDiscovery,
         telemetry_http_client: Option<HttpClient>,
     ) -> Self {
+        let metadata_client = metadata_writer.raw_metadata_store_client().clone();
         Self {
             listeners,
             ingestion_client,
-            #[cfg(feature = "metadata-api")]
-            metadata_writer: metadata_writer.clone(),
             schema_registry: SchemaRegistry::new(
                 MetadataService(metadata_writer),
                 service_discovery,
@@ -81,6 +83,8 @@ where
             serdes_client,
             invocation_client,
             query_context: None,
+            metadata_client,
+            rule_book_observer: None,
         }
     }
 
@@ -90,6 +94,13 @@ where
     ) -> Self {
         Self {
             query_context: Some(query_context),
+            ..self
+        }
+    }
+
+    pub fn with_rule_book_observer(self, observer: RuleBookObserver) -> Self {
+        Self {
+            rule_book_observer: Some(observer),
             ..self
         }
     }
@@ -105,15 +116,15 @@ where
             self.serdes_client,
             self.invocation_client,
             self.ingestion_client,
+            self.metadata_client.clone(),
             self.query_context,
+            self.rule_book_observer,
         );
 
         let router = axum::Router::new();
 
         #[cfg(feature = "metadata-api")]
-        let router = router.merge(crate::metadata_api::router(
-            self.metadata_writer.raw_metadata_store_client(),
-        ));
+        let router = router.merge(crate::metadata_api::router(&self.metadata_client));
 
         // Add now the tracing layer, this makes sure we don't log ui requests
         let router = router.layer(

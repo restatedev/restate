@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 use ahash::{HashMap, HashSet};
 use anyhow::{Context, bail};
+use futures::FutureExt;
 use futures::stream::{FuturesUnordered, StreamExt};
 use itertools::{Either, Itertools};
 use metrics::{counter, gauge};
@@ -96,6 +97,7 @@ use crate::partition_processor_manager::processor_state::{
     LeaderEpochToken, ProcessorState, StartedProcessor,
 };
 use crate::partition_processor_manager::spawn_processor_task::SpawnPartitionProcessorTask;
+use crate::rule_book_cache::{RuleBookCache, RuleBookCacheHandle};
 
 pub struct PartitionProcessorManager<T> {
     health_status: HealthStatus<WorkerStatus>,
@@ -131,6 +133,10 @@ pub struct PartitionProcessorManager<T> {
     invoker_capacity: InvokerCapacity,
 
     ingestion_client: IngestionClient<T, Envelope>,
+
+    /// Built in `new`; the polling task is spawned at the start of `run`.
+    rule_book_cache_task: Option<RuleBookCache>,
+    rule_book_cache: RuleBookCacheHandle,
 }
 
 type SnapshotResult = Result<PartitionSnapshotStatus, SnapshotError>;
@@ -234,6 +240,13 @@ where
         );
 
         let (tx, rx) = mpsc::channel(updateable_config.pinned().worker.internal_queue_length());
+
+        let rule_book_poll_interval = config.limits.rule_book.poll_interval.into();
+        let (rule_book_cache_task, rule_book_cache) = RuleBookCache::create(
+            metadata_writer.raw_metadata_store_client().clone(),
+            rule_book_poll_interval,
+        );
+
         Self {
             health_status,
             updateable_config,
@@ -261,6 +274,8 @@ where
             wait_for_partition_table_update: false,
             invoker_capacity,
             ingestion_client,
+            rule_book_cache_task: Some(rule_book_cache_task),
+            rule_book_cache,
         }
     }
 
@@ -272,8 +287,20 @@ where
         ProcessorsManagerHandle::new(self.tx.clone())
     }
 
+    pub fn rule_book_cache_handle(&self) -> RuleBookCacheHandle {
+        self.rule_book_cache.clone()
+    }
+
     pub async fn run(mut self) -> anyhow::Result<()> {
         let mut shutdown = std::pin::pin!(cancellation_watcher());
+
+        if let Some(cache) = self.rule_book_cache_task.take() {
+            TaskCenter::spawn_child(
+                TaskKind::MetadataBackgroundSync,
+                "rule-book-cache",
+                cache.run().map(|()| Ok(())),
+            )?;
+        }
 
         let metadata = Metadata::current();
 
@@ -1365,6 +1392,7 @@ where
             self.invoker_capacity.clone(),
             self.ingestion_client.clone(),
             self.leader_handles_registry.clone(),
+            self.rule_book_cache.clone(),
         );
 
         self.asynchronous_operations

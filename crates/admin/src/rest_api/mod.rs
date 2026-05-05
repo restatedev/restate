@@ -18,11 +18,13 @@ mod health;
 mod invocations;
 mod kafka_clusters;
 mod query;
+mod rules;
 mod serdes;
 mod services;
 mod subscriptions;
 mod version;
 
+use serde::Serialize;
 use utoipa::OpenApi;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
@@ -61,12 +63,14 @@ pub use version::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
         (name = "health", description = "Admin API health"),
         (name = "version", description = "API Version"),
         (name = "introspection", description = "System introspection"),
+        (name = "rule", description = "Limiter rule book management"),
     ),
     components(responses(
         error::meta_api_error::BadRequest,
         error::meta_api_error::NotFound,
         error::meta_api_error::MethodNotAllowed,
         error::meta_api_error::Conflict,
+        error::meta_api_error::UnprocessableEntity,
         error::meta_api_error::InternalServerError))
 )]
 struct AdminApiDoc;
@@ -122,6 +126,10 @@ where
             .routes(routes!(kafka_clusters::get_kafka_cluster))
             .routes(routes!(kafka_clusters::update_kafka_cluster))
             .routes(routes!(kafka_clusters::delete_kafka_cluster))
+            // Rule book endpoints
+            .routes(routes!(rules::create_rule))
+            .routes(routes!(rules::update_rule))
+            .routes(routes!(rules::delete_rule))
             // Query endpoint
             .routes(routes!(query::query))
     };
@@ -188,4 +196,16 @@ fn create_envelope_header(partition_key: PartitionKey) -> Header {
             dedup: None,
         },
     }
+}
+
+/// # Error description response
+///
+/// Error details of the response
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+struct ErrorDescriptionResponse {
+    message: String,
+    /// # Restate code
+    ///
+    /// Restate error code describing this error
+    restate_code: Option<&'static str>,
 }

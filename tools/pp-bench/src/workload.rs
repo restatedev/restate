@@ -24,11 +24,13 @@
 //! with the apply loop for thread time, which can perturb measurements
 //! slightly compared to the isolated production runtime.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use hdrhistogram::Histogram;
 
 use restate_cli_util::{c_println, c_success};
+use restate_limiter::RuleBook;
 use restate_partition_store::PartitionStoreManager;
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
@@ -40,6 +42,7 @@ use restate_types::partitions::Partition;
 use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
 use restate_vqueues::VQueuesMetaCache;
+use restate_worker::RuleBookCacheHandle;
 use restate_worker::partition::state_machine::{ActionCollector, StateMachine};
 
 use crate::RunOpts;
@@ -100,6 +103,8 @@ pub async fn run(
         KeyRange::FULL,
         SemanticRestateVersion::unknown(),
         None, /* schema */
+        Arc::new(RuleBook::default()),
+        RuleBookCacheHandle::detached(),
     );
 
     // Initialize the vqueue cache from the (empty) partition store — this follows

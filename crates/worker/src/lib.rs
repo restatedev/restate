@@ -19,6 +19,7 @@ pub mod partition;
 #[cfg(not(feature = "expose-internals"))]
 mod partition;
 mod partition_processor_manager;
+mod rule_book_cache;
 mod subscription_controller;
 mod subscription_integration;
 
@@ -60,6 +61,7 @@ use crate::partition_processor_manager::PartitionProcessorManager;
 
 pub use self::error::*;
 pub use self::handle::*;
+pub use crate::rule_book_cache::RuleBookCacheHandle;
 pub use crate::subscription_controller::SubscriptionController;
 pub use crate::subscription_integration::SubscriptionControllerHandle;
 
@@ -202,6 +204,10 @@ where
 
     pub fn partition_processor_manager_handle(&self) -> ProcessorsManagerHandle {
         self.partition_processor_manager.handle()
+    }
+
+    pub fn rule_book_cache_handle(&self) -> RuleBookCacheHandle {
+        self.partition_processor_manager.rule_book_cache_handle()
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
