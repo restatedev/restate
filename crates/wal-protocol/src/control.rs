@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use bytes::Bytes;
+
 use restate_storage_api::fsm_table::{CurrentReplicaSetState, NextReplicaSetState};
 use restate_types::identifiers::{LeaderEpoch, PartitionId};
 use restate_types::logs::{Keys, Lsn, SequenceNumber};
@@ -169,4 +171,25 @@ pub struct PartitionDurability {
 pub struct UpsertSchema {
     pub partition_key_range: Keys,
     pub schema: Schema,
+}
+
+/// Consistently distribute the cluster-global rule book across partition
+/// replicas. Each partition's leader observes a node-level cache of the
+/// rule book stored in the metadata store and proposes this command when
+/// it sees a higher version than the partition's in-memory state.
+/// Followers and the leader (replaying) apply it idempotently — no-op if
+/// the carried rule book's version is not greater than the current
+/// in-memory version.
+///
+/// `rule_book` is the bilrost-encoded [`restate_limiter::RuleBook`]. It
+/// is carried as opaque bytes (same precedent as
+/// [`crate::Command::VQSchedulerDecisions`]) so the wal-protocol crate
+/// doesn't need to drag full serde derive through every limiter type.
+/// The state machine decodes once on apply.
+///
+/// Since v1.7.0.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct UpsertRuleBook {
+    pub partition_key_range: Keys,
+    pub rule_book: Bytes,
 }

@@ -19,6 +19,10 @@ pub mod partition;
 #[cfg(not(feature = "expose-internals"))]
 mod partition;
 mod partition_processor_manager;
+#[cfg(feature = "expose-internals")]
+pub mod rule_book_cache;
+#[cfg(not(feature = "expose-internals"))]
+mod rule_book_cache;
 mod subscription_controller;
 mod subscription_integration;
 

@@ -15,6 +15,7 @@ use std::pin::Pin;
 use std::future::poll_fn;
 use std::task::Poll;
 
+use restate_limiter::RuleUpdate;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::scheduler::{RunAction, SchedulerAction, YieldAction};
 use restate_storage_api::vqueue_table::{EntryKey, ScanVQueueTable, VQueueStore};
@@ -163,6 +164,14 @@ impl<S: VQueueStore> SchedulerService<S> {
     pub fn on_inbox_event(&mut self, event: VQueueEvent) {
         if let State::Active(ref mut drr_scheduler) = self.state {
             drr_scheduler.as_mut().on_inbox_event(event);
+        }
+    }
+
+    /// Forward a batch of rule-book updates to the embedded resource
+    /// manager. No-op when the scheduler is disabled (followers).
+    pub fn on_rules_updated(&self, updates: Vec<RuleUpdate>) {
+        if let State::Active(ref drr_scheduler) = self.state {
+            drr_scheduler.on_rules_updated(updates);
         }
     }
 

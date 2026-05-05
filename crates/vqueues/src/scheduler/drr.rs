@@ -243,6 +243,11 @@ impl<S: VQueueStore> DRRScheduler<S> {
         Some(permit.build(&self.resource_manager))
     }
 
+    /// Forward a batch of rule-book updates to the embedded resource manager.
+    pub fn on_rules_updated(&self, updates: Vec<restate_limiter::RuleUpdate>) {
+        self.resource_manager.on_rules_updated(updates);
+    }
+
     #[tracing::instrument(skip_all)]
     #[track_caller]
     pub fn on_inbox_event(&mut self, event: VQueueEvent) {

@@ -32,7 +32,7 @@ restate-ingestion-client = { workspace = true }
 restate-ingress-http = { workspace = true }
 restate-ingress-kafka = { workspace = true }
 restate-invoker-impl = { workspace = true }
-restate-limiter = { workspace = true }
+restate-limiter = { workspace = true, features = ["rule-book"] }
 restate-memory = { workspace = true }
 restate-metadata-server = { workspace = true }
 restate-metadata-store = { workspace = true }

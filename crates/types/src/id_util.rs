@@ -57,6 +57,7 @@ prefixed_ids! {
         Snapshot("snap"),
         StateMutation("mut"),
         VQueue("vq"),
+        Rule("rul"),
         // used for testing
         #[cfg(test)]
         Test("tst"),
@@ -196,7 +197,7 @@ pub struct IdEncoder<T: ResourceId + ?Sized> {
 }
 
 impl<T: ResourceId + ?Sized> IdEncoder<T> {
-    pub(crate) fn new() -> IdEncoder<T> {
+    pub fn new() -> IdEncoder<T> {
         use std::io::{IoSlice, Write};
 
         static SEP_AND_VER: [u8; 2] = [
@@ -225,14 +226,14 @@ impl<T: ResourceId + ?Sized> IdEncoder<T> {
         encoder
     }
     /// Appends a u64 value as a padded base62 encoded string to the underlying buffer
-    pub(crate) fn push_u64(&mut self, i: u64) {
+    pub fn push_u64(&mut self, i: u64) {
         let width = base62_encode_fixed_width_u64(i, &mut self.buf[self.pos..]);
         self.pos += width;
         debug_assert!(self.pos <= self.buf.len());
     }
 
     /// Appends a u128 value as a padded base62 encoded string to the underlying buffer
-    pub(crate) fn push_u128(&mut self, i: u128) {
+    pub fn push_u128(&mut self, i: u128) {
         let width = base62_encode_fixed_width_u128(i, &mut self.buf[self.pos..]);
         self.pos += width;
         debug_assert!(self.pos <= self.buf.len());
@@ -251,5 +252,11 @@ impl<T: ResourceId + ?Sized> IdEncoder<T> {
         // SAFETY; the array was initialised with valid utf8 and we only write valid utf8 to the
         // buffer.
         unsafe { std::str::from_utf8_unchecked(&self.buf[..self.pos]) }
+    }
+}
+
+impl<T: ResourceId + ?Sized> Default for IdEncoder<T> {
+    fn default() -> Self {
+        Self::new()
     }
 }

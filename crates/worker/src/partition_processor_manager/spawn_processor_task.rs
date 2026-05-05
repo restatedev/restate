@@ -32,6 +32,7 @@ use crate::PartitionProcessorBuilder;
 use crate::partition::{ProcessorError, TargetLeaderState};
 use crate::partition_processor_manager::PartitionLeaderHandlesRegistry;
 use crate::partition_processor_manager::processor_state::StartedProcessor;
+use crate::rule_book_cache::RuleBookCacheHandle;
 
 pub struct SpawnPartitionProcessorTask<T> {
     task_name: SharedString,
@@ -43,6 +44,7 @@ pub struct SpawnPartitionProcessorTask<T> {
     invoker_capacity: InvokerCapacity,
     ingestion_client: IngestionClient<T, Envelope>,
     leader_handles_registry: PartitionLeaderHandlesRegistry,
+    rule_book_cache: RuleBookCacheHandle,
 }
 
 impl<T> SpawnPartitionProcessorTask<T>
@@ -60,6 +62,7 @@ where
         invoker_capacity: InvokerCapacity,
         ingestion_client: IngestionClient<T, Envelope>,
         leader_handles_registry: PartitionLeaderHandlesRegistry,
+        rule_book_cache: RuleBookCacheHandle,
     ) -> Self {
         Self {
             task_name,
@@ -71,6 +74,7 @@ where
             invoker_capacity,
             ingestion_client,
             leader_handles_registry,
+            rule_book_cache,
         }
     }
 
@@ -99,6 +103,7 @@ where
             invoker_capacity,
             ingestion_client,
             leader_handles_registry,
+            rule_book_cache,
         } = self;
 
         let (control_tx, control_rx) = watch::channel(TargetLeaderState::Follower);
@@ -113,6 +118,7 @@ where
             watch_tx,
             invoker_capacity,
             leader_handles_registry,
+            rule_book_cache,
         );
 
         let key_range = partition.key_range;

@@ -96,7 +96,9 @@ impl TestEnv {
             None, /* outbox_head_seq_number */
             KeyRange::FULL,
             min_restate_version,
-            None,
+            None, /* schema */
+            Arc::new(RuleBook::default()),
+            RuleBookCacheHandle::detached(),
         ))
         .await
     }
@@ -1056,7 +1058,9 @@ async fn truncate_outbox_with_gap() -> Result<(), Error> {
         Some(outbox_head_index),
         KeyRange::FULL,
         SemanticRestateVersion::unknown().clone(),
-        None,
+        None, /* schema */
+        Arc::new(RuleBook::default()),
+        RuleBookCacheHandle::detached(),
     ))
     .await;
 
