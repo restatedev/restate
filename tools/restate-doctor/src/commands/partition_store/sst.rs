@@ -387,6 +387,7 @@ fn decode_key_details(kind: KeyKind, key: &[u8]) -> Option<String> {
             let ts = u64::from_be_bytes(ts_bytes);
             return Some(format!("timestamp={}", ts));
         }
+        #[allow(deprecated)]
         KeyKind::State | KeyKind::ServiceStatus | KeyKind::Promise | KeyKind::Idempotency
             if key.len() > 10 =>
         {
@@ -394,6 +395,7 @@ fn decode_key_details(kind: KeyKind, key: &[u8]) -> Option<String> {
             let mut pos = 10;
 
             // Try to decode variable-length fields
+            #[allow(deprecated)]
             let field_names: &[&str] = match kind {
                 KeyKind::State => &["service_name", "service_key", "state_key"],
                 KeyKind::ServiceStatus => &["service_name", "service_key"],

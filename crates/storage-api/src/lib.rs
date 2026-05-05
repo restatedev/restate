@@ -61,7 +61,6 @@ impl From<OutOfMemory> for BudgetedReadError {
 
 pub mod deduplication_table;
 pub mod fsm_table;
-pub mod idempotency_table;
 pub mod inbox_table;
 pub mod invocation_status_table;
 pub mod journal_events;
@@ -126,7 +125,6 @@ pub trait Transaction:
     + journal_table_v2::ReadJournalTable
     + fsm_table::WriteFsmTable
     + timer_table::WriteTimerTable
-    + idempotency_table::IdempotencyTable
     + promise_table::ReadPromiseTable
     + promise_table::WritePromiseTable
     + journal_events::WriteJournalEventsTable
