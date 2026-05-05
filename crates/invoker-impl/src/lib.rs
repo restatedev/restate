@@ -257,7 +257,8 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
                     action_token_bucket,
                     allow_protocol_v7: Configuration::pinned()
                         .common
-                        .experimental_allow_protocol_v7,
+                        .experimental
+                        .is_protocol_v7_enabled(),
                 },
                 schemas,
                 invocation_tasks: Default::default(),
@@ -1291,7 +1292,8 @@ where
                     // their memory.
                     if Configuration::pinned()
                         .common
-                        .experimental_enable_invoker_yield
+                        .experimental
+                        .is_invoker_yield_enabled()
                     {
                         debug!(
                             restate.invocation.target = %ism.invocation_target,
@@ -3041,7 +3043,7 @@ mod tests {
     async fn yield_flag_enabled_sends_yield_effect() {
         // Enable the experimental yield flag
         let mut config = Configuration::default();
-        config.common.experimental_enable_invoker_yield = true;
+        config.common.experimental.set_invoker_yield(true);
         restate_types::config::set_current_config(config);
 
         let invoker_options = InvokerOptionsBuilder::default()
