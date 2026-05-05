@@ -456,7 +456,7 @@ where
                 })?
                 .into_guard();
 
-            let scheduler_service = if config.common.experimental_enable_vqueues {
+            let scheduler_service = if config.common.experimental.is_vqueues_enabled() {
                 SchedulerService::create(
                     ResourceManager::create(
                         partition_store.partition_db().clone(),

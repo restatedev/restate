@@ -41,7 +41,11 @@ where
 
         metadata.timestamps.update(ctx.record_created_at);
 
-        if Configuration::pinned().common.experimental_enable_vqueues {
+        if Configuration::pinned()
+            .common
+            .experimental
+            .is_vqueues_enabled()
+        {
             ctx.vqueue_move_invocation_to_inbox_stage(&self.invocation_id)
                 .await?;
         } else {

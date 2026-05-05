@@ -15,6 +15,7 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use enumset::EnumSet;
+use paste::paste;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
@@ -463,20 +464,6 @@ pub struct CommonOptions {
     #[serde(flatten)]
     pub gossip: GossipOptions,
 
-    /// Current in heavy development, do not enable this feature unless you are a contributor
-    #[cfg_attr(feature = "schemars", schemars(skip))]
-    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
-    pub experimental_enable_vqueues: bool,
-
-    /// When enabled, invocations that exhaust their memory budget will yield back to
-    /// the scheduler instead of consuming retry attempts. Requires all nodes in the
-    /// cluster to be running v1.7.0 or later because it introduces a new WAL variant.
-    ///
-    /// Since v1.6.3
-    #[cfg_attr(feature = "schemars", schemars(skip))]
-    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
-    pub experimental_enable_invoker_yield: bool,
-
     /// # HLC maximum drift
     ///
     /// Restate uses an internal hybrid-logical-clock (HLC) to track causality between
@@ -494,6 +481,103 @@ pub struct CommonOptions {
     #[serde(default)]
     hlc_max_drift: FriendlyDuration,
 
+    #[serde(flatten)]
+    pub experimental: Experimental,
+}
+
+/// Declares the [`Experimental`] feature-flag struct from a list of feature names.
+///
+/// Each entry is a bare identifier (optionally preceded by doc comments / attributes) inside
+/// `experimental! { ... }`. For a feature `foo` the macro generates:
+/// - a `experimental_enable_foo: bool` field on [`Experimental`] — this is the on-disk /
+///   JSON-schema name, so the configuration schema always exposes flags as
+///   `experimental_enable_<feature>`;
+/// - `Experimental::is_foo_enabled()` and `Experimental::set_foo(enable)` accessors;
+/// - an entry in [`Experimental::features`] keyed on the bare name `"foo"` (without the
+///   `experimental_enable_` prefix), which is what is surfaced through the admin `/version` API.
+///
+/// Adding a new experimental flag is therefore a one-line change at the invocation site below:
+/// no other code needs to be touched for the flag to show up in `/version`.
+macro_rules! experimental {
+    (@gen_struct [] -> [$($body:tt)*]) => {
+        #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+        #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+        #[cfg_attr(feature = "schemars", schemars(default))]
+        #[serde(rename_all = "kebab-case")]
+        pub struct Experimental {
+            $($body)*
+        }
+    };
+    (@gen_struct [$(#[$($attrss:meta)*])* $feat:ident $(, $($tail:tt)*)?] -> [$($body:tt)*]) => {
+        paste!{
+            experimental!(@gen_struct [$($($tail)*)?] -> [
+                $($body)*
+
+                $(#[$($attrss)*])*
+                #[cfg_attr(feature = "schemars", schemars(skip))]
+                #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+                [<experimental_enable_ $feat>]: bool,
+            ]);
+        }
+    };
+    (@gen_features [] -> [$($field:ident)*]) => {
+        impl Experimental {
+            pub fn features(&self) -> std::collections::HashMap<std::borrow::Cow<'static, str>, bool> {
+                let mut map = std::collections::HashMap::default();
+                $(
+                    paste!{
+                        map.insert(std::borrow::Cow::Borrowed(stringify!($field)), self.[<experimental_enable_ $field>]);
+                    }
+                )*
+                map
+            }
+        }
+    };
+    (@gen_features [$(#[$($attrss:meta)*])* $feat:ident $(, $($tail:tt)*)?] -> [$($acc:ident)*]) => {
+        experimental!(@gen_features [$($($tail)*)?] -> [$($acc)* $feat]);
+    };
+    (@gen_getters [] -> [$($field:ident)*]) => {
+        impl Experimental {
+            $(
+                paste!{
+                    pub fn [<is_ $field _enabled>](&self) -> bool {
+                        self.[<experimental_enable_ $field>]
+                    }
+
+                    pub fn [<set_ $field>](&mut self, enable: bool) {
+                        self.[<experimental_enable_ $field>] = enable;
+                    }
+                }
+            )*
+        }
+    };
+    (@gen_getters [$(#[$($attrss:meta)*])* $feat:ident $(, $($tail:tt)*)?] -> [$($acc:ident)*]) => {
+        experimental!(@gen_getters [$($($tail)*)?] -> [$($acc)* $feat]);
+    };
+
+
+    {$($tokens:tt)*} => {
+        experimental!(@gen_struct [$($tokens)*] -> []);
+        experimental!(@gen_features [$($tokens)*] -> []);
+        experimental!(@gen_getters [$($tokens)*] -> []);
+    };
+}
+
+// List of experimental features. Add a new identifier below to introduce a flag; the
+// `experimental!` macro will generate the `experimental_enable_<name>` config field, the
+// `is_<name>_enabled()` / `set_<name>()` accessors, and the entry exposed (under the bare
+// name, without the `experimental_enable_` prefix) by the admin `/version` API.
+experimental! {
+    /// Current in heavy development, do not enable this feature unless you are a contributor
+    vqueues,
+
+    /// When enabled, invocations that exhaust their memory budget will yield back to
+    /// the scheduler instead of consuming retry attempts. Requires all nodes in the
+    /// cluster to be running v1.7.0 or later because it introduces a new WAL variant.
+    ///
+    /// Since v1.6.3
+    invoker_yield,
+
     /// # Enables service protocol v7
     ///
     /// Introduced in Restate v1.7
@@ -502,9 +586,7 @@ pub struct CommonOptions {
     ///
     /// Once enabled, you **cannot** rollback back to previous versions
     /// where v7 is not supported < v1.7
-    #[cfg_attr(feature = "schemars", schemars(skip))]
-    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
-    pub experimental_allow_protocol_v7: bool,
+    protocol_v7,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
@@ -740,10 +822,8 @@ impl Default for CommonOptions {
             initialization_timeout: NonZeroFriendlyDuration::from_secs_unchecked(5 * 60),
             disable_telemetry: false,
             gossip: GossipOptions::default(),
-            experimental_enable_vqueues: false,
-            experimental_enable_invoker_yield: false,
             hlc_max_drift: FriendlyDuration::from_millis(5000),
-            experimental_allow_protocol_v7: false,
+            experimental: Experimental::default(),
         }
     }
 }
