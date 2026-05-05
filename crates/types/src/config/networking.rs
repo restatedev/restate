@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use restate_serde_util::NonZeroByteCount;
@@ -103,6 +104,16 @@ pub struct NetworkingOptions {
         skip_serializing_if = "is_default_fabric_memory_limit"
     )]
     fabric_memory_limit: NonZeroByteCount,
+
+    /// # TLS Configuration
+    ///
+    /// Optional TLS/mTLS configuration for inter-node fabric communication.
+    /// When set, the fabric port uses TLS for both inbound and outbound connections.
+    /// Without this section, fabric communication remains plaintext (default behavior).
+    ///
+    /// Since v1.3.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls: Option<FabricTlsOptions>,
 }
 
 const fn default_message_size_limit() -> NonZeroByteCount {
@@ -159,6 +170,319 @@ impl Default for NetworkingOptions {
             ),
             message_size_limit: default_message_size_limit(),
             fabric_memory_limit: default_fabric_memory_limit(),
+            tls: None,
         }
+    }
+}
+
+/// TLS mode for fabric inter-node communication.
+///
+/// Since v1.3.0
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum TlsMode {
+    /// Only TLS connections are accepted; plaintext is rejected.
+    #[default]
+    Strict,
+    /// Both TLS and plaintext connections are accepted. Use during rolling upgrades.
+    Optional,
+}
+
+/// TLS configuration for fabric inter-node communication.
+///
+/// Since v1.3.0
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct FabricTlsOptions {
+    /// TLS enforcement mode. Default: `strict`.
+    #[serde(default)]
+    pub mode: TlsMode,
+
+    /// Path to the PEM-encoded server certificate.
+    pub cert_file: PathBuf,
+
+    /// Path to the PEM-encoded private key.
+    pub key_file: PathBuf,
+
+    /// Paths to PEM-encoded CA certificates for verifying peer certificates.
+    pub ca_files: Vec<PathBuf>,
+
+    /// Require clients to present a valid certificate (mTLS). Default: `true`.
+    #[serde(default = "default_require_client_auth")]
+    pub require_client_auth: bool,
+
+    /// How often to reload certificates from disk. Default: `1h`.
+    #[serde(default = "default_refresh_interval")]
+    pub refresh_interval: NonZeroFriendlyDuration,
+
+    /// Allowed subject names on peer certificates. After mTLS authentication
+    /// succeeds, the peer certificate's Subject Common Name (CN) and Subject
+    /// Alternative Names (DNS names and URIs) are checked against these patterns.
+    /// Supports `*` glob wildcards (e.g., `spiffe://domain/*`, `restate-*`).
+    ///
+    /// Required when `require-client-auth` is `true`. Use `["*"]` to explicitly
+    /// allow any authenticated peer (CA-only trust). An empty list is a
+    /// configuration error to prevent accidental fail-open.
+    ///
+    /// Since v1.3.0
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_subject_names: Vec<String>,
+
+    /// Optional separate TLS configuration for outbound connections to peer nodes.
+    /// If omitted, the server cert/key/ca are used for outbound connections as well.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<FabricTlsClientOptions>,
+}
+
+/// Separate client TLS config for outbound fabric connections.
+/// Fields that are `None` inherit from the parent [`FabricTlsOptions`].
+///
+/// Since v1.3.0
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct FabricTlsClientOptions {
+    /// Client certificate for outbound connections. Inherits from parent if omitted.
+    pub cert_file: Option<PathBuf>,
+
+    /// Client private key for outbound connections. Inherits from parent if omitted.
+    pub key_file: Option<PathBuf>,
+
+    /// Root CA files for verifying server certificates. Inherits from parent if omitted.
+    pub root_ca_files: Option<Vec<PathBuf>>,
+}
+
+impl FabricTlsOptions {
+    pub fn client_cert_file(&self) -> &PathBuf {
+        self.client
+            .as_ref()
+            .and_then(|c| c.cert_file.as_ref())
+            .unwrap_or(&self.cert_file)
+    }
+
+    pub fn client_key_file(&self) -> &PathBuf {
+        self.client
+            .as_ref()
+            .and_then(|c| c.key_file.as_ref())
+            .unwrap_or(&self.key_file)
+    }
+
+    pub fn client_ca_files(&self) -> &[PathBuf] {
+        self.client
+            .as_ref()
+            .and_then(|c| c.root_ca_files.as_deref())
+            .unwrap_or(&self.ca_files)
+    }
+
+    pub fn is_strict(&self) -> bool {
+        self.mode == TlsMode::Strict
+    }
+
+    pub fn validate(&self) -> Result<(), anyhow::Error> {
+        if self.require_client_auth && self.allowed_subject_names.is_empty() {
+            anyhow::bail!(
+                "[networking.tls] require-client-auth is true but allowed-subject-names is empty. \
+                 Specify allowed patterns (e.g., [\"spiffe://domain/*\"]) or set [\"*\"] \
+                 to explicitly allow any authenticated peer."
+            );
+        }
+        Ok(())
+    }
+}
+
+fn default_require_client_auth() -> bool {
+    true
+}
+
+fn default_refresh_interval() -> NonZeroFriendlyDuration {
+    NonZeroFriendlyDuration::from_secs_unchecked(3600)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tls_config_minimal_parsing() {
+        let toml_str = r#"
+            cert-file = "/certs/node.crt"
+            key-file = "/certs/node.key"
+            ca-files = ["/certs/ca.crt"]
+        "#;
+        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
+
+        assert_eq!(opts.mode, TlsMode::Strict); // default
+        assert_eq!(opts.cert_file, PathBuf::from("/certs/node.crt"));
+        assert_eq!(opts.key_file, PathBuf::from("/certs/node.key"));
+        assert_eq!(opts.ca_files, vec![PathBuf::from("/certs/ca.crt")]);
+        assert!(opts.require_client_auth); // default true
+        assert_eq!(*opts.refresh_interval, Duration::from_secs(3600)); // default 1h
+        assert!(opts.client.is_none());
+    }
+
+    #[test]
+    fn test_tls_config_full_parsing() {
+        let toml_str = r#"
+            mode = "optional"
+            cert-file = "/certs/server.crt"
+            key-file = "/certs/server.key"
+            ca-files = ["/certs/ca1.crt", "/certs/ca2.crt"]
+            require-client-auth = false
+            refresh-interval = "15m"
+
+            [client]
+            cert-file = "/certs/client.crt"
+            key-file = "/certs/client.key"
+            root-ca-files = ["/certs/client-ca.crt"]
+        "#;
+        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
+
+        assert_eq!(opts.mode, TlsMode::Optional);
+        assert!(!opts.require_client_auth);
+        assert_eq!(*opts.refresh_interval, Duration::from_secs(900));
+        assert!(!opts.is_strict());
+
+        let client = opts.client.as_ref().unwrap();
+        assert_eq!(client.cert_file, Some(PathBuf::from("/certs/client.crt")));
+        assert_eq!(client.key_file, Some(PathBuf::from("/certs/client.key")));
+        assert_eq!(
+            client.root_ca_files,
+            Some(vec![PathBuf::from("/certs/client-ca.crt")])
+        );
+    }
+
+    #[test]
+    fn test_tls_client_inheritance() {
+        let toml_str = r#"
+            cert-file = "/certs/node.crt"
+            key-file = "/certs/node.key"
+            ca-files = ["/certs/ca.crt"]
+        "#;
+        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
+
+        // Without [client] section, client methods inherit from parent
+        assert_eq!(opts.client_cert_file(), &PathBuf::from("/certs/node.crt"));
+        assert_eq!(opts.client_key_file(), &PathBuf::from("/certs/node.key"));
+        assert_eq!(opts.client_ca_files(), &[PathBuf::from("/certs/ca.crt")]);
+    }
+
+    #[test]
+    fn test_tls_client_override() {
+        let toml_str = r#"
+            cert-file = "/certs/server.crt"
+            key-file = "/certs/server.key"
+            ca-files = ["/certs/server-ca.crt"]
+
+            [client]
+            cert-file = "/certs/client.crt"
+            key-file = "/certs/client.key"
+            root-ca-files = ["/certs/client-ca.crt"]
+        "#;
+        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
+
+        // Client methods should return overridden values
+        assert_eq!(opts.client_cert_file(), &PathBuf::from("/certs/client.crt"));
+        assert_eq!(opts.client_key_file(), &PathBuf::from("/certs/client.key"));
+        assert_eq!(
+            opts.client_ca_files(),
+            &[PathBuf::from("/certs/client-ca.crt")]
+        );
+    }
+
+    #[test]
+    fn test_networking_options_tls_none_by_default() {
+        let opts = NetworkingOptions::default();
+        assert!(opts.tls.is_none());
+    }
+
+    #[test]
+    fn test_tls_config_with_allowed_subject_names() {
+        let toml_str = r#"
+            cert-file = "/certs/node.crt"
+            key-file = "/certs/node.key"
+            ca-files = ["/certs/ca.crt"]
+            allowed-subject-names = [
+                "spiffe://svc.pin220.com/restate-agents/*/admin",
+                "spiffe://svc.pin220.com/restate-agents/*/worker",
+                "spiffe://svc.pin220.com/restate-agents/*/ingress",
+            ]
+        "#;
+        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
+
+        assert_eq!(opts.allowed_subject_names.len(), 3);
+        assert_eq!(
+            opts.allowed_subject_names[0],
+            "spiffe://svc.pin220.com/restate-agents/*/admin"
+        );
+        assert!(opts.require_client_auth);
+    }
+
+    #[test]
+    fn test_tls_config_allowed_subject_names_empty_by_default() {
+        let toml_str = r#"
+            cert-file = "/certs/node.crt"
+            key-file = "/certs/node.key"
+            ca-files = ["/certs/ca.crt"]
+        "#;
+        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
+        assert!(opts.allowed_subject_names.is_empty());
+    }
+
+    #[test]
+    fn test_validate_rejects_empty_allowed_subject_names_with_client_auth() {
+        let toml_str = r#"
+            cert-file = "/certs/node.crt"
+            key-file = "/certs/node.key"
+            ca-files = ["/certs/ca.crt"]
+            require-client-auth = true
+        "#;
+        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
+        let result = opts.validate();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("allowed-subject-names is empty")
+        );
+    }
+
+    #[test]
+    fn test_validate_accepts_wildcard_allowed_subject_names() {
+        let toml_str = r#"
+            cert-file = "/certs/node.crt"
+            key-file = "/certs/node.key"
+            ca-files = ["/certs/ca.crt"]
+            require-client-auth = true
+            allowed-subject-names = ["*"]
+        "#;
+        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
+        assert!(opts.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_accepts_empty_when_no_client_auth() {
+        let toml_str = r#"
+            cert-file = "/certs/node.crt"
+            key-file = "/certs/node.key"
+            ca-files = ["/certs/ca.crt"]
+            require-client-auth = false
+        "#;
+        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
+        assert!(opts.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_accepts_specific_patterns() {
+        let toml_str = r#"
+            cert-file = "/certs/node.crt"
+            key-file = "/certs/node.key"
+            ca-files = ["/certs/ca.crt"]
+            allowed-subject-names = ["spiffe://domain/restate-*"]
+        "#;
+        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
+        assert!(opts.validate().is_ok());
     }
 }
