@@ -19,9 +19,9 @@ use http::{HeaderName, HeaderValue, StatusCode, Uri};
 use indicatif::ProgressBar;
 use indoc::indoc;
 
-use restate_admin_rest_model::deployments::{
-    DetailedDeploymentResponse, RegisterDeploymentRequest, RegisterDeploymentResponse,
-};
+use restate_admin_rest_model::deployments::{RegisterDeploymentRequest, RegisterDeploymentResponse};
+
+use crate::clients::DetailedDeploymentResponse;
 use restate_admin_rest_model::version::AdminApiVersion;
 use restate_cli_util::ui::console::{Styled, StyledTable, confirm_or_exit};
 use restate_cli_util::ui::stylesheet::Style;
