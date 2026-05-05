@@ -16,6 +16,7 @@ use std::time::Duration;
 use anyhow::Result;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
+use hickory_resolver::proto::rr::RData;
 use http::{
     Uri,
     uri::{PathAndQuery, Scheme},
@@ -60,18 +61,26 @@ pub(crate) async fn run_local(
         return Ok(());
     }
 
-    let resolver = hickory_resolver::Resolver::builder_tokio().unwrap().build();
+    let resolver = hickory_resolver::Resolver::builder_tokio()
+        .unwrap()
+        .build()
+        .map_err(|err| ServeError::Connection(err.into()))?;
 
     let tunnel_urls = resolver
         .srv_lookup(environment_info.tunnel_srv)
         .await
         .map_err(|err| ServeError::Connection(err.into()))?
+        .answers()
         .iter()
-        .map(|record| {
+        .filter_map(|record| match &record.data {
+            RData::SRV(srv) => Some(srv),
+            _ => None,
+        })
+        .map(|srv| {
             Uri::builder()
                 .scheme(Scheme::HTTPS)
                 .path_and_query(PathAndQuery::from_static("/"))
-                .authority(format!("{}:{}", record.target(), record.port()).as_str())
+                .authority(format!("{}:{}", srv.target, srv.port).as_str())
                 .build()
                 .map_err(|err| ServeError::Connection(err.into()))
         })

@@ -1067,7 +1067,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-benchpress"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1674,7 +1674,7 @@ checksum = "3f88a43d011fc4a6876cb7344703e297c71dda42494fee094d5f7c76bf13f746"
 
 [[package]]
 name = "codederror"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "codederror-derive",
  "restate-workspace-hack",
@@ -1696,6 +1696,16 @@ name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
+
+[[package]]
+name = "combine"
+version = "4.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
+dependencies = [
+ "bytes",
+ "memchr",
+]
 
 [[package]]
 name = "comfy-table"
@@ -3137,18 +3147,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 
 [[package]]
-name = "enum-as-inner"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1e6a265c649f3f5979b601d26f1d05ada116434c87741c9493cb56218f76cbc"
-dependencies = [
- "heck",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "enum-map"
 version = "2.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3828,23 +3826,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
-name = "hickory-proto"
-version = "0.25.2"
+name = "hickory-net"
+version = "0.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8a6fe56c0038198998a6f217ca4e7ef3a5e51f46163bd6dd60b5c71ca6c6502"
+checksum = "e2295ed2f9c31e471e1428a8f88a3f0e1f4b27c15049592138d1eebe9c35b183"
 dependencies = [
  "async-trait",
  "cfg-if",
  "data-encoding",
- "enum-as-inner",
  "futures-channel",
  "futures-io",
  "futures-util",
+ "hickory-proto",
  "idna",
  "ipnet",
- "once_cell",
- "rand 0.9.4",
- "ring",
+ "jni",
+ "rand 0.10.1",
  "thiserror 2.0.18",
  "tinyvec",
  "tokio",
@@ -3853,21 +3850,46 @@ dependencies = [
 ]
 
 [[package]]
-name = "hickory-resolver"
-version = "0.25.2"
+name = "hickory-proto"
+version = "0.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc62a9a99b0bfb44d2ab95a7208ac952d31060efc16241c87eaf36406fecf87a"
+checksum = "0bab31817bfb44672a252e97fe81cd0c18d1b2cf892108922f6818820df8c643"
+dependencies = [
+ "data-encoding",
+ "idna",
+ "ipnet",
+ "jni",
+ "once_cell",
+ "prefix-trie",
+ "rand 0.10.1",
+ "ring",
+ "thiserror 2.0.18",
+ "tinyvec",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "hickory-resolver"
+version = "0.26.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0d58d28879ceecde6607729660c2667a081ccdc082e082675042793960f178c"
 dependencies = [
  "cfg-if",
  "futures-util",
+ "hickory-net",
  "hickory-proto",
  "ipconfig",
+ "ipnet",
+ "jni",
  "moka",
+ "ndk-context",
  "once_cell",
  "parking_lot",
- "rand 0.9.4",
+ "rand 0.10.1",
  "resolv-conf",
  "smallvec",
+ "system-configuration",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -4375,6 +4397,9 @@ name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "iri-string"
@@ -4526,6 +4551,55 @@ dependencies = [
  "num-traits",
  "pyo3",
  "smallvec",
+]
+
+[[package]]
+name = "jni"
+version = "0.22.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5efd9a482cf3a427f00d6b35f14332adc7902ce91efb778580e180ff90fa3498"
+dependencies = [
+ "cfg-if",
+ "combine",
+ "jni-macros",
+ "jni-sys",
+ "log",
+ "simd_cesu8",
+ "thiserror 2.0.18",
+ "walkdir",
+ "windows-link",
+]
+
+[[package]]
+name = "jni-macros"
+version = "0.22.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a00109accc170f0bdb141fed3e393c565b6f5e072365c3bd58f5b062591560a3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "rustc_version",
+ "simd_cesu8",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "jni-sys"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6377a88cb3910bee9b0fa88d4f42e1d2da8e79915598f65fb0c7ee14c878af2"
+dependencies = [
+ "jni-sys-macros",
+]
+
+[[package]]
+name = "jni-sys-macros"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38c0b942f458fe50cdac086d2f946512305e5631e720728f2a61aabcd47a6264"
+dependencies = [
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -4915,7 +4989,7 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "logserver-bench"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "anyhow",
  "axum",
@@ -5182,7 +5256,7 @@ checksum = "f2b8f3a258db515d5e91a904ce4ae3f73e091149b90cadbdb93d210bee07f63b"
 
 [[package]]
 name = "mock-service-endpoint"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "assert2",
  "async-stream",
@@ -5253,6 +5327,12 @@ name = "multimap"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
+
+[[package]]
+name = "ndk-context"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27b02d87554356db9e9a873add8782d4ea6e3e58ea071a9adb9a2e8ddb884a8b"
 
 [[package]]
 name = "nix"
@@ -6035,7 +6115,7 @@ checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
 name = "pp-bench"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "anyhow",
  "axum",
@@ -6152,6 +6232,17 @@ checksum = "d0de1b847b39c8131db0467e9df1ff60e6d0562ab8e9a16e568ad0fdb372e2f2"
 dependencies = [
  "predicates-core",
  "termtree",
+]
+
+[[package]]
+name = "prefix-trie"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23370be78b7e5bcbb0cab4a02047eb040279a693c78daad04c2c5f1c24a83503"
+dependencies = [
+ "either",
+ "ipnet",
+ "num-traits",
 ]
 
 [[package]]
@@ -6949,7 +7040,7 @@ checksum = "1e061d1b48cb8d38042de4ae0a7a6401009d6143dc80d2e2d6f31f0bdd6470c7"
 
 [[package]]
 name = "restate-admin"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "ahash",
  "anyhow",
@@ -7005,7 +7096,7 @@ dependencies = [
 
 [[package]]
 name = "restate-admin-rest-model"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "bytes",
  "derive_more",
@@ -7024,7 +7115,7 @@ dependencies = [
 
 [[package]]
 name = "restate-base64-util"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "base64 0.22.1",
  "restate-workspace-hack",
@@ -7032,7 +7123,7 @@ dependencies = [
 
 [[package]]
 name = "restate-benchmarks"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "anyhow",
  "criterion",
@@ -7059,7 +7150,7 @@ dependencies = [
 
 [[package]]
 name = "restate-bifrost"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "adaptive-timeout",
  "ahash",
@@ -7115,7 +7206,7 @@ dependencies = [
 
 [[package]]
 name = "restate-cli"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -7184,7 +7275,7 @@ dependencies = [
 
 [[package]]
 name = "restate-cli-util"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -7213,7 +7304,7 @@ dependencies = [
 
 [[package]]
 name = "restate-clock"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "bilrost",
  "criterion",
@@ -7232,7 +7323,7 @@ dependencies = [
 
 [[package]]
 name = "restate-cloud-tunnel-client"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "anyhow",
  "bs58",
@@ -7252,7 +7343,7 @@ dependencies = [
 
 [[package]]
 name = "restate-core"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "ahash",
  "anyhow",
@@ -7320,7 +7411,7 @@ dependencies = [
 
 [[package]]
 name = "restate-doctor"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "anyhow",
  "bilrost",
@@ -7356,7 +7447,7 @@ dependencies = [
 
 [[package]]
 name = "restate-encoding"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "bilrost",
  "bytes",
@@ -7377,7 +7468,7 @@ dependencies = [
 
 [[package]]
 name = "restate-errors"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "codederror",
  "paste",
@@ -7389,7 +7480,7 @@ dependencies = [
 
 [[package]]
 name = "restate-fs-util"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "restate-workspace-hack",
  "tokio",
@@ -7399,7 +7490,7 @@ dependencies = [
 
 [[package]]
 name = "restate-futures-util"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -7419,7 +7510,7 @@ dependencies = [
 
 [[package]]
 name = "restate-hyper-uds"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "http 1.4.0",
  "hyper-util",
@@ -7431,7 +7522,7 @@ dependencies = [
 
 [[package]]
 name = "restate-ingestion-client"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "bytes",
  "dashmap",
@@ -7451,7 +7542,7 @@ dependencies = [
 
 [[package]]
 name = "restate-ingress-http"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "anyhow",
  "bytes",
@@ -7496,7 +7587,7 @@ dependencies = [
 
 [[package]]
 name = "restate-ingress-kafka"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -7508,7 +7599,6 @@ dependencies = [
  "opentelemetry_sdk",
  "parking_lot",
  "rdkafka",
- "restate-bifrost",
  "restate-core",
  "restate-ingestion-client",
  "restate-storage-api",
@@ -7527,7 +7617,7 @@ dependencies = [
 
 [[package]]
 name = "restate-invoker-impl"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "anyhow",
  "bytes",
@@ -7576,7 +7666,7 @@ dependencies = [
 
 [[package]]
 name = "restate-limiter"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "bilrost",
  "restate-limiter",
@@ -7589,7 +7679,7 @@ dependencies = [
 
 [[package]]
 name = "restate-lite"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "anyhow",
  "http 1.4.0",
@@ -7618,7 +7708,7 @@ dependencies = [
 
 [[package]]
 name = "restate-local-cluster-runner"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -7655,7 +7745,7 @@ dependencies = [
 
 [[package]]
 name = "restate-log-server"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "ahash",
  "anyhow",
@@ -7697,7 +7787,7 @@ dependencies = [
 
 [[package]]
 name = "restate-log-server-grpc"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "prost",
  "restate-types",
@@ -7709,7 +7799,7 @@ dependencies = [
 
 [[package]]
 name = "restate-memory"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "bytes",
  "futures",
@@ -7725,7 +7815,7 @@ dependencies = [
 
 [[package]]
 name = "restate-metadata-providers"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7761,7 +7851,7 @@ dependencies = [
 
 [[package]]
 name = "restate-metadata-server"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -7806,7 +7896,7 @@ dependencies = [
 
 [[package]]
 name = "restate-metadata-server-grpc"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "bytes",
  "bytestring",
@@ -7827,7 +7917,7 @@ dependencies = [
 
 [[package]]
 name = "restate-metadata-store"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "async-trait",
  "bytes",
@@ -7849,7 +7939,7 @@ dependencies = [
 
 [[package]]
 name = "restate-node"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "ahash",
  "anyhow",
@@ -7911,7 +8001,7 @@ dependencies = [
 
 [[package]]
 name = "restate-object-store-util"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "anyhow",
  "aws-config",
@@ -7929,7 +8019,7 @@ dependencies = [
 
 [[package]]
 name = "restate-partition-store"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "ahash",
  "anyhow",
@@ -7984,7 +8074,7 @@ dependencies = [
 
 [[package]]
 name = "restate-platform"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "bilrost",
  "bytes",
@@ -8000,7 +8090,7 @@ dependencies = [
 
 [[package]]
 name = "restate-queue"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "bincode",
  "criterion",
@@ -8015,7 +8105,7 @@ dependencies = [
 
 [[package]]
 name = "restate-rocksdb"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "anyhow",
  "bytes",
@@ -8045,7 +8135,7 @@ dependencies = [
 
 [[package]]
 name = "restate-serde-util"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "bytes",
  "bytesize",
@@ -8062,7 +8152,7 @@ dependencies = [
 
 [[package]]
 name = "restate-server"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "anyhow",
  "bytestring",
@@ -8112,7 +8202,7 @@ dependencies = [
 
 [[package]]
 name = "restate-service-client"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "arc-swap",
  "aws-config",
@@ -8137,6 +8227,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "jsonwebtoken 10.3.0",
+ "metrics",
  "parking_lot",
  "pem",
  "pin-project",
@@ -8163,7 +8254,7 @@ dependencies = [
 
 [[package]]
 name = "restate-service-protocol"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "bytes",
  "bytes-utils",
@@ -8184,7 +8275,7 @@ dependencies = [
 
 [[package]]
 name = "restate-service-protocol-v4"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "assert2",
  "bytes",
@@ -8218,7 +8309,7 @@ dependencies = [
 
 [[package]]
 name = "restate-sharding"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "bilrost",
  "derive_more",
@@ -8232,7 +8323,7 @@ dependencies = [
 
 [[package]]
 name = "restate-storage-api"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "ahash",
  "anyhow",
@@ -8260,7 +8351,7 @@ dependencies = [
 
 [[package]]
 name = "restate-storage-query-datafusion"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "ahash",
  "anyhow",
@@ -8281,6 +8372,7 @@ dependencies = [
  "paste",
  "prost",
  "restate-core",
+ "restate-limiter",
  "restate-partition-store",
  "restate-rocksdb",
  "restate-service-protocol",
@@ -8301,7 +8393,7 @@ dependencies = [
 
 [[package]]
 name = "restate-test-util"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "assert2",
  "bytes",
@@ -8316,7 +8408,7 @@ dependencies = [
 
 [[package]]
 name = "restate-time-util"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "jiff",
  "restate-workspace-hack",
@@ -8329,7 +8421,7 @@ dependencies = [
 
 [[package]]
 name = "restate-timer"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "ahash",
  "futures-util",
@@ -8346,7 +8438,7 @@ dependencies = [
 
 [[package]]
 name = "restate-timer-queue"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "futures",
  "restate-workspace-hack",
@@ -8355,7 +8447,7 @@ dependencies = [
 
 [[package]]
 name = "restate-tracing-instrumentation"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "console-subscriber",
  "criterion",
@@ -8385,7 +8477,7 @@ dependencies = [
 
 [[package]]
 name = "restate-types"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "adaptive-timeout",
  "ahash",
@@ -8484,7 +8576,7 @@ dependencies = [
 
 [[package]]
 name = "restate-util-string"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "ahash",
  "bilrost",
@@ -8498,7 +8590,7 @@ dependencies = [
 
 [[package]]
 name = "restate-utoipa"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "indexmap 2.14.0",
  "restate-utoipa",
@@ -8509,7 +8601,7 @@ dependencies = [
 
 [[package]]
 name = "restate-vqueues"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "arrayvec",
  "bilrost",
@@ -8543,7 +8635,7 @@ dependencies = [
 
 [[package]]
 name = "restate-wal-protocol"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "bilrost",
  "bytes",
@@ -8560,8 +8652,8 @@ dependencies = [
 
 [[package]]
 name = "restate-web-ui"
-version = "0.1.56"
-source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v0.1.56#03ecafd2feaab6d90f5c9a2534945a455ef3e420"
+version = "0.1.58"
+source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v0.1.58#11912a7b09c178757482084362890014e0ca5766"
 dependencies = [
  "anyhow",
  "include_dir",
@@ -8570,7 +8662,7 @@ dependencies = [
 
 [[package]]
 name = "restate-worker"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "ahash",
  "anyhow",
@@ -8587,7 +8679,6 @@ dependencies = [
  "mockall",
  "opentelemetry",
  "parking_lot",
- "pin-project",
  "prost",
  "rand 0.9.4",
  "restate-bifrost",
@@ -8621,7 +8712,6 @@ dependencies = [
  "restate-worker-api",
  "restate-workspace-hack",
  "rstest",
- "serde",
  "strum",
  "test-log",
  "thiserror 2.0.18",
@@ -8636,7 +8726,7 @@ dependencies = [
 
 [[package]]
 name = "restate-worker-api"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "bytes",
  "codederror",
@@ -8812,7 +8902,7 @@ dependencies = [
 
 [[package]]
 name = "restatectl"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "anyhow",
  "arrow",
@@ -9340,7 +9430,7 @@ dependencies = [
 
 [[package]]
 name = "service-protocol-wireshark-dissector"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "bytes",
  "mlua",
@@ -9471,6 +9561,16 @@ name = "simd-adler32"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
+
+[[package]]
+name = "simd_cesu8"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94f90157bb87cddf702797c5dadfa0be7d266cdf49e22da2fcaa32eff75b2c33"
+dependencies = [
+ "rustc_version",
+ "simdutf8",
+]
 
 [[package]]
 name = "simdutf8"
@@ -11543,7 +11643,7 @@ checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
 
 [[package]]
 name = "xtask"
-version = "1.6.3-dev"
+version = "1.7.0-dev"
 dependencies = [
  "anyhow",
  "reqwest",

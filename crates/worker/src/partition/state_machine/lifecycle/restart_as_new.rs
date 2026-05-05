@@ -13,7 +13,6 @@ use opentelemetry::trace::Span;
 
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::WriteFsmTable;
-use restate_storage_api::idempotency_table::IdempotencyTable;
 use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, JournalMetadata, PreFlightInvocationArgument, PreFlightInvocationJournal,
@@ -75,7 +74,6 @@ impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>
     for OnRestartAsNewInvocationCommand
 where
     S: ReadJournalTable
-        + IdempotencyTable
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
         + WriteFsmTable

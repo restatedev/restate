@@ -34,7 +34,6 @@ use restate_limiter::LimitKey;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::WriteFsmTable;
-use restate_storage_api::idempotency_table::{IdempotencyTable, ReadOnlyIdempotencyTable};
 use restate_storage_api::inbox_table::{InboxEntry, WriteInboxTable};
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, JournalMetadata,
@@ -70,11 +69,11 @@ use restate_types::errors::{
     InvocationErrorCode, KILLED_INVOCATION_ERROR, NOT_FOUND_INVOCATION_ERROR,
     NOT_READY_INVOCATION_ERROR, WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
+use restate_types::identifiers::WithPartitionKey;
 use restate_types::identifiers::{
     AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId,
     PartitionProcessorRpcRequestId, ServiceId, StateMutationId,
 };
-use restate_types::identifiers::{IdempotencyId, WithPartitionKey};
 use restate_types::invocation::client::{
     CancelInvocationResponse, InvocationOutputResponse, KillInvocationResponse,
     PurgeInvocationResponse, ResumeInvocationResponse,
@@ -438,8 +437,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
     async fn on_apply(&mut self, command: Command) -> Result<(), Error>
     where
-        S: IdempotencyTable
-            + ReadPromiseTable
+        S: ReadPromiseTable
             + WritePromiseTable
             + ReadJournalTable
             + WriteJournalTable
@@ -717,8 +715,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         service_invocation: Box<ServiceInvocation>,
     ) -> Result<(), Error>
     where
-        S: IdempotencyTable
-            + WriteOutboxTable
+        S: WriteOutboxTable
             + WriteFsmTable
             + ReadInvocationStatusTable
             + WriteInvocationStatusTable
@@ -786,8 +783,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         limit_key: &LimitKey<ReString>,
     ) -> Result<(), Error>
     where
-        S: IdempotencyTable
-            + WriteInvocationStatusTable
+        S: WriteInvocationStatusTable
             + WriteFsmTable
             + ReadVirtualObjectStatusTable
             + WriteVirtualObjectStatusTable
@@ -931,8 +927,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         limit_key: &LimitKey<ReString>,
     ) -> Result<(), Error>
     where
-        S: IdempotencyTable
-            + WriteInvocationStatusTable
+        S: WriteInvocationStatusTable
             + WriteFsmTable
             + ReadVirtualObjectStatusTable
             + WriteVirtualObjectStatusTable
@@ -1014,11 +1009,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         mut service_invocation: Box<ServiceInvocation>,
     ) -> Result<Option<Box<ServiceInvocation>>, Error>
     where
-        S: IdempotencyTable
-            + ReadInvocationStatusTable
+        S: ReadInvocationStatusTable
             + WriteInvocationStatusTable
-            + ReadVirtualObjectStatusTable
-            + WriteVirtualObjectStatusTable
             + WriteOutboxTable
             + WriteFsmTable,
     {
@@ -1032,42 +1024,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             has_idempotency_key = false;
         }
 
-        let previous_invocation_status = async {
-            let mut invocation_status = self.get_invocation_status(&invocation_id).await?;
-            if invocation_status != InvocationStatus::Free {
-                // Deduplicated invocation with the new deterministic invocation id
-              Ok::<_, Error>(invocation_status)
-            } else {
-                // We might still need to deduplicate based on the idempotency table for old invocation ids
-                // TODO get rid of this code when we remove the idempotency table
-                if has_idempotency_key {
-                    let idempotency_id = service_invocation
-                        .compute_idempotency_id()
-                        .expect("Idempotency key must be present");
-
-                    if let Some(idempotency_metadata) = self.storage.get_idempotency_metadata(&idempotency_id).await? {
-                        invocation_status = self.get_invocation_status(&idempotency_metadata.invocation_id).await?;
-                    }
-                }
-                // Or on lock status for workflow runs with old invocation ids
-                // TODO get rid of this code when we remove the usage of the virtual object table for workflows
-                if is_workflow_run {
-                    let keyed_service_id = service_invocation
-                        .invocation_target
-                        .as_keyed_service_id()
-                        .expect("When the handler type is Workflow, the invocation target must have a key");
-
-                    if let VirtualObjectStatus::Locked(locked_invocation_id) = self
-                        .storage
-                        .get_virtual_object_status(&keyed_service_id)
-                        .await? {
-                        invocation_status = self.get_invocation_status(&locked_invocation_id).await?;
-                    }
-                }
-                Ok(invocation_status)
-            }
-
-        }.await?;
+        let previous_invocation_status = self.get_invocation_status(&invocation_id).await?;
 
         if previous_invocation_status == InvocationStatus::Free {
             // --- New invocation
@@ -2282,8 +2239,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
     async fn on_timer(&mut self, timer_value: TimerKeyValue) -> Result<(), Error>
     where
-        S: IdempotencyTable
-            + ReadInvocationStatusTable
+        S: ReadInvocationStatusTable
             + WriteInvocationStatusTable
             + WriteOutboxTable
             + WriteFsmTable
@@ -2585,6 +2541,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     invocation_id: effect.invocation_id,
                     invocation_status,
                     awaiting_on,
+                    emit_event: false,
                 }
                 .apply(self)
                 .await?;
@@ -2595,6 +2552,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     invocation_id: effect.invocation_id,
                     invocation_status,
                     awaiting_on,
+                    emit_event: true,
                 }
                 .apply(self)
                 .await?;
@@ -4275,10 +4233,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         attach_invocation_request: AttachInvocationRequest,
     ) -> Result<(), Error>
     where
-        S: ReadOnlyIdempotencyTable
-            + ReadInvocationStatusTable
+        S: ReadInvocationStatusTable
             + WriteInvocationStatusTable
-            + ReadVirtualObjectStatusTable
             + WriteOutboxTable
             + WriteFsmTable,
     {
@@ -4290,27 +4246,9 @@ impl<S> StateMachineApplyContext<'_, S> {
             self.partition_key_range
         );
 
-        let invocation_id = match attach_invocation_request.invocation_query {
-            InvocationQuery::Invocation(iid) => iid,
-            ref q @ InvocationQuery::Workflow(ref sid) => {
-                match self.storage.get_virtual_object_status(sid).await? {
-                    VirtualObjectStatus::Locked(iid) => iid,
-                    VirtualObjectStatus::Unlocked => {
-                        // Try the deterministic id
-                        q.to_invocation_id()
-                    }
-                }
-            }
-            ref q @ InvocationQuery::IdempotencyId(ref iid) => {
-                match self.storage.get_idempotency_metadata(iid).await? {
-                    Some(idempotency_metadata) => idempotency_metadata.invocation_id,
-                    None => {
-                        // Try the deterministic id
-                        q.to_invocation_id()
-                    }
-                }
-            }
-        };
+        let invocation_id = attach_invocation_request
+            .invocation_query
+            .to_invocation_id();
         match self.get_invocation_status(&invocation_id).await? {
             InvocationStatus::Free => self.send_response_to_sinks(
                 vec![attach_invocation_request.response_sink],
@@ -4783,23 +4721,6 @@ impl<S> StateMachineApplyContext<'_, S> {
         Ok(())
     }
 
-    async fn do_unlock_service(&mut self, service_id: ServiceId) -> Result<(), Error>
-    where
-        S: WriteVirtualObjectStatusTable,
-    {
-        debug_if_leader!(
-            self.is_leader,
-            rpc.service = %service_id.service_name,
-            "Effect: Unlock service id",
-        );
-
-        self.storage
-            .put_virtual_object_status(&service_id, &VirtualObjectStatus::Unlocked)
-            .map_err(Error::Storage)?;
-
-        Ok(())
-    }
-
     #[tracing::instrument(
         skip_all,
         level="info",
@@ -5123,24 +5044,6 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         self.storage
             .put_invocation_status(&invocation_id, &previous_invocation_status)
-            .map_err(Error::Storage)?;
-
-        Ok(())
-    }
-
-    async fn do_delete_idempotency_id(&mut self, idempotency_id: IdempotencyId) -> Result<(), Error>
-    where
-        S: IdempotencyTable,
-    {
-        debug_if_leader!(
-            self.is_leader,
-            "Effect: Delete idempotency id {:?}",
-            idempotency_id
-        );
-
-        self.storage
-            .delete_idempotency_metadata(&idempotency_id)
-            .await
             .map_err(Error::Storage)?;
 
         Ok(())

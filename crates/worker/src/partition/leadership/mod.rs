@@ -491,7 +491,6 @@ where
                 OutboxReader::from(partition_store.clone()),
                 shuffle_tx,
                 config.worker.internal_queue_length(),
-                &self.bifrost,
                 self.ingestion_client.clone(),
             );
 
@@ -716,6 +715,11 @@ impl<T> LeadershipState<T> {
             (State::Leader(leader_state), LeaderQueryRequest::SchedulerStatus { keys }) => {
                 let _ = response_tx.send(LeaderQueryResponse::SchedulerStatus(
                     leader_state.read_scheduler_status(keys),
+                ));
+            }
+            (State::Leader(leader_state), LeaderQueryRequest::UserLimitCounters { keys }) => {
+                let _ = response_tx.send(LeaderQueryResponse::UserLimitCounters(
+                    leader_state.read_user_limit_counters(keys),
                 ));
             }
             (_, request) => {

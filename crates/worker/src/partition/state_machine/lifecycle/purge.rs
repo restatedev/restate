@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use restate_storage_api::idempotency_table::IdempotencyTable;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
@@ -17,9 +16,8 @@ use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table;
 use restate_storage_api::journal_table_v2::WriteJournalTable;
 use restate_storage_api::promise_table::WritePromiseTable;
-use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
 use restate_storage_api::state_table::WriteStateTable;
-use restate_types::identifiers::{IdempotencyId, InvocationId};
+use restate_types::identifiers::InvocationId;
 use restate_types::invocation::client::PurgeInvocationResponse;
 use restate_types::invocation::{
     InvocationMutationResponseSink, InvocationTargetType, WorkflowHandlerType,
@@ -38,8 +36,6 @@ where
         + WriteInvocationStatusTable
         + WriteStateTable
         + journal_table::WriteJournalTable
-        + IdempotencyTable
-        + WriteVirtualObjectStatusTable
         + WritePromiseTable
         + WriteJournalEventsTable,
 {
@@ -51,7 +47,6 @@ where
         match ctx.get_invocation_status(&invocation_id).await? {
             InvocationStatus::Completed(CompletedInvocation {
                 invocation_target,
-                idempotency_key,
                 journal_metadata,
                 pinned_deployment,
                 ..
@@ -62,17 +57,7 @@ where
 
                 ctx.do_free_invocation(invocation_id)?;
 
-                // Also cleanup the associated idempotency key if any
-                if let Some(idempotency_key) = idempotency_key {
-                    ctx.do_delete_idempotency_id(IdempotencyId::combine(
-                        invocation_id,
-                        &invocation_target,
-                        idempotency_key,
-                    ))
-                    .await?;
-                }
-
-                // For workflow, we should also clean up the service lock, associated state and promises.
+                // For workflow, we should also clean up the associated state and promises.
                 if invocation_target.invocation_target_ty()
                     == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
                 {
@@ -80,7 +65,6 @@ where
                         .as_keyed_service_id()
                         .expect("Workflow methods must have keyed service id");
 
-                    ctx.do_unlock_service(service_id.clone()).await?;
                     ctx.do_clear_all_state(service_id.clone(), invocation_id)?;
                     ctx.do_clear_all_promises(service_id).await?;
                 }

@@ -24,14 +24,17 @@ use tokio::sync::mpsc;
 use tracing::trace;
 
 use restate_futures_util::concurrency::Concurrency;
+use restate_limiter::RuleHandle;
 use restate_memory::{MemoryPool, NonZeroByteCount};
 use restate_storage_api::StorageError;
 use restate_storage_api::lock_table::LoadLocks;
 use restate_storage_api::vqueue_table::{EntryKey, EntryMetadata};
+use restate_types::identifiers::PartitionKey;
 use restate_types::vqueues::EntryKind;
 use restate_types::{LockName, Scope};
-use restate_worker_api::ResourceKind;
+use restate_util_string::ReString;
 use restate_worker_api::resources::{ResourceManagerUpdate, UserPermitKind};
+use restate_worker_api::{ResourceKind, UserLimitCounterEntry};
 
 use self::invoker::InvokerConcurrencyLimiter;
 use self::invoker_memory::InvokerMemoryLimiter;
@@ -325,5 +328,24 @@ impl ResourceManager {
             );
             eligible.wake_up_queue(queue);
         }
+    }
+
+    /// Snapshot of every user-limit counter currently tracked by this partition's
+    /// `UserLimiter`. The rows are stamped with the owning partition's key so that
+    /// DataFusion can route them into the right scan.
+    pub(super) fn scan_user_limit_counters(
+        &self,
+        partition_key: PartitionKey,
+    ) -> Vec<UserLimitCounterEntry> {
+        self.user_limiter.scan_counters(partition_key)
+    }
+
+    /// Resolve a user-limit rule handle into its pattern string, or `None` if
+    /// the rule has been removed since the handle was captured. Used when
+    /// lifting internal `ResourceKind` into the public `BlockedResource`.
+    pub(super) fn resolve_user_rule(&self, handle: RuleHandle) -> Option<ReString> {
+        self.user_limiter
+            .resolve_rule(handle)
+            .map(|pattern| ReString::new_owned(pattern.to_string()))
     }
 }
