@@ -112,6 +112,39 @@ macro_rules! flexbuffers_storage_encode_decode {
     };
 }
 
+/// Implements the [`StorageEncode`] and [`StorageDecode`] by encoding/decoding the implementing
+/// type using [`bilrost`].
+#[macro_export]
+macro_rules! bilrost_storage_encode_decode {
+    ($name:tt) => {
+        impl $crate::storage::StorageEncode for $name {
+            fn default_codec(&self) -> $crate::storage::StorageCodecKind {
+                $crate::storage::StorageCodecKind::Bilrost
+            }
+
+            fn encode(
+                &self,
+                buf: &mut ::bytes::BytesMut,
+            ) -> Result<(), $crate::storage::StorageEncodeError> {
+                $crate::storage::encode::encode_bilrost(self, buf)
+            }
+        }
+
+        impl $crate::storage::StorageDecode for $name {
+            fn decode<B: ::bytes::Buf>(
+                buf: &mut B,
+                kind: $crate::storage::StorageCodecKind,
+            ) -> Result<Self, $crate::storage::StorageDecodeError>
+            where
+                Self: Sized,
+            {
+                debug_assert_eq!(kind, $crate::storage::StorageCodecKind::Bilrost);
+                $crate::storage::decode::decode_bilrost(buf)
+            }
+        }
+    };
+}
+
 /// A polymorphic container of a buffer or a cached storage-encodeable object
 #[derive(Clone, derive_more::Debug, BilrostAs)]
 #[bilrost_as(dto::PolyBytes)]

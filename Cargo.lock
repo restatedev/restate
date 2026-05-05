@@ -8638,6 +8638,7 @@ dependencies = [
 name = "restate-wal-protocol"
 version = "1.7.0-dev"
 dependencies = [
+ "anyhow",
  "bilrost",
  "bytes",
  "derive_more",
