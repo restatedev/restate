@@ -25,6 +25,7 @@ use tracing::trace;
 
 use restate_futures_util::concurrency::Concurrency;
 use restate_limiter::RuleHandle;
+use restate_limiter::RuleUpdate;
 use restate_memory::{MemoryPool, NonZeroByteCount};
 use restate_storage_api::StorageError;
 use restate_storage_api::lock_table::LoadLocks;
@@ -90,6 +91,15 @@ impl ResourceManager {
             rx,
             tx: _tx,
         })
+    }
+
+    /// Forward a batch of rule-book updates to the resource manager's
+    /// internal channel. Picked up on the next `poll_resources` tick and
+    /// applied to the `UserLimiter`.
+    pub fn on_rules_updated(&self, updates: Vec<RuleUpdate>) {
+        // Sending via `tx` (which is held alongside `rx` for keep-alive)
+        // never fails: the receiver is owned by `self`.
+        let _ = self.tx.send(ResourceManagerUpdate::RulesUpdated(updates));
     }
 
     /// Removes the vqueue from the resource it's blocked on
@@ -305,8 +315,8 @@ impl ResourceManager {
                         }
                     }
                 }
-                ResourceManagerUpdate::RulesUpdated(update) => {
-                    let woken = self.user_limiter.apply_rule_update(update);
+                ResourceManagerUpdate::RulesUpdated(updates) => {
+                    let woken = self.user_limiter.apply_rule_updates(updates);
                     eligible.wake_up_queues(woken);
                 }
             }

@@ -16,6 +16,7 @@ restate-workspace-hack = { workspace = true }
 restate-cli-util = { workspace = true }
 restate-core = { workspace = true, features = ["message-util"] }
 restate-errors = { workspace = true }
+restate-limiter = { workspace = true, features = ["rule-book"]}
 restate-log-server = { workspace = true, features = ["expose-internals"] }
 restate-partition-store = { workspace = true }
 restate-rocksdb = { workspace = true }

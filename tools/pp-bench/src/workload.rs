@@ -29,6 +29,7 @@ use std::time::Instant;
 use hdrhistogram::Histogram;
 
 use restate_cli_util::{c_println, c_success};
+use restate_limiter::RuleBook;
 use restate_partition_store::PartitionStoreManager;
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
@@ -99,7 +100,8 @@ pub async fn run(
         None, /* outbox_head_seq_number */
         KeyRange::FULL,
         SemanticRestateVersion::unknown(),
-        None, /* schema */
+        None,                /* schema */
+        RuleBook::default(), /* rule_book */
     );
 
     // Initialize the vqueue cache from the (empty) partition store — this follows
