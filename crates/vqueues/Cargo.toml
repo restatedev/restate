@@ -18,9 +18,11 @@ restate-clock = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-limiter = { workspace = true }
 restate-memory = { workspace = true }
+restate-platform = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-serde-util = { workspace = true }
 restate-storage-api = { workspace = true }
+restate-time-util = { workspace = true }
 restate-types = { workspace = true }
 restate-util-string = { workspace = true }
 restate-worker-api = { workspace = true }

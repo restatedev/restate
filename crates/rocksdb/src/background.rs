@@ -64,7 +64,7 @@ where
         )
         .increment(1);
 
-        let span = tracing::Span::current().clone();
+        let span = tracing::Span::current();
 
         move || span.in_scope(|| self.run())
     }
@@ -75,7 +75,7 @@ where
          OP_TYPE => self.kind.as_static_str(),
         )
         .increment(1);
-        let span = tracing::Span::current().clone();
+        let span = tracing::Span::current();
 
         move || {
             span.in_scope(|| {

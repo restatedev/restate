@@ -8,14 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::task::{Poll, ready};
 use std::time::Duration;
 
 use enum_map::{Enum, EnumMap};
 use metrics::counter;
+use restate_storage_api::StorageError;
 use tokio::time::Instant;
 
 use restate_clock::RoughTimestamp;
-use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{EntryKey, EntryValue, VQueueStore, stats::WaitStats};
 use restate_types::vqueues::{EntryId, VQueueId};
 use restate_worker_api::ResourceKind;
@@ -228,9 +229,10 @@ impl<S: VQueueStore> VQueueState<S> {
         qid: VQueueId,
         handle: VQueueHandle,
         meta: VQueueMetaLite,
+        storage: &S,
         num_running: u32,
     ) -> Self {
-        let queue = Queue::new(num_running);
+        let queue = Queue::new(num_running, storage, &qid);
         Self {
             handle,
             qid,
@@ -263,7 +265,6 @@ impl<S: VQueueStore> VQueueState<S> {
     pub fn try_pop(
         &mut self,
         cx: &mut std::task::Context<'_>,
-        storage: &S,
         resources: &mut ResourceManager,
     ) -> Result<Pop, StorageError> {
         let (inbox_head_key, inbox_head_value, is_running) = match self.queue.head() {
@@ -291,8 +292,7 @@ impl<S: VQueueStore> VQueueState<S> {
                 key: *inbox_head_key,
                 next_run_at: None,
             };
-            self.queue
-                .advance(storage, &self.unconfirmed_assignments, &self.qid)?;
+            self.queue.try_advance()?;
             return Ok(Pop::Yield(action));
         }
 
@@ -313,8 +313,7 @@ impl<S: VQueueStore> VQueueState<S> {
                     wait_stats: self.head_stats.finalize(),
                 };
 
-                self.queue
-                    .advance(storage, &self.unconfirmed_assignments, &self.qid)?;
+                self.queue.try_advance()?;
                 Ok(Pop::Run(action))
             }
             AcquireOutcome::BlockedOn(resource) => {
@@ -335,11 +334,21 @@ impl<S: VQueueStore> VQueueState<S> {
             && self.unconfirmed_assignments.is_empty()
     }
 
-    pub fn poll_eligibility(&mut self, storage: &S) -> Result<DetailedEligibility, StorageError> {
-        self.queue
-            .advance_if_needed(storage, &self.unconfirmed_assignments, &self.qid)?;
+    pub fn poll_eligibility(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+        storage: &S,
+    ) -> Poll<Result<Eligibility, StorageError>> {
+        ready!(self.queue.poll_advance_if_needed(
+            cx,
+            storage,
+            &self.unconfirmed_assignments,
+            &self.qid,
+            self.num_waiting_inbox() == 0,
+            false,
+        ))?;
 
-        Ok(self.check_eligibility())
+        Poll::Ready(Ok(self.check_eligibility().as_compact()))
     }
 
     pub fn check_eligibility(&self) -> DetailedEligibility {
