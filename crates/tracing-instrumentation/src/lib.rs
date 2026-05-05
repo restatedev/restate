@@ -813,9 +813,9 @@ pub fn create_invocation_attempt_span(
     invocation_id: &InvocationId,
     invocation_target: &InvocationTarget,
     deployment_id: DeploymentId,
-    deployment_address: &str,
+    deployment_address: &impl Display,
     service_protocol_version: ServiceProtocolVersion,
-    span_ctx: &SpanContext,
+    span_ctx: &ServiceInvocationSpanContext,
 ) -> ServiceSpan {
     if !is_service_tracing_enabled() {
         return ServiceSpan::noop();
@@ -869,7 +869,7 @@ pub fn create_invocation_attempt_span(
         )])
         .start_with_context(
             &tracer,
-            &Context::new().with_remote_span_context(span_ctx.clone()),
+            &Context::new().with_remote_span_context(span_ctx.span_context().clone().into()),
         )
         .into()
 }

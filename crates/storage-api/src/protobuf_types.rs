@@ -1718,7 +1718,7 @@ pub mod v1 {
         impl From<&restate_types::invocation::ServiceInvocation> for ServiceInvocation {
             fn from(value: &restate_types::invocation::ServiceInvocation) -> Self {
                 let invocation_target = InvocationTarget::from(&value.invocation_target);
-                let span_context = SpanContext::from(&value.span_context);
+                let span_context = value.span_context.clone().into();
                 let response_sink =
                     ServiceInvocationResponseSink::from(value.response_sink.as_ref());
                 let source = Source::from(&value.source);

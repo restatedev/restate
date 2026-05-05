@@ -143,10 +143,10 @@ where
             &self.invocation_task.invocation_id,
             &self.invocation_task.invocation_target,
             deployment.id,
-            &deployment.address_display().to_string(),
+            &deployment.address_display(),
             self.service_protocol_version,
             // The attempt span has as parent the invocation start span created by the PP.
-            &journal_metadata.span_context.span_context().clone().into(),
+            &journal_metadata.span_context,
         );
 
         // Figure out the protocol type. Force RequestResponse if inactivity_timeout is zero
@@ -882,7 +882,7 @@ where
         mh: MessageHeader,
         command: RawCommand,
         attempt_span: &mut ServiceSpan,
-        cmd_name: Option<ByteString>,
+        cmd_name: Option<String>,
     ) {
         if attempt_span.is_recording() {
             let mut attributes = vec![KeyValue::new(
@@ -894,7 +894,7 @@ where
             {
                 attributes.push(KeyValue::new(
                     restate_tracing_instrumentation::semconv::attribute::RESTATE_JOURNAL_COMMAND_NAME,
-                    cmd_name.to_string(),
+                    cmd_name,
                 ));
             }
 
@@ -1007,7 +1007,7 @@ where
                         .map_err(|err| InvokerError::EncodingV2(GenericError::from(err).into()))
                 );
                 if let Some(target) = parsed.target.as_ref() {
-                    crate::shortcircuit!(Self::validate_target(target).map_err(|err| {
+                    shortcircuit!(Self::validate_target(target).map_err(|err| {
                         InvokerError::CommandPrecondition(
                             self.command_index,
                             EntryType::Command(CommandType::GetInvocationOutput),
@@ -1015,17 +1015,22 @@ where
                         )
                     }));
                 }
-                self.handle_new_command(mh, RawCommand::new(CommandType::GetInvocationOutput, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::GetInvocationOutput, cmd),
+                    attempt_span,
+                    None,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::AttachInvocationCommand(cmd) => {
                 // See `Message::GetInvocationOutputCommand` above for why we decode-then-forward.
-                let parsed = crate::shortcircuit!(
+                let parsed = shortcircuit!(
                     proto_lite::AttachInvocationCommandMessageLite::decode(cmd.as_ref())
                         .map_err(|err| InvokerError::EncodingV2(GenericError::from(err).into()))
                 );
                 if let Some(target) = parsed.target.as_ref() {
-                    crate::shortcircuit!(Self::validate_target(target).map_err(|err| {
+                    shortcircuit!(Self::validate_target(target).map_err(|err| {
                         InvokerError::CommandPrecondition(
                             self.command_index,
                             EntryType::Command(CommandType::AttachInvocation),
@@ -1033,39 +1038,29 @@ where
                         )
                     }));
                 }
-                self.handle_new_command(mh, RawCommand::new(CommandType::AttachInvocation, cmd));
-                TerminalLoopState::Continue(())
-            }
-            Message::RunCommand(cmd) => {
-                // Get the name
-                let run_cmd: RunCommand = shortcircuit!(
-                    RawCommand::new(CommandType::Run, cmd.clone())
-                        .decode::<ServiceProtocolV4Codec, _>()
-                );
                 self.handle_new_command(
                     mh,
-                    RawCommand::new(CommandType::Run, cmd),
-                    attempt_span,
-                    Some(run_cmd.name),
-                );
-                TerminalLoopState::Continue(())
-            }
-            Message::SendSignalCommand(cmd) => {
-                // Verify the provided InvocationId is valid
-                let _: Entry = shortcircuit!(
-                    RawCommand::new(CommandType::SendSignal, cmd.clone())
-                        .decode::<ServiceProtocolV4Codec, _>()
-                );
-                self.handle_new_command(
-                    mh,
-                    RawCommand::new(CommandType::SendSignal, cmd),
+                    RawCommand::new(CommandType::AttachInvocation, cmd),
                     attempt_span,
                     None,
                 );
                 TerminalLoopState::Continue(())
             }
+            Message::RunCommand(cmd) => {
+                let raw = RawCommand::new(CommandType::Run, cmd);
+                let run_cmd: RunCommand = shortcircuit!(raw.decode::<ServiceProtocolV4Codec, _>());
+                self.handle_new_command(mh, raw, attempt_span, Some(run_cmd.name.to_string()));
+                TerminalLoopState::Continue(())
+            }
+            Message::SendSignalCommand(cmd) => {
+                // Verify the provided InvocationId is valid
+                let raw = RawCommand::new(CommandType::SendSignal, cmd);
+                let _: Entry = shortcircuit!(raw.decode::<ServiceProtocolV4Codec, _>());
+                self.handle_new_command(mh, raw, attempt_span, None);
+                TerminalLoopState::Continue(())
+            }
             Message::OneWayCallCommand(cmd) => {
-                let name: ByteString = cmd.name.into();
+                let name = cmd.name;
                 let entry: Entry = OneWayCallCommand {
                     request: shortcircuit!(
                         resolve_call_request(
@@ -1092,7 +1087,7 @@ where
                     ),
                     invoke_time: cmd.invoke_time.into(),
                     invocation_id_completion_id: cmd.invocation_id_notification_idx,
-                    name: name.clone(),
+                    name: name.clone().into(),
                 }
                 .into();
                 self.handle_new_command(
@@ -1107,7 +1102,7 @@ where
                 TerminalLoopState::Continue(())
             }
             Message::CallCommand(cmd) => {
-                let name: ByteString = cmd.name.into();
+                let name = cmd.name;
                 let entry: Entry = CallCommand {
                     request: shortcircuit!(
                         resolve_call_request(
@@ -1134,7 +1129,7 @@ where
                     ),
                     invocation_id_completion_id: cmd.invocation_id_notification_idx,
                     result_completion_id: cmd.result_completion_id,
-                    name: name.clone(),
+                    name: name.clone().into(),
                 }
                 .into();
                 self.handle_new_command(
@@ -1149,17 +1144,10 @@ where
                 TerminalLoopState::Continue(())
             }
             Message::SleepCommand(cmd) => {
-                // Get the name
-                let sleep_cmd: SleepCommand = shortcircuit!(
-                    RawCommand::new(CommandType::Sleep, cmd.clone())
-                        .decode::<ServiceProtocolV4Codec, _>()
-                );
-                self.handle_new_command(
-                    mh,
-                    RawCommand::new(CommandType::Sleep, cmd),
-                    attempt_span,
-                    Some(sleep_cmd.name),
-                );
+                let raw = RawCommand::new(CommandType::Sleep, cmd);
+                let sleep_cmd: SleepCommand =
+                    shortcircuit!(raw.decode::<ServiceProtocolV4Codec, _>());
+                self.handle_new_command(mh, raw, attempt_span, Some(sleep_cmd.name.to_string()));
                 TerminalLoopState::Continue(())
             }
             Message::CompletePromiseCommand(cmd) => {
@@ -1325,16 +1313,9 @@ where
             }
             Message::CompleteAwakeableCommand(cmd) => {
                 // Verify the provided InvocationId is valid
-                let _: Entry = shortcircuit!(
-                    RawCommand::new(CommandType::CompleteAwakeable, cmd.clone())
-                        .decode::<ServiceProtocolV4Codec, _>()
-                );
-                self.handle_new_command(
-                    mh,
-                    RawCommand::new(CommandType::CompleteAwakeable, cmd),
-                    attempt_span,
-                    None,
-                );
+                let raw = RawCommand::new(CommandType::CompleteAwakeable, cmd);
+                let _: Entry = shortcircuit!(raw.decode::<ServiceProtocolV4Codec, _>());
+                self.handle_new_command(mh, raw, attempt_span, None);
                 TerminalLoopState::Continue(())
             }
             Message::SignalNotification(_) => TerminalLoopState::Failed(
