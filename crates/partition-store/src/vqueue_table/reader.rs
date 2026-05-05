@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_storage_api::vqueue_table::VQueueStore;
+use restate_storage_api::vqueue_table::{Options, VQueueStore};
 use restate_types::vqueues::VQueueId;
 
 use crate::PartitionDb;
@@ -24,7 +24,7 @@ impl VQueueStore for PartitionDb {
         VQueueRunningReader::new(self, qid)
     }
 
-    fn new_inbox_reader(&self, qid: &VQueueId) -> Self::InboxReader {
-        VQueueWaitingReader::new(self, qid)
+    fn new_inbox_reader(&self, qid: &VQueueId, opts: Options) -> Self::InboxReader {
+        VQueueWaitingReader::new(self, qid, opts)
     }
 }
