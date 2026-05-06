@@ -28,6 +28,7 @@ use restate_limiter::RuleHandle;
 use restate_memory::{MemoryPool, NonZeroByteCount};
 use restate_storage_api::StorageError;
 use restate_storage_api::lock_table::LoadLocks;
+use restate_storage_api::vqueue_table::metadata::VQueueMeta;
 use restate_storage_api::vqueue_table::{EntryKey, EntryMetadata};
 use restate_types::identifiers::PartitionKey;
 use restate_types::vqueues::EntryKind;
@@ -44,7 +45,6 @@ use self::permit::ProvisionalPermit;
 use self::user_limiter::UserLimiter;
 use super::VQueueHandle;
 use super::eligible::EligibilityTracker;
-use super::queue_meta::VQueueMetaLite;
 use crate::GlobalTokenBucket;
 
 // A set of queues waiting on a resource
@@ -177,7 +177,7 @@ impl ResourceManager {
         &mut self,
         cx: &mut std::task::Context<'_>,
         vqueue: VQueueHandle,
-        meta: &VQueueMetaLite,
+        meta: &VQueueMeta,
         key: &EntryKey,
         _metadata: &EntryMetadata,
         current_permit: &mut PermitBuilder,
