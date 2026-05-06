@@ -14,10 +14,9 @@ use std::task::Poll;
 use std::task::Waker;
 use std::time::Duration;
 
-use hashbrown::HashMap;
 use metrics::counter;
 use pin_project::pin_project;
-use slotmap::SlotMap;
+use slotmap::SecondaryMap;
 use tokio::time::Instant;
 use tracing::{info, trace, warn};
 
@@ -32,16 +31,16 @@ use restate_worker_api::UserLimitCounterEntry;
 use crate::EventDetails;
 use crate::VQueueEvent;
 use crate::VQueuesMeta;
+use crate::cache;
+use crate::cache::VQueueHandle;
+use crate::metric_definitions::VQUEUE_ENQUEUE;
 use crate::metric_definitions::VQUEUE_RUN_CONFIRMED;
-use crate::scheduler::MetaLiteUpdate;
 use crate::scheduler::eligible::EligibilityTracker;
 use crate::scheduler::vqueue_state::Pop;
 
 use super::Decisions;
 use super::ReservedResources;
 use super::ResourceManager;
-use super::VQueueHandle;
-use super::VQueueMetaLite;
 use super::VQueueSchedulerStatus;
 use super::vqueue_state::VQueueState;
 
@@ -50,9 +49,7 @@ pub struct DRRScheduler<S: VQueueStore> {
     resource_manager: ResourceManager,
     // sorted by queue_id
     eligible: EligibilityTracker,
-    /// Mapping of vqueue_id -> handle for active vqueues
-    id_lookup: HashMap<VQueueId, VQueueHandle>,
-    q: SlotMap<VQueueHandle, VQueueState<S>>,
+    q: SecondaryMap<VQueueHandle, VQueueState<S>>,
     /// Waker to be notified when scheduler is potentially able to scheduler more work
     waker: Waker,
     /// Time of the last memory reporting and memory compaction
@@ -78,24 +75,14 @@ impl<S: VQueueStore> DRRScheduler<S> {
         let mut total_running = 0;
         let mut total_waiting = 0;
 
-        let num_active = vqueues.num_active();
-        let mut q = SlotMap::with_capacity_and_key(num_active);
-        let mut id_lookup = HashMap::with_capacity(num_active);
-        let mut eligible: EligibilityTracker = EligibilityTracker::with_capacity(num_active);
+        let mut q = SecondaryMap::with_capacity(vqueues.capacity());
+        let mut eligible: EligibilityTracker =
+            EligibilityTracker::with_capacity(vqueues.capacity());
 
-        for (qid, meta) in vqueues.iter_active_vqueues() {
+        for (handle, qid, meta) in vqueues.iter_active_vqueues() {
             total_running += meta.num_running();
             total_waiting += meta.total_waiting();
-            let handle = q.insert_with_key(|handle| {
-                VQueueState::new(
-                    qid.clone(),
-                    handle,
-                    VQueueMetaLite::new(meta),
-                    &storage,
-                    meta.num_running(),
-                )
-            });
-            id_lookup.insert(qid.clone(), handle);
+            q.insert(handle, VQueueState::new(qid, &storage, meta.num_running()));
             // We init all active vqueues as eligible first
             eligible.insert_eligible(handle);
         }
@@ -107,7 +94,6 @@ impl<S: VQueueStore> DRRScheduler<S> {
 
         Self {
             resource_manager,
-            id_lookup,
             q,
             eligible,
             waker: Waker::noop().clone(),
@@ -128,6 +114,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
 
     pub fn poll_schedule_next(
         mut self: Pin<&mut Self>,
+        metas: VQueuesMeta<'_>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Result<Decisions, StorageError>> {
         let mut decisions = Decisions::default();
@@ -156,32 +143,36 @@ impl<S: VQueueStore> DRRScheduler<S> {
                 break;
             }
 
-            let Some(handle) = this.eligible.next_eligible(cx, this.storage, this.q)? else {
+            let Some(handle) = this
+                .eligible
+                .next_eligible(cx, metas, this.storage, this.q)?
+            else {
                 break;
             };
 
             let qstate = this.q.get_mut(handle).unwrap();
+            let slot = metas.get(handle).unwrap();
 
-            match qstate.try_pop(cx, this.resource_manager)? {
+            match qstate.try_pop(cx, handle, slot, this.resource_manager)? {
                 Pop::NeedsCredit => {
                     this.eligible.rotate_one();
                 }
                 Pop::Run(action) => {
                     coop.made_progress();
-                    decisions.push(&qstate.qid, action);
+                    decisions.push(slot.vqueue_id(), action);
                     // We need to set the state so we check eligibility and setup
                     // necessary schedules when we poll the queue again.
                     this.eligible.front_needs_poll();
                 }
                 Pop::Yield(action) => {
                     coop.made_progress();
-                    decisions.push(&qstate.qid, action);
+                    decisions.push(slot.vqueue_id(), action);
                     // We need to set the state so we check eligibility and setup
                     // necessary schedules when we poll the queue again.
                     this.eligible.front_needs_poll();
                 }
                 Pop::Blocked(resource) => {
-                    trace!("VQueue {:?} is blocked on {resource:?}", qstate.qid);
+                    trace!("VQueue {} is blocked on {resource:?}", slot.vqueue_id());
                     this.eligible.front_blocked(resource);
                 }
             }
@@ -214,7 +205,6 @@ impl<S: VQueueStore> DRRScheduler<S> {
                 .remove_vqueue(handle, &blocked_resource);
         }
 
-        self.id_lookup.remove(qid);
         self.q.remove(handle);
         self.eligible.remove(handle);
     }
@@ -222,21 +212,21 @@ impl<S: VQueueStore> DRRScheduler<S> {
     // To be replaced by an invoke event that runs the invocation within the scheduler itself.
     pub fn confirm_run_attempt(
         mut self: Pin<&mut Self>,
-        qid: &VQueueId,
+        handle: VQueueHandle,
+        slot: &cache::Slot,
         key: &EntryKey,
     ) -> Option<ReservedResources> {
-        let handle = self.id_lookup.get(qid).copied()?;
         let qstate = self.q.get_mut(handle)?;
 
         // I've the resources. Let's run it.
         let permit = qstate.remove_from_unconfirmed_assignments(key)?;
-        // To make sure the num_waiting counter is updated.
-        qstate.apply_meta_update(&MetaLiteUpdate::RemovedFromInbox(*key));
         counter!(VQUEUE_RUN_CONFIRMED).increment(1);
 
-        if qstate.is_dormant() {
-            trace!("VQueue {qid} is no longer observed by the scheduler");
-            self.id_lookup.remove(qid);
+        if qstate.is_dormant(slot.meta()) {
+            trace!(
+                "VQueue {} is no longer observed by the scheduler",
+                slot.vqueue_id()
+            );
             self.q.remove(handle);
             self.eligible.remove(handle);
         }
@@ -245,79 +235,51 @@ impl<S: VQueueStore> DRRScheduler<S> {
 
     #[tracing::instrument(skip_all)]
     #[track_caller]
-    pub fn on_inbox_event(&mut self, event: VQueueEvent) {
-        let qid = event.qid;
-        let mut maybe_handle = self.id_lookup.get(&qid).copied();
-        debug_assert!(maybe_handle.map(|h| self.q.contains_key(h)).unwrap_or(true));
+    pub fn on_inbox_event(&mut self, metas: VQueuesMeta<'_>, event: VQueueEvent) {
+        let slot = metas
+            .get(event.queue)
+            .expect("vqueue meta must be in cache");
 
         for update in event.updates {
             match update {
-                EventDetails::AddVQueue {
-                    scope,
-                    limit_key,
-                    lock_name,
-                } => {
-                    if maybe_handle.is_none() {
-                        // add it.
-                        trace!("VQueue {qid} is added to the scheduler");
-                        maybe_handle = Some(self.q.insert_with_key(|h| {
-                            VQueueState::new_empty(
-                                qid.clone(),
-                                h,
-                                VQueueMetaLite::new_empty(scope, limit_key, lock_name),
-                            )
-                        }));
-                        self.id_lookup.insert(qid.clone(), maybe_handle.unwrap());
-                        // Note: We don't make this eligible yet. We'll do that when we see
-                        // an actual enqueue because we initialize the vqueue metadata with
-                        // length 0.
+                EventDetails::LockReleased => {
+                    self.release_lock(slot.meta().scope(), slot.meta().lock_name().unwrap());
+                }
+                EventDetails::QueuePaused => {
+                    let qstate = self.q.get_mut(event.queue).unwrap();
+                    if qstate.is_dormant(slot.meta()) {
+                        self.mark_vqueue_as_dormant(slot.vqueue_id(), event.queue);
                     }
                 }
-                EventDetails::LockReleased { scope, lock_name } => {
-                    self.release_lock(&scope, &lock_name);
-                }
-                EventDetails::InboxUpdate(ref update @ MetaLiteUpdate::QueuePaused) => {
-                    let Some(handle) = maybe_handle else {
-                        continue;
-                    };
-                    let qstate = self.q.get_mut(handle).unwrap();
-                    qstate.apply_meta_update(update);
-                    if qstate.is_dormant() {
-                        self.mark_vqueue_as_dormant(&qid, handle);
-                    }
-                }
-                EventDetails::InboxUpdate(ref update @ MetaLiteUpdate::QueueResumed { .. }) => {
-                    let Some(handle) = maybe_handle else {
-                        continue;
-                    };
-                    let qstate = self.q.get_mut(handle).unwrap();
-                    qstate.apply_meta_update(update);
-                    if self.eligible.refresh_membership(qstate) {
+                EventDetails::QueueResumed => {
+                    let qstate = self.q.get_mut(event.queue).unwrap();
+                    if self
+                        .eligible
+                        .refresh_membership(event.queue, slot.meta(), qstate)
+                    {
                         self.wake_up();
                     }
                 }
-                EventDetails::InboxUpdate(
-                    ref update @ MetaLiteUpdate::EnqueuedToInbox { ref key, ref value },
-                ) => {
-                    assert!(
-                        maybe_handle.is_some(),
-                        "scheduler must know about queue {qid}  before an inbox enqueue",
-                    );
-                    let handle = maybe_handle.unwrap();
-                    let qstate = self.q.get_mut(handle).unwrap();
+                EventDetails::EnqueuedToInbox { ref key, ref value } => {
+                    let qstate = self.q.entry(event.queue).unwrap().or_insert_with(|| {
+                        trace!("VQueue {} is added to the scheduler", slot.vqueue_id());
+                        VQueueState::new_empty()
+                    });
 
-                    // keep inbox size in sync
-                    qstate.apply_meta_update(update);
+                    counter!(VQUEUE_ENQUEUE).increment(1);
 
                     if let Some(permit_builder) = qstate.notify_enqueued(key, value) {
                         // The newly enqueued item became the head of the queue.
                         // If the vqueue was blocked we need to place it back
                         // on the ready ring if it wasn't already there.
                         let mut wake_up = false;
-                        if let Some(resource) = self.eligible.mark_queue_unblocked(handle) {
-                            self.resource_manager.remove_vqueue(handle, &resource);
+                        if let Some(resource) = self.eligible.mark_queue_unblocked(event.queue) {
+                            self.resource_manager.remove_vqueue(event.queue, &resource);
                             wake_up |= true;
-                        } else if self.eligible.refresh_membership(qstate) {
+                        } else if self
+                            .eligible
+                            .refresh_membership(event.queue, slot.meta(), qstate)
+                        {
                             wake_up |= true;
                         }
 
@@ -333,13 +295,10 @@ impl<S: VQueueStore> DRRScheduler<S> {
                         }
                     }
                 }
-                EventDetails::InboxUpdate(
-                    ref update @ MetaLiteUpdate::RemovedFromInbox(ref key),
-                ) => {
-                    let Some(handle) = maybe_handle else {
+                EventDetails::RemovedFromInbox(ref key) => {
+                    let Some(qstate) = self.q.get_mut(event.queue) else {
                         continue;
                     };
-                    let qstate = self.q.get_mut(handle).unwrap();
 
                     // Three cases:
                     // 1. The item was pending confirmation (we hold resources that should be
@@ -347,11 +306,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
                     // 2. The item was the head of the queue (not scheduled yet). We _may_ have a
                     // permit builder in-flight that we can release.
                     // 3. None of the above, removing only changes the vqueue metadata.
-
                     let mut wake_up = false;
-                    // keep inbox size in sync
-                    qstate.apply_meta_update(update);
-
                     // If we have been holding a concurrency permit for this item, we release it.
                     if let Some(permit) = qstate.remove_from_unconfirmed_assignments(key) {
                         // Case 1:
@@ -363,15 +318,15 @@ impl<S: VQueueStore> DRRScheduler<S> {
                         // Case 2:
                         // This means it might be the current head. Let's invalidate it if
                         // that's the case.
-                        if let Some(resource) = self.eligible.find_blocking_resource(handle) {
+                        if let Some(resource) = self.eligible.find_blocking_resource(event.queue) {
                             // The head was removed and the queue was blocked on a resource.
-                            self.resource_manager.remove_vqueue(handle, resource);
+                            self.resource_manager.remove_vqueue(event.queue, resource);
                         }
 
-                        if !qstate.is_dormant() {
+                        if !qstate.is_dormant(slot.meta()) {
                             // force the queue to be polled again since the head
                             // will definitely be unknown at this point.
-                            self.eligible.ensure_queue_needs_polling(handle);
+                            self.eligible.ensure_queue_needs_polling(event.queue);
                             wake_up |= true;
                         }
                         // let the other queues that were blocked on my partial permit
@@ -382,9 +337,9 @@ impl<S: VQueueStore> DRRScheduler<S> {
                             .revert_permit_builder(&mut self.eligible, permit_builder);
                     }
 
-                    if qstate.is_dormant() {
+                    if qstate.is_dormant(slot.meta()) {
                         // the removal makes the queue dormant. Remove it from everything
-                        self.mark_vqueue_as_dormant(&qid, handle);
+                        self.mark_vqueue_as_dormant(slot.vqueue_id(), event.queue);
                     }
 
                     if wake_up {
@@ -404,29 +359,39 @@ impl<S: VQueueStore> DRRScheduler<S> {
         }
     }
 
-    pub fn iter_status(&self) -> impl Iterator<Item = (VQueueId, VQueueSchedulerStatus)> {
+    pub fn iter_status(
+        &self,
+        metas: VQueuesMeta<'_>,
+    ) -> impl Iterator<Item = (VQueueId, VQueueSchedulerStatus)> {
         // Resolver shared across every queue's status snapshot in this sweep —
         // the rule store doesn't change while we hold `&self`.
         let resolve_rule = |handle| self.resource_manager.resolve_user_rule(handle);
-        self.q.iter().map(move |(_handle, qstate)| {
+        self.q.iter().map(move |(handle, qstate)| {
+            let slot = metas.get(handle).unwrap();
             let status = VQueueSchedulerStatus {
                 wait_stats: qstate.get_head_wait_stats(),
                 remaining_running: qstate.num_remaining_in_running_stage(),
-                waiting_inbox: qstate.num_waiting_inbox(),
-                status: self.eligible.get_status(qstate, &resolve_rule),
+                waiting_inbox: qstate.num_waiting_inbox(slot.meta()),
+                status: self
+                    .eligible
+                    .get_status(handle, slot.meta(), qstate, &resolve_rule),
                 head_entry_id: qstate.head_entry_id(),
             };
 
-            (qstate.qid.clone(), status)
+            (slot.vqueue_id().clone(), status)
         })
     }
 
-    pub fn get_status(&self, qid: &VQueueId) -> VQueueSchedulerStatus {
-        let Some(qstate) = self
-            .id_lookup
-            .get(qid)
-            .and_then(|handle| self.q.get(*handle))
-        else {
+    #[cfg(test)]
+    pub fn get_status(
+        &self,
+        metas: VQueuesMeta<'_>,
+        handle: VQueueHandle,
+    ) -> VQueueSchedulerStatus {
+        let Some(qstate) = self.q.get(handle) else {
+            return VQueueSchedulerStatus::default();
+        };
+        let Some(slot) = metas.get(handle) else {
             return VQueueSchedulerStatus::default();
         };
 
@@ -434,8 +399,10 @@ impl<S: VQueueStore> DRRScheduler<S> {
         VQueueSchedulerStatus {
             wait_stats: qstate.get_head_wait_stats(),
             remaining_running: qstate.num_remaining_in_running_stage(),
-            waiting_inbox: qstate.num_waiting_inbox(),
-            status: self.eligible.get_status(qstate, &resolve_rule),
+            waiting_inbox: qstate.num_waiting_inbox(slot.meta()),
+            status: self
+                .eligible
+                .get_status(handle, slot.meta(), qstate, &resolve_rule),
             head_entry_id: qstate.head_entry_id(),
         }
     }
@@ -485,6 +452,8 @@ mod tests {
 
     use crate::cache::VQueuesMetaCache;
     use crate::{GlobalTokenBucket, SchedulingStatus, VQueue, VQueueEvent};
+
+    const TEST_VQUEUES_CAPACITY: usize = 1024;
 
     use super::*;
 
@@ -653,10 +622,11 @@ mod tests {
 
     fn poll_scheduler(
         mut scheduler: Pin<&mut DRRScheduler<PartitionDb>>,
+        metas: VQueuesMeta<'_>,
     ) -> Poll<Result<Decisions, restate_storage_api::StorageError>> {
         let waker = std::task::Waker::noop();
         let mut cx = std::task::Context::from_waker(waker);
-        scheduler.as_mut().poll_schedule_next(&mut cx)
+        scheduler.as_mut().poll_schedule_next(metas, &mut cx)
     }
 
     fn run_keys(decision: &Decisions) -> Vec<EntryKey> {
@@ -675,11 +645,13 @@ mod tests {
     async fn test_empty_scheduler_returns_pending() {
         let rocksdb = storage_test_environment().await;
         let db = rocksdb.partition_db();
-        let cache = VQueuesMetaCache::create(db.clone()).await.unwrap();
+        let cache = VQueuesMetaCache::create(db.clone(), TEST_VQUEUES_CAPACITY)
+            .await
+            .unwrap();
 
         let mut scheduler = create_scheduler(db, &cache).await;
         assert!(matches!(
-            poll_scheduler(Pin::new(&mut scheduler)),
+            poll_scheduler(Pin::new(&mut scheduler), cache.view()),
             Poll::Pending
         ));
     }
@@ -687,7 +659,7 @@ mod tests {
     #[restate_core::test]
     async fn test_poll_yields_enqueued_item() {
         let mut rocksdb = storage_test_environment().await;
-        let mut cache = VQueuesMetaCache::new_empty();
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
         let qid = test_qid(2000);
 
         let mut txn = rocksdb.transaction();
@@ -697,7 +669,7 @@ mod tests {
         let db = rocksdb.partition_db();
         let mut scheduler = create_scheduler(db, &cache).await;
 
-        let result = poll_scheduler(Pin::new(&mut scheduler));
+        let result = poll_scheduler(Pin::new(&mut scheduler), cache.view());
         assert!(matches!(result, Poll::Ready(Ok(ref decision)) if !decision.is_empty()));
 
         let Poll::Ready(Ok(decision)) = result else {
@@ -711,7 +683,7 @@ mod tests {
     #[restate_core::test]
     async fn test_run_at_below_now_preempts_within_inbox() {
         let mut rocksdb = storage_test_environment().await;
-        let mut cache = VQueuesMetaCache::new_empty();
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
         let qid = test_qid(2_100);
         let now = MillisSinceEpoch::now().as_u64();
 
@@ -739,7 +711,8 @@ mod tests {
         let db = rocksdb.partition_db();
         let mut scheduler = create_scheduler(db, &cache).await;
 
-        let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler)) else {
+        let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
+        else {
             panic!("expected decision");
         };
 
@@ -753,7 +726,7 @@ mod tests {
     #[restate_core::test]
     async fn test_round_robin_fairness() {
         let mut rocksdb = storage_test_environment().await;
-        let mut cache = VQueuesMetaCache::new_empty();
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
 
         let mut txn = rocksdb.transaction();
         for i in 1..=3u64 {
@@ -781,7 +754,8 @@ mod tests {
             cache.view(),
         );
 
-        let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler)) else {
+        let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
+        else {
             panic!("expected decision");
         };
 
@@ -804,7 +778,7 @@ mod tests {
     #[restate_core::test]
     async fn test_concurrency_limiting() {
         let mut rocksdb = storage_test_environment().await;
-        let mut cache = VQueuesMetaCache::new_empty();
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
         let qid1 = test_qid(7000);
         let qid2 = test_qid(7001);
 
@@ -818,10 +792,19 @@ mod tests {
         let db = rocksdb.partition_db();
         let mut scheduler = create_scheduler_with_concurrency(db, &cache, 1).await;
 
-        assert_eq!(scheduler.get_status(&qid1).status, SchedulingStatus::Ready,);
-        assert_eq!(scheduler.get_status(&qid2).status, SchedulingStatus::Ready,);
+        let h_qid1 = cache.view().handle_for(&qid1).unwrap();
+        let h_qid2 = cache.view().handle_for(&qid2).unwrap();
 
-        let result = poll_scheduler(Pin::new(&mut scheduler));
+        assert_eq!(
+            scheduler.get_status(cache.view(), h_qid1).status,
+            SchedulingStatus::Ready,
+        );
+        assert_eq!(
+            scheduler.get_status(cache.view(), h_qid2).status,
+            SchedulingStatus::Ready,
+        );
+
+        let result = poll_scheduler(Pin::new(&mut scheduler), cache.view());
         assert!(matches!(result, Poll::Ready(Ok(ref d)) if d.total_items() == 1));
         let Poll::Ready(Ok(result)) = result else {
             panic!("expected decision");
@@ -830,29 +813,34 @@ mod tests {
 
         let first_pop_qid = result.qids.keys().next().unwrap().clone();
         let first_pop_key = run_keys(&result)[0];
+        let h_first_pop = cache.view().handle_for(&first_pop_qid).unwrap();
         qids.retain(|qid| qid != &first_pop_qid);
+        let h_remaining = cache.view().handle_for(&qids[0]).unwrap();
 
         assert!(matches!(
-            poll_scheduler(Pin::new(&mut scheduler)),
+            poll_scheduler(Pin::new(&mut scheduler), cache.view()),
             Poll::Pending
         ));
         assert_eq!(
-            scheduler.get_status(&first_pop_qid).status,
+            scheduler.get_status(cache.view(), h_first_pop).status,
             SchedulingStatus::Empty,
         );
         assert_eq!(
-            scheduler.get_status(&qids[0]).status,
+            scheduler.get_status(cache.view(), h_remaining).status,
             SchedulingStatus::BlockedOn(BlockedResource::InvokerConcurrency),
         );
 
+        let metas = cache.view();
+        let first_pop_slot = metas.get(h_first_pop).unwrap();
         let mut scheduler = Pin::new(&mut scheduler);
-        let resources = scheduler
-            .as_mut()
-            .confirm_run_attempt(&first_pop_qid, &first_pop_key);
+        let resources =
+            scheduler
+                .as_mut()
+                .confirm_run_attempt(h_first_pop, first_pop_slot, &first_pop_key);
         assert!(resources.is_some());
         drop(resources);
 
-        let Poll::Ready(Ok(result2)) = poll_scheduler(scheduler.as_mut()) else {
+        let Poll::Ready(Ok(result2)) = poll_scheduler(scheduler.as_mut(), cache.view()) else {
             panic!("expected decision");
         };
         assert_eq!(result2.num_run(), 1);
@@ -861,16 +849,19 @@ mod tests {
         qids.retain(|qid| qid != &second_pop_qid);
         assert!(qids.is_empty());
         assert_eq!(
-            scheduler.get_status(&qid1).status,
+            scheduler.get_status(cache.view(), h_qid1).status,
             SchedulingStatus::Dormant,
         );
-        assert_eq!(scheduler.get_status(&qid2).status, SchedulingStatus::Empty,);
+        assert_eq!(
+            scheduler.get_status(cache.view(), h_qid2).status,
+            SchedulingStatus::Empty,
+        );
     }
 
     #[restate_core::test]
     async fn test_get_status_reports_invoker_throttling_retry_estimate() {
         let mut rocksdb = storage_test_environment().await;
-        let mut cache = VQueuesMetaCache::new_empty();
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
         let qid1 = test_qid(21_101);
         let qid2 = test_qid(21_102);
 
@@ -901,7 +892,8 @@ mod tests {
             cache.view(),
         );
 
-        let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler)) else {
+        let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
+        else {
             panic!("expected decision");
         };
         assert_eq!(decision.num_run(), 1);
@@ -914,7 +906,10 @@ mod tests {
             .expect("a single queue should be scheduled");
         let blocked_qid = if running_qid == qid1 { qid2 } else { qid1 };
 
-        let blocked_status = scheduler.get_status(&blocked_qid).status;
+        let h_blocked = cache.view().handle_for(&blocked_qid).unwrap();
+        let h_running = cache.view().handle_for(&running_qid).unwrap();
+
+        let blocked_status = scheduler.get_status(cache.view(), h_blocked).status;
         let SchedulingStatus::BlockedOn(BlockedResource::InvokerThrottling { estimated_retry_at }) =
             blocked_status
         else {
@@ -923,7 +918,7 @@ mod tests {
         assert!(estimated_retry_at.is_some());
 
         assert_eq!(
-            scheduler.get_status(&running_qid).status,
+            scheduler.get_status(cache.view(), h_running).status,
             SchedulingStatus::Empty
         );
     }
@@ -931,7 +926,7 @@ mod tests {
     #[restate_core::test]
     async fn test_waiters_outside_throttling_window_report_no_estimate() {
         let mut rocksdb = storage_test_environment().await;
-        let mut cache = VQueuesMetaCache::new_empty();
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
 
         let qids = [
             test_qid(22_001),
@@ -977,7 +972,8 @@ mod tests {
             cache.view(),
         );
 
-        let Poll::Ready(Ok(_decision)) = poll_scheduler(Pin::new(&mut scheduler)) else {
+        let Poll::Ready(Ok(_decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
+        else {
             panic!("expected decision");
         };
 
@@ -985,9 +981,10 @@ mod tests {
         let mut none_estimate = 0;
 
         for qid in &qids {
+            let handle = cache.view().handle_for(qid).unwrap();
             if let SchedulingStatus::BlockedOn(BlockedResource::InvokerThrottling {
                 estimated_retry_at,
-            }) = scheduler.get_status(qid).status
+            }) = scheduler.get_status(cache.view(), handle).status
             {
                 if estimated_retry_at.is_some() {
                     some_estimate += 1;
@@ -1004,7 +1001,7 @@ mod tests {
     #[restate_core::test]
     async fn test_max_items_per_decision_limit() {
         let mut rocksdb = storage_test_environment().await;
-        let mut cache = VQueuesMetaCache::new_empty();
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
 
         let mut txn = rocksdb.transaction();
         for i in 1..=5u64 {
@@ -1022,7 +1019,7 @@ mod tests {
             cache.view(),
         );
 
-        if let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler)) {
+        if let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view()) {
             assert!(!decision.is_empty());
             assert!(decision.total_items() <= 2);
         }
@@ -1031,7 +1028,7 @@ mod tests {
     #[restate_core::test]
     async fn test_higher_priority_preempts_between_polls() {
         let mut rocksdb = storage_test_environment().await;
-        let mut cache = VQueuesMetaCache::new_empty();
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
         let qid = test_qid(14_000);
         let mut events = Vec::new();
 
@@ -1050,7 +1047,8 @@ mod tests {
             cache.view(),
         );
 
-        let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler)) else {
+        let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
+        else {
             panic!("expected decision");
         };
         let mut in_flight = run_keys(&decision);
@@ -1063,10 +1061,11 @@ mod tests {
         enqueue_entry(&mut txn, &mut cache, &qid, 125, 0, Some(&mut events)).await;
         txn.commit().await.expect("commit should succeed");
         for event in events.drain(..) {
-            scheduler.on_inbox_event(event);
+            scheduler.on_inbox_event(cache.view(), event);
         }
 
-        let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler)) else {
+        let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
+        else {
             panic!("expected decision");
         };
         let next_keys = run_keys(&decision);
@@ -1082,10 +1081,11 @@ mod tests {
         }
         txn.commit().await.expect("commit should succeed");
         for event in events.drain(..) {
-            scheduler.on_inbox_event(event);
+            scheduler.on_inbox_event(cache.view(), event);
         }
 
-        let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler)) else {
+        let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
+        else {
             panic!("expected decision");
         };
         let keys = run_keys(&decision);
@@ -1097,7 +1097,7 @@ mod tests {
     #[restate_core::test]
     async fn test_get_status_reflects_scheduling_states() {
         let mut rocksdb = storage_test_environment().await;
-        let mut cache = VQueuesMetaCache::new_empty();
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
         let qid1 = test_qid(21_001);
         let qid2 = test_qid(21_002);
 
@@ -1120,16 +1120,26 @@ mod tests {
             cache.view(),
         );
 
-        assert_eq!(scheduler.get_status(&qid1).status, SchedulingStatus::Ready);
-        assert_eq!(scheduler.get_status(&qid2).status, SchedulingStatus::Ready);
+        let h_qid1 = cache.view().handle_for(&qid1).unwrap();
+        let h_qid2 = cache.view().handle_for(&qid2).unwrap();
 
-        let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler)) else {
+        assert_eq!(
+            scheduler.get_status(cache.view(), h_qid1).status,
+            SchedulingStatus::Ready
+        );
+        assert_eq!(
+            scheduler.get_status(cache.view(), h_qid2).status,
+            SchedulingStatus::Ready
+        );
+
+        let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
+        else {
             panic!("expected decision");
         };
         assert_eq!(decision.total_items(), 3);
         assert_eq!(decision.num_queues(), 2);
 
-        let status = scheduler.get_status(&qid1);
+        let status = scheduler.get_status(cache.view(), h_qid1);
         assert_eq!(
             status.status,
             SchedulingStatus::BlockedOn(BlockedResource::InvokerConcurrency)
@@ -1137,7 +1147,7 @@ mod tests {
         assert_eq!(status.waiting_inbox, 1);
         assert_eq!(status.remaining_running, 0);
 
-        let status = scheduler.get_status(&qid2);
+        let status = scheduler.get_status(cache.view(), h_qid2);
         assert_eq!(status.status, SchedulingStatus::Empty);
         assert_eq!(status.waiting_inbox, 0);
         assert_eq!(status.remaining_running, 0);
@@ -1153,22 +1163,32 @@ mod tests {
             })
             .expect("qid2 run action should exist");
 
+        let metas = cache.view();
+        let qid2_slot = metas.get(h_qid2).unwrap();
         let mut scheduler = Pin::new(&mut scheduler);
-        let resources = scheduler.as_mut().confirm_run_attempt(&qid2, &qid2_key);
+        let resources = scheduler
+            .as_mut()
+            .confirm_run_attempt(h_qid2, qid2_slot, &qid2_key);
         assert!(resources.is_some());
         drop(resources);
 
-        let Poll::Ready(Ok(decision)) = poll_scheduler(scheduler.as_mut()) else {
+        let Poll::Ready(Ok(decision)) = poll_scheduler(scheduler.as_mut(), cache.view()) else {
             panic!("expected decision");
         };
         assert_eq!(decision.total_items(), 1);
         assert_eq!(decision.num_queues(), 1);
 
-        assert_eq!(scheduler.get_status(&qid1).status, SchedulingStatus::Empty);
         assert_eq!(
-            scheduler.get_status(&qid2).status,
+            scheduler.get_status(cache.view(), h_qid1).status,
+            SchedulingStatus::Empty
+        );
+        assert_eq!(
+            scheduler.get_status(cache.view(), h_qid2).status,
             SchedulingStatus::Dormant
         );
-        assert!(matches!(poll_scheduler(scheduler.as_mut()), Poll::Pending));
+        assert!(matches!(
+            poll_scheduler(scheduler.as_mut(), cache.view()),
+            Poll::Pending
+        ));
     }
 }

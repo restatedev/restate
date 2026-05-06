@@ -380,7 +380,7 @@ where
             // Store journal entry
             WriteJournalTable::put_journal_entry(
                 ctx.storage,
-                self.invocation_id,
+                &self.invocation_id,
                 entry_index,
                 // Make sure that a deterministic append time is set based on Bifrost's record creation
                 // time. This ensures that the append time does not depend on the application time of

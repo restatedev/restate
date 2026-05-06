@@ -63,7 +63,7 @@ where
                 // Now write the entry in the new table, and remove it from the old one
                 journal_table_v2::WriteJournalTable::put_journal_entry(
                     ctx.storage,
-                    self.invocation_id,
+                    &self.invocation_id,
                     0,
                     &StoredRawEntry::new(
                         StoredRawEntryHeader::new(ctx.record_created_at),

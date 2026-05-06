@@ -11,8 +11,9 @@
 use std::collections::VecDeque;
 use std::task::Poll;
 
+use restate_storage_api::vqueue_table::metadata::VQueueMeta;
+use slotmap::SecondaryMap;
 use slotmap::secondary::Entry;
-use slotmap::{SecondaryMap, SlotMap};
 use tokio_util::time::{DelayQueue, delay_queue};
 
 use restate_limiter::RuleHandle;
@@ -22,9 +23,10 @@ use restate_types::time::MillisSinceEpoch;
 use restate_util_string::ReString;
 use restate_worker_api::{ResourceKind, SchedulingStatus};
 
-use super::VQueueHandle;
 use super::clock::SchedulerClock;
 use super::vqueue_state::VQueueState;
+use crate::VQueuesMeta;
+use crate::cache::VQueueHandle;
 use crate::scheduler::vqueue_state::Eligibility;
 
 #[derive(Debug, Copy, Clone)]
@@ -71,14 +73,20 @@ impl EligibilityTracker {
         self.ready_ring.push_back(handle);
     }
 
-    pub fn get_status<S, R>(&self, qstate: &VQueueState<S>, resolve_rule: &R) -> SchedulingStatus
+    pub fn get_status<S, R>(
+        &self,
+        handle: VQueueHandle,
+        meta: &VQueueMeta,
+        qstate: &VQueueState<S>,
+        resolve_rule: &R,
+    ) -> SchedulingStatus
     where
         S: VQueueStore,
         R: Fn(RuleHandle) -> Option<ReString>,
     {
-        match self.states.get(qstate.handle) {
+        match self.states.get(handle) {
             None | Some(State::NeedsPoll) | Some(State::Ready) => {
-                super::status_from_detailed_eligibility(qstate.check_eligibility())
+                super::status_from_detailed_eligibility(qstate.check_eligibility(meta))
             }
             Some(State::Scheduled { wake_up }) => SchedulingStatus::Scheduled {
                 at: wake_up.ts.into(),
@@ -111,8 +119,9 @@ impl EligibilityTracker {
     pub fn next_eligible<S: VQueueStore>(
         &mut self,
         cx: &mut std::task::Context<'_>,
+        metas: VQueuesMeta<'_>,
         storage: &S,
-        vqueues: &mut SlotMap<VQueueHandle, VQueueState<S>>,
+        vqueues: &mut SecondaryMap<VQueueHandle, VQueueState<S>>,
     ) -> Result<Option<VQueueHandle>, StorageError> {
         let n = self.ready_ring.len();
         // avoid rescanning the ready ring multiple rounds
@@ -137,10 +146,12 @@ impl EligibilityTracker {
                 continue;
             };
 
+            let slot = metas.get(handle).unwrap();
+
             match current_state {
                 State::NeedsPoll => {
                     // update the state based on eligibility.
-                    match qstate.poll_eligibility(cx, storage) {
+                    match qstate.poll_eligibility(cx, slot, storage) {
                         Poll::Ready(Ok(Eligibility::Eligible)) => {
                             *current_state = State::Ready;
                             return Ok(Some(handle));
@@ -263,8 +274,13 @@ impl EligibilityTracker {
     /// Returns true if scheduler should be woken up
     ///
     /// If the vqueue is blocked on a resource, this function will not touch it.
-    pub fn refresh_membership<S: VQueueStore>(&mut self, vqueue: &VQueueState<S>) -> bool {
-        let Some(current_state) = self.states.entry(vqueue.handle) else {
+    pub fn refresh_membership<S: VQueueStore>(
+        &mut self,
+        handle: VQueueHandle,
+        meta: &VQueueMeta,
+        vqueue: &VQueueState<S>,
+    ) -> bool {
+        let Some(current_state) = self.states.entry(handle) else {
             // the vqueue handle was removed from the original slot map.
             return false;
         };
@@ -272,11 +288,11 @@ impl EligibilityTracker {
         match current_state {
             Entry::Vacant(vacant_entry) => {
                 vacant_entry.insert(State::NeedsPoll);
-                self.ready_ring.push_back(vqueue.handle);
+                self.ready_ring.push_back(handle);
                 true
             }
             Entry::Occupied(mut occupied_entry) => {
-                let eligibility = vqueue.check_eligibility().as_compact();
+                let eligibility = vqueue.check_eligibility(meta).as_compact();
                 match (occupied_entry.get(), eligibility) {
                     (State::NeedsPoll, _) => {
                         // do nothing.
@@ -291,14 +307,14 @@ impl EligibilityTracker {
                         // happens, we err on the safe side and switch to polling.
                         self.delayed_eligibility.remove(&wake_up.timer_key);
                         occupied_entry.insert(State::NeedsPoll);
-                        self.ready_ring.push_back(vqueue.handle);
+                        self.ready_ring.push_back(handle);
                         true
                     }
                     (State::Scheduled { wake_up }, Eligibility::Eligible) => {
                         // wake up now
                         self.delayed_eligibility.remove(&wake_up.timer_key);
-                        self.states.insert(vqueue.handle, State::NeedsPoll);
-                        self.ready_ring.push_back(vqueue.handle);
+                        self.states.insert(handle, State::NeedsPoll);
+                        self.ready_ring.push_back(handle);
                         true
                     }
                     (State::Scheduled { wake_up }, Eligibility::EligibleAt(eligible_at_ts)) => {
