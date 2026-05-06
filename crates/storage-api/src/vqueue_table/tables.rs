@@ -221,3 +221,20 @@ pub trait ScanVQueueMetaTable {
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
+
+pub trait ScanVQueueInboxStages {
+    /// Used for data-fusion queries
+    fn for_each_vqueue_inbox_entry<
+        F: for<'a> FnMut(
+                (&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue),
+            ) -> std::ops::ControlFlow<()>
+            + Send
+            + Sync
+            + 'static,
+    >(
+        &self,
+        range: KeyRange,
+        stage: Stage,
+        f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send>;
+}

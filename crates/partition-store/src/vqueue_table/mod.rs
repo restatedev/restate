@@ -18,6 +18,7 @@ mod running_reader;
 mod waiting_reader;
 
 use std::io::Cursor;
+use std::pin::Pin;
 
 pub use entry::{EntryStatusKey, EntryStatusKeyRef, StatusHeaderRaw};
 pub use inbox::InboxKey;
@@ -32,12 +33,12 @@ use tracing::error;
 
 use restate_rocksdb::Priority;
 use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::ScanVQueueMetaTable;
 use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaRef, VQueueMetaUpdates};
 use restate_storage_api::vqueue_table::{
     EntryKey, EntryMetadata, EntryStatusHeader, EntryValue, LazyEntryStatus, ReadVQueueTable,
     ScanVQueueTable, Stage, Status, WriteVQueueTable, stats::EntryStatistics,
 };
+use restate_storage_api::vqueue_table::{ScanVQueueInboxStages, ScanVQueueMetaTable};
 use restate_types::sharding::{KeyRange, PartitionKey};
 use restate_types::vqueues::{EntryId, Seq, VQueueId};
 
@@ -471,6 +472,118 @@ impl ScanVQueueMetaTable for PartitionStore {
             },
         )
         .map_err(|_| StorageError::OperationalError)
+    }
+}
+
+fn stage_from_key_kind(key_kind: KeyKind) -> Option<Stage> {
+    match key_kind {
+        KeyKind::VQueueInboxStage => Some(Stage::Inbox),
+        KeyKind::VQueueRunningStage => Some(Stage::Running),
+        KeyKind::VQueueSuspendedStage => Some(Stage::Suspended),
+        KeyKind::VQueuePausedStage => Some(Stage::Paused),
+        KeyKind::VQueueFinishedStage => Some(Stage::Finished),
+        _ => None,
+    }
+}
+
+fn scan_vqueue_inbox_stage<'store, K, F>(
+    partition_store: &'store PartitionStore,
+    scanner_name: &'static str,
+    range: KeyRange,
+    stage: Stage,
+    mut f: F,
+) -> Result<Pin<Box<dyn Future<Output = Result<()>> + Send + 'store>>>
+where
+    K: EncodeTableKeyPrefix + 'store,
+    F: for<'row> FnMut(
+            (&'row VQueueId, Stage, &'row EntryKey, &'row EntryValue),
+        ) -> std::ops::ControlFlow<()>
+        + Send
+        + Sync
+        + 'static,
+{
+    let future = partition_store
+        .iterator_for_each(
+            scanner_name,
+            Priority::Low,
+            TableScan::FullScanPartitionKeyRange::<K>(range),
+            move |(mut key, mut value)| {
+                let key_kind = break_on_err(KeyKind::deserialize(&mut key))?;
+                let key_stage = break_on_err(
+                    stage_from_key_kind(key_kind).ok_or(StorageError::DataIntegrityError),
+                )?;
+                if key_stage != stage {
+                    return std::ops::ControlFlow::Break(Err(StorageError::DataIntegrityError));
+                }
+
+                let qid: VQueueId = break_on_err(crate::keys::deserialize(&mut key))?;
+                let entry_key: EntryKey = break_on_err(crate::keys::deserialize(&mut key))?;
+                let entry = break_on_err(
+                    EntryValue::decode(&mut value).map_err(StorageError::BilrostDecode),
+                )?;
+
+                f((&qid, stage, &entry_key, &entry)).map_break(Ok)
+            },
+        )
+        .map_err(|_| StorageError::OperationalError)?;
+
+    Ok(Box::pin(future))
+}
+
+impl ScanVQueueInboxStages for PartitionStore {
+    fn for_each_vqueue_inbox_entry<
+        F: for<'a> FnMut(
+                (&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue),
+            ) -> std::ops::ControlFlow<()>
+            + Send
+            + Sync
+            + 'static,
+    >(
+        &self,
+        range: KeyRange,
+        stage: Stage,
+        f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        match stage {
+            Stage::Unknown => Err(StorageError::Generic(anyhow::anyhow!(
+                "Unknown stage can't be scanned"
+            ))),
+            Stage::Inbox => scan_vqueue_inbox_stage::<inbox::InboxKey, _>(
+                self,
+                "df-vqueue-inbox",
+                range,
+                stage,
+                f,
+            ),
+            Stage::Running => scan_vqueue_inbox_stage::<inbox::RunningKey, _>(
+                self,
+                "df-vqueue-running",
+                range,
+                stage,
+                f,
+            ),
+            Stage::Suspended => scan_vqueue_inbox_stage::<inbox::SuspendedKey, _>(
+                self,
+                "df-vqueue-suspended",
+                range,
+                stage,
+                f,
+            ),
+            Stage::Paused => scan_vqueue_inbox_stage::<inbox::PausedKey, _>(
+                self,
+                "df-vqueue-paused",
+                range,
+                stage,
+                f,
+            ),
+            Stage::Finished => scan_vqueue_inbox_stage::<inbox::FinishedKey, _>(
+                self,
+                "df-vqueue-finished",
+                range,
+                stage,
+                f,
+            ),
+        }
     }
 }
 
