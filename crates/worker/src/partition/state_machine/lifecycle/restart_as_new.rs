@@ -156,7 +156,7 @@ where
                     // Now copy to the new journal
                     journal_table_v2::WriteJournalTable::put_journal_entry(
                         ctx.storage,
-                        new_invocation_id,
+                        &new_invocation_id,
                         new_journal_index,
                         &entry,
                         &related_completion_ids,
@@ -176,7 +176,7 @@ where
                     // Now copy to the new journal
                     journal_table_v2::WriteJournalTable::put_journal_entry(
                         ctx.storage,
-                        new_invocation_id,
+                        &new_invocation_id,
                         new_journal_index,
                         &entry,
                         &[],
@@ -202,7 +202,7 @@ where
                 // Copy over this notification
                 journal_table_v2::WriteJournalTable::put_journal_entry(
                     ctx.storage,
-                    new_invocation_id,
+                    &new_invocation_id,
                     new_journal_index,
                     &entry,
                     &[],
@@ -311,7 +311,7 @@ where
         };
 
         ctx.on_pre_flight_invocation(
-            new_invocation_id,
+            &new_invocation_id,
             pre_flight_invocation_metadata,
             None,
             &limit_key,

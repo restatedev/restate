@@ -8,19 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use hashbrown::{HashMap, hash_map};
+use hashbrown::hash_map;
 use slotmap::SlotMap;
 use tokio::task::JoinHandle;
 use tracing::{debug, trace};
 
+use restate_platform::hash::HashMap;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::metadata::{self, VQueueMeta};
 use restate_storage_api::vqueue_table::{ReadVQueueTable, ScanVQueueTable};
+use restate_types::sharding::PartitionKey;
 use restate_types::vqueues::VQueueId;
+
+const VQUEUES_CAPACITY: usize = 100_000;
 
 type Result<T> = std::result::Result<T, StorageError>;
 
-slotmap::new_key_type! { pub struct VQueueCacheKey; }
+slotmap::new_key_type! { pub struct VQueueHandle; }
 
 // A read-only view over the in-memory stash of vqueues.
 #[derive(Copy, Clone)]
@@ -34,8 +38,13 @@ impl<'a> VQueuesMeta<'a> {
         Self { inner: cache }
     }
 
-    pub fn get(&self, key: VQueueCacheKey) -> Option<&Slot> {
+    pub fn get(&self, key: VQueueHandle) -> Option<&Slot> {
         self.inner.slab.get(key)
+    }
+
+    /// Lookup the cache handle of the vqueue by its id.
+    pub fn handle_for(&self, qid: &VQueueId) -> Option<VQueueHandle> {
+        self.inner.queues.get(qid).copied()
     }
 
     pub fn get_vqueue(&'a self, qid: &VQueueId) -> Option<&'a VQueueMeta> {
@@ -46,11 +55,13 @@ impl<'a> VQueuesMeta<'a> {
             .map(|slot| &slot.meta)
     }
 
-    pub fn iter_active_vqueues(&'a self) -> impl Iterator<Item = (&'a VQueueId, &'a VQueueMeta)> {
+    pub fn iter_active_vqueues(
+        &'a self,
+    ) -> impl Iterator<Item = (VQueueHandle, &'a VQueueId, &'a VQueueMeta)> {
         self.inner
             .slab
-            .values()
-            .filter_map(|Slot { qid, meta }| meta.is_active().then_some((qid, meta)))
+            .iter()
+            .filter_map(|(key, Slot { qid, meta })| meta.is_active().then_some((key, qid, meta)))
     }
 
     pub fn num_active(&self) -> usize {
@@ -79,6 +90,11 @@ impl Slot {
     }
 
     #[inline(always)]
+    pub fn partition_key(&self) -> PartitionKey {
+        self.qid.partition_key()
+    }
+
+    #[inline(always)]
     pub fn meta(&self) -> &VQueueMeta {
         &self.meta
     }
@@ -97,8 +113,8 @@ impl Slot {
 // Needs rewriting after the workload pattern becomes more clear.
 #[derive(Clone)]
 pub struct VQueuesMetaCache {
-    queues: HashMap<VQueueId, VQueueCacheKey>,
-    slab: SlotMap<VQueueCacheKey, Slot>,
+    queues: HashMap<VQueueId, VQueueHandle>,
+    slab: SlotMap<VQueueHandle, Slot>,
 }
 
 impl VQueuesMetaCache {
@@ -106,11 +122,11 @@ impl VQueuesMetaCache {
         VQueuesMeta::new(self)
     }
 
-    pub fn get(&self, key: VQueueCacheKey) -> Option<&Slot> {
+    pub fn get(&self, key: VQueueHandle) -> Option<&Slot> {
         self.slab.get(key)
     }
 
-    pub fn get_mut(&mut self, key: VQueueCacheKey) -> Option<&mut Slot> {
+    pub fn get_mut(&mut self, key: VQueueHandle) -> Option<&mut Slot> {
         self.slab.get_mut(key)
     }
 
@@ -127,10 +143,11 @@ impl VQueuesMetaCache {
     /// From this point on, the cache remains in-sync with the storage state by
     /// using the "apply_updates" method.
     pub async fn create<S: ScanVQueueTable + Send + Sync + 'static>(storage: S) -> Result<Self> {
+        let mut slab = SlotMap::with_capacity_and_key(VQUEUES_CAPACITY);
+        let mut queues = HashMap::with_capacity(VQUEUES_CAPACITY);
+
         let handle: JoinHandle<Result<_>> = tokio::task::spawn_blocking({
             move || {
-                let mut slab = SlotMap::default();
-                let mut queues = HashMap::default();
                 // find and load all active vqueues.
                 storage.scan_active_vqueues(|qid, meta| {
                     let key = slab.insert(Slot {
@@ -155,7 +172,7 @@ impl VQueuesMetaCache {
         &mut self,
         storage: &mut S,
         qid: &VQueueId,
-    ) -> Result<Option<VQueueCacheKey>> {
+    ) -> Result<Option<VQueueHandle>> {
         Ok(match self.queues.entry_ref(qid) {
             hash_map::EntryRef::Occupied(entry) => Some(*entry.get()),
             hash_map::EntryRef::Vacant(entry) => {
@@ -176,7 +193,7 @@ impl VQueuesMetaCache {
     }
 
     /// Inserts a vqueue metadata unconditionally to the cache.
-    pub(super) fn insert(&mut self, qid: VQueueId, meta: VQueueMeta) -> VQueueCacheKey {
+    pub(super) fn insert(&mut self, qid: VQueueId, meta: VQueueMeta) -> VQueueHandle {
         let key = self.slab.insert(Slot {
             qid: qid.clone(),
             meta,
