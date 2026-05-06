@@ -585,7 +585,7 @@ where
                     action_collector.clear();
 
                     for entry in command_buffer.drain(..) {
-                        let Some((lsn, record)) = self.maybe_advance(entry, &mut transaction, &started_at).await? else {
+                        let Some((lsn, record)) = self.maybe_advance(entry, &mut transaction, &started_at)? else {
                             // this happens when we are reading a filtered gap
                             continue;
                         };
@@ -895,7 +895,7 @@ where
             .await;
     }
 
-    async fn maybe_advance<'a>(
+    fn maybe_advance<'a>(
         &mut self,
         maybe_record: LogEntry,
         transaction: &mut PartitionStoreTransaction<'a>,
