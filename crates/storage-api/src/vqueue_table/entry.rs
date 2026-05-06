@@ -205,7 +205,7 @@ impl<'a> From<&'a EntryMetadata> for EntryMetadataRef<'a> {
 pub struct EntryMetadata {
     // todo: This is temporary placeholder, type and name _will_ change.
     #[bilrost(tag(1))]
-    deployment: Option<String>,
+    pub deployment: Option<String>,
 }
 
 #[cfg(test)]
