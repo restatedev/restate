@@ -108,7 +108,7 @@ mod tests {
     use restate_types::invocation::{IngressInvocationResponseSink, ResumeInvocationRequest};
     use restate_types::journal_v2::{NotificationId, SleepCommand};
     use restate_types::service_protocol::ServiceProtocolVersion;
-    use restate_wal_protocol::Command;
+    use restate_wal_protocol::v2::{Record, records};
     use restate_worker_api::invoker::Effect;
     use std::time::{Duration, SystemTime};
 
@@ -131,13 +131,15 @@ mod tests {
         // Now on manual resume, we should resume the suspended invocation
         let request_id = PartitionProcessorRpcRequestId::new();
         let actions = test_env
-            .apply(Command::ResumeInvocation(ResumeInvocationRequest {
-                invocation_id,
-                update_pinned_deployment_id: None,
-                response_sink: Some(InvocationMutationResponseSink::Ingress(
-                    IngressInvocationResponseSink { request_id },
-                )),
-            }))
+            .apply(records::ResumeInvocation::new_test(
+                ResumeInvocationRequest {
+                    invocation_id,
+                    update_pinned_deployment_id: None,
+                    response_sink: Some(InvocationMutationResponseSink::Ingress(
+                        IngressInvocationResponseSink { request_id },
+                    )),
+                },
+            ))
             .await;
         assert_that!(
             actions,
@@ -168,7 +170,7 @@ mod tests {
         let initial_deployment_id = DeploymentId::new();
         // Pin deployment
         let _ = test_env
-            .apply(Command::InvokerEffect(Box::new(Effect {
+            .apply(records::InvokerEffect::new_test(Box::new(Effect {
                 invocation_id,
                 kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
                     deployment_id: initial_deployment_id,
@@ -193,13 +195,15 @@ mod tests {
         let request_id = PartitionProcessorRpcRequestId::new();
         let new_deployment_id = DeploymentId::new();
         let actions = test_env
-            .apply(Command::ResumeInvocation(ResumeInvocationRequest {
-                invocation_id,
-                update_pinned_deployment_id: Some(new_deployment_id),
-                response_sink: Some(InvocationMutationResponseSink::Ingress(
-                    IngressInvocationResponseSink { request_id },
-                )),
-            }))
+            .apply(records::ResumeInvocation::new_test(
+                ResumeInvocationRequest {
+                    invocation_id,
+                    update_pinned_deployment_id: Some(new_deployment_id),
+                    response_sink: Some(InvocationMutationResponseSink::Ingress(
+                        IngressInvocationResponseSink { request_id },
+                    )),
+                },
+            ))
             .await;
         assert_that!(
             actions,
@@ -260,13 +264,15 @@ mod tests {
         // Now on manual resume, we should resume the suspended invocation
         let request_id = PartitionProcessorRpcRequestId::new();
         let actions = test_env
-            .apply(Command::ResumeInvocation(ResumeInvocationRequest {
-                invocation_id,
-                update_pinned_deployment_id: None,
-                response_sink: Some(InvocationMutationResponseSink::Ingress(
-                    IngressInvocationResponseSink { request_id },
-                )),
-            }))
+            .apply(records::ResumeInvocation::new_test(
+                ResumeInvocationRequest {
+                    invocation_id,
+                    update_pinned_deployment_id: None,
+                    response_sink: Some(InvocationMutationResponseSink::Ingress(
+                        IngressInvocationResponseSink { request_id },
+                    )),
+                },
+            ))
             .await;
         assert_that!(
             actions,
