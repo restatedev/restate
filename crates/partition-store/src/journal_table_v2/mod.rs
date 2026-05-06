@@ -769,23 +769,23 @@ fn budgeted_journal_v2_stream<'a, DB: DBAccess + Send>(
 impl WriteJournalTable for PartitionStoreTransaction<'_> {
     fn put_journal_entry(
         &mut self,
-        invocation_id: InvocationId,
+        invocation_id: &InvocationId,
         index: u32,
         entry: &StoredRawEntry,
         related_completion_ids: &[CompletionId],
     ) -> Result<()> {
-        self.assert_partition_key(&invocation_id)?;
-        put_journal_entry(self, &invocation_id, index, entry, related_completion_ids)
+        self.assert_partition_key(invocation_id)?;
+        put_journal_entry(self, invocation_id, index, entry, related_completion_ids)
     }
 
     fn delete_journal(
         &mut self,
-        invocation_id: InvocationId,
+        invocation_id: &InvocationId,
         journal_length: EntryIndex,
     ) -> Result<()> {
-        self.assert_partition_key(&invocation_id)?;
+        self.assert_partition_key(invocation_id)?;
         let _x = RocksDbPerfGuard::new("delete-journal");
-        delete_journal(self, &invocation_id, journal_length)
+        delete_journal(self, invocation_id, journal_length)
     }
 }
 

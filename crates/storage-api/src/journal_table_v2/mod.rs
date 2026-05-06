@@ -113,14 +113,14 @@ pub trait WriteJournalTable {
     /// Related completion ids to this RawEntry, used to build the internal index
     fn put_journal_entry(
         &mut self,
-        invocation_id: InvocationId,
+        invocation_id: &InvocationId,
         index: EntryIndex,
         entry: &StoredRawEntry,
         related_completion_ids: &[CompletionId],
     ) -> Result<()>;
 
     /// When length is available, it is suggested to provide it as it makes the delete more efficient.
-    fn delete_journal(&mut self, invocation_id: InvocationId, length: EntryIndex) -> Result<()>;
+    fn delete_journal(&mut self, invocation_id: &InvocationId, length: EntryIndex) -> Result<()>;
 }
 
 #[derive(Debug, Clone)]
