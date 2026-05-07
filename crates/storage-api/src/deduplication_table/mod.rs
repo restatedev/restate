@@ -40,6 +40,7 @@ impl DedupInformation {
         }
     }
 
+    #[deprecated]
     pub fn ingress(producer_id: impl Into<ByteString>, sequence_number: MessageIndex) -> Self {
         DedupInformation {
             producer_id: ProducerId::Other(producer_id.into()),
