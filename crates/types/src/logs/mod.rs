@@ -327,6 +327,18 @@ impl<T: StorageEncode> BodyWithKeys<T> {
     pub fn into_inner(self) -> T {
         self.inner
     }
+
+    pub fn keys(&self) -> &Keys {
+        &self.keys
+    }
+
+    pub fn inner(&self) -> &T {
+        &self.inner
+    }
+
+    pub fn split(self) -> (Keys, T) {
+        (self.keys, self.inner)
+    }
 }
 
 impl<T> HasRecordKeys for BodyWithKeys<T>
