@@ -91,13 +91,9 @@ impl Record {
                 StorageCodec::decode(&mut buf)?
             }
             PolyBytes::Both(value, _) | PolyBytes::Typed(value) => {
-                let target_arc: Arc<T> = value.downcast_arc().map_err(|_| {
-                StorageDecodeError::DecodeValue(
-                    anyhow::anyhow!(
-                        "Type mismatch. Original value in PolyBytes::Typed does not match requested type"
-                    )
-                    .into(),
-                )})?;
+                let target_arc: Arc<T> = value
+                    .downcast_arc()
+                    .map_err(|inner| StorageDecodeError::TypedValueMismatch(inner))?;
                 // Attempts to move the inner value (T) if this Arc has exactly one strong
                 // reference. Otherwise, it clones the inner value.
                 match Arc::try_unwrap(target_arc) {
@@ -120,15 +116,9 @@ impl Record {
                 let mut buf = std::io::Cursor::new(slice);
                 Arc::new(StorageCodec::decode(&mut buf)?)
             }
-            PolyBytes::Typed(value) | PolyBytes::Both(value, _) => {
-                value.downcast_arc().map_err(|_| {
-                StorageDecodeError::DecodeValue(
-                    anyhow::anyhow!(
-                        "Type mismatch. Original value in PolyBytes::Typed does not match requested type"
-                    )
-                    .into(),
-                )})?
-            },
+            PolyBytes::Typed(value) | PolyBytes::Both(value, _) => value
+                .downcast_arc()
+                .map_err(|inner| StorageDecodeError::TypedValueMismatch(inner))?,
         };
         Ok(decoded)
     }
