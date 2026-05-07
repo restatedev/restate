@@ -12,13 +12,14 @@ use super::*;
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, ReadInvocationStatusTable,
 };
-use restate_types::identifiers::{InvocationId, WithPartitionKey};
+use restate_types::identifiers::InvocationId;
 use restate_types::invocation::client::PatchDeploymentId;
 use restate_types::invocation::{
     IngressInvocationResponseSink, InvocationMutationResponseSink, ResumeInvocationRequest,
 };
 use restate_types::net::partition_processor::ResumeInvocationRpcResponse;
 use restate_types::schema::deployment::DeploymentResolver;
+use restate_wal_protocol::v2::{RecordWithKeys, records};
 
 pub(super) struct Request {
     pub(super) request_id: PartitionProcessorRpcRequestId,
@@ -127,8 +128,7 @@ where
                 // We need to propose the message, PP will deal with invoking this back
                 self.proposer
                     .handle_rpc_proposal_command(
-                        invocation_id.partition_key(),
-                        Command::ResumeInvocation(ResumeInvocationRequest {
+                        records::ResumeInvocation::partial(ResumeInvocationRequest {
                             invocation_id,
                             update_pinned_deployment_id,
                             response_sink: Some(InvocationMutationResponseSink::Ingress(
