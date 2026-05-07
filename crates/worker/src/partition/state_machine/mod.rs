@@ -14,6 +14,7 @@ mod lifecycle;
 mod utils;
 
 pub use actions::{Action, ActionCollector};
+use restate_wal_protocol::vqueues::{VQueuesPause, VQueuesResume};
 
 use std::collections::HashSet;
 use std::fmt;
@@ -778,6 +779,46 @@ impl<S> StateMachineApplyContext<'_, S> {
                 // Update in-memory state.
                 *self.rule_book = new_book;
 
+                Ok(())
+            }
+            Command::VQueuesPause(bytes) => {
+                let at = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
+                let pause =
+                    VQueuesPause::bilrost_decode(bytes).map_err(StorageError::BilrostDecode)?;
+                for qid in pause.vqueues {
+                    let Some(mut vqueue) = VQueue::get(
+                        &qid,
+                        self.storage,
+                        self.vqueues_cache,
+                        self.is_leader.then_some(self.action_collector),
+                    )
+                    .await?
+                    else {
+                        // Ignore vqueues that we don't know.
+                        continue;
+                    };
+                    vqueue.pause_queue(at);
+                }
+                Ok(())
+            }
+            Command::VQueuesResume(bytes) => {
+                let resume =
+                    VQueuesResume::bilrost_decode(bytes).map_err(StorageError::BilrostDecode)?;
+                let at = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
+                for qid in resume.vqueues {
+                    let Some(mut vqueue) = VQueue::get(
+                        &qid,
+                        self.storage,
+                        self.vqueues_cache,
+                        self.is_leader.then_some(self.action_collector),
+                    )
+                    .await?
+                    else {
+                        // Ignore vqueues that we don't know.
+                        continue;
+                    };
+                    vqueue.resume_queue(at);
+                }
                 Ok(())
             }
         }
