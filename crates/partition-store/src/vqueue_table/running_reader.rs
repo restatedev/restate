@@ -13,7 +13,7 @@ use bilrost::OwnedMessage;
 use rocksdb::DBRawIteratorWithThreadMode;
 
 use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::{EntryKey, EntryValue, VQueueCursor};
+use restate_storage_api::vqueue_table::{EntryKey, EntryValue, VQueueRunningCursor};
 use restate_types::vqueues::VQueueId;
 
 use crate::PartitionDb;
@@ -60,55 +60,13 @@ impl VQueueRunningReader {
     }
 }
 
-impl VQueueCursor for VQueueRunningReader {
+impl VQueueRunningCursor for VQueueRunningReader {
     fn seek_to_first(&mut self) {
         self.it.seek_to_first();
     }
 
-    fn seek_after(&mut self, _qid: &VQueueId, _key: &EntryKey) {
-        panic!("seek_after is not supported for running snapshot reader");
-    }
-
     fn advance(&mut self) {
         self.it.next();
-    }
-
-    /// Returns the current key under cursor
-    fn current_key(&mut self) -> Result<Option<EntryKey>, StorageError> {
-        if let Some(key) = self.it.key() {
-            debug_assert_eq!(key.len(), RunningKey::serialized_length_fixed());
-
-            // The portion we are interested in is everything that represents the EntryKey
-            let entry_key =
-                <EntryKey as KeyDecode>::decode(&mut &key[RunningKey::offset_of_entry_key()..])?;
-            Ok(Some(entry_key))
-        } else {
-            // we reached the end (or an error). We cannot recover from this without seek.
-            // todo: add support for iterator refresh().
-            self.it
-                .status()
-                .context("peek into vqueue snapshot iterator")
-                .map_err(StorageError::Generic)?;
-            // iterator is beyond the end, we can't peek
-            Ok(None)
-        }
-    }
-
-    /// Returns the current value under cursor
-    fn current_value(&mut self) -> Result<Option<EntryValue>, StorageError> {
-        if let Some(mut value) = self.it.value() {
-            let value = EntryValue::decode(&mut value)?;
-            Ok(Some(value))
-        } else {
-            // we reached the end (or an error). We cannot recover from this without seek.
-            // todo: add support for iterator refresh().
-            self.it
-                .status()
-                .context("peek into vqueue snapshot iterator")
-                .map_err(StorageError::Generic)?;
-            // iterator is beyond the end, we can't peek
-            Ok(None)
-        }
     }
 
     fn peek(&mut self) -> Result<Option<(EntryKey, EntryValue)>, StorageError> {
