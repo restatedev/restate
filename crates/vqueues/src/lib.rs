@@ -675,7 +675,7 @@ where
 
         debug!(
             header = ?header,
-            "[yield] entry: {},  next_stage: '{}', new_status: {new_status}",
+            "[yield] entry: {}, next_stage: '{}', new_status: {new_status}",
             Stage::Inbox,
             header.display_entry_id()
         );
