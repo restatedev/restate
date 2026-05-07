@@ -45,9 +45,9 @@ use restate_types::net::partition_processor::{
 };
 use restate_types::sharding::KeyRange;
 use restate_types::{RESTATE_VERSION_1_7_0, SemanticRestateVersion, Version, Versioned, vqueues};
-use restate_vqueues::SchedulerService;
 use restate_vqueues::VQueueEvent;
 use restate_vqueues::scheduler::Decisions;
+use restate_vqueues::{SchedulerService, VQueuesMeta};
 use restate_wal_protocol::Command;
 use restate_wal_protocol::control::UpsertSchema;
 use restate_worker_api::invoker::InvokerHandle;
@@ -149,9 +149,13 @@ impl LeaderState {
         }
     }
 
-    pub fn read_scheduler_status(&self, keys: KeyRange) -> Vec<SchedulerStatusEntry> {
+    pub fn read_scheduler_status(
+        &self,
+        metas: VQueuesMeta<'_>,
+        keys: KeyRange,
+    ) -> Vec<SchedulerStatusEntry> {
         self.scheduler
-            .iter_status()
+            .iter_status(metas)
             .into_iter()
             .flatten()
             .filter(|(qid, _)| keys.contains(&qid.partition_key()))
@@ -170,7 +174,11 @@ impl LeaderState {
     ///
     /// Important: The future needs to be cancellation safe since it is polled as a tokio::select
     /// arm!
-    pub async fn run(&mut self, state_machine: &StateMachine) -> Result<Vec<ActionEffect>, Error> {
+    pub async fn run(
+        &mut self,
+        state_machine: &StateMachine,
+        vqueue_metas: VQueuesMeta<'_>,
+    ) -> Result<Vec<ActionEffect>, Error> {
         let timer_stream = std::pin::pin!(stream::unfold(
             &mut self.timer_service,
             |timer_service| async {
@@ -183,7 +191,7 @@ impl LeaderState {
         // if we have problems with latency
         let scheduler_stream =
             std::pin::pin!(stream::unfold(&mut self.scheduler, |scheduler| async {
-                match scheduler.schedule_next().await {
+                match scheduler.schedule_next(vqueue_metas).await {
                     Ok(decisions) => Some((ActionEffect::Scheduler(decisions), scheduler)),
                     Err(e) => {
                         error!("Fatal error when polling scheduler: {e}");
@@ -551,7 +559,11 @@ impl LeaderState {
         }
     }
 
-    pub fn handle_actions(&mut self, actions: impl Iterator<Item = Action>) -> Result<(), Error> {
+    pub fn handle_actions(
+        &mut self,
+        vqueues: VQueuesMeta<'_>,
+        actions: impl Iterator<Item = Action>,
+    ) -> Result<(), Error> {
         for action in actions {
             let action_name = action.name();
 
@@ -565,13 +577,13 @@ impl LeaderState {
             )
             .increment(1);
 
-            self.handle_action(action)?;
+            self.handle_action(vqueues, action)?;
         }
 
         Ok(())
     }
 
-    fn handle_action(&mut self, action: Action) -> Result<(), Error> {
+    fn handle_action(&mut self, metas: VQueuesMeta<'_>, action: Action) -> Result<(), Error> {
         match action {
             Action::Invoke {
                 invocation_id,
@@ -717,25 +729,25 @@ impl LeaderState {
                 }
             }
             Action::VQEvent(inbox_event) => {
-                self.handle_vqueue_inbox_event(inbox_event);
+                self.handle_vqueue_inbox_event(metas, inbox_event);
             }
             Action::VQInvoke {
-                qid,
+                vq_handle,
                 key,
                 invocation_target,
-                limit_key,
                 idempotency_key,
             } => {
+                let slot = metas.get(vq_handle).expect("vqueue meta must be in cache");
                 // state mutations should not create Invoke actions. At least for now.
                 assert!(matches!(key.kind(), vqueues::EntryKind::Invocation));
                 let invocation_id = key
                     .entry_id()
-                    .to_invocation_id(qid.partition_key())
+                    .to_invocation_id(slot.partition_key())
                     .unwrap();
 
-                let run_permit = self.scheduler.confirm_run_attempt(&qid, &key).unwrap_or_else(|| {
+                let run_permit = self.scheduler.confirm_run_attempt(vq_handle, slot, &key).unwrap_or_else(|| {
                     tracing::error!(
-                        vqueue = %qid,
+                        vqueue = %slot.vqueue_id(),
                         restate.invocation.id = %invocation_id,
                         "Cannot find a permit for entry key {key:?} in scheduler. Will not respect the invoker limit for this invocation"
                     );
@@ -743,11 +755,11 @@ impl LeaderState {
                 });
                 self.invoker_handle
                     .vqueue_invoke(
-                        qid,
+                        slot.vqueue_id().clone(),
                         run_permit,
                         invocation_id,
                         invocation_target,
-                        limit_key,
+                        slot.meta().limit_key().clone(),
                         idempotency_key,
                     )
                     .map_err(Error::Invoker)?
@@ -764,8 +776,8 @@ impl LeaderState {
         &mut self.invoker_handle
     }
 
-    fn handle_vqueue_inbox_event(&mut self, event: VQueueEvent) {
-        self.scheduler.on_inbox_event(event);
+    fn handle_vqueue_inbox_event(&mut self, metas: VQueuesMeta<'_>, event: VQueueEvent) {
+        self.scheduler.on_inbox_event(metas, event);
     }
 }
 

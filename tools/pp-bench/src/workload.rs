@@ -110,7 +110,8 @@ pub async fn run(
 
     // Initialize the vqueue cache from the (empty) partition store — this follows
     // the production init path and avoids requiring test-util features.
-    let mut vq_cache = VQueuesMetaCache::create(partition_store.partition_db().clone()).await?;
+    let mut vq_cache =
+        VQueuesMetaCache::create(partition_store.partition_db().clone(), 100_000).await?;
 
     let workload_name = format!("{:?}", opts.spec.workload);
     let batch_size = opts.batch_size;

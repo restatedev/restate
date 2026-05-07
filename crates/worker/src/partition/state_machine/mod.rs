@@ -117,7 +117,7 @@ use restate_types::{RESTATE_VERSION_1_6_0, journal_v2};
 use restate_types::{RestateVersion, SemanticRestateVersion};
 use restate_types::{Versioned, journal::*};
 use restate_util_string::ReString;
-use restate_vqueues::{VQueue, VQueuesMetaCache};
+use restate_vqueues::{VQueue, VQueueHandle, VQueuesMetaCache};
 use restate_wal_protocol::Command;
 use restate_wal_protocol::timer::TimerKeyDisplay;
 use restate_wal_protocol::timer::TimerKeyValue;
@@ -844,7 +844,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         );
 
         self.on_pre_flight_invocation(
-            invocation_id,
+            &invocation_id,
             pre_flight_invocation_metadata,
             submit_notification_sink,
             &limit_key,
@@ -854,7 +854,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
     async fn on_pre_flight_invocation(
         &mut self,
-        invocation_id: InvocationId,
+        invocation_id: &InvocationId,
         mut pre_flight_invocation_metadata: PreFlightInvocationMetadata,
         submit_notification_sink: Option<SubmitNotificationSink>,
         limit_key: &LimitKey<ReString>,
@@ -1008,7 +1008,7 @@ impl<S> StateMachineApplyContext<'_, S> {
     // Uses vqueues, replaces on_pre_flight_invocation
     async fn vqueue_enqueue(
         &mut self,
-        invocation_id: InvocationId,
+        invocation_id: &InvocationId,
         metadata: PreFlightInvocationMetadata,
         submit_notification_sink: Option<SubmitNotificationSink>,
         limit_key: &LimitKey<ReString>,
@@ -1042,7 +1042,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             record_unique_ts,
             self.record_lsn,
             metadata.execution_time,
-            EntryId::from(&invocation_id),
+            EntryId::from(invocation_id),
             vqueue_table::EntryMetadata::default(),
         );
 
@@ -1066,7 +1066,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         };
 
         self.storage
-            .put_invocation_status(&invocation_id, &invocation_status)
+            .put_invocation_status(invocation_id, &invocation_status)
             .map_err(Error::Storage)?;
 
         // Invocation was scheduled, send back the ingress attach notification and return
@@ -1126,7 +1126,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         // Send submit notification
         self.send_submit_notification_if_needed(
-            service_invocation.invocation_id,
+            &service_invocation.invocation_id,
             previous_invocation_status.execution_time(),
             // is_new_invocation is true if the RPC ingress request is a duplicate.
             service_invocation.source
@@ -1197,7 +1197,7 @@ impl<S> StateMachineApplyContext<'_, S> {
     /// Returns the invocation in case the invocation should run immediately
     fn handle_service_invocation_execution_time(
         &mut self,
-        invocation_id: InvocationId,
+        invocation_id: &InvocationId,
         metadata: PreFlightInvocationMetadata,
     ) -> Result<Option<PreFlightInvocationMetadata>, Error>
     where
@@ -1208,13 +1208,13 @@ impl<S> StateMachineApplyContext<'_, S> {
             debug_if_leader!(self.is_leader, "Store scheduled invocation");
 
             self.register_timer(
-                TimerKeyValue::neo_invoke(execution_time, invocation_id),
+                TimerKeyValue::neo_invoke(execution_time, *invocation_id),
                 span_context,
             )?;
 
             self.storage
                 .put_invocation_status(
-                    &invocation_id,
+                    invocation_id,
                     &InvocationStatus::Scheduled(
                         ScheduledInvocation::from_pre_flight_invocation_metadata(
                             metadata,
@@ -1233,7 +1233,7 @@ impl<S> StateMachineApplyContext<'_, S> {
     /// Returns the invocation in case the invocation was not inboxed
     async fn handle_service_invocation_exclusive_handler(
         &mut self,
-        invocation_id: InvocationId,
+        invocation_id: &InvocationId,
         metadata: PreFlightInvocationMetadata,
     ) -> Result<Option<PreFlightInvocationMetadata>, Error>
     where
@@ -1258,7 +1258,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             if let VirtualObjectStatus::Locked(_) = service_status {
                 // If locked, enqueue in inbox and be done with it
                 let inbox_seq_number = self
-                    .enqueue_into_inbox(InboxEntry::Invocation(keyed_service_id, invocation_id))
+                    .enqueue_into_inbox(InboxEntry::Invocation(keyed_service_id, *invocation_id))
                     .await?;
 
                 debug_if_leader!(
@@ -1268,7 +1268,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 );
                 self.storage
                     .put_invocation_status(
-                        &invocation_id,
+                        invocation_id,
                         &InvocationStatus::Inboxed(
                             InboxedInvocation::from_pre_flight_invocation_metadata(
                                 metadata,
@@ -1291,7 +1291,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 self.storage
                     .put_virtual_object_status(
                         &keyed_service_id,
-                        &VirtualObjectStatus::Locked(invocation_id),
+                        &VirtualObjectStatus::Locked(*invocation_id),
                     )
                     .map_err(Error::Storage)?;
             }
@@ -1301,12 +1301,11 @@ impl<S> StateMachineApplyContext<'_, S> {
 
     fn init_journal_and_vqueue_invoke(
         &mut self,
-        qid: &VQueueId,
+        vq_handle: VQueueHandle,
         key: &EntryKey,
-        invocation_id: InvocationId,
+        invocation_id: &InvocationId,
         mut in_flight_invocation_metadata: InFlightInvocationMetadata,
         invocation_input: Option<InvocationInput>,
-        limit_key: LimitKey<ReString>,
     ) -> Result<(), Error>
     where
         S: WriteJournalTable + WriteInvocationStatusTable + journal_table_v2::WriteJournalTable,
@@ -1333,19 +1332,13 @@ impl<S> StateMachineApplyContext<'_, S> {
         // Emit the trace anchor span for the invocation.
         if self.is_leader {
             let _start = instrumentation::create_invocation_start_span(
-                &invocation_id,
+                invocation_id,
                 &in_flight_invocation_metadata.invocation_target,
                 &in_flight_invocation_metadata.journal_metadata.span_context,
                 in_flight_invocation_metadata.timestamps.creation_time(),
             );
         }
-        self.vqueue_invoke(
-            qid,
-            key,
-            invocation_id,
-            in_flight_invocation_metadata,
-            limit_key,
-        )
+        self.vqueue_invoke(vq_handle, key, invocation_id, in_flight_invocation_metadata)
     }
 
     /// Inits the journal if invocation_input is `Some` and invokes the invocation. If
@@ -1353,24 +1346,13 @@ impl<S> StateMachineApplyContext<'_, S> {
     /// invoke the invocation.
     fn init_journal_and_invoke(
         &mut self,
-        invocation_id: InvocationId,
+        invocation_id: &InvocationId,
         mut in_flight_invocation_metadata: InFlightInvocationMetadata,
         invocation_input: Option<InvocationInput>,
     ) -> Result<(), Error>
     where
         S: WriteJournalTable + WriteInvocationStatusTable + journal_table_v2::WriteJournalTable,
     {
-        // Usage metering for "actions" should include the Input journal entry
-        // type, but it gets filtered out before reaching the state machine.
-        // Therefore we count it here, as a special case.
-        if self.is_leader {
-            counter!(
-                USAGE_LEADER_JOURNAL_ENTRY_COUNT,
-                "entry" => "Command/Input",
-            )
-            .increment(1);
-        }
-
         // Only init the journal if we have some invocation input
         if let Some(invocation_input) = invocation_input {
             self.init_journal(
@@ -1382,8 +1364,17 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         // Emit the trace anchor span for the invocation.
         if self.is_leader {
+            // Usage metering for "actions" should include the Input journal entry
+            // type, but it gets filtered out before reaching the state machine.
+            // Therefore we count it here, as a special case.
+            counter!(
+                USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+                "entry" => "Command/Input",
+            )
+            .increment(1);
+
             let _start = instrumentation::create_invocation_start_span(
-                &invocation_id,
+                invocation_id,
                 &in_flight_invocation_metadata.invocation_target,
                 &in_flight_invocation_metadata.journal_metadata.span_context,
                 in_flight_invocation_metadata.timestamps.creation_time(),
@@ -1402,7 +1393,7 @@ impl<S> StateMachineApplyContext<'_, S> {
     // will no longer be needed.
     fn init_journal(
         &mut self,
-        invocation_id: InvocationId,
+        invocation_id: &InvocationId,
         in_flight_invocation_metadata: &mut InFlightInvocationMetadata,
         invocation_input: InvocationInput,
     ) -> Result<(), Error>
@@ -1452,7 +1443,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             ));
             journal_table::WriteJournalTable::put_journal_entry(
                 self.storage,
-                &invocation_id,
+                invocation_id,
                 0,
                 &input_entry,
             )
@@ -1464,11 +1455,10 @@ impl<S> StateMachineApplyContext<'_, S> {
 
     fn vqueue_invoke(
         &mut self,
-        qid: &VQueueId,
+        vq_handle: VQueueHandle,
         key: &EntryKey,
-        invocation_id: InvocationId,
+        invocation_id: &InvocationId,
         in_flight_invocation_metadata: InFlightInvocationMetadata,
-        limit_key: LimitKey<ReString>,
     ) -> Result<(), Error>
     where
         S: WriteInvocationStatusTable,
@@ -1478,17 +1468,16 @@ impl<S> StateMachineApplyContext<'_, S> {
         let status = InvocationStatus::Invoked(in_flight_invocation_metadata);
 
         self.storage
-            .put_invocation_status(&invocation_id, &status)
+            .put_invocation_status(invocation_id, &status)
             .map_err(Error::Storage)?;
 
         if self.is_leader {
             let invocation_metadata = status.into_invocation_metadata().unwrap();
             let invocation_target = invocation_metadata.invocation_target;
             self.action_collector.push(Action::VQInvoke {
-                qid: qid.clone(),
+                vq_handle,
                 key: *key,
                 invocation_target,
-                limit_key,
                 idempotency_key: invocation_metadata.idempotency_key.map(ReString::new_owned),
             });
         }
@@ -1498,7 +1487,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
     fn invoke(
         &mut self,
-        invocation_id: InvocationId,
+        invocation_id: &InvocationId,
         in_flight_invocation_metadata: InFlightInvocationMetadata,
     ) -> Result<(), Error>
     where
@@ -1506,13 +1495,15 @@ impl<S> StateMachineApplyContext<'_, S> {
     {
         debug_if_leader!(self.is_leader, "Invoke");
 
-        self.action_collector.push(Action::Invoke {
-            invocation_id,
-            invocation_target: in_flight_invocation_metadata.invocation_target.clone(),
-        });
+        if self.is_leader {
+            self.action_collector.push(Action::Invoke {
+                invocation_id: *invocation_id,
+                invocation_target: in_flight_invocation_metadata.invocation_target.clone(),
+            });
+        }
         self.storage
             .put_invocation_status(
-                &invocation_id,
+                invocation_id,
                 &InvocationStatus::Invoked(in_flight_invocation_metadata),
             )
             .map_err(Error::Storage)?;
@@ -2421,11 +2412,11 @@ impl<S> StateMachineApplyContext<'_, S> {
                 .await?;
                 Ok(())
             }
-            Timer::NeoInvoke(invocation_id) => self.on_neo_invoke_timer(invocation_id).await,
+            Timer::NeoInvoke(ref invocation_id) => self.on_neo_invoke_timer(invocation_id).await,
         }
     }
 
-    async fn on_neo_invoke_timer(&mut self, invocation_id: InvocationId) -> Result<(), Error>
+    async fn on_neo_invoke_timer(&mut self, invocation_id: &InvocationId) -> Result<(), Error>
     where
         S: ReadVirtualObjectStatusTable
             + WriteVirtualObjectStatusTable
@@ -2440,7 +2431,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             self.is_leader,
             "Handle scheduled invocation timer with invocation id {invocation_id}"
         );
-        let invocation_status = self.get_invocation_status(&invocation_id).await?;
+        let invocation_status = self.get_invocation_status(invocation_id).await?;
 
         if let InvocationStatus::Free = &invocation_status {
             warn!(
@@ -3127,15 +3118,13 @@ impl<S> StateMachineApplyContext<'_, S> {
             .unwrap();
 
             vqueue.run_entry(record_unique_ts, &header, wait_stats);
-
-            let limit_key = vqueue.meta().limit_key().clone();
+            let vq_handle = vqueue.handle();
 
             if self.is_leader {
                 self.action_collector.push(Action::VQInvoke {
-                    qid: qid.clone(),
+                    vq_handle,
                     key: *entry_key,
                     invocation_target: status.invocation_target().unwrap().clone(),
-                    limit_key,
                     // todo(tillrohrmann) avoid the transformation from ByteString to ReString by
                     //  storing the idempotency key as ReString in the first place
                     idempotency_key: status
@@ -3203,16 +3192,14 @@ impl<S> StateMachineApplyContext<'_, S> {
                 .unwrap();
 
                 vqueue.run_entry(record_unique_ts, &header, wait_stats);
-
-                let limit_key = vqueue.meta().limit_key().clone();
+                let vq_handle = vqueue.handle();
 
                 self.init_journal_and_vqueue_invoke(
-                    qid,
+                    vq_handle,
                     entry_key,
-                    invocation_id,
+                    &invocation_id,
                     metadata,
                     invocation_input,
-                    limit_key,
                 )?;
             }
             _ => {
@@ -3286,7 +3273,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                                 self.record_created_at,
                             );
                         self.init_journal_and_invoke(
-                            invocation_id,
+                            &invocation_id,
                             in_flight_invocation_meta,
                             invocation_input,
                         )?;
@@ -4504,7 +4491,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
     fn send_submit_notification_if_needed(
         &mut self,
-        invocation_id: InvocationId,
+        invocation_id: &InvocationId,
         execution_time: Option<MillisSinceEpoch>,
         is_new_invocation: bool,
         submit_notification_sink: Option<SubmitNotificationSink>,
@@ -4952,7 +4939,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         if pinned_protocol_version.is_none_or(|sp| sp >= ServiceProtocolVersion::V4) {
             journal_table_v2::WriteJournalTable::delete_journal(
                 self.storage,
-                invocation_id,
+                &invocation_id,
                 journal_length,
             )
             .map_err(Error::Storage)?

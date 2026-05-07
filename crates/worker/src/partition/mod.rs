@@ -80,7 +80,7 @@ use restate_types::schema::Schema;
 use restate_types::storage::StorageDecodeError;
 use restate_types::time::{MillisSinceEpoch, NanosSinceEpoch};
 use restate_types::{GenerationalNodeId, SemanticRestateVersion, Version};
-use restate_vqueues::VQueuesMetaCache;
+use restate_vqueues::{VQueuesMeta, VQueuesMetaCache};
 use restate_wal_protocol::control::{
     AnnounceLeader, CurrentReplicaSetConfiguration, NextReplicaSetConfiguration,
 };
@@ -98,6 +98,11 @@ use crate::partition::leadership::LeadershipState;
 use crate::partition::state_machine::{ActionCollector, StateMachine};
 use crate::partition_processor_manager::PartitionLeaderHandlesRegistry;
 use crate::rule_book_cache::RuleBookCacheHandle;
+
+// Soft cap for the in-memory vqueue cache; once reached, inactive
+// entries are evicted at insert time. The cache will still grow past
+// this if compaction frees nothing.
+const VQUEUE_CACHE_CAPACITY: usize = 100_000;
 
 /// Information needed to run as leader, including the epoch and partition configurations.
 #[derive(Clone, Debug)]
@@ -532,7 +537,11 @@ where
             tokio::time::interval(with_jitter(Duration::from_millis(500), 0.5));
         status_update_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-        let mut vqueues = VQueuesMetaCache::create(partition_store.partition_db().clone()).await?;
+        let mut vqueues = VQueuesMetaCache::create(
+            partition_store.partition_db().clone(),
+            VQUEUE_CACHE_CAPACITY,
+        )
+        .await?;
 
         let mut action_collector = ActionCollector::default();
         let mut command_buffer =
@@ -705,9 +714,9 @@ where
                     if let Some(lsn) = &self.status.last_applied_log_lsn {
                         self.last_applied_log_lsn_watch.send_replace(*lsn);
                     }
-                    self.leadership_state.handle_actions(action_collector.drain(..))?;
+                    self.leadership_state.handle_actions(vqueues.view(), action_collector.drain(..))?;
                 },
-                result = self.leadership_state.run(&self.state_machine) => {
+                result = self.leadership_state.run(&self.state_machine, vqueues.view()) => {
                     let action_effects = result?;
                     // We process the action_effects not directly in the run future because it
                     // requires the run future to be cancellation safe. In the future this could be
@@ -715,7 +724,7 @@ where
                     self.leadership_state.handle_action_effects(action_effects).await?;
                 }
                 Some(leader_query_cmd) = self.leader_query_rx.recv() => {
-                    self.on_leader_query(leader_query_cmd);
+                    self.on_leader_query(vqueues.view(), leader_query_cmd);
                 }
             }
             // Allow other tasks on this thread to run, but only if we have exhausted the coop
@@ -746,8 +755,9 @@ where
         Ok(())
     }
 
-    fn on_leader_query(&mut self, leader_query_cmd: LeaderQueryCommand) {
-        self.leadership_state.handle_leader_query(leader_query_cmd);
+    fn on_leader_query(&mut self, metas: VQueuesMeta<'_>, leader_query_cmd: LeaderQueryCommand) {
+        self.leadership_state
+            .handle_leader_query(metas, leader_query_cmd);
     }
 
     async fn on_pp_rpc_request(

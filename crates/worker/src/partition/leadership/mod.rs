@@ -65,7 +65,7 @@ use restate_types::{
     GenerationalNodeId, RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, SemanticRestateVersion,
 };
 use restate_vqueues::scheduler::{self};
-use restate_vqueues::{ResourceManager, SchedulerService, VQueuesMetaCache};
+use restate_vqueues::{ResourceManager, SchedulerService, VQueuesMeta, VQueuesMetaCache};
 use restate_wal_protocol::control::{AnnounceLeader, PartitionDurability, VersionBarrier};
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::{Command, Envelope};
@@ -668,13 +668,17 @@ where
         }
     }
 
-    pub fn handle_actions(&mut self, actions: impl Iterator<Item = Action>) -> Result<(), Error> {
+    pub fn handle_actions(
+        &mut self,
+        vqueues: VQueuesMeta<'_>,
+        actions: impl Iterator<Item = Action>,
+    ) -> Result<(), Error> {
         match &mut self.state {
             State::Follower | State::Candidate { .. } => {
                 // nothing to do :-)
             }
             State::Leader(leader_state) => {
-                leader_state.handle_actions(actions)?;
+                leader_state.handle_actions(vqueues, actions)?;
             }
         }
 
@@ -686,7 +690,11 @@ where
     /// * Follower: Nothing to do
     /// * Candidate: Monitor appender task
     /// * Leader: Await action effects and monitor appender task
-    pub async fn run(&mut self, state_machine: &StateMachine) -> Result<Vec<ActionEffect>, Error> {
+    pub async fn run(
+        &mut self,
+        state_machine: &StateMachine,
+        vqueues: VQueuesMeta<'_>,
+    ) -> Result<Vec<ActionEffect>, Error> {
         match &mut self.state {
             State::Follower => Ok(futures::future::pending::<Vec<_>>().await),
             State::Candidate { self_proposer, .. } => Err(self_proposer
@@ -695,7 +703,7 @@ where
                 .join_on_err()
                 .await
                 .expect_err("never should never be returned")),
-            State::Leader(leader_state) => leader_state.run(state_machine).await,
+            State::Leader(leader_state) => leader_state.run(state_machine, vqueues).await,
         }
     }
 
@@ -725,13 +733,17 @@ where
 }
 
 impl<T> LeadershipState<T> {
-    pub fn handle_leader_query(&self, leader_query_cmd: LeaderQueryCommand) {
+    pub fn handle_leader_query(
+        &self,
+        metas: VQueuesMeta<'_>,
+        leader_query_cmd: LeaderQueryCommand,
+    ) {
         let (request, response_tx) = leader_query_cmd.into_inner();
 
         match (&self.state, request) {
             (State::Leader(leader_state), LeaderQueryRequest::SchedulerStatus { keys }) => {
                 let _ = response_tx.send(LeaderQueryResponse::SchedulerStatus(
-                    leader_state.read_scheduler_status(keys),
+                    leader_state.read_scheduler_status(metas, keys),
                 ));
             }
             (State::Leader(leader_state), LeaderQueryRequest::UserLimitCounters { keys }) => {
@@ -963,7 +975,7 @@ mod tests {
                 &mut partition_store,
                 &replica_set_states,
                 &Configuration::pinned(),
-                &mut VQueuesMetaCache::new_empty(),
+                &mut VQueuesMetaCache::new_empty(1024),
                 &rule_book,
             )
             .await?;
