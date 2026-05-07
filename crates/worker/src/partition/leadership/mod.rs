@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::{StreamExt, TryStreamExt};
+use restate_wal_protocol::v2::{PartialRecord, RecordWithKeys, records};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, instrument, warn};
@@ -46,8 +47,8 @@ use restate_timer::TokioClock;
 use restate_types::cluster::cluster_state::RunMode;
 use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
+use restate_types::identifiers::PartitionProcessorRpcRequestId;
 use restate_types::identifiers::{LeaderEpoch, PartitionId};
-use restate_types::identifiers::{PartitionKey, PartitionProcessorRpcRequestId};
 use restate_types::live::LiveLoadExt;
 use restate_types::logs::Keys;
 use restate_types::message::MessageIndex;
@@ -65,9 +66,9 @@ use restate_types::{
 };
 use restate_vqueues::scheduler::{self};
 use restate_vqueues::{ResourceManager, SchedulerService, VQueuesMetaCache};
+use restate_wal_protocol::Envelope;
 use restate_wal_protocol::control::{AnnounceLeader, PartitionDurability, VersionBarrier};
 use restate_wal_protocol::timer::TimerKeyValue;
-use restate_wal_protocol::{Command, Envelope};
 use restate_worker_api::invoker::capacity::InvokerCapacity;
 use restate_worker_api::invoker::{Effect, InvokerHandle};
 use restate_worker_api::{
@@ -260,14 +261,14 @@ where
     ) -> Result<(), Error> {
         let leader_epoch = leadership_info.leader_epoch;
 
-        let announce_leader = Command::AnnounceLeader(Box::new(AnnounceLeader {
+        let announce_leader = records::AnnounceLeader::partial(AnnounceLeader {
             node_id: my_node_id(),
             leader_epoch,
             epoch_version: Some(leadership_info.version),
             partition_key_range: self.partition.key_range,
             current_config: Some(leadership_info.current_config),
             next_config: leadership_info.next_config,
-        }));
+        });
 
         let mut self_proposer = SelfProposer::new(
             self.partition.log_id(),
@@ -275,9 +276,7 @@ where
             &self.bifrost,
         )?;
 
-        self_proposer
-            .self_propose(self.partition.key_range.start(), announce_leader)
-            .await?;
+        self_proposer.self_propose(announce_leader).await?;
 
         self.state = State::Candidate {
             leader_epoch,
@@ -527,16 +526,11 @@ where
                     })
             {
                 self_proposer
-                    .self_propose(
-                        self.partition.key_range.start(),
-                        Command::VersionBarrier(VersionBarrier {
-                            version: forced_min_restate_version.clone(),
-                            partition_key_range: Keys::RangeInclusive(
-                                self.partition.key_range.into(),
-                            ),
-                            human_reason: Some("Force min Restate version".to_owned()),
-                        }),
-                    )
+                    .self_propose(records::VersionBarrier::partial(VersionBarrier {
+                        version: forced_min_restate_version.clone(),
+                        partition_key_range: Keys::RangeInclusive(self.partition.key_range.into()),
+                        human_reason: Some("Force min Restate version".to_owned()),
+                    }))
                     .await?;
 
                 min_restate_version = min_restate_version.max(forced_min_restate_version);
@@ -547,16 +541,11 @@ where
                 && RESTATE_VERSION_1_6_0.is_newer_than(&min_restate_version)
             {
                 self_proposer
-                    .self_propose(
-                        self.partition.key_range.start(),
-                        Command::VersionBarrier(VersionBarrier {
-                            version: RESTATE_VERSION_1_6_0.clone(),
-                            partition_key_range: Keys::RangeInclusive(
-                                self.partition.key_range.into(),
-                            ),
-                            human_reason: Some("Enable journal v2 by default".to_owned()),
-                        }),
-                    )
+                    .self_propose(records::VersionBarrier::partial(VersionBarrier {
+                        version: RESTATE_VERSION_1_6_0.clone(),
+                        partition_key_range: Keys::RangeInclusive(self.partition.key_range.into()),
+                        human_reason: Some("Enable journal v2 by default".to_owned()),
+                    }))
                     .await?;
             }
 
@@ -734,8 +723,7 @@ impl<T> LeadershipState<T> {
         reciprocal: Reciprocal<
             Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
         >,
-        partition_key: PartitionKey,
-        cmd: Command,
+        record: PartialRecord,
     ) {
         match &mut self.state {
             State::Follower | State::Candidate { .. } => {
@@ -746,7 +734,7 @@ impl<T> LeadershipState<T> {
             }
             State::Leader(leader_state) => {
                 leader_state
-                    .handle_rpc_proposal_command(request_id, reciprocal, partition_key, cmd)
+                    .handle_rpc_proposal_command(request_id, reciprocal, record)
                     .await;
             }
         }
@@ -755,8 +743,7 @@ impl<T> LeadershipState<T> {
     /// Append a command to Bifrost without dedup information, responding on Bifrost commit.
     pub async fn append_and_respond_asynchronously(
         &mut self,
-        partition_key: PartitionKey,
-        cmd: Command,
+        record: PartialRecord,
         reciprocal: Reciprocal<
             Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
         >,
@@ -768,12 +755,7 @@ impl<T> LeadershipState<T> {
             )),
             State::Leader(leader_state) => {
                 leader_state
-                    .append_and_respond_asynchronously(
-                        partition_key,
-                        cmd,
-                        reciprocal,
-                        success_response,
-                    )
+                    .append_and_respond_asynchronously(record, reciprocal, success_response)
                     .await;
             }
         }

@@ -15,12 +15,13 @@ use std::ops::RangeBounds;
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 
-use bytes::BytesMut;
 use futures::future::OptionFuture;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt, stream};
 use itertools::Itertools;
 use metrics::counter;
+use restate_wal_protocol::v2::records::TruncateOutboxPayload;
+use restate_wal_protocol::v2::{PartialRecord, RecordWithKeys, records};
 use tokio_stream::wrappers::{ReceiverStream, WatchStream};
 use tracing::{debug, error, trace};
 
@@ -30,9 +31,7 @@ use restate_core::{Metadata, MetadataKind, TaskCenter, TaskHandle, TaskId};
 use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
 use restate_partition_store::PartitionDb;
 use restate_storage_api::vqueue_table::scheduler::SchedulerDecisions;
-use restate_types::identifiers::{
-    LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
-};
+use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::PurgeInvocationRequest;
 use restate_types::invocation::client::{InvocationOutput, SubmittedInvocationNotification};
 use restate_types::logs::Keys;
@@ -45,7 +44,6 @@ use restate_types::{RESTATE_VERSION_1_7_0, SemanticRestateVersion, Version, Vers
 use restate_vqueues::SchedulerService;
 use restate_vqueues::VQueueEvent;
 use restate_vqueues::scheduler::Decisions;
-use restate_wal_protocol::Command;
 use restate_wal_protocol::control::UpsertSchema;
 use restate_worker_api::invoker::InvokerHandle;
 use restate_worker_api::resources::ReservedResources;
@@ -317,7 +315,6 @@ impl LeaderState {
         &mut self,
         action_effects: impl IntoIterator<Item = ActionEffect>,
     ) -> Result<(), Error> {
-        let mut arena = BytesMut::with_capacity(128 * 1024);
         for effect in action_effects {
             match effect {
                 ActionEffect::Scheduler(decisions) => {
@@ -336,19 +333,13 @@ impl LeaderState {
                         .chunk_by(|(id, _)| id.partition_key())
                         .into_iter()
                         // one command per partition key
-                        .map(|(partition_key, group)| {
+                        .map(|(_, group)| {
                             let decisions = SchedulerDecisions {
                                 qids: group.collect(),
                             };
 
-                            arena.reserve(decisions.encoded_len());
-                            // safe to unwrap because we reserved enough space
-                            decisions.bilrost_encode(&mut arena).unwrap();
+                            records::VQSchedulerDecisions::partial(decisions)
 
-                            (
-                                partition_key,
-                                Command::VQSchedulerDecisions(arena.split().freeze()),
-                            )
                             // an action goes into command, and resources are popped
                         })
                         // Unfortunately chunk_by cannot generate an ExactSizeIterator.
@@ -362,71 +353,62 @@ impl LeaderState {
                     // based on configuration, whether to consider partition-local durability in
                     // the replica-set as a sufficient source of durability, or only snapshots.
                     self.self_proposer
-                        .self_propose(
-                            self.partition_key_range.start(),
-                            Command::UpdatePartitionDurability(partition_durability),
-                        )
+                        .self_propose(records::UpdatePartitionDurability::partial(
+                            partition_durability,
+                        ))
                         .await?;
                 }
                 ActionEffect::Invoker(invoker_effect) => {
                     self.self_proposer
-                        .self_propose(
-                            invoker_effect.invocation_id.partition_key(),
-                            Command::InvokerEffect(invoker_effect),
-                        )
+                        .self_propose(records::InvokerEffect::partial(invoker_effect))
                         .await?;
                 }
                 ActionEffect::Shuffle(outbox_truncation) => {
                     // todo: Until we support partition splits we need to get rid of outboxes or introduce partition
                     //  specific destination messages that are identified by a partition_id
                     self.self_proposer
-                        .self_propose(
-                            self.partition_key_range.start(),
-                            Command::TruncateOutbox(outbox_truncation.index()),
-                        )
+                        .self_propose(records::TruncateOutbox::partial(TruncateOutboxPayload {
+                            partition_key_range: Keys::RangeInclusive(
+                                self.partition_key_range.clone().into(),
+                            ),
+                            index: outbox_truncation.index(),
+                        }))
                         .await?;
                 }
                 ActionEffect::Timer(timer) => {
                     self.self_proposer
-                        .self_propose(timer.invocation_id().partition_key(), Command::Timer(timer))
+                        .self_propose(records::Timer::partial(timer))
                         .await?;
                 }
                 ActionEffect::Cleaner(effect) => {
-                    let (invocation_id, cmd) = match effect {
-                        CleanerEffect::PurgeJournal(invocation_id) => (
-                            invocation_id,
-                            Command::PurgeJournal(PurgeInvocationRequest {
+                    let record = match effect {
+                        CleanerEffect::PurgeJournal(invocation_id) => {
+                            records::PurgeJournal::partial(PurgeInvocationRequest {
                                 invocation_id,
                                 response_sink: None,
-                            }),
-                        ),
-                        CleanerEffect::PurgeInvocation(invocation_id) => (
-                            invocation_id,
-                            Command::PurgeInvocation(PurgeInvocationRequest {
+                            })
+                        }
+                        CleanerEffect::PurgeInvocation(invocation_id) => {
+                            records::PurgeInvocation::partial(PurgeInvocationRequest {
                                 invocation_id,
                                 response_sink: None,
-                            }),
-                        ),
+                            })
+                        }
                     };
 
-                    self.self_proposer
-                        .self_propose(invocation_id.partition_key(), cmd)
-                        .await?;
+                    self.self_proposer.self_propose(record).await?;
                 }
                 ActionEffect::UpsertSchema(schema) => {
                     if SemanticRestateVersion::current()
                         .is_equal_or_newer_than(&RESTATE_VERSION_1_7_0)
                     {
                         self.self_proposer
-                            .self_propose(
-                                self.partition_key_range.start(),
-                                Command::UpsertSchema(UpsertSchema {
-                                    partition_key_range: Keys::RangeInclusive(
-                                        self.partition_key_range.into(),
-                                    ),
-                                    schema,
-                                }),
-                            )
+                            .self_propose(records::UpsertSchema::partial(UpsertSchema {
+                                partition_key_range: Keys::RangeInclusive(
+                                    self.partition_key_range.into(),
+                                ),
+                                schema,
+                            }))
                             .await?;
                     }
                 }
@@ -445,8 +427,7 @@ impl LeaderState {
         reciprocal: Reciprocal<
             Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
         >,
-        partition_key: PartitionKey,
-        cmd: Command,
+        record: PartialRecord,
     ) {
         match self.awaiting_rpc_actions.entry(request_id) {
             Entry::Occupied(mut o) => {
@@ -460,7 +441,7 @@ impl LeaderState {
             }
             Entry::Vacant(v) => {
                 // In this case, no one proposed this command yet, let's try to propose it
-                if let Err(e) = self.self_proposer.self_propose(partition_key, cmd).await {
+                if let Err(e) = self.self_proposer.self_propose(record).await {
                     reciprocal.send(Err(PartitionProcessorRpcError::Internal(e.to_string())));
                 } else {
                     v.insert(reciprocal);
@@ -476,16 +457,11 @@ impl LeaderState {
     /// responses).
     pub async fn append_and_respond_asynchronously(
         &mut self,
-        partition_key: PartitionKey,
-        cmd: Command,
+        record: PartialRecord,
         reciprocal: RpcReciprocal,
         success_response: PartitionProcessorRpcResponse,
     ) {
-        match self
-            .self_proposer
-            .append_with_notification(partition_key, cmd)
-            .await
-        {
+        match self.self_proposer.append_with_notification(record).await {
             Ok(commit_token) => {
                 self.awaiting_rpc_self_propose.push(SelfAppendFuture::new(
                     commit_token,

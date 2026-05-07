@@ -9,11 +9,11 @@
 // by the Apache License, Version 2.0.
 
 use super::*;
-use restate_types::identifiers::WithPartitionKey;
 use restate_types::invocation;
 use restate_types::invocation::{
     ServiceInvocation, ServiceInvocationResponseSink, SubmitNotificationSink,
 };
+use restate_wal_protocol::v2::{RecordWithKeys, records};
 
 pub(super) struct Request {
     pub(super) request_id: PartitionProcessorRpcRequestId,
@@ -55,15 +55,13 @@ impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
             }
         };
 
-        let partition_key = service_invocation.partition_key();
-        let cmd = Command::Invoke(Box::new(service_invocation));
+        let record = records::Invoke::partial(Box::new(service_invocation));
 
         match append_invocation_reply_on {
             AppendInvocationReplyOn::Appended => {
                 self.proposer
                     .append_and_respond_asynchronously(
-                        partition_key,
-                        cmd,
+                        record,
                         replier,
                         PartitionProcessorRpcResponse::Appended,
                     )
@@ -71,7 +69,7 @@ impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
             }
             AppendInvocationReplyOn::Submitted | AppendInvocationReplyOn::Output => {
                 self.proposer
-                    .handle_rpc_proposal_command(partition_key, cmd, request_id, replier)
+                    .handle_rpc_proposal_command(record, request_id, replier)
                     .await;
             }
         }

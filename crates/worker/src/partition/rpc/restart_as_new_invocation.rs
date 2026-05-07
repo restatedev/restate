@@ -28,6 +28,7 @@ use restate_types::journal_v2::{CommandMetadata, EntryMetadata, EntryType};
 use restate_types::net::partition_processor::RestartAsNewInvocationRpcResponse;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::{invocation, journal_v2};
+use restate_wal_protocol::v2::{RecordWithKeys, records};
 
 pub(super) struct Request {
     pub(super) request_id: PartitionProcessorRpcRequestId,
@@ -240,14 +241,13 @@ where
             );
 
             // Propose the usual Invoke command
-            let cmd = Command::Invoke(Box::new(service_invocation));
+            let record = records::Invoke::partial(Box::new(service_invocation));
 
             // Propose and done
             // This path should be no longer needed once we switch to the journal v2 by default.
             self.proposer
                 .append_and_respond_asynchronously(
-                    invocation_id.partition_key(),
-                    cmd,
+                    record,
                     replier,
                     RestartAsNewInvocationRpcResponse::Ok { new_invocation_id },
                 )
@@ -372,7 +372,7 @@ where
         }
 
         // Pass the ball to the state machine, the PP will reply to the RPC request.
-        let cmd = Command::RestartAsNewInvocation(RestartAsNewInvocationRequest {
+        let record = records::RestartAsNewInvocation::partial(RestartAsNewInvocationRequest {
             invocation_id,
             new_invocation_id,
             copy_prefix_up_to_index_included,
@@ -382,7 +382,7 @@ where
             )),
         });
         self.proposer
-            .handle_rpc_proposal_command(invocation_id.partition_key(), cmd, request_id, replier)
+            .handle_rpc_proposal_command(record, request_id, replier)
             .await;
 
         Ok(())

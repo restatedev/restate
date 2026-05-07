@@ -9,10 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use super::*;
-use restate_types::identifiers::WithPartitionKey;
 use restate_types::invocation::InvocationResponse;
 use restate_types::net::partition_processor::PartitionProcessorRpcResponse;
-use restate_wal_protocol::Command;
+use restate_wal_protocol::v2::{RecordWithKeys, records};
 
 pub(super) struct Request {
     pub(super) invocation_response: InvocationResponse,
@@ -33,8 +32,7 @@ impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
     ) -> Result<(), Self::Error> {
         self.proposer
             .append_and_respond_asynchronously(
-                invocation_response.partition_key(),
-                Command::InvocationResponse(invocation_response),
+                records::InvocationResponse::partial(invocation_response),
                 replier,
                 PartitionProcessorRpcResponse::Appended,
             )
