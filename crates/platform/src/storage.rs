@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::{any::type_name_of_val, sync::Arc};
+
 use bytes::{Buf, BufMut, BytesMut};
 use downcast_rs::{DowncastSync, impl_downcast};
 
@@ -23,7 +25,7 @@ pub enum StorageEncodeError {
     SizeOverflow(usize),
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(derive_more::Debug, thiserror::Error)]
 pub enum StorageDecodeError {
     #[error("failed reading codec: {0}")]
     ReadingCodec(ReString),
@@ -31,6 +33,9 @@ pub enum StorageDecodeError {
     DecodeValue(GenericError),
     #[error("unsupported codec kind: {0}")]
     UnsupportedCodecKind(StorageCodecKind),
+    #[error("Type mismatch. Original value in PolyBytes::Typed({}) does not match requested type", _0.type_name())]
+    #[debug("TypedValueMismatch({})", _0.type_name())]
+    TypedValueMismatch(Arc<dyn StorageEncode>),
 }
 
 /// Trait to encode a value using the specified [`Self::default_codec`]. The trait is used by the
@@ -44,6 +49,10 @@ pub trait StorageEncode: DowncastSync {
 
     /// Codec which is used when encode new values.
     fn default_codec(&self) -> StorageCodecKind;
+
+    fn type_name(&self) -> &'static str {
+        type_name_of_val(self)
+    }
 }
 
 impl_downcast!(sync StorageEncode);
