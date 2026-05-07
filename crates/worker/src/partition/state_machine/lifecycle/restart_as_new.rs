@@ -352,8 +352,8 @@ mod tests {
     };
     use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_types::time::MillisSinceEpoch;
-    use restate_wal_protocol::Command;
     use restate_wal_protocol::timer::TimerKeyValue;
+    use restate_wal_protocol::v2::{Record, records};
     use std::time::Duration;
 
     #[restate_core::test]
@@ -365,7 +365,7 @@ mod tests {
         let original_invocation_id = InvocationId::generate(&invocation_target, None);
         let _ = test_env
             .apply_multiple([
-                Command::Invoke(Box::new(ServiceInvocation {
+                records::Invoke::new_test(Box::new(ServiceInvocation {
                     invocation_id: original_invocation_id,
                     invocation_target: invocation_target.clone(),
                     completion_retention_duration: Duration::from_secs(120),
@@ -402,7 +402,7 @@ mod tests {
         let new_id = InvocationId::mock_generate(&InvocationTarget::mock_virtual_object());
         let request_id = PartitionProcessorRpcRequestId::new();
         let actions = test_env
-            .apply(Command::RestartAsNewInvocation(
+            .apply(records::RestartAsNewInvocation::new_test(
                 RestartAsNewInvocationRequest {
                     invocation_id: original_invocation_id,
                     new_invocation_id: new_id,
@@ -441,14 +441,14 @@ mod tests {
         let original_invocation_id = InvocationId::generate(&invocation_target, None);
         let _ = test_env
             .apply_multiple([
-                Command::Invoke(Box::new(ServiceInvocation {
+                records::Invoke::new_test(Box::new(ServiceInvocation {
                     invocation_id: original_invocation_id,
                     invocation_target: invocation_target.clone(),
                     completion_retention_duration: Duration::from_secs(120),
                     journal_retention_duration: Duration::from_secs(120),
                     ..ServiceInvocation::mock()
                 })),
-                Command::TerminateInvocation(InvocationTermination {
+                records::TerminateInvocation::new_test(InvocationTermination {
                     invocation_id: original_invocation_id,
                     flavor: TerminationFlavor::Kill,
                     response_sink: None,
@@ -460,7 +460,7 @@ mod tests {
         let new_id = InvocationId::mock_generate(&invocation_target);
         let request_id = PartitionProcessorRpcRequestId::new();
         let actions = test_env
-            .apply(Command::RestartAsNewInvocation(
+            .apply(records::RestartAsNewInvocation::new_test(
                 RestartAsNewInvocationRequest {
                     invocation_id: original_invocation_id,
                     new_invocation_id: new_id,
@@ -512,7 +512,7 @@ mod tests {
         let original_invocation_id = InvocationId::generate(&invocation_target, None);
         let _ = test_env
             .apply_multiple([
-                Command::Invoke(Box::new(ServiceInvocation {
+                records::Invoke::new_test(Box::new(ServiceInvocation {
                     invocation_id: original_invocation_id,
                     invocation_target: invocation_target.clone(),
                     completion_retention_duration: Duration::from_secs(120),
@@ -535,7 +535,7 @@ mod tests {
         let new_id = InvocationId::mock_generate(&invocation_target);
         let request_id = PartitionProcessorRpcRequestId::new();
         let actions = test_env
-            .apply(Command::RestartAsNewInvocation(
+            .apply(records::RestartAsNewInvocation::new_test(
                 RestartAsNewInvocationRequest {
                     invocation_id: original_invocation_id,
                     new_invocation_id: new_id,
@@ -588,7 +588,7 @@ mod tests {
         let original_invocation_id = InvocationId::generate(&invocation_target, None);
         let _ = test_env
             .apply_multiple([
-                Command::Invoke(Box::new(ServiceInvocation {
+                records::Invoke::new_test(Box::new(ServiceInvocation {
                     invocation_id: original_invocation_id,
                     invocation_target: invocation_target.clone(),
                     completion_retention_duration: Duration::from_secs(120),
@@ -617,7 +617,7 @@ mod tests {
         // Now restart original into a new invocation while VO is locked by locker_id
         let new_id = InvocationId::mock_generate(&invocation_target);
         let _ = test_env
-            .apply(Command::RestartAsNewInvocation(
+            .apply(records::RestartAsNewInvocation::new_test(
                 RestartAsNewInvocationRequest {
                     invocation_id: original_invocation_id,
                     new_invocation_id: new_id,
@@ -663,7 +663,7 @@ mod tests {
         let completion_id = 1u32;
         let _ = test_env
             .apply_multiple([
-                Command::Invoke(Box::new(ServiceInvocation {
+                records::Invoke::new_test(Box::new(ServiceInvocation {
                     invocation_id: original_invocation_id,
                     invocation_target: invocation_target.clone(),
                     completion_retention_duration: Duration::from_secs(120),
@@ -679,7 +679,7 @@ mod tests {
                         completion_id,
                     },
                 ),
-                Command::NotifySignal(NotifySignalRequest {
+                records::NotifySignal::new_test(NotifySignalRequest {
                     invocation_id: original_invocation_id,
                     signal: Signal::new(
                         SignalId::for_index(1),
@@ -694,7 +694,7 @@ mod tests {
                         completion_id: completion_id + 1,
                     },
                 ),
-                Command::Timer(TimerKeyValue::complete_journal_entry(
+                records::Timer::new_test(TimerKeyValue::complete_journal_entry(
                     wake_up_time,
                     original_invocation_id,
                     completion_id,
@@ -726,7 +726,7 @@ mod tests {
         );
         let new_deployment_id = DeploymentId::new();
         let _ = test_env
-            .apply(Command::RestartAsNewInvocation(
+            .apply(records::RestartAsNewInvocation::new_test(
                 RestartAsNewInvocationRequest {
                     invocation_id: original_invocation_id,
                     new_invocation_id,
@@ -780,7 +780,7 @@ mod tests {
         let original_invocation_id = InvocationId::generate(&invocation_target, None);
         let _ = test_env
             .apply_multiple([
-                Command::Invoke(Box::new(ServiceInvocation {
+                records::Invoke::new_test(Box::new(ServiceInvocation {
                     invocation_id: original_invocation_id,
                     invocation_target: invocation_target.clone(),
                     completion_retention_duration: Duration::from_secs(120),
@@ -815,7 +815,7 @@ mod tests {
         let new_invocation_id = InvocationId::mock_generate(&invocation_target);
         let request_id = PartitionProcessorRpcRequestId::new();
         let actions = test_env
-            .apply(Command::RestartAsNewInvocation(
+            .apply(records::RestartAsNewInvocation::new_test(
                 RestartAsNewInvocationRequest {
                     invocation_id: original_invocation_id,
                     new_invocation_id,
