@@ -122,7 +122,7 @@ mod tests {
         InFlightInvocationMetadata, InvocationStatusDiscriminants, ReadInvocationStatusTable,
     };
     use restate_types::journal_events::{Event, PausedEvent, TransientErrorEvent};
-    use restate_wal_protocol::Command;
+    use restate_wal_protocol::v2::{Record, records};
 
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use crate::partition::types::InvokerEffectKind;
@@ -147,7 +147,7 @@ mod tests {
 
         // Check we just pause
         let _ = test_env
-            .apply(Command::InvokerEffect(Box::new(
+            .apply(records::InvokerEffect::test_envelope(Box::new(
                 restate_worker_api::invoker::Effect {
                     invocation_id,
                     kind: InvokerEffectKind::Paused {
@@ -198,7 +198,7 @@ mod tests {
 
         // Check we just pause
         let _ = test_env
-            .apply(Command::InvokerEffect(Box::new(
+            .apply(records::InvokerEffect::test_envelope(Box::new(
                 restate_worker_api::invoker::Effect {
                     invocation_id,
                     kind: InvokerEffectKind::Paused { paused_event },
