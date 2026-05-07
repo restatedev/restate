@@ -28,7 +28,7 @@ pub enum YieldReason {
     },
 }
 
-#[derive(Debug, bilrost::Oneof, bilrost::Message, derive_more::From)]
+#[derive(Debug, Clone, bilrost::Oneof, bilrost::Message, derive_more::From)]
 pub enum SchedulerAction {
     #[bilrost(empty)]
     Unknown,
@@ -40,7 +40,7 @@ pub enum SchedulerAction {
     Yield(YieldAction),
 }
 
-#[derive(Debug, bilrost::Message)]
+#[derive(Debug, Clone, bilrost::Message)]
 pub struct RunAction {
     #[bilrost(tag(1))]
     pub key: EntryKey,
@@ -48,7 +48,7 @@ pub struct RunAction {
     pub wait_stats: WaitStats,
 }
 
-#[derive(Debug, bilrost::Message)]
+#[derive(Debug, Clone, bilrost::Message)]
 pub struct YieldAction {
     #[bilrost(tag(1))]
     pub key: EntryKey,
@@ -56,7 +56,7 @@ pub struct YieldAction {
     pub next_run_at: Option<RoughTimestamp>,
 }
 
-#[derive(Debug, bilrost::Message)]
+#[derive(Debug, Clone, bilrost::Message)]
 pub struct SchedulerDecisions {
     #[bilrost(tag(1))]
     pub qids: Vec<(VQueueId, Vec<SchedulerAction>)>,
