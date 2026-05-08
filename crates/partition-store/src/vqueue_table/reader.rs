@@ -14,7 +14,7 @@ use restate_types::vqueues::VQueueId;
 use crate::PartitionDb;
 
 use super::running_reader::VQueueRunningReader;
-use super::waiting_reader::VQueueWaitingReader;
+use super::inbox_reader::VQueueWaitingReader;
 
 impl VQueueStore for PartitionDb {
     type RunningReader = VQueueRunningReader;

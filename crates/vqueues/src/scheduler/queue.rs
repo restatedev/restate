@@ -288,7 +288,7 @@ pub(crate) struct Queue<S: VQueueStore> {
 
 impl<S: VQueueStore> Queue<S> {
     /// Creates a new queue that must first go through the given number of running items
-    /// before it switches to reading the waiting inbox.
+    /// before it switches to reading the inbox stage.
     pub fn new(num_running: u32, storage: &S, qid: &VQueueId) -> Self {
         let stage = if num_running > 0 {
             Stage::New {

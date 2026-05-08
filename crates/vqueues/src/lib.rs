@@ -525,7 +525,7 @@ where
             metadata: maybe_new_metadata,
         };
 
-        // We add the entry back into the waiting inbox
+        // We add the entry back into the inbox stage
         self.storage
             .put_vqueue_inbox(vqueue_id, Stage::Inbox, &modified_key, &value);
 
@@ -634,7 +634,7 @@ where
         }
     }
 
-    /// Movement of a running entry back to the waiting inbox happens on failover of pp.
+    /// Movement of a running entry back to the inbox stage happens on failover of pp.
     /// or entries being retried.
     ///
     /// ? -> Inbox
@@ -712,7 +712,7 @@ where
             metadata: maybe_new_metadata,
         };
 
-        // We add the entry back into the waiting inbox
+        // We add the entry back into the inbox stage
         self.storage
             .put_vqueue_inbox(vqueue_id, Stage::Inbox, &modified_key, &value);
 
