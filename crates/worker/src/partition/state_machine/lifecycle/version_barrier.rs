@@ -52,8 +52,8 @@ mod tests {
     use restate_types::identifiers::PartitionKey;
     use restate_types::logs::Keys;
     use restate_types::sharding::KeyRange;
-    use restate_wal_protocol::Command;
     use restate_wal_protocol::control::VersionBarrier;
+    use restate_wal_protocol::v2::{Record, records};
 
     use crate::partition::state_machine::StateMachine;
     use crate::partition::state_machine::tests::TestEnv;
@@ -83,7 +83,7 @@ mod tests {
         );
 
         let result = test_env
-            .apply_fallible(Command::VersionBarrier(VersionBarrier {
+            .apply_fallible(records::VersionBarrier::test_envelope(VersionBarrier {
                 version: SemanticRestateVersion::parse("99.0.0").unwrap(),
                 human_reason: Some("testing".to_string()),
                 partition_key_range: Keys::RangeInclusive(PartitionKey::MIN..=PartitionKey::MAX),
@@ -120,7 +120,7 @@ mod tests {
         let mut test_env = TestEnv::create_with_state_machine(state_machine).await;
 
         let result = test_env
-            .apply_fallible(Command::VersionBarrier(VersionBarrier {
+            .apply_fallible(records::VersionBarrier::test_envelope(VersionBarrier {
                 version: SemanticRestateVersion::current().clone(),
                 human_reason: Some("testing".to_string()),
                 partition_key_range: Keys::RangeInclusive(PartitionKey::MIN..=PartitionKey::MAX),
@@ -135,7 +135,7 @@ mod tests {
         }
         // re-apply the same version, no-op
         let result = test_env
-            .apply_fallible(Command::VersionBarrier(VersionBarrier {
+            .apply_fallible(records::VersionBarrier::test_envelope(VersionBarrier {
                 version: SemanticRestateVersion::current().clone(),
                 human_reason: Some("testing".to_string()),
                 partition_key_range: Keys::RangeInclusive(PartitionKey::MIN..=PartitionKey::MAX),
@@ -150,7 +150,7 @@ mod tests {
 
         // apply an older version, success but without effect.
         let result = test_env
-            .apply_fallible(Command::VersionBarrier(VersionBarrier {
+            .apply_fallible(records::VersionBarrier::test_envelope(VersionBarrier {
                 version: SemanticRestateVersion::parse("0.1.0").unwrap(),
                 human_reason: Some("testing".to_string()),
                 partition_key_range: Keys::RangeInclusive(PartitionKey::MIN..=PartitionKey::MAX),
