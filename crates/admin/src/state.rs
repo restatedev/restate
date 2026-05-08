@@ -8,26 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-
 use restate_core::network::TransportConnect;
 use restate_ingestion_client::IngestionClient;
-use restate_limiter::RuleBook;
+use restate_limiter::rule_book::RuleBookObserver;
 use restate_metadata_store::MetadataStoreClient;
 use restate_service_protocol_v4::serdes::SerdesClient;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::schema::registry::SchemaRegistry;
 use restate_wal_protocol::Envelope;
-
-/// Fire-and-forget callback that pushes a freshly written rule book
-/// into a co-located worker's `RuleBookCache`. `None` on admin-only
-/// nodes; the worker then learns about updates via its metadata-store
-/// poll loop instead.
-///
-/// Takes the book by value: the cache only allocates an `Arc` for it
-/// on the newer-version branch, so admin handlers don't have to
-/// pre-wrap their result.
-pub type RuleBookObserver = Arc<dyn Fn(RuleBook) + Send + Sync>;
+use std::sync::Arc;
 
 #[derive(Clone, derive_builder::Builder)]
 pub struct AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport> {
@@ -40,7 +29,7 @@ pub struct AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transp
     pub metadata_store_client: MetadataStoreClient,
     // Some value if the query endpoint is activated
     pub query_context: Option<QueryContext>,
-    pub rule_book_observer: Option<RuleBookObserver>,
+    pub rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
 }
 
 impl<Metadata, Discovery, Telemetry, Invocations, Transport>
@@ -55,7 +44,7 @@ where
         ingestion_client: IngestionClient<Transport, Envelope>,
         metadata_store_client: MetadataStoreClient,
         query_context: Option<QueryContext>,
-        rule_book_observer: Option<RuleBookObserver>,
+        rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
     ) -> Self {
         Self {
             schema_registry,

@@ -163,6 +163,8 @@ where
             }),
         );
 
+        let metadata_store_client = metadata_writer.raw_metadata_store_client().clone();
+
         let partition_processor_manager = PartitionProcessorManager::new(
             health_status,
             Configuration::live(),
@@ -180,6 +182,8 @@ where
             ppm_ingestion_client,
         );
 
+        let rule_book_cache_handle = partition_processor_manager.rule_book_cache_handle();
+
         let storage_query_context = QueryContext::with_user_tables(
             &config.admin.query_engine,
             SelectPartitionsFromMetadata,
@@ -187,6 +191,8 @@ where
             Some(partition_processor_manager.leader_handles_registry()),
             schema,
             remote_scanner_manager,
+            metadata_store_client,
+            Some(Arc::new(rule_book_cache_handle)),
         )
         .await?;
 

@@ -18,6 +18,7 @@
 //! cross-node propagation does not have to wait for the next poll
 //! tick.
 
+use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,6 +28,7 @@ use tracing::warn;
 
 use restate_core::cancellation_watcher;
 use restate_limiter::RuleBook;
+use restate_limiter::rule_book::RuleBookObserver;
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::Versioned;
 use restate_types::metadata_store::keys::RULE_BOOK_KEY;
@@ -87,6 +89,16 @@ impl RuleBookCacheHandle {
     pub fn detached() -> Self {
         let (sender, _) = watch::channel(Arc::new(RuleBook::default()));
         Self { sender }
+    }
+}
+
+impl RuleBookObserver for RuleBookCacheHandle {
+    fn notify_observed(&self, rule_book: RuleBook) {
+        self.notify_observed_owned(rule_book);
+    }
+
+    fn get(&self) -> Arc<RuleBook> {
+        Arc::clone(self.sender.borrow().deref())
     }
 }
 
@@ -169,14 +181,7 @@ async fn poll_once(client: &MetadataStoreClient, handle: &RuleBookCacheHandle) {
 
     match client.get::<RuleBook>(RULE_BOOK_KEY.clone()).await {
         Ok(Some(book)) => {
-            handle.sender.send_if_modified(|current| {
-                if book.version() > current.version() {
-                    *current = Arc::new(book);
-                    true
-                } else {
-                    false
-                }
-            });
+            handle.notify_observed_owned(book);
         }
         // Race: the rule book was deleted between our version probe
         // and the body fetch. Leave the cache alone — subscribers
@@ -188,7 +193,7 @@ async fn poll_once(client: &MetadataStoreClient, handle: &RuleBookCacheHandle) {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU64;
+    use std::num::NonZeroU32;
 
     use restate_limiter::{Precondition as RulePrecondition, RuleChange, RuleUpsert, UserLimits};
     use restate_types::Version;
@@ -202,8 +207,8 @@ mod tests {
         book.apply_change(
             pattern,
             RuleChange::Upsert(RuleUpsert {
-                limits: UserLimits::new(NonZeroU64::new(100)),
-                reason: None,
+                limits: UserLimits::new(NonZeroU32::new(100)),
+                description: None,
                 disabled: false,
                 precondition: RulePrecondition::None,
             }),
@@ -236,7 +241,7 @@ mod tests {
             pattern.clone(),
             RuleChange::Upsert(RuleUpsert {
                 limits: UserLimits::default(),
-                reason: None,
+                description: None,
                 disabled: true,
                 precondition: RulePrecondition::None,
             }),

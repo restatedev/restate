@@ -33,6 +33,7 @@ use restate_core::{Metadata, MetadataKind, MetadataWriter, TaskKind};
 use restate_core::{MetadataBuilder, MetadataManager, TaskCenter, spawn_metadata_manager};
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_ingestion_client::{IngestionClient, SessionOptions};
+use restate_limiter::rule_book::RuleBookObserver;
 use restate_log_server::LogServerService;
 use restate_storage_query_datafusion::context::{NoTables, QueryContext};
 use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
@@ -371,9 +372,7 @@ impl Node {
 
         let admin_role = if config.has_role(Role::Admin) {
             let local_rule_book_observer = worker_role.as_ref().map(|worker_role| {
-                let handle = worker_role.rule_book_cache_handle();
-                Arc::new(move |book| handle.notify_observed_owned(book))
-                    as restate_admin::service::RuleBookObserver
+                Arc::new(worker_role.rule_book_cache_handle()) as Arc<dyn RuleBookObserver>
             });
 
             Some(

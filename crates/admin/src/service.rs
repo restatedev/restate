@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::error_handling::HandleErrorLayer;
@@ -23,6 +24,7 @@ use tracing::{Span, debug, info, info_span};
 use restate_admin_rest_model::version::AdminApiVersion;
 use restate_core::network::{TransportConnect, net_util};
 use restate_core::{MetadataWriter, TaskCenter};
+use restate_limiter::rule_book::RuleBookObserver;
 use restate_metadata_store::MetadataStoreClient;
 use restate_service_client::HttpClient;
 use restate_service_protocol_v4::discovery::ServiceDiscovery;
@@ -39,8 +41,6 @@ use crate::rest_api::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
 use crate::schema_registry_integration::{MetadataService, TelemetryClient};
 use crate::{rest_api, state};
 
-pub use crate::state::RuleBookObserver;
-
 #[derive(Debug, thiserror::Error)]
 #[error("could not create the service client: {0}")]
 pub struct BuildError(#[from] restate_service_client::BuildError);
@@ -53,7 +53,7 @@ pub struct AdminService<Metadata, Discovery, Telemetry, Invocations, Transport> 
     invocation_client: Invocations,
     query_context: Option<restate_storage_query_datafusion::context::QueryContext>,
     metadata_client: MetadataStoreClient,
-    rule_book_observer: Option<RuleBookObserver>,
+    rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
 }
 
 impl<Invocations, Transport>
@@ -98,7 +98,7 @@ where
         }
     }
 
-    pub fn with_rule_book_observer(self, observer: RuleBookObserver) -> Self {
+    pub fn with_rule_book_observer(self, observer: Arc<dyn RuleBookObserver>) -> Self {
         Self {
             rule_book_observer: Some(observer),
             ..self

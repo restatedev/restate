@@ -34,7 +34,7 @@ define_table!(sys_user_limits(
     usage: DataType::UInt32,
 
     /// The configured concurrency limit (null if unlimited).
-    concurrency_limit: DataType::UInt64,
+    concurrency_limit: DataType::UInt32,
 
     /// The rule pattern that defines the limit (null if unlimited).
     /// Resolved from the rule handle; shows "[removed]" if the rule was
@@ -42,7 +42,7 @@ define_table!(sys_user_limits(
     rule_pattern: DataType::Utf8,
 
     /// Available capacity (limit - usage). Null if unlimited.
-    available: DataType::UInt64,
+    available: DataType::UInt32,
 
     /// Number of vqueues currently waiting behind this counter.
     num_waiters: DataType::UInt64,

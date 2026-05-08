@@ -18,7 +18,7 @@
 //! [`RuleUpdate`] is the channel-level message the per-PP `UserLimiter`
 //! consumes; it is produced by [`crate::RuleBook::diff`].
 
-use std::num::NonZeroU64;
+use std::num::NonZeroU32;
 
 use restate_util_string::ReString;
 
@@ -43,12 +43,12 @@ pub struct UserLimits {
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
-    #[cfg_attr(feature = "schema", schema(value_type = Option<u64>, minimum = 1))]
-    pub action_concurrency: Option<NonZeroU64>,
+    #[cfg_attr(feature = "schema", schema(value_type = Option<u32>, minimum = 1))]
+    pub action_concurrency: Option<NonZeroU32>,
 }
 
 impl UserLimits {
-    pub fn new(action_concurrency: Option<NonZeroU64>) -> Self {
+    pub fn new(action_concurrency: Option<NonZeroU32>) -> Self {
         Self { action_concurrency }
     }
 }

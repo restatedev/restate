@@ -34,7 +34,7 @@ pub struct UserLimitCounterEntry {
     pub usage: u32,
     /// Configured concurrency limit for this counter. `None` means unlimited
     /// (either no rule matched, or the matching rule leaves concurrency undefined).
-    pub concurrency_limit: Option<u64>,
+    pub concurrency_limit: Option<u32>,
     /// Human-readable form of the rule that applies at this counter, if any.
     /// `None` when the counter has no matching rule (i.e. is unlimited).
     pub rule_pattern: Option<String>,

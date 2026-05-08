@@ -16,7 +16,8 @@ table_docs = []
 restate-workspace-hack = { workspace = true }
 
 restate-core = { workspace = true }
-restate-limiter = { workspace = true }
+restate-limiter = { workspace = true, features = ["rule-book"] }
+restate-metadata-store = { workspace = true }
 restate-partition-store = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["codec"] }
 restate-service-protocol-v4 = { workspace = true, features = ["entry-codec"]  }

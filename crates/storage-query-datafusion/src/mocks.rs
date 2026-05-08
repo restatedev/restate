@@ -21,6 +21,7 @@ use datafusion::common::DataFusionError;
 use googletest::matcher::{Matcher, MatcherResult};
 use serde_json::Value;
 
+use restate_metadata_store::MetadataStoreClient;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_types::NodeId;
@@ -226,6 +227,8 @@ impl MockQueryEngine {
                     Arc::new(NoopSvc),
                     Arc::new(AlwaysLocalPartitionLocator) as Arc<dyn PartitionLocator>,
                 ),
+                MetadataStoreClient::new_in_memory(),
+                None,
             )
             .await
             .unwrap(),

@@ -129,7 +129,7 @@ pub async fn upsert_rules<Metadata, Discovery, Telemetry, Invocations, Transport
                     entry.pattern.clone(),
                     RuleChange::Upsert(RuleUpsert {
                         limits: entry.limits.clone(),
-                        reason: entry.reason.clone(),
+                        description: entry.description.clone(),
                         disabled: entry.disabled,
                         precondition: entry.precondition,
                     }),
@@ -217,6 +217,6 @@ fn notify_rule_book_observer<Metadata, Discovery, Telemetry, Invocations, Transp
     book: RuleBook,
 ) {
     if let Some(observer) = &state.rule_book_observer {
-        observer(book);
+        observer.notify_observed(book);
     }
 }

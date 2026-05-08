@@ -34,7 +34,7 @@ pub struct UpsertRuleRequest {
     /// Free-form description shown in the rule book; not consulted at
     /// runtime.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
+    pub description: Option<String>,
     /// Soft-tombstone toggle. `true` parks the rule (the runtime treats
     /// it as absent) without removing it.
     #[serde(default)]
@@ -74,12 +74,12 @@ pub struct RuleResponse {
     pub pattern: RulePattern<ReString>,
     pub limits: UserLimits,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
+    pub description: Option<String>,
     pub disabled: bool,
     /// Per-rule version: bumped on runtime-relevant changes.
     #[cfg_attr(feature = "schema", schema(value_type = u32))]
     pub version: Version,
-    /// Seconds since UNIX epoch.
+    /// Millis since UNIX epoch.
     pub last_modified_millis_since_epoch: u64,
 }
 
@@ -88,7 +88,7 @@ impl From<(RulePattern<ReString>, &PersistedRule)> for RuleResponse {
         RuleResponse {
             pattern,
             limits: rule.limits.clone(),
-            reason: rule.reason.clone(),
+            description: rule.description.clone(),
             disabled: rule.disabled,
             version: rule.version,
             last_modified_millis_since_epoch: rule.last_modified.as_u64(),
