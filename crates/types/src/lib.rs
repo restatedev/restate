@@ -89,9 +89,6 @@ pub mod sharding {
     pub use restate_sharding::*;
 }
 
-// Re-export metrics' SharedString (Space-efficient Cow + RefCounted variant)
-pub type SharedString = metrics::SharedString;
-
 /// An interned service name
 #[derive(
     derive_more::Display,

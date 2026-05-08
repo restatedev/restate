@@ -20,7 +20,7 @@ use restate_core::network::{ShardSender, TransportConnect};
 use restate_core::{RuntimeTaskHandle, TaskCenter, TaskKind, cancellation_token};
 use restate_ingestion_client::IngestionClient;
 use restate_partition_store::PartitionStoreManager;
-use restate_types::SharedString;
+use restate_platform::prelude::ReString;
 use restate_types::cluster::cluster_state::PartitionProcessorStatus;
 use restate_types::logs::Lsn;
 use restate_types::partitions::Partition;
@@ -35,7 +35,7 @@ use crate::partition_processor_manager::processor_state::StartedProcessor;
 use crate::rule_book_cache::RuleBookCacheHandle;
 
 pub struct SpawnPartitionProcessorTask<T> {
-    task_name: SharedString,
+    task_name: ReString,
     partition: Partition,
     bifrost: Bifrost,
     replica_set_states: PartitionReplicaSetStates,
@@ -53,7 +53,7 @@ where
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        task_name: SharedString,
+        task_name: ReString,
         partition: Partition,
         bifrost: Bifrost,
         replica_set_states: PartitionReplicaSetStates,
