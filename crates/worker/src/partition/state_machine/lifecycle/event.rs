@@ -86,7 +86,7 @@ mod tests {
     use googletest::prelude::*;
     use restate_types::journal_events::raw::RawEvent;
     use restate_types::journal_events::{Event, TransientErrorEvent};
-    use restate_wal_protocol::Command;
+    use restate_wal_protocol::v2::{Record, records};
     use restate_worker_api::invoker::Effect;
 
     #[restate_core::test]
@@ -106,7 +106,7 @@ mod tests {
         };
 
         let _ = test_env
-            .apply(Command::InvokerEffect(Box::new(Effect {
+            .apply(records::InvokerEffect::test_envelope(Box::new(Effect {
                 invocation_id,
                 kind: InvokerEffectKind::JournalEvent {
                     event: RawEvent::from(Event::TransientError(transient_error_event.clone()))
