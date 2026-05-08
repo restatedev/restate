@@ -32,6 +32,7 @@ restate-metadata-store = { workspace = true }
 restate-platform = { workspace = true }
 restate-time-util = { workspace = true }
 restate-types = { workspace = true }
+restate-util-string = { workspace = true, features = ["metrics"] }
 
 ahash = { workspace = true }
 anyhow = { workspace = true }

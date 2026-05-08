@@ -56,6 +56,7 @@ use restate_partition_store::snapshots::{
 };
 use restate_partition_store::{SnapshotError, SnapshotErrorKind};
 use restate_time_util::DurationExt;
+use restate_types::GenerationalNodeId;
 use restate_types::cluster::cluster_state::ReplayStatus;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::config::Configuration;
@@ -79,7 +80,7 @@ use restate_types::partitions::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::retries::with_jitter;
-use restate_types::{GenerationalNodeId, SharedString};
+use restate_util_string::format_restring;
 use restate_wal_protocol::Envelope;
 use restate_worker_api::invoker::capacity::InvokerCapacity;
 use restate_worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
@@ -103,7 +104,6 @@ pub struct PartitionProcessorManager<T> {
     health_status: HealthStatus<WorkerStatus>,
     updateable_config: Live<Configuration>,
     processor_states: BTreeMap<PartitionId, ProcessorState>,
-    name_cache: BTreeMap<PartitionId, SharedString>,
 
     metadata_writer: MetadataWriter,
     partition_store_manager: Arc<PartitionStoreManager>,
@@ -251,7 +251,6 @@ where
             health_status,
             updateable_config,
             processor_states: BTreeMap::default(),
-            name_cache: Default::default(),
             metadata_writer,
             partition_store_manager,
             ppm_svc_rx,
@@ -1375,15 +1374,8 @@ where
 
         debug!("Starting new partition processor",);
 
-        // the name is also used as thread names for the corresponding tokio runtimes, let's keep
-        // it short.
-        let task_name = self
-            .name_cache
-            .entry(partition_id)
-            .or_insert_with(|| SharedString::from(Arc::from(format!("pp-{partition_id}"))));
-
         let starting_task = SpawnPartitionProcessorTask::new(
-            task_name.clone(),
+            format_restring!("pp-{partition_id}"),
             partition,
             self.bifrost.clone(),
             self.replica_set_states.clone(),
@@ -1397,7 +1389,7 @@ where
 
         self.asynchronous_operations
             .build_task()
-            .name(&format!("start-pp-{partition_id}"))
+            .name(&format_restring!("start-pp-{partition_id}"))
             .spawn(
                 async move {
                     counter!(PARTITION_START, PARTITION_LABEL => partition_id.to_string())

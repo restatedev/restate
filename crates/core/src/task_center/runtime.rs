@@ -16,17 +16,18 @@ use futures::FutureExt;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use restate_types::SharedString;
+use restate_platform::prelude::ReString;
+
 /// A handle for a dedicated runtime managed by task-center
 pub struct RuntimeTaskHandle<T> {
-    name: SharedString,
+    name: ReString,
     cancellation_token: CancellationToken,
     inner_handle: oneshot::Receiver<T>,
 }
 
 impl<T> RuntimeTaskHandle<T> {
     pub fn new(
-        name: SharedString,
+        name: ReString,
         cancellation_token: CancellationToken,
         result_receiver: oneshot::Receiver<T>,
     ) -> Self {
@@ -37,7 +38,7 @@ impl<T> RuntimeTaskHandle<T> {
         }
     }
     // The runtime  name
-    pub fn name(&self) -> &SharedString {
+    pub fn name(&self) -> &ReString {
         &self.name
     }
     /// Trigger graceful shutdown of the runtime root task. Shutdown is not guaranteed, it depends

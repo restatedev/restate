@@ -15,7 +15,7 @@ use futures::FutureExt;
 use parking_lot::Mutex;
 use tokio_util::sync::{CancellationToken, DropGuard};
 
-use restate_types::SharedString;
+use restate_platform::prelude::ReString;
 use restate_types::identifiers::PartitionId;
 
 use super::{TASK_CONTEXT, TaskId, TaskKind};
@@ -25,7 +25,7 @@ use crate::ShutdownError;
 pub struct TaskContext {
     /// It's nice to have a unique ID for each task.
     pub(super) id: TaskId,
-    pub(super) name: SharedString,
+    pub(super) name: ReString,
     pub(super) kind: TaskKind,
     /// cancel this token to request cancelling this task.
     pub(super) cancellation_token: CancellationToken,

@@ -35,7 +35,7 @@ use std::time::Duration;
 use anyhow::Context;
 use assert2::let_assert;
 use futures::{FutureExt, Stream, StreamExt};
-use metrics::{SharedString, gauge, histogram};
+use metrics::{gauge, histogram};
 use tokio::sync::watch;
 use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{Span, debug, error, info, instrument, trace, warn};
@@ -80,6 +80,7 @@ use restate_types::schema::Schema;
 use restate_types::storage::StorageDecodeError;
 use restate_types::time::{MillisSinceEpoch, NanosSinceEpoch};
 use restate_types::{GenerationalNodeId, SemanticRestateVersion, Version};
+use restate_util_string::{ReString, ToReString};
 use restate_vqueues::{VQueuesMeta, VQueuesMetaCache};
 use restate_wal_protocol::control::{
     AnnounceLeader, CurrentReplicaSetConfiguration, NextReplicaSetConfiguration,
@@ -186,7 +187,7 @@ impl PartitionProcessorBuilder {
             rule_book_cache,
         } = self;
 
-        let partition_id_str = SharedString::from(partition_store.partition_id().to_string());
+        let partition_id_str = partition_store.partition_id().to_restring();
         let state_machine =
             Self::create_state_machine(&mut partition_store, rule_book_cache.clone()).await?;
 
@@ -302,7 +303,7 @@ impl PartitionProcessorBuilder {
 }
 
 pub struct PartitionProcessor<T> {
-    partition_id_str: SharedString,
+    partition_id_str: ReString,
     leadership_state: LeadershipState<T>,
     state_machine: StateMachine,
     bifrost: Bifrost,
@@ -404,7 +405,7 @@ where
                             "Shutting partition processor down because it encountered a trim gap in the log."
                         ),
                     Err(ProcessorError::StateMachine(state_machine::Error::VersionBarrier { .. })) => {
-                        gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL => self.partition_id_str.clone(), REASON_LABEL => FLARE_REASON_VERSION_BARRIER).set(1);
+                        gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL => self.partition_id_str, REASON_LABEL => FLARE_REASON_VERSION_BARRIER).set(1);
                     }
                     Err(err) => warn!("Shutting partition processor down because of error: {err}"),
                 }
