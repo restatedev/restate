@@ -8,9 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
 use assert2::let_assert;
 use opentelemetry::trace::Span;
+
 use restate_service_protocol::codec::ProtobufRawEntryCodec as OldProtocolEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
@@ -28,6 +28,9 @@ use restate_types::journal_v2::{CommandMetadata, EntryMetadata, EntryType};
 use restate_types::net::partition_processor::RestartAsNewInvocationRpcResponse;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::{invocation, journal_v2};
+use restate_wal_protocol::v2::{RecordWithKeys, records};
+
+use super::*;
 
 pub(super) struct Request {
     pub(super) request_id: PartitionProcessorRpcRequestId,
@@ -240,14 +243,13 @@ where
             );
 
             // Propose the usual Invoke command
-            let cmd = Command::Invoke(Box::new(service_invocation));
+            let record = records::Invoke::partial(Box::new(service_invocation));
 
             // Propose and done
             // This path should be no longer needed once we switch to the journal v2 by default.
             self.proposer
                 .append_and_respond_asynchronously(
-                    invocation_id.partition_key(),
-                    cmd,
+                    record,
                     replier,
                     RestartAsNewInvocationRpcResponse::Ok { new_invocation_id },
                 )
@@ -372,7 +374,7 @@ where
         }
 
         // Pass the ball to the state machine, the PP will reply to the RPC request.
-        let cmd = Command::RestartAsNewInvocation(RestartAsNewInvocationRequest {
+        let record = records::RestartAsNewInvocation::partial(RestartAsNewInvocationRequest {
             invocation_id,
             new_invocation_id,
             copy_prefix_up_to_index_included,
@@ -382,7 +384,7 @@ where
             )),
         });
         self.proposer
-            .handle_rpc_proposal_command(invocation_id.partition_key(), cmd, request_id, replier)
+            .handle_rpc_proposal_command(record, request_id, replier)
             .await;
 
         Ok(())
@@ -394,11 +396,11 @@ mod tests {
     use std::collections::HashMap;
     use std::future::ready;
 
-    use assert2::let_assert;
     use bytes::Bytes;
     use futures::{FutureExt, Stream, StreamExt, stream};
     use googletest::prelude::*;
     use restate_storage_api::journal_table_v2::NotificationEntryIndex;
+    use restate_wal_protocol::v2::RecordKind;
     use rstest::rstest;
     use test_log::test;
 
@@ -729,8 +731,10 @@ mod tests {
         let payload_clone = payload.clone();
         proposer
             .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
-            .return_once_st(move |_, cmd, _, response| {
-                let_assert!(Command::Invoke(service_invocation) = cmd);
+            .return_once_st(move |cmd, _, response| {
+                assert_eq!(cmd.kind(), RecordKind::Invoke);
+                let service_invocation: Box<ServiceInvocation> =
+                    cmd.unwrap::<records::Invoke>().into();
                 assert_that!(
                     service_invocation,
                     points_to(all!(
@@ -1009,15 +1013,16 @@ mod tests {
         proposer.expect_is_leader().return_const(true);
         proposer
             .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .return_once_st(move |_, cmd, _, _| {
+            .return_once_st(move |cmd, _, _| {
+                assert_eq!(cmd.kind(), RecordKind::RestartAsNewInvocation);
+                let request: RestartAsNewInvocationRequest =
+                    cmd.unwrap::<records::RestartAsNewInvocation>().into();
                 assert_that!(
-                    cmd,
-                    pat!(Command::RestartAsNewInvocation(pat!(
-                        RestartAsNewInvocationRequest {
-                            copy_prefix_up_to_index_included: eq(0),
-                            patch_deployment_id: none()
-                        }
-                    )))
+                    request,
+                    pat!(RestartAsNewInvocationRequest {
+                        copy_prefix_up_to_index_included: eq(0),
+                        patch_deployment_id: none()
+                    })
                 );
                 ready(()).boxed()
             });
@@ -1071,15 +1076,16 @@ mod tests {
         proposer.expect_is_leader().return_const(true);
         proposer
             .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .return_once_st(move |_, cmd, _, _| {
+            .return_once_st(move |cmd, _, _| {
+                assert_eq!(cmd.kind(), RecordKind::RestartAsNewInvocation);
+                let request: RestartAsNewInvocationRequest =
+                    cmd.unwrap::<records::RestartAsNewInvocation>().into();
                 assert_that!(
-                    cmd,
-                    pat!(Command::RestartAsNewInvocation(pat!(
-                        RestartAsNewInvocationRequest {
-                            copy_prefix_up_to_index_included: eq(0),
-                            patch_deployment_id: none()
-                        }
-                    )))
+                    request,
+                    pat!(RestartAsNewInvocationRequest {
+                        copy_prefix_up_to_index_included: eq(0),
+                        patch_deployment_id: none()
+                    })
                 );
                 ready(()).boxed()
             });
@@ -1345,15 +1351,16 @@ mod tests {
         proposer.expect_is_leader().return_const(true);
         proposer
             .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .return_once_st(move |_, cmd, _, _| {
+            .return_once_st(move |cmd, _, _| {
+                assert_eq!(cmd.kind(), RecordKind::RestartAsNewInvocation);
+                let request: RestartAsNewInvocationRequest =
+                    cmd.unwrap::<records::RestartAsNewInvocation>().into();
                 assert_that!(
-                    cmd,
-                    pat!(Command::RestartAsNewInvocation(pat!(
-                        RestartAsNewInvocationRequest {
-                            copy_prefix_up_to_index_included: eq(1),
-                            patch_deployment_id: none()
-                        }
-                    )))
+                    request,
+                    pat!(RestartAsNewInvocationRequest {
+                        copy_prefix_up_to_index_included: eq(1),
+                        patch_deployment_id: none()
+                    })
                 );
                 ready(()).boxed()
             });
@@ -1409,15 +1416,16 @@ mod tests {
         proposer.expect_is_leader().return_const(true);
         proposer
             .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .return_once_st(move |_, cmd, _, _| {
+            .return_once_st(move |cmd, _, _| {
+                assert_eq!(cmd.kind(), RecordKind::RestartAsNewInvocation);
+                let request: RestartAsNewInvocationRequest =
+                    cmd.unwrap::<records::RestartAsNewInvocation>().into();
                 assert_that!(
-                    cmd,
-                    pat!(Command::RestartAsNewInvocation(pat!(
-                        RestartAsNewInvocationRequest {
-                            copy_prefix_up_to_index_included: eq(1),
-                            patch_deployment_id: some(eq(latest_id))
-                        }
-                    )))
+                    request,
+                    pat!(RestartAsNewInvocationRequest {
+                        copy_prefix_up_to_index_included: eq(1),
+                        patch_deployment_id: some(eq(latest_id))
+                    })
                 );
                 ready(()).boxed()
             });
