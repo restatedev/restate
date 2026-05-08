@@ -244,7 +244,7 @@ jobs:
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
       envVars: |
-        RESTATE_experimental_allow_protocol_v7=true
+        RESTATE_experimental_enable_protocol_v7=true
       testArtifactOutput: sdk-typescript-protocol-v7
       sdkRepoRef: 'new-shared-core'
   

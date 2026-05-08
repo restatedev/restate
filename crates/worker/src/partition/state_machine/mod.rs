@@ -936,7 +936,11 @@ impl<S> StateMachineApplyContext<'_, S> {
                 });
         }
 
-        if Configuration::pinned().common.experimental_enable_vqueues {
+        if Configuration::pinned()
+            .common
+            .experimental
+            .is_vqueues_enabled()
+        {
             // skips the rest of this logic and jumps straight to vqueues' implementation
             return self
                 .vqueue_enqueue(
@@ -1557,7 +1561,11 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteLockTable
             + ReadVQueueTable,
     {
-        if Configuration::pinned().common.experimental_enable_vqueues {
+        if Configuration::pinned()
+            .common
+            .experimental
+            .is_vqueues_enabled()
+        {
             self.vqueue_enqueue_state_mutation(mutation).await?;
         } else {
             let service_status = self
@@ -1896,7 +1904,11 @@ impl<S> StateMachineApplyContext<'_, S> {
             Some(&invocation_target),
         )?;
 
-        if Configuration::pinned().common.experimental_enable_vqueues {
+        if Configuration::pinned()
+            .common
+            .experimental
+            .is_vqueues_enabled()
+        {
             let record_unique_ts =
                 UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
             let new_status = match termination_flavor {
@@ -2008,7 +2020,11 @@ impl<S> StateMachineApplyContext<'_, S> {
             Some(&invocation_target),
         )?;
 
-        if Configuration::pinned().common.experimental_enable_vqueues {
+        if Configuration::pinned()
+            .common
+            .experimental
+            .is_vqueues_enabled()
+        {
             let record_unique_ts =
                 UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
             let new_status = match termination_flavor {
@@ -2871,7 +2887,11 @@ impl<S> StateMachineApplyContext<'_, S> {
             .await?;
         }
 
-        if Configuration::pinned().common.experimental_enable_vqueues {
+        if Configuration::pinned()
+            .common
+            .experimental
+            .is_vqueues_enabled()
+        {
             if invocation_target.invocation_target_ty()
                 == InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
             {
@@ -3235,7 +3255,11 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteJournalTable
             + journal_table_v2::WriteJournalTable,
     {
-        if Configuration::pinned().common.experimental_enable_vqueues {
+        if Configuration::pinned()
+            .common
+            .experimental
+            .is_vqueues_enabled()
+        {
             return Ok(());
         }
 
@@ -4546,7 +4570,11 @@ impl<S> StateMachineApplyContext<'_, S> {
             .put_invocation_status(&invocation_id, &InvocationStatus::Invoked(metadata))
             .map_err(Error::Storage)?;
 
-        if Configuration::pinned().common.experimental_enable_vqueues {
+        if Configuration::pinned()
+            .common
+            .experimental
+            .is_vqueues_enabled()
+        {
             self.vqueue_move_invocation_to_inbox_stage(&invocation_id)
                 .await?;
         } else {
@@ -4587,7 +4615,11 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         metadata.timestamps.update(self.record_created_at);
 
-        if Configuration::pinned().common.experimental_enable_vqueues {
+        if Configuration::pinned()
+            .common
+            .experimental
+            .is_vqueues_enabled()
+        {
             let now = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
             let entry_id = EntryId::from(&invocation_id);
             let Some(header) = self
