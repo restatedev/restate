@@ -250,7 +250,8 @@ impl InvocationBuilder {
         if invocation_target.scope().is_some()
             && !restate_types::config::Configuration::pinned()
                 .common
-                .experimental_enable_vqueues
+                .experimental
+                .is_vqueues_enabled()
         {
             bail!("Scoped invocations require experimental vqueues to be enabled");
         }

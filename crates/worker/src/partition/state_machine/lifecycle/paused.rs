@@ -65,7 +65,11 @@ where
         // Invoker paused the invocation, let's record the event, then set the status to paused
         debug_if_leader!(ctx.is_leader, "Paused the invocation");
 
-        if Configuration::pinned().common.experimental_enable_vqueues {
+        if Configuration::pinned()
+            .common
+            .experimental
+            .is_vqueues_enabled()
+        {
             // todo: use the new status
             let entry_id = EntryId::from(&invocation_id);
             let Some(header) = ctx
