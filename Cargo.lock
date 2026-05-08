@@ -8887,6 +8887,7 @@ dependencies = [
  "stable_deref_trait",
  "syn 2.0.117",
  "sync_wrapper",
+ "thiserror 2.0.18",
  "tikv-jemalloc-ctl",
  "tikv-jemalloc-sys",
  "time",
