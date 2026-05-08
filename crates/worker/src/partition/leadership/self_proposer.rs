@@ -8,16 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-
 use futures::never::Never;
 
 use restate_bifrost::{Bifrost, CommitToken, ErrorRecoveryStrategy, InputRecord};
-use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
-use restate_types::{
-    identifiers::PartitionKey, logs::LogId, net::ingest::IngestRecord, time::NanosSinceEpoch,
-};
-use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
+use restate_storage_api::deduplication_table::EpochSequenceNumber;
+use restate_types::{logs::LogId, net::ingest::IngestRecord, time::NanosSinceEpoch};
+use restate_wal_protocol::v2::{Dedup, Envelope, PartialRecord, Raw, Source};
 
 use crate::partition::leadership::Error;
 
@@ -34,7 +30,7 @@ static BIFROST_APPENDER_TASK: &str = "bifrost-appender";
 
 pub struct SelfProposer {
     epoch_sequence_number: EpochSequenceNumber,
-    bifrost_appender: restate_bifrost::AppenderHandle<Envelope>,
+    bifrost_appender: restate_bifrost::AppenderHandle<Envelope<Raw>>,
 }
 
 impl SelfProposer {
@@ -74,31 +70,22 @@ impl SelfProposer {
     /// the internal channel's max capacity.
     pub async fn self_propose_many(
         &mut self,
-        cmds: impl ExactSizeIterator<Item = (PartitionKey, Command)>,
+        records: impl ExactSizeIterator<Item = PartialRecord>,
     ) -> Result<(), Error> {
         // allocate a sequence number range for the batch
         let leader_epoch = self.epoch_sequence_number.leader_epoch;
 
         let start_seq = self.epoch_sequence_number.sequence_number;
-        let end_seq = start_seq + cmds.len() as u64;
+        let end_seq = start_seq + records.len() as u64;
 
-        let envelopes = cmds.enumerate().map(|(idx, (partition_key, cmd))| {
-            let esn = EpochSequenceNumber {
-                leader_epoch,
-                sequence_number: start_seq + idx as u64,
-            };
-            let header = Header {
-                dest: Destination::Processor {
-                    partition_key,
-                    dedup: Some(DedupInformation::self_proposal(esn)),
-                },
-                source: Source::Processor {
-                    partition_id: None,
-                    partition_key: Some(partition_key),
+        let envelopes = records.enumerate().map(|(idx, record)| {
+            record.build(
+                Source::Processor { leader_epoch },
+                Dedup::SelfProposal {
                     leader_epoch,
+                    seq: start_seq + idx as u64,
                 },
-            };
-            Arc::new(Envelope::new(header, cmd))
+            )
         });
 
         // Only blocks if background append is pushing back (queue full)
@@ -117,21 +104,23 @@ impl SelfProposer {
         Ok(())
     }
 
-    /// Self-propose a single command to Bifrost, attaching ESN-based dedup information.
-    pub async fn self_propose(
-        &mut self,
-        partition_key: PartitionKey,
-        cmd: Command,
-    ) -> Result<(), Error> {
-        let envelope = Envelope::new(self.create_self_propose_header(partition_key), cmd);
+    pub async fn self_propose(&mut self, record: PartialRecord) -> Result<(), Error> {
+        let esn = self.next_esn();
+        let record = record.build(
+            Source::Processor {
+                leader_epoch: esn.leader_epoch,
+            },
+            Dedup::SelfProposal {
+                leader_epoch: esn.leader_epoch,
+                seq: esn.sequence_number,
+            },
+        );
 
-        // Only blocks if background append is pushing back (queue full)
         self.bifrost_appender
             .sender()
-            .enqueue(Arc::new(envelope))
+            .enqueue(record)
             .await
             .map_err(|e| Error::SelfProposer(e.to_string()))?;
-
         Ok(())
     }
 
@@ -142,26 +131,19 @@ impl SelfProposer {
     /// which makes them safe for fire-and-forget ingress commands (signals, invocation responses).
     pub async fn append_with_notification(
         &mut self,
-        partition_key: PartitionKey,
-        cmd: Command,
+        envelope: PartialRecord,
     ) -> Result<CommitToken, Error> {
-        let header = Header {
-            dest: Destination::Processor {
-                partition_key,
-                dedup: None,
-            },
-            source: Source::Processor {
-                partition_id: None,
-                partition_key: Some(partition_key),
+        let record = envelope.build(
+            Source::Processor {
                 leader_epoch: self.epoch_sequence_number.leader_epoch,
             },
-        };
-        let envelope = Envelope::new(header, cmd);
+            Dedup::None,
+        );
 
         let commit_token = self
             .bifrost_appender
             .sender()
-            .enqueue_with_notification(Arc::new(envelope))
+            .enqueue_with_notification(record)
             .await
             .map_err(|e| Error::SelfProposer(e.to_string()))?;
 
@@ -213,21 +195,10 @@ impl SelfProposer {
             .map_err(|e| Error::SelfProposer(e.to_string()))
     }
 
-    fn create_self_propose_header(&mut self, partition_key: PartitionKey) -> Header {
+    fn next_esn(&mut self) -> EpochSequenceNumber {
         let esn = self.epoch_sequence_number;
         self.epoch_sequence_number = self.epoch_sequence_number.next();
-
-        Header {
-            dest: Destination::Processor {
-                partition_key,
-                dedup: Some(DedupInformation::self_proposal(esn)),
-            },
-            source: Source::Processor {
-                partition_id: None,
-                partition_key: Some(partition_key),
-                leader_epoch: self.epoch_sequence_number.leader_epoch,
-            },
-        }
+        esn
     }
 
     /// Waits for self proposer to fail. This method will only complete with an error if the self
