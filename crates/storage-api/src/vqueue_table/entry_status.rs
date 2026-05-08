@@ -26,11 +26,11 @@ pub enum Status {
     /// Invocation has started running with at least one attempt.
     #[bilrost(3)]
     Started,
-    /// Invocation has previously started but has been placed back on the waiting inbox
+    /// Invocation has previously started but has been placed back on the inbox stage
     /// due to an attempt error.
     #[bilrost(4)]
     BackingOff,
-    /// Invocation has previously started but has been placed back on the waiting inbox.
+    /// Invocation has previously started but has been placed back on the inbox stage.
     /// This does not mean that the invocation attempt has failed, it just means that
     /// it has been evicted from the run queue and will be resumed later.
     #[bilrost(5)]

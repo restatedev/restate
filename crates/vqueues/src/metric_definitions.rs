@@ -37,7 +37,7 @@ pub fn describe_metrics() {
     describe_counter!(
         VQUEUE_ENQUEUE,
         Unit::Count,
-        "Number of entries/invocations in vqueues added to the waiting inbox"
+        "Number of entries/invocations in vqueues added to the inbox stage"
     );
 
     describe_counter!(

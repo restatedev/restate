@@ -63,7 +63,7 @@ pub struct Decisions {
     pub qids: BTreeMap<VQueueId, Vec<SchedulerAction>>,
     /// running items
     pub num_run: u32,
-    /// Items in run queue that need to go back to waiting inbox
+    /// Items in run queue that need to go back to the inbox stage
     pub num_yield: u32,
 }
 

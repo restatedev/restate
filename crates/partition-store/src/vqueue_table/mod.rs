@@ -15,7 +15,7 @@ mod key_codec;
 mod metadata;
 mod reader;
 mod running_reader;
-mod waiting_reader;
+mod inbox_reader;
 
 use std::io::Cursor;
 
