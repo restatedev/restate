@@ -8596,6 +8596,8 @@ dependencies = [
  "bytes",
  "compact_str",
  "hashbrown 0.16.1",
+ "metrics",
+ "opentelemetry",
  "restate-util-string",
  "restate-workspace-hack",
  "serde",

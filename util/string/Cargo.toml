@@ -12,6 +12,8 @@ default = []
 serde = ["dep:serde", "compact_str/serde"]
 bytes = ["dep:bytes", "compact_str/bytes"]
 bilrost = ["dep:bilrost", "bytes"]
+opentelemetry = ["dep:opentelemetry"]
+metrics = ["dep:metrics"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
@@ -22,6 +24,8 @@ compact_str = { workspace = true, features = ["std"] }
 ahash = { workspace = true }
 serde = { workspace = true, optional = true }
 hashbrown = { workspace = true }
+metrics = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
 
 [dev-dependencies]
 restate-util-string = {path = ".", default-features = false, features = ["bytes", "bilrost", "serde"]}
