@@ -117,6 +117,7 @@ smallvec = { version = "1", default-features = false, features = ["const_new", "
 stable_deref_trait = { version = "1" }
 syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 sync_wrapper = { version = "1", default-features = false, features = ["futures"] }
+thiserror = { version = "2" }
 time = { version = "0.3", features = ["formatting", "local-offset", "macros", "parsing"] }
 tokio-rustls = { version = "0.26", features = ["ring"] }
 tokio-stream = { version = "0.1", features = ["net", "sync"] }
@@ -248,6 +249,7 @@ smallvec = { version = "1", default-features = false, features = ["const_new", "
 stable_deref_trait = { version = "1" }
 syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 sync_wrapper = { version = "1", default-features = false, features = ["futures"] }
+thiserror = { version = "2" }
 time = { version = "0.3", features = ["formatting", "local-offset", "macros", "parsing"] }
 tokio-rustls = { version = "0.26", features = ["ring"] }
 tokio-stream = { version = "0.1", features = ["net", "sync"] }
