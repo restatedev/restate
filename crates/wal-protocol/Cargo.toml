@@ -7,13 +7,20 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+test-util = []
+
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
+restate-encoding = { workspace = true }
+restate-limiter = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-types = { workspace = true }
+restate-util-string = { workspace = true }
 restate-worker-api = { workspace = true, features = ["serde"] }
 
+anyhow = { workspace = true }
 bilrost = { workspace = true }
 bytes = { workspace = true }
 derive_more = { workspace = true, features = ["debug"] }
