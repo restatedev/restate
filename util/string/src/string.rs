@@ -273,6 +273,38 @@ impl From<Cow<'static, str>> for ReString {
     }
 }
 
+#[cfg(feature = "metrics")]
+impl From<ReString> for metrics::SharedString {
+    #[inline]
+    fn from(s: ReString) -> Self {
+        match s.0 {
+            Inner::Static(s) => metrics::SharedString::from_borrowed(s),
+            Inner::RefCounted(s) => metrics::SharedString::from_shared(s),
+            Inner::Owned(s) => metrics::SharedString::from_owned(s.into_string()),
+        }
+    }
+}
+
+#[cfg(feature = "opentelemetry")]
+impl From<ReString> for opentelemetry::Value {
+    #[inline]
+    fn from(s: ReString) -> Self {
+        opentelemetry::Value::String(opentelemetry::StringValue::from(s))
+    }
+}
+
+#[cfg(feature = "opentelemetry")]
+impl From<ReString> for opentelemetry::StringValue {
+    #[inline]
+    fn from(s: ReString) -> Self {
+        match s.0 {
+            Inner::Static(s) => opentelemetry::StringValue::from(s),
+            Inner::RefCounted(s) => opentelemetry::StringValue::from(s),
+            Inner::Owned(s) => opentelemetry::StringValue::from(s.into_string()),
+        }
+    }
+}
+
 impl From<Arc<str>> for ReString {
     #[inline]
     fn from(s: Arc<str>) -> Self {
