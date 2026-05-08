@@ -448,7 +448,7 @@ fn to_deployment_response(
             http_version,
             protocol_type,
             address,
-        } => DeploymentResponse::Http {
+        } => DeploymentResponse::Http(HttpDeploymentResponse {
             id,
             uri: address,
             protocol_type,
@@ -464,12 +464,12 @@ fn to_deployment_response(
                 .map(|(name, revision)| ServiceNameRevPair { name, revision })
                 .collect(),
             info,
-        },
+        }),
         DeploymentType::Lambda {
             arn,
             assume_role_arn,
             compression,
-        } => DeploymentResponse::Lambda {
+        } => DeploymentResponse::Lambda(LambdaDeploymentResponse {
             id,
             arn,
             assume_role_arn: assume_role_arn.map(Into::into),
@@ -485,7 +485,7 @@ fn to_deployment_response(
                 .map(|(name, revision)| ServiceNameRevPair { name, revision })
                 .collect(),
             info,
-        },
+        }),
     }
 }
 
@@ -508,7 +508,7 @@ fn to_detailed_deployment_response(
             http_version,
             protocol_type,
             address,
-        } => DetailedDeploymentResponse::Http {
+        } => DetailedDeploymentResponse::Http(HttpDetailedDeploymentResponse {
             id,
             uri: address,
             protocol_type,
@@ -521,12 +521,12 @@ fn to_detailed_deployment_response(
             sdk_version,
             services,
             info,
-        },
+        }),
         DeploymentType::Lambda {
             arn,
             assume_role_arn,
             compression,
-        } => DetailedDeploymentResponse::Lambda {
+        } => DetailedDeploymentResponse::Lambda(LambdaDetailedDeploymentResponse {
             id,
             arn,
             assume_role_arn: assume_role_arn.map(Into::into),
@@ -539,7 +539,7 @@ fn to_detailed_deployment_response(
             sdk_version,
             services,
             info,
-        },
+        }),
     }
 }
 

@@ -14,7 +14,11 @@ use futures::StreamExt;
 use futures::stream;
 use http::{Uri, Version};
 use indicatif::ProgressBar;
-use restate_admin_rest_model::deployments::*;
+use restate_admin_rest_model::deployments::{
+    HttpDeploymentResponse, HttpDetailedDeploymentResponse, LambdaDeploymentResponse,
+    LambdaDetailedDeploymentResponse, RegisterDeploymentRequest, RegisterDeploymentResponse,
+    ServiceNameRevPair,
+};
 use restate_admin_rest_model::invocations::RestartAsNewInvocationResponse;
 use restate_admin_rest_model::kafka_clusters::*;
 use restate_admin_rest_model::services::*;
@@ -25,7 +29,49 @@ use restate_serde_util::SerdeableHeaderHashMap;
 use restate_types::identifiers::{DeploymentId, LambdaARN};
 use restate_types::schema::deployment::ProtocolType;
 use restate_types::schema::service::ServiceMetadata;
+use serde::Deserialize;
 use std::collections::HashMap;
+
+// Local untagged versions of deployment response enums for backward-compatible deserialization.
+// The server model uses #[serde(tag = "type")] for OpenAPI discriminator support, but the CLI
+// needs #[serde(untagged)] to also work with older servers that don't emit the "type" field.
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(untagged)]
+pub enum DeploymentResponse {
+    Http(HttpDeploymentResponse),
+    Lambda(LambdaDeploymentResponse),
+}
+
+impl DeploymentResponse {
+    pub fn id(&self) -> DeploymentId {
+        match self {
+            Self::Http(h) => h.id,
+            Self::Lambda(l) => l.id,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(untagged)]
+pub enum DetailedDeploymentResponse {
+    Http(HttpDetailedDeploymentResponse),
+    Lambda(LambdaDetailedDeploymentResponse),
+}
+
+impl DetailedDeploymentResponse {
+    pub fn id(&self) -> DeploymentId {
+        match self {
+            Self::Http(h) => h.id,
+            Self::Lambda(l) => l.id,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListDeploymentsResponse {
+    pub deployments: Vec<DeploymentResponse>,
+}
 
 const MAX_PARALLEL_REQUESTS: usize = 500;
 
@@ -483,7 +529,7 @@ impl Deployment {
         deployment_response: DeploymentResponse,
     ) -> (DeploymentId, Self, Vec<ServiceNameRevPair>) {
         match deployment_response {
-            DeploymentResponse::Http {
+            DeploymentResponse::Http(HttpDeploymentResponse {
                 id,
                 uri,
                 protocol_type,
@@ -496,7 +542,7 @@ impl Deployment {
                 metadata,
                 sdk_version,
                 ..
-            } => (
+            }) => (
                 id,
                 Deployment::Http {
                     uri,
@@ -511,7 +557,7 @@ impl Deployment {
                 },
                 services,
             ),
-            DeploymentResponse::Lambda {
+            DeploymentResponse::Lambda(LambdaDeploymentResponse {
                 id,
                 arn,
                 assume_role_arn,
@@ -523,7 +569,7 @@ impl Deployment {
                 metadata,
                 sdk_version,
                 ..
-            } => (
+            }) => (
                 id,
                 Deployment::Lambda {
                     arn,
@@ -544,7 +590,7 @@ impl Deployment {
         detailed_deployment_response: DetailedDeploymentResponse,
     ) -> (DeploymentId, Self, Vec<ServiceMetadata>) {
         match detailed_deployment_response {
-            DetailedDeploymentResponse::Http {
+            DetailedDeploymentResponse::Http(HttpDetailedDeploymentResponse {
                 id,
                 uri,
                 protocol_type,
@@ -557,7 +603,7 @@ impl Deployment {
                 metadata,
                 sdk_version,
                 ..
-            } => (
+            }) => (
                 id,
                 Deployment::Http {
                     uri,
@@ -572,7 +618,7 @@ impl Deployment {
                 },
                 services,
             ),
-            DetailedDeploymentResponse::Lambda {
+            DetailedDeploymentResponse::Lambda(LambdaDetailedDeploymentResponse {
                 id,
                 arn,
                 assume_role_arn,
@@ -584,7 +630,7 @@ impl Deployment {
                 metadata,
                 sdk_version,
                 ..
-            } => (
+            }) => (
                 id,
                 Deployment::Lambda {
                     arn,

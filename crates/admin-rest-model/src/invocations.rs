@@ -13,8 +13,12 @@ use restate_types::invocation::client as invocation_client;
 use serde::{Deserialize, Serialize};
 
 /// Specifies which deployment to use when resuming or restarting an invocation.
+///
+/// Can be one of:
+/// - `"Keep"` or `"keep"`: Keep the currently pinned deployment
+/// - `"Latest"` or `"latest"`: Use the latest deployment
+/// - Any other string: Use the specified deployment ID
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub enum PatchDeploymentId {
     /// Keep the currently pinned deployment
     #[default]
@@ -26,6 +30,30 @@ pub enum PatchDeploymentId {
     /// Use a specific deployment ID
     #[serde(untagged)]
     Id(String),
+}
+
+// We just generate a simple string type here,
+// because utoipa won't be able to generate a good schema by itself for this query param
+#[cfg(feature = "schema")]
+impl utoipa::PartialSchema for PatchDeploymentId {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        utoipa::openapi::ObjectBuilder::new()
+            .schema_type(utoipa::openapi::schema::Type::String)
+            .description(Some(
+                "Specifies which deployment to use. \
+                 Use 'keep' to keep the currently pinned deployment, \
+                 'latest' to use the latest deployment, \
+                 or provide a specific deployment ID.",
+            ))
+            .into()
+    }
+}
+
+#[cfg(feature = "schema")]
+impl utoipa::ToSchema for PatchDeploymentId {
+    fn name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("PatchDeploymentId")
+    }
 }
 
 impl PatchDeploymentId {

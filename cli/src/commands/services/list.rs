@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use cling::prelude::*;
 use comfy_table::Table;
 
-use restate_admin_rest_model::deployments::DeploymentResponse;
+use crate::clients::DeploymentResponse;
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::watcher::Watch;
 use restate_cli_util::{c_error, c_println};

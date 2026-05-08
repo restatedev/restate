@@ -36,7 +36,7 @@ use crate::generate_meta_api_error;
 use crate::rest_api::create_envelope_header;
 use crate::state::AdminServiceState;
 
-#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Default, Deserialize)]
 pub enum DeletionMode {
     #[default]
     #[serde(alias = "cancel")]
@@ -46,7 +46,7 @@ pub enum DeletionMode {
     #[serde(alias = "purge")]
     Purge,
 }
-#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Default, Deserialize)]
 pub struct DeleteInvocationParams {
     pub mode: Option<DeletionMode>,
 }
@@ -54,26 +54,6 @@ pub struct DeleteInvocationParams {
 /// Delete an invocation
 ///
 /// Use kill_invocation/cancel_invocation/purge_invocation instead.
-#[utoipa::path(
-    delete,
-    path = "/invocations/{invocation_id}",
-    operation_id = "delete_invocation",
-    tag = "invocation",
-    params(
-        ("invocation_id" = String, Path, description = "Invocation identifier."),
-        (
-            "mode" = Option<DeletionMode>, Query, 
-            description = "If cancel, it will gracefully terminate the invocation. \
-            If kill, it will terminate the invocation with a hard stop. \
-            If purge, it will only cleanup the response for completed invocations, 
-            and leave unaffected an in-flight invocation."
-        ),
-    ),
-    responses(
-        (status = 202, description = "Accepted"),
-        MetaApiError
-    )
-)]
 #[deprecated]
 pub async fn delete_invocation<Metadata, Discovery, Telemetry, Invocations, Transport>(
     State(mut state): State<
