@@ -84,7 +84,7 @@ mod test {
     use super::U128;
 
     #[test]
-    fn test_u128() {
+    fn u128() {
         (0..100).for_each(|_| {
             let num = random::<u128>();
             let value = U128::from(num);

@@ -26,7 +26,7 @@ mod tests {
     use restate_cli_util::completions::CompletionProvider;
 
     #[test]
-    fn test_completion_provider() {
+    fn completion_provider() {
         let binary_name = CliApp::completion_binary_name();
         assert_eq!(binary_name, "restate");
     }

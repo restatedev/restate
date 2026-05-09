@@ -353,7 +353,7 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn test_polybytes() {
+    fn polybytes() {
         let bytes = PolyBytes::Bytes(Bytes::from_static(b"hello"));
         assert_eq!(format!("{bytes:?}"), "Bytes(5 B)");
         let typed = PolyBytes::Typed(Arc::new("hello".to_string()));

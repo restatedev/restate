@@ -36,7 +36,7 @@ const PROMISE_COMPLETED: Promise = Promise {
 };
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_promise_table() {
+async fn promise_table() {
     let mut rocksdb = storage_test_environment().await;
 
     let promise_not_completed = Promise {

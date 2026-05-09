@@ -323,7 +323,7 @@ mod tests {
 
     #[restate_core::test]
     #[traced_test]
-    async fn test_http_post() {
+    async fn http_post() {
         let mut mock_dispatcher = MockRequestDispatcher::default();
         mock_dispatcher
             .expect_call()

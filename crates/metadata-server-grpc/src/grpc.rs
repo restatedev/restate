@@ -98,7 +98,7 @@ mod test {
     use super::Ulid;
 
     #[test]
-    fn test_ulid_encoding() {
+    fn ulid_encoding() {
         let id = ulid::Ulid::new();
         let encoded = Ulid::from(id);
         let decoded = ulid::Ulid::from(encoded);

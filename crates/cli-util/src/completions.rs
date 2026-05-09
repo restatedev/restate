@@ -286,12 +286,12 @@ mod tests {
     }
 
     #[test]
-    fn test_get_or_detect_shell() {
+    fn get_or_detect_shell() {
         // Test with explicit shell
-        assert_eq!(get_or_detect_shell(Some(Shell::Zsh)), Shell::Zsh);
+        assert_eq!(super::get_or_detect_shell(Some(Shell::Zsh)), Shell::Zsh);
 
         // Test with None - should use env detection or default to Bash
-        let detected = get_or_detect_shell(None);
+        let detected = super::get_or_detect_shell(None);
         assert!(matches!(
             detected,
             Shell::Bash | Shell::Zsh | Shell::Fish | Shell::PowerShell
@@ -299,13 +299,13 @@ mod tests {
     }
 
     #[test]
-    fn test_completion_provider() {
+    fn completion_provider() {
         let name = TestCli::completion_binary_name();
         assert_eq!(name, "test-cli");
     }
 
     #[test]
-    fn test_shell_config_constants() {
+    fn shell_config_constants() {
         assert_eq!(
             ShellConfig::BASH.completion_path,
             ".local/share/bash-completion/completions"
@@ -322,13 +322,13 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_completions() {
-        let result = generate_completions::<TestCli>(Some(Shell::Bash));
+    fn generate_completions() {
+        let result = super::generate_completions::<TestCli>(Some(Shell::Bash));
         assert!(result.is_ok());
     }
 
     #[test]
-    fn test_install_bash_completions() {
+    fn install_bash_completions() {
         let temp_dir = tempdir().unwrap();
         let home_dir = temp_dir.path().to_str().unwrap();
 
@@ -347,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn test_install_unsupported_shell() {
+    fn install_unsupported_shell() {
         let result = install_completions_for_shell::<TestCli>(Shell::Elvish);
         assert!(result.is_err());
     }

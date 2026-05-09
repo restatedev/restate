@@ -534,7 +534,7 @@ mod tests {
     }
 
     #[test]
-    fn test_append_operation_cost_in_bytes() {
+    fn append_operation_cost_in_bytes() {
         // Test that Enqueue operations report their record size
         let record = make_record_with_size(100);
         let expected_size = record.estimated_encode_size();
@@ -554,7 +554,7 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_can_fit_by_bytes() {
+    fn batch_can_fit_by_bytes() {
         let mut batch = Batch::with_capacity(100);
         let byte_limit = 1000;
         let max_count = 100; // High count limit, so bytes is the constraint
@@ -577,7 +577,7 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_can_fit_by_count() {
+    fn batch_can_fit_by_count() {
         let mut batch = Batch::with_capacity(100);
         let byte_limit = 1_000_000; // High byte limit, so count is the constraint
         let max_count = 3;
@@ -599,7 +599,7 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_bytes_accumulated_tracking() {
+    fn batch_bytes_accumulated_tracking() {
         let mut batch = Batch::with_capacity(10);
         let mut expected_total = 0;
 

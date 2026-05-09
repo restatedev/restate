@@ -149,7 +149,7 @@ mod tests {
     use bytes::Bytes;
 
     #[tokio::test]
-    async fn test_create_and_get() {
+    async fn create_and_get() {
         let repo = InMemoryVersionRepository::new();
         let key = ByteString::from_static("test_key");
         let content = Content {
@@ -166,7 +166,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_already_exists() {
+    async fn create_already_exists() {
         let repo = InMemoryVersionRepository::new();
         let key = ByteString::from_static("test_key");
         let content = Content {
@@ -181,7 +181,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_put_and_put_if_tag_matches() {
+    async fn put_and_put_if_tag_matches() {
         let repo = InMemoryVersionRepository::new();
         let key = ByteString::from_static("test_key");
         let content1 = Content {
@@ -213,7 +213,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_delete() {
+    async fn delete() {
         let repo = InMemoryVersionRepository::new();
         let key = ByteString::from_static("test_key");
         let content = Content {
@@ -229,7 +229,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_delete_if_tag_matches() {
+    async fn delete_if_tag_matches() {
         let repo = InMemoryVersionRepository::new();
         let key = ByteString::from_static("test_key");
         let content = Content {

@@ -979,7 +979,7 @@ mod tests {
     }
 
     #[test(restate_core::test(start_paused = true))]
-    async fn test_simple_store_flow() -> Result<()> {
+    async fn simple_store_flow() -> Result<()> {
         let log_store = setup().await?;
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
         const LOGLET: LogletId = LogletId::new_unchecked(1);
@@ -1042,7 +1042,7 @@ mod tests {
     }
 
     #[test(restate_core::test(start_paused = true))]
-    async fn test_store_and_seal() -> Result<()> {
+    async fn store_and_seal() -> Result<()> {
         let log_store = setup().await?;
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
         const LOGLET: LogletId = LogletId::new_unchecked(1);
@@ -1162,7 +1162,7 @@ mod tests {
     }
 
     #[test(restate_core::test(start_paused = true))]
-    async fn test_repair_store() -> Result<()> {
+    async fn repair_store() -> Result<()> {
         let log_store = setup().await?;
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
         const PEER: GenerationalNodeId = GenerationalNodeId::new(2, 2);
@@ -1303,7 +1303,7 @@ mod tests {
     }
 
     #[test(restate_core::test(start_paused = true))]
-    async fn test_simple_get_records_flow() -> Result<()> {
+    async fn simple_get_records_flow() -> Result<()> {
         let log_store = setup().await?;
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
         const LOGLET: LogletId = LogletId::new_unchecked(1);
@@ -1501,7 +1501,7 @@ mod tests {
     }
 
     #[test(restate_core::test(start_paused = true))]
-    async fn test_trim_basics() -> Result<()> {
+    async fn trim_basics() -> Result<()> {
         let log_store = setup().await?;
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
         const LOGLET: LogletId = LogletId::new_unchecked(1);

@@ -113,7 +113,7 @@ pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_delete_all() {
+async fn delete_all() {
     let mut rocksdb = storage_test_environment().await;
 
     let mut txn = rocksdb.transaction();

@@ -1334,7 +1334,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     #[traced_test]
-    async fn test_basic_lifecycle() -> Result<()> {
+    async fn basic_lifecycle() -> Result<()> {
         let common_opts = CommonOptionsBuilder::default()
             .default_thread_pool_size(3)
             .build()

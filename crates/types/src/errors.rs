@@ -424,7 +424,7 @@ mod tests {
     use tonic::Code;
 
     #[test]
-    fn test_simple_status_display() {
+    fn simple_status_display() {
         let status = tonic::Status::new(Code::NotFound, "Resource not found");
         let simple_status = SimpleStatus(status);
         assert_eq!(
@@ -434,14 +434,14 @@ mod tests {
     }
 
     #[test]
-    fn test_simple_status_from_tonic() {
+    fn simple_status_from_tonic() {
         let tonic_status = tonic::Status::new(Code::Internal, "Internal error");
         let simple_status: SimpleStatus = tonic_status.into();
         assert_eq!(simple_status.to_string(), "Internal error: Internal error");
     }
 
     #[test]
-    fn test_simple_status_as_ref() {
+    fn simple_status_as_ref() {
         let tonic_status = tonic::Status::new(Code::InvalidArgument, "Invalid argument");
         let simple_status = SimpleStatus(tonic_status.clone());
         assert_eq!(simple_status.as_ref().code(), tonic_status.code());
@@ -449,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn test_simple_status_into_tonic() {
+    fn simple_status_into_tonic() {
         let tonic_status = tonic::Status::new(Code::Unauthenticated, "Unauthenticated");
         let simple_status = SimpleStatus(tonic_status.clone());
         let converted: tonic::Status = simple_status.into();
@@ -458,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn test_simple_status_omits_details_and_metadata() {
+    fn simple_status_omits_details_and_metadata() {
         let mut status = tonic::Status::new(Code::Internal, "Error message");
 
         status

@@ -672,7 +672,7 @@ mod tests {
 
     // Test handshake with a client
     #[restate_core::test]
-    async fn test_hello_welcome_handshake() -> Result<()> {
+    async fn hello_welcome_handshake() -> Result<()> {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
         let connections = ConnectionManager::default();
 
@@ -689,7 +689,7 @@ mod tests {
     }
 
     #[restate_core::test(start_paused = true)]
-    async fn test_hello_welcome_timeout() -> Result<()> {
+    async fn hello_welcome_timeout() -> Result<()> {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
         let net_opts = NetworkingOptions::default();
         let connections = ConnectionManager::default();
@@ -708,7 +708,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn test_bad_handshake() -> Result<()> {
+    async fn bad_handshake() -> Result<()> {
         let test_setup = TestCoreEnv::create_with_single_node(1, 1).await;
         let metadata = test_setup.metadata;
         let (tx, rx) = mpsc::channel(1);
@@ -805,7 +805,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn test_node_generation() -> Result<()> {
+    async fn node_generation() -> Result<()> {
         let _env = TestCoreEnv::create_with_single_node(1, 2).await;
         let metadata = Metadata::current();
         let (tx, rx) = mpsc::channel(1);

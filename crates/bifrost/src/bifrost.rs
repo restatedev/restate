@@ -795,7 +795,7 @@ mod tests {
 
     #[restate_core::test]
     #[traced_test]
-    async fn test_append_smoke() -> googletest::Result<()> {
+    async fn append_smoke() -> googletest::Result<()> {
         let num_partitions = 5;
         let env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_partition_table(PartitionTable::with_equally_sized_partitions(
@@ -871,7 +871,7 @@ mod tests {
     }
 
     #[restate_core::test(start_paused = true)]
-    async fn test_lazy_initialization() -> googletest::Result<()> {
+    async fn lazy_initialization() -> googletest::Result<()> {
         let env = TestCoreEnv::create_with_single_node(1, 1).await;
         let delay = Duration::from_secs(5);
         // This memory provider adds a delay to its loglet initialization, we want
@@ -972,7 +972,7 @@ mod tests {
     }
 
     #[restate_core::test(start_paused = true)]
-    async fn test_read_across_segments() -> googletest::Result<()> {
+    async fn read_across_segments() -> googletest::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
 
         let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
@@ -1192,7 +1192,7 @@ mod tests {
 
     #[restate_core::test(start_paused = true)]
     #[traced_test]
-    async fn test_appends_correctly_handle_reconfiguration() -> googletest::Result<()> {
+    async fn appends_correctly_handle_reconfiguration() -> googletest::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
         let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_partition_table(PartitionTable::with_equally_sized_partitions(
@@ -1304,7 +1304,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn test_append_record_too_large() -> googletest::Result<()> {
+    async fn append_record_too_large() -> googletest::Result<()> {
         // Set up a configuration with a small record size limit.
         let mut config = restate_types::config::Configuration::default();
         config.networking.message_size_limit = small_byte_limit(5); // 5 bytes limit
@@ -1345,7 +1345,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn test_background_appender_record_too_large() -> googletest::Result<()> {
+    async fn background_appender_record_too_large() -> googletest::Result<()> {
         // Set up configuration with a small record size limit (100 bytes).
         // Note: The estimated_encode_size for any typed record is ~2KB constant,
         // so even "small" strings will exceed the 100 byte limit.
@@ -1404,7 +1404,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn test_background_appender_record_within_limit() -> googletest::Result<()> {
+    async fn background_appender_record_within_limit() -> googletest::Result<()> {
         // Set up configuration with a large enough record size limit (10KB) to allow records
         let mut config = restate_types::config::Configuration::default();
         config.networking.message_size_limit = small_byte_limit(10 * 1024); // 10KB
@@ -1432,7 +1432,7 @@ mod tests {
 
     /// Test that records enqueued rapidly are properly committed.
     #[restate_core::test]
-    async fn test_background_appender_rapid_enqueue() -> googletest::Result<()> {
+    async fn background_appender_rapid_enqueue() -> googletest::Result<()> {
         let mut config = restate_types::config::Configuration::default();
         config.networking.message_size_limit = small_byte_limit(50 * 1024); // 50KB
         let config = config.apply_cascading_values();

@@ -231,7 +231,7 @@ mod tests {
     /// 2. Records with HLC timestamps (UniqueTimestamp encoded as u64)
     /// 3. Records with extended headers (extra bytes after timestamp)
     #[test]
-    fn test_decode_with_record_flags() -> googletest::Result<()> {
+    fn decode_with_record_flags() -> googletest::Result<()> {
         let body = b"test payload";
 
         // Test 1: Decode record with no flags set (plain NanosSinceEpoch timestamp)

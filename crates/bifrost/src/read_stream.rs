@@ -769,7 +769,7 @@ mod tests {
 
     #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
     #[traced_test]
-    async fn test_readstream_one_loglet() -> anyhow::Result<()> {
+    async fn readstream_one_loglet() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
 
         let env = TestCoreEnvBuilder::with_incoming_only_connector()
@@ -851,7 +851,7 @@ mod tests {
 
     #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
     #[traced_test]
-    async fn test_read_stream_with_trim() -> anyhow::Result<()> {
+    async fn read_stream_with_trim() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
 
         let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
@@ -948,7 +948,7 @@ mod tests {
 
     // Note: This test doesn't validate read stream behaviour with zombie records at seal boundary.
     #[restate_core::test(start_paused = true)]
-    async fn test_readstream_simple_multi_loglet() -> anyhow::Result<()> {
+    async fn readstream_simple_multi_loglet() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
 
         let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
@@ -1109,7 +1109,7 @@ mod tests {
     }
 
     #[restate_core::test(start_paused = true)]
-    async fn test_readstream_sealed_multi_loglet() -> anyhow::Result<()> {
+    async fn readstream_sealed_multi_loglet() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
 
         let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
@@ -1229,7 +1229,7 @@ mod tests {
     }
 
     #[restate_core::test(start_paused = true)]
-    async fn test_readstream_chain_sealing() -> anyhow::Result<()> {
+    async fn readstream_chain_sealing() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
 
         let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
@@ -1360,7 +1360,7 @@ mod tests {
     }
 
     #[restate_core::test(start_paused = true)]
-    async fn test_readstream_prefix_trimmed() -> anyhow::Result<()> {
+    async fn readstream_prefix_trimmed() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
 
         let node_env = TestCoreEnvBuilder::with_incoming_only_connector()

@@ -577,7 +577,7 @@ mod test {
     }
 
     #[restate_core::test]
-    async fn test_remote_stream_ok() {
+    async fn remote_stream_ok() {
         let handler = SequencerMockHandler::default();
         let test_env = create_test_env(handler).await;
 
@@ -616,7 +616,7 @@ mod test {
     }
 
     #[restate_core::test]
-    async fn test_remote_stream_sealed() {
+    async fn remote_stream_sealed() {
         let handler = SequencerMockHandler::with_reply_status(Some(SequencerStatus::Sealed));
         let test_env = create_test_env(handler).await;
 

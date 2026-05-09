@@ -101,7 +101,7 @@ mod tests {
     use std::time::{Duration, Instant, SystemTime};
 
     #[tokio::test]
-    async fn test_simple_timer() {
+    async fn simple_timer() {
         let mut timer_queue = TimerQueue::new();
 
         let now = Instant::now();
@@ -116,7 +116,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_timer_ordering() {
+    async fn timer_ordering() {
         let now = SystemTime::now();
 
         let mut timer_queue: TimerQueue<i32> = [
@@ -132,7 +132,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_completed_timers() {
+    async fn completed_timers() {
         let now = SystemTime::now();
 
         let mut timer_queue: TimerQueue<i32> = [

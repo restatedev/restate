@@ -697,7 +697,7 @@ mod tests {
     }
 
     #[test(restate_core::test(start_paused = true))]
-    async fn test_log_store_marker() -> Result<()> {
+    async fn log_store_marker() -> Result<()> {
         let log_store = setup().await?;
 
         let marker = log_store.load_marker().await?;
@@ -720,7 +720,7 @@ mod tests {
     }
 
     #[test(restate_core::test(start_paused = true))]
-    async fn test_load_loglet_state() -> Result<()> {
+    async fn load_loglet_state() -> Result<()> {
         let log_store = setup().await?;
         // fresh/unknown loglet
         let loglet_id_1 = LogletId::new_unchecked(88);
@@ -809,7 +809,7 @@ mod tests {
     }
 
     #[test(restate_core::test(start_paused = true))]
-    async fn test_digest() -> Result<()> {
+    async fn digest() -> Result<()> {
         let log_store = setup().await?;
         let loglet_id_1 = LogletId::new_unchecked(88);
         let loglet_id_2 = LogletId::new_unchecked(89);

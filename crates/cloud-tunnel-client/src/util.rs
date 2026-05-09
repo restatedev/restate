@@ -72,7 +72,7 @@ mod tests {
     use http::uri::PathAndQuery;
 
     #[test]
-    fn test_parse_tunnel_destination_valid_http() {
+    fn parse_tunnel_destination_valid_http() {
         let path_and_query =
             PathAndQuery::from_static("/http/example.com/8080/api/v1/users?id=123");
         let result = parse_tunnel_destination(&path_and_query).unwrap();
@@ -86,7 +86,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_tunnel_destination_valid_https() {
+    fn parse_tunnel_destination_valid_https() {
         let path_and_query = PathAndQuery::from_static("/https/api.example.com/443/v2/data");
         let result = parse_tunnel_destination(&path_and_query).unwrap();
 
@@ -96,7 +96,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_tunnel_destination_root_path() {
+    fn parse_tunnel_destination_root_path() {
         let path_and_query = PathAndQuery::from_static("/http/localhost/3000");
         let result = parse_tunnel_destination(&path_and_query).unwrap();
 
@@ -106,7 +106,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_tunnel_destination_with_query_no_path() {
+    fn parse_tunnel_destination_with_query_no_path() {
         let path_and_query = PathAndQuery::from_static("/https/example.com/443?query=value");
         let result = parse_tunnel_destination(&path_and_query).unwrap();
 
@@ -116,7 +116,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_tunnel_destination_missing_leading_slash() {
+    fn parse_tunnel_destination_missing_leading_slash() {
         let path_and_query = PathAndQuery::from_static("http/example.com/8080/api");
         let result = parse_tunnel_destination(&path_and_query);
 
@@ -124,7 +124,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_tunnel_destination_no_host() {
+    fn parse_tunnel_destination_no_host() {
         let path_and_query = PathAndQuery::from_static("/http");
         let result = parse_tunnel_destination(&path_and_query);
 
@@ -132,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_tunnel_destination_invalid_scheme() {
+    fn parse_tunnel_destination_invalid_scheme() {
         let path_and_query = PathAndQuery::from_static("/!/example.com/8080/api");
         let result = parse_tunnel_destination(&path_and_query);
 
@@ -140,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_tunnel_destination_no_port() {
+    fn parse_tunnel_destination_no_port() {
         let path_and_query = PathAndQuery::from_static("/http/example.com");
         let result = parse_tunnel_destination(&path_and_query);
 
@@ -148,7 +148,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_tunnel_destination_complex_path() {
+    fn parse_tunnel_destination_complex_path() {
         let path_and_query = PathAndQuery::from_static(
             "/https/api.service.com/443/v1/users/123/posts?limit=10&offset=20",
         );

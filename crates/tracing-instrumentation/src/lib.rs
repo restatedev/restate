@@ -932,7 +932,7 @@ mod test {
     use restate_types::invocation::InvocationTarget;
 
     #[test]
-    fn test_macro() {
+    fn macro_call_syntax() {
         let target = InvocationTarget::mock_virtual_object();
 
         // verification of macro call syntax

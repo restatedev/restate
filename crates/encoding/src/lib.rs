@@ -36,7 +36,7 @@ mod test {
     }
 
     #[test]
-    fn test_new_type() {
+    fn new_type() {
         let x = Nested { id: MyId(10) };
 
         let bytes = x.encode_to_bytes();
