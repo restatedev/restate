@@ -26,6 +26,7 @@ use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceState};
 pub use opentelemetry::trace::TraceId;
 use serde_with::{DisplayFromStr, FromInto, serde_as};
 
+use restate_memory::ByteCount;
 use restate_util_string::ReString;
 
 use crate::Scope;
@@ -514,7 +515,7 @@ impl WithInvocationId for InvocationRequest {
 }
 
 /// Struct representing an invocation to a service. This struct is processed by Restate to execute the invocation.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(derive_more::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(
     from = "serde_hacks::ServiceInvocation",
     into = "serde_hacks::ServiceInvocation"
@@ -522,6 +523,7 @@ impl WithInvocationId for InvocationRequest {
 pub struct ServiceInvocation {
     pub invocation_id: InvocationId,
     pub invocation_target: InvocationTarget,
+    #[debug("Bytes({})", ByteCount::from(argument.len()))]
     pub argument: Bytes,
     pub source: Source,
     pub span_context: ServiceInvocationSpanContext,

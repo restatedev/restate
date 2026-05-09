@@ -131,10 +131,10 @@ pub async fn run(
     // -----------------------------------------------------------------------
     // 4. Warmup
     // -----------------------------------------------------------------------
+    let mut action_collector = ActionCollector::default();
     if warmup > 0 {
         c_println!("Warming up ({} commands)...", warmup);
         let mut lsn = Lsn::OLDEST;
-        let mut action_collector = ActionCollector::default();
 
         let warmup_batch_count = warmup.div_ceil(batch_size as u64);
         let mut cmds_applied: u64 = 0;
@@ -171,7 +171,6 @@ pub async fn run(
 
     let mut latencies = Histogram::<u64>::new(3).unwrap();
     let mut lsn = Lsn::from(1_000_000);
-    let mut action_collector = ActionCollector::default();
 
     let num_batches = num_commands.div_ceil(batch_size as u64);
     let mut total_cmds: u64 = 0;
@@ -217,6 +216,8 @@ pub async fn run(
     reporter_handle.abort();
     let _ = reporter_handle.await;
 
+    RocksDbManager::get().shutdown().await;
+
     // -----------------------------------------------------------------------
     // 7. Summary
     // -----------------------------------------------------------------------
@@ -240,6 +241,5 @@ pub async fn run(
         print_summary(&summary);
     }
 
-    RocksDbManager::get().shutdown().await;
     Ok(())
 }

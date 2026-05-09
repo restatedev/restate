@@ -6141,6 +6141,7 @@ dependencies = [
  "restate-time-util",
  "restate-tracing-instrumentation",
  "restate-types",
+ "restate-util-string",
  "restate-vqueues",
  "restate-wal-protocol",
  "restate-worker",
