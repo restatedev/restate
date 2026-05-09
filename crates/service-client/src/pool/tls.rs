@@ -232,7 +232,7 @@ where
                 TlsConnectorFutureInnerProject::Handshaking { fut } => {
                     match ready!(fut.poll_unpin(cx)) {
                         Ok(Ok(stream)) => {
-                            return Poll::Ready(Ok(MaybeTlsStream::TLS(Box::new(stream))));
+                            return Poll::Ready(Ok(MaybeTlsStream::Tls(Box::new(stream))));
                         }
                         Ok(Err(err)) => {
                             return Poll::Ready(Err(err));
@@ -257,7 +257,7 @@ where
 /// to the inner stream.
 pub enum MaybeTlsStream<S> {
     /// A TLS-encrypted stream (HTTPS).
-    TLS(Box<TlsStream<S>>),
+    Tls(Box<TlsStream<S>>),
     /// A plain, unencrypted stream (HTTP).
     Plain(S),
 }
@@ -276,7 +276,7 @@ where
                 let plain = Pin::new(plain);
                 plain.poll_read(cx, buf)
             }
-            MaybeTlsStream::TLS(tls) => {
+            MaybeTlsStream::Tls(tls) => {
                 let tls = Pin::new(tls);
                 tls.poll_read(cx, buf)
             }
@@ -298,7 +298,7 @@ where
                 let plain = Pin::new(plain);
                 plain.poll_write(cx, buf)
             }
-            MaybeTlsStream::TLS(tls) => {
+            MaybeTlsStream::Tls(tls) => {
                 let tls = Pin::new(tls);
                 tls.poll_write(cx, buf)
             }
@@ -314,7 +314,7 @@ where
                 let plain = Pin::new(plain);
                 plain.poll_flush(cx)
             }
-            MaybeTlsStream::TLS(tls) => {
+            MaybeTlsStream::Tls(tls) => {
                 let tls = Pin::new(tls);
                 tls.poll_flush(cx)
             }
@@ -330,7 +330,7 @@ where
                 let plain = Pin::new(plain);
                 plain.poll_shutdown(cx)
             }
-            MaybeTlsStream::TLS(tls) => {
+            MaybeTlsStream::Tls(tls) => {
                 let tls = Pin::new(tls);
                 tls.poll_shutdown(cx)
             }

@@ -288,22 +288,22 @@ impl<const CAN_BE_ZERO: bool> Duration<CAN_BE_ZERO> {
     }
 
     /// Returns a span with its maximum unit set to days.
-    pub fn to_days_span(&self) -> TimeSpan<Days> {
+    pub fn to_days_span(self) -> TimeSpan<Days> {
         TimeSpan::<Days>::new(Span::try_from(self.0).unwrap())
     }
 
     /// Returns a span with its maximum unit set to seconds.
-    pub fn to_seconds_span(&self) -> TimeSpan<Seconds> {
+    pub fn to_seconds_span(self) -> TimeSpan<Seconds> {
         TimeSpan::<Seconds>::new(Span::try_from(self.0).unwrap())
     }
 
     /// Returns a span that's displayed as `HH:MM:SS`
-    pub fn to_hms_span(&self) -> TimeSpan<Hms> {
+    pub fn to_hms_span(self) -> TimeSpan<Hms> {
         TimeSpan::<Hms>::new(Span::try_from(self.0).unwrap())
     }
 
     /// Returns a span that's displayed as `HH:MM:SS`
-    pub fn to_iso8601_span(&self) -> TimeSpan<Iso8601> {
+    pub fn to_iso8601_span(self) -> TimeSpan<Iso8601> {
         TimeSpan::<Iso8601>::new(Span::try_from(self.0).unwrap())
     }
 

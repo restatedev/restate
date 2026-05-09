@@ -318,7 +318,7 @@ where
         (
             http_stream_tx,
             Request::new(
-                Parts::from_deployment(deployment, Method::POST, path, headers),
+                Parts::from_deployment(deployment, Method::Post, path, headers),
                 req_body,
             ),
         )

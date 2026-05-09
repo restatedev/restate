@@ -229,7 +229,7 @@ impl DiscoveryClient for ServiceDiscovery {
             headers.extend(additional_headers.clone());
             let path = PathAndQuery::from_static(DISCOVER_PATH);
             Request::new(
-                Parts::new(Method::GET, cloned_endpoint.clone(), path, headers),
+                Parts::new(Method::Get, cloned_endpoint.clone(), path, headers),
                 Empty::default(),
             )
         };

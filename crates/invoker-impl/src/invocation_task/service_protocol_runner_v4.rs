@@ -462,7 +462,7 @@ where
 
         (
             http_stream_tx,
-            Request::new(Parts::new(Method::POST, address, path, headers), req_body),
+            Request::new(Parts::new(Method::Post, address, path, headers), req_body),
         )
     }
 

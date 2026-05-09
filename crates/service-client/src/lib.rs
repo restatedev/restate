@@ -223,15 +223,15 @@ impl<B> Request<B> {
 
 #[derive(Clone, Copy, Debug)]
 pub enum Method {
-    POST,
-    GET,
+    Post,
+    Get,
 }
 
 impl From<Method> for hyper::http::Method {
     fn from(value: Method) -> Self {
         match value {
-            Method::POST => hyper::http::Method::POST,
-            Method::GET => hyper::http::Method::GET,
+            Method::Post => hyper::http::Method::POST,
+            Method::Get => hyper::http::Method::GET,
         }
     }
 }

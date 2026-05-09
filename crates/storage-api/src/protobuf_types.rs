@@ -78,6 +78,7 @@ impl From<ConversionError> for StorageError {
 }
 
 pub mod v1 {
+    #![allow(clippy::enum_variant_names)]
     #![allow(clippy::large_enum_variant)]
 
     include!(concat!(

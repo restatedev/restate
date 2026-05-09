@@ -84,7 +84,7 @@ impl SerdesClient {
         let (parts, response_body) = self
             .client
             .call(Request::new(
-                Parts::from_deployment(deployment, Method::POST, path, headers),
+                Parts::from_deployment(deployment, Method::Post, path, headers),
                 body,
             ))
             .await?
@@ -134,7 +134,7 @@ impl SerdesClient {
         let (parts, response_body) = self
             .client
             .call(Request::new(
-                Parts::from_deployment(deployment, Method::POST, path, headers),
+                Parts::from_deployment(deployment, Method::Post, path, headers),
                 body,
             ))
             .await?

@@ -67,7 +67,7 @@ impl EntryId {
         self.kind
     }
 
-    pub fn to_bytes(&self) -> [u8; Self::serialized_length_fixed()] {
+    pub fn to_bytes(self) -> [u8; Self::serialized_length_fixed()] {
         assert_ne!(
             self.kind,
             EntryKind::Unknown,
@@ -99,7 +99,7 @@ impl EntryId {
     }
 
     #[inline]
-    pub fn to_remainder_bytes(&self) -> [u8; Self::REMAINDER_LEN] {
+    pub fn to_remainder_bytes(self) -> [u8; Self::REMAINDER_LEN] {
         self.remainder
     }
 
@@ -113,7 +113,7 @@ impl EntryId {
 
     /// Returns the [`InvocationId`] if this is a [`EntryKind::Invocation`].
     #[inline]
-    pub fn to_invocation_id(&self, partition_key: PartitionKey) -> Option<InvocationId> {
+    pub fn to_invocation_id(self, partition_key: PartitionKey) -> Option<InvocationId> {
         match self.kind() {
             EntryKind::Invocation => Some(InvocationId::from_parts(
                 partition_key,
@@ -125,7 +125,7 @@ impl EntryId {
 
     /// Returns the [`StateMutationId`] if this is a [`EntryKind::StateMutation`].
     #[inline]
-    pub fn to_state_mutation_id(&self, partition_key: PartitionKey) -> Option<StateMutationId> {
+    pub fn to_state_mutation_id(self, partition_key: PartitionKey) -> Option<StateMutationId> {
         match self.kind() {
             EntryKind::StateMutation => Some(StateMutationId::from_partition_key_and_bytes(
                 partition_key,

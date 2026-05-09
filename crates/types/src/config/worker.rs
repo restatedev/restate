@@ -907,9 +907,9 @@ impl From<ThrottlingOptions> for gardal::Limit {
         use gardal::Limit;
 
         let mut limit = match options.rate {
-            Rate::PerSecond(rate) => Limit::per_second(rate),
-            Rate::PerMinute(rate) => Limit::per_minute(rate),
-            Rate::PerHour(rate) => Limit::per_hour(rate),
+            Rate::Second(rate) => Limit::per_second(rate),
+            Rate::Minute(rate) => Limit::per_minute(rate),
+            Rate::Hour(rate) => Limit::per_hour(rate),
         };
 
         if let Some(capacity) = options.capacity {

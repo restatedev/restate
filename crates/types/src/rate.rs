@@ -29,9 +29,9 @@ use serde::{Deserialize, Serialize, de::Visitor};
 /// use std::num::NonZeroU32;
 ///
 /// // Create rates using different time units
-/// let per_second = Rate::PerSecond(NonZeroU32::new(100).unwrap());
-/// let per_minute = Rate::PerMinute(NonZeroU32::new(60).unwrap());
-/// let per_hour = Rate::PerHour(NonZeroU32::new(3600).unwrap());
+/// let per_second = Rate::Second(NonZeroU32::new(100).unwrap());
+/// let per_minute = Rate::Minute(NonZeroU32::new(60).unwrap());
+/// let per_hour = Rate::Hour(NonZeroU32::new(3600).unwrap());
 ///
 /// // Parse from string
 /// let parsed: Rate = "100/sec".parse().unwrap();
@@ -40,11 +40,11 @@ use serde::{Deserialize, Serialize, de::Visitor};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Rate {
     /// Rate expressed as operations per second
-    PerSecond(NonZeroU32),
+    Second(NonZeroU32),
     /// Rate expressed as operations per minute
-    PerMinute(NonZeroU32),
+    Minute(NonZeroU32),
     /// Rate expressed as operations per hour
-    PerHour(NonZeroU32),
+    Hour(NonZeroU32),
 }
 
 impl Rate {
@@ -56,14 +56,14 @@ impl Rate {
     /// use restate_types::rate::Rate;
     /// use std::num::NonZeroU32;
     ///
-    /// let rate = Rate::PerMinute(NonZeroU32::new(60).unwrap());
+    /// let rate = Rate::Minute(NonZeroU32::new(60).unwrap());
     /// assert_eq!(rate.get(), NonZeroU32::new(60).unwrap());
     /// ```
     pub fn get(&self) -> NonZeroU32 {
         match self {
-            Rate::PerSecond(rate) => *rate,
-            Rate::PerMinute(rate) => *rate,
-            Rate::PerHour(rate) => *rate,
+            Rate::Second(rate) => *rate,
+            Rate::Minute(rate) => *rate,
+            Rate::Hour(rate) => *rate,
         }
     }
 }
@@ -71,9 +71,9 @@ impl Rate {
 impl Display for Rate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Rate::PerSecond(rate) => write!(f, "{}/s", rate),
-            Rate::PerMinute(rate) => write!(f, "{}/m", rate),
-            Rate::PerHour(rate) => write!(f, "{}/h", rate),
+            Rate::Second(rate) => write!(f, "{}/s", rate),
+            Rate::Minute(rate) => write!(f, "{}/m", rate),
+            Rate::Hour(rate) => write!(f, "{}/h", rate),
         }
     }
 }
@@ -119,15 +119,15 @@ impl FromStr for Rate {
     ///
     /// // Plain number defaults to per-second
     /// let rate: Rate = "100".parse().unwrap();
-    /// assert_eq!(rate, Rate::PerSecond(NonZeroU32::new(100).unwrap()));
+    /// assert_eq!(rate, Rate::Second(NonZeroU32::new(100).unwrap()));
     ///
     /// // Explicit unit specification
     /// let rate: Rate = "60/min".parse().unwrap();
-    /// assert_eq!(rate, Rate::PerMinute(NonZeroU32::new(60).unwrap()));
+    /// assert_eq!(rate, Rate::Minute(NonZeroU32::new(60).unwrap()));
     ///
     /// // Case-insensitive and whitespace-tolerant
     /// let rate: Rate = " 3600 / HOUR ".parse().unwrap();
-    /// assert_eq!(rate, Rate::PerHour(NonZeroU32::new(3600).unwrap()));
+    /// assert_eq!(rate, Rate::Hour(NonZeroU32::new(3600).unwrap()));
     /// ```
     ///
     /// # Errors
@@ -142,7 +142,7 @@ impl FromStr for Rate {
                     .trim()
                     .parse::<NonZeroU32>()
                     .map_err(ParseError::InvalidRate)?;
-                return Ok(Rate::PerSecond(rate));
+                return Ok(Rate::Second(rate));
             }
         };
 
@@ -152,9 +152,9 @@ impl FromStr for Rate {
             .map_err(ParseError::InvalidRate)?;
 
         match unit.trim().to_lowercase().as_str() {
-            "s" | "sec" | "second" => Ok(Rate::PerSecond(rate)),
-            "m" | "min" | "minute" => Ok(Rate::PerMinute(rate)),
-            "h" | "hr" | "hour" => Ok(Rate::PerHour(rate)),
+            "s" | "sec" | "second" => Ok(Rate::Second(rate)),
+            "m" | "min" | "minute" => Ok(Rate::Minute(rate)),
+            "h" | "hr" | "hour" => Ok(Rate::Hour(rate)),
             _ => Err(ParseError::InvalidSyntax),
         }
     }
@@ -172,7 +172,7 @@ impl Serialize for Rate {
     /// use std::num::NonZeroU32;
     /// use serde_json;
     ///
-    /// let rate = Rate::PerMinute(NonZeroU32::new(60).unwrap());
+    /// let rate = Rate::Minute(NonZeroU32::new(60).unwrap());
     /// let serialized = serde_json::to_string(&rate).unwrap();
     /// assert_eq!(serialized, "\"60/m\"");
     /// ```
@@ -194,7 +194,7 @@ impl<'de> Visitor<'de> for RateVisitor {
     }
 
     fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Self::Value, E> {
-        Ok(Rate::PerSecond(
+        Ok(Rate::Second(
             NonZeroU32::new(u32::try_from(value).map_err(E::custom)?)
                 .ok_or_else(|| E::custom("rate must be non-zero"))?,
         ))
@@ -221,21 +221,21 @@ mod tests {
 
     #[test]
     fn serialize_per_second() {
-        let rate = Rate::PerSecond(NonZeroU32::new(100).unwrap());
+        let rate = Rate::Second(NonZeroU32::new(100).unwrap());
         let serialized = serde_json::to_string(&rate).unwrap();
         assert_eq!(serialized, "\"100/s\"");
     }
 
     #[test]
     fn serialize_per_minute() {
-        let rate = Rate::PerMinute(NonZeroU32::new(60).unwrap());
+        let rate = Rate::Minute(NonZeroU32::new(60).unwrap());
         let serialized = serde_json::to_string(&rate).unwrap();
         assert_eq!(serialized, "\"60/m\"");
     }
 
     #[test]
     fn serialize_per_hour() {
-        let rate = Rate::PerHour(NonZeroU32::new(3600).unwrap());
+        let rate = Rate::Hour(NonZeroU32::new(3600).unwrap());
         let serialized = serde_json::to_string(&rate).unwrap();
         assert_eq!(serialized, "\"3600/h\"");
     }
@@ -244,36 +244,36 @@ mod tests {
     fn deserialize_per_second() {
         let json = "\"100/s\"";
         let rate: Rate = serde_json::from_str(json).unwrap();
-        assert_eq!(rate, Rate::PerSecond(NonZeroU32::new(100).unwrap()));
+        assert_eq!(rate, Rate::Second(NonZeroU32::new(100).unwrap()));
     }
 
     #[test]
     fn deserialize_per_minute() {
         let json = "\"60/m\"";
         let rate: Rate = serde_json::from_str(json).unwrap();
-        assert_eq!(rate, Rate::PerMinute(NonZeroU32::new(60).unwrap()));
+        assert_eq!(rate, Rate::Minute(NonZeroU32::new(60).unwrap()));
     }
 
     #[test]
     fn deserialize_per_hour() {
         let json = "\"3600/h\"";
         let rate: Rate = serde_json::from_str(json).unwrap();
-        assert_eq!(rate, Rate::PerHour(NonZeroU32::new(3600).unwrap()));
+        assert_eq!(rate, Rate::Hour(NonZeroU32::new(3600).unwrap()));
     }
 
     #[test]
     fn deserialize_default_per_second() {
         let json = "\"100\"";
         let rate: Rate = serde_json::from_str(json).unwrap();
-        assert_eq!(rate, Rate::PerSecond(NonZeroU32::new(100).unwrap()));
+        assert_eq!(rate, Rate::Second(NonZeroU32::new(100).unwrap()));
     }
 
     #[test]
     fn deserialize_case_insensitive() {
         let test_cases = vec![
-            ("\"100/S\"", Rate::PerSecond(NonZeroU32::new(100).unwrap())),
-            ("\"100/M\"", Rate::PerMinute(NonZeroU32::new(100).unwrap())),
-            ("\"100/H\"", Rate::PerHour(NonZeroU32::new(100).unwrap())),
+            ("\"100/S\"", Rate::Second(NonZeroU32::new(100).unwrap())),
+            ("\"100/M\"", Rate::Minute(NonZeroU32::new(100).unwrap())),
+            ("\"100/H\"", Rate::Hour(NonZeroU32::new(100).unwrap())),
         ];
 
         for (json, expected) in test_cases {
@@ -287,15 +287,15 @@ mod tests {
         let test_cases = vec![
             (
                 "\" 100 / second \"",
-                Rate::PerSecond(NonZeroU32::new(100).unwrap()),
+                Rate::Second(NonZeroU32::new(100).unwrap()),
             ),
             (
                 "\" 60 / minute \"",
-                Rate::PerMinute(NonZeroU32::new(60).unwrap()),
+                Rate::Minute(NonZeroU32::new(60).unwrap()),
             ),
             (
                 "\" 3600 / hour \"",
-                Rate::PerHour(NonZeroU32::new(3600).unwrap()),
+                Rate::Hour(NonZeroU32::new(3600).unwrap()),
             ),
         ];
 
@@ -339,10 +339,10 @@ mod tests {
     #[test]
     fn round_trip_serialization() {
         let test_cases = vec![
-            Rate::PerSecond(NonZeroU32::new(1).unwrap()),
-            Rate::PerSecond(NonZeroU32::new(100).unwrap()),
-            Rate::PerMinute(NonZeroU32::new(60).unwrap()),
-            Rate::PerHour(NonZeroU32::new(3600).unwrap()),
+            Rate::Second(NonZeroU32::new(1).unwrap()),
+            Rate::Second(NonZeroU32::new(100).unwrap()),
+            Rate::Minute(NonZeroU32::new(60).unwrap()),
+            Rate::Hour(NonZeroU32::new(3600).unwrap()),
         ];
 
         for original in test_cases {

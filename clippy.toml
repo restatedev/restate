@@ -4,3 +4,5 @@ ignore-interior-mutability = ["bytes::Bytes", "bytestring::ByteString", "http::h
 allow-private-module-inception = true
 # The default is 16kib, relaxing this without going too crazy.
 future-size-threshold = 32768
+# Our crates are designed for internal use, make sure to give warnings when exported APIs break our linter rules.
+avoid-breaking-exported-api = false

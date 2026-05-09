@@ -205,7 +205,7 @@ impl InvocationUuid {
         Self::from_u128(u128::from_be_bytes(b))
     }
 
-    pub const fn to_bytes(&self) -> [u8; Self::RAW_BYTES_LEN] {
+    pub const fn to_bytes(self) -> [u8; Self::RAW_BYTES_LEN] {
         self.0.to_be_bytes()
     }
 
@@ -526,7 +526,7 @@ impl InvocationId {
         self.inner
     }
 
-    pub fn to_bytes(&self) -> EncodedInvocationId {
+    pub fn to_bytes(self) -> EncodedInvocationId {
         let mut buf = EncodedInvocationId::default();
         self.encode_raw_bytes(&mut buf);
         buf
@@ -545,7 +545,7 @@ impl InvocationId {
     }
 
     /// Generate random seed to feed RNG in SDKs.
-    pub fn to_random_seed(&self) -> u64 {
+    pub fn to_random_seed(self) -> u64 {
         use std::hash::{DefaultHasher, Hash, Hasher};
 
         let mut hasher = DefaultHasher::new();
@@ -1052,7 +1052,7 @@ macro_rules! ulid_backed_id {
                     Self(ulid)
                 }
 
-                pub fn to_bytes(&self) -> [u8; 16] {
+                pub fn to_bytes(self) -> [u8; 16] {
                     self.0.to_bytes()
                 }
             }

@@ -148,7 +148,7 @@ pub enum Error {
         "cannot parse log configuration {e} environment variable: {0}",
         e = EnvFilter::DEFAULT_ENV
     )]
-    LogDirectiveParseError(#[from] ParseError),
+    LogDirectiveParse(#[from] ParseError),
 
     #[error("could not initialize tracing due to unknown error: {0}")]
     Other(#[from] Box<dyn std::error::Error>),
