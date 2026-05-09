@@ -1585,7 +1585,7 @@ mod tests {
     }
 
     #[test]
-    fn test_subscription_id_format() {
+    fn subscription_id_format() {
         let a = SubscriptionId::new();
         assert!(a.timestamp().as_u64() > 0);
         let a_str = a.to_string();
@@ -1593,7 +1593,7 @@ mod tests {
     }
 
     #[test]
-    fn test_subscription_roundtrip() {
+    fn subscription_roundtrip() {
         let a = SubscriptionId::new();
         let b: SubscriptionId = a.to_string().parse().unwrap();
         assert_eq!(a, b);
@@ -1601,7 +1601,7 @@ mod tests {
     }
 
     #[test]
-    fn test_deployment_id_from_str() {
+    fn deployment_id_from_str() {
         let deployment_id = "dp_11nGQpCRmau6ypL82KH2TnP";
         let from_str_result = DeploymentId::from_str(deployment_id);
         assert!(from_str_result.is_ok());

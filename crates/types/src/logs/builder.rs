@@ -380,7 +380,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_default_builder() -> googletest::Result<()> {
+    fn default_builder() -> googletest::Result<()> {
         let builder = LogsBuilder::new(MockClock::new());
         let logs = builder.build();
         assert_eq!(Version::MIN, logs.version());
@@ -449,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn test_add_segments() -> googletest::Result<()> {
+    fn add_segments() -> googletest::Result<()> {
         let log_id = LogId::new(1);
         let mut builder = LogsBuilder::new(MockClock::new());
         let mut chain = builder.add_log(
@@ -551,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn test_find_segments() -> googletest::Result<()> {
+    fn find_segments() -> googletest::Result<()> {
         let log_id = LogId::new(1);
         let mut builder = LogsBuilder::new(MockClock::new());
         let mut chain = builder.add_log(
@@ -652,7 +652,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trim_log_single_segment() -> googletest::Result<()> {
+    fn trim_log_single_segment() -> googletest::Result<()> {
         let log_id = LogId::new(1);
         let mut builder = LogsBuilder::new(MockClock::new());
         builder.add_log(
@@ -681,7 +681,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trim_log_multi_segment() -> googletest::Result<()> {
+    fn trim_log_multi_segment() -> googletest::Result<()> {
         let log_id = LogId::new(1);
         let mut builder = LogsBuilder::new(MockClock::new());
         let mut chain = builder.add_log(
@@ -828,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lookup_index() -> googletest::Result<()> {
+    fn lookup_index() -> googletest::Result<()> {
         use crate::GenerationalNodeId;
         use crate::logs::LogletId;
         use crate::replicated_loglet::ReplicatedLogletParams;

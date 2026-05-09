@@ -620,7 +620,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn test_empty_scheduler_returns_pending() {
+    async fn empty_scheduler_returns_pending() {
         let rocksdb = storage_test_environment().await;
         let db = rocksdb.partition_db();
         let cache = VQueuesMetaCache::create(db.clone(), TEST_VQUEUES_CAPACITY)
@@ -635,7 +635,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn test_poll_yields_enqueued_item() {
+    async fn poll_yields_enqueued_item() {
         let mut rocksdb = storage_test_environment().await;
         let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
         let qid = test_qid(2000);
@@ -659,7 +659,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn test_run_at_below_now_preempts_within_inbox() {
+    async fn run_at_below_now_preempts_within_inbox() {
         let mut rocksdb = storage_test_environment().await;
         let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
         let qid = test_qid(2_100);
@@ -702,7 +702,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn test_round_robin_fairness() {
+    async fn round_robin_fairness() {
         let mut rocksdb = storage_test_environment().await;
         let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
 
@@ -754,7 +754,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn test_concurrency_limiting() {
+    async fn concurrency_limiting() {
         let mut rocksdb = storage_test_environment().await;
         let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
         let qid1 = test_qid(7000);
@@ -837,7 +837,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn test_get_status_reports_invoker_throttling_retry_estimate() {
+    async fn get_status_reports_invoker_throttling_retry_estimate() {
         let mut rocksdb = storage_test_environment().await;
         let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
         let qid1 = test_qid(21_101);
@@ -902,7 +902,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn test_waiters_outside_throttling_window_report_no_estimate() {
+    async fn waiters_outside_throttling_window_report_no_estimate() {
         let mut rocksdb = storage_test_environment().await;
         let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
 
@@ -977,7 +977,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn test_max_items_per_decision_limit() {
+    async fn max_items_per_decision_limit() {
         let mut rocksdb = storage_test_environment().await;
         let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
 
@@ -1004,7 +1004,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn test_higher_priority_preempts_between_polls() {
+    async fn higher_priority_preempts_between_polls() {
         let mut rocksdb = storage_test_environment().await;
         let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
         let qid = test_qid(14_000);
@@ -1073,7 +1073,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn test_get_status_reflects_scheduling_states() {
+    async fn get_status_reflects_scheduling_states() {
         let mut rocksdb = storage_test_environment().await;
         let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
         let qid1 = test_qid(21_001);

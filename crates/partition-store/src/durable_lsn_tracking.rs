@@ -189,7 +189,7 @@ mod tests {
     use restate_storage_api::protobuf_types::ProtobufStorageWrapper;
 
     #[test]
-    fn test_extract_partition_applied_lsn() -> googletest::Result<()> {
+    fn extract_partition_applied_lsn() -> googletest::Result<()> {
         let partition_id = PartitionId::from(42);
         let lsn = Lsn::from(12345);
 
@@ -211,25 +211,25 @@ mod tests {
             .unwrap();
         let value = value_buf.as_ref();
 
-        let result = extract_partition_applied_lsn(key, value)?;
+        let result = super::extract_partition_applied_lsn(key, value)?;
         assert_eq!(result, Some((partition_id, lsn)));
 
         Ok(())
     }
 
     #[test]
-    fn test_extract_partition_applied_lsn_invalid_key() -> googletest::Result<()> {
+    fn extract_partition_applied_lsn_invalid_key() -> googletest::Result<()> {
         let key = b"invalid_key";
         let value = b"some_value";
 
-        let result = extract_partition_applied_lsn(key, value)?;
+        let result = super::extract_partition_applied_lsn(key, value)?;
         assert!(result.is_none());
 
         Ok(())
     }
 
     #[test]
-    fn test_extract_partition_applied_lsn_incorrect_key() -> googletest::Result<()> {
+    fn extract_partition_applied_lsn_incorrect_key() -> googletest::Result<()> {
         let partition_id = PartitionId::from(42);
         let lsn = Lsn::from(12345);
 
@@ -251,7 +251,7 @@ mod tests {
             .unwrap();
         let value = value_buf.as_ref();
 
-        let result = extract_partition_applied_lsn(key, value)?;
+        let result = super::extract_partition_applied_lsn(key, value)?;
         assert!(result.is_none());
 
         Ok(())

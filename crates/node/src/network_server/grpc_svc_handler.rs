@@ -456,7 +456,7 @@ mod tests {
     use restate_types::protobuf::common::DatabaseKind;
 
     #[test]
-    fn test_database_kind_db_names() {
+    fn database_kind_db_names() {
         assert_eq!(DatabaseKind::LogServer.db_name(), "log-server");
         assert_eq!(
             DatabaseKind::MetadataServer.db_name(),

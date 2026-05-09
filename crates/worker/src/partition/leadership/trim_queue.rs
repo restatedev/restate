@@ -248,7 +248,7 @@ mod tests {
     use googletest::prelude::*;
 
     #[test]
-    fn test_pop_next_immediately() {
+    fn pop_next_immediately() {
         let mut queue = State::default();
         let now = MillisSinceEpoch::now();
         let very_old = MillisSinceEpoch::new(MillisSinceEpoch::now().as_u64() - 20);
@@ -350,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn test_update_trim_point() {
+    fn update_trim_point() {
         let mut queue = State::default();
         // millis since epoch is bigger if it's closer to now, small if it's far in the past.
         let now = MillisSinceEpoch::new(100);
@@ -418,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compaction() {
+    fn compaction() {
         // simulating a realistic scenario. A partition starts with knowledge about a durable LSN
         // slightly in the future.
         // Then we replay a large number of older durability points as follower.

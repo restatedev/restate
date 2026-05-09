@@ -725,7 +725,7 @@ mod tests {
     }
 
     #[test]
-    fn test_upsert_node() {
+    fn upsert_node() {
         let mut config = NodesConfiguration::new_for_testing();
         let address: AdvertisedAddress<_> = "unix:/tmp/my_socket".parse().unwrap();
         let roles = EnumSet::only(Role::Worker);
@@ -811,7 +811,7 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_node() {
+    fn remove_node() {
         let mut config = NodesConfiguration::new_for_testing();
         let address: AdvertisedAddress<_> = "unix:/tmp/my_socket".parse().unwrap();
         let node1 = NodeConfig {

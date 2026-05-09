@@ -299,7 +299,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_detect_format() {
+    fn detect_format() {
         assert_eq!(
             IdFormat::detect("inv_1fBuS9KMPNrt0zQBGdilypucn1EeT7AO5j"),
             IdFormat::Invocation
@@ -326,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_segments_invocation() {
+    fn build_segments_invocation() {
         let id = "inv_1fBuS9KMPNrt0zQBGdilypucn1EeT7AO5j";
         let segments = build_segments(id, IdFormat::Invocation);
 
@@ -339,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_segments_ulid_based() {
+    fn build_segments_ulid_based() {
         let id = "dp_11nGQpCRmau6ypL82KH2TnP";
         let segments = build_segments(id, IdFormat::UlidBased);
 

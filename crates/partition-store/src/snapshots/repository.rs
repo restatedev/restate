@@ -1111,7 +1111,7 @@ mod tests {
     use super::{PartitionSnapshotMetadata, SnapshotFormatVersion};
 
     #[restate_core::test]
-    async fn test_overwrite_unparsable_latest() -> anyhow::Result<()> {
+    async fn overwrite_unparsable_latest() -> anyhow::Result<()> {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
 
         let snapshot_source = TempDir::new()?;
@@ -1158,7 +1158,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn test_put_snapshot_local_filesystem() -> anyhow::Result<()> {
+    async fn put_snapshot_local_filesystem() -> anyhow::Result<()> {
         let snapshots_destination = TempDir::new()?;
         test_put_snapshot(
             Url::from_file_path(snapshots_destination.path())
@@ -1170,7 +1170,7 @@ mod tests {
 
     /// For this test to run, set RESTATE_S3_INTEGRATION_TEST_BUCKET_NAME to a writable S3 bucket name
     #[restate_core::test]
-    async fn test_put_snapshot_s3() -> anyhow::Result<()> {
+    async fn put_snapshot_s3() -> anyhow::Result<()> {
         let Ok(bucket_name) = std::env::var("RESTATE_S3_INTEGRATION_TEST_BUCKET_NAME") else {
             return Ok(());
         };
@@ -1345,7 +1345,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn test_snapshot_retention_v2() -> anyhow::Result<()> {
+    async fn snapshot_retention_v2() -> anyhow::Result<()> {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
 
         let snapshots_destination = TempDir::new()?;
@@ -1406,7 +1406,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn test_v1_to_v2_migration() -> anyhow::Result<()> {
+    async fn v1_to_v2_migration() -> anyhow::Result<()> {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
 
         let snapshots_destination = TempDir::new()?;
@@ -1500,7 +1500,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn test_archived_lsn_v2() -> anyhow::Result<()> {
+    async fn archived_lsn_v2() -> anyhow::Result<()> {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
 
         let snapshots_destination = TempDir::new()?;
@@ -1550,7 +1550,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn test_cleanup() -> anyhow::Result<()> {
+    async fn cleanup() -> anyhow::Result<()> {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
 
         let snapshots_destination = TempDir::new()?;
@@ -1638,7 +1638,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn test_archived_lsn_reports_earliest_retained_v2() -> anyhow::Result<()> {
+    async fn archived_lsn_reports_earliest_retained_v2() -> anyhow::Result<()> {
         use super::PartitionSnapshotStatus;
 
         // Create a V2 latest snapshot with multiple retained snapshots.

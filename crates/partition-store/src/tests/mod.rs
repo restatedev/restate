@@ -69,7 +69,7 @@ async fn storage_test_environment_with_manager() -> (Arc<PartitionStoreManager>,
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_read_write() {
+async fn read_write() {
     let _env = TestCoreEnv::create_with_single_node(1, 1).await;
 
     let (manager, store) = storage_test_environment_with_manager().await;

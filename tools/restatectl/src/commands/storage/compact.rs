@@ -164,35 +164,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_database_kind() {
+    fn parse_database_kind() {
         assert_eq!(
-            parse_database_kind("partition-store"),
+            super::parse_database_kind("partition-store"),
             Ok(DatabaseKind::PartitionStore)
         );
         assert_eq!(
-            parse_database_kind("PARTITION-STORE"),
+            super::parse_database_kind("PARTITION-STORE"),
             Ok(DatabaseKind::PartitionStore)
         );
         assert_eq!(
-            parse_database_kind("log-server"),
+            super::parse_database_kind("log-server"),
             Ok(DatabaseKind::LogServer)
         );
         assert_eq!(
-            parse_database_kind("LOG-SERVER"),
+            super::parse_database_kind("LOG-SERVER"),
             Ok(DatabaseKind::LogServer)
         );
         assert_eq!(
-            parse_database_kind("metadata-server"),
+            super::parse_database_kind("metadata-server"),
             Ok(DatabaseKind::MetadataServer)
         );
         assert_eq!(
-            parse_database_kind("local-loglet"),
+            super::parse_database_kind("local-loglet"),
             Ok(DatabaseKind::LocalLoglet)
         );
         // Invalid values should return an error
-        assert!(parse_database_kind("invalid").is_err());
-        assert!(parse_database_kind("all").is_err());
-        assert!(parse_database_kind("").is_err());
-        assert!(parse_database_kind("db").is_err());
+        assert!(super::parse_database_kind("invalid").is_err());
+        assert!(super::parse_database_kind("all").is_err());
+        assert!(super::parse_database_kind("").is_err());
+        assert!(super::parse_database_kind("db").is_err());
     }
 }

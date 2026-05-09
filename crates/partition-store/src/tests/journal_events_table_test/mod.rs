@@ -23,7 +23,7 @@ const MOCK_INVOCATION_ID_1: InvocationId =
     InvocationId::from_parts(1, InvocationUuid::from_u128(12345678900001));
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_event() {
+async fn event() {
     let mut rocksdb = storage_test_environment().await;
 
     let mut txn = rocksdb.transaction();

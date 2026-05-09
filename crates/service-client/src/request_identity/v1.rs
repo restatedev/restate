@@ -160,7 +160,7 @@ MCowBQYDK2VwAyEAj5BTvH+WJo0QGHm2hdLOuk6P7szKgTQxmpnnmZe/DcU=
 -----END PUBLIC KEY-----"#;
 
     #[test]
-    fn test_read_key() {
+    fn read_key() {
         let mut pemfile = tempfile::NamedTempFile::new().unwrap();
         pemfile.write_all(PRIVATE_KEY).unwrap();
 
@@ -181,7 +181,7 @@ MCowBQYDK2VwAyEAj5BTvH+WJo0QGHm2hdLOuk6P7szKgTQxmpnnmZe/DcU=
     }
 
     #[test]
-    fn test_sign() {
+    fn sign() {
         let mut pemfile = tempfile::NamedTempFile::new().unwrap();
         pemfile.write_all(PRIVATE_KEY).unwrap();
 

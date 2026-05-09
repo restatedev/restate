@@ -344,6 +344,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(doc_cfg)'] }
 
 [workspace.lints.clippy]
 or_fun_call = "deny"
+redundant_test_prefix = "deny"
 clear_with_drain = "deny"
 collection_is_never_read = "deny"
 naive_bytecount = "deny"

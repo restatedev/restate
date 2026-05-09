@@ -175,7 +175,7 @@ mod tests {
     use restate_test_util::assert_eq;
 
     #[test(tokio::test)]
-    async fn test_back_and_forth() {
+    async fn back_and_forth() {
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         let handle_command_tx = tokio::spawn(async move {

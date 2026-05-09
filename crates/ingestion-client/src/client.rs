@@ -355,7 +355,7 @@ mod test {
     }
 
     #[test(restate_core::test)]
-    async fn test_client_single_record() {
+    async fn client_single_record() {
         let (mut incoming, mut client) = init_env(10).await;
         let mut buf = BytesMut::new();
 
@@ -382,7 +382,7 @@ mod test {
     }
 
     #[test(restate_core::test)]
-    async fn test_client_single_record_retry() {
+    async fn client_single_record_retry() {
         let (mut incoming, mut client) = init_env(10).await;
         let mut buf = BytesMut::new();
 
@@ -416,7 +416,7 @@ mod test {
     }
 
     #[test(restate_core::test)]
-    async fn test_client_close() {
+    async fn client_close() {
         let (_, mut client) = init_env(10).await;
 
         let commit = client
@@ -430,7 +430,7 @@ mod test {
     }
 
     #[test(restate_core::test(start_paused = true))]
-    async fn test_client_dispatch() {
+    async fn client_dispatch() {
         let (mut incoming, mut client) = init_env(10).await;
 
         let pt = Metadata::with_current(|p| p.partition_table_snapshot());

@@ -594,7 +594,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_from_parts_defaults_to_ipv6_unspecified() {
+    fn from_parts_defaults_to_ipv6_unspecified() {
         let addr = BindAddress::<ControlPort>::from_parts(None, None, false);
         assert_eq!(addr.inner.ip(), IpAddr::V6(Ipv6Addr::UNSPECIFIED));
         assert_eq!(addr.inner.port(), ControlPort::DEFAULT_PORT);
@@ -614,7 +614,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_bind_address() {
+    fn parse_bind_address() {
         let input = "127.0.0.1:8080";
         let addr = input
             .parse::<BindAddress<ControlPort>>()
@@ -634,7 +634,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_bind_address_with_default_port() {
+    fn parse_bind_address_with_default_port() {
         let input = "127.0.0.1";
         let result = match input.parse::<BindAddress<ControlPort>>() {
             Ok(addr) => addr.inner,
@@ -658,7 +658,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_bind_address_invalid() {
+    fn parse_bind_address_invalid() {
         let input = "unsupported:address";
         let result = input.parse::<BindAddress<ControlPort>>();
         assert!(
@@ -668,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_advertised_address_host_port() {
+    fn parse_advertised_address_host_port() {
         // stick the port next to the hostname
         let input = "localhost";
         let result = input.parse::<AdvertisedAddress<ControlPort>>().unwrap();

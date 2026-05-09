@@ -645,30 +645,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_decode_varint() {
+    fn decode_varint() {
         // Single byte values
-        assert_eq!(decode_varint(&[0x00]), Some((0, 1)));
-        assert_eq!(decode_varint(&[0x01]), Some((1, 1)));
-        assert_eq!(decode_varint(&[0x7f]), Some((127, 1)));
+        assert_eq!(super::decode_varint(&[0x00]), Some((0, 1)));
+        assert_eq!(super::decode_varint(&[0x01]), Some((1, 1)));
+        assert_eq!(super::decode_varint(&[0x7f]), Some((127, 1)));
 
         // Two byte values
-        assert_eq!(decode_varint(&[0x80, 0x01]), Some((128, 2)));
-        assert_eq!(decode_varint(&[0xff, 0x01]), Some((255, 2)));
+        assert_eq!(super::decode_varint(&[0x80, 0x01]), Some((128, 2)));
+        assert_eq!(super::decode_varint(&[0xff, 0x01]), Some((255, 2)));
 
         // Empty input
-        assert_eq!(decode_varint(&[]), None);
+        assert_eq!(super::decode_varint(&[]), None);
     }
 
     #[test]
-    fn test_hex_encode_plain() {
-        assert_eq!(hex_encode_plain(&[]), "");
-        assert_eq!(hex_encode_plain(&[0x00]), "00");
-        assert_eq!(hex_encode_plain(&[0xab, 0xcd]), "abcd");
-        assert_eq!(hex_encode_plain(&[0x73, 0x74]), "7374"); // "st" for State
+    fn hex_encode_plain() {
+        assert_eq!(super::hex_encode_plain(&[]), "");
+        assert_eq!(super::hex_encode_plain(&[0x00]), "00");
+        assert_eq!(super::hex_encode_plain(&[0xab, 0xcd]), "abcd");
+        assert_eq!(super::hex_encode_plain(&[0x73, 0x74]), "7374"); // "st" for State
     }
 
     #[test]
-    fn test_build_segments_for_lock_key() {
+    fn build_segments_for_lock_key() {
         let mut key = Vec::new();
         key.extend_from_slice(restate_partition_store::keys::KeyKind::Lock.as_bytes());
         key.extend_from_slice(&1u64.to_be_bytes());

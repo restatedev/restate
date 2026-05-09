@@ -485,7 +485,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_read_subdirs_did_not_exist() {
+    fn read_subdirs_did_not_exist() {
         let temp_dir = tempfile::tempdir().unwrap();
         let temp_dir_path = temp_dir.path().to_path_buf();
         assert!(fs::remove_dir(temp_dir).is_ok());
@@ -493,14 +493,14 @@ mod tests {
     }
 
     #[test]
-    fn test_read_subdirs_empty() {
+    fn read_subdirs_empty() {
         let temp_dir = tempfile::tempdir().unwrap();
         let temp_dir_path = temp_dir.path().to_path_buf();
         assert!(read_subdirs(&temp_dir_path).is_empty());
     }
 
     #[test]
-    fn test_read_subdirs_with_subdirs_and_files() {
+    fn read_subdirs_with_subdirs_and_files() {
         let temp_dir = tempfile::tempdir().unwrap();
         let temp_dir_path = temp_dir.path().to_path_buf();
 
@@ -519,7 +519,7 @@ mod tests {
     }
 
     #[test]
-    fn test_configuration_validate_empty_base_dir() {
+    fn configuration_validate_empty_base_dir() {
         let mut config = Configuration::default();
         assert!(config.validate().is_ok());
 
@@ -530,7 +530,7 @@ mod tests {
     }
 
     #[test]
-    fn test_configuration_validate_base_dir_one_subdir() {
+    fn configuration_validate_base_dir_one_subdir() {
         let mut config = Configuration::default();
         assert!(config.validate().is_ok());
 
@@ -548,7 +548,7 @@ mod tests {
     }
 
     #[test]
-    fn test_configuration_validate_base_dir_multi_subdir() {
+    fn configuration_validate_base_dir_multi_subdir() {
         let mut config = Configuration::default();
         assert!(config.validate().is_ok());
 

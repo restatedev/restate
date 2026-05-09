@@ -168,7 +168,7 @@ mod tests {
     use crate::identifiers::{ResourceId, TimestampAwareId};
 
     #[test]
-    fn test_deployment_id_format() {
+    fn deployment_id_format() {
         let a = DeploymentId::new();
         assert!(a.timestamp().as_u64() > 0);
         let a_str = a.to_string();
@@ -178,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn test_deployment_roundtrip() {
+    fn deployment_roundtrip() {
         let a = DeploymentId::new();
         let b: DeploymentId = a.to_string().parse().unwrap();
         assert_eq!(a, b);

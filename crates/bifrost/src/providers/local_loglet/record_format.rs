@@ -296,7 +296,7 @@ mod tests {
     use restate_types::logs::Keys;
 
     #[test]
-    fn test_record_format() {
+    fn record_format() {
         use super::RecordFormat;
         use std::convert::TryFrom;
         assert_eq!(RecordFormat::try_from(0x02).unwrap(), RecordFormat::Legacy);
@@ -308,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn test_codec_compatibility() -> googletest::Result<()> {
+    fn codec_compatibility() -> googletest::Result<()> {
         // ensure that we can encode and decode both the old and new formats
         let record = Record::from_parts(
             NanosSinceEpoch::from(100),
@@ -372,7 +372,7 @@ mod tests {
     /// 2. Records with HLC timestamps (UniqueTimestamp encoded as u64)
     /// 3. Records with extended headers (extra bytes after timestamp)
     #[test]
-    fn test_decode_with_record_flags() -> googletest::Result<()> {
+    fn decode_with_record_flags() -> googletest::Result<()> {
         let body = b"test payload";
 
         // Test 1: Decode record with no flags set (plain NanosSinceEpoch timestamp)

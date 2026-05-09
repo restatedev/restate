@@ -407,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn test_service_key() {
+    fn service_key() {
         let extractor =
             FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
 
@@ -424,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_service_keys() {
+    fn multiple_service_keys() {
         let extractor =
             FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
 
@@ -448,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_service_keys_ored() {
+    fn multiple_service_keys_ored() {
         let extractor =
             FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
 
@@ -472,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_service_keys_nested_or() {
+    fn multiple_service_keys_nested_or() {
         let extractor =
             FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
 
@@ -508,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_service_keys_too_deep_nesting() {
+    fn multiple_service_keys_too_deep_nesting() {
         let extractor =
             FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
 
@@ -532,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn test_invocation_id() {
+    fn invocation_id() {
         let extractor = FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id");
 
         let invocation_id = make_invocation_id("key-2");
@@ -548,7 +548,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_invocation_ids() {
+    fn multiple_invocation_ids() {
         let extractor = FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id");
 
         let invocation_id_1 = make_invocation_id("key-1");
@@ -574,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn test_vqueue_entry_id_invocation_id() {
+    fn vqueue_entry_id_invocation_id() {
         let extractor =
             FirstMatchingPartitionKeyExtractor::default().with_vqueue_entry_id("head_entry_id");
 
@@ -594,7 +594,7 @@ mod tests {
     }
 
     #[test]
-    fn test_vqueue_entry_id_state_mutation_id() {
+    fn vqueue_entry_id_state_mutation_id() {
         let extractor =
             FirstMatchingPartitionKeyExtractor::default().with_vqueue_entry_id("head_entry_id");
 
@@ -614,7 +614,7 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_in_list() {
+    fn invalid_in_list() {
         let extractor = FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id");
 
         let invocation_id = make_invocation_id("key-1");
