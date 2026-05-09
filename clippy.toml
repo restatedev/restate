@@ -2,3 +2,5 @@
 ignore-interior-mutability = ["bytes::Bytes", "bytestring::ByteString", "http::header::HeaderName", "http::header::HeaderValue"]
 # Sometimes we want to keep the mod.rs file clean
 allow-private-module-inception = true
+# The default is 16kib, relaxing this without going too crazy.
+future-size-threshold = 32768
