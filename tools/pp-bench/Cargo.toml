@@ -25,9 +25,10 @@ restate-storage-api = { workspace = true }
 restate-time-util = { workspace = true }
 restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio"] }
 restate-types = { workspace = true, features = ["clap"] }
+restate-util-string = { workspace = true }
 restate-vqueues = { workspace = true }
 restate-wal-protocol = { workspace = true }
-restate-worker = { workspace = true, features = ["test-util"] }
+restate-worker = { workspace = true, features = ["expose-internals"] }
 
 anyhow = { workspace = true }
 axum = { workspace = true, features = ["tokio", "http1"] }

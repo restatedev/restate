@@ -25,31 +25,32 @@ use restate_cli_util::ui::stylesheet::Style;
 use restate_rocksdb::{DbName, RocksDbManager};
 use restate_serde_util::ByteCount;
 use restate_time_util::FriendlyDuration;
+use restate_util_string::{ReString, ToReString, format_restring};
 
 // ---------------------------------------------------------------------------
 // Human-friendly formatting helpers
 // ---------------------------------------------------------------------------
 
-fn fmt_count(n: u64) -> String {
+fn fmt_count(n: u64) -> ReString {
     if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
+        format_restring!("{:.1}M", n as f64 / 1_000_000.0)
     } else if n >= 1_000 {
-        format!("{:.1}K", n as f64 / 1_000.0)
+        format_restring!("{:.1}K", n as f64 / 1_000.0)
     } else {
-        n.to_string()
+        n.to_restring()
     }
 }
 
-fn fmt_duration_short(d: Duration) -> String {
+fn fmt_duration_short(d: Duration) -> ReString {
     let nanos = d.as_nanos();
     if nanos < 1_000 {
-        format!("{nanos}ns")
+        format_restring!("{nanos}ns")
     } else if nanos < 1_000_000 {
-        format!("{:.0}us", nanos as f64 / 1_000.0)
+        format_restring!("{:.0}us", nanos as f64 / 1_000.0)
     } else if nanos < 1_000_000_000 {
-        format!("{:.1}ms", nanos as f64 / 1_000_000.0)
+        format_restring!("{:.1}ms", nanos as f64 / 1_000_000.0)
     } else {
-        format!("{:.2}s", nanos as f64 / 1_000_000_000.0)
+        format_restring!("{:.2}s", nanos as f64 / 1_000_000_000.0)
     }
 }
 
@@ -252,12 +253,12 @@ impl BenchCounters {
 
     /// Add `n` to the commands counter.
     pub fn inc_commands(&self, n: u64) {
-        self.commands.set(self.commands.get() + n);
+        self.commands.update(|c| c + n);
     }
 
     /// Increment the batches counter by 1.
     pub fn inc_batches(&self) {
-        self.batches.set(self.batches.get() + 1);
+        self.batches.update(|b| b + 1);
     }
 
     pub fn commands(&self) -> u64 {
@@ -285,7 +286,7 @@ impl LatencyCollector {
 
 pub struct IntervalReporter {
     interval: FriendlyDuration,
-    db_name: String,
+    db_name: &'static str,
     counters: Rc<BenchCounters>,
     rx: tokio::sync::mpsc::UnboundedReceiver<u64>,
 }
@@ -293,14 +294,14 @@ pub struct IntervalReporter {
 impl IntervalReporter {
     pub fn new(
         interval: FriendlyDuration,
-        db_name: &str,
+        db_name: &'static str,
         counters: Rc<BenchCounters>,
     ) -> (Self, LatencyCollector) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         (
             Self {
                 interval,
-                db_name: db_name.to_owned(),
+                db_name,
                 counters,
                 rx,
             },
@@ -363,21 +364,21 @@ impl IntervalReporter {
             };
 
             let p50 = if interval_hist.is_empty() {
-                "-".to_owned()
+                "-".to_restring()
             } else {
                 fmt_duration_short(Duration::from_nanos(
                     interval_hist.value_at_percentile(50.0),
                 ))
             };
             let p99 = if interval_hist.is_empty() {
-                "-".to_owned()
+                "-".to_restring()
             } else {
                 fmt_duration_short(Duration::from_nanos(
                     interval_hist.value_at_percentile(99.0),
                 ))
             };
             let p999 = if interval_hist.is_empty() {
-                "-".to_owned()
+                "-".to_restring()
             } else {
                 fmt_duration_short(Duration::from_nanos(
                     interval_hist.value_at_percentile(99.9),
@@ -385,9 +386,9 @@ impl IntervalReporter {
             };
 
             let stall_str = if stall_delta == 0 {
-                "0".to_owned()
+                "0".to_restring()
             } else {
-                friendly(Duration::from_micros(stall_delta)).to_string()
+                friendly(Duration::from_micros(stall_delta)).to_restring()
             };
 
             c_println!(
@@ -433,14 +434,16 @@ pub fn print_summary(s: &RunSummary<'_>) {
         let mut table = Table::new_styled();
         table.add_kv_row(
             "Config:",
-            format!(
+            format_restring!(
                 "workload={}, batch_size={}, warmup={}",
-                s.workload, s.batch_size, s.warmup_commands,
+                s.workload,
+                s.batch_size,
+                s.warmup_commands,
             ),
         );
         table.add_kv_row(
             "Total:",
-            format!(
+            format_restring!(
                 "{} commands ({} batches) in {}",
                 fmt_count(s.total_commands),
                 fmt_count(s.total_batches),
@@ -449,7 +452,7 @@ pub fn print_summary(s: &RunSummary<'_>) {
         );
         table.add_kv_row(
             "Throughput:",
-            format!(
+            format_restring!(
                 "{:.0} commands/s | {:.0} batches/s",
                 s.total_commands as f64 / wall,
                 s.total_batches as f64 / wall,
@@ -471,11 +474,11 @@ pub fn print_summary(s: &RunSummary<'_>) {
             ("max", 100.0),
         ] {
             table.add_kv_row(
-                &format!("{label}:"),
-                friendly(Duration::from_nanos(s.latencies.value_at_percentile(pct))).to_string(),
+                &format_restring!("{label}:"),
+                friendly(Duration::from_nanos(s.latencies.value_at_percentile(pct))).to_restring(),
             );
         }
-        table.add_kv_row("samples:", s.latencies.len().to_string());
+        table.add_kv_row("samples:", s.latencies.len().to_restring());
         c_println!("{}", table);
     } else {
         c_println!("  {}", Styled(Style::Notice, "(no samples)"));
@@ -487,11 +490,14 @@ pub fn print_summary(s: &RunSummary<'_>) {
         let (user, sys) = cpu.as_friendly();
         restate_cli_util::c_title!(">>", "CPU");
         let mut table = Table::new_styled();
-        table.add_kv_row("User:", user.to_string());
-        table.add_kv_row("System:", sys.to_string());
-        table.add_kv_row("Wall:", s.wall_time.to_string());
+        table.add_kv_row("User:", user.to_restring());
+        table.add_kv_row("System:", sys.to_restring());
+        table.add_kv_row("Wall:", s.wall_time.to_restring());
         if wall > 0.0 {
-            table.add_kv_row("Avg util:", format!("{:.1}%", cpu.total() / wall * 100.0));
+            table.add_kv_row(
+                "Avg util:",
+                format_restring!("{:.1}%", cpu.total() / wall * 100.0),
+            );
         }
         c_println!("{}", table);
     }
@@ -501,11 +507,11 @@ pub fn print_summary(s: &RunSummary<'_>) {
         let je = &s.end_snapshot.jemalloc;
         restate_cli_util::c_title!(">>", "Memory (jemalloc)");
         let mut table = Table::new_styled();
-        table.add_kv_row("Allocated:", bytes_usize(je.allocated).to_string());
-        table.add_kv_row("Active:", bytes_usize(je.active).to_string());
-        table.add_kv_row("Resident:", bytes_usize(je.resident).to_string());
-        table.add_kv_row("Mapped:", bytes_usize(je.mapped).to_string());
-        table.add_kv_row("Retained:", bytes_usize(je.retained).to_string());
+        table.add_kv_row("Allocated:", bytes_usize(je.allocated).to_restring());
+        table.add_kv_row("Active:", bytes_usize(je.active).to_restring());
+        table.add_kv_row("Resident:", bytes_usize(je.resident).to_restring());
+        table.add_kv_row("Mapped:", bytes_usize(je.mapped).to_restring());
+        table.add_kv_row("Retained:", bytes_usize(je.retained).to_restring());
         c_println!("{}", table);
     }
 
@@ -516,11 +522,11 @@ pub fn print_summary(s: &RunSummary<'_>) {
         let mut table = Table::new_styled();
         table.add_kv_row(
             "Write stall:",
-            friendly(Duration::from_micros(rocks.stall_micros)).to_string(),
+            friendly(Duration::from_micros(rocks.stall_micros)).to_restring(),
         );
         table.add_kv_row(
             "WAL:",
-            format!(
+            format_restring!(
                 "{} syncs, {} written",
                 fmt_count(rocks.wal_synced),
                 bytes(rocks.wal_bytes),
@@ -528,11 +534,11 @@ pub fn print_summary(s: &RunSummary<'_>) {
         );
         table.add_kv_row(
             "Flush:",
-            format!("{} written", bytes(rocks.flush_write_bytes)),
+            format_restring!("{} written", bytes(rocks.flush_write_bytes)),
         );
         table.add_kv_row(
             "Compaction:",
-            format!(
+            format_restring!(
                 "read={} written={}",
                 bytes(rocks.compact_read_bytes),
                 bytes(rocks.compact_write_bytes),
@@ -543,7 +549,7 @@ pub fn print_summary(s: &RunSummary<'_>) {
         if cache_total > 0 {
             table.add_kv_row(
                 "Block cache:",
-                format!(
+                format_restring!(
                     "{:.1}% hit ({} / {})",
                     rocks.block_cache_hit as f64 / cache_total as f64 * 100.0,
                     fmt_count(rocks.block_cache_hit),

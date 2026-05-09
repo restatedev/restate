@@ -109,7 +109,11 @@ where
                 .timestamps
                 .update(ctx.record_created_at);
 
-            if Configuration::pinned().common.experimental_enable_vqueues {
+            if Configuration::pinned()
+                .common
+                .experimental
+                .is_vqueues_enabled()
+            {
                 let now = UniqueTimestamp::from_unix_millis_unchecked(ctx.record_created_at);
                 let entry_id = EntryId::from(&self.invocation_id);
                 let Some(header) = ctx

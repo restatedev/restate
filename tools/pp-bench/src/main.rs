@@ -13,16 +13,16 @@ use std::time::Duration;
 use clap::Parser;
 use codederror::CodedError;
 use metrics_exporter_prometheus::PrometheusBuilder;
-use restate_types::clock::ClockUpkeep;
 use tokio::runtime::LocalOptions;
 use tracing::info;
 
 use restate_cli_util::{CliContext, c_eprintln, c_println, c_warn};
 use restate_core::task_center::TaskCenterFutureExt;
 use restate_core::task_center::TaskCenterMonitoring;
-use restate_core::{MetadataBuilder, TaskCenter, TaskCenterBuilder};
+use restate_core::{MetadataBuilder, TaskCenterBuilder};
 use restate_errors::fmt::RestateCode;
 use restate_tracing_instrumentation::init_tracing_and_logging;
+use restate_types::clock::ClockUpkeep;
 use restate_types::config_loader::ConfigLoaderBuilder;
 
 use pp_bench::{Arguments, BenchCommand, command_gen, extract, metrics_server, workload};
@@ -103,6 +103,10 @@ fn main() -> anyhow::Result<()> {
 
     let _upkeep = ClockUpkeep::start().expect("clock upkeep starts");
 
+    // Give a few seconds for the quanta clock to settle.
+    c_println!("Waiting 2 seconds for clock to settle...");
+    std::thread::sleep(Duration::from_secs(2));
+
     // Build a single-threaded LocalRuntime. The apply loop, interval reporter,
     // and metrics HTTP server all run on this one runtime, interleaved at
     // .await points. This is simpler than the production setup (which runs the
@@ -128,20 +132,19 @@ fn main() -> anyhow::Result<()> {
         .into_handle();
 
     let metadata = MetadataBuilder::default().to_metadata();
+    tc.try_set_global_metadata(metadata);
     let args = cli_args.clone();
     let task_center = tc.clone();
 
+    // Start metrics HTTP server
+    metrics_server::start_metrics_server(args.metrics_port, recorder);
+
     runtime.block_on(
         async move {
-            TaskCenter::try_set_global_metadata(metadata);
-
             let tracing_guard = init_tracing_and_logging(&config.common, "pp-bench")
                 .expect("failed to configure logging and tracing!");
 
             CliContext::new_without_tracing(args.common_opts.clone()).set_as_global();
-
-            // Start metrics HTTP server
-            metrics_server::start_metrics_server(args.metrics_port, recorder);
 
             info!("PP-bench environment ready");
 

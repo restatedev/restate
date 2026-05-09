@@ -464,7 +464,7 @@ where
                 })?
                 .into_guard();
 
-            let scheduler_service = if config.common.experimental_enable_vqueues {
+            let scheduler_service = if config.common.experimental.is_vqueues_enabled() {
                 let scheduler = SchedulerService::create(
                     ResourceManager::create(
                         partition_store.partition_db().clone(),
@@ -582,7 +582,7 @@ where
                 .map(|d| d.durable_point);
 
             let durability_tracker = DurabilityTracker::new(
-                self.partition.partition_id,
+                self.partition.clone(),
                 last_reported_durable_lsn,
                 replica_set_states,
                 partition_store.partition_db().watch_archived_lsn(),

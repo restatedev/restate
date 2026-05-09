@@ -140,7 +140,12 @@ where
         };
 
         // Scoped invocations require vqueues to be enabled
-        if scope.is_some() && !Configuration::pinned().common.experimental_enable_vqueues {
+        if scope.is_some()
+            && !Configuration::pinned()
+                .common
+                .experimental
+                .is_vqueues_enabled()
+        {
             return Err(HandlerError::ScopeRequiresVQueues);
         }
 

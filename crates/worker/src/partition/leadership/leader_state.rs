@@ -457,7 +457,11 @@ impl LeaderState {
                 ActionEffect::UpsertRuleBook(book) => {
                     // todo(tillrohrmann) also enable the feature once the partition has been migrated
                     //  to use vqueues and then rolling back to v1.7
-                    if Configuration::pinned().common.experimental_enable_vqueues {
+                    if Configuration::pinned()
+                        .common
+                        .experimental
+                        .is_vqueues_enabled()
+                    {
                         self.self_proposer
                             .self_propose(
                                 self.partition_key_range.start(),
