@@ -28,3 +28,6 @@ restate-test-util = { workspace = true }
 
 futures-util = { workspace = true }
 test-log = { workspace = true }
+
+[lints]
+workspace = true

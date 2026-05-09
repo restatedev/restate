@@ -220,7 +220,7 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
             invocation
                 .last_attempt_started_at
                 .map(|d| d.to_string())
-                .unwrap_or("UNKNOWN".to_owned())
+                .unwrap_or_else(|| "UNKNOWN".to_owned())
         );
 
         table.add_kv_row(
@@ -244,7 +244,7 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
                     .or_else(|| invocation
                         .last_failure_entry_index
                         .map(|idx| format!(" [{idx}]")))
-                    .unwrap_or("".to_string())
+                    .unwrap_or_default()
             ),
         );
     }

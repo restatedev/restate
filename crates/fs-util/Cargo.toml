@@ -16,3 +16,6 @@ restate-workspace-hack = { workspace = true }
 tokio = { workspace = true, features = ["fs"] }
 tracing = { workspace = true }
 uuid = { workspace = true }
+
+[lints]
+workspace = true

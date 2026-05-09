@@ -178,7 +178,7 @@ pub async fn list_partitions(
                         .status
                         .last_observed_leader_epoch
                         .map(|x| x.to_string())
-                        .unwrap_or("-".to_owned()),
+                        .unwrap_or_else(|| "-".to_owned()),
                 )
                 .fg(observed_leader_color),
                 Cell::new(
@@ -186,21 +186,21 @@ pub async fn list_partitions(
                         .status
                         .last_applied_log_lsn
                         .map(|x| x.to_string())
-                        .unwrap_or("-".to_owned()),
+                        .unwrap_or_else(|| "-".to_owned()),
                 ),
                 Cell::new(
                     processor
                         .status
                         .durable_lsn
                         .map(|x| x.to_string())
-                        .unwrap_or("-".to_owned()),
+                        .unwrap_or_else(|| "-".to_owned()),
                 ),
                 Cell::new(
                     processor
                         .status
                         .last_archived_log_lsn
                         .map(|x| x.to_string())
-                        .unwrap_or("-".to_owned()),
+                        .unwrap_or_else(|| "-".to_owned()),
                 ),
                 Cell::new(
                     processor
@@ -211,7 +211,7 @@ pub async fn list_partitions(
                             // (tail - 1) - applied_lsn = tail - (applied_lsn + 1)
                             tail.value.saturating_sub(applied.value + 1).to_string()
                         })
-                        .unwrap_or("-".to_owned()),
+                        .unwrap_or_else(|| "-".to_owned()),
                 ),
                 render_as_duration(processor.status.updated_at, Tense::Past),
             ]);
@@ -269,7 +269,9 @@ fn render_replay_status(effective: RunMode, status: ReplayStatus, target_lsn: Op
         (ReplayStatus::Active, RunMode::Unknown) => Cell::new("Active?").fg(Color::Red),
         (ReplayStatus::CatchingUp, _) => Cell::new(format!(
             "Catching Up ({})",
-            target_lsn.map(|x| x.to_string()).unwrap_or("-".to_owned())
+            target_lsn
+                .map(|x| x.to_string())
+                .unwrap_or_else(|| "-".to_owned())
         ))
         .fg(Color::Magenta),
     }

@@ -169,7 +169,7 @@ impl ConnectionManagerInner {
             .observed_generations
             .get(&peer_node_id.as_plain())
             .copied()
-            .unwrap_or(GenStatus::new(peer_node_id.generation()));
+            .unwrap_or_else(|| GenStatus::new(peer_node_id.generation()));
 
         if known_status.generation > peer_node_id.generation() {
             // This peer is _older_ than the one we have seen in the past, we cannot accept

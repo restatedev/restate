@@ -453,11 +453,11 @@ async fn raft_metadata_cluster_reconfiguration() -> googletest::Result<()> {
         let cluster_status = cluster
             .get_metadata_cluster_status()
             .await
-            .ok_or(anyhow!("failed to retrieve the cluster status"))?;
+            .ok_or_else(|| anyhow!("failed to retrieve the cluster status"))?;
 
         let (leader, configuration) = cluster_status.into_inner();
 
-        let leader = leader.ok_or(anyhow!("unknown metadata server leader"))?;
+        let leader = leader.ok_or_else(|| anyhow!("unknown metadata server leader"))?;
 
         // switch a random node from member to standby and standby to member
         let mut chosen_node = PlainNodeId::from(rng.random_range(1..=num_nodes));

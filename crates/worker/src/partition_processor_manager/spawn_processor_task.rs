@@ -237,7 +237,7 @@ where
                         )
                         .await
                         .map_err(ProcessorError::from)?;
-                    let result = pp.run().await;
+                    let result = Box::pin(pp.run()).await;
                     info!(
                         partition_id = %partition.partition_id,
                         "Partition processor stopped"

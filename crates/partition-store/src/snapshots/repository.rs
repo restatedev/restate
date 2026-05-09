@@ -555,7 +555,7 @@ impl SnapshotRepository {
             created_at: snapshot.created_at,
             snapshot_id: snapshot.snapshot_id,
             min_applied_lsn: snapshot.min_applied_lsn,
-            path: new_snapshot_ref.path.clone(),
+            path: new_snapshot_ref.path,
             retained_snapshots,
         };
 
@@ -818,7 +818,7 @@ impl SnapshotRepository {
             }.instrument(Span::current()))?;
             task_handles.insert(handle.id(), filename.to_string());
             // patch the directory path to reflect the actual location on the restoring node
-            file.directory = directory.clone();
+            file.directory.clone_from(&directory);
         }
 
         loop {
@@ -1363,7 +1363,6 @@ mod tests {
             .await?
             .unwrap();
 
-        let mut snapshots = Vec::new();
         for i in 1..=4 {
             let snapshot_source = TempDir::new()?;
             let source_dir = snapshot_source.path().to_path_buf();
@@ -1381,7 +1380,6 @@ mod tests {
             snapshot.min_applied_lsn = Lsn::new(i * 1000);
 
             repository.put(&snapshot, source_dir).await?;
-            snapshots.push(snapshot);
         }
 
         let latest_path = ObjectPath::from(Url::parse(&destination)?.path().to_string())

@@ -127,28 +127,27 @@ mod tests {
         let response_bytes = Bytes::from_static(b"123");
 
         // Create and complete a fresh invocation
-        let actions = test_env
-            .apply_multiple([
-                Command::Invoke(Box::new(ServiceInvocation {
-                    invocation_id,
-                    invocation_target: invocation_target.clone(),
-                    response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
-                    idempotency_key: Some(idempotency_key.clone()),
-                    completion_retention_duration: completion_retention,
-                    journal_retention_duration: journal_retention,
-                    ..ServiceInvocation::mock()
-                })),
-                pinned_deployment(invocation_id, ServiceProtocolVersion::V5),
-                invoker_entry_effect(
-                    invocation_id,
-                    OutputCommand {
-                        result: OutputResult::Success(response_bytes.clone()),
-                        name: Default::default(),
-                    },
-                ),
-                invoker_end_effect(invocation_id),
-            ])
-            .await;
+        let actions = Box::pin(test_env.apply_multiple([
+            Command::Invoke(Box::new(ServiceInvocation {
+                invocation_id,
+                invocation_target: invocation_target.clone(),
+                response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
+                idempotency_key: Some(idempotency_key.clone()),
+                completion_retention_duration: completion_retention,
+                journal_retention_duration: journal_retention,
+                ..ServiceInvocation::mock()
+            })),
+            pinned_deployment(invocation_id, ServiceProtocolVersion::V5),
+            invoker_entry_effect(
+                invocation_id,
+                OutputCommand {
+                    result: OutputResult::Success(response_bytes.clone()),
+                    name: Default::default(),
+                },
+            ),
+            invoker_end_effect(invocation_id),
+        ]))
+        .await;
 
         // Assert response
         assert_that!(

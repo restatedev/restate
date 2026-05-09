@@ -86,7 +86,7 @@ pub async fn check_if_latest_version() {
                 latest
                     .published_at
                     .map(|d| d.to_string())
-                    .unwrap_or("<unknown>".to_owned()),
+                    .unwrap_or_else(|| "<unknown>".to_owned()),
                 latest.html_url.to_string()
             );
         }

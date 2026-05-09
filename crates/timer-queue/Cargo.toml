@@ -12,3 +12,6 @@ restate-workspace-hack = { workspace = true }
 
 futures = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
+
+[lints]
+workspace = true

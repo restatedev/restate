@@ -91,3 +91,6 @@ restate-local-cluster-runner = { workspace = true }
 
 googletest = { workspace = true }
 tempfile = { workspace = true }
+
+[lints]
+workspace = true

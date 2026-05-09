@@ -516,7 +516,7 @@ mod tests {
         let (sender1, _rx1) = raw_sender();
         let (sender2, _rx2) = raw_sender();
 
-        shards.force_register(SVC_A, 100, sender1.clone());
+        shards.force_register(SVC_A, 100, sender1);
         shards.force_register(SVC_A, 200, sender2.clone());
 
         // Removing sort_code=100 should not affect sort_code=200.

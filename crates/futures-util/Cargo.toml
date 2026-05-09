@@ -32,3 +32,6 @@ tracing-test = { workspace = true }
 [[bench]]
 name = "waiter_queue"
 harness = false
+
+[lints]
+workspace = true

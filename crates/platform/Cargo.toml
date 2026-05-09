@@ -20,3 +20,6 @@ downcast-rs = { workspace = true }
 hashbrown = { workspace = true }
 parking_lot = { workspace = true }
 thiserror = { workspace = true }
+
+[lints]
+workspace = true

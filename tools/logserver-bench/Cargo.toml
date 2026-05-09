@@ -48,3 +48,6 @@ tikv-jemalloc-ctl = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[lints]
+workspace = true

@@ -135,7 +135,7 @@ impl Paths {
         }
 
         if let Some(other_paths_extensions) = other_paths.extensions {
-            let paths_extensions = self.extensions.get_or_insert(Extensions::default());
+            let paths_extensions = self.extensions.get_or_insert_with(Extensions::default);
             paths_extensions.merge(other_paths_extensions);
         }
     }

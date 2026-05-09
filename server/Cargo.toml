@@ -102,3 +102,6 @@ vergen = { workspace = true, default-features = false, features = [
     "gitcl",
     "cargo",
 ] }
+
+[lints]
+workspace = true

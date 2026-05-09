@@ -804,10 +804,9 @@ mod tests {
     #[test]
     fn snapshot_does_not_advance_clock() {
         // snapshot() should return the last emitted timestamp without advancing
-        let mock_clock = MockClock::new();
         let hlc = HlcClock::new(
             MAX_DRIFT_5000,
-            mock_clock.clone(),
+            MockClock::new(),
             Arc::new(AtomicStorage::default()),
         )
         .unwrap();

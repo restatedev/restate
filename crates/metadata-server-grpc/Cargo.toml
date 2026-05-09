@@ -33,3 +33,6 @@ ulid = { workspace = true, features = ["serde"] }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }
+
+[lints]
+workspace = true

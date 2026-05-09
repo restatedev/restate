@@ -44,3 +44,6 @@ tikv-jemalloc-sys = { workspace = true }
 [dev-dependencies]
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

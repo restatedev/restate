@@ -23,3 +23,6 @@ tonic-prost = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }
+
+[lints]
+workspace = true

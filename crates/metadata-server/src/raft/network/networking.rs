@@ -169,7 +169,7 @@ where
             {
                 trace!(%target, "Try connecting to metadata store peer");
                 let channel = net_util::create_tonic_channel(
-                    address.clone(),
+                    address,
                     networking_options,
                     net_util::DNSResolution::Gai,
                 );

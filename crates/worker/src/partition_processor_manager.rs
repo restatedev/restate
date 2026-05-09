@@ -1265,7 +1265,7 @@ where
             .read_modify_write(partition_processor_epoch_key(partition_id), |epoch| {
                 let next_epoch = epoch
                     .map(|epoch: EpochMetadata| epoch.claim_leadership(node_id, partition_id))
-                    .ok_or("missing epoch metadata".to_owned())?;
+                    .ok_or_else(|| "missing epoch metadata".to_owned())?;
 
                 Ok(next_epoch)
             })

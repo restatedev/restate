@@ -707,7 +707,7 @@ where
         );
 
         let value = EntryValue {
-            stats: stats.clone(),
+            stats,
             status: new_status,
             metadata: maybe_new_metadata,
         };

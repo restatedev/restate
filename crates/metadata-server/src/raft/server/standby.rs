@@ -301,7 +301,7 @@ impl Standby {
                 .into_inner()
                 .nodes_config_version
                 .map(Version::from)
-                .unwrap_or(Metadata::with_current(|m| m.nodes_config_version()))),
+                .unwrap_or_else(|| Metadata::with_current(|m| m.nodes_config_version()))),
             Err(status) => {
                 let known_leader = KnownLeader::from_status(&status);
                 Err(JoinError::Rpc(Box::new(status), known_leader))
