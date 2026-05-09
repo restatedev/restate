@@ -1307,7 +1307,7 @@ impl Member {
                     *configuration = self.configuration.clone();
                 }
                 *raft = self.raft_summary();
-                *snapshot = self.snapshot_summary.clone();
+                snapshot.clone_from(&self.snapshot_summary);
             } else {
                 let raft = self.raft_summary();
 

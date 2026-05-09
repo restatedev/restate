@@ -46,3 +46,6 @@ tracing = { workspace = true }
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
 restate-partition-store = { workspace = true }
+
+[lints]
+workspace = true

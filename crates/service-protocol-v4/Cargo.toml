@@ -52,3 +52,6 @@ serde_json = { workspace = true }
 syn = { workspace = true }
 typify = { workspace = true }
 jsonptr = { workspace = true }
+
+[lints]
+workspace = true

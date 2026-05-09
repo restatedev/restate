@@ -101,10 +101,7 @@ mod tests {
             value: "d".to_string(),
         };
 
-        let expected = MyStruct(HashMap::from([
-            ("a".to_owned(), e1.clone()),
-            ("c".to_owned(), e2.clone()),
-        ]));
+        let expected = MyStruct(HashMap::from([("a".to_owned(), e1), ("c".to_owned(), e2)]));
         let serialized = serde_json::to_value(expected.clone()).unwrap();
         assert_eq!(serialized.as_array().unwrap().len(), 2);
 

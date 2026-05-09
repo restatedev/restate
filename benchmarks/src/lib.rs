@@ -109,7 +109,7 @@ pub fn spawn_restate(config: Configuration) -> task_center::Handle {
         .into_handle();
 
     let mut prometheus = Prometheus::install(&config.common);
-    restate_types::config::set_current_config(config.clone());
+    restate_types::config::set_current_config(config);
 
     let mut address_book = AddressBook::new(restate_types::config::node_filepath(""));
     let live_config = Configuration::live();

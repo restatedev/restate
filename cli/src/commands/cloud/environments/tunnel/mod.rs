@@ -137,9 +137,9 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
         *crate::EXIT_HANDLER.lock().unwrap() = Some(boxed);
     }
 
-    let tunnel_name = opts.tunnel_name.clone().unwrap_or(
-        String::from_utf8_lossy(mnemonic::MN_WORDS.choose(&mut rand::rng()).unwrap()).to_string(),
-    );
+    let tunnel_name = opts.tunnel_name.clone().unwrap_or_else(|| {
+        String::from_utf8_lossy(mnemonic::MN_WORDS.choose(&mut rand::rng()).unwrap()).to_string()
+    });
 
     let tunnel_renderer = Arc::new(
         renderer::TunnelRenderer::new(

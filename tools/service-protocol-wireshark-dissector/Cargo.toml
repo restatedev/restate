@@ -20,3 +20,6 @@ bytes = { workspace = true }
 thiserror = { workspace = true }
 # Lua
 mlua = { version = "0.10.2", features = ["module", "macros", "lua54"] }
+
+[lints]
+workspace = true

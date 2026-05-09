@@ -310,7 +310,7 @@ impl MaybeTempDir {
     pub fn new<P: AsRef<Path>>(path: &P) -> MaybeTempDir {
         if let Ok("true" | "1") = std::env::var("LOCAL_CLUSTER_RUNNER_RETAIN_TEMPDIR").as_deref() {
             let dir = match std::env::var("LOCAL_CLUSTER_RUNNER_TEMPDIR") {
-                Ok(v) => Path::new(&v).join(path).to_path_buf(),
+                Ok(v) => Path::new(&v).join(path),
                 Err(_) => tempfile::tempdir().expect("to create a tempdir").keep(),
             };
             eprintln!(

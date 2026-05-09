@@ -49,3 +49,6 @@ harness = false
 [[bench]]
 name = "throughput_sequential"
 harness = false
+
+[lints]
+workspace = true

@@ -67,7 +67,7 @@ mod tests {
             0,    /* outbox_seq_number */
             None, /* outbox_head_seq_number */
             KeyRange::FULL,
-            SemanticRestateVersion::unknown().clone(),
+            SemanticRestateVersion::unknown(),
             Default::default(), /* schema */
             std::sync::Arc::new(RuleBook::default()),
             RuleBookCacheHandle::detached(),
@@ -111,7 +111,7 @@ mod tests {
             0,    /* outbox_seq_number */
             None, /* outbox_head_seq_number */
             KeyRange::FULL,
-            SemanticRestateVersion::unknown().clone(),
+            SemanticRestateVersion::unknown(),
             Default::default(), /* schema */
             std::sync::Arc::new(RuleBook::default()),
             RuleBookCacheHandle::detached(),

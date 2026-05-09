@@ -133,7 +133,7 @@ fn main() -> anyhow::Result<()> {
 
     let metadata = MetadataBuilder::default().to_metadata();
     tc.try_set_global_metadata(metadata);
-    let args = cli_args.clone();
+    let args = cli_args;
     let task_center = tc.clone();
 
     // Start metrics HTTP server

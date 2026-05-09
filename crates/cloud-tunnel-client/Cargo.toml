@@ -26,3 +26,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
+
+[lints]
+workspace = true

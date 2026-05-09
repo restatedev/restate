@@ -142,7 +142,7 @@ impl From<PartitionSnapshotMetadataShadow> for PartitionSnapshotMetadata {
             // todo: delete this in 1.5
             log_id: value
                 .log_id
-                .unwrap_or(LogId::default_for_partition(value.partition_id)),
+                .unwrap_or_else(|| LogId::default_for_partition(value.partition_id)),
             min_applied_lsn: value.min_applied_lsn,
             db_comparator_name: value.db_comparator_name,
             files: value.files,

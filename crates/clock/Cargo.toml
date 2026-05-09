@@ -48,3 +48,6 @@ required-features = ["hlc"]
 [[example]]
 name = "brrr_multi"
 required-features = ["hlc"]
+
+[lints]
+workspace = true

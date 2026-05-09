@@ -212,7 +212,7 @@ impl LogReadStream {
         // skips over the boundary of the gap.
         record
             .trim_gap_to_sequence_number()
-            .unwrap_or(record.sequence_number())
+            .unwrap_or_else(|| record.sequence_number())
             .next()
     }
 

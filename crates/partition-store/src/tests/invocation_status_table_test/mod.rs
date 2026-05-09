@@ -129,29 +129,17 @@ fn suspended_status(invocation_target: InvocationTarget) -> InvocationStatus {
 }
 
 async fn populate_data<T: WriteInvocationStatusTable>(txn: &mut T) {
-    txn.put_invocation_status(
-        &INVOCATION_ID_1,
-        &invoked_status(INVOCATION_TARGET_1.clone()),
-    )
-    .unwrap();
+    txn.put_invocation_status(&INVOCATION_ID_1, &invoked_status(INVOCATION_TARGET_1))
+        .unwrap();
 
-    txn.put_invocation_status(
-        &INVOCATION_ID_2,
-        &invoked_status(INVOCATION_TARGET_2.clone()),
-    )
-    .expect("");
+    txn.put_invocation_status(&INVOCATION_ID_2, &invoked_status(INVOCATION_TARGET_2))
+        .expect("");
 
-    txn.put_invocation_status(
-        &INVOCATION_ID_3,
-        &suspended_status(INVOCATION_TARGET_3.clone()),
-    )
-    .unwrap();
+    txn.put_invocation_status(&INVOCATION_ID_3, &suspended_status(INVOCATION_TARGET_3))
+        .unwrap();
 
-    txn.put_invocation_status(
-        &INVOCATION_ID_4,
-        &suspended_status(INVOCATION_TARGET_4.clone()),
-    )
-    .unwrap();
+    txn.put_invocation_status(&INVOCATION_ID_4, &suspended_status(INVOCATION_TARGET_4))
+        .unwrap();
 }
 
 async fn verify_point_lookups<T: ReadInvocationStatusTable>(txn: &mut T) {
@@ -159,7 +147,7 @@ async fn verify_point_lookups<T: ReadInvocationStatusTable>(txn: &mut T) {
         txn.get_invocation_status(&INVOCATION_ID_1)
             .await
             .expect("should not fail"),
-        invoked_status(INVOCATION_TARGET_1.clone())
+        invoked_status(INVOCATION_TARGET_1)
     );
 }
 
@@ -174,12 +162,12 @@ async fn test_invocation_status() {
         txn.get_invocation_status(&INVOCATION_ID_1)
             .await
             .expect("should not fail"),
-        invoked_status(INVOCATION_TARGET_1.clone())
+        invoked_status(INVOCATION_TARGET_1)
     );
     assert_eq!(
         txn.get_invocation_status(&INVOCATION_ID_2)
             .await
             .expect("should not fail"),
-        invoked_status(INVOCATION_TARGET_2.clone())
+        invoked_status(INVOCATION_TARGET_2)
     );
 }

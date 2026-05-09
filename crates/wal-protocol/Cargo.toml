@@ -30,3 +30,6 @@ strum = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+
+[lints]
+workspace = true

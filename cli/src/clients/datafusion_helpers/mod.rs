@@ -332,7 +332,7 @@ pub struct LockedKeyInfo {
 impl ServiceHandlerLockedKeysMap {
     fn insert(&mut self, service: &str, key: String, info: LockedKeyInfo) {
         let locked_keys = self.services.entry(service.to_owned()).or_default();
-        locked_keys.insert(key.to_owned(), info);
+        locked_keys.insert(key, info);
     }
 
     fn locked_key_info_mut(&mut self, service: &str, key: &str) -> &mut LockedKeyInfo {

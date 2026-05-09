@@ -116,7 +116,7 @@ pub async fn run(State(env): State<CliEnv>) {
         &CliContext::get()
             .loaded_dotenv()
             .map(|x| x.display().to_string())
-            .unwrap_or("(NONE)".to_string()),
+            .unwrap_or_else(|| "(NONE)".to_string()),
     ]);
     c_println!("{}", table);
 

@@ -28,3 +28,6 @@ googletest = { workspace = true }
 test-log = { workspace = true }
 
 restate-core = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

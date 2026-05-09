@@ -1186,7 +1186,7 @@ mod tests {
         // Partial accumulation: some in-flight is pinned, some is reclaimable
         let global = pool(200);
         let initial_lease = global.try_reserve(100).unwrap();
-        let mut budget = LocalMemoryPool::new(global.clone(), initial_lease, bc(0), nzb(300));
+        let mut budget = LocalMemoryPool::new(global, initial_lease, bc(0), nzb(300));
 
         // Reserve 100 bytes (in-flight)
         let _lease1 = budget.try_reserve(50).unwrap();

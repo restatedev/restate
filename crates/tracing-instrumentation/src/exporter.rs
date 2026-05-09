@@ -62,7 +62,7 @@ impl ExporterBuilder {
 
         // Tokenize the scheme on '+' to determine the type of exporter.
         let mut scheme_tokens: Vec<&str> = scheme.split('+').collect();
-        scheme_tokens.sort();
+        scheme_tokens.sort_unstable();
 
         enum Transport {
             Tonic, // gRPC

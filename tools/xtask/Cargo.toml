@@ -26,3 +26,6 @@ tempfile = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
 restate-workspace-hack = { workspace = true }
+
+[lints]
+workspace = true

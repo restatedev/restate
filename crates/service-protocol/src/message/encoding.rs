@@ -485,7 +485,7 @@ mod tests {
         let expected_msg_size = message.encoded_len();
         let msg = encoder.encode(message);
 
-        decoder.push(msg.clone());
+        decoder.push(msg);
         let_assert!(
             EncodingError::MessageSizeLimit(msg_size, limit) = decoder.consume_next().unwrap_err()
         );

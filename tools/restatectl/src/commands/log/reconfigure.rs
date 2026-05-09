@@ -87,7 +87,7 @@ async fn inner_reconfigure(
 
     let new_provider = opts
         .provider
-        .unwrap_or(logs.configuration().default_provider.kind());
+        .unwrap_or_else(|| logs.configuration().default_provider.kind());
 
     let extension = match (new_provider, tail_provider) {
         // we can always go to replicated loglet
@@ -197,7 +197,7 @@ fn replicated_loglet_params(
             sequencer: Some(
                 opts.sequencer
                     .map(Into::into)
-                    .unwrap_or(NodeId::from(last_params.sequencer))
+                    .unwrap_or_else(|| NodeId::from(last_params.sequencer))
                     .into(),
             ),
             // (deprecated) intentionally empty

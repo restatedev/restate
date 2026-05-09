@@ -278,7 +278,7 @@ impl RocksDbManager {
 
             self.close_db_tasks.spawn_blocking(move || {
                 db.db.shutdown();
-                name.clone()
+                name
             });
         }
         // wait for all tasks to complete

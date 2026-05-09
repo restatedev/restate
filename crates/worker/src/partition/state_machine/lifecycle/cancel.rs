@@ -277,14 +277,19 @@ mod tests {
 
     #[restate_core::test]
     async fn cancel_scheduled_invocation_through_notify_signal() -> anyhow::Result<()> {
-        run_cancel_scheduled_invocation_through_notify_signal(SemanticRestateVersion::unknown())
-            .await
+        Box::pin(run_cancel_scheduled_invocation_through_notify_signal(
+            SemanticRestateVersion::unknown(),
+        ))
+        .await
     }
 
     #[restate_core::test]
     async fn cancel_scheduled_invocation_through_notify_signal_journal_v2_enabled()
     -> anyhow::Result<()> {
-        run_cancel_scheduled_invocation_through_notify_signal(RESTATE_VERSION_1_6_0.clone()).await
+        Box::pin(run_cancel_scheduled_invocation_through_notify_signal(
+            RESTATE_VERSION_1_6_0.clone(),
+        ))
+        .await
     }
 
     async fn run_cancel_scheduled_invocation_through_notify_signal(
@@ -361,13 +366,19 @@ mod tests {
 
     #[restate_core::test]
     async fn cancel_inboxed_invocation_through_notify_signal() -> anyhow::Result<()> {
-        run_cancel_inboxed_invocation_through_notify_signal(SemanticRestateVersion::unknown()).await
+        Box::pin(run_cancel_inboxed_invocation_through_notify_signal(
+            SemanticRestateVersion::unknown(),
+        ))
+        .await
     }
 
     #[restate_core::test]
     async fn cancel_inboxed_invocation_through_notify_signal_journal_v2_enabled()
     -> anyhow::Result<()> {
-        run_cancel_inboxed_invocation_through_notify_signal(RESTATE_VERSION_1_6_0.clone()).await
+        Box::pin(run_cancel_inboxed_invocation_through_notify_signal(
+            RESTATE_VERSION_1_6_0.clone(),
+        ))
+        .await
     }
 
     async fn run_cancel_inboxed_invocation_through_notify_signal(
