@@ -31,12 +31,15 @@ use test_log::test;
 
 #[restate_core::test]
 async fn kill_inboxed_invocation() -> anyhow::Result<()> {
-    run_kill_inboxed_invocation(SemanticRestateVersion::unknown()).await
+    Box::pin(run_kill_inboxed_invocation(
+        SemanticRestateVersion::unknown(),
+    ))
+    .await
 }
 
 #[restate_core::test]
 async fn kill_inboxed_invocation_journal_v2_enabled() -> anyhow::Result<()> {
-    run_kill_inboxed_invocation(RESTATE_VERSION_1_6_0.clone()).await
+    Box::pin(run_kill_inboxed_invocation(RESTATE_VERSION_1_6_0.clone())).await
 }
 
 async fn run_kill_inboxed_invocation(

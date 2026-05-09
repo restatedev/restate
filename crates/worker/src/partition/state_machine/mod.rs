@@ -3367,7 +3367,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                             .unwrap_or(CompletionResult::Empty);
                         ProtobufRawEntryCodec::write_completion(
                             &mut journal_entry,
-                            completion_result.clone(),
+                            completion_result,
                         )?;
 
                         self.forward_completion(invocation_id, entry_index);
@@ -3452,10 +3452,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
                     let completion_result =
                         ProtobufRawEntryCodec::serialize_get_state_keys_completion(value);
-                    ProtobufRawEntryCodec::write_completion(
-                        &mut journal_entry,
-                        completion_result.clone(),
-                    )?;
+                    ProtobufRawEntryCodec::write_completion(&mut journal_entry, completion_result)?;
 
                     // We can already forward the completion
                     self.forward_completion(invocation_id, entry_index);
@@ -3482,7 +3479,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                                 let completion_result: CompletionResult = result.into();
                                 ProtobufRawEntryCodec::write_completion(
                                     &mut journal_entry,
-                                    completion_result.clone(),
+                                    completion_result,
                                 )?;
 
                                 // Forward completion
@@ -3553,7 +3550,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
                         ProtobufRawEntryCodec::write_completion(
                             &mut journal_entry,
-                            completion_result.clone(),
+                            completion_result,
                         )?;
 
                         // Forward completion
@@ -3632,7 +3629,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
                         ProtobufRawEntryCodec::write_completion(
                             &mut journal_entry,
-                            completion_result.clone(),
+                            completion_result,
                         )?;
 
                         // Forward completion
@@ -3771,10 +3768,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                         JournalEntry::Completion(completion_result) => Some(completion_result),
                     })
                 {
-                    ProtobufRawEntryCodec::write_completion(
-                        &mut journal_entry,
-                        completion_result.clone(),
-                    )?;
+                    ProtobufRawEntryCodec::write_completion(&mut journal_entry, completion_result)?;
 
                     self.forward_completion(invocation_id, entry_index);
                 }
@@ -3860,7 +3854,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
                         ProtobufRawEntryCodec::write_completion(
                             &mut journal_entry,
-                            completion_result.clone(),
+                            completion_result,
                         )?;
                         self.forward_completion(invocation_id, entry_index);
                     } else {

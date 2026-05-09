@@ -71,7 +71,7 @@ fn main() -> anyhow::Result<()> {
     // Initial configuration loading
     let config_loader = ConfigLoaderBuilder::default()
         .load_env(true)
-        .path(config_path.clone())
+        .path(config_path)
         .cli_override(cli_args.opts_overrides.clone())
         .build()
         .unwrap();

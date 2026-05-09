@@ -33,7 +33,7 @@ pub(crate) fn register_self(
     resolver: Live<impl DeploymentResolver + Send + Sync + 'static>,
 ) -> datafusion::common::Result<()> {
     let schema = SysDeploymentBuilder::schema();
-    let statistics = TableStatisticsBuilder::new(schema.clone())
+    let statistics = TableStatisticsBuilder::new(schema)
         .with_num_rows_estimate(DEPLOYMENT_ROW_ESTIMATE)
         .with_primary_key("id");
     let deployment_table = GenericTableProvider::new(

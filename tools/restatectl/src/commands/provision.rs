@@ -81,13 +81,13 @@ async fn provision_cluster(
     let partition_replication = provision_opts
         .partition_replication
         .clone()
-        .or(provision_opts.replication.clone())
+        .or_else(|| provision_opts.replication.clone())
         .map(Into::into);
 
     let log_replication = provision_opts
         .log_replication
         .clone()
-        .or(provision_opts.replication.clone())
+        .or_else(|| provision_opts.replication.clone())
         .map(Into::into);
 
     let request = ProvisionClusterRequest {

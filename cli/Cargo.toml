@@ -108,3 +108,6 @@ bench = false
 [[bin]]
 name = "restate"
 path = "src/main.rs"
+
+[lints]
+workspace = true

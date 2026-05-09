@@ -46,3 +46,6 @@ utoipa = { workspace = true, optional = true }
 
 [dev-dependencies]
 restate-limiter = { path = ".", default-features = false, features = ["rule-book"] }
+
+[lints]
+workspace = true

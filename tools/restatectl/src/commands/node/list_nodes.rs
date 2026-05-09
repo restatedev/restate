@@ -168,14 +168,14 @@ pub fn list_nodes_lite<P: ListenerPort>(
                 ident
                     .node_id
                     .map(|id| format!("{}", id.id))
-                    .unwrap_or("n/a".to_owned()),
+                    .unwrap_or_else(|| "n/a".to_owned()),
             ),
             Cell::new(
                 ident
                     .node_id
                     .and_then(|id| id.generation)
                     .map(|generation| format!("{generation}"))
-                    .unwrap_or("".to_owned()),
+                    .unwrap_or_else(|| "".to_owned()),
             ),
             Cell::new("-"),
             Cell::new(address.to_string()),
@@ -207,7 +207,7 @@ where
 {
     ident_response
         .map(f)
-        .unwrap_or(vec![Cell::new("N/A"), Cell::new("Unknown")])
+        .unwrap_or_else(|| vec![Cell::new("N/A"), Cell::new("Unknown")])
 }
 
 fn render_ident_extras(ident_response: &IdentResponse) -> Vec<Cell> {

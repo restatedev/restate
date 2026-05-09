@@ -183,7 +183,7 @@ impl RequestPump {
                 .get_or_load(loglet_id, log_store)
                 .await
                 .context("cannot load loglet state map from logstore")?;
-            let handle = LogletWorker::start(loglet_id, log_store.clone(), state.clone())?;
+            let handle = LogletWorker::start(loglet_id, log_store.clone(), state)?;
 
             data_shards.force_register_sort_code(loglet_id.into(), handle.data_tx());
             meta_shards.force_register_sort_code(loglet_id.into(), handle.meta_tx());

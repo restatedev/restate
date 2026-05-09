@@ -61,3 +61,6 @@ hyper-util = { workspace = true, features = ["full"] }
 mockall = { workspace = true }
 tempfile = { workspace = true }
 tracing-test = { workspace = true }
+
+[lints]
+workspace = true

@@ -114,7 +114,7 @@ where
                     notification_idx,
                 )
             }),
-            span_context: span_context.clone(),
+            span_context,
             execution_time: self.execution_time,
             completion_retention_duration,
             journal_retention_duration,

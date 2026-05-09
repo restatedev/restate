@@ -67,3 +67,6 @@ tokio-stream = {workspace = true}
 [[bench]]
 name = "h2_pool_benchmark"
 harness = false
+
+[lints]
+workspace = true

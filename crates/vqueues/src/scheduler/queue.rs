@@ -857,7 +857,7 @@ impl<S: VQueueStore> Queue<S> {
 
         // It's very important that we must reset the task to standby
         self.refill_state = RefillState::Standby {
-            refill_anchor: refill_anchor.or(self.items.back().map(|(k, _)| *k)),
+            refill_anchor: refill_anchor.or_else(|| self.items.back().map(|(k, _)| *k)),
         };
 
         // at the end, if the cache is empty and end_of_queue is true, then we must

@@ -59,3 +59,6 @@ restate-storage-api = { workspace = true, features = ["test-util"] }
 restate-types = { workspace = true, features = ["test-util"] }
 
 googletest = { workspace = true }
+
+[lints]
+workspace = true

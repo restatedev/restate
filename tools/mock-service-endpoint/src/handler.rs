@@ -223,11 +223,11 @@ impl Handler {
             match replayed.len() {
                 0 => {
                     yield get_state(counter.clone());
-                    yield output(counter.unwrap_or("0".into()));
+                    yield output(counter.unwrap_or_else(|| "0".into()));
                     yield end();
                 },
                 1 => {
-                    yield output(counter.unwrap_or("0".into()));
+                    yield output(counter.unwrap_or_else(|| "0".into()));
                     yield end();
                 }
                 2=> {
@@ -336,9 +336,7 @@ fn set_state(value: Bytes) -> Message {
         prost::Message::encode_to_vec(&SetStateCommandMessage {
             name: String::new(),
             key: "counter".into(),
-            value: Some(proto::Value {
-                content: value.clone(),
-            }),
+            value: Some(proto::Value { content: value }),
         })
         .into(),
     )

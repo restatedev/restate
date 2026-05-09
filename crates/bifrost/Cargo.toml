@@ -85,3 +85,6 @@ tikv-jemallocator = { workspace = true }
 [[bench]]
 name = "replicated_loglet_serde"
 harness = false
+
+[lints]
+workspace = true

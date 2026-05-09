@@ -60,3 +60,6 @@ vergen = { workspace = true, default-features = false, features = [
 [[bin]]
 name = "restate-doctor"
 path = "src/main.rs"
+
+[lints]
+workspace = true

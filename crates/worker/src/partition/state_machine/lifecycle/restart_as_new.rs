@@ -363,26 +363,25 @@ mod tests {
         // Start and complete an invocation with only the input entry
         let invocation_target = InvocationTarget::mock_virtual_object();
         let original_invocation_id = InvocationId::generate(&invocation_target, None);
-        let _ = test_env
-            .apply_multiple([
-                Command::Invoke(Box::new(ServiceInvocation {
-                    invocation_id: original_invocation_id,
-                    invocation_target: invocation_target.clone(),
-                    completion_retention_duration: Duration::from_secs(120),
-                    journal_retention_duration: Duration::ZERO,
-                    ..ServiceInvocation::mock()
-                })),
-                fixtures::pinned_deployment(original_invocation_id, ServiceProtocolVersion::V6),
-                fixtures::invoker_entry_effect(
-                    original_invocation_id,
-                    OutputCommand {
-                        result: OutputResult::Success(Default::default()),
-                        name: Default::default(),
-                    },
-                ),
-                fixtures::invoker_end_effect(original_invocation_id),
-            ])
-            .await;
+        let _ = Box::pin(test_env.apply_multiple([
+            Command::Invoke(Box::new(ServiceInvocation {
+                invocation_id: original_invocation_id,
+                invocation_target: invocation_target.clone(),
+                completion_retention_duration: Duration::from_secs(120),
+                journal_retention_duration: Duration::ZERO,
+                ..ServiceInvocation::mock()
+            })),
+            fixtures::pinned_deployment(original_invocation_id, ServiceProtocolVersion::V6),
+            fixtures::invoker_entry_effect(
+                original_invocation_id,
+                OutputCommand {
+                    result: OutputResult::Success(Default::default()),
+                    name: Default::default(),
+                },
+            ),
+            fixtures::invoker_end_effect(original_invocation_id),
+        ]))
+        .await;
 
         // Sanity check, journal should not be available
         assert_that!(
@@ -439,22 +438,21 @@ mod tests {
         // Start invocation, then kill it
         let invocation_target = InvocationTarget::mock_virtual_object();
         let original_invocation_id = InvocationId::generate(&invocation_target, None);
-        let _ = test_env
-            .apply_multiple([
-                Command::Invoke(Box::new(ServiceInvocation {
-                    invocation_id: original_invocation_id,
-                    invocation_target: invocation_target.clone(),
-                    completion_retention_duration: Duration::from_secs(120),
-                    journal_retention_duration: Duration::from_secs(120),
-                    ..ServiceInvocation::mock()
-                })),
-                Command::TerminateInvocation(InvocationTermination {
-                    invocation_id: original_invocation_id,
-                    flavor: TerminationFlavor::Kill,
-                    response_sink: None,
-                }),
-            ])
-            .await;
+        let _ = Box::pin(test_env.apply_multiple([
+            Command::Invoke(Box::new(ServiceInvocation {
+                invocation_id: original_invocation_id,
+                invocation_target: invocation_target.clone(),
+                completion_retention_duration: Duration::from_secs(120),
+                journal_retention_duration: Duration::from_secs(120),
+                ..ServiceInvocation::mock()
+            })),
+            Command::TerminateInvocation(InvocationTermination {
+                invocation_id: original_invocation_id,
+                flavor: TerminationFlavor::Kill,
+                response_sink: None,
+            }),
+        ]))
+        .await;
 
         // Restart as new with copy_prefix_up_to_index_included = 0
         let new_id = InvocationId::mock_generate(&invocation_target);
@@ -510,26 +508,25 @@ mod tests {
         // Start and complete an invocation with only the input entry
         let invocation_target = InvocationTarget::mock_virtual_object();
         let original_invocation_id = InvocationId::generate(&invocation_target, None);
-        let _ = test_env
-            .apply_multiple([
-                Command::Invoke(Box::new(ServiceInvocation {
-                    invocation_id: original_invocation_id,
-                    invocation_target: invocation_target.clone(),
-                    completion_retention_duration: Duration::from_secs(120),
-                    journal_retention_duration: Duration::from_secs(120),
-                    ..ServiceInvocation::mock()
-                })),
-                fixtures::pinned_deployment(original_invocation_id, ServiceProtocolVersion::V6),
-                fixtures::invoker_entry_effect(
-                    original_invocation_id,
-                    OutputCommand {
-                        result: OutputResult::Success(Default::default()),
-                        name: Default::default(),
-                    },
-                ),
-                fixtures::invoker_end_effect(original_invocation_id),
-            ])
-            .await;
+        let _ = Box::pin(test_env.apply_multiple([
+            Command::Invoke(Box::new(ServiceInvocation {
+                invocation_id: original_invocation_id,
+                invocation_target: invocation_target.clone(),
+                completion_retention_duration: Duration::from_secs(120),
+                journal_retention_duration: Duration::from_secs(120),
+                ..ServiceInvocation::mock()
+            })),
+            fixtures::pinned_deployment(original_invocation_id, ServiceProtocolVersion::V6),
+            fixtures::invoker_entry_effect(
+                original_invocation_id,
+                OutputCommand {
+                    result: OutputResult::Success(Default::default()),
+                    name: Default::default(),
+                },
+            ),
+            fixtures::invoker_end_effect(original_invocation_id),
+        ]))
+        .await;
 
         // Restart as new with copy_prefix_up_to_index_included = 0
         let new_id = InvocationId::mock_generate(&invocation_target);
@@ -586,26 +583,25 @@ mod tests {
 
         // Mock the first invocation for the same target that we will restart
         let original_invocation_id = InvocationId::generate(&invocation_target, None);
-        let _ = test_env
-            .apply_multiple([
-                Command::Invoke(Box::new(ServiceInvocation {
-                    invocation_id: original_invocation_id,
-                    invocation_target: invocation_target.clone(),
-                    completion_retention_duration: Duration::from_secs(120),
-                    journal_retention_duration: Duration::from_secs(120),
-                    ..ServiceInvocation::mock()
-                })),
-                fixtures::pinned_deployment(original_invocation_id, ServiceProtocolVersion::V6),
-                fixtures::invoker_entry_effect(
-                    original_invocation_id,
-                    OutputCommand {
-                        result: OutputResult::Success(Default::default()),
-                        name: Default::default(),
-                    },
-                ),
-                fixtures::invoker_end_effect(original_invocation_id),
-            ])
-            .await;
+        let _ = Box::pin(test_env.apply_multiple([
+            Command::Invoke(Box::new(ServiceInvocation {
+                invocation_id: original_invocation_id,
+                invocation_target: invocation_target.clone(),
+                completion_retention_duration: Duration::from_secs(120),
+                journal_retention_duration: Duration::from_secs(120),
+                ..ServiceInvocation::mock()
+            })),
+            fixtures::pinned_deployment(original_invocation_id, ServiceProtocolVersion::V6),
+            fixtures::invoker_entry_effect(
+                original_invocation_id,
+                OutputCommand {
+                    result: OutputResult::Success(Default::default()),
+                    name: Default::default(),
+                },
+            ),
+            fixtures::invoker_end_effect(original_invocation_id),
+        ]))
+        .await;
 
         // Now before restarting the invocation, lock the VO
         let locker_id = fixtures::mock_start_invocation_with_invocation_target(
@@ -661,54 +657,53 @@ mod tests {
         // Build journal: input(0 already) + command(1) + signal() + completion(2)
         let wake_up_time = MillisSinceEpoch::now();
         let completion_id = 1u32;
-        let _ = test_env
-            .apply_multiple([
-                Command::Invoke(Box::new(ServiceInvocation {
-                    invocation_id: original_invocation_id,
-                    invocation_target: invocation_target.clone(),
-                    completion_retention_duration: Duration::from_secs(120),
-                    journal_retention_duration: Duration::from_secs(120),
-                    ..ServiceInvocation::mock()
-                })),
-                fixtures::pinned_deployment(original_invocation_id, ServiceProtocolVersion::V6),
-                fixtures::invoker_entry_effect(
-                    original_invocation_id,
-                    SleepCommand {
-                        wake_up_time,
-                        name: Default::default(),
-                        completion_id,
-                    },
-                ),
-                Command::NotifySignal(NotifySignalRequest {
-                    invocation_id: original_invocation_id,
-                    signal: Signal::new(
-                        SignalId::for_index(1),
-                        SignalResult::Success(Default::default()),
-                    ),
-                }),
-                fixtures::invoker_entry_effect(
-                    original_invocation_id,
-                    SleepCommand {
-                        wake_up_time,
-                        name: Default::default(),
-                        completion_id: completion_id + 1,
-                    },
-                ),
-                Command::Timer(TimerKeyValue::complete_journal_entry(
+        let _ = Box::pin(test_env.apply_multiple([
+            Command::Invoke(Box::new(ServiceInvocation {
+                invocation_id: original_invocation_id,
+                invocation_target: invocation_target.clone(),
+                completion_retention_duration: Duration::from_secs(120),
+                journal_retention_duration: Duration::from_secs(120),
+                ..ServiceInvocation::mock()
+            })),
+            fixtures::pinned_deployment(original_invocation_id, ServiceProtocolVersion::V6),
+            fixtures::invoker_entry_effect(
+                original_invocation_id,
+                SleepCommand {
                     wake_up_time,
-                    original_invocation_id,
+                    name: Default::default(),
                     completion_id,
-                )),
-                fixtures::invoker_entry_effect(
-                    original_invocation_id,
-                    OutputCommand {
-                        result: OutputResult::Success(Default::default()),
-                        name: Default::default(),
-                    },
+                },
+            ),
+            Command::NotifySignal(NotifySignalRequest {
+                invocation_id: original_invocation_id,
+                signal: Signal::new(
+                    SignalId::for_index(1),
+                    SignalResult::Success(Default::default()),
                 ),
-                fixtures::invoker_end_effect(original_invocation_id),
-            ])
-            .await;
+            }),
+            fixtures::invoker_entry_effect(
+                original_invocation_id,
+                SleepCommand {
+                    wake_up_time,
+                    name: Default::default(),
+                    completion_id: completion_id + 1,
+                },
+            ),
+            Command::Timer(TimerKeyValue::complete_journal_entry(
+                wake_up_time,
+                original_invocation_id,
+                completion_id,
+            )),
+            fixtures::invoker_entry_effect(
+                original_invocation_id,
+                OutputCommand {
+                    result: OutputResult::Success(Default::default()),
+                    name: Default::default(),
+                },
+            ),
+            fixtures::invoker_end_effect(original_invocation_id),
+        ]))
+        .await;
 
         // Capture original random seed to compare later
         let original_status = test_env
@@ -778,27 +773,26 @@ mod tests {
         // Start and complete an invocation with the journal retained
         let invocation_target = InvocationTarget::mock_virtual_object();
         let original_invocation_id = InvocationId::generate(&invocation_target, None);
-        let _ = test_env
-            .apply_multiple([
-                Command::Invoke(Box::new(ServiceInvocation {
-                    invocation_id: original_invocation_id,
-                    invocation_target: invocation_target.clone(),
-                    completion_retention_duration: Duration::from_secs(120),
-                    journal_retention_duration: Duration::from_secs(120),
-                    ..ServiceInvocation::mock()
-                })),
-                fixtures::pinned_deployment(original_invocation_id, ServiceProtocolVersion::V6),
-                // Complete with an output so the journal has at least input+output
-                fixtures::invoker_entry_effect(
-                    original_invocation_id,
-                    OutputCommand {
-                        result: OutputResult::Success(Default::default()),
-                        name: Default::default(),
-                    },
-                ),
-                fixtures::invoker_end_effect(original_invocation_id),
-            ])
-            .await;
+        let _ = Box::pin(test_env.apply_multiple([
+            Command::Invoke(Box::new(ServiceInvocation {
+                invocation_id: original_invocation_id,
+                invocation_target: invocation_target.clone(),
+                completion_retention_duration: Duration::from_secs(120),
+                journal_retention_duration: Duration::from_secs(120),
+                ..ServiceInvocation::mock()
+            })),
+            fixtures::pinned_deployment(original_invocation_id, ServiceProtocolVersion::V6),
+            // Complete with an output so the journal has at least input+output
+            fixtures::invoker_entry_effect(
+                original_invocation_id,
+                OutputCommand {
+                    result: OutputResult::Success(Default::default()),
+                    name: Default::default(),
+                },
+            ),
+            fixtures::invoker_end_effect(original_invocation_id),
+        ]))
+        .await;
 
         // Fetch completed status to get the exact journal length
         let original_status = test_env

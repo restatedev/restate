@@ -329,9 +329,9 @@ impl Connection {
         // In this version, we don't allow anonymous connections.
         let peer_node_id: GenerationalNodeId = welcome
             .my_node_id
-            .ok_or(HandshakeError::Failed(
-                "Peer must set my_node_id in Welcome message".to_owned(),
-            ))?
+            .ok_or_else(|| {
+                HandshakeError::Failed("Peer must set my_node_id in Welcome message".to_owned())
+            })?
             .into();
 
         // we expect the node to identify itself as the same NodeId we think we are connecting to.

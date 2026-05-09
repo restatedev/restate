@@ -25,3 +25,6 @@ tempfile = { workspace = true }
 [[bench]]
 name = "queue_benchmark"
 harness = false
+
+[lints]
+workspace = true

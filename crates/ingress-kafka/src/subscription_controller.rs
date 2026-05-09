@@ -107,7 +107,7 @@ where
         // Subscription metadata takes precedence over cluster properties
         let cluster_properties = kafka_cluster.properties.clone();
 
-        for (k, v) in cluster_properties.clone() {
+        for (k, v) in &cluster_properties {
             client_config.set(k, v);
         }
         for (k, v) in subscription.metadata() {
@@ -413,7 +413,7 @@ mod task_orchestrator {
             self.subscription_id_to_task_state.insert(
                 subscription_id,
                 TaskState {
-                    consumer_task_clone: consumer_task_clone.clone(),
+                    consumer_task_clone,
                     task_state_inner: TaskStateInner::Running {
                         task_id,
                         _close_ch: tx,

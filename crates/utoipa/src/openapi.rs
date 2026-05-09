@@ -183,7 +183,7 @@ impl OpenApi {
         };
 
         if let Some(other_components) = &mut other.components {
-            let components = self.components.get_or_insert(Components::default());
+            let components = self.components.get_or_insert_with(Components::default);
 
             other_components
                 .schemas

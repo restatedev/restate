@@ -80,13 +80,9 @@ where
         request: Request<Streaming<grpc_svc::NetworkMessage>>,
     ) -> Result<Response<Self::ConnectToStream>, Status> {
         if let Some(connection_manager) = self.connection_manager.load().as_ref() {
-            let peer_metadata =
-                request
-                    .metadata()
-                    .get(PEER_METADATA_KEY)
-                    .ok_or(Status::invalid_argument(format!(
-                        "'{PEER_METADATA_KEY}' is missing"
-                    )))?;
+            let peer_metadata = request.metadata().get(PEER_METADATA_KEY).ok_or_else(|| {
+                Status::invalid_argument(format!("'{PEER_METADATA_KEY}' is missing"))
+            })?;
             let peer = PlainNodeId::from_str(
                 peer_metadata
                     .to_str()
