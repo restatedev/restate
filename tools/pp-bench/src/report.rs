@@ -312,7 +312,7 @@ impl IntervalReporter {
     pub async fn run(mut self) -> Histogram<u64> {
         let mut combined = Histogram::<u64>::new(3).unwrap();
         let mut interval_hist = Histogram::<u64>::new(3).unwrap();
-        let mut prev_snap = SystemSnapshot::capture(&self.db_name);
+        let mut prev_snap = SystemSnapshot::capture(self.db_name);
         let mut prev_cmds: u64 = 0;
         let start = Instant::now();
 
@@ -348,7 +348,7 @@ impl IntervalReporter {
             let delta_cmds = cur_cmds.saturating_sub(prev_cmds);
             prev_cmds = cur_cmds;
 
-            let snap = SystemSnapshot::capture(&self.db_name);
+            let snap = SystemSnapshot::capture(self.db_name);
             let cpu_delta = snap.cpu.delta(&prev_snap.cpu);
             let stall_delta = snap
                 .rocksdb
