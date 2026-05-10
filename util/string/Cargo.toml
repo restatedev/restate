@@ -30,5 +30,7 @@ opentelemetry = { workspace = true, optional = true }
 [dev-dependencies]
 restate-util-string = {path = ".", default-features = false, features = ["bytes", "bilrost", "serde"]}
 
+serde_json = { workspace = true }
+
 [lints]
 workspace = true

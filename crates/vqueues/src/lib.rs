@@ -230,7 +230,7 @@ where
                 };
                 // Note: we don't send an event (i.e. vqueue created) because we only care
                 // about notifying the scheduler only when the queue becomes active.
-                let limit_key = limit_key.to_cheap_cloneable();
+                let limit_key = limit_key.clone();
                 let meta = VQueueMeta::new(at, scope.clone(), limit_key, link);
                 storage.create_vqueue(qid, &meta);
                 cache.insert(qid.clone(), meta)

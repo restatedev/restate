@@ -276,7 +276,7 @@ mod tests {
         let err = "s*".parse::<RulePattern<String>>().unwrap_err();
         assert!(matches!(
             err,
-            ParseError::InvalidComponent(RestrictedValueError::InvalidChar('*')),
+            ParseError::InvalidComponent(RestrictedValueError::Invalid),
         ));
 
         let err = "".parse::<RulePattern<String>>().unwrap_err();

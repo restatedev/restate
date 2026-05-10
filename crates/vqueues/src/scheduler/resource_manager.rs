@@ -351,6 +351,6 @@ impl ResourceManager {
     pub(super) fn resolve_user_rule(&self, handle: RuleHandle) -> Option<ReString> {
         self.user_limiter
             .resolve_rule(handle)
-            .map(|pattern| ReString::new_owned(pattern.to_string()))
+            .map(|pattern| ReString::new(pattern.to_string()))
     }
 }

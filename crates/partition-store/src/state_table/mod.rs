@@ -16,8 +16,6 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
-use restate_types::{Scope, ServiceName};
-use restate_util_string::ReString;
 use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 
 use restate_memory::{
@@ -28,6 +26,8 @@ use restate_storage_api::state_table::{ReadStateTable, ScanStateTable, WriteStat
 use restate_storage_api::{BudgetedReadError, Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::sharding::KeyRange;
+use restate_types::{Scope, ServiceName};
+use restate_util_string::ReString;
 
 use crate::TableKind::State;
 use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
@@ -137,7 +137,7 @@ fn put_user_state<S: StorageAccess>(
     if service_id.scope.is_some() {
         //todo(tillrohrmann) remove once ServiceId carries the right types
         let service_name = ServiceName::new(service_id.service_name.as_ref());
-        let service_key = ReString::new_owned(&service_id.key);
+        let service_key = ReString::new(&service_id.key);
         let partition_key = service_id.partition_key();
 
         let key = ScopedStateKeyRef::builder()
@@ -165,7 +165,7 @@ fn delete_user_state<S: StorageAccess>(
     if service_id.scope.is_some() {
         //todo(tillrohrmann) remove once ServiceId carries the right types
         let service_name = ServiceName::new(service_id.service_name.as_ref());
-        let service_key = ReString::new_owned(&service_id.key);
+        let service_key = ReString::new(&service_id.key);
         let partition_key = service_id.partition_key();
 
         let key = ScopedStateKeyRef::builder()
@@ -188,7 +188,7 @@ fn delete_all_user_state<S: StorageAccess>(storage: &mut S, service_id: &Service
     if service_id.scope.is_some() {
         //todo(tillrohrmann) remove once ServiceId carries the right types
         let service_name = ServiceName::new(service_id.service_name.as_ref());
-        let service_key = ReString::new_owned(&service_id.key);
+        let service_key = ReString::new(&service_id.key);
         let partition_key = service_id.partition_key();
 
         let prefix_key = ScopedStateKeyRef::builder()
@@ -238,7 +238,7 @@ fn get_user_state<S: StorageAccess>(
     if service_id.scope.is_some() {
         //todo(tillrohrmann) remove once ServiceId carries the right types
         let service_name = ServiceName::new(service_id.service_name.as_ref());
-        let service_key = ReString::new_owned(&service_id.key);
+        let service_key = ReString::new(&service_id.key);
         let partition_key = service_id.partition_key();
 
         let key = ScopedStateKeyRef::builder()
@@ -266,7 +266,7 @@ fn get_all_user_states_for_service<'a, S: StorageAccess>(
     if service_id.scope.is_some() {
         //todo(tillrohrmann) remove once ServiceId carries the right types
         let service_name = ServiceName::new(service_id.service_name.as_ref());
-        let service_key = ReString::new_owned(&service_id.key);
+        let service_key = ReString::new(&service_id.key);
         let partition_key = service_id.partition_key();
 
         let key = ScopedStateKeyRef::builder()
