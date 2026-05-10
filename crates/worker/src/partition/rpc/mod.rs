@@ -27,26 +27,24 @@ use restate_core::network::{Oneshot, Reciprocal, TransportConnect};
 use restate_storage_api::invocation_status_table::ReadInvocationStatusTable;
 use restate_storage_api::journal_table as journal_table_v1;
 use restate_storage_api::journal_table_v2::ReadJournalTable;
-use restate_types::identifiers::{
-    InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId,
-};
+use restate_types::identifiers::{InvocationId, PartitionId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::InvocationRequest;
+use restate_types::logs::HasRecordKeys;
 use restate_types::net::partition_processor::{
     AppendInvocationReplyOn, PartitionProcessorRpcError, PartitionProcessorRpcRequest,
     PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
 };
 use restate_types::schema::deployment::DeploymentResolver;
-use restate_wal_protocol::Command;
+use restate_wal_protocol::v2::Command;
 use restate_worker_api::invoker::InvokerHandle;
 
 use crate::partition::leadership::LeadershipState;
 
 #[cfg_attr(test, mockall::automock)]
 pub(super) trait Actuator {
-    fn handle_rpc_proposal_command<O: 'static>(
+    fn handle_rpc_proposal_command<C: Command + HasRecordKeys, O: 'static>(
         &mut self,
-        partition_key: PartitionKey,
-        cmd: Command,
+        cmd: C,
         request_id: PartitionProcessorRpcRequestId,
         replier: Replier<O>,
     ) -> impl Future<Output = ()>;
@@ -57,11 +55,11 @@ pub(super) trait Actuator {
     /// transitions, making this safe for fire-and-forget ingress commands (signals, invocation
     /// responses).
     fn append_and_respond_asynchronously<
+        C: Command + HasRecordKeys,
         O: 'static + Into<PartitionProcessorRpcResponse> + Send + Sync,
     >(
         &mut self,
-        partition_key: PartitionKey,
-        cmd: Command,
+        cmd: C,
         replier: Replier<O>,
         success_response: O,
     ) -> impl Future<Output = ()>;
@@ -79,16 +77,17 @@ impl<T> Actuator for LeadershipState<T>
 where
     T: TransportConnect,
 {
-    async fn append_and_respond_asynchronously<O: Into<PartitionProcessorRpcResponse>>(
+    async fn append_and_respond_asynchronously<
+        C: Command + HasRecordKeys,
+        O: Into<PartitionProcessorRpcResponse>,
+    >(
         &mut self,
-        partition_key: PartitionKey,
-        cmd: Command,
+        cmd: C,
         replier: Replier<O>,
         on_proposed_response: O,
     ) {
         LeadershipState::append_and_respond_asynchronously(
             self,
-            partition_key,
             cmd,
             replier.0,
             on_proposed_response.into(),
@@ -96,21 +95,13 @@ where
         .await
     }
 
-    async fn handle_rpc_proposal_command<O>(
+    async fn handle_rpc_proposal_command<C: Command + HasRecordKeys, O>(
         &mut self,
-        partition_key: PartitionKey,
-        cmd: Command,
+        cmd: C,
         request_id: PartitionProcessorRpcRequestId,
         replier: Replier<O>,
     ) {
-        LeadershipState::handle_rpc_proposal_command(
-            self,
-            request_id,
-            replier.0,
-            partition_key,
-            cmd,
-        )
-        .await
+        LeadershipState::handle_rpc_proposal_command(self, request_id, replier.0, cmd).await
     }
 
     fn notify_invoker_to_retry_now(&mut self, invocation_id: InvocationId) {
