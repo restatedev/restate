@@ -83,7 +83,7 @@ use restate_types::{GenerationalNodeId, SemanticRestateVersion, Version};
 use restate_util_string::{ReString, ToReString};
 use restate_vqueues::{VQueuesMeta, VQueuesMetaCache};
 use restate_wal_protocol::control::{
-    AnnounceLeader, CurrentReplicaSetConfiguration, NextReplicaSetConfiguration,
+    AnnounceLeaderCommand, CurrentReplicaSetConfiguration, NextReplicaSetConfiguration,
 };
 use restate_wal_protocol::{Command, Destination, Envelope, Header};
 use restate_worker_api::invoker::capacity::InvokerCapacity;
@@ -995,7 +995,7 @@ where
         transaction: &mut PartitionStoreTransaction<'_>,
         action_collector: &mut ActionCollector,
         vqueues_cache: &mut VQueuesMetaCache,
-    ) -> Result<Option<Box<AnnounceLeader>>, state_machine::Error> {
+    ) -> Result<Option<Box<AnnounceLeaderCommand>>, state_machine::Error> {
         trace!(lsn = %record.lsn, "Processing bifrost record for '{}': {:?}", record.envelope.command.name(), record.envelope.header);
 
         if let Some(dedup_information) = self.is_targeted_to_me(&record.envelope.header) {

@@ -21,12 +21,12 @@ use restate_storage_api::{
 use restate_types::logs::Keys;
 use restate_util_string::ReString;
 
-use super::{Raw, records};
+use super::{Raw, commands};
 use crate::{
     v1,
     v2::{
-        self, Record,
-        records::{ProxyThroughPayload, TruncateOutboxPayload, UpsertRuleBookPayload},
+        self, Envelope,
+        commands::{TruncateOutboxCommand, UpsertRuleBookCommand},
     },
 };
 
@@ -69,58 +69,64 @@ impl TryFrom<v1::Envelope> for v2::Envelope<Raw> {
         };
 
         let envelope = match value.command {
-            v1::Command::AnnounceLeader(payload) => {
-                records::AnnounceLeader::envelope(dedup, *payload).into_raw()
-            }
+            v1::Command::AnnounceLeader(payload) => Envelope::new(dedup, *payload).into_raw(),
             v1::Command::AttachInvocation(payload) => {
-                records::AttachInvocation::envelope(dedup, payload).into_raw()
+                Envelope::new(dedup, commands::AttachInvocationCommand::from(payload)).into_raw()
             }
             v1::Command::InvocationResponse(payload) => {
-                records::InvocationResponse::envelope(dedup, payload).into_raw()
+                Envelope::new(dedup, commands::InvocationResponseCommand::from(payload)).into_raw()
             }
-            v1::Command::Invoke(payload) => records::Invoke::envelope(dedup, payload).into_raw(),
+            v1::Command::Invoke(payload) => {
+                Envelope::new(dedup, commands::InvokeCommand::from(*payload)).into_raw()
+            }
             v1::Command::InvokerEffect(payload) => {
-                records::InvokerEffect::envelope(dedup, payload).into_raw()
+                Envelope::new(dedup, commands::InvokerEffectCommand::from(*payload)).into_raw()
             }
-            v1::Command::NotifyGetInvocationOutputResponse(payload) => {
-                records::NotifyGetInvocationOutputResponse::envelope(dedup, payload).into_raw()
-            }
+            v1::Command::NotifyGetInvocationOutputResponse(payload) => Envelope::new(
+                dedup,
+                commands::NotifyGetInvocationOutputResponseCommand::from(payload),
+            )
+            .into_raw(),
             v1::Command::NotifySignal(payload) => {
-                records::NotifySignal::envelope(dedup, payload).into_raw()
+                Envelope::new(dedup, commands::NotifySignalCommand::from(payload)).into_raw()
             }
             v1::Command::PatchState(payload) => {
-                records::PatchState::envelope(dedup, payload).into_raw()
+                Envelope::new(dedup, commands::PatchStateCommand::from(payload)).into_raw()
             }
-            v1::Command::ProxyThrough(payload) => records::ProxyThrough::envelope(
+            v1::Command::ProxyThrough(payload) => Envelope::new(
                 dedup,
-                ProxyThroughPayload {
-                    invocation: payload.into(),
+                commands::ProxyThroughCommand {
+                    invocation: (*payload).into(),
                     proxy_partition: Keys::Single(partition_key),
                 },
             )
             .into_raw(),
             v1::Command::PurgeInvocation(payload) => {
-                records::PurgeInvocation::envelope(dedup, payload).into_raw()
+                Envelope::new(dedup, commands::PurgeInvocationCommand::from(payload)).into_raw()
             }
             v1::Command::PurgeJournal(payload) => {
-                records::PurgeJournal::envelope(dedup, payload).into_raw()
+                Envelope::new(dedup, commands::PurgeJournalCommand::from(payload)).into_raw()
             }
-            v1::Command::RestartAsNewInvocation(payload) => {
-                records::RestartAsNewInvocation::envelope(dedup, payload).into_raw()
-            }
+            v1::Command::RestartAsNewInvocation(payload) => Envelope::new(
+                dedup,
+                commands::RestartAsNewInvocationCommand::from(payload),
+            )
+            .into_raw(),
             v1::Command::ResumeInvocation(payload) => {
-                records::ResumeInvocation::envelope(dedup, payload).into_raw()
+                Envelope::new(dedup, commands::ResumeInvocationCommand::from(payload)).into_raw()
             }
             v1::Command::ScheduleTimer(payload) => {
-                records::ScheduleTimer::envelope(dedup, payload).into_raw()
+                Envelope::new(dedup, commands::ScheduleTimerCommand::from(payload)).into_raw()
             }
             v1::Command::TerminateInvocation(payload) => {
-                records::TerminateInvocation::envelope(dedup, payload).into_raw()
+                Envelope::new(dedup, commands::TerminateInvocationCommand::from(payload)).into_raw()
             }
-            v1::Command::Timer(payload) => records::Timer::envelope(dedup, payload).into_raw(),
-            v1::Command::TruncateOutbox(payload) => records::TruncateOutbox::envelope(
+            v1::Command::Timer(payload) => {
+                Envelope::new(dedup, commands::TimerCommand::from(payload)).into_raw()
+            }
+            v1::Command::TruncateOutbox(payload) => Envelope::new(
                 dedup,
-                TruncateOutboxPayload {
+                TruncateOutboxCommand {
                     index: payload,
                     // this actually should be a key-range but v1 unfortunately
                     // only hold the "start" of the range.
@@ -130,24 +136,21 @@ impl TryFrom<v1::Envelope> for v2::Envelope<Raw> {
             )
             .into_raw(),
             v1::Command::UpdatePartitionDurability(payload) => {
-                records::UpdatePartitionDurability::envelope(dedup, payload).into_raw()
+                Envelope::new(dedup, payload).into_raw()
             }
-            v1::Command::UpsertSchema(payload) => {
-                records::UpsertSchema::envelope(dedup, payload).into_raw()
-            }
-            v1::Command::VersionBarrier(payload) => {
-                records::VersionBarrier::envelope(dedup, payload).into_raw()
-            }
+            v1::Command::UpsertSchema(payload) => Envelope::new(dedup, payload).into_raw(),
+            v1::Command::VersionBarrier(payload) => Envelope::new(dedup, payload).into_raw(),
             v1::Command::VQSchedulerDecisions(payload) => {
                 // bytes are bilrost encoded SchedulerDecision.
                 let payload = SchedulerDecisions::bilrost_decode(payload)?;
-                records::VQSchedulerDecisions::envelope(dedup, payload).into_raw()
+                Envelope::new(dedup, commands::VQSchedulerDecisionsCommand::from(payload))
+                    .into_raw()
             }
             v1::Command::UpsertRuleBook(payload) => {
                 let rule_book = RuleBook::decode(payload.rule_book)?;
-                records::UpsertRuleBook::envelope(
+                Envelope::new(
                     dedup,
-                    UpsertRuleBookPayload {
+                    UpsertRuleBookCommand {
                         partition_key_range: payload.partition_key_range,
                         rule_book: Arc::new(rule_book),
                     },
