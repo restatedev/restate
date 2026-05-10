@@ -52,8 +52,8 @@ mod tests {
     use restate_types::identifiers::PartitionKey;
     use restate_types::logs::Keys;
     use restate_types::sharding::KeyRange;
-    use restate_wal_protocol::Command;
     use restate_wal_protocol::control::VersionBarrierCommand;
+    use restate_wal_protocol::v2::{Command, commands};
 
     use crate::partition::state_machine::StateMachine;
     use crate::partition::state_machine::tests::TestEnv;
@@ -83,11 +83,15 @@ mod tests {
         );
 
         let result = test_env
-            .apply_fallible(Command::VersionBarrier(VersionBarrierCommand {
-                version: SemanticRestateVersion::parse("99.0.0").unwrap(),
-                human_reason: Some("testing".to_string()),
-                partition_key_range: Keys::RangeInclusive(PartitionKey::MIN..=PartitionKey::MAX),
-            }))
+            .apply_fallible(commands::VersionBarrierCommand::test_envelope(
+                VersionBarrierCommand {
+                    version: SemanticRestateVersion::parse("99.0.0").unwrap(),
+                    human_reason: Some("testing".to_string()),
+                    partition_key_range: Keys::RangeInclusive(
+                        PartitionKey::MIN..=PartitionKey::MAX,
+                    ),
+                },
+            ))
             .await;
 
         assert_that!(
@@ -120,11 +124,15 @@ mod tests {
         let mut test_env = TestEnv::create_with_state_machine(state_machine).await;
 
         let result = test_env
-            .apply_fallible(Command::VersionBarrier(VersionBarrierCommand {
-                version: SemanticRestateVersion::current().clone(),
-                human_reason: Some("testing".to_string()),
-                partition_key_range: Keys::RangeInclusive(PartitionKey::MIN..=PartitionKey::MAX),
-            }))
+            .apply_fallible(commands::VersionBarrierCommand::test_envelope(
+                VersionBarrierCommand {
+                    version: SemanticRestateVersion::current().clone(),
+                    human_reason: Some("testing".to_string()),
+                    partition_key_range: Keys::RangeInclusive(
+                        PartitionKey::MIN..=PartitionKey::MAX,
+                    ),
+                },
+            ))
             .await;
 
         assert_that!(result, ok(empty()));
@@ -135,11 +143,15 @@ mod tests {
         }
         // re-apply the same version, no-op
         let result = test_env
-            .apply_fallible(Command::VersionBarrier(VersionBarrierCommand {
-                version: SemanticRestateVersion::current().clone(),
-                human_reason: Some("testing".to_string()),
-                partition_key_range: Keys::RangeInclusive(PartitionKey::MIN..=PartitionKey::MAX),
-            }))
+            .apply_fallible(commands::VersionBarrierCommand::test_envelope(
+                VersionBarrierCommand {
+                    version: SemanticRestateVersion::current().clone(),
+                    human_reason: Some("testing".to_string()),
+                    partition_key_range: Keys::RangeInclusive(
+                        PartitionKey::MIN..=PartitionKey::MAX,
+                    ),
+                },
+            ))
             .await;
 
         assert_that!(result, ok(empty()));
@@ -150,11 +162,15 @@ mod tests {
 
         // apply an older version, success but without effect.
         let result = test_env
-            .apply_fallible(Command::VersionBarrier(VersionBarrierCommand {
-                version: SemanticRestateVersion::parse("0.1.0").unwrap(),
-                human_reason: Some("testing".to_string()),
-                partition_key_range: Keys::RangeInclusive(PartitionKey::MIN..=PartitionKey::MAX),
-            }))
+            .apply_fallible(commands::VersionBarrierCommand::test_envelope(
+                VersionBarrierCommand {
+                    version: SemanticRestateVersion::parse("0.1.0").unwrap(),
+                    human_reason: Some("testing".to_string()),
+                    partition_key_range: Keys::RangeInclusive(
+                        PartitionKey::MIN..=PartitionKey::MAX,
+                    ),
+                },
+            ))
             .await;
 
         assert_that!(result, ok(empty()));
