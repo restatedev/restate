@@ -178,8 +178,8 @@ mod tests {
     };
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{RESTATE_VERSION_1_6_0, SemanticRestateVersion};
-    use restate_wal_protocol::Command;
     use restate_wal_protocol::timer::TimerKeyValue;
+    use restate_wal_protocol::v2::{Command, commands};
     use std::time::{Duration, SystemTime};
     use tracing::info;
 
@@ -212,7 +212,9 @@ mod tests {
             }))
         );
 
-        let actions = test_env.apply(Command::Timer(timer_key_value)).await;
+        let actions = test_env
+            .apply(commands::TimerCommand::test_envelope(timer_key_value))
+            .await;
         assert_that!(
             actions,
             contains(matchers::actions::invoke_for_id(invocation_id))
@@ -252,7 +254,7 @@ mod tests {
         let actions = test_env
             .apply_multiple([
                 invoker_entry_effect(invocation_id, sleep_command.clone()),
-                Command::Timer(timer_key_value.clone()),
+                commands::TimerCommand::test_envelope(timer_key_value.clone()),
             ])
             .await;
         assert_that!(
@@ -335,10 +337,12 @@ mod tests {
             result: SignalResult::Void,
         };
         let actions = test_env
-            .apply(Command::NotifySignal(NotifySignalRequest {
-                invocation_id,
-                signal: signal.clone(),
-            }))
+            .apply(commands::NotifySignalCommand::test_envelope(
+                NotifySignalRequest {
+                    invocation_id,
+                    signal: signal.clone(),
+                },
+            ))
             .await;
         assert_that!(
             actions,
@@ -403,13 +407,15 @@ mod tests {
         ) -> Self {
             let actions = self
                 .test_env
-                .apply(Command::NotifySignal(NotifySignalRequest {
-                    invocation_id: self.invocation_id,
-                    signal: Signal {
-                        id: signal_id,
-                        result: signal_result,
+                .apply(commands::NotifySignalCommand::test_envelope(
+                    NotifySignalRequest {
+                        invocation_id: self.invocation_id,
+                        signal: Signal {
+                            id: signal_id,
+                            result: signal_result,
+                        },
                     },
-                }))
+                ))
                 .await;
             self.log_invocation_status().await;
 
@@ -436,13 +442,15 @@ mod tests {
         ) -> Self {
             let actions = self
                 .test_env
-                .apply(Command::NotifySignal(NotifySignalRequest {
-                    invocation_id: self.invocation_id,
-                    signal: Signal {
-                        id: signal_id,
-                        result: signal_result,
+                .apply(commands::NotifySignalCommand::test_envelope(
+                    NotifySignalRequest {
+                        invocation_id: self.invocation_id,
+                        signal: Signal {
+                            id: signal_id,
+                            result: signal_result,
+                        },
                     },
-                }))
+                ))
                 .await;
             self.log_invocation_status().await;
 
@@ -704,13 +712,15 @@ mod tests {
         // this by making the invoker re-suspend on a notification that's
         // already available, so resolve() short-circuits.
         let _ = test_env
-            .apply(Command::NotifySignal(NotifySignalRequest {
-                invocation_id,
-                signal: Signal {
-                    id: A,
-                    result: SUCCESS,
+            .apply(commands::NotifySignalCommand::test_envelope(
+                NotifySignalRequest {
+                    invocation_id,
+                    signal: Signal {
+                        id: A,
+                        result: SUCCESS,
+                    },
                 },
-            }))
+            ))
             .await;
         assert_that!(
             test_env

@@ -43,7 +43,7 @@ use rand::{Rng, RngCore, SeedableRng};
 use restate_cli_util::{c_println, c_success};
 use restate_serde_util::ByteCount;
 use restate_types::identifiers::{
-    InvocationId, PartitionId, PartitionProcessorRpcRequestId, ServiceId, WithPartitionKey,
+    InvocationId, PartitionId, PartitionProcessorRpcRequestId, ServiceId,
 };
 use restate_types::invocation::{
     InvocationTarget, ServiceInvocation, Source, VirtualObjectHandlerType,
@@ -51,7 +51,7 @@ use restate_types::invocation::{
 use restate_types::logs::Lsn;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::storage::StorageCodec;
-use restate_wal_protocol::{Command, Destination, Envelope, Header};
+use restate_wal_protocol::v2::{self, CommandKind, Dedup, Envelope, Raw, commands};
 
 use crate::{GenerateOpts, InspectOpts, WorkloadSpec, WorkloadType};
 
@@ -164,7 +164,7 @@ impl FileHeader {
 /// Result of loading commands from a file — carries optional real LSNs
 /// and metadata from the file header.
 pub struct LoadedWorkload {
-    pub commands: Vec<Command>,
+    pub envelopes: Vec<v2::Envelope<v2::Raw>>,
     pub lsns: Option<Vec<Lsn>>,
     pub start_lsn: Option<Lsn>,
     pub partition_id: Option<PartitionId>,
@@ -175,14 +175,14 @@ pub struct LoadedWorkload {
 // Command generation
 // ---------------------------------------------------------------------------
 
-fn generate_one(rng: &mut StdRng, spec: &WorkloadSpec) -> Command {
+fn generate_one(rng: &mut StdRng, spec: &WorkloadSpec) -> Envelope<Raw> {
     match spec.workload {
         WorkloadType::PatchState => generate_patch_state(rng, spec),
         WorkloadType::Invoke => generate_invoke(rng, spec),
     }
 }
 
-fn generate_patch_state(rng: &mut StdRng, spec: &WorkloadSpec) -> Command {
+fn generate_patch_state(rng: &mut StdRng, spec: &WorkloadSpec) -> Envelope<Raw> {
     let key_idx = rng.random_range(0..spec.num_keys);
     let service_id = ServiceId::new(None, "bench.PatchTarget", format!("key-{key_idx}"));
 
@@ -194,14 +194,18 @@ fn generate_patch_state(rng: &mut StdRng, spec: &WorkloadSpec) -> Command {
         state.insert(Bytes::from(format!("state-{i}")), Bytes::from(value));
     }
 
-    Command::PatchState(ExternalStateMutation {
-        service_id,
-        version: None,
-        state,
-    })
+    Envelope::new(
+        Dedup::None,
+        commands::PatchStateCommand::from(ExternalStateMutation {
+            service_id,
+            version: None,
+            state,
+        }),
+    )
+    .into_raw()
 }
 
-fn generate_invoke(rng: &mut StdRng, spec: &WorkloadSpec) -> Command {
+fn generate_invoke(rng: &mut StdRng, spec: &WorkloadSpec) -> Envelope<Raw> {
     let key_idx = rng.random_range(0..spec.num_keys);
     let target = InvocationTarget::virtual_object(
         "bench.InvokeTarget",
@@ -220,29 +224,7 @@ fn generate_invoke(rng: &mut StdRng, spec: &WorkloadSpec) -> Command {
     rng.fill_bytes(&mut arg_buf);
     invocation.argument = Bytes::from(arg_buf);
 
-    Command::Invoke(Box::new(invocation))
-}
-
-// ---------------------------------------------------------------------------
-// Wrapping commands in Envelopes for serialization
-// ---------------------------------------------------------------------------
-
-fn wrap_in_envelope(command: Command) -> Envelope {
-    let partition_key = match &command {
-        Command::PatchState(mutation) => mutation.service_id.partition_key(),
-        Command::Invoke(invoke) => invoke.partition_key(),
-        _ => 0,
-    };
-    Envelope::new(
-        Header {
-            source: restate_wal_protocol::Source::Ingress {},
-            dest: Destination::Processor {
-                partition_key,
-                dedup: None,
-            },
-        },
-        command,
-    )
+    Envelope::new(Dedup::None, commands::InvokeCommand::from(invocation)).into_raw()
 }
 
 // ---------------------------------------------------------------------------
@@ -252,7 +234,7 @@ fn wrap_in_envelope(command: Command) -> Envelope {
 /// Encode and write a single envelope record, optionally with an LSN prefix.
 pub fn write_record<W: Write>(
     writer: &mut W,
-    envelope: &Envelope,
+    envelope: &Envelope<Raw>,
     lsn: Option<Lsn>,
     scratch: &mut BytesMut,
 ) -> anyhow::Result<()> {
@@ -270,7 +252,7 @@ pub fn write_record<W: Write>(
 fn read_record<R: Read>(
     reader: &mut R,
     has_real_lsns: bool,
-) -> anyhow::Result<(Option<Lsn>, Envelope)> {
+) -> anyhow::Result<(Option<Lsn>, Envelope<Raw>)> {
     let lsn = if has_real_lsns {
         let mut buf8 = [0u8; 8];
         reader.read_exact(&mut buf8)?;
@@ -287,7 +269,7 @@ fn read_record<R: Read>(
     reader.read_exact(&mut data)?;
 
     let mut cursor = &data[..];
-    let envelope: Envelope = StorageCodec::decode(&mut cursor)
+    let envelope: Envelope<Raw> = StorageCodec::decode(&mut cursor)
         .map_err(|e| anyhow::anyhow!("Failed to decode envelope: {e}"))?;
 
     Ok((lsn, envelope))
@@ -319,8 +301,7 @@ pub fn generate_command_file(opts: &GenerateOpts) -> anyhow::Result<()> {
     let mut rng = StdRng::seed_from_u64(opts.spec.seed);
     let mut scratch = BytesMut::with_capacity(4096);
     for _ in 0..opts.num_commands {
-        let cmd = generate_one(&mut rng, &opts.spec);
-        let envelope = wrap_in_envelope(cmd);
+        let envelope = generate_one(&mut rng, &opts.spec);
         write_record(&mut writer, &envelope, None, &mut scratch)?;
     }
     writer.flush()?;
@@ -353,7 +334,7 @@ pub fn load_commands_from_file(path: &Path) -> anyhow::Result<LoadedWorkload> {
     let has_real_lsns = header.has_real_lsns();
     let num_commands = header.num_commands as usize;
 
-    let mut commands = Vec::with_capacity(num_commands);
+    let mut envelopes = Vec::with_capacity(num_commands);
     let mut lsns = if has_real_lsns {
         Some(Vec::with_capacity(num_commands))
     } else {
@@ -362,7 +343,9 @@ pub fn load_commands_from_file(path: &Path) -> anyhow::Result<LoadedWorkload> {
 
     for _ in 0..num_commands {
         let (lsn, envelope) = read_record(&mut reader, has_real_lsns)?;
-        commands.push(envelope.command);
+
+        envelopes.push(envelope);
+
         if let (Some(lsn_vec), Some(lsn)) = (&mut lsns, lsn) {
             lsn_vec.push(lsn);
         }
@@ -380,7 +363,7 @@ pub fn load_commands_from_file(path: &Path) -> anyhow::Result<LoadedWorkload> {
     };
 
     Ok(LoadedWorkload {
-        commands,
+        envelopes,
         lsns,
         start_lsn,
         partition_id,
@@ -389,7 +372,7 @@ pub fn load_commands_from_file(path: &Path) -> anyhow::Result<LoadedWorkload> {
 }
 
 /// Generate commands in-memory (no file I/O).
-pub fn generate_commands_inline(spec: &WorkloadSpec, count: u64) -> Vec<Command> {
+pub fn generate_commands_inline(spec: &WorkloadSpec, count: u64) -> Vec<Envelope<Raw>> {
     let mut rng = StdRng::seed_from_u64(spec.seed);
     (0..count).map(|_| generate_one(&mut rng, spec)).collect()
 }
@@ -436,7 +419,7 @@ impl ExtractedFileWriter {
         })
     }
 
-    pub fn write_envelope(&mut self, lsn: Lsn, envelope: &Envelope) -> anyhow::Result<()> {
+    pub fn write_envelope(&mut self, lsn: Lsn, envelope: &Envelope<Raw>) -> anyhow::Result<()> {
         write_record(&mut self.writer, envelope, Some(lsn), &mut self.scratch)?;
         let lsn_val = u64::from(lsn);
         if self.first_lsn.is_none() {
@@ -484,9 +467,13 @@ fn workload_source_name(tag: u8) -> &'static str {
     }
 }
 
-fn describe_command(cmd: &Command) -> String {
-    match cmd {
-        Command::PatchState(m) => {
+fn describe_command(envelope: Envelope<Raw>) -> String {
+    match envelope.kind() {
+        CommandKind::PatchState => {
+            let m = envelope
+                .into_typed::<commands::PatchStateCommand>()
+                .into_inner()
+                .unwrap();
             format!(
                 "PatchState {{ service={}/{}, keys={} }}",
                 m.service_id.service_name,
@@ -494,14 +481,18 @@ fn describe_command(cmd: &Command) -> String {
                 m.state.len(),
             )
         }
-        Command::Invoke(inv) => {
+        CommandKind::Invoke => {
+            let inv = envelope
+                .into_typed::<commands::InvokeCommand>()
+                .into_inner()
+                .unwrap();
             format!(
                 "Invoke {{ target={}, arg_len={} }}",
                 inv.invocation_target,
                 inv.argument.len(),
             )
         }
-        other => other.name().to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -564,12 +555,12 @@ pub fn inspect_command_file(opts: &InspectOpts) -> anyhow::Result<()> {
 
         if i < to_show {
             let mut cursor = &data[..];
-            let envelope: Envelope = StorageCodec::decode(&mut cursor)
+            let envelope: Envelope<Raw> = StorageCodec::decode(&mut cursor)
                 .map_err(|e| anyhow::anyhow!("Failed to decode command {i}: {e}"))?;
             let lsn_prefix = lsn.map(|l| format!("lsn={l} ")).unwrap_or_default();
             c_println!(
                 "  [{i}] {lsn_prefix}{} ({}B)",
-                describe_command(&envelope.command),
+                describe_command(envelope),
                 len
             );
         }
