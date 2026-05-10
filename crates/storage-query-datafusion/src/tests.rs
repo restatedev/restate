@@ -19,6 +19,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use futures::StreamExt;
 use googletest::prelude::{all, assert_that, eq};
 use googletest::unordered_elements_are;
+
 use restate_limiter::{Level, LimitKey};
 use restate_storage_api::Transaction;
 use restate_storage_api::invocation_status_table::{
@@ -37,7 +38,7 @@ use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::EntryId;
 use restate_types::vqueues::VQueueId;
-use restate_util_string::{ReString, RestrictedValue};
+use restate_util_string::{ReString, RestateString, RestrictedValue};
 use restate_worker_api::invoker::status_handle::InvocationStatusReportInner;
 use restate_worker_api::invoker::{InvocationErrorReport, InvocationStatusReport, StatusHandle};
 use restate_worker_api::{
@@ -93,14 +94,14 @@ async fn query_sys_scheduler() {
 
     // A BlockedOn(LimitKeyConcurrency) row exercises both the resolved rule
     // pattern (feedback #2) and the structured Display impl (feedback #1).
-    let scope = Scope::from_static("svc-A");
-    let tenant = RestrictedValue::<ReString>::new(ReString::new_owned("tenant-1")).unwrap();
+    let scope = Scope::try_from_static("svc-A").unwrap();
+    let tenant = RestrictedValue::<ReString>::new(ReString::new("tenant-1")).unwrap();
     let limit_key = LimitKey::L1(tenant);
     let blocked_resource = BlockedResource::LimitKeyConcurrency {
         scope,
         limit_key,
         blocked_level: Level::Level1,
-        blocked_rule: Some(ReString::new_owned("svc-A/tenant-*")),
+        blocked_rule: Some(ReString::new("svc-A/tenant-*")),
     };
     let expected_blocked_display = blocked_resource.to_string();
 

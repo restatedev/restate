@@ -31,7 +31,7 @@ use restate_types::live::Live;
 use restate_types::schema::Schema;
 use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
 use restate_types::schema::subscriptions::{EventInvocationTargetTemplate, Sink, Subscription};
-use restate_util_string::ReString;
+use restate_util_string::{ReString, RestateString, RestrictedValueError};
 use restate_wal_protocol::{Command, Destination, Envelope, Source};
 
 use crate::Error;
@@ -90,7 +90,14 @@ impl EnvelopeBuilder {
         };
 
         let headers = Self::generate_events_attributes(&msg, &self.subscription_id);
-        let (scope, limit_key) = extract_scope_limit_key(&msg);
+        let (scope, limit_key) = extract_scope_limit_key(&msg).map_err(|err| Error::Event {
+            subscription: self.subscription_id.clone(),
+            topic: msg.topic().to_string(),
+            partition: msg.partition(),
+            offset: msg.offset(),
+            cause: anyhow::anyhow!("invalid scope value in x-restate-scope header: {err}"),
+        })?;
+
         let dedup = DedupInformation::producer(producer_id, msg.offset() as u64);
 
         let invocation = InvocationBuilder::create(
@@ -157,9 +164,9 @@ impl EnvelopeBuilder {
 
 pub(crate) fn extract_scope_limit_key(
     msg: &impl rdkafka::Message,
-) -> (Option<Scope>, LimitKey<ReString>) {
+) -> Result<(Option<Scope>, LimitKey<ReString>), RestrictedValueError> {
     let Some(kafka_headers) = msg.headers() else {
-        return (None, LimitKey::None);
+        return Ok((None, LimitKey::None));
     };
 
     let mut scope = None;
@@ -175,7 +182,7 @@ pub(crate) fn extract_scope_limit_key(
                 if let Ok(s) = std::str::from_utf8(value)
                     && !s.is_empty()
                 {
-                    scope = Some(Scope::new(s));
+                    scope = Some(Scope::try_new(s)?);
                 }
             }
             "x-restate-limit-key" => {
@@ -189,7 +196,7 @@ pub(crate) fn extract_scope_limit_key(
         }
     }
 
-    (scope, limit_key)
+    Ok((scope, limit_key))
 }
 
 #[derive(Debug)]

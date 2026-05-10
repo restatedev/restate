@@ -37,6 +37,7 @@ use restate_types::journal_v2::raw::{
     RawNotificationResultVariant,
 };
 use restate_types::{LimitKey, Scope, journal_v2::*};
+use restate_util_string::RestateString;
 
 use crate::proto;
 use crate::proto::{
@@ -1649,12 +1650,12 @@ impl TryFrom<proto::attach_invocation_command_message::Target> for AttachInvocat
             proto::attach_invocation_command_message::Target::IdempotentRequestTarget(
                 idempotent_request,
             ) => {
-                // Before we accept an idempotent request we validate in
+                // Safety: Before we accept an idempotent request we validate in
                 // ServiceProtocolRunner::handle_message that the scope value is valid.
                 let scope = idempotent_request
                     .scope
                     .as_ref()
-                    .map(|scope| Scope::new(scope));
+                    .map(|scope| unsafe { Scope::new_unchecked(scope) });
                 Self::IdempotentRequest(IdempotencyId::new(
                     idempotent_request.service_name.into(),
                     idempotent_request.service_key.map(Into::into),
@@ -1664,12 +1665,12 @@ impl TryFrom<proto::attach_invocation_command_message::Target> for AttachInvocat
                 ))
             }
             proto::attach_invocation_command_message::Target::WorkflowTarget(workflow_target) => {
-                // Before we accept a workflow target we validate in
+                // Safety: Before we accept a workflow target we validate in
                 // ServiceProtocolRunner::handle_message that the scope value is valid.
                 let scope = workflow_target
                     .scope
                     .as_ref()
-                    .map(|scope| Scope::new(scope));
+                    .map(|scope| unsafe { Scope::new_unchecked(scope) });
                 Self::Workflow(ServiceId::new(
                     scope,
                     workflow_target.workflow_name,
@@ -1717,12 +1718,11 @@ impl TryFrom<proto::get_invocation_output_command_message::Target> for AttachInv
             proto::get_invocation_output_command_message::Target::IdempotentRequestTarget(
                 idempotent_request,
             ) => {
-                // Before we accept an idempotent request we validate in
+                // Safety: Before we accept an idempotent request we validate in
                 // ServiceProtocolRunner::handle_message that the scope value is valid.
                 let scope = idempotent_request
                     .scope
-                    .as_ref()
-                    .map(|scope| Scope::new(scope));
+                    .map(|ref scope| unsafe { Scope::new_unchecked(scope) });
                 Self::IdempotentRequest(IdempotencyId::new(
                     idempotent_request.service_name.into(),
                     idempotent_request.service_key.map(Into::into),
@@ -1734,12 +1734,11 @@ impl TryFrom<proto::get_invocation_output_command_message::Target> for AttachInv
             proto::get_invocation_output_command_message::Target::WorkflowTarget(
                 workflow_target,
             ) => {
-                // Before we accept a workflow target we validate in
+                // Safety: Before we accept a workflow target we validate in
                 // ServiceProtocolRunner::handle_message that the scope value is valid.
                 let scope = workflow_target
                     .scope
-                    .as_ref()
-                    .map(|scope| Scope::new(scope));
+                    .map(|ref scope| unsafe { Scope::new_unchecked(scope) });
                 Self::Workflow(ServiceId::new(
                     scope,
                     workflow_target.workflow_name,

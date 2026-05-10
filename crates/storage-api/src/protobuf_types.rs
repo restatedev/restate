@@ -108,6 +108,7 @@ pub mod v1 {
         use restate_types::service_protocol::ServiceProtocolVersion;
         use restate_types::time::MillisSinceEpoch;
         use restate_types::{GenerationalNodeId, Scope, journal_v2};
+        use restate_util_string::RestateString;
 
         use super::dedup_sequence_number::Variant;
         use super::enriched_entry_header::{
@@ -233,7 +234,12 @@ pub mod v1 {
             type Error = ConversionError;
 
             fn try_from(value: IdempotencyId) -> Result<Self, ConversionError> {
-                let scope = value.scope.as_ref().map(|scope| Scope::new(scope));
+                // Safety: In principle, data is meant to be validated _before_ they
+                // are written to storage.
+                // RestrictedValue. Therefore, we validate it here.
+                let scope = value
+                    .scope
+                    .map(|scope| unsafe { Scope::new_unchecked(&scope) });
                 Ok(restate_types::identifiers::IdempotencyId::new(
                     value.service_name.into(),
                     value.service_key.map(Into::into),
@@ -1842,7 +1848,10 @@ pub mod v1 {
                 let scope = if let Some(scope) = value.scope
                     && !scope.is_empty()
                 {
-                    Some(Scope::new(&scope))
+                    // Safety: In principle, data is meant to be validated _before_ they
+                    // are written to storage.
+                    // RestrictedValue. Therefore, we validate it here.
+                    Some(unsafe { Scope::new_unchecked(&scope) })
                 } else {
                     None
                 };
@@ -2026,7 +2035,13 @@ pub mod v1 {
             type Error = ConversionError;
 
             fn try_from(service_id: ServiceId) -> Result<Self, ConversionError> {
-                let scope = service_id.scope.as_ref().map(|scope| Scope::new(scope));
+                // Safety: In principle, data is meant to be validated _before_ they
+                // are written to storage.
+                // RestrictedValue. Therefore, we validate it here.
+                let scope = service_id
+                    .scope
+                    .as_ref()
+                    .map(|scope| unsafe { Scope::new_unchecked(scope) });
                 Ok(restate_types::identifiers::ServiceId::new(
                     scope,
                     ByteString::try_from(service_id.service_name)

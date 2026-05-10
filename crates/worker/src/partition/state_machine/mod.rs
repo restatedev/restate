@@ -1482,7 +1482,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 vq_handle,
                 key: *key,
                 invocation_target,
-                idempotency_key: invocation_metadata.idempotency_key.map(ReString::new_owned),
+                idempotency_key: invocation_metadata.idempotency_key.map(ReString::new),
             });
         }
 
@@ -3144,12 +3144,10 @@ impl<S> StateMachineApplyContext<'_, S> {
                 self.action_collector.push(Action::VQInvoke {
                     vq_handle,
                     key: *entry_key,
-                    invocation_target: status.invocation_target().unwrap().clone(),
+                    invocation_target: status.invocation_target().cloned().unwrap(),
                     // todo(tillrohrmann) avoid the transformation from ByteString to ReString by
                     //  storing the idempotency key as ReString in the first place
-                    idempotency_key: status
-                        .idempotency_key()
-                        .map(|value| ReString::new_shared(value.as_ref())),
+                    idempotency_key: status.idempotency_key().map(ReString::new),
                 });
             }
             return Ok(());

@@ -40,7 +40,7 @@ use restate_types::schema::invocation_target::{
     DeploymentStatus, InvocationTargetMetadata, InvocationTargetResolver,
 };
 use restate_types::time::MillisSinceEpoch;
-use restate_util_string::{ReString, RestrictedValue};
+use restate_util_string::{ReString, RestateString};
 
 pub(crate) const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
 const LIMIT_KEY_HEADER: HeaderName = HeaderName::from_static("x-restate-limit-key");
@@ -130,11 +130,7 @@ where
 
         // Parse scope from path
         let scope = if let Some(scope) = scope {
-            Some(Scope::new(
-                RestrictedValue::new(scope)
-                    .map_err(HandlerError::BadScopeValue)?
-                    .as_str(),
-            ))
+            Some(Scope::try_from_restring(scope).map_err(HandlerError::BadScopeValue)?)
         } else {
             None
         };

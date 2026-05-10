@@ -8596,6 +8596,7 @@ dependencies = [
  "ahash",
  "bilrost",
  "bytes",
+ "bytestring",
  "compact_str",
  "hashbrown 0.16.1",
  "metrics",
@@ -8603,6 +8604,7 @@ dependencies = [
  "restate-util-string",
  "restate-workspace-hack",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

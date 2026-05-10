@@ -629,6 +629,8 @@ impl Update {
 
 #[cfg(test)]
 mod tests {
+    use restate_util_string::RestateString;
+
     use super::*;
 
     const BASE_TS_MS: u64 = 1_744_000_000_000;
@@ -928,7 +930,7 @@ mod tests {
                 avg_blocked_on_concurrency_rules_ms: 15,
                 avg_blocked_on_invoker_throttling_ms: 16,
             },
-            scope: Some(Scope::new("scope-a")),
+            scope: Some(Scope::try_from_static("scope-a").unwrap()),
             limit_key: "tenant-1/user-1".parse::<LimitKey<ReString>>().unwrap(),
             link: VQueueLink::Lock(LockName::parse("service-a/key-a").unwrap()),
         };

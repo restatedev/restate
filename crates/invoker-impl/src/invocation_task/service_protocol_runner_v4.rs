@@ -57,7 +57,7 @@ use restate_types::limit_key::LimitKey;
 use restate_types::schema::deployment::{Deployment, DeploymentType, ProtocolType};
 use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
 use restate_types::service_protocol::ServiceProtocolVersion;
-use restate_util_string::{ReString, RestrictedValue};
+use restate_util_string::{ReString, RestateString, RestrictedValue};
 use restate_worker_api::invoker::JournalMetadata;
 use restate_worker_api::invoker::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
@@ -1522,15 +1522,13 @@ fn resolve_call_request(
         }
         InvocationTargetType::VirtualObject(h_ty) => InvocationTarget::virtual_object(
             request.service_name.clone(),
-            ByteString::try_from(request.key.clone().into_bytes())
-                .map_err(CommandPreconditionError::BadRequestKey)?,
+            request.key.clone(),
             request.handler_name,
             h_ty,
         ),
         InvocationTargetType::Workflow(h_ty) => InvocationTarget::workflow(
             request.service_name.clone(),
-            ByteString::try_from(request.key.clone().into_bytes())
-                .map_err(CommandPreconditionError::BadRequestKey)?,
+            request.key.clone(),
             request.handler_name,
             h_ty,
         ),
@@ -1539,11 +1537,7 @@ fn resolve_call_request(
         if let Some(scope) = request.scope
             && !scope.is_empty()
         {
-            Some(Scope::new(
-                RestrictedValue::new(scope)
-                    .map_err(CommandPreconditionError::InvalidScope)?
-                    .as_str(),
-            ))
+            Some(Scope::try_new(&scope).map_err(CommandPreconditionError::InvalidScope)?)
         } else {
             None
         },

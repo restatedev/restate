@@ -26,7 +26,6 @@ use restate_types::schema::registry::MetadataService;
 use restate_types::schema::service::ServiceMetadata;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::{Scope, schema};
-use restate_util_string::RestrictedValue;
 use restate_wal_protocol::{Command, Envelope};
 
 use super::create_envelope_header;
@@ -232,11 +231,7 @@ where
     }
 
     let scope = if let Some(scope) = scope {
-        Some(Scope::new(
-            RestrictedValue::new(scope)
-                .map_err(MetaApiError::BadScope)?
-                .as_str(),
-        ))
+        Some(Scope::try_non_interned(&scope).map_err(MetaApiError::BadScope)?)
     } else {
         None
     };

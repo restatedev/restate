@@ -990,12 +990,12 @@ mod tests {
     use std::num::NonZeroU32;
 
     use restate_limiter::{LimitKey, RulePattern};
-    use restate_util_string::ReString;
+    use restate_util_string::{ReString, RestateString};
 
     use super::*;
 
     fn scope(s: &str) -> Scope {
-        Scope::new(s)
+        Scope::try_new(s).unwrap()
     }
 
     fn limit_key(s: &str) -> LimitKey<ReString> {

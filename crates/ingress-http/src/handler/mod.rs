@@ -172,14 +172,11 @@ impl InvocationTargetRequest {
         // Unfortunately, we cannot first check the existence of the service/handler or workflow
         // because it might have been removed from the Schema after an invocation having completed :-(
         // For such a check to work, we need to keep information about previously registered services
-        // and workflows. Hence, we can only validate that the scope value is valid and hope that
-        // nobody is DOSing us with valid but meaningless scopes for the time being.
+        // and workflows. Hence, we can only validate that the scope value and avoid interning.
         let scope = match scope_value {
             None => None,
             Some(s) => Some(Scope::new(
-                RestrictedValue::new(s)
-                    .map_err(HandlerError::BadScopeValue)?
-                    .as_str(),
+                RestrictedValue::new(s).map_err(HandlerError::BadScopeValue)?,
             )),
         };
 

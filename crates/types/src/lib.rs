@@ -66,7 +66,9 @@ pub use limit_key::LimitKey;
 pub use locking::*;
 pub use node_id::*;
 use restate_encoding::BilrostNewType;
-use restate_util_string::InternedReString;
+use restate_util_string::{
+    Interned, ReString, RestateString, RestrictedValue, RestrictedValueError,
+};
 pub use restate_version::*;
 pub use version::*;
 
@@ -106,19 +108,26 @@ pub mod sharding {
 #[debug("{}", _0)]
 #[display("{}", _0)]
 #[repr(transparent)]
-pub struct ServiceName(InternedReString);
+pub struct ServiceName(Interned<ReString>);
 
 impl ServiceName {
-    #[inline]
-    pub fn new(value: &str) -> Self {
-        assert!(!value.is_empty());
-        Self(InternedReString::new(value))
+    /// Create a new `ServiceName` without interning.
+    pub fn new_non_interned(s: &str) -> Self {
+        let inner = ReString::new(s);
+        // SAFETY: no validation rules are applied to `ReString`.
+        Self(unsafe { Interned::from_restring_unchecked(inner) })
     }
 
     #[inline]
-    pub const fn from_static(value: &'static str) -> Self {
+    pub fn new(value: &str) -> Self {
         assert!(!value.is_empty());
-        Self(InternedReString::from_static(value))
+        Self(Interned::<ReString>::new(value))
+    }
+
+    #[inline]
+    pub fn from_static(value: &'static str) -> Self {
+        assert!(!value.is_empty());
+        Self(Interned::from(ReString::from_static(value)))
     }
 
     #[inline]
@@ -184,19 +193,17 @@ impl From<&str> for ServiceName {
 #[debug("{}", _0)]
 #[display("{}", _0)]
 #[repr(transparent)]
-pub struct Scope(InternedReString);
+pub struct Scope(Interned<RestrictedValue<ReString>>);
 
 impl Scope {
-    #[inline]
-    pub fn new(value: &str) -> Self {
-        assert!(!value.is_empty());
-        Self(InternedReString::new(value))
+    pub const fn new(s: RestrictedValue<ReString>) -> Self {
+        Self(Interned::non_interned(s))
     }
 
-    #[inline]
-    pub const fn from_static(value: &'static str) -> Self {
-        assert!(!value.is_empty());
-        Self(InternedReString::from_static(value))
+    /// Validate and create a new `Scope` without interning.
+    pub fn try_non_interned(s: &str) -> Result<Self, RestrictedValueError> {
+        let inner: RestrictedValue<ReString> = RestateString::try_new(s)?;
+        Ok(Self(Interned::non_interned(inner)))
     }
 
     #[inline]
@@ -217,6 +224,50 @@ impl Scope {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+}
+
+impl RestateString for Scope {
+    type Err = RestrictedValueError;
+
+    #[inline]
+    unsafe fn new_unchecked(s: &str) -> Self {
+        Self(unsafe { RestateString::new_unchecked(s) })
+    }
+
+    #[inline]
+    unsafe fn from_restring_unchecked(s: ReString) -> Self {
+        Self(unsafe { RestateString::from_restring_unchecked(s) })
+    }
+
+    #[inline]
+    fn try_from_restring(s: ReString) -> Result<Self, Self::Err> {
+        Ok(Self(RestateString::try_from_restring(s)?))
+    }
+
+    #[inline]
+    fn try_from_static(s: &'static str) -> Result<Self, Self::Err> {
+        Ok(Self(RestateString::try_from_static(s)?))
+    }
+
+    #[inline]
+    fn try_new(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(RestateString::try_new(s)?))
+    }
+
+    #[inline]
+    fn try_from_arc(s: &std::sync::Arc<str>) -> Result<Self, Self::Err> {
+        Ok(Self(RestateString::try_from_arc(s)?))
+    }
+
+    #[inline]
+    fn to_restring(&self) -> ReString {
+        self.0.to_restring()
+    }
+
+    #[inline]
+    fn into_restring(self) -> ReString {
+        self.0.into_restring()
     }
 }
 

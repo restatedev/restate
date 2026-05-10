@@ -35,8 +35,9 @@ use std::borrow::Borrow;
 use std::fmt;
 use std::ops::Deref;
 use std::str::FromStr;
+use std::sync::Arc;
 
-use crate::{OwnedStringLike, ReString, StringLike};
+use crate::{OwnedStringLike, ReString, RestateString, StringLike};
 
 /// Maximum length of a restricted value in bytes.
 pub const MAX_LEN: usize = 36;
@@ -46,8 +47,11 @@ pub const MAX_LEN: usize = 36;
 pub enum RestrictedValueError {
     /// The value is empty.
     Empty,
-    /// The value contains a character outside `[a-zA-Z0-9_.-]`.
-    InvalidChar(char),
+    /// The value contains characters outside the allowed ASCII set
+    /// `[a-zA-Z0-9_.-]` (or contains non-ASCII bytes).
+    Invalid,
+    /// The value contains invalid UTF-8.
+    Utf8Error(std::str::Utf8Error),
     /// The value exceeds [`MAX_LEN`] bytes.
     TooLong { len: usize, max: usize },
 }
@@ -56,10 +60,11 @@ impl fmt::Display for RestrictedValueError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => write!(f, "value cannot be empty"),
-            Self::InvalidChar(c) => write!(
+            Self::Invalid => write!(
                 f,
-                "value contains invalid character '{c}', only [a-zA-Z0-9_.-] are allowed",
+                "value contains characters outside the allowed set [a-zA-Z0-9_.-]"
             ),
+            Self::Utf8Error(e) => write!(f, "value contains invalid UTF-8: {}", e),
             Self::TooLong { len, max } => {
                 write!(f, "value too long: {len} bytes (max {max})")
             }
@@ -69,18 +74,26 @@ impl fmt::Display for RestrictedValueError {
 
 impl std::error::Error for RestrictedValueError {}
 
-/// Returns `true` if the character is allowed in a restricted value.
-///
-/// Allowed: `[a-zA-Z0-9_.-]`
-#[inline]
-pub fn is_valid_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-'
-}
-
 /// Validate a string against restricted value rules.
 ///
 /// Returns `Ok(())` if valid, or the first violation found.
 pub fn validate(s: &str) -> Result<(), RestrictedValueError> {
+    /// Byte lookup table: `true` for any byte in `[a-zA-Z0-9_.-]`. All other bytes
+    /// (including every byte ≥ 0x80, i.e. non-ASCII / UTF-8 continuation/lead bytes)
+    /// are `false`. The allowed set is ASCII-only, so byte-level scanning is
+    /// equivalent to char-level scanning here.
+    const TABLE: [bool; 256] = build_table();
+    const fn build_table() -> [bool; 256] {
+        let mut t = [false; 256];
+        let mut i = 0u16;
+        while i < 256 {
+            let b = i as u8;
+            t[i as usize] = b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'-';
+            i += 1;
+        }
+        t
+    }
+
     if s.is_empty() {
         return Err(RestrictedValueError::Empty);
     }
@@ -90,8 +103,8 @@ pub fn validate(s: &str) -> Result<(), RestrictedValueError> {
             max: MAX_LEN,
         });
     }
-    if let Some(c) = s.chars().find(|&c| !is_valid_char(c)) {
-        return Err(RestrictedValueError::InvalidChar(c));
+    if !s.as_bytes().iter().all(|&b| TABLE[b as usize]) {
+        return Err(RestrictedValueError::Invalid);
     }
     Ok(())
 }
@@ -119,6 +132,63 @@ impl<S: Deref> RestrictedValue<S> {
     }
 }
 
+impl RestateString for RestrictedValue<ReString> {
+    type Err = RestrictedValueError;
+
+    #[inline]
+    unsafe fn new_unchecked(s: &str) -> Self {
+        Self(ReString::new(s))
+    }
+
+    fn try_from_restring(s: ReString) -> Result<Self, Self::Err> {
+        validate(&s)?;
+        Ok(Self(s))
+    }
+
+    fn try_from_static(s: &'static str) -> Result<Self, Self::Err> {
+        validate(s)?;
+        Ok(Self(ReString::from_static(s)))
+    }
+
+    fn try_new(s: &str) -> Result<Self, Self::Err> {
+        validate(s)?;
+        Ok(Self(ReString::new(s)))
+    }
+
+    fn try_from_arc(s: &Arc<str>) -> Result<Self, Self::Err> {
+        validate(s)?;
+        Ok(Self(ReString::from(s)))
+    }
+
+    fn to_restring(&self) -> ReString {
+        self.0.clone()
+    }
+
+    fn into_restring(self) -> ReString {
+        self.0
+    }
+
+    /// Wrap a well-formed restricted value without checking it.
+    ///
+    /// # Safety
+    ///
+    /// This is unsafe because it skips input validation. It's the caller's responsibility to
+    /// ensure that the input is a valid RestrictedValue.
+    unsafe fn from_restring_unchecked(s: ReString) -> Self {
+        Self(s)
+    }
+}
+
+impl crate::interned::Internable for RestrictedValue<ReString> {
+    fn intern_pool() -> &'static std::thread::LocalKey<crate::interned::InternPool> {
+        thread_local! {
+            static POOL: crate::interned::InternPool =
+                std::cell::RefCell::new(hashbrown::HashSet::with_capacity(20_000));
+        }
+        &POOL
+    }
+}
+
 impl<S: StringLike> RestrictedValue<S> {
     /// Create a new restricted value, validating the input.
     pub fn new(s: S) -> Result<Self, RestrictedValueError> {
@@ -136,10 +206,13 @@ impl<S: StringLike> RestrictedValue<S> {
         Self(s)
     }
 
-    /// Clones the inner value into a shared
-    pub fn to_cheap_cloneable(&self) -> RestrictedValue<ReString> {
-        RestrictedValue(ReString::new_shared(self.0.as_ref()))
-    }
+    // /// Returns a `RestrictedValue<ReString>` containing a copy of this value's
+    // /// contents. Inline content stays inline; longer content is promoted to a
+    // /// reference-counted `Arc<str>`. The returned value is always cheap to
+    // /// clone.
+    // pub fn to_cheap_cloneable(&self) -> RestrictedValue<ReString> {
+    //     RestrictedValue(ReString::new(self.0.as_ref()))
+    // }
 
     /// Returns the value as a string slice.
     #[inline]
@@ -284,22 +357,22 @@ mod tests {
     fn invalid_chars() {
         // Whitespace
         let err = "a b".parse::<RestrictedValue<String>>().unwrap_err();
-        assert_eq!(err, RestrictedValueError::InvalidChar(' '));
+        assert_eq!(err, RestrictedValueError::Invalid);
 
         // Slash
         let err = "a/b".parse::<RestrictedValue<String>>().unwrap_err();
-        assert_eq!(err, RestrictedValueError::InvalidChar('/'));
+        assert_eq!(err, RestrictedValueError::Invalid);
 
         // Asterisk
         let err = "a*b".parse::<RestrictedValue<String>>().unwrap_err();
-        assert_eq!(err, RestrictedValueError::InvalidChar('*'));
+        assert_eq!(err, RestrictedValueError::Invalid);
 
         // At sign
         let err = "a@b".parse::<RestrictedValue<String>>().unwrap_err();
-        assert_eq!(err, RestrictedValueError::InvalidChar('@'));
+        assert_eq!(err, RestrictedValueError::Invalid);
 
         // Non-ASCII
         let err = "café".parse::<RestrictedValue<String>>().unwrap_err();
-        assert_eq!(err, RestrictedValueError::InvalidChar('é'));
+        assert_eq!(err, RestrictedValueError::Invalid);
     }
 }

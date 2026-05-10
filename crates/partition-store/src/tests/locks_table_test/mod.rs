@@ -15,6 +15,7 @@ use restate_storage_api::Transaction;
 use restate_storage_api::lock_table::{AcquiredBy, LoadLocks, LockState, WriteLockTable};
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::{LockName, Scope};
+use restate_util_string::{RestateString, format_restring};
 
 use crate::PartitionStore;
 
@@ -34,8 +35,8 @@ fn distinct_scopes(count: usize) -> Vec<Scope> {
     let mut partition_keys = HashSet::with_capacity(count);
 
     for idx in 0..10_000 {
-        let scope_name = format!("locks-scan-scope-{idx}");
-        let scope = Scope::new(&scope_name);
+        let scope_name = format_restring!("locks-scan-scope-{idx}");
+        let scope = Scope::try_from_restring(scope_name).unwrap();
         if partition_keys.insert(scope.partition_key()) {
             scopes.push(scope);
             if scopes.len() == count {
