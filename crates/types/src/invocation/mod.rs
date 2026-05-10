@@ -306,7 +306,7 @@ impl InvocationTarget {
                 ..
             } if handler_ty == &VirtualObjectHandlerType::Exclusive => Some(LockName::new(
                 ServiceName::new(name.as_ref()),
-                ReString::from(key.as_ref()),
+                ReString::new(key),
             )),
             // NOTE: Workflows don't have locks as their invariant (run once per ID) is enforced by
             // the partition processor at ingestion/creation time (via invocation/entry status)

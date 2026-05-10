@@ -72,8 +72,8 @@ fn get_promise<S: StorageAccess>(
     if service_id.scope.is_some() {
         // todo(tillrohrmann) remove once ServiceId uses ServiceName and ReString internally
         let service_name = ServiceName::new(&service_id.service_name);
-        let service_key = ReString::new_owned(&service_id.key);
-        let key = ReString::new_owned(key);
+        let service_key = ReString::new(&service_id.key);
+        let key = ReString::new(key);
 
         storage.get_value_proto(
             ScopedPromiseKeyRef::builder()
@@ -100,8 +100,8 @@ fn put_promise<S: StorageAccess>(
     if service_id.scope.is_some() {
         // todo(tillrohrmann) remove once ServiceId uses ServiceName and ReString internally
         let service_name = ServiceName::new(&service_id.service_name);
-        let service_key = ReString::new_owned(&service_id.key);
-        let key = ReString::new_owned(key);
+        let service_key = ReString::new(&service_id.key);
+        let key = ReString::new(key);
 
         storage.put_kv_proto(
             ScopedPromiseKeyRef::builder()
@@ -124,7 +124,7 @@ fn delete_all_promises<S: StorageAccess>(storage: &mut S, service_id: &ServiceId
     if service_id.scope.is_some() {
         // todo(tillrohrmann) remove once ServiceId uses ServiceName and ReString internally
         let service_name = ServiceName::new(&service_id.service_name);
-        let service_key = ReString::new_owned(&service_id.key);
+        let service_key = ReString::new(&service_id.key);
         let partition_key = service_id.partition_key();
 
         let prefix_key = ScopedPromiseKeyRef::builder()

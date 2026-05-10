@@ -93,7 +93,7 @@ impl LockName {
         }
         Ok(Self {
             service_name: ServiceName::new(service_name),
-            key: ReString::new_owned(key),
+            key: ReString::new(key),
         })
     }
 

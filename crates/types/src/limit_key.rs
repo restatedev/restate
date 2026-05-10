@@ -10,9 +10,7 @@
 
 use std::str::FromStr;
 
-use restate_util_string::{
-    OwnedStringLike, ReString, RestrictedValue, RestrictedValueError, StringLike,
-};
+use restate_util_string::{OwnedStringLike, RestrictedValue, RestrictedValueError, StringLike};
 
 /// Error type for limit key parsing failures.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -56,13 +54,6 @@ pub enum LimitKey<S: StringLike> {
 }
 
 impl<S: StringLike> LimitKey<S> {
-    pub fn to_cheap_cloneable(&self) -> LimitKey<ReString> {
-        match self {
-            Self::None => LimitKey::None,
-            Self::L1(s) => LimitKey::L1(s.to_cheap_cloneable()),
-            Self::L2(s1, s2) => LimitKey::L2(s1.to_cheap_cloneable(), s2.to_cheap_cloneable()),
-        }
-    }
     /// Create a Level 1 key.
     #[inline]
     pub const fn l1(level1: RestrictedValue<S>) -> Self {
@@ -294,6 +285,8 @@ mod bilrost_encodings {
 
 #[cfg(test)]
 mod tests {
+    use restate_util_string::ReString;
+
     use super::*;
 
     #[test]

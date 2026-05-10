@@ -66,7 +66,7 @@ pub use limit_key::LimitKey;
 pub use locking::*;
 pub use node_id::*;
 use restate_encoding::BilrostNewType;
-use restate_util_string::InternedReString;
+use restate_util_string::{Interned, ReString, RestateString, RestrictedValue};
 pub use restate_version::*;
 pub use version::*;
 
@@ -106,19 +106,19 @@ pub mod sharding {
 #[debug("{}", _0)]
 #[display("{}", _0)]
 #[repr(transparent)]
-pub struct ServiceName(InternedReString);
+pub struct ServiceName(Interned<ReString>);
 
 impl ServiceName {
     #[inline]
     pub fn new(value: &str) -> Self {
         assert!(!value.is_empty());
-        Self(InternedReString::new(value))
+        Self(Interned::<ReString>::new(value))
     }
 
     #[inline]
-    pub const fn from_static(value: &'static str) -> Self {
+    pub fn from_static(value: &'static str) -> Self {
         assert!(!value.is_empty());
-        Self(InternedReString::from_static(value))
+        Self(Interned::from(ReString::from_static(value)))
     }
 
     #[inline]
@@ -184,19 +184,23 @@ impl From<&str> for ServiceName {
 #[debug("{}", _0)]
 #[display("{}", _0)]
 #[repr(transparent)]
-pub struct Scope(InternedReString);
+pub struct Scope(Interned<RestrictedValue<ReString>>);
 
 impl Scope {
     #[inline]
     pub fn new(value: &str) -> Self {
-        assert!(!value.is_empty());
-        Self(InternedReString::new(value))
+        Self(
+            <Interned<RestrictedValue<ReString>> as RestateString>::try_new(value)
+                .expect("valid scope"),
+        )
     }
 
     #[inline]
-    pub const fn from_static(value: &'static str) -> Self {
-        assert!(!value.is_empty());
-        Self(InternedReString::from_static(value))
+    pub fn from_static(value: &'static str) -> Self {
+        Self(
+            <Interned<RestrictedValue<ReString>> as RestateString>::try_from_static(value)
+                .expect("valid scope"),
+        )
     }
 
     #[inline]
