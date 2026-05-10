@@ -28,7 +28,7 @@ use restate_types::nodes_config::Role;
 use restate_types::partitions::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::time::MillisSinceEpoch;
-use restate_wal_protocol::control::PartitionDurability;
+use restate_wal_protocol::control::UpdatePartitionDurabilityCommand;
 
 const WARN_PERIOD: Duration = Duration::from_secs(60);
 
@@ -148,7 +148,7 @@ impl DurabilityTracker {
 }
 
 impl Stream for DurabilityTracker {
-    type Item = PartitionDurability;
+    type Item = UpdatePartitionDurabilityCommand;
 
     fn poll_next(
         mut self: Pin<&mut Self>,
@@ -212,7 +212,7 @@ impl Stream for DurabilityTracker {
             return Poll::Pending;
         }
 
-        let partition_durability = PartitionDurability {
+        let partition_durability = UpdatePartitionDurabilityCommand {
             partition_id: self.partition.partition_id,
             durable_point: suggested,
             modification_time: MillisSinceEpoch::now(),
