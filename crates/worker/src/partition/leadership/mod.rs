@@ -66,7 +66,9 @@ use restate_types::{
 };
 use restate_vqueues::scheduler::{self};
 use restate_vqueues::{ResourceManager, SchedulerService, VQueuesMeta, VQueuesMetaCache};
-use restate_wal_protocol::control::{AnnounceLeader, PartitionDurability, VersionBarrier};
+use restate_wal_protocol::control::{
+    AnnounceLeaderCommand, UpdatePartitionDurabilityCommand, VersionBarrierCommand,
+};
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::{Command, Envelope};
 use restate_worker_api::invoker::capacity::InvokerCapacity;
@@ -149,7 +151,7 @@ pub(crate) enum ActionEffect {
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerKeyValue),
     Cleaner(cleaner::CleanerEffect),
-    PartitionMaintenance(PartitionDurability),
+    PartitionMaintenance(UpdatePartitionDurabilityCommand),
     UpsertSchema(Schema),
     UpsertRuleBook(Arc<restate_limiter::RuleBook>),
     AwaitingRpcSelfProposeDone,
@@ -265,7 +267,7 @@ where
     ) -> Result<(), Error> {
         let leader_epoch = leadership_info.leader_epoch;
 
-        let announce_leader = Command::AnnounceLeader(Box::new(AnnounceLeader {
+        let announce_leader = Command::AnnounceLeader(Box::new(AnnounceLeaderCommand {
             node_id: my_node_id(),
             leader_epoch,
             epoch_version: Some(leadership_info.version),
@@ -334,7 +336,7 @@ where
     #[instrument(level = "debug", skip_all, fields(leader_epoch = %announce_leader.leader_epoch))]
     pub async fn on_announce_leader(
         &mut self,
-        announce_leader: &AnnounceLeader,
+        announce_leader: &AnnounceLeaderCommand,
         partition_store: &mut PartitionStore,
         replica_set_states: &PartitionReplicaSetStates,
         config: &Configuration,
@@ -545,7 +547,7 @@ where
                 self_proposer
                     .self_propose(
                         self.partition.key_range.start(),
-                        Command::VersionBarrier(VersionBarrier {
+                        Command::VersionBarrier(VersionBarrierCommand {
                             version: forced_min_restate_version.clone(),
                             partition_key_range: Keys::RangeInclusive(
                                 self.partition.key_range.into(),
@@ -565,7 +567,7 @@ where
                 self_proposer
                     .self_propose(
                         self.partition.key_range.start(),
-                        Command::VersionBarrier(VersionBarrier {
+                        Command::VersionBarrier(VersionBarrierCommand {
                             version: RESTATE_VERSION_1_6_0.clone(),
                             partition_key_range: Keys::RangeInclusive(
                                 self.partition.key_range.into(),

@@ -49,7 +49,7 @@ use restate_vqueues::VQueueEvent;
 use restate_vqueues::scheduler::Decisions;
 use restate_vqueues::{SchedulerService, VQueuesMeta};
 use restate_wal_protocol::Command;
-use restate_wal_protocol::control::UpsertSchema;
+use restate_wal_protocol::control::UpsertSchemaCommand;
 use restate_worker_api::invoker::InvokerHandle;
 use restate_worker_api::resources::ReservedResources;
 use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
@@ -444,7 +444,7 @@ impl LeaderState {
                         self.self_proposer
                             .self_propose(
                                 self.partition_key_range.start(),
-                                Command::UpsertSchema(UpsertSchema {
+                                Command::UpsertSchema(UpsertSchemaCommand {
                                     partition_key_range: Keys::RangeInclusive(
                                         self.partition_key_range.into(),
                                     ),
@@ -466,7 +466,7 @@ impl LeaderState {
                             .self_propose(
                                 self.partition_key_range.start(),
                                 Command::UpsertRuleBook(
-                                    restate_wal_protocol::control::UpsertRuleBook {
+                                    restate_wal_protocol::control::UpsertRuleBookCommand {
                                         partition_key_range: self.partition_key_range,
                                         rule_book: book.bilrost_encode_to_bytes(),
                                     },
