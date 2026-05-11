@@ -8,10 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
 use restate_storage_api::StorageError;
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
-use restate_types::identifiers::WithPartitionKey;
 use restate_types::invocation;
 use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
 use restate_types::invocation::{
@@ -20,7 +18,9 @@ use restate_types::invocation::{
 use restate_types::net::partition_processor::{
     GetInvocationOutputResponseMode, PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
-use restate_wal_protocol::Command;
+use restate_wal_protocol::v2::commands;
+
+use super::*;
 
 pub(super) struct Request {
     pub(super) request_id: PartitionProcessorRpcRequestId,
@@ -95,8 +95,7 @@ where
 
                 self.proposer
                     .handle_rpc_proposal_command(
-                        invocation_query.partition_key(),
-                        Command::AttachInvocation(AttachInvocationRequest {
+                        commands::AttachInvocationCommand::from(AttachInvocationRequest {
                             invocation_query,
                             block_on_inflight: true,
                             response_sink: ServiceInvocationResponseSink::Ingress { request_id },
