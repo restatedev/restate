@@ -268,7 +268,7 @@ impl<S: LogStore> LogletWorker<S> {
         self.persist_global_tail();
         counter!(LOG_SERVER_LOGLET_STOPPED).increment(1);
 
-        info!(loglet_id = %self.loglet_id, "loglet worker stopped");
+        debug!(loglet_id = %self.loglet_id, "loglet worker stopped");
     }
 
     fn on_local_tail_change(&mut self, new_tail: TailState<LogletOffset>) {
