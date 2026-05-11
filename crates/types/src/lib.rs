@@ -66,9 +66,8 @@ pub use limit_key::LimitKey;
 pub use locking::*;
 pub use node_id::*;
 use restate_encoding::BilrostNewType;
-use restate_util_string::{
-    Interned, ReString, RestateString, RestrictedValue, RestrictedValueError,
-};
+pub use restate_util_string::ReString;
+use restate_util_string::{Interned, RestateString, RestrictedValue, RestrictedValueError};
 pub use restate_version::*;
 pub use version::*;
 

@@ -18,7 +18,7 @@ use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use bytestring::ByteString;
+use restate_util_string::ReString;
 
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, JournalMetadata, ReadInvocationStatusTable,
@@ -33,9 +33,9 @@ use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::time::MillisSinceEpoch;
 
 const INVOCATION_TARGET_1: InvocationTarget = InvocationTarget::VirtualObject {
-    name: ByteString::from_static("abc"),
-    key: ByteString::from_static("1"),
-    handler: ByteString::from_static("myhandler"),
+    name: ReString::from_static("abc"),
+    key: ReString::from_static("1"),
+    handler: ReString::from_static("myhandler"),
     handler_ty: VirtualObjectHandlerType::Exclusive,
     scope: None,
 };
@@ -43,9 +43,9 @@ static INVOCATION_ID_1: LazyLock<InvocationId> =
     LazyLock::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_1));
 
 const INVOCATION_TARGET_2: InvocationTarget = InvocationTarget::VirtualObject {
-    name: ByteString::from_static("abc"),
-    key: ByteString::from_static("2"),
-    handler: ByteString::from_static("myhandler"),
+    name: ReString::from_static("abc"),
+    key: ReString::from_static("2"),
+    handler: ReString::from_static("myhandler"),
     handler_ty: VirtualObjectHandlerType::Exclusive,
     scope: None,
 };
@@ -53,9 +53,9 @@ static INVOCATION_ID_2: LazyLock<InvocationId> =
     LazyLock::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_2));
 
 const INVOCATION_TARGET_3: InvocationTarget = InvocationTarget::VirtualObject {
-    name: ByteString::from_static("abc"),
-    key: ByteString::from_static("3"),
-    handler: ByteString::from_static("myhandler"),
+    name: ReString::from_static("abc"),
+    key: ReString::from_static("3"),
+    handler: ReString::from_static("myhandler"),
     handler_ty: VirtualObjectHandlerType::Exclusive,
     scope: None,
 };
@@ -63,9 +63,9 @@ static INVOCATION_ID_3: LazyLock<InvocationId> =
     LazyLock::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_3));
 
 const INVOCATION_TARGET_4: InvocationTarget = InvocationTarget::VirtualObject {
-    name: ByteString::from_static("abc"),
-    key: ByteString::from_static("4"),
-    handler: ByteString::from_static("myhandler"),
+    name: ReString::from_static("abc"),
+    key: ReString::from_static("4"),
+    handler: ReString::from_static("myhandler"),
     handler_ty: VirtualObjectHandlerType::Exclusive,
     scope: None,
 };

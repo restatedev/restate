@@ -302,6 +302,16 @@ impl From<ReString> for bytestring::ByteString {
     }
 }
 
+#[cfg(feature = "bytestring")]
+impl From<bytestring::ByteString> for ReString {
+    #[inline]
+    fn from(value: bytestring::ByteString) -> Self {
+        let mut bytes: bytes::Bytes = value.into_bytes();
+        // SAFETY: ByteString guarantees valid UTF-8.
+        unsafe { ReString::from_utf8_buf_unchecked(&mut bytes) }
+    }
+}
+
 #[derive(Clone)]
 enum Inner {
     RefCounted(Arc<str>),
@@ -374,7 +384,7 @@ impl Ord for ReString {
 
 impl Eq for ReString {}
 
-impl<T: AsRef<str>> PartialEq<T> for ReString {
+impl<T: AsRef<str> + ?Sized> PartialEq<T> for ReString {
     #[inline(always)]
     fn eq(&self, other: &T) -> bool {
         self.as_str().eq(other.as_ref())

@@ -31,6 +31,7 @@ use restate_types::journal_v2::{
 };
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
+use restate_util_string::ReString;
 
 const MOCK_INVOCATION_ID_1: InvocationId =
     InvocationId::from_parts(1, InvocationUuid::from_u128(12345678900001));
@@ -55,8 +56,8 @@ fn mock_call_command(
         request: CallRequest {
             invocation_id: InvocationId::from_parts(789, InvocationUuid::from_u128(456)),
             invocation_target: InvocationTarget::Service {
-                name: ByteString::from_static("MySvc"),
-                handler: ByteString::from_static("MyHandler"),
+                name: ReString::from_static("MySvc"),
+                handler: ReString::from_static("MyHandler"),
                 scope: None,
             },
             span_context: ServiceInvocationSpanContext::empty(),
@@ -78,8 +79,8 @@ fn mock_one_way_call_command(invocation_id_completion_id: CompletionId) -> Entry
         request: CallRequest {
             invocation_id: InvocationId::from_parts(789, InvocationUuid::from_u128(456)),
             invocation_target: InvocationTarget::Service {
-                name: ByteString::from_static("MySvc"),
-                handler: ByteString::from_static("MyHandler"),
+                name: ReString::from_static("MySvc"),
+                handler: ReString::from_static("MyHandler"),
                 scope: None,
             },
             span_context: ServiceInvocationSpanContext::empty(),
