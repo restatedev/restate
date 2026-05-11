@@ -111,7 +111,7 @@ mod tests {
     };
     use restate_types::journal_v2::{CommandType, OutputCommand, OutputResult};
     use restate_types::service_protocol::ServiceProtocolVersion;
-    use restate_wal_protocol::Command;
+    use restate_wal_protocol::v2::{Command, commands};
     use std::time::Duration;
 
     #[restate_core::test]
@@ -127,27 +127,28 @@ mod tests {
         let response_bytes = Bytes::from_static(b"123");
 
         // Create and complete a fresh invocation
-        let actions = Box::pin(test_env.apply_multiple([
-            Command::Invoke(Box::new(ServiceInvocation {
-                invocation_id,
-                invocation_target: invocation_target.clone(),
-                response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
-                idempotency_key: Some(idempotency_key.clone()),
-                completion_retention_duration: completion_retention,
-                journal_retention_duration: journal_retention,
-                ..ServiceInvocation::mock()
-            })),
-            pinned_deployment(invocation_id, ServiceProtocolVersion::V5),
-            invoker_entry_effect(
-                invocation_id,
-                OutputCommand {
-                    result: OutputResult::Success(response_bytes.clone()),
-                    name: Default::default(),
-                },
-            ),
-            invoker_end_effect(invocation_id),
-        ]))
-        .await;
+        let actions = test_env
+            .apply_multiple([
+                commands::InvokeCommand::test_envelope(ServiceInvocation {
+                    invocation_id,
+                    invocation_target: invocation_target.clone(),
+                    response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
+                    idempotency_key: Some(idempotency_key.clone()),
+                    completion_retention_duration: completion_retention,
+                    journal_retention_duration: journal_retention,
+                    ..ServiceInvocation::mock()
+                }),
+                pinned_deployment(invocation_id, ServiceProtocolVersion::V5),
+                invoker_entry_effect(
+                    invocation_id,
+                    OutputCommand {
+                        result: OutputResult::Success(response_bytes.clone()),
+                        name: Default::default(),
+                    },
+                ),
+                invoker_end_effect(invocation_id),
+            ])
+            .await;
 
         // Assert response
         assert_that!(
@@ -185,22 +186,24 @@ mod tests {
 
         // Now let's purge the journal
         test_env
-            .apply(Command::PurgeJournal(PurgeInvocationRequest {
-                invocation_id,
-                response_sink: None,
-            }))
+            .apply(commands::PurgeJournalCommand::test_envelope(
+                PurgeInvocationRequest {
+                    invocation_id,
+                    response_sink: None,
+                },
+            ))
             .await;
 
         // At this point we should still be able to de-duplicate the invocation
         let request_id = PartitionProcessorRpcRequestId::default();
         let actions = test_env
-            .apply(Command::Invoke(Box::new(ServiceInvocation {
+            .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
                 invocation_id,
                 invocation_target: invocation_target.clone(),
                 response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
                 idempotency_key: Some(idempotency_key),
                 ..ServiceInvocation::mock()
-            })))
+            }))
             .await;
         assert_that!(
             actions,
@@ -229,10 +232,12 @@ mod tests {
 
         // Now purge completely
         test_env
-            .apply(Command::PurgeInvocation(PurgeInvocationRequest {
-                invocation_id,
-                response_sink: None,
-            }))
+            .apply(commands::PurgeInvocationCommand::test_envelope(
+                PurgeInvocationRequest {
+                    invocation_id,
+                    response_sink: None,
+                },
+            ))
             .await;
 
         // Nothing should be left

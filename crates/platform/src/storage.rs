@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::any::type_name_of_val;
+
 use bytes::{Buf, BufMut, BytesMut};
 use downcast_rs::{DowncastSync, impl_downcast};
 
@@ -23,7 +25,7 @@ pub enum StorageEncodeError {
     SizeOverflow(usize),
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(derive_more::Debug, thiserror::Error)]
 pub enum StorageDecodeError {
     #[error("failed reading codec: {0}")]
     ReadingCodec(ReString),
@@ -44,6 +46,10 @@ pub trait StorageEncode: DowncastSync {
 
     /// Codec which is used when encode new values.
     fn default_codec(&self) -> StorageCodecKind;
+
+    fn type_name(&self) -> &'static str {
+        type_name_of_val(self)
+    }
 }
 
 impl_downcast!(sync StorageEncode);
