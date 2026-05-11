@@ -121,6 +121,9 @@ pub fn sys_invocation_table_docs() -> OwnedTableDocs {
             .remove("target_service_ty")
             .expect("target_service_ty should exist"),
         sys_invocation_status
+            .remove("scope")
+            .expect("scope should exist"),
+        sys_invocation_status
             .remove("idempotency_key")
             .expect("idempotency_key should exist"),
         sys_invocation_status

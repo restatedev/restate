@@ -13,8 +13,8 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use bytes::Bytes;
-use bytestring::ByteString;
 use futures_util::StreamExt;
+use restate_util_string::ReString;
 
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
@@ -43,8 +43,8 @@ static MOCK_INVOKE_JOURNAL_ENTRY: LazyLock<JournalEntry> = LazyLock::new(|| {
             enrichment_result: Some(CallEnrichmentResult {
                 invocation_id: InvocationId::from_parts(789, InvocationUuid::from_u128(456)),
                 invocation_target: InvocationTarget::Service {
-                    name: ByteString::from_static("MySvc"),
-                    handler: ByteString::from_static("MyHandler"),
+                    name: ReString::from_static("MySvc"),
+                    handler: ReString::from_static("MyHandler"),
                     scope: None,
                 },
                 completion_retention_time: Some(Duration::from_secs(10)),

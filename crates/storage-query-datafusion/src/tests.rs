@@ -556,3 +556,80 @@ fn extract_uint32_list(column: &ArrayRef, row: usize) -> Option<Vec<u32>> {
 
     Some(row_value_downcast.values().to_owned().into())
 }
+
+fn extract_nullable_string(column: &ArrayRef, row: usize) -> Option<Option<String>> {
+    use datafusion::arrow::array::Array;
+
+    let column = column
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("Downcast ref to StringArray");
+    if column.len() <= row {
+        return None;
+    }
+    if column.is_null(row) {
+        Some(None)
+    } else {
+        Some(Some(column.value(row).to_string()))
+    }
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_sys_invocation_status_scope() {
+    let scoped_id = InvocationId::from_parts(0, InvocationUuid::from_u128(1));
+    let unscoped_id = InvocationId::from_parts(0, InvocationUuid::from_u128(2));
+
+    let scope = Scope::try_from_static("tenant-A").unwrap();
+    let scoped_target = InvocationTarget::scoped_service("svc", "h", scope);
+    let unscoped_target = InvocationTarget::service("svc", "h");
+
+    let mut engine = MockQueryEngine::create().await;
+
+    let mut tx = engine.partition_store().transaction();
+    tx.put_invocation_status(
+        &scoped_id,
+        &InvocationStatus::Invoked(InFlightInvocationMetadata {
+            invocation_target: scoped_target,
+            ..InFlightInvocationMetadata::mock()
+        }),
+    )
+    .unwrap();
+    tx.put_invocation_status(
+        &unscoped_id,
+        &InvocationStatus::Invoked(InFlightInvocationMetadata {
+            invocation_target: unscoped_target,
+            ..InFlightInvocationMetadata::mock()
+        }),
+    )
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let records = engine
+        .execute("SELECT id, scope FROM sys_invocation_status ORDER BY id ASC")
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_that!(
+        records,
+        all!(
+            row!(0, {
+                "id" => LargeStringArray: eq(scoped_id.to_string()),
+            }),
+            row_column_matcher(
+                0,
+                "scope",
+                extract_nullable_string,
+                eq(Some("tenant-A".to_string()))
+            ),
+            row!(1, {
+                "id" => LargeStringArray: eq(unscoped_id.to_string()),
+            }),
+            row_column_matcher(1, "scope", extract_nullable_string, eq(None)),
+        )
+    );
+}

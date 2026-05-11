@@ -54,6 +54,7 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
             ss.target_service_key,
             ss.target_handler_name,
             ss.target_service_ty,
+            ss.scope,
             ss.idempotency_key,
             ss.invoked_by,
             ss.invoked_by_service_name,
