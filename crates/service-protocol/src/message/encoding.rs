@@ -15,9 +15,9 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytes_utils::SegmentedBuf;
 use tracing::warn;
 
-use restate_serde_util::ByteCount;
 use restate_types::journal::raw::{PlainEntryHeader, RawEntry};
 use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_util_bytecount::ByteCount;
 
 use super::header::UnknownMessageType;
 use super::*;

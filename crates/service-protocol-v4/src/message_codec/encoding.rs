@@ -18,8 +18,8 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytes_utils::SegmentedBuf;
 use tracing::warn;
 
-use restate_serde_util::ByteCount;
 use restate_types::{errors::GenericError, service_protocol::ServiceProtocolVersion};
+use restate_util_bytecount::ByteCount;
 
 #[derive(Debug, codederror::CodedError, thiserror::Error)]
 #[code(restate_errors::RT0012)]

@@ -11,7 +11,7 @@
 #![allow(dead_code)]
 
 use restate_memory::{MemoryPool, PollMemoryPool};
-use restate_serde_util::NonZeroByteCount;
+use restate_util_bytecount::NonZeroByteCount;
 
 use crate::scheduler::VQueueHandle;
 

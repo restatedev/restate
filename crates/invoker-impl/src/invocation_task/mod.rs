@@ -33,7 +33,6 @@ use tokio_util::task::AbortOnDropHandle;
 use tracing::{debug, instrument};
 
 use restate_memory::{LocalMemoryLease, LocalMemoryPool};
-use restate_serde_util::{ByteCount, NonZeroByteCount};
 use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClientError};
 use restate_types::LimitKey;
 use restate_types::deployment::PinnedDeployment;
@@ -47,6 +46,7 @@ use restate_types::live::Live;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_util_bytecount::{ByteCount, NonZeroByteCount};
 use restate_util_string::ReString;
 use restate_worker_api::invoker::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderTransaction, JournalKind,

@@ -26,7 +26,6 @@ use restate_core::{
     Metadata, TaskCenterFutureExt,
     network::{Networking, TransportConnect},
 };
-use restate_serde_util::ByteCount;
 use restate_time_util::DurationExt;
 use restate_types::replicated_loglet::Spread;
 use restate_types::retries::with_jitter;
@@ -39,6 +38,7 @@ use restate_types::{
     replication::{DecoratedNodeSet, NodeSet, NodeSetChecker},
     time::MillisSinceEpoch,
 };
+use restate_util_bytecount::ByteCount;
 
 use super::{RecordsExt, SequencerSharedState};
 use crate::loglet::{AppendError, LogletCommitResolver};

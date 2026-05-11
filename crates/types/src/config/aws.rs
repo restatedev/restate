@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_serde_util::ByteCount;
+use restate_util_bytecount::ByteCount;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 

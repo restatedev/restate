@@ -1780,7 +1780,6 @@ mod tests {
 
     use restate_core::{TaskCenter, TaskKind};
     use restate_memory::OutOfMemoryKind;
-    use restate_serde_util::NonZeroByteCount;
     use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
     use restate_test_util::check;
     use restate_time_util::FriendlyDuration;
@@ -1802,6 +1801,7 @@ mod tests {
     use restate_types::schema::service::ServiceMetadata;
     use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_types::vqueues::VQueueId;
+    use restate_util_bytecount::NonZeroByteCount;
     use restate_worker_api::invoker::InvokerHandle;
 
     use crate::error::{InvocationMemoryExhausted, InvokerError, SdkInvocationErrorV2};

@@ -8,253 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::cmp::Ordering;
-use std::fmt::{self, Display};
+use std::fmt;
 use std::num::{NonZeroU64, NonZeroUsize};
-use std::ops::{Add, Mul};
-use std::str::FromStr;
 
 use bytesize::ByteSize;
-use serde::de::Visitor;
-use serde::{Deserializer, Serialize, Serializer, de, de::Deserialize};
+use serde_core::de::Visitor;
+use serde_core::{Deserializer, Serialize, Serializer, de, de::Deserialize};
 use serde_with::{DeserializeAs, SerializeAs};
 
-#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Copy, Hash)]
-pub struct ByteCount<const CAN_BE_ZERO: bool = true>(u64);
-pub type NonZeroByteCount = ByteCount<false>;
+use restate_util_string::ToReString;
 
-#[cfg(feature = "schema")]
-impl schemars::JsonSchema for ByteCount<true> {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        "HumanBytes".into()
-    }
-
-    fn schema_id() -> std::borrow::Cow<'static, str> {
-        std::borrow::Cow::Owned(std::concat!(std::module_path!(), "::", "HumanBytes").to_owned())
-    }
-
-    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({
-            "type": "string",
-            "pattern": r"^\d+(\.\d+)? ?[KMG]B$",
-            "minLength": 1,
-            "title": "Human-readable bytes",
-            "description": "Human-readable bytes",
-        })
-    }
-}
-#[cfg(feature = "schema")]
-impl schemars::JsonSchema for ByteCount<false> {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        "NonZeroHumanBytes".into()
-    }
-
-    fn schema_id() -> std::borrow::Cow<'static, str> {
-        std::borrow::Cow::Owned(
-            std::concat!(std::module_path!(), "::", "NonZeroHumanBytes").to_owned(),
-        )
-    }
-
-    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({
-            "type": "string",
-            "pattern": r"^\d+(\.\d+)? ?[KMG]B$",
-            "minLength": 1,
-            "title": "Non-zero human-readable bytes",
-            "description": "Non-zero human-readable bytes",
-        })
-    }
-}
-
-impl ByteCount<true> {
-    pub const ZERO: Self = Self(0);
-    pub const fn new(value: u64) -> Self {
-        Self(value)
-    }
-
-    pub const fn saturating_add(self, other: Self) -> ByteCount<true> {
-        ByteCount(self.0.saturating_add(other.0))
-    }
-
-    pub const fn saturating_mul(self, other: u64) -> ByteCount<true> {
-        ByteCount(self.0.saturating_mul(other))
-    }
-}
-
-impl Default for ByteCount<true> {
-    fn default() -> Self {
-        ByteCount::ZERO
-    }
-}
-
-impl ByteCount<false> {
-    pub const fn new(value: NonZeroUsize) -> Self {
-        Self(value.get() as u64)
-    }
-
-    pub const fn as_non_zero_usize(&self) -> NonZeroUsize {
-        NonZeroUsize::new(self.0 as usize).expect("ByteCount is not zero")
-    }
-
-    pub const fn saturating_add(self, other: Self) -> ByteCount<false> {
-        ByteCount(self.0.saturating_add(other.0))
-    }
-
-    pub const fn saturating_mul(self, other: NonZeroU64) -> ByteCount<false> {
-        ByteCount(self.0.saturating_mul(other.get()))
-    }
-
-    /// Calculates the quotient of self and rhs, rounding the result towards positive infinity.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `rhs` is 0.
-    pub fn div_ceil(self, rhs: u64) -> ByteCount<false> {
-        ByteCount(self.0.div_ceil(rhs))
-    }
-}
-
-impl Mul<u64> for ByteCount<false> {
-    type Output = ByteCount<true>;
-
-    fn mul(self, rhs: u64) -> Self::Output {
-        ByteCount(self.0 * rhs)
-    }
-}
-
-impl<const CAN_BE_ZERO: bool> Display for ByteCount<CAN_BE_ZERO> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        ByteSize(self.0).fmt(f)
-    }
-}
-
-impl<const CAN_BE_ZERO: bool> ByteCount<CAN_BE_ZERO> {
-    pub const MAX: Self = ByteCount(u64::MAX);
-
-    pub const fn as_u64(&self) -> u64 {
-        self.0
-    }
-
-    pub const fn as_usize(&self) -> usize {
-        self.0 as usize
-    }
-}
-
-impl Add for ByteCount<true> {
-    type Output = ByteCount<true>;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        ByteCount(self.0 + rhs.0)
-    }
-}
-
-impl Add for ByteCount<false> {
-    type Output = ByteCount<false>;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        ByteCount(self.0 + rhs.0)
-    }
-}
-
-impl Mul for ByteCount<true> {
-    type Output = ByteCount<true>;
-
-    fn mul(self, rhs: Self) -> Self::Output {
-        ByteCount(self.0 * rhs.0)
-    }
-}
-
-impl Mul for ByteCount<false> {
-    type Output = ByteCount<false>;
-
-    fn mul(self, rhs: Self) -> Self::Output {
-        ByteCount(self.0 * rhs.0)
-    }
-}
-
-// Comparisons between ByteCount<false> and ByteCount<true>
-
-impl PartialEq<ByteCount<false>> for ByteCount<true> {
-    fn eq(&self, other: &ByteCount<false>) -> bool {
-        self.0 == other.0
-    }
-}
-
-impl PartialOrd<ByteCount<false>> for ByteCount<true> {
-    fn partial_cmp(&self, other: &ByteCount<false>) -> Option<Ordering> {
-        Some(self.0.cmp(&other.0))
-    }
-}
-
-impl PartialEq<ByteCount<true>> for ByteCount<false> {
-    fn eq(&self, other: &ByteCount<true>) -> bool {
-        self.0 == other.0
-    }
-}
-
-impl PartialOrd<ByteCount<true>> for ByteCount<false> {
-    fn partial_cmp(&self, other: &ByteCount<true>) -> Option<Ordering> {
-        Some(self.0.cmp(&other.0))
-    }
-}
-
-impl FromStr for ByteCount<true> {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let s: ByteSize = s.parse()?;
-        Ok(ByteCount(s.0))
-    }
-}
-
-impl From<NonZeroUsize> for ByteCount<false> {
-    fn from(value: NonZeroUsize) -> Self {
-        let v: usize = value.into();
-        ByteCount(v as u64)
-    }
-}
-
-impl From<NonZeroU64> for ByteCount<false> {
-    fn from(value: NonZeroU64) -> Self {
-        ByteCount(value.into())
-    }
-}
-
-impl TryFrom<u64> for ByteCount<false> {
-    type Error = std::num::TryFromIntError;
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
-        Ok(Self::from(NonZeroU64::try_from(value)?))
-    }
-}
-
-impl From<u64> for ByteCount<true> {
-    fn from(value: u64) -> Self {
-        ByteCount(value)
-    }
-}
-
-impl From<u32> for ByteCount<true> {
-    fn from(value: u32) -> Self {
-        ByteCount(value as u64)
-    }
-}
-
-impl From<usize> for ByteCount<true> {
-    fn from(value: usize) -> Self {
-        ByteCount(value as u64)
-    }
-}
-
-impl<const CAN_BE_ZERO: bool> From<ByteCount<CAN_BE_ZERO>> for u64 {
-    fn from(value: ByteCount<CAN_BE_ZERO>) -> Self {
-        value.0
-    }
-}
-
-impl From<ByteCount<false>> for ByteCount<true> {
-    fn from(value: ByteCount<false>) -> Self {
-        Self(value.0)
-    }
-}
+use crate::ByteCount;
 
 impl<const CAN_BE_ZERO: bool> Serialize for ByteCount<CAN_BE_ZERO> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -262,7 +26,7 @@ impl<const CAN_BE_ZERO: bool> Serialize for ByteCount<CAN_BE_ZERO> {
         S: Serializer,
     {
         if serializer.is_human_readable() {
-            serializer.serialize_str(&ByteSize(self.0).to_string())
+            serializer.serialize_str(&ByteSize(self.0).to_restring())
         } else {
             // raw u64 num of bytes
             self.0.serialize(serializer)
@@ -347,7 +111,7 @@ impl<const CAN_BE_ZERO: bool> Visitor<'_> for ByteCountVisitor<CAN_BE_ZERO> {
 impl SerializeAs<u64> for ByteCount<true> {
     fn serialize_as<S>(source: &u64, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::Serializer,
+        S: serde_core::Serializer,
     {
         Self(*source).serialize(serializer)
     }
@@ -356,7 +120,7 @@ impl SerializeAs<u64> for ByteCount<true> {
 impl<'de> DeserializeAs<'de, u64> for ByteCount<true> {
     fn deserialize_as<D>(deserializer: D) -> Result<u64, D::Error>
     where
-        D: serde::Deserializer<'de>,
+        D: serde_core::Deserializer<'de>,
     {
         Ok(Self::deserialize(deserializer)?.0)
     }
@@ -365,7 +129,7 @@ impl<'de> DeserializeAs<'de, u64> for ByteCount<true> {
 impl SerializeAs<usize> for ByteCount<true> {
     fn serialize_as<S>(source: &usize, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::Serializer,
+        S: serde_core::Serializer,
     {
         Self(*source as u64).serialize(serializer)
     }
@@ -374,7 +138,7 @@ impl SerializeAs<usize> for ByteCount<true> {
 impl<'de> DeserializeAs<'de, usize> for ByteCount<true> {
     fn deserialize_as<D>(deserializer: D) -> Result<usize, D::Error>
     where
-        D: serde::Deserializer<'de>,
+        D: serde_core::Deserializer<'de>,
     {
         Ok(Self::deserialize(deserializer)?.0 as usize)
     }
@@ -383,7 +147,7 @@ impl<'de> DeserializeAs<'de, usize> for ByteCount<true> {
 impl SerializeAs<NonZeroUsize> for ByteCount<false> {
     fn serialize_as<S>(source: &NonZeroUsize, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::Serializer,
+        S: serde_core::Serializer,
     {
         Self::from(*source).serialize(serializer)
     }
@@ -392,7 +156,7 @@ impl SerializeAs<NonZeroUsize> for ByteCount<false> {
 impl<'de> DeserializeAs<'de, NonZeroUsize> for ByteCount<false> {
     fn deserialize_as<D>(deserializer: D) -> Result<NonZeroUsize, D::Error>
     where
-        D: serde::Deserializer<'de>,
+        D: serde_core::Deserializer<'de>,
     {
         Ok(Self::deserialize(deserializer)?.as_non_zero_usize())
     }
@@ -401,7 +165,7 @@ impl<'de> DeserializeAs<'de, NonZeroUsize> for ByteCount<false> {
 impl SerializeAs<NonZeroU64> for ByteCount<false> {
     fn serialize_as<S>(source: &NonZeroU64, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::Serializer,
+        S: serde_core::Serializer,
     {
         Self::from(*source).serialize(serializer)
     }
@@ -410,7 +174,7 @@ impl SerializeAs<NonZeroU64> for ByteCount<false> {
 impl<'de> DeserializeAs<'de, NonZeroU64> for ByteCount<false> {
     fn deserialize_as<D>(deserializer: D) -> Result<NonZeroU64, D::Error>
     where
-        D: serde::Deserializer<'de>,
+        D: serde_core::Deserializer<'de>,
     {
         let raw_value = Self::deserialize(deserializer)?.0;
         Ok(NonZeroU64::new(raw_value).expect("ByteCount is not zero"))
@@ -419,9 +183,11 @@ impl<'de> DeserializeAs<'de, NonZeroU64> for ByteCount<false> {
 
 #[cfg(test)]
 mod tests {
+    use crate::NonZeroByteCount;
+
     use super::*;
 
-    use serde::Deserialize;
+    use serde::{Deserialize, Serialize};
 
     #[derive(Serialize, Deserialize)]
     struct Config(ByteCount<true>);

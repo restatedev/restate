@@ -29,7 +29,7 @@ restate-errors = { workspace = true }
 restate-metadata-server = { workspace = true }
 restate-node = { workspace = true }
 restate-rocksdb = { workspace = true }
-restate-serde-util = { workspace = true }
+restate-util-bytecount = { workspace = true, features = ["serde"] }
 restate-service-client = { workspace = true }
 restate-types = { workspace = true }
 

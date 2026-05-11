@@ -1,5 +1,5 @@
 [package]
-name = "restate-serde-util"
+name = "restate-util-bytecount"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -9,24 +9,24 @@ publish = false
 
 [features]
 default = []
+serde = ["dep:serde_core"]
 schema = ["dep:schemars"]
-utoipa-schema = ["dep:utoipa"]
-proto = ["dep:prost", "dep:bytes"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
-bytes = { workspace = true, optional = true }
-http = { workspace = true }
-http-serde = { workspace = true }
-prost = { workspace = true, optional = true }
+restate-util-string = { workspace = true }
+
+bytesize = { workspace = true }
 schemars = { workspace = true, optional = true }
-serde = { workspace = true }
+serde_core = { workspace = true, optional = true }
 serde_with = { workspace = true }
-utoipa = { workspace = true, optional = true }
 
 [dev-dependencies]
+restate-util-bytecount = {path = ".", default-features = false, features = ["serde", "schema"]}
+
 serde_json = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 
 [lints]
 workspace = true

@@ -20,7 +20,7 @@ restate-limiter = { workspace = true, features = ["rule-book"]}
 restate-log-server = { workspace = true, features = ["expose-internals"] }
 restate-partition-store = { workspace = true }
 restate-rocksdb = { workspace = true }
-restate-serde-util = { workspace = true }
+restate-util-bytecount = { workspace = true, features = ["serde"] }
 restate-storage-api = { workspace = true }
 restate-time-util = { workspace = true }
 restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio"] }

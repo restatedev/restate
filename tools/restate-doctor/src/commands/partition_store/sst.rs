@@ -19,7 +19,7 @@ use comfy_table::{Color, Table};
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::{c_println, c_title};
 use restate_partition_store::keys::KeyKind;
-use restate_serde_util::ByteCount;
+use restate_util_bytecount::ByteCount;
 
 use crate::app::GlobalOpts;
 use crate::util::colorize::{color_legend, colorize_key_hex};

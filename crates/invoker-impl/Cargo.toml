@@ -20,7 +20,7 @@ restate-futures-util = { workspace = true }
 restate-memory = { workspace = true }
 restate-platform = { workspace = true }
 restate-queue = { workspace = true }
-restate-serde-util = { workspace = true }
+restate-util-bytecount = { workspace = true, features = ["serde"] }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["message", "codec"] }
 restate-service-protocol-v4 = { workspace = true, features = ["message-codec", "entry-codec"] }

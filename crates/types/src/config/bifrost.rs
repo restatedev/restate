@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tracing::warn;
 
-use restate_serde_util::{ByteCount, NonZeroByteCount};
 use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
+use restate_util_bytecount::{ByteCount, NonZeroByteCount};
 
 use crate::logs::metadata::{NodeSetSize, ProviderKind};
 use crate::net::connect_opts::MESSAGE_SIZE_OVERHEAD;
