@@ -20,7 +20,6 @@ use restate_util_bytecount::ByteCount;
 use tokio::time::Instant;
 use tracing::{debug, warn};
 
-use restate_time_util::DurationExt;
 use restate_types::errors::{
     BoxedMaybeRetryableError, GenericError, IntoMaybeRetryable, MaybeRetryableError,
 };
@@ -31,6 +30,7 @@ use restate_types::retries::RetryPolicy;
 use restate_types::schema::Schema;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode, StorageEncodeError};
 use restate_types::{Version, Versioned};
+use restate_util_time::DurationExt;
 
 use crate::metric_definitions::{
     METADATA_CLIENT_GET_DURATION, METADATA_CLIENT_GET_TOTAL, METADATA_CLIENT_GET_VERSION_DURATION,

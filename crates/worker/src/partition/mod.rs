@@ -58,7 +58,6 @@ use restate_storage_api::fsm_table::{
 };
 use restate_storage_api::outbox_table::ReadOutboxTable;
 use restate_storage_api::{StorageError, Transaction};
-use restate_time_util::DurationExt;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
 use restate_types::config::Configuration;
 use restate_types::epoch::EpochMetadata;
@@ -82,6 +81,7 @@ use restate_types::storage::StorageDecodeError;
 use restate_types::time::{MillisSinceEpoch, NanosSinceEpoch};
 use restate_types::{GenerationalNodeId, SemanticRestateVersion, Version};
 use restate_util_string::{ReString, ToReString};
+use restate_util_time::DurationExt;
 use restate_vqueues::{VQueuesMeta, VQueuesMetaCache};
 use restate_wal_protocol::control::{
     AnnounceLeaderCommand, CurrentReplicaSetConfiguration, NextReplicaSetConfiguration,

@@ -12,7 +12,7 @@ use std::num::NonZeroUsize;
 
 use serde::{Deserialize, Serialize};
 
-use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
+use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
 
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder, PartialEq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]

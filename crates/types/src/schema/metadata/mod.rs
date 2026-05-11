@@ -25,8 +25,8 @@ use serde_json::Value;
 use serde_with::serde_as;
 
 use restate_serde_util::MapAsVecItem;
-use restate_time_util::FriendlyDuration;
 use restate_util_bytecount::ByteCount;
+use restate_util_time::FriendlyDuration;
 
 use crate::config::{Configuration, InvocationRetryPolicyOptions};
 use crate::deployment::{

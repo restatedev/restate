@@ -35,7 +35,7 @@ restate-serde-util = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol-v4 = { workspace = true, features = ["discovery", "serdes"] }
 restate-storage-query-datafusion = { workspace = true }
-restate-time-util = { workspace = true }
+restate-util-time = { workspace = true }
 restate-types = { workspace = true }
 restate-util-string = { workspace = true }
 restate-wal-protocol = { workspace = true }

@@ -13,8 +13,8 @@ use std::num::NonZeroUsize;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use restate_time_util::FriendlyDuration;
 use restate_util_bytecount::NonZeroByteCount;
+use restate_util_time::FriendlyDuration;
 
 #[serde_as]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, derive_builder::Builder, PartialEq)]

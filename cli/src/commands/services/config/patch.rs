@@ -16,7 +16,7 @@ use const_format::concatcp;
 use restate_admin_rest_model::services::ModifyServiceRequest;
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
-use restate_time_util::{DurationExt, FriendlyDuration};
+use restate_util_time::{DurationExt, FriendlyDuration};
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface};

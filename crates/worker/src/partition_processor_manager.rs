@@ -55,7 +55,6 @@ use restate_partition_store::snapshots::{
     PartitionSnapshotStatus, SnapshotPartitionTask, SnapshotRepository,
 };
 use restate_partition_store::{SnapshotError, SnapshotErrorKind};
-use restate_time_util::DurationExt;
 use restate_types::GenerationalNodeId;
 use restate_types::cluster::cluster_state::ReplayStatus;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
@@ -81,6 +80,7 @@ use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::retries::with_jitter;
 use restate_util_string::format_restring;
+use restate_util_time::DurationExt;
 use restate_wal_protocol::Envelope;
 use restate_worker_api::invoker::capacity::InvokerCapacity;
 use restate_worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};

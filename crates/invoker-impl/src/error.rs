@@ -20,7 +20,6 @@ use tokio::task::JoinError;
 use restate_memory::OutOfMemoryKind;
 use restate_service_client::ServiceClientError;
 use restate_service_protocol::message::{EncodingError, MessageType};
-use restate_time_util::FriendlyDuration;
 use restate_types::errors::{IdDecodeError, InvocationError, InvocationErrorCode, codes};
 use restate_types::identifiers::DeploymentId;
 use restate_types::journal::raw::RawEntryCodecError;
@@ -33,6 +32,7 @@ use restate_types::service_protocol::{
 };
 use restate_util_bytecount::NonZeroByteCount;
 use restate_util_string::RestrictedValueError;
+use restate_util_time::FriendlyDuration;
 use restate_worker_api::invoker::{InvocationErrorReport, InvocationReaderError};
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]

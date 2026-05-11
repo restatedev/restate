@@ -14,8 +14,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
-use restate_time_util::FriendlyDuration;
 use restate_types::schema::service::ServiceMetadata;
+use restate_util_time::FriendlyDuration;
 
 /// List of all registered services.
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]

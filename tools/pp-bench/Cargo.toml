@@ -22,7 +22,7 @@ restate-partition-store = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-util-bytecount = { workspace = true, features = ["serde"] }
 restate-storage-api = { workspace = true }
-restate-time-util = { workspace = true }
+restate-util-time = { workspace = true }
 restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio"] }
 restate-types = { workspace = true, features = ["clap"] }
 restate-util-string = { workspace = true }

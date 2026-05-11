@@ -42,7 +42,6 @@ use restate_errors::warn_it;
 use restate_memory::{ByteCount, LocalMemoryPool, MemoryLease, MemoryPool, OutOfMemoryKind};
 use restate_queue::SegmentQueue;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
-use restate_time_util::DurationExt;
 use restate_types::config::{Configuration, InvokerOptions, ServiceClientOptions};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::PartitionId;
@@ -58,6 +57,7 @@ use restate_types::live::{Live, LiveLoad};
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::sharding::KeyRange;
+use restate_util_time::DurationExt;
 use restate_worker_api::invoker::capacity::TokenBucket;
 use restate_worker_api::invoker::invocation_reader::InvocationReader;
 use restate_worker_api::invoker::{
@@ -1782,7 +1782,6 @@ mod tests {
     use restate_memory::OutOfMemoryKind;
     use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
     use restate_test_util::check;
-    use restate_time_util::FriendlyDuration;
     use restate_types::config::InvokerOptionsBuilder;
     use restate_types::deployment::{DeploymentAddress, Headers};
     use restate_types::errors::{InvocationError, codes};
@@ -1802,6 +1801,7 @@ mod tests {
     use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_types::vqueues::VQueueId;
     use restate_util_bytecount::NonZeroByteCount;
+    use restate_util_time::FriendlyDuration;
     use restate_worker_api::invoker::InvokerHandle;
 
     use crate::error::{InvocationMemoryExhausted, InvokerError, SdkInvocationErrorV2};

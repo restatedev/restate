@@ -29,13 +29,13 @@ use restate_metadata_store::MetadataStoreClient;
 use restate_service_client::HttpClient;
 use restate_service_protocol_v4::discovery::ServiceDiscovery;
 use restate_service_protocol_v4::serdes::SerdesClient;
-use restate_time_util::DurationExt;
 use restate_types::config::AdminOptions;
 use restate_types::invocation::client::InvocationClient;
 use restate_types::live::LiveLoad;
 use restate_types::net::address::AdminPort;
 use restate_types::net::listener::Listeners;
 use restate_types::schema::registry::SchemaRegistry;
+use restate_util_time::DurationExt;
 
 use crate::rest_api::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
 use crate::schema_registry_integration::{MetadataService, TelemetryClient};

@@ -24,8 +24,8 @@ use restate_storage_api::vqueue_table::{
     EntryKey, EntryValue, VQueueCursor, VQueueRunningCursor, VQueueStore,
 };
 use restate_storage_api::{StorageError, vqueue_table};
-use restate_time_util::DurationExt;
 use restate_types::vqueues::VQueueId;
+use restate_util_time::DurationExt;
 
 use super::UnconfirmedAssignments;
 

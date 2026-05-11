@@ -17,12 +17,12 @@ use bytes::Bytes;
 use futures::FutureExt;
 use tokio::sync::oneshot;
 
-use restate_time_util::DurationExt;
 use restate_types::net::address::AdvertisedAddress;
 use restate_types::net::address::FabricPort;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::{ProtocolVersion, RpcResponse};
 use restate_types::{GenerationalNodeId, Version};
+use restate_util_time::DurationExt;
 
 use super::protobuf::network::{Header, rpc_reply};
 use super::{ConnectionClosed, MessageSendError};

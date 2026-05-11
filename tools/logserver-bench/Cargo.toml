@@ -20,7 +20,7 @@ restate-log-server = { workspace = true, features = ["expose-internals"] }
 restate-memory = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-util-bytecount = { workspace = true, features = ["serde"] }
-restate-time-util = { workspace = true }
+restate-util-time = { workspace = true }
 restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio"] }
 restate-types = { workspace = true, features = ["clap"] }
 

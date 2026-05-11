@@ -11,8 +11,8 @@
 use std::path::PathBuf;
 
 use restate_cli_util::CommonOpts;
-use restate_time_util::FriendlyDuration;
 use restate_types::config::CommonOptionCliOverride;
+use restate_util_time::FriendlyDuration;
 
 pub mod metrics_server;
 pub mod mixed_workload;

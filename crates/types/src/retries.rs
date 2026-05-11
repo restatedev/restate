@@ -16,7 +16,7 @@ use std::future::Future;
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
-use restate_time_util::FriendlyDuration;
+use restate_util_time::FriendlyDuration;
 
 use rand::Rng;
 

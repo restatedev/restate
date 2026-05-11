@@ -31,7 +31,7 @@ restate-admin-rest-model = { workspace = true }
 restate-cli-util = { workspace = true }
 restate-cloud-tunnel-client = { workspace = true }
 restate-serde-util = { workspace = true }
-restate-time-util = { workspace = true }
+restate-util-time = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-types = { workspace = true }
 restate-lite = { workspace = true, optional = true }
