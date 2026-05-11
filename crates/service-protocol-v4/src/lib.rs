@@ -24,6 +24,8 @@ pub mod serdes;
 // service protocol messages. Otherwise, crates depending only on this feature fail clippy.
 #[allow(dead_code)]
 pub mod proto {
+    use restate_types::errors::ConversionError;
+    use restate_util_string::{ReString, RestrictedValue, ToReString};
 
     include!(concat!(env!("OUT_DIR"), "/dev.restate.service.protocol.rs"));
 
@@ -40,6 +42,39 @@ pub mod proto {
         AttachInvocationCommandMessage,
         GetInvocationOutputCommandMessage
     );
+
+    #[inline]
+    pub fn proto_limit_key_to_limit_key(
+        value: Option<LimitKey>,
+    ) -> Result<restate_types::LimitKey<ReString>, ConversionError> {
+        Ok(match value {
+            None => restate_types::LimitKey::None,
+            Some(LimitKey { l1, l2: None }) => restate_types::LimitKey::l1(
+                RestrictedValue::new(l1.to_restring()).map_err(ConversionError::invalid_data)?,
+            ),
+            Some(LimitKey { l1, l2: Some(l2) }) => restate_types::LimitKey::l2(
+                RestrictedValue::new(l1.to_restring()).map_err(ConversionError::invalid_data)?,
+                RestrictedValue::new(l2.to_restring()).map_err(ConversionError::invalid_data)?,
+            ),
+        })
+    }
+
+    #[inline]
+    pub fn limit_key_to_proto_limit_key(
+        value: &restate_types::LimitKey<ReString>,
+    ) -> Option<LimitKey> {
+        match value {
+            restate_types::LimitKey::None => None,
+            restate_types::LimitKey::L1(l1) => Some(LimitKey {
+                l1: l1.to_string(),
+                l2: None,
+            }),
+            restate_types::LimitKey::L2(l1, l2) => Some(LimitKey {
+                l1: l1.to_string(),
+                l2: Some(l2.to_string()),
+            }),
+        }
+    }
 
     mod pb_conversion {
         use restate_types::{

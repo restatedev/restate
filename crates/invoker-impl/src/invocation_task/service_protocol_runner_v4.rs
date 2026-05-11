@@ -34,6 +34,7 @@ use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_service_protocol_v4::message_codec::{
     Decoder, Encoder, Message, MessageHeader, MessageType, StateEntry, proto,
 };
+use restate_service_protocol_v4::proto::proto_limit_key_to_limit_key;
 use restate_service_protocol_v4::proto_lite;
 use restate_tracing_instrumentation::ServiceSpan;
 use restate_types::Scope;
@@ -57,7 +58,7 @@ use restate_types::limit_key::LimitKey;
 use restate_types::schema::deployment::{Deployment, DeploymentType, ProtocolType};
 use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
 use restate_types::service_protocol::ServiceProtocolVersion;
-use restate_util_string::{ReString, RestateString, RestrictedValue};
+use restate_util_string::{RestateString, RestrictedValue};
 use restate_worker_api::invoker::JournalMetadata;
 use restate_worker_api::invoker::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
@@ -1485,7 +1486,7 @@ pub struct InvokeRequest {
     key: ByteString,
     idempotency_key: Option<ByteString>,
     scope: Option<String>,
-    limit_key: Option<String>,
+    limit_key: Option<proto::LimitKey>,
     span_relation: SpanRelation,
     parameter: Bytes,
 }
@@ -1551,13 +1552,9 @@ fn resolve_call_request(
     } else {
         None
     };
-    let limit_key: LimitKey<ReString> = if let Some(limit_key) = request.limit_key {
-        limit_key
-            .parse()
-            .map_err(|_| CommandPreconditionError::InvalidLimitKey)?
-    } else {
-        LimitKey::None
-    };
+
+    let limit_key = proto_limit_key_to_limit_key(request.limit_key)
+        .map_err(|_| CommandPreconditionError::InvalidLimitKey)?;
 
     // Validate invariant: limit_key requires scope
     if !limit_key.is_empty() && invocation_target.scope().is_none() {

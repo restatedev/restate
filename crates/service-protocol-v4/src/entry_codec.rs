@@ -36,13 +36,13 @@ use restate_types::journal_v2::raw::{
     CallOrSendMetadata, RawCommand, RawCommandSpecificMetadata, RawEntry, RawNotification,
     RawNotificationResultVariant,
 };
-use restate_types::{LimitKey, Scope, journal_v2::*};
+use restate_types::{Scope, journal_v2::*};
 use restate_util_string::RestateString;
 
 use crate::proto;
 use crate::proto::{
-    complete_awakeable_command_message, notification_template, output_command_message,
-    send_signal_command_message,
+    complete_awakeable_command_message, limit_key_to_proto_limit_key, notification_template,
+    output_command_message, proto_limit_key_to_limit_key, send_signal_command_message,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -143,11 +143,7 @@ impl Encoder for ServiceProtocolV4Codec {
                         .to_string(),
                     idempotency_key: idempotency_key.map(|s| s.to_string()),
                     scope: invocation_target.scope().map(ToString::to_string),
-                    limit_key: if limit_key == LimitKey::None {
-                        None
-                    } else {
-                        Some(limit_key.to_string())
-                    },
+                    limit_key: limit_key_to_proto_limit_key(&limit_key),
                     name: name.to_string(),
                     invocation_id_notification_idx: invocation_id_completion_id,
                     result_completion_id,
@@ -195,11 +191,7 @@ impl Encoder for ServiceProtocolV4Codec {
                         .to_string(),
                     idempotency_key: idempotency_key.map(|s| s.to_string()),
                     scope: invocation_target.scope().map(ToString::to_string),
-                    limit_key: if limit_key == LimitKey::None {
-                        None
-                    } else {
-                        Some(limit_key.to_string())
-                    },
+                    limit_key: limit_key_to_proto_limit_key(&limit_key),
                     name: name.to_string(),
                     invocation_id_notification_idx: invocation_id_completion_id,
                 }
@@ -747,11 +739,8 @@ impl Decoder for ServiceProtocolV4Codec {
                             idempotency_key: idempotency_key.map(|s| s.into()),
                             completion_retention_duration: metadata.completion_retention_duration,
                             journal_retention_duration: metadata.journal_retention_duration,
-                            limit_key: if let Some(limit_key) = limit_key {
-                                limit_key.parse().map_err(GenericError::from)?
-                            } else {
-                                LimitKey::None
-                            },
+                            limit_key: proto_limit_key_to_limit_key(limit_key)
+                                .map_err(GenericError::from)?,
                         },
                         invocation_id_completion_id: invocation_id_notification_idx,
                         result_completion_id,
@@ -785,11 +774,8 @@ impl Decoder for ServiceProtocolV4Codec {
                             idempotency_key: idempotency_key.map(|s| s.into()),
                             completion_retention_duration: metadata.completion_retention_duration,
                             journal_retention_duration: metadata.journal_retention_duration,
-                            limit_key: if let Some(limit_key) = limit_key {
-                                limit_key.parse().map_err(GenericError::from)?
-                            } else {
-                                LimitKey::None
-                            },
+                            limit_key: proto_limit_key_to_limit_key(limit_key)
+                                .map_err(GenericError::from)?,
                         },
                         invoke_time: invoke_time.into(),
                         invocation_id_completion_id: invocation_id_notification_idx,

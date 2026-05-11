@@ -18,6 +18,7 @@ mod encoding;
 mod header;
 
 pub use crate::proto;
+use crate::proto::limit_key_to_proto_limit_key;
 pub(crate) use encoding::default_encode_decode;
 pub use encoding::{
     Decoder, Encoder, EncodingError, MessageEncodingError, ServiceWireDecoder, ServiceWireEncoder,
@@ -408,11 +409,7 @@ impl Message {
             duration_since_last_stored_entry: duration_since_last_stored_entry.as_millis() as u64,
             random_seed,
             scope: scope.map(|scope| scope.to_string()),
-            limit_key: if limit_key == &LimitKey::None {
-                None
-            } else {
-                Some(limit_key.to_string())
-            },
+            limit_key: limit_key_to_proto_limit_key(limit_key),
             idempotency_key: idempotency_key.map(|value| value.to_string()),
         })
     }
