@@ -28,7 +28,6 @@ mod state_machine;
 pub mod types;
 
 use std::fmt::Debug;
-use std::ops::RangeBounds;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -64,7 +63,9 @@ use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStat
 use restate_types::config::Configuration;
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::LeaderEpoch;
-use restate_types::logs::{KeyFilter, Lsn, Record, SequenceNumber};
+use restate_types::logs::{
+    KeyFilter, Keys, Lsn, MatchKeyQuery, Record, RecordDecodeError, SequenceNumber,
+};
 use restate_types::net::ingest::{
     DedupSequenceNrQueryRequest, DedupSequenceNrQueryResponse, ReceivedIngestRequest,
     ResponseStatus,
@@ -85,7 +86,8 @@ use restate_vqueues::{VQueuesMeta, VQueuesMetaCache};
 use restate_wal_protocol::control::{
     AnnounceLeaderCommand, CurrentReplicaSetConfiguration, NextReplicaSetConfiguration,
 };
-use restate_wal_protocol::{Command, Destination, Envelope, Header};
+use restate_wal_protocol::v2::commands;
+use restate_wal_protocol::{Envelope, v2};
 use restate_worker_api::invoker::capacity::InvokerCapacity;
 use restate_worker_api::{LeaderQueryCommand, LeaderQueryReceiver};
 
@@ -241,6 +243,7 @@ impl PartitionProcessorBuilder {
         let last_applied_log_lsn_watch = watch::Sender::new(Lsn::INVALID);
 
         Ok(PartitionProcessor {
+            key_filter: KeyFilter::Within(partition_store.partition_key_range().into()),
             partition_id_str,
             leadership_state,
             state_machine,
@@ -319,6 +322,7 @@ pub struct PartitionProcessor<T> {
 
     last_applied_log_lsn_watch: watch::Sender<Lsn>,
     cached_epoch_metadata: Option<CachedEpochMetadata>,
+    key_filter: KeyFilter,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -368,8 +372,9 @@ pub enum ProcessorError {
 
 struct LsnEnvelope {
     pub lsn: Lsn,
+    pub keys: Keys,
     pub created_at: NanosSinceEpoch,
-    pub envelope: Arc<Envelope>,
+    pub envelope: Arc<v2::Envelope<v2::Raw>>,
 }
 
 /// OrderedOperations are scheduled operations that
@@ -428,6 +433,33 @@ where
         }
 
         res
+    }
+
+    /// Decode record tries to decode the record first as v2 Envelope, if it failed,
+    /// it decodes as v1 Envelope then converts into v2.
+    fn decode_record(record: Record) -> Result<Arc<v2::Envelope<v2::Raw>>, StorageDecodeError> {
+        let envelope = match record.decode_arc::<v2::Envelope<v2::Raw>>() {
+            Ok(envelope) => envelope,
+            Err(RecordDecodeError::TypedValueMismatch(v1_envelope)) => {
+                let v1_envelope: Arc<Envelope> = v1_envelope
+                    .downcast_arc()
+                    .map_err(|_| StorageDecodeError::DecodeValue("Type mismatch. Record value in PolyBytes::Typed does not match requested type".into()))?;
+
+                let v1_envelope = match Arc::try_unwrap(v1_envelope) {
+                    Ok(v1_envelope) => v1_envelope,
+                    Err(arc) => arc.as_ref().clone(),
+                };
+
+                let envelope: v2::Envelope<v2::Raw> = v1_envelope
+                    .try_into()
+                    .map_err(|err: anyhow::Error| StorageDecodeError::DecodeValue(err.into()))?;
+
+                Arc::new(envelope)
+            }
+            Err(RecordDecodeError::StorageDecodeError(err)) => return Err(err),
+        };
+
+        Ok(envelope)
     }
 
     async fn run_inner(&mut self) -> Result<(), ProcessorError> {
@@ -625,8 +657,9 @@ where
 
                         let record = LsnEnvelope {
                             lsn,
+                            keys: record.keys().clone(),
                             created_at: record.created_at(),
-                            envelope: record.decode_arc()?,
+                            envelope: Self::decode_record(record)?,
                         };
 
                         let maybe_announce_leader = self.apply_record(
@@ -996,37 +1029,55 @@ where
         action_collector: &mut ActionCollector,
         vqueues_cache: &mut VQueuesMetaCache,
     ) -> Result<Option<Box<AnnounceLeaderCommand>>, state_machine::Error> {
-        trace!(lsn = %record.lsn, "Processing bifrost record for '{}': {:?}", record.envelope.command.name(), record.envelope.header);
+        trace!(lsn = %record.lsn, "Processing bifrost record for '{}': {:?}", record.envelope.kind(), record.envelope.header());
 
-        if let Some(dedup_information) = self.is_targeted_to_me(&record.envelope.header) {
-            // deduplicate if deduplication information has been provided
-            if let Some(dedup_information) = dedup_information {
-                if Self::is_outdated_or_duplicate(dedup_information, transaction).await? {
-                    debug!(
-                        "Ignoring outdated or duplicate message: {:?}",
-                        record.envelope.header
-                    );
-                    return Ok(None);
-                }
-                transaction
-                    .put_dedup_seq_number(
-                        dedup_information.producer_id.clone(),
-                        &dedup_information.sequence_number,
-                    )
-                    .map_err(state_machine::Error::Storage)?;
+        if !self.is_targeted_to_me(&record.keys) {
+            self.status.num_skipped_records += 1;
+            trace!(
+                "Ignore message which is not targeted to me Partition Range: {:?} Key: {:?}, Header: {:?}",
+                self.key_filter,
+                record.keys,
+                record.envelope.header()
+            );
+            return Ok(None);
+        }
+
+        // todo(azmy): use dedup() directly without first converting to DedupInformation
+        let dedup_information: Option<DedupInformation> = record.envelope.dedup().clone().into();
+
+        // deduplicate if deduplication information has been provided
+        if let Some(dedup_information) = dedup_information {
+            if Self::is_outdated_or_duplicate(&dedup_information, transaction).await? {
+                debug!(
+                    "Ignoring outdated or duplicate message: {:?}",
+                    record.envelope.header()
+                );
+                return Ok(None);
             }
+            transaction
+                .put_dedup_seq_number(
+                    dedup_information.producer_id.clone(),
+                    &dedup_information.sequence_number,
+                )
+                .map_err(state_machine::Error::Storage)?;
+        }
 
-            // todo: redesign to pass the arc (or reference) further down
-            let record_created_at = record.created_at;
-            let record_lsn = record.lsn;
-            let envelope = Arc::unwrap_or_clone(record.envelope);
+        // todo: redesign to pass the arc (or reference) further down
+        let record_created_at = record.created_at;
+        let record_lsn = record.lsn;
+        // note: v2 envelope is cheaply clonable since it holds either `Bytes` or
+        // Arc of the payload record.
+        let envelope = Arc::unwrap_or_clone(record.envelope);
 
-            if let Command::AnnounceLeader(announce_leader) = envelope.command {
-                // leadership change detected, let's finish our transaction here
-                return Ok(Some(announce_leader));
-            } else if let Command::UpdatePartitionDurability(partition_durability) =
-                envelope.command
-            {
+        match envelope.kind() {
+            v2::CommandKind::AnnounceLeader => {
+                let envelope = envelope.into_typed::<commands::AnnounceLeaderCommand>();
+                let announce_leader = envelope.into_inner()?;
+                return Ok(Some(Box::new(announce_leader)));
+            }
+            v2::CommandKind::UpdatePartitionDurability => {
+                let envelope = envelope.into_typed::<commands::UpdatePartitionDurabilityCommand>();
+                let partition_durability = envelope.into_inner()?;
                 if partition_durability.partition_id != self.partition_store.partition_id() {
                     self.status.num_skipped_records += 1;
                     trace!(
@@ -1044,10 +1095,11 @@ where
                 if self.trim_queue.push(&partition_durability) {
                     transaction.put_partition_durability(&partition_durability)?;
                 }
-            } else {
+            }
+            _ => {
                 self.state_machine
                     .apply(
-                        envelope.command,
+                        envelope,
                         record_created_at.into(),
                         record_lsn,
                         transaction,
@@ -1057,31 +1109,13 @@ where
                     )
                     .await?;
             }
-        } else {
-            self.status.num_skipped_records += 1;
-            trace!(
-                "Ignore message which is not targeted to me: {:?}",
-                record.envelope.header
-            );
         }
 
         Ok(None)
     }
 
-    fn is_targeted_to_me<'a>(&self, header: &'a Header) -> Option<&'a Option<DedupInformation>> {
-        match &header.dest {
-            Destination::Processor {
-                partition_key,
-                dedup,
-            } if self
-                .partition_store
-                .partition_key_range()
-                .contains(partition_key) =>
-            {
-                Some(dedup)
-            }
-            _ => None,
-        }
+    fn is_targeted_to_me(&self, keys: &Keys) -> bool {
+        keys.matches_key_query(&self.key_filter)
     }
 
     async fn is_outdated_or_duplicate(

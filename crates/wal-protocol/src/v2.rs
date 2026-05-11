@@ -375,7 +375,6 @@ where
     C: Command + HasRecordKeys,
 {
     fn from(command: C) -> PartialEnvelope {
-        // let payload = payload.into();
         PartialEnvelope {
             kind: C::KIND,
             keys: command.record_keys(),

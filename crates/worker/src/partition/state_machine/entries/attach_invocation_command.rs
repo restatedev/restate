@@ -55,7 +55,7 @@ mod tests {
         AttachInvocationCommand, AttachInvocationCompletion, AttachInvocationResult,
         AttachInvocationTarget, CommandType, Entry, EntryMetadata, EntryType, NotificationId,
     };
-    use restate_wal_protocol::Command;
+    use restate_wal_protocol::v2::{Command, commands};
     use rstest::rstest;
 
     #[rstest]
@@ -83,7 +83,7 @@ mod tests {
         let actions = test_env
             .apply_multiple([
                 invoker_entry_effect(invocation_id, attach_invocation_command.clone()),
-                Command::InvocationResponse(InvocationResponse {
+                commands::InvocationResponseCommand::test_envelope(InvocationResponse {
                     target: JournalCompletionTarget::from_parts(invocation_id, completion_id),
                     result: ResponseResult::Success(success_result.clone()),
                 }),
