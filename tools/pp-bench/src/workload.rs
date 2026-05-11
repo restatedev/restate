@@ -66,12 +66,17 @@ pub async fn run(
     // -----------------------------------------------------------------------
     let mut pool = if let Some(ref path) = opts.command_file {
         c_println!("Loading commands from {}", path.display());
+        let start_time = MillisSinceEpoch::now();
         let loaded = command_gen::load_commands_from_file(path)?;
-        c_println!("Command pool: {} commands loaded", loaded.commands.len());
+        c_println!(
+            "Command pool: {} commands loaded (took: {}ms)",
+            loaded.envelopes.len(),
+            start_time.elapsed().as_millis()
+        );
         if let Some(ref lsns) = loaded.lsns {
-            CommandPool::with_lsns(loaded.commands, lsns.clone())
+            CommandPool::with_lsns(loaded.envelopes, lsns.clone())
         } else {
-            CommandPool::new(loaded.commands)
+            CommandPool::new(loaded.envelopes)
         }
     } else {
         let total_needed = opts.warmup + opts.num_commands;
@@ -143,7 +148,7 @@ pub async fn run(
             let mut txn = partition_store.transaction();
             let batch_cmds = (batch_size as u64).min(warmup - cmds_applied);
             for _ in 0..batch_cmds {
-                let (cmd, _real_lsn) = pool.next_command();
+                let (cmd, _real_lsn) = pool.next_envelope();
                 state_machine
                     .apply(
                         cmd,
@@ -181,7 +186,7 @@ pub async fn run(
 
         let mut txn = partition_store.transaction();
         for _ in 0..batch_cmds {
-            let (cmd, _real_lsn) = pool.next_command();
+            let (cmd, _real_lsn) = pool.next_envelope();
             state_machine
                 .apply(
                     cmd,

@@ -57,7 +57,7 @@ mod tests {
         GetInvocationOutputCommand, GetInvocationOutputCompletion, GetInvocationOutputResult,
         NotificationId,
     };
-    use restate_wal_protocol::Command;
+    use restate_wal_protocol::v2::{Command, commands};
     use rstest::rstest;
 
     #[rstest]
@@ -90,12 +90,14 @@ mod tests {
             completion_id,
         };
         let response_command = if complete_using_notify_get_invocation_output {
-            Command::NotifyGetInvocationOutputResponse(GetInvocationOutputResponse {
-                target: JournalCompletionTarget::from_parts(invocation_id, completion_id),
-                result: expected_get_invocation_result.clone(),
-            })
+            commands::NotifyGetInvocationOutputResponseCommand::test_envelope(
+                GetInvocationOutputResponse {
+                    target: JournalCompletionTarget::from_parts(invocation_id, completion_id),
+                    result: expected_get_invocation_result.clone(),
+                },
+            )
         } else {
-            Command::InvocationResponse(InvocationResponse {
+            commands::InvocationResponseCommand::test_envelope(InvocationResponse {
                 target: JournalCompletionTarget::from_parts(invocation_id, completion_id),
                 result: if complete_with_not_ready {
                     ResponseResult::Failure(NOT_READY_INVOCATION_ERROR)
