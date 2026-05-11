@@ -432,7 +432,7 @@ mod tests {
     };
     use restate_types::journal_v2::{CallCommand, CallRequest};
     use restate_types::{RESTATE_VERSION_1_6_0, SemanticRestateVersion};
-    use restate_wal_protocol::Command;
+    use restate_wal_protocol::v2::{Command, commands};
 
     #[restate_core::test]
     async fn update_journal_and_commands_length() {
@@ -484,13 +484,15 @@ mod tests {
         );
 
         let _ = test_env
-            .apply(Command::InvocationResponse(InvocationResponse {
-                target: JournalCompletionTarget {
-                    caller_id: invocation_id,
-                    caller_completion_id: result_completion_id,
+            .apply(commands::InvocationResponseCommand::test_envelope(
+                InvocationResponse {
+                    target: JournalCompletionTarget {
+                        caller_id: invocation_id,
+                        caller_completion_id: result_completion_id,
+                    },
+                    result: ResponseResult::Success(success_result.clone()),
                 },
-                result: ResponseResult::Success(success_result.clone()),
-            }))
+            ))
             .await;
         assert_that!(
             test_env

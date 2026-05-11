@@ -28,7 +28,7 @@ mod tail;
 
 pub use loglet::*;
 pub use offset_watch::*;
-pub use record::{CustomRecordEncoding, Record};
+pub use record::{CustomRecordEncoding, Record, RecordDecodeError};
 pub use record_cache::RecordCache;
 pub use tail::*;
 
