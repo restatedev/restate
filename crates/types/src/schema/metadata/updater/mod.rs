@@ -445,6 +445,7 @@ impl SchemaUpdater {
                 created_at: MillisSinceEpoch::now(),
                 metadata,
                 services: computed_services,
+                limits: discovery_response.limits.map(Into::into),
             },
         );
 
@@ -682,6 +683,7 @@ impl SchemaUpdater {
                     ),
                     delivery_options: DeliveryOptions::new(additional_headers),
                     sdk_version: discovery_response.sdk_version,
+                    limits: discovery_response.limits.map(Into::into),
 
                     // We keep these the same
                     id: deployment_id,
@@ -787,6 +789,7 @@ impl SchemaUpdater {
                     supported_protocol_versions: discovery_response.supported_protocol_versions,
                     sdk_version: discovery_response.sdk_version,
                     services: computed_services,
+                    limits: discovery_response.limits.map(Into::into),
 
                     // We keep only these same as before
                     id: deployment_id,

@@ -45,6 +45,7 @@ pub struct DiscoveryResponse {
     pub supported_protocol_versions: RangeInclusive<i32>,
     pub sdk_version: Option<String>,
     pub services: Vec<endpoint_manifest::Service>,
+    pub limits: Option<endpoint_manifest::EndpointLimits>,
 }
 
 pub trait DiscoveryClient {
@@ -76,6 +77,7 @@ mod mocks {
                     ..=MAX_DISCOVERABLE_SERVICE_PROTOCOL_VERSION.as_repr(),
                 sdk_version: None,
                 services,
+                limits: None,
             }
         }
     }

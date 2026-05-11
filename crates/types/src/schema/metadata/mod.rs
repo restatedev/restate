@@ -59,7 +59,7 @@ use crate::schema::subscriptions::{
 use crate::schema::{Redaction, deployment, service};
 use crate::service_protocol::ServiceProtocolVersion;
 use crate::time::MillisSinceEpoch;
-use crate::{Version, Versioned, identifiers};
+use crate::{Version, Versioned, endpoint_manifest, identifiers};
 
 /// Serializable data structure representing the schema registry
 ///
@@ -171,6 +171,23 @@ impl DeliveryOptions {
     }
 }
 
+/// Since v1.7.0
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct DeploymentLimits {
+    /// Maximum number of concurrent invocations per node for this deployment.
+    /// A value of 0 means unlimited.
+    #[serde(default)]
+    pub invocations: u64,
+}
+
+impl From<endpoint_manifest::EndpointLimits> for DeploymentLimits {
+    fn from(value: endpoint_manifest::EndpointLimits) -> Self {
+        Self {
+            invocations: value.invocations.unwrap_or_default(),
+        }
+    }
+}
+
 #[serde_as]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Deployment {
@@ -188,6 +205,9 @@ struct Deployment {
 
     #[serde_as(as = "restate_serde_util::MapAsVec")]
     services: HashMap<String, Arc<ServiceRevision>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limits: Option<DeploymentLimits>,
 }
 
 impl MapAsVecItem for Deployment {
@@ -209,6 +229,7 @@ impl Deployment {
             metadata: self.metadata.clone(),
             additional_headers: self.delivery_options.additional_headers.clone(),
             info: vec![],
+            limits: self.limits.map(Into::into),
         }
     }
     /// This returns true if the two deployments are to be considered the "same".

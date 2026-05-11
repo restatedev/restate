@@ -38,6 +38,24 @@ pub enum ProtocolType {
     BidiStream,
 }
 
+/// Since v1.7.0
+#[derive(Debug, Clone, Copy)]
+pub struct DeploymentLimits {
+    /// Maximum number of concurrent invocations per node for this deployment.
+    /// A value of 0 means unlimited.
+    ///
+    /// Since v1.7.0
+    pub invocations: u64,
+}
+
+impl From<super::metadata::DeploymentLimits> for DeploymentLimits {
+    fn from(value: super::metadata::DeploymentLimits) -> Self {
+        Self {
+            invocations: value.invocations,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Deployment {
@@ -54,6 +72,8 @@ pub struct Deployment {
     ///
     /// List of configuration/deprecation information related to this deployment.
     pub info: Vec<SchemaInfo>,
+    /// Since v1.7.0
+    pub limits: Option<DeploymentLimits>,
 }
 
 impl Deployment {
@@ -366,6 +386,7 @@ pub mod test_util {
                 metadata: Default::default(),
                 additional_headers: Default::default(),
                 info: vec![],
+                limits: None,
             }
         }
 
@@ -386,6 +407,7 @@ pub mod test_util {
                 metadata: Default::default(),
                 additional_headers: Default::default(),
                 info: vec![],
+                limits: None,
             }
         }
     }

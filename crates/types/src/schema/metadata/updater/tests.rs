@@ -209,6 +209,7 @@ fn add_deployment_request(services: Vec<endpoint_manifest::Service>) -> AddDeplo
             supported_protocol_versions: (MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION as i32)
                 ..=(MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION as i32),
             sdk_version: None,
+            limits: None,
             services,
         },
         allow_breaking_changes: AllowBreakingChanges::No,
@@ -232,6 +233,7 @@ fn update_deployment_request(
             supported_protocol_versions: (MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION as i32)
                 ..=(MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION as i32),
             sdk_version: None,
+            limits: None,
             services,
         },
         overwrite: Overwrite::No,
@@ -254,6 +256,45 @@ fn register_new_deployment() {
     schema.assert_service_revision(GREETER_SERVICE_NAME, 1);
     schema.assert_service_deployment(GREETER_SERVICE_NAME, new_deployment_id);
     schema.assert_invocation_target(GREETER_SERVICE_NAME, "greet");
+}
+
+#[test]
+fn deployment_limits_round_trip_and_update() {
+    let mut updater = SchemaUpdater::default();
+
+    // 1. Add a deployment that advertises a limit.
+    let mut add_req = add_deployment_request(vec![greeter_service()]);
+    add_req.discovery_response.limits = Some(endpoint_manifest::EndpointLimits {
+        invocations: Some(42),
+    });
+    let deployment_id = updater.add_deployment(add_req).unwrap().1;
+
+    let read_limit = |updater: &SchemaUpdater| {
+        updater
+            .schema
+            .get_deployment(&deployment_id)
+            .unwrap()
+            .limits
+            .map(|l| l.invocations)
+    };
+    assert_eq!(read_limit(&updater), Some(42));
+
+    // 2. Update with Overwrite::No still updated limits
+    let mut update_request = update_deployment_request(deployment_id, vec![greeter_service()]);
+    update_request.discovery_response.limits = Some(endpoint_manifest::EndpointLimits {
+        invocations: Some(100),
+    });
+    updater.update_deployment(update_request).unwrap();
+    assert_eq!(read_limit(&updater), Some(100));
+
+    // 3. Update with Overwrite::Yes and a new limit: the new value applies.
+    let mut update_req = update_deployment_request(deployment_id, vec![greeter_service()]);
+    update_req.overwrite = Overwrite::Yes;
+    update_req.discovery_response.limits = Some(endpoint_manifest::EndpointLimits {
+        invocations: Some(7),
+    });
+    updater.update_deployment(update_req).unwrap();
+    assert_eq!(read_limit(&updater), Some(7));
 }
 
 #[test]
@@ -2123,6 +2164,7 @@ mod endpoint_manifest_options_propagation {
                         supported_protocol_versions: (MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION as i32)
                             ..=(MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION as i32),
                         sdk_version: None,
+                        limits: None,
                         services: vec![endpoint_manifest::Service {
                             inactivity_timeout: Some(60 * 1000), // 60 seconds
                             ..greeter_service()
