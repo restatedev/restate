@@ -26,8 +26,24 @@
     },
     "lambdaCompression": {
       "type": "string",
-      "enum": ["zstd"],
+      "enum": [
+        "zstd"
+      ],
       "description": "Compression used when the endpoint is a Lambda. This is unsupported if the endpoint is a regular HTTP endpoint."
+    },
+    "limits": {
+      "type": "object",
+      "description": "Global deployment limits",
+      "required": [
+        "invocations"
+      ],
+      "properties": {
+        "invocations": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum number of concurrent invocations. 0 means unlimited (equivalent to omitting the field)."
+        }
+      }
     },
     "services": {
       "type": "array",
@@ -152,54 +168,54 @@
                   "minimum": 0,
                   "description": "Inactivity timeout duration, expressed in milliseconds."
                 },
-                "abortTimeout":  {
+                "abortTimeout": {
                   "type": "integer",
                   "minimum": 0,
                   "description": "Abort timeout duration, expressed in milliseconds."
                 },
-                "journalRetention":  {
+                "journalRetention": {
                   "type": "integer",
                   "minimum": 0,
                   "description": "Journal retention duration, expressed in milliseconds."
                 },
-                "idempotencyRetention":  {
+                "idempotencyRetention": {
                   "type": "integer",
                   "minimum": 0,
                   "description": "Idempotency retention duration, expressed in milliseconds. This is NOT VALID when HandlerType == WORKFLOW"
                 },
-                "workflowCompletionRetention":  {
+                "workflowCompletionRetention": {
                   "type": "integer",
                   "minimum": 0,
                   "description": "Workflow completion retention duration, expressed in milliseconds. This is valid ONLY when HandlerType == WORKFLOW"
                 },
-                "enableLazyState":  {
+                "enableLazyState": {
                   "type": "boolean",
                   "description": "If true, lazy state is enabled."
                 },
-                "ingressPrivate":  {
+                "ingressPrivate": {
                   "type": "boolean",
                   "description": "If true, the service cannot be invoked from the HTTP nor Kafka ingress."
                 },
-                "retryPolicyInitialInterval":  {
+                "retryPolicyInitialInterval": {
                   "type": "integer",
                   "minimum": 0,
                   "description": "Retry policy initial interval, expressed in milliseconds."
                 },
-                "retryPolicyMaxInterval":  {
+                "retryPolicyMaxInterval": {
                   "type": "integer",
                   "minimum": 0,
                   "description": "Retry policy max interval, expressed in milliseconds."
                 },
-                "retryPolicyMaxAttempts":  {
+                "retryPolicyMaxAttempts": {
                   "type": "integer",
                   "minimum": 0,
                   "description": "Retry policy max attempts."
                 },
-                "retryPolicyExponentiationFactor":  {
+                "retryPolicyExponentiationFactor": {
                   "type": "number",
                   "description": "Retry policy exponentiation factor."
                 },
-                "retryPolicyOnMaxAttempts":  {
+                "retryPolicyOnMaxAttempts": {
                   "title": "RetryPolicyOnMaxAttempts",
                   "enum": [
                     "PAUSE",
@@ -226,49 +242,49 @@
             "minimum": 0,
             "description": "Inactivity timeout duration, expressed in milliseconds."
           },
-          "abortTimeout":  {
+          "abortTimeout": {
             "type": "integer",
             "minimum": 0,
             "description": "Abort timeout duration, expressed in milliseconds."
           },
-          "journalRetention":  {
+          "journalRetention": {
             "type": "integer",
             "minimum": 0,
             "description": "Journal retention duration, expressed in milliseconds."
           },
-          "idempotencyRetention":  {
+          "idempotencyRetention": {
             "type": "integer",
             "minimum": 0,
             "description": "Idempotency retention duration, expressed in milliseconds. When ServiceType == WORKFLOW, this option will be applied only to the shared handlers. See workflowCompletionRetention for more details."
           },
-          "enableLazyState":  {
+          "enableLazyState": {
             "type": "boolean",
             "description": "If true, lazy state is enabled."
           },
-          "ingressPrivate":  {
+          "ingressPrivate": {
             "type": "boolean",
             "description": "If true, the service cannot be invoked from the HTTP nor Kafka ingress."
           },
-          "retryPolicyInitialInterval":  {
+          "retryPolicyInitialInterval": {
             "type": "integer",
             "minimum": 0,
             "description": "Retry policy initial interval, expressed in milliseconds."
           },
-          "retryPolicyMaxInterval":  {
+          "retryPolicyMaxInterval": {
             "type": "integer",
             "minimum": 0,
             "description": "Retry policy max interval, expressed in milliseconds."
           },
-          "retryPolicyMaxAttempts":  {
+          "retryPolicyMaxAttempts": {
             "type": "integer",
             "minimum": 0,
             "description": "Retry policy max attempts."
           },
-          "retryPolicyExponentiationFactor":  {
+          "retryPolicyExponentiationFactor": {
             "type": "number",
             "description": "Retry policy exponentiation factor."
           },
-          "retryPolicyOnMaxAttempts":  {
+          "retryPolicyOnMaxAttempts": {
             "title": "RetryPolicyOnMaxAttempts",
             "enum": [
               "PAUSE",

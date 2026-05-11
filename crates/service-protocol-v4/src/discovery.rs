@@ -430,6 +430,7 @@ impl ServiceDiscovery {
             // version yet.
             supported_protocol_versions: min_version..=max_version,
             sdk_version,
+            limits: endpoint_response.limits,
         })
     }
 
@@ -522,6 +523,7 @@ mod tests {
             max_protocol_version: NonZeroU64::MAX,
             services: Vec::new(),
             protocol_mode: Some(ProtocolMode::BidiStream),
+            limits: None,
         };
 
         assert!(matches!(
@@ -543,6 +545,7 @@ mod tests {
             max_protocol_version: NonZeroU64::MIN,
             services: Vec::new(),
             protocol_mode: Some(ProtocolMode::BidiStream),
+            limits: None,
         };
 
         assert!(matches!(
@@ -570,6 +573,7 @@ mod tests {
             max_protocol_version: NonZeroU64::MAX,
             services: Vec::new(),
             protocol_mode: Some(ProtocolMode::BidiStream),
+            limits: None,
         };
 
         assert!(matches!(
@@ -591,6 +595,7 @@ mod tests {
             max_protocol_version: NonZeroU64::new(9).unwrap(),
             services: Vec::new(),
             protocol_mode: Some(ProtocolMode::BidiStream),
+            limits: None,
         };
 
         assert!(matches!(
@@ -613,6 +618,7 @@ mod tests {
             max_protocol_version: NonZeroU64::new(unsupported_version as u64).unwrap(),
             services: Vec::new(),
             protocol_mode: Some(ProtocolMode::BidiStream),
+            limits: None,
         };
 
         assert_that!(
