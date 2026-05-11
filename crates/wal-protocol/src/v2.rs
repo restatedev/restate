@@ -26,8 +26,8 @@ use restate_util_string::ReString;
 
 use crate::v1;
 
+pub mod commands;
 mod compatibility;
-pub mod records;
 
 mod sealed {
     pub trait Sealed {}
@@ -41,7 +41,7 @@ pub struct Header {
     dedup: Dedup,
     /// Payload record kind
     #[bilrost(2)]
-    kind: RecordKind,
+    kind: CommandKind,
     /// Payload codec
     #[bilrost(3)]
     codec: Option<StorageCodecKind>,
@@ -52,7 +52,7 @@ impl Header {
         &self.dedup
     }
 
-    pub fn kind(&self) -> RecordKind {
+    pub fn kind(&self) -> CommandKind {
         self.kind
     }
 }
@@ -67,19 +67,19 @@ pub struct Envelope<R> {
     _p: PhantomData<R>,
 }
 
-impl<R> Envelope<R> {
+impl<C> Envelope<C> {
     pub fn header(&self) -> &Header {
         &self.header
     }
 }
 
-impl<R: Record> Envelope<R> {
-    pub fn new(dedup: Dedup, payload: impl Into<Arc<R::Payload>>) -> Self {
+impl<C: Command> Envelope<C> {
+    pub fn new(dedup: Dedup, payload: impl Into<Arc<C>>) -> Self {
         let payload = payload.into();
         Self {
             header: Header {
                 dedup,
-                kind: R::KIND,
+                kind: C::KIND,
                 codec: Some(payload.default_codec()),
             },
             payload: PolyBytes::Typed(payload),
@@ -88,7 +88,7 @@ impl<R: Record> Envelope<R> {
     }
 }
 
-impl<R: Send + Sync + 'static> StorageEncode for Envelope<R> {
+impl<C: Send + Sync + 'static> StorageEncode for Envelope<C> {
     fn default_codec(&self) -> StorageCodecKind {
         StorageCodecKind::Custom
     }
@@ -150,7 +150,7 @@ impl StorageDecode for Envelope<Raw> {
 impl Envelope<Raw> {
     /// Converts Raw Envelope into a Typed envelope. Panics
     /// if the record kind does not match the M::KIND
-    pub fn into_typed<M: Record>(self) -> Envelope<M> {
+    pub fn into_typed<M: Command>(self) -> Envelope<M> {
         assert_eq!(self.header.kind, M::KIND);
 
         let Self {
@@ -165,18 +165,18 @@ impl Envelope<Raw> {
     }
 }
 
-impl<M: Record> Envelope<M>
+impl<C: Command> Envelope<C>
 where
-    M::Payload: Clone,
+    C: Clone,
 {
     /// return the envelope payload
-    pub fn split(self) -> Result<(Header, M::Payload), StorageDecodeError> {
+    pub fn split(self) -> Result<(Header, C), StorageDecodeError> {
         let payload = match self.payload {
             PolyBytes::Bytes(mut bytes) => {
-                M::Payload::decode(&mut bytes, self.header.codec.expect("has codec kind"))?
+                C::decode(&mut bytes, self.header.codec.expect("has codec kind"))?
             }
             PolyBytes::Both(typed, _) | PolyBytes::Typed(typed) => {
-                let typed = typed.downcast_arc::<M::Payload>().map_err(|_| {
+                let typed = typed.downcast_arc::<C>().map_err(|_| {
                     StorageDecodeError::DecodeValue("Type mismatch. Original value in PolyBytes::Typed does not match requested type".into())
                 })?;
 
@@ -190,12 +190,12 @@ where
         Ok((self.header, payload))
     }
 
-    pub fn into_inner(self) -> Result<M::Payload, StorageDecodeError> {
+    pub fn into_inner(self) -> Result<C, StorageDecodeError> {
         self.split().map(|v| v.1)
     }
 }
 
-impl<M: Record> Envelope<M> {
+impl<C: Command> Envelope<C> {
     pub fn into_raw(self) -> Envelope<Raw> {
         Envelope {
             header: self.header,
@@ -205,8 +205,8 @@ impl<M: Record> Envelope<M> {
     }
 }
 
-impl<M: Record> From<Envelope<M>> for Envelope<Raw> {
-    fn from(value: Envelope<M>) -> Self {
+impl<C: Command> From<Envelope<C>> for Envelope<Raw> {
+    fn from(value: Envelope<C>) -> Self {
         value.into_raw()
     }
 }
@@ -216,7 +216,7 @@ impl<M: Record> From<Envelope<M>> for Envelope<Raw> {
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, bilrost::Enumeration, strum::Display, strum::IntoStaticStr,
 )]
-pub enum RecordKind {
+pub enum CommandKind {
     Unknown = 0,
 
     AnnounceLeader = 1,
@@ -322,14 +322,14 @@ pub enum Dedup {
 
 /// A partial type-erased envelope mainly used for writing records.
 /// It carries the payload part with Keys.
-pub struct PartialRecord {
-    kind: RecordKind,
+pub struct PartialEnvelope {
+    kind: CommandKind,
     keys: Keys,
     payload: Arc<dyn StorageEncode>,
 }
 
-impl PartialRecord {
-    pub fn kind(&self) -> RecordKind {
+impl PartialEnvelope {
+    pub fn kind(&self) -> CommandKind {
         self.kind
     }
 
@@ -351,66 +351,35 @@ impl PartialRecord {
 
         BodyWithKeys::new(inner, self.keys)
     }
-
-    /// Extract the typed payload back from the [`PartialRecord`]
-    #[cfg(any(test, feature = "test-util"))]
-    pub fn unwrap<R: Record>(self) -> R::Payload {
-        assert_eq!(R::KIND, self.kind, "Record kind mismatch");
-        let typed = self
-            .payload
-            .downcast_arc::<R::Payload>()
-            .map_err(|_| ())
-            .expect("record kind to match");
-
-        Arc::into_inner(typed).expect("sole owner of the payload")
-    }
 }
 
 /// Marker trait implemented by strongly-typed representations of WAL record
 /// payloads.
-pub trait Record: sealed::Sealed + Sized {
-    const KIND: RecordKind;
-    type Payload: StorageEncode + StorageDecode + 'static;
+pub trait Command: sealed::Sealed + StorageEncode + StorageDecode + Sized {
+    const KIND: CommandKind;
 
-    /// Create an envelope with `this` record kind
-    /// given the header, keys and payload
-    fn envelope(dedup: Dedup, payload: impl Into<Self::Payload>) -> Envelope<Self> {
-        Envelope::new(dedup, payload.into())
+    fn envelope(self, dedup: Dedup) -> Envelope<Self> {
+        Envelope::new(dedup, self)
     }
 
     /// Creates a new test envelope. Shortcut for new(Source::Ingress, Dedup::None, payload)
     #[cfg(any(test, feature = "test-util"))]
-    fn test_envelope(payload: impl Into<Self::Payload>) -> Envelope<Raw> {
-        let record = Self::envelope(Dedup::None, payload);
+    fn test_envelope(payload: impl Into<Self>) -> Envelope<Raw> {
+        let record = Envelope::new(Dedup::None, payload.into());
         record.into_raw()
     }
 }
 
-pub trait RecordWithKeys: Record {
-    fn partial(payload: impl Into<Self::Payload>) -> PartialRecord;
-    fn partial_arc(payload: impl Into<Arc<Self::Payload>>) -> PartialRecord;
-}
-
-impl<T> RecordWithKeys for T
+impl<C> From<C> for PartialEnvelope
 where
-    T: Record,
-    T::Payload: HasRecordKeys,
+    C: Command + HasRecordKeys,
 {
-    fn partial(payload: impl Into<Self::Payload>) -> PartialRecord {
-        let payload = payload.into();
-        PartialRecord {
-            kind: T::KIND,
-            keys: payload.record_keys(),
-            payload: Arc::new(payload),
-        }
-    }
-
-    fn partial_arc(payload: impl Into<Arc<Self::Payload>>) -> PartialRecord {
-        let payload = payload.into();
-        PartialRecord {
-            kind: T::KIND,
-            keys: payload.record_keys(),
-            payload,
+    fn from(command: C) -> PartialEnvelope {
+        // let payload = payload.into();
+        PartialEnvelope {
+            kind: C::KIND,
+            keys: command.record_keys(),
+            payload: Arc::new(command),
         }
     }
 }
@@ -424,15 +393,15 @@ mod test {
         GenerationalNodeId, logs::Keys, sharding::KeyRange, storage::StorageCodec,
     };
 
-    use super::{Dedup, records};
+    use super::Dedup;
     use crate::{
-        control::AnnounceLeader,
-        v2::{Envelope, Raw, Record, RecordKind, RecordWithKeys},
+        control::AnnounceLeaderCommand,
+        v2::{CommandKind, Envelope, PartialEnvelope, Raw},
     };
 
     #[test]
     fn envelope_encode_decode() {
-        let payload = AnnounceLeader {
+        let payload = AnnounceLeaderCommand {
             leader_epoch: 11.into(),
             node_id: GenerationalNodeId::new(1, 3),
             partition_key_range: KeyRange::new(0, u64::MAX),
@@ -441,7 +410,7 @@ mod test {
             next_config: None,
         };
 
-        let envelope = records::AnnounceLeader::envelope(
+        let envelope = Envelope::new(
             Dedup::SelfProposal {
                 leader_epoch: 10.into(),
                 seq: 120,
@@ -454,8 +423,8 @@ mod test {
 
         let envelope: Envelope<Raw> = StorageCodec::decode(&mut buf).expect("to decode");
 
-        assert_eq!(envelope.kind(), RecordKind::AnnounceLeader);
-        let typed = envelope.into_typed::<records::AnnounceLeader>();
+        assert_eq!(envelope.kind(), CommandKind::AnnounceLeader);
+        let typed = envelope.into_typed::<AnnounceLeaderCommand>();
 
         let (_, loaded_payload) = typed.split().expect("to decode");
 
@@ -464,7 +433,7 @@ mod test {
 
     #[test]
     fn envelope_skip_encode() {
-        let payload = AnnounceLeader {
+        let payload = AnnounceLeaderCommand {
             leader_epoch: 11.into(),
             node_id: GenerationalNodeId::new(1, 3),
             partition_key_range: KeyRange::new(0, u64::MAX),
@@ -473,7 +442,7 @@ mod test {
             next_config: None,
         };
 
-        let envelope = records::AnnounceLeader::envelope(
+        let envelope = Envelope::new(
             Dedup::SelfProposal {
                 leader_epoch: 10.into(),
                 seq: 120,
@@ -485,8 +454,8 @@ mod test {
 
         let envelope = envelope.into_raw();
 
-        assert_eq!(envelope.kind(), RecordKind::AnnounceLeader);
-        let typed = envelope.into_typed::<records::AnnounceLeader>();
+        assert_eq!(envelope.kind(), CommandKind::AnnounceLeader);
+        let typed = envelope.into_typed::<AnnounceLeaderCommand>();
 
         let (_, loaded_payload) = typed.split().expect("to decode");
 
@@ -495,7 +464,7 @@ mod test {
 
     #[test]
     fn partial_envelope_with_keys() {
-        let payload = AnnounceLeader {
+        let payload = AnnounceLeaderCommand {
             leader_epoch: 11.into(),
             node_id: GenerationalNodeId::new(1, 3),
             partition_key_range: KeyRange::new(0, u64::MAX),
@@ -504,7 +473,7 @@ mod test {
             next_config: None,
         };
 
-        let envelope = records::AnnounceLeader::partial(payload.clone());
+        let envelope: PartialEnvelope = payload.clone().into();
 
         let keyed = envelope.build(Dedup::SelfProposal {
             leader_epoch: 10.into(),
@@ -517,8 +486,8 @@ mod test {
         );
 
         let envelope = keyed.into_inner();
-        assert_eq!(envelope.kind(), RecordKind::AnnounceLeader);
-        let envelope = envelope.into_typed::<records::AnnounceLeader>();
+        assert_eq!(envelope.kind(), CommandKind::AnnounceLeader);
+        let envelope = envelope.into_typed::<AnnounceLeaderCommand>();
 
         let (_, loaded_payload) = envelope.split().expect("to decode");
 
@@ -526,7 +495,7 @@ mod test {
     }
 
     #[track_caller]
-    fn assert_announce_leader_eq(expected: &AnnounceLeader, actual: &AnnounceLeader) {
+    fn assert_announce_leader_eq(expected: &AnnounceLeaderCommand, actual: &AnnounceLeaderCommand) {
         assert_eq!(expected.node_id, actual.node_id);
         assert_eq!(expected.leader_epoch, actual.leader_epoch);
         assert_eq!(expected.partition_key_range, actual.partition_key_range);

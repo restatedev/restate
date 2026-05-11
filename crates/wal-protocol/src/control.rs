@@ -26,7 +26,7 @@ use restate_types::{
 /// Announcing a new leader. This message can be written by any component to make the specified
 /// partition processor the leader.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message)]
-pub struct AnnounceLeader {
+pub struct AnnounceLeaderCommand {
     /// Sender of the announce leader message.
     ///
     /// This became non-optional in v1.5. Noting that it has always been set in previous versions,
@@ -60,9 +60,9 @@ pub struct AnnounceLeader {
     pub next_config: Option<NextReplicaSetConfiguration>,
 }
 
-bilrost_storage_encode_decode!(AnnounceLeader);
+bilrost_storage_encode_decode!(AnnounceLeaderCommand);
 
-impl HasRecordKeys for AnnounceLeader {
+impl HasRecordKeys for AnnounceLeaderCommand {
     fn record_keys(&self) -> Keys {
         Keys::RangeInclusive(self.partition_key_range.start()..=self.partition_key_range.end())
     }
@@ -161,7 +161,7 @@ fn new_replica_set_state(version: Version, node_set: &NodeSet) -> ReplicaSetStat
 /// minimum version of restate server that can progress after this command. It also updates the FSM
 /// in case command has been trimmed.
 #[derive(Debug, Clone, bilrost::Message, serde::Serialize, serde::Deserialize)]
-pub struct VersionBarrier {
+pub struct VersionBarrierCommand {
     /// The minimum version required (inclusive) to progress after this barrier.
     pub version: SemanticRestateVersion,
     /// A human-readable reason for why this barrier exists.
@@ -169,9 +169,9 @@ pub struct VersionBarrier {
     pub partition_key_range: Keys,
 }
 
-bilrost_storage_encode_decode!(VersionBarrier);
+bilrost_storage_encode_decode!(VersionBarrierCommand);
 
-impl HasRecordKeys for VersionBarrier {
+impl HasRecordKeys for VersionBarrierCommand {
     fn record_keys(&self) -> Keys {
         self.partition_key_range.clone()
     }
@@ -185,7 +185,7 @@ impl HasRecordKeys for VersionBarrier {
 ///
 /// Since v1.4.2.
 #[derive(Debug, Clone, bilrost::Message, serde::Serialize, serde::Deserialize)]
-pub struct PartitionDurability {
+pub struct UpdatePartitionDurabilityCommand {
     #[bilrost(tag(1))]
     pub partition_id: PartitionId,
     /// The partition has applied this LSN durably to the replica-set and/or has been
@@ -201,9 +201,9 @@ pub struct PartitionDurability {
     pub partition_key_range: Keys,
 }
 
-bilrost_storage_encode_decode!(PartitionDurability);
+bilrost_storage_encode_decode!(UpdatePartitionDurabilityCommand);
 
-impl HasRecordKeys for PartitionDurability {
+impl HasRecordKeys for UpdatePartitionDurabilityCommand {
     fn record_keys(&self) -> Keys {
         self.partition_key_range.clone()
     }
@@ -213,14 +213,14 @@ impl HasRecordKeys for PartitionDurability {
 ///
 /// Since v1.6.0.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct UpsertSchema {
+pub struct UpsertSchemaCommand {
     pub partition_key_range: Keys,
     pub schema: Schema,
 }
 
-flexbuffers_storage_encode_decode!(UpsertSchema);
+flexbuffers_storage_encode_decode!(UpsertSchemaCommand);
 
-impl HasRecordKeys for UpsertSchema {
+impl HasRecordKeys for UpsertSchemaCommand {
     fn record_keys(&self) -> Keys {
         self.partition_key_range.clone()
     }
@@ -242,7 +242,7 @@ impl HasRecordKeys for UpsertSchema {
 ///
 /// Since v1.7.0.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct UpsertRuleBook {
+pub struct UpsertRuleBookCommand {
     pub partition_key_range: KeyRange,
     pub rule_book: Bytes,
 }
