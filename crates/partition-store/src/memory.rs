@@ -16,9 +16,9 @@ use ahash::{HashMap, HashMapExt};
 use tracing::{info, trace, warn};
 
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
-use restate_serde_util::ByteCount;
 use restate_types::config::Configuration;
 use restate_types::identifiers::PartitionId;
+use restate_util_bytecount::ByteCount;
 
 use crate::{PartitionDb, SharedState};
 

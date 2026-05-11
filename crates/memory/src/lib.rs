@@ -26,4 +26,4 @@ pub use local_pool::{
 };
 pub use pinned_memory_stream::{IgnorePinnableMemoryStream, PinnableMapErr, PinnableMemoryStream};
 pub use pool::{MemoryLease, MemoryPool, PollMemoryPool};
-pub use restate_serde_util::{ByteCount, NonZeroByteCount};
+pub use restate_util_bytecount::{ByteCount, NonZeroByteCount};

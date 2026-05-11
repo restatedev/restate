@@ -41,7 +41,6 @@ use rand::rngs::StdRng;
 use rand::{Rng, RngCore, SeedableRng};
 
 use restate_cli_util::{c_println, c_success};
-use restate_serde_util::ByteCount;
 use restate_types::identifiers::{
     InvocationId, PartitionId, PartitionProcessorRpcRequestId, ServiceId, WithPartitionKey,
 };
@@ -51,6 +50,7 @@ use restate_types::invocation::{
 use restate_types::logs::Lsn;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::storage::StorageCodec;
+use restate_util_bytecount::ByteCount;
 use restate_wal_protocol::{Command, Destination, Envelope, Header};
 
 use crate::{GenerateOpts, InspectOpts, WorkloadSpec, WorkloadType};

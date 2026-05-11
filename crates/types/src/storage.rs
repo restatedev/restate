@@ -25,7 +25,7 @@ pub use restate_platform::storage::{
 
 use restate_encoding::BilrostAs;
 use restate_platform::memory::EstimatedMemorySize;
-use restate_serde_util::ByteCount;
+use restate_util_bytecount::ByteCount;
 use restate_util_string::format_restring;
 
 use crate::journal_v2::raw::{RawEntry, RawEntryError, TryFromEntry};

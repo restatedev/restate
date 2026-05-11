@@ -23,10 +23,10 @@ use tracing::{debug, info, instrument, warn};
 use restate_core::ShutdownError;
 use restate_rocksdb::configuration::{CfConfigurator, DbConfigurator};
 use restate_rocksdb::{DbName, RocksDb, RocksError};
-use restate_serde_util::ByteCount;
 use restate_types::config::Configuration;
 use restate_types::logs::Lsn;
 use restate_types::partitions::{CfName, Partition};
+use restate_util_bytecount::ByteCount;
 
 use crate::TableKind;
 use crate::durable_lsn_tracking::{AppliedLsnCollectorFactory, DurableLsnEventListener};

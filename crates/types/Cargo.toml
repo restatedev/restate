@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-schemars = ["dep:schemars", "adaptive-timeout/schemars", "restate-serde-util/schema", "restate-time-util/schema", "restate-clock/schemars"]
+schemars = ["dep:schemars", "adaptive-timeout/schemars", "restate-serde-util/schema", "restate-util-bytecount/schema", "restate-time-util/schema", "restate-clock/schemars"]
 utoipa-schema = ["dep:utoipa",]
 unsafe-mutable-config = []
 # Enables the tokio console subscriber and exposes its configuration
@@ -32,6 +32,7 @@ restate-serde-util = { workspace = true }
 restate-sharding = { workspace = true, features = ["serde", "bilrost"] }
 restate-test-util = { workspace = true, optional = true }
 restate-time-util = { workspace = true, features = ["serde", "serde_with"] }
+restate-util-bytecount = { workspace = true, features = ["serde"] }
 restate-util-string = { workspace = true, features = ["serde", "bilrost"] }
 restate-utoipa = { workspace = true }
 

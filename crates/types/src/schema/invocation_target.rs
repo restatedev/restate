@@ -17,7 +17,7 @@ use bytestring::ByteString;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
-use restate_serde_util::ByteCount;
+use restate_util_bytecount::ByteCount;
 
 use crate::identifiers::DeploymentId;
 use crate::invocation::{

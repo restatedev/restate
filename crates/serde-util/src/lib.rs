@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod byte_count;
 mod header_map;
 #[cfg(feature = "proto")]
 mod proto;
@@ -19,7 +18,6 @@ pub mod header_value;
 mod map_as_vec;
 mod version;
 
-pub use byte_count::*;
 pub use header_map::SerdeableHeaderHashMap;
 pub use header_name::HeaderNameSerde;
 pub use header_value::HeaderValueSerde;
