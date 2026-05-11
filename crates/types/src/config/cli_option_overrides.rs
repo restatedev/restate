@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 use serde_with::{serde_as, skip_serializing_none};
 
-use restate_time_util::NonZeroFriendlyDuration;
+use restate_util_time::NonZeroFriendlyDuration;
 
 use crate::PlainNodeId;
 use crate::locality::NodeLocation;

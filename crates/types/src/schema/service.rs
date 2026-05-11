@@ -15,7 +15,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde::Serialize;
 
-use restate_time_util::FriendlyDuration;
+use restate_util_time::FriendlyDuration;
 
 use crate::config::{DEFAULT_ABORT_TIMEOUT, DEFAULT_INACTIVITY_TIMEOUT};
 use crate::identifiers::{DeploymentId, ServiceRevision};

@@ -1309,7 +1309,7 @@ mod endpoint_manifest_options_propagation {
     use crate::schema::invocation_target::{InvocationAttemptOptions, InvocationTargetMetadata};
     use crate::schema::service::{HandlerMetadata, ServiceMetadata};
     use googletest::prelude::*;
-    use restate_time_util::FriendlyDuration;
+    use restate_util_time::FriendlyDuration;
     use std::time::Duration;
     use test_log::test;
 
@@ -2159,7 +2159,7 @@ mod modify_service {
     use crate::schema::invocation_target::{InvocationAttemptOptions, InvocationTargetMetadata};
     use crate::schema::service::ServiceMetadata;
     use googletest::prelude::*;
-    use restate_time_util::FriendlyDuration;
+    use restate_util_time::FriendlyDuration;
     use test_log::test;
 
     #[test]

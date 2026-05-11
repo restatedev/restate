@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tracing::warn;
 
-use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
+use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
 use restate_util_bytecount::{ByteCount, NonZeroByteCount};
 
 use super::{

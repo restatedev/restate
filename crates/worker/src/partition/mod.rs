@@ -58,7 +58,7 @@ use restate_storage_api::fsm_table::{
 };
 use restate_storage_api::outbox_table::ReadOutboxTable;
 use restate_storage_api::{StorageError, Transaction};
-use restate_time_util::DurationExt;
+use restate_util_time::DurationExt;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
 use restate_types::config::Configuration;
 use restate_types::epoch::EpochMetadata;

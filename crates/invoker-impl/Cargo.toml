@@ -24,7 +24,7 @@ restate-util-bytecount = { workspace = true, features = ["serde"] }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["message", "codec"] }
 restate-service-protocol-v4 = { workspace = true, features = ["message-codec", "entry-codec"] }
-restate-time-util = { workspace = true }
+restate-util-time = { workspace = true }
 restate-tracing-instrumentation = { workspace = true }
 restate-types = { workspace = true }
 restate-util-string = { workspace = true }

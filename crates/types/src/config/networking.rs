@@ -11,7 +11,7 @@
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
-use restate_time_util::NonZeroFriendlyDuration;
+use restate_util_time::NonZeroFriendlyDuration;
 use restate_util_bytecount::NonZeroByteCount;
 
 use serde::{Deserialize, Serialize};

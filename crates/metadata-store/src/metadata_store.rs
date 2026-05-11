@@ -20,7 +20,7 @@ use restate_util_bytecount::ByteCount;
 use tokio::time::Instant;
 use tracing::{debug, warn};
 
-use restate_time_util::DurationExt;
+use restate_util_time::DurationExt;
 use restate_types::errors::{
     BoxedMaybeRetryableError, GenericError, IntoMaybeRetryable, MaybeRetryableError,
 };

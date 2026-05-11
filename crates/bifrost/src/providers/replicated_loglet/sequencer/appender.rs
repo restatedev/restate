@@ -26,7 +26,7 @@ use restate_core::{
     Metadata, TaskCenterFutureExt,
     network::{Networking, TransportConnect},
 };
-use restate_time_util::DurationExt;
+use restate_util_time::DurationExt;
 use restate_types::replicated_loglet::Spread;
 use restate_types::retries::with_jitter;
 use restate_types::{

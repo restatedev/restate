@@ -15,7 +15,7 @@ use rocksdb::event_listener::{
 };
 use tracing::{debug, error, trace, warn};
 
-use restate_time_util::FriendlyDuration;
+use restate_util_time::FriendlyDuration;
 use restate_util_bytecount::ByteCount;
 
 use crate::DbName;

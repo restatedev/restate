@@ -13,7 +13,7 @@ use tracing::trace;
 
 use restate_core::network::{Oneshot, Reciprocal};
 use restate_memory::MemoryLease;
-use restate_time_util::DurationExt;
+use restate_util_time::DurationExt;
 use restate_types::GenerationalNodeId;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber as _, TailState};
 use restate_types::net::log_server::{Status, Stored};

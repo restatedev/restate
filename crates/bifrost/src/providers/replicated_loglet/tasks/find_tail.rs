@@ -17,7 +17,7 @@ use tracing::{Instrument, Span, debug, error, info, instrument, trace, warn};
 
 use restate_core::network::{NetworkSender, Networking, RpcError, Swimlane, TransportConnect};
 use restate_core::{Metadata, TaskCenter, TaskCenterFutureExt};
-use restate_time_util::DurationExt;
+use restate_util_time::DurationExt;
 use restate_types::cluster_state::ClusterState;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::SegmentIndex;

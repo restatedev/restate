@@ -13,7 +13,7 @@ use std::num::NonZeroU32;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
+use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder, PartialEq)]

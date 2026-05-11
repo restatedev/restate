@@ -34,7 +34,7 @@ use restate_limiter::RuleBook;
 use restate_partition_store::PartitionStoreManager;
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
-use restate_time_util::FriendlyDuration;
+use restate_util_time::FriendlyDuration;
 use restate_types::SemanticRestateVersion;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::{Lsn, SequenceNumber};

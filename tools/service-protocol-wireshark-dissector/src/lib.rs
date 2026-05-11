@@ -12,7 +12,7 @@ use bytes::Bytes;
 use mlua::prelude::*;
 use mlua::{Table, Value};
 use restate_service_protocol_v4::message_codec::{Decoder, Message, MessageType};
-use restate_time_util::DurationExt;
+use restate_util_time::DurationExt;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use std::num::NonZeroUsize;
 use std::time::Duration;

@@ -22,7 +22,7 @@ use restate_cli_util::c_println;
 use restate_cli_util::ui::console::{Styled, StyledTable};
 use restate_cli_util::ui::stylesheet::Style;
 use restate_rocksdb::{DbName, RocksDbManager};
-use restate_time_util::FriendlyDuration;
+use restate_util_time::FriendlyDuration;
 use restate_util_bytecount::ByteCount;
 
 // ---------------------------------------------------------------------------

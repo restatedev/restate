@@ -16,7 +16,7 @@ use std::time::Duration;
 use enumset::EnumSet;
 use serde_with::serde_as;
 
-use restate_time_util::FriendlyDuration;
+use restate_util_time::FriendlyDuration;
 use restate_types::config::Configuration;
 use restate_types::health::{
     AdminStatus, LogServerStatus, MetadataServerStatus, NodeStatus, WorkerStatus,

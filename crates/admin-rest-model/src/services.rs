@@ -14,7 +14,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
-use restate_time_util::FriendlyDuration;
+use restate_util_time::FriendlyDuration;
 use restate_types::schema::service::ServiceMetadata;
 
 /// List of all registered services.

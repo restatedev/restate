@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 use restate_serde_util::SerdeableHeaderHashMap;
-use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
+use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
 use restate_util_bytecount::NonZeroByteCount;
 
 use super::{

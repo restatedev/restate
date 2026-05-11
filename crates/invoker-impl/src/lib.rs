@@ -42,7 +42,7 @@ use restate_errors::warn_it;
 use restate_memory::{ByteCount, LocalMemoryPool, MemoryLease, MemoryPool, OutOfMemoryKind};
 use restate_queue::SegmentQueue;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
-use restate_time_util::DurationExt;
+use restate_util_time::DurationExt;
 use restate_types::config::{Configuration, InvokerOptions, ServiceClientOptions};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::PartitionId;
@@ -1782,7 +1782,7 @@ mod tests {
     use restate_memory::OutOfMemoryKind;
     use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
     use restate_test_util::check;
-    use restate_time_util::FriendlyDuration;
+    use restate_util_time::FriendlyDuration;
     use restate_types::config::InvokerOptionsBuilder;
     use restate_types::deployment::{DeploymentAddress, Headers};
     use restate_types::errors::{InvocationError, codes};

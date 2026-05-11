@@ -17,7 +17,7 @@ use bytes::Bytes;
 use futures::FutureExt;
 use tokio::sync::oneshot;
 
-use restate_time_util::DurationExt;
+use restate_util_time::DurationExt;
 use restate_types::net::address::AdvertisedAddress;
 use restate_types::net::address::FabricPort;
 use restate_types::net::metadata::MetadataKind;

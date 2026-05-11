@@ -1,5 +1,5 @@
 [package]
-name = "restate-time-util"
+name = "restate-util-time"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

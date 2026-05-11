@@ -17,7 +17,7 @@ restate-workspace-hack = { workspace = true }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-util-bytecount = { workspace = true, features = ["serde"] }
-restate-time-util = { workspace = true }
+restate-util-time = { workspace = true }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }

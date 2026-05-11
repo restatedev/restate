@@ -22,7 +22,7 @@ use tracing::{Span, debug, instrument, trace};
 use restate_core::network::net_util::{DNSResolution, create_tonic_channel};
 use restate_core::{Metadata, MetadataWriter};
 use restate_metadata_providers::replicated::KnownLeader;
-use restate_time_util::DurationExt;
+use restate_util_time::DurationExt;
 use restate_types::Version;
 use restate_types::config::Configuration;
 use restate_types::net::metadata::MetadataKind;

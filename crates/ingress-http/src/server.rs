@@ -27,7 +27,7 @@ use tower_http::trace::TraceLayer;
 use tracing::{Span, debug, info, info_span, instrument};
 
 use restate_core::{TaskCenter, TaskKind, cancellation_watcher};
-use restate_time_util::DurationExt;
+use restate_util_time::DurationExt;
 use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
