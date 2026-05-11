@@ -36,7 +36,7 @@ async fn run_send_with_delay(min_restate_version: SemanticRestateVersion) {
 
     let wake_up_time = MillisSinceEpoch::from(SystemTime::now() + Duration::from_secs(60));
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: None,
@@ -44,7 +44,7 @@ async fn run_send_with_delay(min_restate_version: SemanticRestateVersion) {
             // Doesn't matter the execution time here, just needs to be filled
             execution_time: Some(wake_up_time),
             ..ServiceInvocation::mock()
-        })))
+        }))
         .await;
     assert_that!(
         actions,
@@ -61,10 +61,9 @@ async fn run_send_with_delay(min_restate_version: SemanticRestateVersion) {
 
     // Now fire the timer
     let actions = test_env
-        .apply(Command::Timer(TimerKeyValue::neo_invoke(
-            wake_up_time,
-            invocation_id,
-        )))
+        .apply(commands::TimerCommand::test_envelope(
+            TimerKeyValue::neo_invoke(wake_up_time, invocation_id),
+        ))
         .await;
 
     assert_that!(
@@ -98,7 +97,7 @@ async fn send_with_delay_where_experimental_feature_journal_table_v2_is_enabled_
 
     let wake_up_time = MillisSinceEpoch::from(SystemTime::now() + Duration::from_secs(60));
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: None,
@@ -107,7 +106,7 @@ async fn send_with_delay_where_experimental_feature_journal_table_v2_is_enabled_
             // Doesn't matter the execution time here, just needs to be filled
             execution_time: Some(wake_up_time),
             ..ServiceInvocation::mock()
-        })))
+        }))
         .await;
     assert_that!(
         actions,
@@ -127,10 +126,9 @@ async fn send_with_delay_where_experimental_feature_journal_table_v2_is_enabled_
 
     // Now fire the timer
     let actions = test_env
-        .apply(Command::Timer(TimerKeyValue::neo_invoke(
-            wake_up_time,
-            invocation_id,
-        )))
+        .apply(commands::TimerCommand::test_envelope(
+            TimerKeyValue::neo_invoke(wake_up_time, invocation_id),
+        ))
         .await;
 
     assert_that!(
@@ -171,7 +169,7 @@ async fn send_with_delay_to_locked_virtual_object() {
 
     let wake_up_time = MillisSinceEpoch::from(SystemTime::now() + Duration::from_secs(60));
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: None,
@@ -179,7 +177,7 @@ async fn send_with_delay_to_locked_virtual_object() {
             // Doesn't matter the execution time here, just needs to be filled
             execution_time: Some(wake_up_time),
             ..ServiceInvocation::mock()
-        })))
+        }))
         .await;
     assert_that!(
         actions,
@@ -205,10 +203,9 @@ async fn send_with_delay_to_locked_virtual_object() {
 
     // Now fire the timer
     let actions = test_env
-        .apply(Command::Timer(TimerKeyValue::neo_invoke(
-            wake_up_time,
-            invocation_id,
-        )))
+        .apply(commands::TimerCommand::test_envelope(
+            TimerKeyValue::neo_invoke(wake_up_time, invocation_id),
+        ))
         .await;
 
     assert_that!(
@@ -256,7 +253,7 @@ async fn send_with_delay_and_idempotency_key() {
     ));
 
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             idempotency_key: Some(idempotency_key.clone()),
@@ -268,7 +265,7 @@ async fn send_with_delay_and_idempotency_key() {
             execution_time,
             source: Source::Ingress(request_id_1),
             ..ServiceInvocation::mock()
-        })))
+        }))
         .await;
     assert_that!(
         actions,
@@ -286,7 +283,7 @@ async fn send_with_delay_and_idempotency_key() {
     // Send another invocation which reattaches to the original one
     let request_id_2 = PartitionProcessorRpcRequestId::default();
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             idempotency_key: Some(idempotency_key),
@@ -298,7 +295,7 @@ async fn send_with_delay_and_idempotency_key() {
             execution_time: execution_time.map(|m| m + Duration::from_secs(10)),
             source: Source::Ingress(request_id_2),
             ..ServiceInvocation::mock()
-        })))
+        }))
         .await;
     assert_that!(
         actions,

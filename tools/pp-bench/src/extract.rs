@@ -19,6 +19,7 @@ use std::path::Path;
 
 use anyhow::{Context, bail};
 use bytes::BytesMut;
+use restate_wal_protocol::v2::{Envelope, Raw};
 use rocksdb::{ColumnFamilyDescriptor, DB, Options, SliceTransform};
 
 use restate_cli_util::{c_println, c_success, c_warn};
@@ -33,7 +34,6 @@ use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{LogId, LogletId, LogletOffset, Lsn, SequenceNumber};
 use restate_types::storage::StorageCodec;
-use restate_wal_protocol::Envelope;
 
 use crate::ExtractOpts;
 use crate::command_gen::ExtractedFileWriter;
@@ -343,7 +343,7 @@ fn extract_log_records(
             .map_err(|e| anyhow::anyhow!("Failed to encode record body at {offset}: {e}"))?;
 
         let mut cursor = std::io::Cursor::new(body_bytes.as_ref());
-        let envelope: Envelope = match StorageCodec::decode(&mut cursor) {
+        let envelope: Envelope<Raw> = match StorageCodec::decode(&mut cursor) {
             Ok(e) => e,
             Err(e) => {
                 c_warn!("Skipping record at offset {offset}: envelope decode error: {e}");
