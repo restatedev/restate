@@ -23,7 +23,7 @@ restate-cli-util = { workspace = true }
 restate-log-server = { workspace = true, features = ["expose-internals"] }
 restate-partition-store = { workspace = true }
 restate-rocksdb = { workspace = true }
-restate-serde-util = { workspace = true }
+restate-util-bytecount = { workspace = true, features = ["serde"] }
 restate-storage-api = { workspace = true }
 restate-types = { workspace = true }
 restate-wal-protocol = { workspace = true }

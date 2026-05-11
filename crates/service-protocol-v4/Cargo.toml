@@ -18,7 +18,7 @@ serdes = ["dep:serde_json", "dep:tracing", "dep:codederror", "dep:restate-errors
 restate-workspace-hack = { workspace = true }
 
 restate-errors = { workspace = true, optional = true }
-restate-serde-util = { workspace = true }
+restate-util-bytecount = { workspace = true, features = ["serde"] }
 restate-service-client = { workspace = true, optional = true }
 restate-util-string = { workspace = true }
 restate-types = { workspace = true }

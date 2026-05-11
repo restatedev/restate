@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tracing::warn;
 
-use restate_serde_util::{ByteCount, NonZeroByteCount};
 use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
+use restate_util_bytecount::{ByteCount, NonZeroByteCount};
 
 use super::{
     BackgroundWorkBudget, CommonOptions, DEFAULT_MESSAGE_SIZE_LIMIT, NetworkingOptions,
@@ -923,7 +923,7 @@ impl From<ThrottlingOptions> for gardal::Limit {
 mod serde_helpers {
     use std::num::NonZeroUsize;
 
-    use restate_serde_util::ByteCount;
+    use restate_util_bytecount::ByteCount;
 
     pub const fn default_compact_on_deletions_window() -> NonZeroUsize {
         // SAFETY: 1000 is non-zero

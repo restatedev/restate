@@ -13,7 +13,7 @@ use tracing::warn;
 
 use restate_platform::hash::HashMap;
 use restate_platform::sync::RwLock;
-use restate_serde_util::NonZeroByteCount;
+use restate_util_bytecount::NonZeroByteCount;
 
 use crate::MemoryPool;
 use crate::metric_definitions::{POOL_CAPACITY, POOL_USAGE};

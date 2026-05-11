@@ -9,13 +9,13 @@
 // by the Apache License, Version 2.0.
 
 use restate_storage_api::fsm_table::WriteFsmTable;
-use restate_wal_protocol::control::VersionBarrier;
+use restate_wal_protocol::control::VersionBarrierCommand;
 
 use crate::debug_if_leader;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub struct OnVersionBarrierCommand {
-    pub barrier: VersionBarrier,
+    pub barrier: VersionBarrierCommand,
 }
 
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
@@ -53,7 +53,7 @@ mod tests {
     use restate_types::logs::Keys;
     use restate_types::sharding::KeyRange;
     use restate_wal_protocol::Command;
-    use restate_wal_protocol::control::VersionBarrier;
+    use restate_wal_protocol::control::VersionBarrierCommand;
 
     use crate::partition::state_machine::StateMachine;
     use crate::partition::state_machine::tests::TestEnv;
@@ -83,7 +83,7 @@ mod tests {
         );
 
         let result = test_env
-            .apply_fallible(Command::VersionBarrier(VersionBarrier {
+            .apply_fallible(Command::VersionBarrier(VersionBarrierCommand {
                 version: SemanticRestateVersion::parse("99.0.0").unwrap(),
                 human_reason: Some("testing".to_string()),
                 partition_key_range: Keys::RangeInclusive(PartitionKey::MIN..=PartitionKey::MAX),
@@ -120,7 +120,7 @@ mod tests {
         let mut test_env = TestEnv::create_with_state_machine(state_machine).await;
 
         let result = test_env
-            .apply_fallible(Command::VersionBarrier(VersionBarrier {
+            .apply_fallible(Command::VersionBarrier(VersionBarrierCommand {
                 version: SemanticRestateVersion::current().clone(),
                 human_reason: Some("testing".to_string()),
                 partition_key_range: Keys::RangeInclusive(PartitionKey::MIN..=PartitionKey::MAX),
@@ -135,7 +135,7 @@ mod tests {
         }
         // re-apply the same version, no-op
         let result = test_env
-            .apply_fallible(Command::VersionBarrier(VersionBarrier {
+            .apply_fallible(Command::VersionBarrier(VersionBarrierCommand {
                 version: SemanticRestateVersion::current().clone(),
                 human_reason: Some("testing".to_string()),
                 partition_key_range: Keys::RangeInclusive(PartitionKey::MIN..=PartitionKey::MAX),
@@ -150,7 +150,7 @@ mod tests {
 
         // apply an older version, success but without effect.
         let result = test_env
-            .apply_fallible(Command::VersionBarrier(VersionBarrier {
+            .apply_fallible(Command::VersionBarrier(VersionBarrierCommand {
                 version: SemanticRestateVersion::parse("0.1.0").unwrap(),
                 human_reason: Some("testing".to_string()),
                 partition_key_range: Keys::RangeInclusive(PartitionKey::MIN..=PartitionKey::MAX),

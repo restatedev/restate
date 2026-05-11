@@ -14,7 +14,7 @@ use std::num::NonZeroUsize;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use restate_serde_util::NonZeroByteCount;
+use restate_util_bytecount::NonZeroByteCount;
 
 /// # Storage query engine options
 #[serde_as]

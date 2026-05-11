@@ -17,7 +17,7 @@ test-util = ["restate-types/test-util"]
 restate-workspace-hack = { workspace = true }
 
 restate-errors = { workspace = true, optional = true }
-restate-serde-util = { workspace = true }
+restate-util-bytecount = { workspace = true, features = ["serde"] }
 restate-types = { workspace = true, optional = true }
 
 bytes = { workspace = true }

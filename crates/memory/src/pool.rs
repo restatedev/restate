@@ -25,7 +25,7 @@ use std::task::Poll;
 use tokio::sync::Notify;
 use tokio::sync::futures::OwnedNotified;
 
-use restate_serde_util::{ByteCount, NonZeroByteCount};
+use restate_util_bytecount::{ByteCount, NonZeroByteCount};
 
 /// A memory budget that tracks and limits memory usage.
 ///

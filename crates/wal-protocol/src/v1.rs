@@ -22,7 +22,8 @@ use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
 
 use crate::control::{
-    AnnounceLeader, PartitionDurability, UpsertRuleBook, UpsertSchema, VersionBarrier,
+    AnnounceLeaderCommand, UpdatePartitionDurabilityCommand, UpsertRuleBookCommand,
+    UpsertSchemaCommand, VersionBarrierCommand,
 };
 use crate::timer::TimerKeyValue;
 
@@ -135,13 +136,13 @@ pub enum Command {
     /// See [`PartitionDurability`] for more details.
     ///
     /// *Since v1.4.2*
-    UpdatePartitionDurability(PartitionDurability),
+    UpdatePartitionDurability(UpdatePartitionDurabilityCommand),
     /// A version barrier to fence off state machine changes that require a certain minimum
     /// version of restate server.
     /// *Since v1.4.0*
-    VersionBarrier(VersionBarrier),
+    VersionBarrier(VersionBarrierCommand),
     // -- Control-plane related events
-    AnnounceLeader(Box<AnnounceLeader>),
+    AnnounceLeader(Box<AnnounceLeaderCommand>),
 
     // -- Partition processor commands
     /// Manual patching of storage state
@@ -188,12 +189,12 @@ pub enum Command {
 
     /// Upsert schema for consistent schema across replicas
     /// *Since v1.6.0
-    UpsertSchema(UpsertSchema),
+    UpsertSchema(UpsertSchemaCommand),
     /// Upsert the cluster-global rule book for consistent rules across
     /// replicas; the apply path persists it to the partition store and
     /// notifies the leader's `UserLimiter` of the diff.
     /// *Since v1.7.0
-    UpsertRuleBook(UpsertRuleBook),
+    UpsertRuleBook(UpsertRuleBookCommand),
     // # Commands for VQueues management
     // ----------------------------------
     /// A command to attempt a run an entry in the vqueue (invocation, or otherwise)

@@ -37,7 +37,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 
-use restate_serde_util::{ByteCount, NonZeroByteCount};
+use restate_util_bytecount::{ByteCount, NonZeroByteCount};
 use tokio::sync::Notify;
 use tokio::sync::futures::OwnedNotified;
 
