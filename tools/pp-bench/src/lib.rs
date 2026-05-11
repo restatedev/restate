@@ -11,9 +11,9 @@
 use std::path::PathBuf;
 
 use restate_cli_util::CommonOpts;
-use restate_serde_util::ByteCount;
 use restate_time_util::FriendlyDuration;
 use restate_types::config::CommonOptionCliOverride;
+use restate_util_bytecount::ByteCount;
 
 pub mod command_gen;
 pub mod command_pool;

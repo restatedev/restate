@@ -28,11 +28,11 @@ use restate_log_server::rocksdb_logstore::metadata_merge::{
 };
 use restate_log_server::rocksdb_logstore::record_format::DataRecordDecoder;
 use restate_log_server::rocksdb_logstore::{DATA_CF, METADATA_CF};
-use restate_serde_util::ByteCount;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{LogId, LogletId, LogletOffset, Lsn, SequenceNumber};
 use restate_types::storage::StorageCodec;
+use restate_util_bytecount::ByteCount;
 use restate_wal_protocol::v2::{Envelope, Raw};
 
 use crate::ExtractOpts;

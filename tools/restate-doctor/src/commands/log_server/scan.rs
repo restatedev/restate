@@ -20,9 +20,9 @@ use restate_cli_util::{c_println, c_title};
 use restate_log_server::rocksdb_logstore::DATA_CF;
 use restate_log_server::rocksdb_logstore::keys::{DataRecordKey, KeyPrefixKind};
 use restate_log_server::rocksdb_logstore::record_format::DataRecordDecoder;
-use restate_serde_util::ByteCount;
 use restate_types::logs::{LogId, LogletId, LogletOffset, Record, SequenceNumber};
 use restate_types::storage::StorageCodec;
+use restate_util_bytecount::ByteCount;
 use restate_wal_protocol::Envelope;
 
 use crate::app::GlobalOpts;

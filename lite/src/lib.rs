@@ -170,7 +170,7 @@ impl Restate {
 
         common_builder
             .roles(Role::Worker | Role::HttpIngress | Role::MetadataServer | Role::Admin)
-            .rocksdb_total_memory_size(restate_serde_util::NonZeroByteCount::from(
+            .rocksdb_total_memory_size(restate_util_bytecount::NonZeroByteCount::from(
                 opts.memory_budget,
             ))
             .node_name(Some("embedded".to_owned()))

@@ -789,8 +789,8 @@ mod tests {
     use crate::providers::memory_loglet::{self};
 
     // Helper to create a small byte count for testing
-    fn small_byte_limit(bytes: usize) -> restate_serde_util::NonZeroByteCount {
-        restate_serde_util::NonZeroByteCount::new(NonZeroUsize::new(bytes).unwrap())
+    fn small_byte_limit(bytes: usize) -> restate_util_bytecount::NonZeroByteCount {
+        restate_util_bytecount::NonZeroByteCount::new(NonZeroUsize::new(bytes).unwrap())
     }
 
     #[restate_core::test]

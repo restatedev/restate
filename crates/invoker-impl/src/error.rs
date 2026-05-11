@@ -18,7 +18,6 @@ use http::{HeaderName, HeaderValue};
 use tokio::task::JoinError;
 
 use restate_memory::OutOfMemoryKind;
-use restate_serde_util::NonZeroByteCount;
 use restate_service_client::ServiceClientError;
 use restate_service_protocol::message::{EncodingError, MessageType};
 use restate_time_util::FriendlyDuration;
@@ -32,6 +31,7 @@ use restate_types::service_protocol::{
     MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION, MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION,
     ServiceProtocolVersion,
 };
+use restate_util_bytecount::NonZeroByteCount;
 use restate_util_string::RestrictedValueError;
 use restate_worker_api::invoker::{InvocationErrorReport, InvocationReaderError};
 

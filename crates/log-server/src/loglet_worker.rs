@@ -25,11 +25,11 @@ use restate_core::task_center::TaskGuard;
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_token};
 use restate_futures_util::waiter_queue::WaiterQueue;
 use restate_platform::memory::EstimatedMemorySize;
-use restate_serde_util::ByteCount;
 use restate_types::GenerationalNodeId;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber, TailState};
 use restate_types::net::{RpcRequest, UnaryMessage, log_server::*};
 use restate_types::retries::with_jitter;
+use restate_util_bytecount::ByteCount;
 
 use crate::logstore::{LogStore, LogletWriter, WriteDisableReason};
 use crate::metadata::{IntrospectLogletWorker, LogletState, LogletWorkerState};

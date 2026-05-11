@@ -15,8 +15,8 @@ use async_trait::async_trait;
 use bytes::BytesMut;
 use bytestring::ByteString;
 use metrics::{counter, histogram};
-use restate_serde_util::ByteCount;
 use restate_types::config::Configuration;
+use restate_util_bytecount::ByteCount;
 use tokio::time::Instant;
 use tracing::{debug, warn};
 
