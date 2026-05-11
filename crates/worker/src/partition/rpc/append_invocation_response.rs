@@ -8,11 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
-use restate_types::identifiers::WithPartitionKey;
 use restate_types::invocation::InvocationResponse;
 use restate_types::net::partition_processor::PartitionProcessorRpcResponse;
-use restate_wal_protocol::Command;
+use restate_wal_protocol::v2::commands;
+
+use super::*;
 
 pub(super) struct Request {
     pub(super) invocation_response: InvocationResponse,
@@ -33,8 +33,7 @@ impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
     ) -> Result<(), Self::Error> {
         self.proposer
             .append_and_respond_asynchronously(
-                invocation_response.partition_key(),
-                Command::InvocationResponse(invocation_response),
+                commands::InvocationResponseCommand::from(invocation_response),
                 replier,
                 PartitionProcessorRpcResponse::Appended,
             )

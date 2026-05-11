@@ -436,57 +436,28 @@ where
     /// Decode record tries to decode the record first as v2 Envelope, if it failed,
     /// it decodes as v1 Envelope then converts into v2.
     fn decode_record(record: Record) -> Result<Arc<v2::Envelope<v2::Raw>>, StorageDecodeError> {
-        // TODO(azmy): We don't write v2 envelopes yet, so attempting v1 decoding first
-        // and then converting is currently faster. Once v2 envelopes start being written,
-        // the try_v1_first branch can be dropped entirely.
-        let try_v1_first = true;
-        if try_v1_first {
-            let envelope = match record.decode_arc::<Envelope>() {
-                Ok(v1_envelope) => {
-                    let v1_envelope = match Arc::try_unwrap(v1_envelope) {
-                        Ok(v1_envelope) => v1_envelope,
-                        Err(arc) => arc.as_ref().clone(),
-                    };
-
-                    let envelope: v2::Envelope<v2::Raw> =
-                        v1_envelope.try_into().map_err(|err: anyhow::Error| {
-                            StorageDecodeError::DecodeValue(err.into())
-                        })?;
-
-                    Arc::new(envelope)
-                }
-                Err(StorageDecodeError::TypedValueMismatch(v2_envelope)) => v2_envelope
+        let envelope = match record.decode_arc::<v2::Envelope<v2::Raw>>() {
+            Ok(envelope) => envelope,
+            Err(StorageDecodeError::TypedValueMismatch(v1_envelope)) => {
+                let v1_envelope: Arc<Envelope> = v1_envelope
                     .downcast_arc()
-                    .map_err(StorageDecodeError::TypedValueMismatch)?,
-                Err(err) => return Err(err),
-            };
+                    .map_err(StorageDecodeError::TypedValueMismatch)?;
 
-            Ok(envelope)
-        } else {
-            let envelope = match record.decode_arc::<v2::Envelope<v2::Raw>>() {
-                Ok(envelope) => envelope,
-                Err(StorageDecodeError::TypedValueMismatch(v1_envelope)) => {
-                    let v1_envelope: Arc<Envelope> = v1_envelope
-                        .downcast_arc()
-                        .map_err(StorageDecodeError::TypedValueMismatch)?;
+                let v1_envelope = match Arc::try_unwrap(v1_envelope) {
+                    Ok(v1_envelope) => v1_envelope,
+                    Err(arc) => arc.as_ref().clone(),
+                };
 
-                    let v1_envelope = match Arc::try_unwrap(v1_envelope) {
-                        Ok(v1_envelope) => v1_envelope,
-                        Err(arc) => arc.as_ref().clone(),
-                    };
+                let envelope: v2::Envelope<v2::Raw> = v1_envelope
+                    .try_into()
+                    .map_err(|err: anyhow::Error| StorageDecodeError::DecodeValue(err.into()))?;
 
-                    let envelope: v2::Envelope<v2::Raw> =
-                        v1_envelope.try_into().map_err(|err: anyhow::Error| {
-                            StorageDecodeError::DecodeValue(err.into())
-                        })?;
+                Arc::new(envelope)
+            }
+            Err(err) => return Err(err),
+        };
 
-                    Arc::new(envelope)
-                }
-                Err(err) => return Err(err),
-            };
-
-            Ok(envelope)
-        }
+        Ok(envelope)
     }
 
     async fn run_inner(&mut self) -> Result<(), ProcessorError> {
