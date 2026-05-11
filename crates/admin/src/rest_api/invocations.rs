@@ -46,8 +46,13 @@ pub enum DeletionMode {
     #[serde(alias = "purge")]
     Purge,
 }
-#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct DeleteInvocationParams {
+    /// If cancel, it will gracefully terminate the invocation.
+    /// If kill, it will terminate the invocation with a hard stop.
+    /// If purge, it will only cleanup the response for completed invocations,
+    /// and leave unaffected an in-flight invocation.
+    #[param(inline)]
     pub mode: Option<DeletionMode>,
 }
 
@@ -61,13 +66,7 @@ pub struct DeleteInvocationParams {
     tag = "invocation",
     params(
         ("invocation_id" = String, Path, description = "Invocation identifier."),
-        (
-            "mode" = Option<DeletionMode>, Query, 
-            description = "If cancel, it will gracefully terminate the invocation. \
-            If kill, it will terminate the invocation with a hard stop. \
-            If purge, it will only cleanup the response for completed invocations, 
-            and leave unaffected an in-flight invocation."
-        ),
+        DeleteInvocationParams,
     ),
     responses(
         (status = 202, description = "Accepted"),
