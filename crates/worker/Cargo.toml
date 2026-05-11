@@ -84,6 +84,7 @@ restate-storage-api = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true, features = ["prost"] }
 restate-types = { workspace = true, features = ["test-util"] }
 restate-vqueues = { workspace = true, features = ["test-util"] }
+restate-wal-protocol = { workspace = true, features = ["test-util"] }
 
 googletest = { workspace = true }
 mockall = { workspace = true }
