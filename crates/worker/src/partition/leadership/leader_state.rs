@@ -16,7 +16,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, ready};
 
-use bytes::BytesMut;
 use futures::future::OptionFuture;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt, stream};
@@ -33,9 +32,7 @@ use restate_limiter::RuleBook;
 use restate_partition_store::PartitionDb;
 use restate_storage_api::vqueue_table::scheduler::SchedulerDecisionsCommand;
 use restate_types::config::Configuration;
-use restate_types::identifiers::{
-    LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
-};
+use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::PurgeInvocationRequest;
 use restate_types::invocation::client::{InvocationOutput, SubmittedInvocationNotification};
 use restate_types::logs::{BodyWithKeys, Keys};
