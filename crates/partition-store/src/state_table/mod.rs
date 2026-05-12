@@ -170,6 +170,7 @@ fn delete_user_state<S: StorageAccess>(
 
         let key = ScopedStateKeyRef::builder()
             .partition_key(&partition_key)
+            .scope(&service_id.scope)
             .service_name(&service_name)
             .service_key(&service_key)
             .state_key(state_key)
@@ -243,6 +244,7 @@ fn get_user_state<S: StorageAccess>(
 
         let key = ScopedStateKeyRef::builder()
             .partition_key(&partition_key)
+            .scope(&service_id.scope)
             .service_name(&service_name)
             .service_key(&service_key)
             .state_key(state_key)
@@ -271,6 +273,7 @@ fn get_all_user_states_for_service<'a, S: StorageAccess>(
 
         let key = ScopedStateKeyRef::builder()
             .partition_key(&partition_key)
+            .scope(&service_id.scope)
             .service_name(&service_name)
             .service_key(&service_key);
 

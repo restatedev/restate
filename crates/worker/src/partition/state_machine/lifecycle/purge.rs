@@ -24,12 +24,13 @@ use restate_types::invocation::{
 };
 use tracing::trace;
 
-pub struct OnPurgeCommand {
-    pub invocation_id: InvocationId,
+pub struct OnPurgeCommand<'a> {
+    pub invocation_id: &'a InvocationId,
     pub response_sink: Option<InvocationMutationResponseSink>,
 }
 
-impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>> for OnPurgeCommand
+impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
+    for OnPurgeCommand<'_>
 where
     S: WriteJournalTable
         + ReadInvocationStatusTable
@@ -44,7 +45,7 @@ where
             invocation_id,
             response_sink,
         } = self;
-        match ctx.get_invocation_status(&invocation_id).await? {
+        match ctx.get_invocation_status(invocation_id).await? {
             InvocationStatus::Completed(CompletedInvocation {
                 invocation_target,
                 journal_metadata,

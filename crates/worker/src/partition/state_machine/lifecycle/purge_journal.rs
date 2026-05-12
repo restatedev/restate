@@ -20,13 +20,13 @@ use restate_types::invocation::InvocationMutationResponseSink;
 use restate_types::invocation::client::PurgeInvocationResponse;
 use tracing::trace;
 
-pub struct OnPurgeJournalCommand {
-    pub invocation_id: InvocationId,
+pub struct OnPurgeJournalCommand<'a> {
+    pub invocation_id: &'a InvocationId,
     pub response_sink: Option<InvocationMutationResponseSink>,
 }
 
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
-    for OnPurgeJournalCommand
+    for OnPurgeJournalCommand<'_>
 where
     S: WriteJournalTable
         + ReadInvocationStatusTable
@@ -39,7 +39,7 @@ where
             invocation_id,
             response_sink,
         } = self;
-        match ctx.get_invocation_status(&invocation_id).await? {
+        match ctx.get_invocation_status(invocation_id).await? {
             InvocationStatus::Completed(mut completed) => {
                 let pinned_service_protocol_version = completed
                     .pinned_deployment
@@ -62,7 +62,7 @@ where
 
                 // Update invocation status
                 ctx.storage.put_invocation_status(
-                    &invocation_id,
+                    invocation_id,
                     &InvocationStatus::Completed(completed),
                 )?;
                 ctx.reply_to_purge_journal(response_sink, PurgeInvocationResponse::Ok);
