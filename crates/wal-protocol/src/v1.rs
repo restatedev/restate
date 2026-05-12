@@ -22,8 +22,8 @@ use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
 
 use crate::control::{
-    AnnounceLeaderCommand, UpdatePartitionDurabilityCommand, UpsertRuleBookCommand,
-    UpsertSchemaCommand, VersionBarrierCommand,
+    AnnounceLeaderCommand, UpdatePartitionDurabilityCommand, UpsertSchemaCommand,
+    VersionBarrierCommand,
 };
 use crate::timer::TimerKeyValue;
 
@@ -193,8 +193,10 @@ pub enum Command {
     /// Upsert the cluster-global rule book for consistent rules across
     /// replicas; the apply path persists it to the partition store and
     /// notifies the leader's `UserLimiter` of the diff.
+    ///
+    /// payload is a bilrost encoded [`crate::control::UpsertRuleBookCommand`]
     /// *Since v1.7.0
-    UpsertRuleBook(UpsertRuleBookCommand),
+    UpsertRuleBook(#[debug(skip)] Bytes),
     // # Commands for VQueues management
     // ----------------------------------
     /// A command to attempt a run an entry in the vqueue (invocation, or otherwise)
@@ -260,9 +262,12 @@ impl HasRecordKeys for Envelope {
                 Keys::Single(res.target.partition_key())
             }
             Command::UpsertSchema(schema) => schema.partition_key_range.clone(),
-            Command::UpsertRuleBook(upsert) => {
-                Keys::RangeInclusive(upsert.partition_key_range.into())
-            }
+            // v1 carries the payload as opaque bytes, so the encoded
+            // `partition_key_range` is not reachable without decoding. With one
+            // log per partition `Keys::Single` is enough for routing
+            // (`Keys::None` would also work); v2 decodes the typed command and
+            // uses the full range.
+            Command::UpsertRuleBook(_) => Keys::Single(self.partition_key()),
             Command::VQSchedulerDecisions(_) => Keys::Single(self.partition_key()),
             Command::VQueuesPause(_) => Keys::Single(self.partition_key()),
             Command::VQueuesResume(_) => Keys::Single(self.partition_key()),
