@@ -8,17 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, ReadInvocationStatusTable,
 };
-use restate_types::identifiers::{InvocationId, WithPartitionKey};
+use restate_types::identifiers::InvocationId;
 use restate_types::invocation::client::PatchDeploymentId;
 use restate_types::invocation::{
     IngressInvocationResponseSink, InvocationMutationResponseSink, ResumeInvocationRequest,
 };
 use restate_types::net::partition_processor::ResumeInvocationRpcResponse;
 use restate_types::schema::deployment::DeploymentResolver;
+use restate_wal_protocol::v2::commands;
+
+use super::*;
 
 pub(super) struct Request {
     pub(super) request_id: PartitionProcessorRpcRequestId,
@@ -127,8 +129,7 @@ where
                 // We need to propose the message, PP will deal with invoking this back
                 self.proposer
                     .handle_rpc_proposal_command(
-                        invocation_id.partition_key(),
-                        Command::ResumeInvocation(ResumeInvocationRequest {
+                        commands::ResumeInvocationCommand::from(ResumeInvocationRequest {
                             invocation_id,
                             update_pinned_deployment_id,
                             response_sink: Some(InvocationMutationResponseSink::Ingress(
@@ -165,7 +166,6 @@ mod tests {
     use super::*;
 
     use crate::partition::rpc::MockActuator;
-    use assert2::let_assert;
     use futures::FutureExt;
     use googletest::prelude::*;
     use restate_storage_api::invocation_status_table::{
@@ -251,9 +251,9 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_handle_rpc_proposal_command::<ResumeInvocationRpcResponse>()
-            .return_once_st(move |_, cmd, request_id, replier| {
-                let_assert!(Command::ResumeInvocation(resume_invocation_request) = cmd);
+            .expect_handle_rpc_proposal_command::<commands::ResumeInvocationCommand, ResumeInvocationRpcResponse>()
+            .return_once_st(move |cmd, request_id, replier| {
+                let resume_invocation_request: ResumeInvocationRequest = cmd.into();
                 assert_that!(
                     resume_invocation_request,
                     all!(
@@ -301,7 +301,7 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_handle_rpc_proposal_command::<PartitionProcessorRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::ResumeInvocationCommand, PartitionProcessorRpcResponse>()
             .never();
 
         let mut storage = MockStorage {
@@ -335,7 +335,7 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_handle_rpc_proposal_command::<PartitionProcessorRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::ResumeInvocationCommand, PartitionProcessorRpcResponse>()
             .never();
 
         let mut storage = MockStorage {
@@ -381,7 +381,7 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_handle_rpc_proposal_command::<ResumeInvocationRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::ResumeInvocationCommand, ResumeInvocationRpcResponse>()
             .never();
 
         let mut storage = MockStorage {
@@ -434,7 +434,7 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_handle_rpc_proposal_command::<ResumeInvocationRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::ResumeInvocationCommand, ResumeInvocationRpcResponse>()
             .never();
 
         let metadata = InFlightInvocationMetadata {
@@ -510,17 +510,18 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_handle_rpc_proposal_command::<ResumeInvocationRpcResponse>()
-            .return_once_st(move |_, cmd, request_id, replier| {
+            .expect_handle_rpc_proposal_command::<commands::ResumeInvocationCommand, ResumeInvocationRpcResponse>()
+            .return_once_st(move |cmd, request_id, replier| {
+                let resume_invocation_request: ResumeInvocationRequest = cmd.into();
                 assert_that!(
-                    cmd,
-                    pat!(Command::ResumeInvocation(pat!(ResumeInvocationRequest {
+                    resume_invocation_request,
+                    pat!(ResumeInvocationRequest {
                         invocation_id: eq(invocation_id),
                         update_pinned_deployment_id: some(eq(expected_deployment_id)),
                         response_sink: some(eq(InvocationMutationResponseSink::Ingress(
                             IngressInvocationResponseSink { request_id }
                         )))
-                    })))
+                    })
                 );
                 replier.send(ResumeInvocationRpcResponse::Ok);
                 ready(()).boxed()
@@ -579,7 +580,7 @@ mod tests {
             .expect_partition_id()
             .return_const(PartitionId::from(0));
         proposer
-            .expect_handle_rpc_proposal_command::<PartitionProcessorRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::ResumeInvocationCommand, PartitionProcessorRpcResponse>()
             .never();
 
         let mut storage = MockStorage {
