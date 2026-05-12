@@ -188,7 +188,7 @@ impl Envelope<Raw> {
 
 impl<C: Command> Envelope<C>
 where
-    C: Clone,
+    C: StorageDecode + Clone,
 {
     /// return the envelope payload
     pub fn split(self) -> Result<(Header, C), StorageDecodeError> {
@@ -349,42 +349,9 @@ pub enum Dedup {
     },
 }
 
-/// A partial type-erased envelope mainly used for writing records.
-/// It carries the payload part with Keys.
-pub struct PartialEnvelope {
-    kind: CommandKind,
-    keys: Keys,
-    payload: Arc<dyn StorageEncode>,
-}
-
-impl PartialEnvelope {
-    pub fn kind(&self) -> CommandKind {
-        self.kind
-    }
-
-    pub fn keys(&self) -> &Keys {
-        &self.keys
-    }
-
-    /// Builds an [`Envelope<Raw>`] with keys from the [`PartialEnvelope`]
-    pub fn build(self, dedup: Dedup) -> BodyWithKeys<Envelope<Raw>> {
-        let inner = Envelope {
-            header: Header {
-                dedup,
-                kind: self.kind,
-                codec: Some(self.payload.default_codec()),
-            },
-            payload: PolyBytes::Typed(self.payload),
-            _p: PhantomData,
-        };
-
-        BodyWithKeys::new(inner, self.keys)
-    }
-}
-
 /// Marker trait implemented by strongly-typed representations of WAL record
 /// payloads.
-pub trait Command: sealed::Sealed + StorageEncode + StorageDecode + Sized {
+pub trait Command: sealed::Sealed + StorageEncode + Sized {
     const KIND: CommandKind;
 
     fn envelope(self, dedup: Dedup) -> Envelope<Self> {
@@ -399,16 +366,47 @@ pub trait Command: sealed::Sealed + StorageEncode + StorageDecode + Sized {
     }
 }
 
-impl<C> From<C> for PartialEnvelope
+impl<C> sealed::Sealed for BodyWithKeys<C> {}
+
+/// Provides record keys for a [`Command`].
+///
+/// Auto-implemented for any [`Command`] that also implements [`HasRecordKeys`].
+/// Commands without a [`HasRecordKeys`] implementation can be paired with keys
+/// explicitly via [`BodyWithKeys::new`], which also implements this trait.
+///
+/// This lets generic functions uniformly accept either a [`Command`] that
+/// carries its own keys or a [`BodyWithKeys`] wrapper supplying them.
+pub trait CommandWithKeys<C>
+where
+    C: Command,
+{
+    fn keys(&self) -> Keys;
+    fn inner(self) -> C;
+}
+
+impl<C> CommandWithKeys<C> for C
 where
     C: Command + HasRecordKeys,
 {
-    fn from(command: C) -> PartialEnvelope {
-        PartialEnvelope {
-            kind: C::KIND,
-            keys: command.record_keys(),
-            payload: Arc::new(command),
-        }
+    fn inner(self) -> C {
+        self
+    }
+
+    fn keys(&self) -> Keys {
+        self.record_keys()
+    }
+}
+
+impl<C> CommandWithKeys<C> for BodyWithKeys<C>
+where
+    C: Command,
+{
+    fn keys(&self) -> Keys {
+        BodyWithKeys::keys(self).clone()
+    }
+
+    fn inner(self) -> C {
+        BodyWithKeys::into_inner(self)
     }
 }
 
@@ -418,13 +416,17 @@ mod test {
     use bytes::BytesMut;
 
     use restate_types::{
-        GenerationalNodeId, logs::Keys, sharding::KeyRange, storage::StorageCodec,
+        GenerationalNodeId,
+        logs::{BodyWithKeys, Keys},
+        sharding::KeyRange,
+        storage::StorageCodec,
+        time::MillisSinceEpoch,
     };
 
     use super::Dedup;
     use crate::{
-        control::AnnounceLeaderCommand,
-        v2::{CommandKind, Envelope, PartialEnvelope, Raw},
+        control::{AnnounceLeaderCommand, UpdatePartitionDurabilityCommand},
+        v2::{Command, CommandKind, CommandWithKeys, Envelope, Raw},
     };
 
     #[test]
@@ -478,8 +480,6 @@ mod test {
             payload.clone(),
         );
 
-        // assert_eq!(envelope.record_keys(), Keys::RangeInclusive(0..=u64::MAX));
-
         let envelope = envelope.into_raw();
 
         assert_eq!(envelope.kind(), CommandKind::AnnounceLeader);
@@ -490,8 +490,12 @@ mod test {
         assert_announce_leader_eq(&payload, &loaded_payload);
     }
 
+    fn make_envelope<C: Command>(cmd: impl CommandWithKeys<C>) -> Envelope<Raw> {
+        Envelope::new(Dedup::None, cmd.inner()).into_raw()
+    }
+
     #[test]
-    fn partial_envelope_with_keys() {
+    fn command_with_has_record_keys() {
         let payload = AnnounceLeaderCommand {
             leader_epoch: 11.into(),
             node_id: GenerationalNodeId::new(1, 3),
@@ -501,25 +505,56 @@ mod test {
             next_config: None,
         };
 
-        let envelope: PartialEnvelope = payload.clone().into();
+        let envelope = make_envelope(payload.clone());
 
-        let keyed = envelope.build(Dedup::SelfProposal {
-            leader_epoch: 10.into(),
-            seq: 120,
-        });
-
-        assert_eq!(
-            keyed.keys(),
-            &Keys::RangeInclusive(payload.partition_key_range.into())
-        );
-
-        let envelope = keyed.into_inner();
         assert_eq!(envelope.kind(), CommandKind::AnnounceLeader);
-        let envelope = envelope.into_typed::<AnnounceLeaderCommand>();
+        let typed = envelope.into_typed::<AnnounceLeaderCommand>();
 
-        let (_, loaded_payload) = envelope.split().expect("to decode");
+        let (_, loaded_payload) = typed.split().expect("to decode");
 
         assert_announce_leader_eq(&payload, &loaded_payload);
+    }
+
+    #[test]
+    fn command_without_has_record_keys() {
+        let payload = UpdatePartitionDurabilityCommand {
+            durable_point: 0.into(),
+            modification_time: MillisSinceEpoch::now(),
+            partition_id: 10.into(),
+        };
+
+        let envelope = make_envelope(BodyWithKeys::new(payload.clone(), Keys::Single(100)));
+
+        let mut buf = BytesMut::new();
+        StorageCodec::encode(&envelope, &mut buf).unwrap();
+
+        let loaded: Envelope<Raw> = StorageCodec::decode(&mut buf).unwrap();
+
+        let typed = loaded.into_typed::<UpdatePartitionDurabilityCommand>();
+        let inner = typed.into_inner().unwrap();
+
+        assert_eq!(payload.durable_point, inner.durable_point);
+        assert_eq!(payload.modification_time, inner.modification_time);
+        assert_eq!(payload.partition_id, inner.partition_id);
+    }
+
+    #[test]
+    fn command_without_has_record_keys_type_cast() {
+        let payload = UpdatePartitionDurabilityCommand {
+            durable_point: 0.into(),
+            modification_time: MillisSinceEpoch::now(),
+            partition_id: 10.into(),
+        };
+
+        let envelope = make_envelope(BodyWithKeys::new(payload.clone(), Keys::Single(100)));
+
+        let converted = envelope.into_typed::<UpdatePartitionDurabilityCommand>();
+
+        let inner = converted.into_inner().unwrap();
+
+        assert_eq!(payload.durable_point, inner.durable_point);
+        assert_eq!(payload.modification_time, inner.modification_time);
+        assert_eq!(payload.partition_id, inner.partition_id);
     }
 
     #[track_caller]
