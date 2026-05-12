@@ -691,7 +691,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     .into();
 
                 lifecycle::OnPurgeCommand {
-                    invocation_id: purge_invocation_request.invocation_id,
+                    invocation_id: &purge_invocation_request.invocation_id,
                     response_sink: purge_invocation_request.response_sink,
                 }
                 .apply(self)
@@ -705,7 +705,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     .into();
 
                 lifecycle::OnPurgeJournalCommand {
-                    invocation_id: purge_invocation_request.invocation_id,
+                    invocation_id: &purge_invocation_request.invocation_id,
                     response_sink: purge_invocation_request.response_sink,
                 }
                 .apply(self)
@@ -2057,7 +2057,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             )
             .await?;
         }
-        self.do_free_invocation(invocation_id)?;
+        self.do_free_invocation(&invocation_id)?;
 
         // If there's a journal, delete journal
         if let PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
@@ -2070,7 +2070,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 .map(|pd| pd.service_protocol_version);
 
             self.do_drop_journal(
-                invocation_id,
+                &invocation_id,
                 journal_metadata.length,
                 pinned_service_protocol_version,
             )
@@ -2179,7 +2179,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         }
 
         // Free invocation
-        self.do_free_invocation(invocation_id)?;
+        self.do_free_invocation(&invocation_id)?;
 
         // If there's a journal, delete journal
         if let PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
@@ -2192,7 +2192,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 .map(|pd| pd.service_protocol_version);
 
             self.do_drop_journal(
-                invocation_id,
+                &invocation_id,
                 journal_metadata.length,
                 pinned_service_protocol_version,
             )
@@ -2538,7 +2538,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 // where the invocation should be executed
                 self.on_service_invocation(*service_invocation).await
             }
-            Timer::CleanInvocationStatus(invocation_id) => {
+            Timer::CleanInvocationStatus(ref invocation_id) => {
                 lifecycle::OnPurgeCommand {
                     invocation_id,
                     response_sink: None,
@@ -2723,9 +2723,9 @@ impl<S> StateMachineApplyContext<'_, S> {
                 .await?;
             }
             InvokerEffectKind::JournalEvent { event } => {
-                lifecycle::OnInvokerEventCommand {
-                    invocation_id: effect.invocation_id,
-                    invocation_status,
+                lifecycle::ApplyEventCommand {
+                    invocation_id: &effect.invocation_id,
+                    invocation_status: &invocation_status,
                     event,
                 }
                 .apply(self)
@@ -2800,7 +2800,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             }
             InvokerEffectKind::Paused { paused_event } => {
                 lifecycle::OnPausedCommand {
-                    invocation_id: effect.invocation_id,
+                    invocation_id: &effect.invocation_id,
                     paused_event,
                 }
                 .apply(self)
@@ -2985,12 +2985,12 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         // If no retention, immediately cleanup the invocation status
         if completion_retention.is_zero() {
-            self.do_free_invocation(invocation_id)?;
+            self.do_free_invocation(&invocation_id)?;
         }
 
         if journal_retention.is_zero() {
             self.do_drop_journal(
-                invocation_id,
+                &invocation_id,
                 journal_length,
                 pinned_service_protocol_version,
             )
@@ -3540,7 +3540,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 if let Some(service_id) =
                     invocation_metadata.invocation_target.as_keyed_service_id()
                 {
-                    self.do_clear_all_state(service_id, invocation_id)?;
+                    self.do_clear_all_state(service_id, &invocation_id)?;
                 } else {
                     warn!(
                         "Trying to process entry {} for a target that has no state",
@@ -4779,7 +4779,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             .map_err(Error::Storage)
     }
 
-    fn do_free_invocation(&mut self, invocation_id: InvocationId) -> Result<(), Error>
+    fn do_free_invocation(&mut self, invocation_id: &InvocationId) -> Result<(), Error>
     where
         S: WriteInvocationStatusTable,
     {
@@ -4790,7 +4790,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         );
 
         self.storage
-            .put_invocation_status(&invocation_id, &InvocationStatus::Free)
+            .put_invocation_status(invocation_id, &InvocationStatus::Free)
             .map_err(Error::Storage)
     }
 
@@ -4982,7 +4982,7 @@ impl<S> StateMachineApplyContext<'_, S> {
     fn do_clear_all_state(
         &mut self,
         service_id: ServiceId,
-        invocation_id: InvocationId,
+        invocation_id: &InvocationId,
     ) -> Result<(), Error>
     where
         S: WriteStateTable,
@@ -5062,7 +5062,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
     async fn do_drop_journal(
         &mut self,
-        invocation_id: InvocationId,
+        invocation_id: &InvocationId,
         journal_length: EntryIndex,
         pinned_protocol_version: Option<ServiceProtocolVersion>,
     ) -> Result<(), Error>
@@ -5076,13 +5076,13 @@ impl<S> StateMachineApplyContext<'_, S> {
         );
 
         if pinned_protocol_version.is_none_or(|sp| sp < ServiceProtocolVersion::V4) {
-            WriteJournalTable::delete_journal(self.storage, &invocation_id, journal_length)
+            WriteJournalTable::delete_journal(self.storage, invocation_id, journal_length)
                 .map_err(Error::Storage)?;
         };
         if pinned_protocol_version.is_none_or(|sp| sp >= ServiceProtocolVersion::V4) {
             journal_table_v2::WriteJournalTable::delete_journal(
                 self.storage,
-                &invocation_id,
+                invocation_id,
                 journal_length,
             )
             .map_err(Error::Storage)?

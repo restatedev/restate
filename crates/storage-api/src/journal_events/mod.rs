@@ -21,7 +21,7 @@ use restate_types::time::MillisSinceEpoch;
 pub trait ReadJournalEventsTable {
     fn get_journal_events(
         &mut self,
-        invocation_id: InvocationId,
+        invocation_id: &InvocationId,
     ) -> Result<impl Stream<Item = Result<EventView>> + Send>;
 }
 
@@ -44,12 +44,12 @@ pub trait ScanJournalEventsTable {
 pub trait WriteJournalEventsTable {
     fn put_journal_event(
         &mut self,
-        invocation_id: InvocationId,
+        invocation_id: &InvocationId,
         event: EventView,
         lsn: u64,
     ) -> Result<()>;
 
-    fn delete_journal_events(&mut self, invocation_id: InvocationId) -> Result<()>;
+    fn delete_journal_events(&mut self, invocation_id: &InvocationId) -> Result<()>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

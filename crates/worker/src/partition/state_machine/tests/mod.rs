@@ -246,7 +246,7 @@ impl TestEnv {
     }
 
     /// Returns journal events ordered by timestamps
-    pub async fn read_journal_events(&mut self, invocation_id: InvocationId) -> Vec<Event> {
+    pub async fn read_journal_events(&mut self, invocation_id: &InvocationId) -> Vec<Event> {
         let mut events =
             restate_storage_api::journal_events::ReadJournalEventsTable::get_journal_events(
                 self.storage(),

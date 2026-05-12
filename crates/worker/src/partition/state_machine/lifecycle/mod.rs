@@ -26,7 +26,7 @@ mod suspend;
 mod version_barrier;
 
 pub(super) use cancel::OnCancelCommand;
-pub(super) use event::OnInvokerEventCommand;
+pub(super) use event::ApplyEventCommand;
 pub(super) use manual_resume::OnManualResumeCommand;
 pub(super) use migrate_journal_table::VerifyOrMigrateJournalTableToV2Command;
 pub(super) use notify_get_invocation_output_response::OnNotifyGetInvocationOutputResponse;
