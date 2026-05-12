@@ -49,7 +49,7 @@ use restate_vqueues::VQueueEvent;
 use restate_vqueues::scheduler::Decisions;
 use restate_vqueues::{SchedulerService, VQueuesMeta};
 use restate_wal_protocol::Command;
-use restate_wal_protocol::control::UpsertSchemaCommand;
+use restate_wal_protocol::control::{UpsertRuleBookCommandWrapper, UpsertSchemaCommand};
 use restate_worker_api::invoker::InvokerHandle;
 use restate_worker_api::resources::ReservedResources;
 use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
@@ -454,7 +454,7 @@ impl LeaderState {
                             .await?;
                     }
                 }
-                ActionEffect::UpsertRuleBook(book) => {
+                ActionEffect::UpsertRuleBook(rule_book) => {
                     // todo(tillrohrmann) also enable the feature once the partition has been migrated
                     //  to use vqueues and then rolling back to v1.7
                     if Configuration::pinned()
@@ -462,15 +462,20 @@ impl LeaderState {
                         .experimental
                         .is_vqueues_enabled()
                     {
+                        let cmd =
+                            restate_wal_protocol::control::UpsertRuleBookCommand { rule_book };
+
+                        arena.reserve(cmd.encoded_len());
+                        // safe to unwrap because we reserved enough space
+                        cmd.bilrost_encode(&mut arena).unwrap();
+
                         self.self_proposer
                             .self_propose(
                                 self.partition_key_range.start(),
-                                Command::UpsertRuleBook(
-                                    restate_wal_protocol::control::UpsertRuleBookCommand {
-                                        partition_key_range: self.partition_key_range,
-                                        rule_book: book.bilrost_encode_to_bytes(),
-                                    },
-                                ),
+                                Command::UpsertRuleBook(UpsertRuleBookCommandWrapper {
+                                    partition_key_range: self.partition_key_range,
+                                    command: arena.split().freeze(),
+                                }),
                             )
                             .await?;
                     }

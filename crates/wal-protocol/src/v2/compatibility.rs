@@ -8,12 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-
-use bilrost::OwnedMessage;
-
 use restate_encoding::U128;
-use restate_limiter::RuleBook;
 use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, EpochSequenceNumber, ProducerId,
 };
@@ -23,10 +18,7 @@ use restate_util_string::ReString;
 use super::{Raw, commands};
 use crate::{
     v1,
-    v2::{
-        self, Envelope,
-        commands::{TruncateOutboxCommand, UpsertRuleBookCommand},
-    },
+    v2::{self, Envelope, commands::TruncateOutboxCommand},
 };
 
 impl TryFrom<v1::Envelope> for v2::Envelope<Raw> {
@@ -139,17 +131,12 @@ impl TryFrom<v1::Envelope> for v2::Envelope<Raw> {
             }
             v1::Command::UpsertSchema(payload) => Envelope::new(dedup, payload).into_raw(),
             v1::Command::VersionBarrier(payload) => Envelope::new(dedup, payload).into_raw(),
-            v1::Command::UpsertRuleBook(payload) => {
-                let rule_book = RuleBook::decode(payload.rule_book)?;
-                Envelope::new(
-                    dedup,
-                    UpsertRuleBookCommand {
-                        partition_key_range: payload.partition_key_range,
-                        rule_book: Arc::new(rule_book),
-                    },
-                )
-                .into_raw()
-            }
+            v1::Command::UpsertRuleBook(wrapper) => Envelope::from_bytes_unchecked(
+                v2::CommandKind::UpsertRuleBook,
+                StorageCodecKind::Bilrost,
+                dedup,
+                wrapper.command,
+            ),
             v1::Command::VQSchedulerDecisions(payload) => Envelope::from_bytes_unchecked(
                 v2::CommandKind::VQSchedulerDecisions,
                 StorageCodecKind::Bilrost,

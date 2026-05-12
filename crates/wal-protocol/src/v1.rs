@@ -22,7 +22,7 @@ use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
 
 use crate::control::{
-    AnnounceLeaderCommand, UpdatePartitionDurabilityCommand, UpsertRuleBookCommand,
+    AnnounceLeaderCommand, UpdatePartitionDurabilityCommand, UpsertRuleBookCommandWrapper,
     UpsertSchemaCommand, VersionBarrierCommand,
 };
 use crate::timer::TimerKeyValue;
@@ -193,8 +193,9 @@ pub enum Command {
     /// Upsert the cluster-global rule book for consistent rules across
     /// replicas; the apply path persists it to the partition store and
     /// notifies the leader's `UserLimiter` of the diff.
+    ///
     /// *Since v1.7.0
-    UpsertRuleBook(UpsertRuleBookCommand),
+    UpsertRuleBook(UpsertRuleBookCommandWrapper),
     // # Commands for VQueues management
     // ----------------------------------
     /// A command to attempt a run an entry in the vqueue (invocation, or otherwise)

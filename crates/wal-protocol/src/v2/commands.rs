@@ -8,29 +8,24 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-// Re-epxort vqueues commands
-pub use crate::vqueues::{VQueuesPauseCommand, VQueuesResumeCommand};
-pub use restate_storage_api::vqueue_table::scheduler::SchedulerDecisionsCommand;
-
-use std::sync::Arc;
-
 use serde::{Deserialize, Serialize};
 
-use restate_encoding::Arced;
-use restate_limiter::RuleBook;
+pub use restate_storage_api::vqueue_table::scheduler::SchedulerDecisionsCommand;
 use restate_types::{
     bilrost_storage_encode_decode, flexbuffers_storage_encode_decode,
     identifiers::{WithInvocationId, WithPartitionKey},
     invocation,
     logs::{HasRecordKeys, Keys},
     message::MessageIndex,
-    sharding::KeyRange,
     state_mut,
 };
 
 use super::sealed::Sealed;
 use super::{Command, CommandKind};
-use crate::timer::{self};
+pub use crate::control::UpsertRuleBookCommand;
+use crate::timer;
+// Re-epxort vqueues commands
+pub use crate::vqueues::{VQueuesPauseCommand, VQueuesResumeCommand};
 
 pub use crate::control::{
     AnnounceLeaderCommand, UpdatePartitionDurabilityCommand, UpsertSchemaCommand,
@@ -337,22 +332,6 @@ flexbuffers_storage_encode_decode!(ProxyThroughCommand);
 impl HasRecordKeys for ProxyThroughCommand {
     fn record_keys(&self) -> Keys {
         self.proxy_partition.clone()
-    }
-}
-
-#[derive(Debug, Clone, bilrost::Message)]
-pub struct UpsertRuleBookCommand {
-    #[bilrost(tag(1))]
-    pub partition_key_range: KeyRange,
-    #[bilrost(tag(2), encoding(Arced))]
-    pub rule_book: Arc<RuleBook>,
-}
-
-bilrost_storage_encode_decode!(UpsertRuleBookCommand);
-
-impl HasRecordKeys for UpsertRuleBookCommand {
-    fn record_keys(&self) -> Keys {
-        Keys::RangeInclusive(self.partition_key_range.into())
     }
 }
 
