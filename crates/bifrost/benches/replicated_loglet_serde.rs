@@ -21,6 +21,7 @@ use pprof::flamegraph::Options;
 use prost::Message as _;
 use rand::distr::Alphanumeric;
 use rand::{Rng, RngCore, random};
+use restate_types::ReString;
 
 use restate_bifrost::InputRecord;
 use restate_core::network::protobuf::network::message::Body;
@@ -68,7 +69,7 @@ fn invoke_cmd() -> Command {
     let idempotency_key: ByteString = rand_string(15).into();
     let request_id = PartitionProcessorRpcRequestId::new();
     let inv_source = restate_types::invocation::Source::Ingress(request_id);
-    let handler: ByteString = format!("aFunction_{}", rand_string(10)).into();
+    let handler: ReString = format!("aFunction_{}", rand_string(10)).into();
 
     Command::Invoke(Box::new(ServiceInvocation {
         invocation_id: InvocationId::generate(
@@ -104,7 +105,7 @@ fn invoke_cmd() -> Command {
 
 fn invoker_effect_cmd() -> Command {
     let idempotency_key: ByteString = rand_string(15).into();
-    let handler: ByteString = format!("aFunction_{}", rand_string(10)).into();
+    let handler: ReString = format!("aFunction_{}", rand_string(10)).into();
 
     let mut data = [0u8; 128];
     rand::rng().fill_bytes(&mut data);

@@ -28,7 +28,7 @@ use restate_types::journal_v2::{
     CommandIndex, CommandType, CompletionType, EntryType, NotificationType,
 };
 use restate_types::{LimitKey, Scope};
-use restate_util_string::ReString;
+use restate_util_string::{ReString, RestateString};
 
 const CUSTOM_MESSAGE_MASK: u16 = 0xFC00;
 
@@ -401,17 +401,15 @@ impl Message {
             known_entries,
             partial_state,
             state_map,
-            key: key
-                .and_then(|b| String::from_utf8(b.to_vec()).ok())
-                .unwrap_or_default(),
+            key: key.unwrap_or_default(),
             retry_count_since_last_stored_entry,
             duration_since_last_stored_entry: duration_since_last_stored_entry.as_millis() as u64,
             random_seed,
-            scope: scope.map(|scope| scope.to_string()),
+            scope: scope.map(|scope| scope.to_restring().into()),
             limit_key: if limit_key == &LimitKey::None {
                 None
             } else {
-                Some(limit_key.to_string())
+                Some(Bytes::from(limit_key.to_string()))
             },
             idempotency_key: idempotency_key.map(|value| value.to_string()),
         })

@@ -33,7 +33,7 @@ restate-sharding = { workspace = true, features = ["serde", "bilrost"] }
 restate-test-util = { workspace = true, optional = true }
 restate-util-time = { workspace = true, features = ["serde", "serde_with"] }
 restate-util-bytecount = { workspace = true, features = ["serde"] }
-restate-util-string = { workspace = true, features = ["serde", "bilrost"] }
+restate-util-string = { workspace = true, features = ["serde", "bilrost", "bytestring"] }
 restate-utoipa = { workspace = true }
 
 adaptive-timeout = { workspace = true, features = ["serde"] }

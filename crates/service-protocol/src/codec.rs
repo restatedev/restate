@@ -259,9 +259,9 @@ mod test_util {
                             enrichment_result: Some(CallEnrichmentResult {
                                 invocation_id,
                                 invocation_target: InvocationTarget::VirtualObject {
-                                    name: entry.request.service_name.clone(),
-                                    key: entry.request.key.clone(),
-                                    handler: entry.request.handler_name.clone(),
+                                    name: entry.request.service_name.clone().into(),
+                                    key: entry.request.key.clone().into(),
+                                    handler: entry.request.handler_name.clone().into(),
                                     handler_ty: VirtualObjectHandlerType::Exclusive,
                                     scope: None,
                                 },
@@ -297,9 +297,9 @@ mod test_util {
                             enrichment_result: CallEnrichmentResult {
                                 invocation_id,
                                 invocation_target: InvocationTarget::VirtualObject {
-                                    name: entry.request.service_name.clone(),
-                                    key: entry.request.key.clone(),
-                                    handler: entry.request.handler_name.clone(),
+                                    name: entry.request.service_name.clone().into(),
+                                    key: entry.request.key.clone().into(),
+                                    handler: entry.request.handler_name.clone().into(),
                                     handler_ty: VirtualObjectHandlerType::Exclusive,
                                     scope: None,
                                 },

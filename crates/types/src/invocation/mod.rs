@@ -155,23 +155,23 @@ pub enum Short<'a> {
 #[derive(Eq, Hash, PartialEq, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum InvocationTarget {
     Service {
-        name: ByteString,
-        handler: ByteString,
+        name: ReString,
+        handler: ReString,
         #[serde(skip_serializing_if = "Option::is_none")]
         scope: Option<Scope>,
     },
     VirtualObject {
-        name: ByteString,
-        key: ByteString,
-        handler: ByteString,
+        name: ReString,
+        key: ReString,
+        handler: ReString,
         handler_ty: VirtualObjectHandlerType,
         #[serde(skip_serializing_if = "Option::is_none")]
         scope: Option<Scope>,
     },
     Workflow {
-        name: ByteString,
-        key: ByteString,
-        handler: ByteString,
+        name: ReString,
+        key: ReString,
+        handler: ReString,
         handler_ty: WorkflowHandlerType,
         #[serde(skip_serializing_if = "Option::is_none")]
         scope: Option<Scope>,
@@ -179,7 +179,7 @@ pub enum InvocationTarget {
 }
 
 impl InvocationTarget {
-    pub fn service(name: impl Into<ByteString>, handler: impl Into<ByteString>) -> Self {
+    pub fn service(name: impl Into<ReString>, handler: impl Into<ReString>) -> Self {
         Self::Service {
             name: name.into(),
             handler: handler.into(),
@@ -188,8 +188,8 @@ impl InvocationTarget {
     }
 
     pub fn scoped_service(
-        name: impl Into<ByteString>,
-        handler: impl Into<ByteString>,
+        name: impl Into<ReString>,
+        handler: impl Into<ReString>,
         scope: Scope,
     ) -> Self {
         Self::Service {
@@ -209,9 +209,9 @@ impl InvocationTarget {
     }
 
     pub fn virtual_object(
-        name: impl Into<ByteString>,
-        key: impl Into<ByteString>,
-        handler: impl Into<ByteString>,
+        name: impl Into<ReString>,
+        key: impl Into<ReString>,
+        handler: impl Into<ReString>,
         handler_ty: VirtualObjectHandlerType,
     ) -> Self {
         Self::VirtualObject {
@@ -224,9 +224,9 @@ impl InvocationTarget {
     }
 
     pub fn scoped_virtual_object(
-        name: impl Into<ByteString>,
-        key: impl Into<ByteString>,
-        handler: impl Into<ByteString>,
+        name: impl Into<ReString>,
+        key: impl Into<ReString>,
+        handler: impl Into<ReString>,
         handler_ty: VirtualObjectHandlerType,
         scope: Scope,
     ) -> Self {
@@ -240,9 +240,9 @@ impl InvocationTarget {
     }
 
     pub fn workflow(
-        name: impl Into<ByteString>,
-        key: impl Into<ByteString>,
-        handler: impl Into<ByteString>,
+        name: impl Into<ReString>,
+        key: impl Into<ReString>,
+        handler: impl Into<ReString>,
         handler_ty: WorkflowHandlerType,
     ) -> Self {
         Self::Workflow {
@@ -255,9 +255,9 @@ impl InvocationTarget {
     }
 
     pub fn scoped_workflow(
-        name: impl Into<ByteString>,
-        key: impl Into<ByteString>,
-        handler: impl Into<ByteString>,
+        name: impl Into<ReString>,
+        key: impl Into<ReString>,
+        handler: impl Into<ReString>,
         handler_ty: WorkflowHandlerType,
         scope: Scope,
     ) -> Self {
@@ -288,7 +288,7 @@ impl InvocationTarget {
         }
     }
 
-    pub fn service_name(&self) -> &ByteString {
+    pub fn service_name(&self) -> &ReString {
         match self {
             InvocationTarget::Service { name, .. } => name,
             InvocationTarget::VirtualObject { name, .. } => name,
@@ -304,10 +304,9 @@ impl InvocationTarget {
                 key,
                 handler_ty,
                 ..
-            } if handler_ty == &VirtualObjectHandlerType::Exclusive => Some(LockName::new(
-                ServiceName::new(name.as_ref()),
-                ReString::new(key),
-            )),
+            } if handler_ty == &VirtualObjectHandlerType::Exclusive => {
+                Some(LockName::new(ServiceName::new(name.as_str()), key.clone()))
+            }
             // NOTE: Workflows don't have locks as their invariant (run once per ID) is enforced by
             // the partition processor at ingestion/creation time (via invocation/entry status)
             // Therefore, we treat them as normal services when it comes to locking and vqueue
@@ -320,7 +319,7 @@ impl InvocationTarget {
         }
     }
 
-    pub fn key(&self) -> Option<&ByteString> {
+    pub fn key(&self) -> Option<&ReString> {
         match self {
             InvocationTarget::Service { .. } => None,
             InvocationTarget::VirtualObject { key, .. } => Some(key),
@@ -328,7 +327,7 @@ impl InvocationTarget {
         }
     }
 
-    pub fn handler_name(&self) -> &ByteString {
+    pub fn handler_name(&self) -> &ReString {
         match self {
             InvocationTarget::Service { handler, .. } => handler,
             InvocationTarget::VirtualObject { handler, .. } => handler,
@@ -1402,8 +1401,8 @@ impl InvocationQuery {
             InvocationQuery::Invocation(iid) => *iid,
             InvocationQuery::Workflow(wfid) => InvocationId::generate(
                 &InvocationTarget::Workflow {
-                    name: wfid.service_name.clone(),
-                    key: wfid.key.clone(),
+                    name: wfid.service_name.clone().into(),
+                    key: wfid.key.clone().into(),
                     // Doesn't matter
                     handler: Default::default(),
                     // Must be the workflow handler type

@@ -719,9 +719,9 @@ impl IdempotencyId {
         idempotency_key: ByteString,
     ) -> Self {
         IdempotencyId {
-            service_name: invocation_target.service_name().clone(),
-            service_key: invocation_target.key().cloned(),
-            service_handler: invocation_target.handler_name().clone(),
+            service_name: invocation_target.service_name().clone().into(),
+            service_key: invocation_target.key().cloned().map(Into::into),
+            service_handler: invocation_target.handler_name().clone().into(),
             idempotency_key,
             scope: invocation_target.scope().cloned(),
             partition_key: invocation_id.partition_key(),
@@ -1536,7 +1536,7 @@ mod tests {
 
     #[test]
     fn unscoped_service_invocations_use_consistent_bounded_partition_key_set() {
-        fn service_partition_key_set(service_name: &ByteString) -> HashSet<PartitionKey> {
+        fn service_partition_key_set(service_name: &str) -> HashSet<PartitionKey> {
             (0..UNSCOPED_SERVICE_PARTITION_KEY_FANOUT)
                 .map(|bucket| unscoped_service_partition_key(service_name, bucket))
                 .collect()
@@ -1561,7 +1561,7 @@ mod tests {
 
     #[test]
     fn unscoped_services_have_different_partition_key_sets() {
-        fn service_partition_key_set(service_name: &ByteString) -> HashSet<PartitionKey> {
+        fn service_partition_key_set(service_name: &str) -> HashSet<PartitionKey> {
             (0..UNSCOPED_SERVICE_PARTITION_KEY_FANOUT)
                 .map(|bucket| unscoped_service_partition_key(service_name, bucket))
                 .collect()

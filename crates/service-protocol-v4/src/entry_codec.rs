@@ -37,7 +37,7 @@ use restate_types::journal_v2::raw::{
     RawNotificationResultVariant,
 };
 use restate_types::{LimitKey, Scope, journal_v2::*};
-use restate_util_string::RestateString;
+use restate_util_string::{ReString, RestateString};
 
 use crate::proto;
 use crate::proto::{
@@ -133,20 +133,17 @@ impl Encoder for ServiceProtocolV4Codec {
             })) => RawCommand::new(
                 CommandType::Call,
                 proto::CallCommandMessage {
-                    service_name: invocation_target.service_name().to_string(),
-                    handler_name: invocation_target.handler_name().to_string(),
+                    service_name: invocation_target.service_name().clone().into(),
+                    handler_name: invocation_target.handler_name().clone().into(),
                     parameter,
                     headers: headers.into_iter().map(Into::into).collect(),
-                    key: invocation_target
-                        .key()
-                        .unwrap_or(&ByteString::new())
-                        .to_string(),
+                    key: invocation_target.key().cloned().unwrap_or_default().into(),
                     idempotency_key: idempotency_key.map(|s| s.to_string()),
-                    scope: invocation_target.scope().map(ToString::to_string),
+                    scope: invocation_target.scope().map(|s| s.to_restring().into()),
                     limit_key: if limit_key == LimitKey::None {
                         None
                     } else {
-                        Some(limit_key.to_string())
+                        Some(Bytes::from(limit_key.to_string()))
                     },
                     name: name.to_string(),
                     invocation_id_notification_idx: invocation_id_completion_id,
@@ -184,21 +181,18 @@ impl Encoder for ServiceProtocolV4Codec {
             })) => RawCommand::new(
                 CommandType::OneWayCall,
                 proto::OneWayCallCommandMessage {
-                    service_name: invocation_target.service_name().to_string(),
-                    handler_name: invocation_target.handler_name().to_string(),
+                    service_name: invocation_target.service_name().clone().into(),
+                    handler_name: invocation_target.handler_name().clone().into(),
                     parameter,
                     invoke_time: invoke_time.as_u64(),
                     headers: headers.into_iter().map(Into::into).collect(),
-                    key: invocation_target
-                        .key()
-                        .unwrap_or(&ByteString::new())
-                        .to_string(),
+                    key: invocation_target.key().cloned().unwrap_or_default().into(),
                     idempotency_key: idempotency_key.map(|s| s.to_string()),
-                    scope: invocation_target.scope().map(ToString::to_string),
+                    scope: invocation_target.scope().map(|s| s.to_restring().into()),
                     limit_key: if limit_key == LimitKey::None {
                         None
                     } else {
-                        Some(limit_key.to_string())
+                        Some(Bytes::from(limit_key.to_string()))
                     },
                     name: name.to_string(),
                     invocation_id_notification_idx: invocation_id_completion_id,
@@ -654,6 +648,18 @@ macro_rules! to_string_or_bail {
     };
 }
 
+// Safe Bytes -> ReString conversion. Validates UTF-8 (input from SDK is untrusted).
+macro_rules! to_restring_or_bail {
+    ($field:expr) => {
+        ReString::try_from($field).map_err(|e| {
+            DecodingError::from(GenericError::from(BadFieldError(
+                stringify!($field),
+                e.into(),
+            )))
+        })?
+    };
+}
+
 macro_rules! to_invocation_id_or_bail {
     ($field:ident) => {
         InvocationId::from_str(&$field).map_err(|e| {
@@ -748,7 +754,9 @@ impl Decoder for ServiceProtocolV4Codec {
                             completion_retention_duration: metadata.completion_retention_duration,
                             journal_retention_duration: metadata.journal_retention_duration,
                             limit_key: if let Some(limit_key) = limit_key {
-                                limit_key.parse().map_err(GenericError::from)?
+                                to_restring_or_bail!(limit_key)
+                                    .parse()
+                                    .map_err(GenericError::from)?
                             } else {
                                 LimitKey::None
                             },
@@ -786,7 +794,9 @@ impl Decoder for ServiceProtocolV4Codec {
                             completion_retention_duration: metadata.completion_retention_duration,
                             journal_retention_duration: metadata.journal_retention_duration,
                             limit_key: if let Some(limit_key) = limit_key {
-                                limit_key.parse().map_err(GenericError::from)?
+                                to_restring_or_bail!(limit_key)
+                                    .parse()
+                                    .map_err(GenericError::from)?
                             } else {
                                 LimitKey::None
                             },
@@ -1619,17 +1629,17 @@ impl From<AttachInvocationTarget> for proto::attach_invocation_command_message::
             AttachInvocationTarget::InvocationId(id) => Self::InvocationId(id.to_string()),
             AttachInvocationTarget::IdempotentRequest(id) => {
                 Self::IdempotentRequestTarget(proto::IdempotentRequestTarget {
-                    service_name: id.service_name.into(),
-                    service_key: id.service_key.map(Into::into),
-                    handler_name: id.service_handler.into(),
+                    service_name: id.service_name.into_bytes(),
+                    service_key: id.service_key.map(ByteString::into_bytes),
+                    handler_name: id.service_handler.into_bytes(),
                     idempotency_key: id.idempotency_key.into(),
-                    scope: id.scope.map(|s| s.to_string()),
+                    scope: id.scope.map(|s| s.to_restring().into()),
                 })
             }
             AttachInvocationTarget::Workflow(id) => Self::WorkflowTarget(proto::WorkflowTarget {
-                workflow_name: id.service_name.into(),
-                workflow_key: id.key.into(),
-                scope: id.scope.map(|s| s.to_string()),
+                workflow_name: id.service_name.into_bytes(),
+                workflow_key: id.key.into_bytes(),
+                scope: id.scope.map(|s| s.to_restring().into()),
             }),
         }
     }
@@ -1650,31 +1660,41 @@ impl TryFrom<proto::attach_invocation_command_message::Target> for AttachInvocat
             proto::attach_invocation_command_message::Target::IdempotentRequestTarget(
                 idempotent_request,
             ) => {
-                // Safety: Before we accept an idempotent request we validate in
-                // ServiceProtocolRunner::handle_message that the scope value is valid.
                 let scope = idempotent_request
                     .scope
-                    .as_ref()
-                    .map(|scope| unsafe { Scope::new_unchecked(scope) });
+                    .map(|scope| {
+                        let s = to_restring_or_bail!(scope);
+                        Scope::try_from_restring(s).map_err(GenericError::from)
+                    })
+                    .transpose()?;
                 Self::IdempotentRequest(IdempotencyId::new(
-                    idempotent_request.service_name.into(),
-                    idempotent_request.service_key.map(Into::into),
-                    idempotent_request.handler_name.into(),
+                    ByteString::try_from(idempotent_request.service_name)
+                        .map_err(GenericError::from)?,
+                    idempotent_request
+                        .service_key
+                        .map(ByteString::try_from)
+                        .transpose()
+                        .map_err(GenericError::from)?,
+                    ByteString::try_from(idempotent_request.handler_name)
+                        .map_err(GenericError::from)?,
                     idempotent_request.idempotency_key.into(),
                     scope,
                 ))
             }
             proto::attach_invocation_command_message::Target::WorkflowTarget(workflow_target) => {
-                // Safety: Before we accept a workflow target we validate in
-                // ServiceProtocolRunner::handle_message that the scope value is valid.
                 let scope = workflow_target
                     .scope
-                    .as_ref()
-                    .map(|scope| unsafe { Scope::new_unchecked(scope) });
+                    .map(|scope| {
+                        let s = to_restring_or_bail!(scope);
+                        Scope::try_from_restring(s).map_err(GenericError::from)
+                    })
+                    .transpose()?;
                 Self::Workflow(ServiceId::new(
                     scope,
-                    workflow_target.workflow_name,
-                    workflow_target.workflow_key,
+                    ByteString::try_from(workflow_target.workflow_name)
+                        .map_err(GenericError::from)?,
+                    ByteString::try_from(workflow_target.workflow_key)
+                        .map_err(GenericError::from)?,
                 ))
             }
         })
@@ -1687,17 +1707,17 @@ impl From<AttachInvocationTarget> for proto::get_invocation_output_command_messa
             AttachInvocationTarget::InvocationId(id) => Self::InvocationId(id.to_string()),
             AttachInvocationTarget::IdempotentRequest(id) => {
                 Self::IdempotentRequestTarget(proto::IdempotentRequestTarget {
-                    service_name: id.service_name.into(),
-                    service_key: id.service_key.map(Into::into),
-                    handler_name: id.service_handler.into(),
+                    service_name: id.service_name.into_bytes(),
+                    service_key: id.service_key.map(ByteString::into_bytes),
+                    handler_name: id.service_handler.into_bytes(),
                     idempotency_key: id.idempotency_key.into(),
-                    scope: id.scope.map(|s| s.to_string()),
+                    scope: id.scope.map(|s| s.to_restring().into()),
                 })
             }
             AttachInvocationTarget::Workflow(id) => Self::WorkflowTarget(proto::WorkflowTarget {
-                workflow_name: id.service_name.into(),
-                workflow_key: id.key.into(),
-                scope: id.scope.map(|s| s.to_string()),
+                workflow_name: id.service_name.into_bytes(),
+                workflow_key: id.key.into_bytes(),
+                scope: id.scope.map(|s| s.to_restring().into()),
             }),
         }
     }
@@ -1718,15 +1738,23 @@ impl TryFrom<proto::get_invocation_output_command_message::Target> for AttachInv
             proto::get_invocation_output_command_message::Target::IdempotentRequestTarget(
                 idempotent_request,
             ) => {
-                // Safety: Before we accept an idempotent request we validate in
-                // ServiceProtocolRunner::handle_message that the scope value is valid.
                 let scope = idempotent_request
                     .scope
-                    .map(|ref scope| unsafe { Scope::new_unchecked(scope) });
+                    .map(|scope| {
+                        let s = to_restring_or_bail!(scope);
+                        Scope::try_from_restring(s).map_err(GenericError::from)
+                    })
+                    .transpose()?;
                 Self::IdempotentRequest(IdempotencyId::new(
-                    idempotent_request.service_name.into(),
-                    idempotent_request.service_key.map(Into::into),
-                    idempotent_request.handler_name.into(),
+                    ByteString::try_from(idempotent_request.service_name)
+                        .map_err(GenericError::from)?,
+                    idempotent_request
+                        .service_key
+                        .map(ByteString::try_from)
+                        .transpose()
+                        .map_err(GenericError::from)?,
+                    ByteString::try_from(idempotent_request.handler_name)
+                        .map_err(GenericError::from)?,
                     idempotent_request.idempotency_key.into(),
                     scope,
                 ))
@@ -1734,15 +1762,19 @@ impl TryFrom<proto::get_invocation_output_command_message::Target> for AttachInv
             proto::get_invocation_output_command_message::Target::WorkflowTarget(
                 workflow_target,
             ) => {
-                // Safety: Before we accept a workflow target we validate in
-                // ServiceProtocolRunner::handle_message that the scope value is valid.
                 let scope = workflow_target
                     .scope
-                    .map(|ref scope| unsafe { Scope::new_unchecked(scope) });
+                    .map(|scope| {
+                        let s = to_restring_or_bail!(scope);
+                        Scope::try_from_restring(s).map_err(GenericError::from)
+                    })
+                    .transpose()?;
                 Self::Workflow(ServiceId::new(
                     scope,
-                    workflow_target.workflow_name,
-                    workflow_target.workflow_key,
+                    ByteString::try_from(workflow_target.workflow_name)
+                        .map_err(GenericError::from)?,
+                    ByteString::try_from(workflow_target.workflow_key)
+                        .map_err(GenericError::from)?,
                 ))
             }
         })
