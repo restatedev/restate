@@ -973,6 +973,63 @@ where
         self.storage.update_vqueue(vqueue_id, &update);
     }
 
+    /// Marks this vqueue as paused
+    pub fn pause_queue(&mut self, at: UniqueTimestamp) {
+        let meta = self.cache.get_mut(self.handle).unwrap();
+
+        if meta.meta().queue_is_paused() {
+            // queue is already paused
+            return;
+        }
+
+        debug!("Pausing vqueue {}", meta.vqueue_id());
+        let update = metadata::Update::new(at, metadata::Action::PauseVQueue {});
+
+        // Update cache
+        let (was_active_before, is_active_now) = meta.apply_update(&update);
+
+        // Update vqueue meta in storage
+        self.storage.update_vqueue(meta.vqueue_id(), &update);
+
+        if was_active_before && !is_active_now {
+            self.storage.mark_vqueue_as_dormant(meta.vqueue_id());
+        }
+
+        if let Some(collector) = self.action_collector.as_deref_mut() {
+            let mut event = VQueueEvent::new(self.handle);
+            event.push(EventDetails::QueuePaused);
+            collector.push(A::from(event));
+        }
+    }
+
+    /// Marks this vqueue as resumed
+    pub fn resume_queue(&mut self, at: UniqueTimestamp) {
+        let meta = self.cache.get_mut(self.handle).unwrap();
+
+        if !meta.meta().queue_is_paused() {
+            // queue is not paused
+            return;
+        }
+        debug!("Resuming vqueue {}", meta.vqueue_id());
+        let update = metadata::Update::new(at, metadata::Action::ResumeVQueue {});
+
+        // Update cache
+        let (was_active_before, is_active_now) = meta.apply_update(&update);
+
+        // Update vqueue meta in storage
+        self.storage.update_vqueue(meta.vqueue_id(), &update);
+
+        if !was_active_before && is_active_now {
+            self.storage.mark_vqueue_as_active(meta.vqueue_id());
+        }
+
+        if let Some(collector) = self.action_collector.as_deref_mut() {
+            let mut event = VQueueEvent::new(self.handle);
+            event.push(EventDetails::QueueResumed);
+            collector.push(A::from(event));
+        }
+    }
+
     #[inline]
     fn build_move_metrics(
         stats: &EntryStatistics,

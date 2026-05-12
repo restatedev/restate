@@ -337,22 +337,6 @@ impl HasRecordKeys for ProxyThroughCommand {
     }
 }
 
-#[derive(Clone, derive_more::Deref, derive_more::Into, derive_more::From, bilrost::Message)]
-pub struct VQSchedulerDecisionsCommand(scheduler::SchedulerDecisions);
-
-bilrost_storage_encode_decode!(VQSchedulerDecisionsCommand);
-
-impl HasRecordKeys for VQSchedulerDecisionsCommand {
-    fn record_keys(&self) -> Keys {
-        // All records in a decision are for a single partition key
-        if self.0.qids.is_empty() {
-            Keys::None
-        } else {
-            Keys::Single(self.0.qids[0].0.partition_key())
-        }
-    }
-}
-
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct UpsertRuleBookCommand {
     #[bilrost(tag(1))]
@@ -366,6 +350,54 @@ bilrost_storage_encode_decode!(UpsertRuleBookCommand);
 impl HasRecordKeys for UpsertRuleBookCommand {
     fn record_keys(&self) -> Keys {
         Keys::RangeInclusive(self.partition_key_range.into())
+    }
+}
+
+#[derive(Clone, derive_more::Deref, derive_more::Into, derive_more::From, bilrost::Message)]
+pub struct VQSchedulerDecisionsCommand(scheduler::SchedulerDecisions);
+
+bilrost_storage_encode_decode!(VQSchedulerDecisionsCommand);
+
+impl HasRecordKeys for VQSchedulerDecisionsCommand {
+    fn record_keys(&self) -> Keys {
+        // All records in a decision are for a single partition key
+        self.0
+            .qids
+            .first()
+            .map(|(qid, _)| Keys::Single(qid.partition_key()))
+            .unwrap_or_default()
+    }
+}
+
+#[derive(Clone, derive_more::Deref, derive_more::Into, derive_more::From, bilrost::Message)]
+pub struct VQueuesPauseCommand(crate::vqueues::VQueuesPause);
+
+bilrost_storage_encode_decode!(VQueuesPauseCommand);
+
+impl HasRecordKeys for VQueuesPauseCommand {
+    fn record_keys(&self) -> Keys {
+        // All records in a pause command are for a single partition key
+        self.0
+            .vqueues
+            .first()
+            .map(|qid| Keys::Single(qid.partition_key()))
+            .unwrap_or_default()
+    }
+}
+
+#[derive(Clone, derive_more::Deref, derive_more::Into, derive_more::From, bilrost::Message)]
+pub struct VQueuesResumeCommand(crate::vqueues::VQueuesResume);
+
+bilrost_storage_encode_decode!(VQueuesResumeCommand);
+
+impl HasRecordKeys for VQueuesResumeCommand {
+    fn record_keys(&self) -> Keys {
+        // All records in a pause command are for a single partition key
+        self.0
+            .vqueues
+            .first()
+            .map(|qid| Keys::Single(qid.partition_key()))
+            .unwrap_or_default()
     }
 }
 
@@ -483,11 +515,21 @@ command! {
 }
 
 command! {
+    @kind=CommandKind::UpsertRuleBook,
+    @command=UpsertRuleBookCommand
+}
+
+command! {
     @kind=CommandKind::VQSchedulerDecisions,
     @command=VQSchedulerDecisionsCommand
 }
 
 command! {
-    @kind=CommandKind::UpsertRuleBook,
-    @command=UpsertRuleBookCommand
+    @kind=CommandKind::VQueuesPause,
+    @command=VQueuesPauseCommand
+}
+
+command! {
+    @kind=CommandKind::VQueuesResume,
+    @command=VQueuesResumeCommand
 }
