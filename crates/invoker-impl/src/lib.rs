@@ -42,6 +42,7 @@ use restate_errors::warn_it;
 use restate_memory::{ByteCount, LocalMemoryPool, MemoryLease, MemoryPool, OutOfMemoryKind};
 use restate_queue::SegmentQueue;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
+use restate_types::clock::RoughTimestamp;
 use restate_types::config::{Configuration, InvokerOptions, ServiceClientOptions};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::PartitionId;
@@ -1317,9 +1318,12 @@ where
                         let _ = sender
                             .send(Box::new(Effect {
                                 invocation_id,
-                                kind: EffectKind::Yield(YieldReason::ExhaustedMemoryBudget {
-                                    needed_memory: oom.needed,
-                                }),
+                                kind: EffectKind::Yield {
+                                    reason: YieldReason::ExhaustedMemoryBudget {
+                                        needed_memory: oom.needed,
+                                    },
+                                    error_event: None,
+                                },
                             }))
                             .await;
                     } else {
@@ -1564,6 +1568,77 @@ where
                 // Timer was already registered inside handle_task_error via the closure
                 self.invocation_state_machine_manager
                     .register_invocation(invocation_id, ism);
+            }
+            OnTaskError::RetryViaScheduler {
+                retry_after,
+                retry_attempts,
+                retry_count_since_last_stored_command,
+            } => {
+                counter!(INVOKER_INVOCATION_TASKS,
+                    "status" => TASK_OP_FAILED,
+                    "transient" => "true",
+                    "partition_id" => self.invoker_id_label.clone()
+                )
+                .increment(1);
+                warn_it!(
+                        error,
+                        restate.invocation.id = %invocation_id,
+                        restate.invocation.target = %ism.invocation_target,
+                        restate.deployment.id = %attempt_deployment_id,
+                        "Invocation error, retrying via the scheduler after at least {}.",
+                        retry_after.friendly());
+                trace!("Invocation state: {:?}.", ism.invocation_state_debug());
+
+                let journal_v2_related_command_type =
+                    if let InvokerError::SdkV2(SdkInvocationErrorV2 {
+                        related_command: Some(ref related_entry),
+                        ..
+                    }) = error
+                    {
+                        related_entry
+                            .related_entry_type
+                            .and_then(|e| e.try_as_command_ref().copied())
+                    } else {
+                        None
+                    };
+                let invocation_error_report = error.into_invocation_error_report();
+                let error_event = TransientErrorEvent {
+                    error_code: invocation_error_report.err.code(),
+                    error_message: invocation_error_report.err.message().to_owned(),
+                    error_stacktrace: invocation_error_report
+                        .err
+                        .stacktrace()
+                        .map(|s| s.to_owned()),
+                    restate_doc_error_code: invocation_error_report
+                        .doc_error_code
+                        .map(|c| c.code().to_owned()),
+                    related_command_index: invocation_error_report.related_entry_index,
+                    related_command_name: invocation_error_report.related_entry_name.clone(),
+                    related_command_type: journal_v2_related_command_type,
+                };
+
+                // Some trivial deduplication here: if we already sent this transient error in the previous retry, don't send it again
+                let error_event = ism
+                    .should_emit_transient_error_event(&error_event)
+                    .then(|| RawEvent::from(Event::TransientError(error_event)));
+
+                self.status_store.on_end(&invocation_id);
+
+                let _ = self
+                    .invocation_state_machine_manager
+                    .partition_sender()
+                    .send(Box::new(Effect {
+                        invocation_id,
+                        kind: EffectKind::Yield {
+                            reason: YieldReason::TransientError {
+                                retry_attempts,
+                                retry_count_since_last_stored_command,
+                                resume_at: RoughTimestamp::now() + retry_after,
+                            },
+                            error_event,
+                        },
+                    }))
+                    .await;
             }
             OnTaskError::Pause => {
                 counter!(INVOKER_INVOCATION_TASKS,
@@ -3116,11 +3191,11 @@ mod tests {
             *effect,
             pat!(Effect {
                 invocation_id: eq(invocation_id),
-                kind: pat!(EffectKind::Yield(pat!(
-                    YieldReason::ExhaustedMemoryBudget {
+                kind: pat!(EffectKind::Yield {
+                    reason: pat!(YieldReason::ExhaustedMemoryBudget {
                         needed_memory: eq(NonZeroByteCount::new(NonZeroUsize::new(32768).unwrap())),
-                    }
-                )))
+                    })
+                })
             })
         );
 
