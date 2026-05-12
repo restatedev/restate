@@ -8,10 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod control;
-pub mod timer;
-pub mod v1;
-pub mod v2;
-pub mod vqueues;
+mod row;
+pub(crate) mod schema;
+mod table;
 
-pub use v1::{Command, Destination, Envelope, Header, Source};
+pub(crate) use table::register_self;
+
+#[cfg(test)]
+mod tests;

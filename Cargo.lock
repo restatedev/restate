@@ -8401,6 +8401,7 @@ dependencies = [
  "restate-workspace-hack",
  "schemars 1.2.1",
  "serde_json",
+ "strum",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",

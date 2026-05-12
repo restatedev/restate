@@ -4467,6 +4467,8 @@ pub mod v1 {
             pub handler: &'a [u8],
             // tag 4
             pub key: &'a [u8],
+            // tag 5
+            pub scope: Option<&'a str>,
         }
 
         impl<'a> InvocationTargetLazy<'a> {
@@ -4514,6 +4516,20 @@ pub mod v1 {
                                     error.push(STRUCT_NAME, "key");
                                     error
                                 })?
+                        }
+                        5u32 => {
+                            let mut bytes: &'a [u8] = &[];
+                            merge_bytes_zerocopy(wire_type, &mut bytes, &mut buf, ctx.clone())
+                                .map_err(|mut error| {
+                                    error.push(STRUCT_NAME, "scope");
+                                    error
+                                })?;
+                            self.scope = Some(str::from_utf8(bytes).map_err(|_| {
+                                #[allow(deprecated)]
+                                let mut error = prost::DecodeError::new("scope is not valid UTF-8");
+                                error.push(STRUCT_NAME, "scope");
+                                error
+                            })?);
                         }
                         _ => {
                             skip_field(wire_type, tag, &mut buf, ctx.clone())?;
@@ -4575,6 +4591,10 @@ pub mod v1 {
                 let handler_name = self.handler_name()?;
                 Ok(TargetFormatter(service_name, key, handler_name))
             }
+
+            pub fn scope(&self) -> Option<&str> {
+                self.scope
+            }
         }
 
         impl<'a> From<&'a InvocationTarget> for InvocationTargetLazy<'a> {
@@ -4584,6 +4604,7 @@ pub mod v1 {
                     name: &value.name,
                     handler: &value.handler,
                     key: &value.key,
+                    scope: value.scope.as_deref(),
                 }
             }
         }

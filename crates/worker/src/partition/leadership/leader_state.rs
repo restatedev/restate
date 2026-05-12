@@ -31,7 +31,7 @@ use restate_core::{Metadata, MetadataKind, TaskCenter, TaskHandle, TaskId};
 use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
 use restate_limiter::RuleBook;
 use restate_partition_store::PartitionDb;
-use restate_storage_api::vqueue_table::scheduler::SchedulerDecisions;
+use restate_storage_api::vqueue_table::scheduler::SchedulerDecisionsCommand;
 use restate_types::config::Configuration;
 use restate_types::identifiers::{
     LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
@@ -361,7 +361,7 @@ impl LeaderState {
                         .into_iter()
                         // one command per partition key
                         .map(|(partition_key, group)| {
-                            let decisions = SchedulerDecisions {
+                            let decisions = SchedulerDecisionsCommand {
                                 qids: group.collect(),
                             };
 
@@ -462,15 +462,19 @@ impl LeaderState {
                         .experimental
                         .is_vqueues_enabled()
                     {
+                        let cmd = restate_wal_protocol::control::UpsertRuleBookCommand {
+                            partition_key_range: self.partition_key_range,
+                            rule_book: book,
+                        };
+
+                        arena.reserve(cmd.encoded_len());
+                        // safe to unwrap because we reserved enough space
+                        cmd.bilrost_encode(&mut arena).unwrap();
+
                         self.self_proposer
                             .self_propose(
                                 self.partition_key_range.start(),
-                                Command::UpsertRuleBook(
-                                    restate_wal_protocol::control::UpsertRuleBookCommand {
-                                        partition_key_range: self.partition_key_range,
-                                        rule_book: book.bilrost_encode_to_bytes(),
-                                    },
-                                ),
+                                Command::UpsertRuleBook(arena.split().freeze()),
                             )
                             .await?;
                     }

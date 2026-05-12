@@ -46,6 +46,7 @@ paste = { workspace = true }
 prost = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde_json = { workspace = true }
+strum = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }

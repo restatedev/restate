@@ -11,6 +11,7 @@
 use std::future::Future;
 use std::time::{Duration, SystemTime};
 
+use bytes::Bytes;
 use datafusion::arrow::array::{
     ArrayRef, DurationMillisecondArray, LargeStringArray, ListArray, StringArray,
     TimestampMillisecondArray, UInt32Array, UInt64Array,
@@ -25,11 +26,12 @@ use restate_storage_api::Transaction;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InvocationStatus, WriteInvocationStatusTable,
 };
+use restate_storage_api::state_table::WriteStateTable;
 use restate_storage_api::vqueue_table::stats::WaitStats;
 use restate_types::Scope;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::InvocationUuid;
-use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey};
+use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, ServiceId};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::EntryType;
 use restate_types::journal_v2::NotificationId;
@@ -555,4 +557,142 @@ fn extract_uint32_list(column: &ArrayRef, row: usize) -> Option<Vec<u32>> {
         .expect("Downcast ref to UInt32Array");
 
     Some(row_value_downcast.values().to_owned().into())
+}
+
+fn extract_nullable_string(column: &ArrayRef, row: usize) -> Option<Option<String>> {
+    use datafusion::arrow::array::Array;
+
+    let column = column
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("Downcast ref to StringArray");
+    if column.len() <= row {
+        return None;
+    }
+    if column.is_null(row) {
+        Some(None)
+    } else {
+        Some(Some(column.value(row).to_string()))
+    }
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_sys_invocation_status_scope() {
+    let scoped_id = InvocationId::from_parts(0, InvocationUuid::from_u128(1));
+    let unscoped_id = InvocationId::from_parts(0, InvocationUuid::from_u128(2));
+
+    let scope = Scope::try_from_static("tenant-A").unwrap();
+    let scoped_target = InvocationTarget::scoped_service("svc", "h", scope);
+    let unscoped_target = InvocationTarget::service("svc", "h");
+
+    let mut engine = MockQueryEngine::create().await;
+
+    let mut tx = engine.partition_store().transaction();
+    tx.put_invocation_status(
+        &scoped_id,
+        &InvocationStatus::Invoked(InFlightInvocationMetadata {
+            invocation_target: scoped_target,
+            ..InFlightInvocationMetadata::mock()
+        }),
+    )
+    .unwrap();
+    tx.put_invocation_status(
+        &unscoped_id,
+        &InvocationStatus::Invoked(InFlightInvocationMetadata {
+            invocation_target: unscoped_target,
+            ..InFlightInvocationMetadata::mock()
+        }),
+    )
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let records = engine
+        .execute("SELECT id, scope FROM sys_invocation_status ORDER BY id ASC")
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_that!(
+        records,
+        all!(
+            row!(0, {
+                "id" => LargeStringArray: eq(scoped_id.to_string()),
+            }),
+            row_column_matcher(
+                0,
+                "scope",
+                extract_nullable_string,
+                eq(Some("tenant-A".to_string()))
+            ),
+            row!(1, {
+                "id" => LargeStringArray: eq(unscoped_id.to_string()),
+            }),
+            row_column_matcher(1, "scope", extract_nullable_string, eq(None)),
+        )
+    );
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_state_scoped_with_service_key_filter() {
+    // Regression: combining `scope = ...` and `service_key = ...` filters used to
+    // return zero rows because the partition-key extractor narrowed the scan to
+    // hash(service_key), but scoped rows live under hash(scope).
+    let scope = Scope::try_from_static("c").unwrap();
+    let scoped_i1 = ServiceId::new(Some(scope.clone()), "workflow", "i1");
+    let scoped_i2 = ServiceId::new(Some(scope.clone()), "workflow", "i2");
+    let state_key = Bytes::from_static(b"a");
+    let value = b"\"b\"";
+
+    let mut engine = MockQueryEngine::create().await;
+
+    let mut tx = engine.partition_store().transaction();
+    tx.put_user_state(&scoped_i1, &state_key, value).unwrap();
+    tx.put_user_state(&scoped_i2, &state_key, value).unwrap();
+    tx.commit().await.unwrap();
+
+    let scope_only = engine
+        .execute(
+            "SELECT service_key FROM state \
+             WHERE service_name = 'workflow' AND scope = 'c' \
+             ORDER BY service_key",
+        )
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_eq!(scope_only.num_rows(), 2);
+    assert_that!(
+        scope_only,
+        all!(
+            row!(0, { "service_key" => LargeStringArray: eq("i1") }),
+            row!(1, { "service_key" => LargeStringArray: eq("i2") }),
+        )
+    );
+
+    let scope_and_key = engine
+        .execute(
+            "SELECT service_key FROM state \
+             WHERE service_name = 'workflow' AND scope = 'c' AND service_key = 'i1'",
+        )
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_eq!(scope_and_key.num_rows(), 1);
+    assert_that!(
+        scope_and_key,
+        row!(0, { "service_key" => LargeStringArray: eq("i1") })
+    );
 }

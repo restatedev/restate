@@ -8,13 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+// Re-epxort vqueues commands
+pub use crate::vqueues::{VQueuesPauseCommand, VQueuesResumeCommand};
+pub use restate_storage_api::vqueue_table::scheduler::SchedulerDecisionsCommand;
+
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
 use restate_encoding::Arced;
 use restate_limiter::RuleBook;
-use restate_storage_api::vqueue_table::scheduler::{self};
 use restate_types::{
     bilrost_storage_encode_decode, flexbuffers_storage_encode_decode,
     identifiers::{WithInvocationId, WithPartitionKey},
@@ -337,22 +340,6 @@ impl HasRecordKeys for ProxyThroughCommand {
     }
 }
 
-#[derive(Clone, derive_more::Deref, derive_more::Into, derive_more::From, bilrost::Message)]
-pub struct VQSchedulerDecisionsCommand(scheduler::SchedulerDecisions);
-
-bilrost_storage_encode_decode!(VQSchedulerDecisionsCommand);
-
-impl HasRecordKeys for VQSchedulerDecisionsCommand {
-    fn record_keys(&self) -> Keys {
-        // All records in a decision are for a single partition key
-        if self.0.qids.is_empty() {
-            Keys::None
-        } else {
-            Keys::Single(self.0.qids[0].0.partition_key())
-        }
-    }
-}
-
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct UpsertRuleBookCommand {
     #[bilrost(tag(1))]
@@ -483,11 +470,21 @@ command! {
 }
 
 command! {
-    @kind=CommandKind::VQSchedulerDecisions,
-    @command=VQSchedulerDecisionsCommand
+    @kind=CommandKind::UpsertRuleBook,
+    @command=UpsertRuleBookCommand
 }
 
 command! {
-    @kind=CommandKind::UpsertRuleBook,
-    @command=UpsertRuleBookCommand
+    @kind=CommandKind::VQSchedulerDecisions,
+    @command=SchedulerDecisionsCommand
+}
+
+command! {
+    @kind=CommandKind::VQueuesPause,
+    @command=VQueuesPauseCommand
+}
+
+command! {
+    @kind=CommandKind::VQueuesResume,
+    @command=VQueuesResumeCommand
 }

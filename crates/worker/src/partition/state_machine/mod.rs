@@ -14,8 +14,6 @@ mod lifecycle;
 mod utils;
 
 pub use actions::{Action, ActionCollector};
-use restate_wal_protocol::v2::{CommandKind, commands};
-use restate_worker_api::invoker::Effect;
 
 use std::collections::HashSet;
 use std::fmt;
@@ -123,6 +121,8 @@ use restate_vqueues::{VQueue, VQueueHandle, VQueuesMetaCache};
 use restate_wal_protocol::timer::TimerKeyDisplay;
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::v2;
+use restate_wal_protocol::v2::{CommandKind, commands};
+use restate_worker_api::invoker::Effect;
 
 use self::utils::SpanExt;
 use crate::metric_definitions::{
@@ -496,7 +496,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             }
             CommandKind::VQSchedulerDecisions => {
                 let scheduler_decisions = envelope
-                    .into_typed::<commands::VQSchedulerDecisionsCommand>()
+                    .into_typed::<commands::SchedulerDecisionsCommand>()
                     .into_inner()?;
                 for (qid, actions) in &scheduler_decisions.qids {
                     for action in actions {
@@ -813,6 +813,18 @@ impl<S> StateMachineApplyContext<'_, S> {
                     .into_typed::<commands::UpsertRuleBookCommand>()
                     .into_inner()?;
 
+                if !upsert
+                    .partition_key_range
+                    .is_overlapping(&self.partition_key_range)
+                {
+                    trace!(
+                        "Ignore upsert-rule-book message which is not targeted to me. Message is for {} but I'm {}",
+                        upsert.partition_key_range, self.partition_key_range
+                    );
+
+                    return Ok(());
+                }
+
                 let new_book = upsert.rule_book;
 
                 let current_version = self.rule_book.version();
@@ -854,6 +866,49 @@ impl<S> StateMachineApplyContext<'_, S> {
                 // Update in-memory state.
                 *self.rule_book = new_book;
 
+                Ok(())
+            }
+            CommandKind::VQueuesPause => {
+                let pause = envelope
+                    .into_typed::<commands::VQueuesPauseCommand>()
+                    .into_inner()?;
+                let at = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
+                for qid in pause.vqueues.iter() {
+                    let Some(mut vqueue) = VQueue::get(
+                        qid,
+                        self.storage,
+                        self.vqueues_cache,
+                        self.is_leader.then_some(self.action_collector),
+                    )
+                    .await?
+                    else {
+                        // Ignore vqueues that we don't know.
+                        continue;
+                    };
+                    vqueue.pause_queue(at);
+                }
+                Ok(())
+            }
+            CommandKind::VQueuesResume => {
+                let resume = envelope
+                    .into_typed::<commands::VQueuesResumeCommand>()
+                    .into_inner()?;
+
+                let at = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
+                for qid in resume.vqueues.iter() {
+                    let Some(mut vqueue) = VQueue::get(
+                        qid,
+                        self.storage,
+                        self.vqueues_cache,
+                        self.is_leader.then_some(self.action_collector),
+                    )
+                    .await?
+                    else {
+                        // Ignore vqueues that we don't know.
+                        continue;
+                    };
+                    vqueue.resume_queue(at);
+                }
                 Ok(())
             }
         }

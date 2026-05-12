@@ -11,6 +11,7 @@
 use bytes::{Buf, BufMut, Bytes};
 
 use restate_clock::RoughTimestamp;
+use restate_types::bilrost_storage_encode_decode;
 use restate_types::vqueues::VQueueId;
 
 use super::EntryKey;
@@ -57,12 +58,14 @@ pub struct YieldAction {
 }
 
 #[derive(Debug, Clone, bilrost::Message)]
-pub struct SchedulerDecisions {
+pub struct SchedulerDecisionsCommand {
     #[bilrost(tag(1))]
     pub qids: Vec<(VQueueId, Vec<SchedulerAction>)>,
 }
 
-impl SchedulerDecisions {
+bilrost_storage_encode_decode!(SchedulerDecisionsCommand);
+
+impl SchedulerDecisionsCommand {
     pub fn bilrost_encode<B: BufMut>(&self, b: &mut B) -> Result<(), bilrost::EncodeError> {
         bilrost::Message::encode(self, b)
     }

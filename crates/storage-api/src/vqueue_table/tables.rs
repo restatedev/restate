@@ -29,6 +29,7 @@ use crate::Result;
     PartialOrd,
     Ord,
     bilrost::Enumeration,
+    strum::EnumCount,
     strum::FromRepr,
     strum::Display,
 )]
@@ -220,4 +221,28 @@ pub trait ScanVQueueMetaTable {
         range: KeyRange,
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>;
+}
+
+pub trait ScanVQueueEntries {
+    /// Iterate entries across one or more stages within a partition-key range.
+    ///
+    /// Stages are scanned sequentially in the order given. An empty `stages`
+    /// iterator scans all stages except [`Stage::Unknown`]. The callback
+    /// receives the originating stage along with each item.
+    ///
+    /// Used for data-fusion queries.
+    fn for_each_vqueue_entry<F, S>(
+        &self,
+        range: KeyRange,
+        stages: S,
+        f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send>
+    where
+        F: for<'a> FnMut(
+                (&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue),
+            ) -> std::ops::ControlFlow<()>
+            + Send
+            + Sync
+            + 'static,
+        S: IntoIterator<Item = Stage>;
 }

@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use bilrost::encoding::encoded_len_varint;
 use bilrost::{Message, OwnedMessage};
-use bytes::{BufMut, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 
 use restate_encoding::U128;
 use restate_types::identifiers::{LeaderEpoch, PartitionId};
@@ -148,6 +148,27 @@ impl StorageDecode for Envelope<Raw> {
 }
 
 impl Envelope<Raw> {
+    /// Construct the raw envelope from the given inputs.
+    ///
+    /// It's the caller's responsibility to ensure that the bytes payload is the correct
+    /// encoded value for this command kind and this codec.
+    pub fn from_bytes_unchecked(
+        kind: CommandKind,
+        codec: StorageCodecKind,
+        dedup: Dedup,
+        bytes: Bytes,
+    ) -> Self {
+        Self {
+            header: Header {
+                dedup,
+                kind,
+                codec: Some(codec),
+            },
+            payload: PolyBytes::Bytes(bytes),
+            _p: PhantomData,
+        }
+    }
+
     /// Converts Raw Envelope into a Typed envelope. Panics
     /// if the record kind does not match the M::KIND
     pub fn into_typed<M: Command>(self) -> Envelope<M> {
@@ -275,11 +296,19 @@ pub enum CommandKind {
     /// UpsertSchema record type
     UpsertSchema = 20,
 
-    /// VQueues scheduler decisions record type.
-    VQSchedulerDecisions = 21,
-
     /// Upsert rule book
-    UpsertRuleBook = 22,
+    UpsertRuleBook = 21,
+
+    /// VQueues scheduler decisions record type.
+    VQSchedulerDecisions = 22,
+
+    /// payload is bilrost encoded [`vqueues::VQueuesPause`]
+    /// *Since v1.7.0
+    VQueuesPause = 23,
+
+    /// payload is bilrost encoded [`vqueues::VQueuesResume`]
+    /// *Since v1.7.0
+    VQueuesResume = 24,
 }
 
 /// Specifies the deduplication strategy that allows receivers to discard

@@ -32,7 +32,8 @@ pub(crate) fn append_invocation_status_row<'a>(
         || row.is_target_service_key_defined()
         || row.is_target_handler_name_defined()
         || row.is_target_defined()
-        || row.is_target_service_ty_defined())
+        || row.is_target_service_ty_defined()
+        || row.is_scope_defined())
         && let Some(invocation_target) = invocation_status.invocation_target()?
     {
         if row.is_target_service_name_defined() {
@@ -55,6 +56,11 @@ pub(crate) fn append_invocation_status_row<'a>(
                 ServiceType::VirtualObject => "virtual_object",
                 ServiceType::Workflow => "workflow",
             });
+        }
+        if row.is_scope_defined()
+            && let Some(scope) = invocation_target.scope()
+        {
+            row.scope(scope);
         }
     }
 

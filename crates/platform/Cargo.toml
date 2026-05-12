@@ -15,7 +15,7 @@ restate-util-string = { workspace = true }
 bilrost = { workspace = true, optional = true }
 bytes = { workspace = true }
 bytestring = { workspace = true, optional = true }
-derive_more = { workspace = true, features = ["deref", "from", "display"] }
+derive_more = { workspace = true, features = ["deref", "from", "display", "debug"] }
 downcast-rs = { workspace = true }
 hashbrown = { workspace = true }
 parking_lot = { workspace = true }
