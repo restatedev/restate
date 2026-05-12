@@ -200,19 +200,9 @@ pub struct UpdatePartitionDurabilityCommand {
     /// Timestamp which the durability point was updated
     #[bilrost(tag(3))]
     pub modification_time: MillisSinceEpoch,
-    /// partition key range
-    #[bilrost(tag(4))]
-    #[serde(default)]
-    pub partition_key_range: Keys,
 }
 
 bilrost_storage_encode_decode!(UpdatePartitionDurabilityCommand);
-
-impl HasRecordKeys for UpdatePartitionDurabilityCommand {
-    fn record_keys(&self) -> Keys {
-        self.partition_key_range.clone()
-    }
-}
 
 /// Consistently store schema across partition replicas.
 ///
