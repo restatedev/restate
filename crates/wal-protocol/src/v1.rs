@@ -19,11 +19,12 @@ use restate_types::invocation::{
 };
 use restate_types::logs::{self, HasRecordKeys, Keys, MatchKeyQuery};
 use restate_types::message::MessageIndex;
+use restate_types::sharding::KeyRange;
 use restate_types::state_mut::ExternalStateMutation;
 
 use crate::control::{
-    AnnounceLeaderCommand, UpdatePartitionDurabilityCommand, UpsertRuleBookCommand,
-    UpsertSchemaCommand, VersionBarrierCommand,
+    AnnounceLeaderCommand, UpdatePartitionDurabilityCommand, UpsertSchemaCommand,
+    VersionBarrierCommand,
 };
 use crate::timer::TimerKeyValue;
 
@@ -193,8 +194,9 @@ pub enum Command {
     /// Upsert the cluster-global rule book for consistent rules across
     /// replicas; the apply path persists it to the partition store and
     /// notifies the leader's `UserLimiter` of the diff.
+    ///
     /// *Since v1.7.0
-    UpsertRuleBook(UpsertRuleBookCommand),
+    UpsertRuleBook(UpsertRuleBookCommandWrapper),
     // # Commands for VQueues management
     // ----------------------------------
     /// A command to attempt a run an entry in the vqueue (invocation, or otherwise)
@@ -274,4 +276,13 @@ impl MatchKeyQuery for Envelope {
     fn matches_key_query(&self, query: &logs::KeyFilter) -> bool {
         self.record_keys().matches_key_query(query)
     }
+}
+
+/// A temporary wrapper for [`UpsertRuleBookCommand`]
+/// only used in v1 to only supply the partition_key_range
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct UpsertRuleBookCommandWrapper {
+    pub partition_key_range: KeyRange,
+    /// Bytes are bilrost encoded [`UpsertRuleBookCommand`]
+    pub command: Bytes,
 }

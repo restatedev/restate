@@ -8,7 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::Bytes;
+use std::sync::Arc;
+
+use bytes::{Buf, BufMut, Bytes};
+
+use restate_encoding::Arced;
+use restate_limiter::RuleBook;
 use restate_storage_api::fsm_table::{CurrentReplicaSetState, NextReplicaSetState};
 use restate_types::identifiers::{LeaderEpoch, PartitionId};
 use restate_types::logs::{HasRecordKeys, Keys, Lsn, SequenceNumber};
@@ -241,8 +246,28 @@ impl HasRecordKeys for UpsertSchemaCommand {
 /// The state machine decodes once on apply.
 ///
 /// Since v1.7.0.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, bilrost::Message)]
 pub struct UpsertRuleBookCommand {
-    pub partition_key_range: KeyRange,
-    pub rule_book: Bytes,
+    #[bilrost(tag(1), encoding(Arced))]
+    pub rule_book: Arc<RuleBook>,
+}
+
+bilrost_storage_encode_decode!(UpsertRuleBookCommand);
+
+impl UpsertRuleBookCommand {
+    pub fn bilrost_encode<B: BufMut>(&self, b: &mut B) -> Result<(), bilrost::EncodeError> {
+        bilrost::Message::encode(self, b)
+    }
+
+    pub fn encoded_len(&self) -> usize {
+        bilrost::Message::encoded_len(self)
+    }
+
+    pub fn bilrost_encode_to_bytes(&self) -> Bytes {
+        bilrost::Message::encode_to_bytes(self)
+    }
+
+    pub fn bilrost_decode<B: Buf>(buf: B) -> Result<Self, bilrost::DecodeError> {
+        bilrost::OwnedMessage::decode(buf)
+    }
 }
