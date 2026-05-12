@@ -10,6 +10,7 @@
 
 use std::collections::HashSet;
 
+use restate_clock::RoughTimestamp;
 use restate_memory::NonZeroByteCount;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::InvocationError;
@@ -79,7 +80,11 @@ pub enum EffectKind {
     /// The invoker yielded the invocation back to the scheduler. The partition
     /// processor should re-schedule the invocation (via [`YieldReason`] the
     /// scheduler can apply reason-specific strategies in the future).
-    Yield(YieldReason),
+    Yield {
+        reason: YieldReason,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error_event: Option<RawEvent>,
+    },
     /// This is sent always after [`Self::JournalEntry`] with `OutputStreamEntry`(s).
     End,
     /// This is sent when the invoker exhausted all its attempts to make progress on the specific invocation.
@@ -125,6 +130,20 @@ impl EffectKind {
 pub enum YieldReason {
     /// The invocation exhausted its outbound memory budget.
     ExhaustedMemoryBudget { needed_memory: NonZeroByteCount },
+    /// The invocation has been yielded due to an error.
+    TransientError {
+        /// Controls the service retry policy related retries. This is the the
+        /// value that should be used to initialize the retry policy after resuming.
+        retry_attempts: u32,
+        /// For sdk-controlled retries. This defines the retry-count value that will be
+        /// sent downstream to the SDK to be used for its ctx.run() retries on the next
+        /// start message.
+        retry_count_since_last_stored_command: u32,
+        resume_at: RoughTimestamp,
+    },
+    /// The invocation has been yielded due to an error or cooperatively yielded
+    /// due to capacity constraints.
+    LoadShedding {},
     /// A yield reason not recognized by this node version. The partition
     /// processor applies the default strategy (re-schedule immediately).
     #[cfg_attr(feature = "serde", serde(other))]

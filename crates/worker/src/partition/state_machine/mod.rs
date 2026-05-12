@@ -2826,7 +2826,21 @@ impl<S> StateMachineApplyContext<'_, S> {
                 )
                 .await?;
             }
-            InvokerEffectKind::Yield(ref reason) => {
+            InvokerEffectKind::Yield {
+                ref reason,
+                error_event,
+            } => {
+                if let Some(event) = error_event {
+                    // Submit the journal event if we have one
+                    lifecycle::ApplyEventCommand {
+                        invocation_id: &effect.invocation_id,
+                        invocation_status: &invocation_status,
+                        event,
+                    }
+                    .apply(self)
+                    .await?;
+                }
+
                 let invocation_metadata = invocation_status
                     .into_invocation_metadata()
                     .expect("Must be present if status is invoked");
