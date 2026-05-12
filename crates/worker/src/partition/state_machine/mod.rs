@@ -813,6 +813,18 @@ impl<S> StateMachineApplyContext<'_, S> {
                     .into_typed::<commands::UpsertRuleBookCommand>()
                     .into_inner()?;
 
+                if !upsert
+                    .partition_key_range
+                    .is_overlapping(&self.partition_key_range)
+                {
+                    trace!(
+                        "Ignore upsert-rule-book message which is not targeted to me. Message is for {} but I'm {}",
+                        upsert.partition_key_range, self.partition_key_range
+                    );
+
+                    return Ok(());
+                }
+
                 let new_book = upsert.rule_book;
 
                 let current_version = self.rule_book.version();
