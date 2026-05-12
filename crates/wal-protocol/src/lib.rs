@@ -12,5 +12,6 @@ pub mod control;
 pub mod timer;
 pub mod v1;
 pub mod v2;
+pub mod vqueues;
 
 pub use v1::{Command, Destination, Envelope, Header, Source};

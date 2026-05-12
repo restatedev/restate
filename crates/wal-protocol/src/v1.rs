@@ -201,6 +201,12 @@ pub enum Command {
     /// *Since v1.7.0
     /// payload is a bilrost encoded [`restate_storage_api::vqueue_table::scheduler::SchedulerDecisions`]
     VQSchedulerDecisions(#[debug(skip)] Bytes),
+    /// payload is bilrost encoded [`vqueues::VQueuesPause`]
+    /// *Since v1.7.0
+    VQueuesPause(#[debug(skip)] Bytes),
+    /// payload is bilrost encoded [`vqueues::VQueuesResume`]
+    /// *Since v1.7.0
+    VQueuesResume(#[debug(skip)] Bytes),
 }
 
 impl Command {
@@ -258,6 +264,8 @@ impl HasRecordKeys for Envelope {
                 Keys::RangeInclusive(upsert.partition_key_range.into())
             }
             Command::VQSchedulerDecisions(_) => Keys::Single(self.partition_key()),
+            Command::VQueuesPause(_) => Keys::Single(self.partition_key()),
+            Command::VQueuesResume(_) => Keys::Single(self.partition_key()),
         }
     }
 }

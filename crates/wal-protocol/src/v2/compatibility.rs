@@ -14,11 +14,10 @@ use bilrost::OwnedMessage;
 
 use restate_encoding::U128;
 use restate_limiter::RuleBook;
-use restate_storage_api::{
-    deduplication_table::{DedupInformation, DedupSequenceNumber, EpochSequenceNumber, ProducerId},
-    vqueue_table::scheduler::SchedulerDecisions,
+use restate_storage_api::deduplication_table::{
+    DedupInformation, DedupSequenceNumber, EpochSequenceNumber, ProducerId,
 };
-use restate_types::logs::Keys;
+use restate_types::{logs::Keys, storage::StorageCodecKind};
 use restate_util_string::ReString;
 
 use super::{Raw, commands};
@@ -140,12 +139,6 @@ impl TryFrom<v1::Envelope> for v2::Envelope<Raw> {
             }
             v1::Command::UpsertSchema(payload) => Envelope::new(dedup, payload).into_raw(),
             v1::Command::VersionBarrier(payload) => Envelope::new(dedup, payload).into_raw(),
-            v1::Command::VQSchedulerDecisions(payload) => {
-                // bytes are bilrost encoded SchedulerDecision.
-                let payload = SchedulerDecisions::bilrost_decode(payload)?;
-                Envelope::new(dedup, commands::VQSchedulerDecisionsCommand::from(payload))
-                    .into_raw()
-            }
             v1::Command::UpsertRuleBook(payload) => {
                 let rule_book = RuleBook::decode(payload.rule_book)?;
                 Envelope::new(
@@ -157,6 +150,24 @@ impl TryFrom<v1::Envelope> for v2::Envelope<Raw> {
                 )
                 .into_raw()
             }
+            v1::Command::VQSchedulerDecisions(payload) => Envelope::from_bytes_unchecked(
+                v2::CommandKind::VQSchedulerDecisions,
+                StorageCodecKind::Bilrost,
+                dedup,
+                payload,
+            ),
+            v1::Command::VQueuesPause(payload) => Envelope::from_bytes_unchecked(
+                v2::CommandKind::VQueuesPause,
+                StorageCodecKind::Bilrost,
+                dedup,
+                payload,
+            ),
+            v1::Command::VQueuesResume(payload) => Envelope::from_bytes_unchecked(
+                v2::CommandKind::VQueuesResume,
+                StorageCodecKind::Bilrost,
+                dedup,
+                payload,
+            ),
         };
 
         Ok(envelope)
