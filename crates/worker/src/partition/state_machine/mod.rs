@@ -5414,10 +5414,10 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         // synthesize a virtual object invocation target so we can generate the vqueue id from.
         let target = InvocationTarget::VirtualObject {
-            name: service_id.service_name.clone(),
-            key: service_id.key.clone(),
+            name: service_id.service_name.clone().into(),
+            key: service_id.key.clone().into(),
             // fake, doesn't matter.
-            handler: ByteString::from_static("_state_mutation"),
+            handler: ReString::from_static("_state_mutation"),
             handler_ty: VirtualObjectHandlerType::Exclusive,
             scope: service_id.scope.clone(),
         };

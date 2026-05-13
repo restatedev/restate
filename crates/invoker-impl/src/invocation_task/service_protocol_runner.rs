@@ -525,7 +525,8 @@ where
                 self.invocation_task
                     .invocation_target
                     .key()
-                    .map(|bs| bs.as_bytes().clone()),
+                    .cloned()
+                    .map(Into::into),
                 journal_size,
                 partial_state,
                 state_map,

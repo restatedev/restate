@@ -108,7 +108,7 @@ pub mod v1 {
         use restate_types::service_protocol::ServiceProtocolVersion;
         use restate_types::time::MillisSinceEpoch;
         use restate_types::{GenerationalNodeId, Scope, journal_v2};
-        use restate_util_string::RestateString;
+        use restate_util_string::{ReString, RestateString};
 
         use super::dedup_sequence_number::Variant;
         use super::enriched_entry_header::{
@@ -144,6 +144,14 @@ pub mod v1 {
         use crate::protobuf_types::v1::{
             Future, NotificationEntryIndex, NotificationResultVariant,
         };
+
+        // Unsafe Bytes -> ReString conversion. Skips UTF-8 validation since storage data was
+        // validated at write-time.
+        #[inline]
+        fn bytes_to_restring(mut bytes: Bytes) -> ReString {
+            // SAFETY: storage payloads are written by the runtime after validating UTF-8.
+            unsafe { ReString::from_utf8_buf_unchecked(&mut bytes) }
+        }
 
         impl TryFrom<VirtualObjectStatus> for crate::service_status_table::VirtualObjectStatus {
             type Error = ConversionError;
@@ -225,7 +233,7 @@ pub mod v1 {
                     service_key: value.service_key.map(Into::into),
                     handler_name: value.service_handler.into(),
                     idempotency_key: value.idempotency_key.into(),
-                    scope: value.scope.map(|s| s.to_string()),
+                    scope: value.scope.map(|s| s.to_restring().into()),
                 }
             }
         }
@@ -234,11 +242,10 @@ pub mod v1 {
             type Error = ConversionError;
 
             fn try_from(value: IdempotencyId) -> Result<Self, ConversionError> {
-                let scope = value
-                    .scope
-                    .map(|scope| Scope::try_new(&scope))
-                    .transpose()
-                    .map_err(ConversionError::invalid_data)?;
+                // SAFETY: storage payloads were validated at write-time.
+                let scope = value.scope.map(|scope| unsafe {
+                    Scope::from_restring_unchecked(bytes_to_restring(scope))
+                });
                 Ok(restate_types::identifiers::IdempotencyId::new(
                     value.service_name.into(),
                     value.service_key.map(Into::into),
@@ -1671,7 +1678,9 @@ pub mod v1 {
                     .transpose()?;
 
                 // Scope is persisted as part of InvocationTarget since v1.7.0
-                let limit_key = limit_key.parse().map_err(ConversionError::invalid_data)?;
+                let limit_key = bytes_to_restring(limit_key)
+                    .parse()
+                    .map_err(ConversionError::invalid_data)?;
 
                 Ok(restate_types::invocation::ServiceInvocation {
                     invocation_id,
@@ -1694,7 +1703,7 @@ pub mod v1 {
 
         impl From<restate_types::invocation::ServiceInvocation> for ServiceInvocation {
             fn from(value: restate_types::invocation::ServiceInvocation) -> Self {
-                let limit_key = value.limit_key.to_string();
+                let limit_key = Bytes::from(value.limit_key.to_string());
                 // Scope is persisted as part of InvocationTarget since v1.7.0
                 let invocation_target = InvocationTarget::from(value.invocation_target);
                 let span_context = SpanContext::from(value.span_context);
@@ -1750,7 +1759,7 @@ pub mod v1 {
                     idempotency_key: value.idempotency_key.as_ref().map(|s| s.to_string()),
                     submit_notification_sink: value.submit_notification_sink.map(Into::into),
                     restate_version: value.restate_version.clone().into_string(),
-                    limit_key: value.limit_key.to_string(),
+                    limit_key: Bytes::from(value.limit_key.to_string()),
                 }
             }
         }
@@ -1840,15 +1849,12 @@ pub mod v1 {
             type Error = ConversionError;
 
             fn try_from(value: InvocationTarget) -> Result<Self, ConversionError> {
-                let name =
-                    ByteString::try_from(value.name).map_err(ConversionError::invalid_data)?;
-                let handler =
-                    ByteString::try_from(value.handler).map_err(ConversionError::invalid_data)?;
-                let scope = if let Some(ref scope) = value.scope {
-                    Some(Scope::try_new(scope).map_err(ConversionError::invalid_data)?)
-                } else {
-                    None
-                };
+                let name = bytes_to_restring(value.name);
+                let handler = bytes_to_restring(value.handler);
+                // SAFETY: storage payloads were validated at write-time.
+                let scope = value.scope.map(|scope| unsafe {
+                    Scope::from_restring_unchecked(bytes_to_restring(scope))
+                });
 
                 match invocation_target::Ty::try_from(value.service_and_handler_ty) {
                     Ok(invocation_target::Ty::Service) => {
@@ -1862,8 +1868,7 @@ pub mod v1 {
                         Ok(restate_types::invocation::InvocationTarget::VirtualObject {
                             name,
                             handler,
-                            key: ByteString::try_from(value.key)
-                                .map_err(ConversionError::invalid_data)?,
+                            key: bytes_to_restring(value.key),
                             handler_ty:
                                 restate_types::invocation::VirtualObjectHandlerType::Exclusive,
                             scope,
@@ -1873,8 +1878,7 @@ pub mod v1 {
                         Ok(restate_types::invocation::InvocationTarget::VirtualObject {
                             name,
                             handler,
-                            key: ByteString::try_from(value.key)
-                                .map_err(ConversionError::invalid_data)?,
+                            key: bytes_to_restring(value.key),
                             handler_ty: restate_types::invocation::VirtualObjectHandlerType::Shared,
                             scope,
                         })
@@ -1883,8 +1887,7 @@ pub mod v1 {
                         Ok(restate_types::invocation::InvocationTarget::Workflow {
                             name,
                             handler,
-                            key: ByteString::try_from(value.key)
-                                .map_err(ConversionError::invalid_data)?,
+                            key: bytes_to_restring(value.key),
                             handler_ty: restate_types::invocation::WorkflowHandlerType::Workflow,
                             scope,
                         })
@@ -1893,8 +1896,7 @@ pub mod v1 {
                         Ok(restate_types::invocation::InvocationTarget::Workflow {
                             name,
                             handler,
-                            key: ByteString::try_from(value.key)
-                                .map_err(ConversionError::invalid_data)?,
+                            key: bytes_to_restring(value.key),
                             handler_ty: restate_types::invocation::WorkflowHandlerType::Shared,
                             scope,
                         })
@@ -1909,13 +1911,13 @@ pub mod v1 {
 
         impl From<restate_types::invocation::InvocationTarget> for InvocationTarget {
             fn from(value: restate_types::invocation::InvocationTarget) -> Self {
-                let scope = value.scope().map(|s| s.to_string());
+                let scope = value.scope().map(|s| s.to_restring().into());
                 match value {
                     restate_types::invocation::InvocationTarget::Service {
                         name, handler, ..
                     } => InvocationTarget {
-                        name: name.into_bytes(),
-                        handler: handler.into_bytes(),
+                        name: name.into(),
+                        handler: handler.into(),
                         service_and_handler_ty: invocation_target::Ty::Service.into(),
                         scope,
                         ..InvocationTarget::default()
@@ -1927,9 +1929,9 @@ pub mod v1 {
                         handler_ty,
                         ..
                     } => InvocationTarget {
-                        name: name.into_bytes(),
-                        handler: handler.into_bytes(),
-                        key: key.into_bytes(),
+                        name: name.into(),
+                        handler: handler.into(),
+                        key: key.into(),
                         scope,
                         service_and_handler_ty: match handler_ty {
                             restate_types::invocation::VirtualObjectHandlerType::Shared => {
@@ -1948,9 +1950,9 @@ pub mod v1 {
                         handler_ty,
                         ..
                     } => InvocationTarget {
-                        name: name.into_bytes(),
-                        handler: handler.into_bytes(),
-                        key: key.into_bytes(),
+                        name: name.into(),
+                        handler: handler.into(),
+                        key: key.into(),
                         scope,
                         service_and_handler_ty: match handler_ty {
                             restate_types::invocation::WorkflowHandlerType::Shared => {
@@ -1968,13 +1970,13 @@ pub mod v1 {
 
         impl From<&restate_types::invocation::InvocationTarget> for InvocationTarget {
             fn from(value: &restate_types::invocation::InvocationTarget) -> Self {
-                let scope = value.scope().map(|s| s.to_string());
+                let scope = value.scope().map(|s| s.to_restring().into());
                 match value {
                     restate_types::invocation::InvocationTarget::Service {
                         name, handler, ..
                     } => InvocationTarget {
-                        name: name.as_bytes().clone(),
-                        handler: handler.as_bytes().clone(),
+                        name: name.clone().into(),
+                        handler: handler.clone().into(),
                         service_and_handler_ty: invocation_target::Ty::Service.into(),
                         scope,
                         ..InvocationTarget::default()
@@ -1986,9 +1988,9 @@ pub mod v1 {
                         handler_ty,
                         ..
                     } => InvocationTarget {
-                        name: name.as_bytes().clone(),
-                        handler: handler.as_bytes().clone(),
-                        key: key.as_bytes().clone(),
+                        name: name.clone().into(),
+                        handler: handler.clone().into(),
+                        key: key.clone().into(),
                         scope,
                         service_and_handler_ty: match handler_ty {
                             restate_types::invocation::VirtualObjectHandlerType::Shared => {
@@ -2007,9 +2009,9 @@ pub mod v1 {
                         handler_ty,
                         ..
                     } => InvocationTarget {
-                        name: name.as_bytes().clone(),
-                        handler: handler.as_bytes().clone(),
-                        key: key.as_bytes().clone(),
+                        name: name.clone().into(),
+                        handler: handler.clone().into(),
+                        key: key.clone().into(),
                         scope,
                         service_and_handler_ty: match handler_ty {
                             restate_types::invocation::WorkflowHandlerType::Shared => {
@@ -2029,13 +2031,10 @@ pub mod v1 {
             type Error = ConversionError;
 
             fn try_from(service_id: ServiceId) -> Result<Self, ConversionError> {
-                // Safety: In principle, data is meant to be validated _before_ they
-                // are written to storage.
-                // RestrictedValue. Therefore, we validate it here.
-                let scope = service_id
-                    .scope
-                    .as_ref()
-                    .map(|scope| unsafe { Scope::new_unchecked(scope) });
+                // SAFETY: storage payloads were validated at write-time.
+                let scope = service_id.scope.map(|scope| unsafe {
+                    Scope::from_restring_unchecked(bytes_to_restring(scope))
+                });
                 Ok(restate_types::identifiers::ServiceId::new(
                     scope,
                     ByteString::try_from(service_id.service_name)
@@ -2051,7 +2050,7 @@ pub mod v1 {
                 ServiceId {
                     service_key: service_id.key.into_bytes(),
                     service_name: service_id.service_name.into_bytes(),
-                    scope: service_id.scope.map(|s| s.to_string()),
+                    scope: service_id.scope.map(|s| s.to_restring().into()),
                 }
             }
         }

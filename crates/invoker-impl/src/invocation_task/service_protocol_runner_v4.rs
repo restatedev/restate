@@ -86,6 +86,32 @@ const RATE_LIMITED_CODES: [StatusCode; 2] = [
     StatusCode::TOO_MANY_REQUESTS,
 ];
 
+/// Convert prost-decoded bytes from the SDK into an `InvokeRequest`, validating UTF-8.
+#[allow(clippy::too_many_arguments)]
+fn try_invoke_request_from_call(
+    service_name: Bytes,
+    handler_name: Bytes,
+    key: Bytes,
+    parameter: Bytes,
+    headers: Vec<Header>,
+    idempotency_key: Option<ByteString>,
+    scope: Option<Bytes>,
+    limit_key: Option<Bytes>,
+    span_relation: SpanRelation,
+) -> Result<InvokeRequest, CommandPreconditionError> {
+    Ok(InvokeRequest {
+        service_name: ReString::try_from(service_name)?,
+        handler_name: ReString::try_from(handler_name)?,
+        parameter,
+        headers,
+        key: ReString::try_from(key)?,
+        idempotency_key,
+        scope: scope.map(ReString::try_from).transpose()?,
+        limit_key: limit_key.map(ReString::try_from).transpose()?,
+        span_relation,
+    })
+}
+
 /// Runs the interaction between the server and the service endpoint.
 pub struct ServiceProtocolRunner<'a, EE, Schemas> {
     invocation_task: &'a mut InvocationTask<EE, Schemas>,
@@ -706,7 +732,8 @@ where
                 self.invocation_task
                     .invocation_target
                     .key()
-                    .map(|bs| bs.as_bytes().clone()),
+                    .cloned()
+                    .map(Into::into),
                 journal_size,
                 partial_state,
                 state_map,
@@ -724,7 +751,8 @@ where
                 self.invocation_task
                     .invocation_target
                     .key()
-                    .map(|bs| bs.as_bytes().clone()),
+                    .cloned()
+                    .map(Into::into),
                 journal_size,
                 partial_state,
                 state_map,
@@ -1063,22 +1091,21 @@ where
                 let name = cmd.name;
                 let entry: Entry = OneWayCallCommand {
                     request: shortcircuit!(
-                        resolve_call_request(
-                            self.invocation_task.schemas.live_load(),
-                            InvokeRequest {
-                                service_name: cmd.service_name.into(),
-                                handler_name: cmd.handler_name.into(),
-                                parameter: cmd.parameter,
-                                headers: cmd.headers.into_iter().map(Into::into).collect(),
-                                key: cmd.key.into(),
-                                idempotency_key: cmd.idempotency_key.map(|s| s.into()),
-                                scope: cmd.scope,
-                                limit_key: cmd.limit_key,
-                                span_relation: SpanRelation::Linked(
-                                    attempt_span.span_context().clone().into()
-                                )
-                            }
+                        try_invoke_request_from_call(
+                            cmd.service_name,
+                            cmd.handler_name,
+                            cmd.key,
+                            cmd.parameter,
+                            cmd.headers.into_iter().map(Into::into).collect(),
+                            cmd.idempotency_key.map(|s| s.into()),
+                            cmd.scope,
+                            cmd.limit_key,
+                            SpanRelation::Linked(attempt_span.span_context().clone().into()),
                         )
+                        .and_then(|req| resolve_call_request(
+                            self.invocation_task.schemas.live_load(),
+                            req
+                        ))
                         .map_err(|e| InvokerError::CommandPrecondition(
                             self.command_index,
                             EntryType::Command(CommandType::OneWayCall),
@@ -1105,22 +1132,21 @@ where
                 let name = cmd.name;
                 let entry: Entry = CallCommand {
                     request: shortcircuit!(
-                        resolve_call_request(
-                            self.invocation_task.schemas.live_load(),
-                            InvokeRequest {
-                                service_name: cmd.service_name.into(),
-                                handler_name: cmd.handler_name.into(),
-                                parameter: cmd.parameter,
-                                headers: cmd.headers.into_iter().map(Into::into).collect(),
-                                key: cmd.key.into(),
-                                idempotency_key: cmd.idempotency_key.map(|s| s.into()),
-                                scope: cmd.scope,
-                                limit_key: cmd.limit_key,
-                                span_relation: SpanRelation::Parent(
-                                    attempt_span.span_context().clone().into()
-                                )
-                            }
+                        try_invoke_request_from_call(
+                            cmd.service_name,
+                            cmd.handler_name,
+                            cmd.key,
+                            cmd.parameter,
+                            cmd.headers.into_iter().map(Into::into).collect(),
+                            cmd.idempotency_key.map(|s| s.into()),
+                            cmd.scope,
+                            cmd.limit_key,
+                            SpanRelation::Parent(attempt_span.span_context().clone().into()),
                         )
+                        .and_then(|req| resolve_call_request(
+                            self.invocation_task.schemas.live_load(),
+                            req
+                        ))
                         .map_err(|e| InvokerError::CommandPrecondition(
                             self.command_index,
                             EntryType::Command(CommandType::Call),
@@ -1476,16 +1502,16 @@ where
 }
 
 pub struct InvokeRequest {
-    service_name: ByteString,
-    handler_name: ByteString,
+    service_name: ReString,
+    handler_name: ReString,
     headers: Vec<Header>,
     /// Empty if service call.
     /// The reason this is not Option<ByteString> is that it cannot be distinguished purely from the message
     /// whether the key is none or empty.
-    key: ByteString,
+    key: ReString,
     idempotency_key: Option<ByteString>,
-    scope: Option<String>,
-    limit_key: Option<String>,
+    scope: Option<ReString>,
+    limit_key: Option<ReString>,
     span_relation: SpanRelation,
     parameter: Bytes,
 }
