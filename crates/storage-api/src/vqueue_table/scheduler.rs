@@ -11,22 +11,75 @@
 use bytes::{Buf, BufMut, Bytes};
 
 use restate_clock::RoughTimestamp;
+use restate_memory::NonZeroByteCount;
 use restate_types::bilrost_storage_encode_decode;
 use restate_types::vqueues::VQueueId;
 
 use super::EntryKey;
 use super::stats::WaitStats;
 
-#[derive(Debug)]
+/// Why the invoker yielded the invocation back to the scheduler.
+///
+/// New reasons can be added without a version barrier — nodes that don't
+/// recognize a reason will deserialize it as [`Unknown`](Self::Unknown) and
+/// apply the default re-scheduling strategy (immediate re-invoke).
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    bilrost::Message,
+    bilrost::Oneof,
+)]
+#[serde(tag = "reason")]
 pub enum YieldReason {
-    /// The entry is in "run" queue and needs to be placed back onto inbox
-    PartitionLeaderChanged,
-    // Only used if we'd like to update the next run time
-    // Entry is in "inbox" and needs to be re-placed back onto inbox but at different
-    // run_at time.
-    RetryLater {
-        run_at: RoughTimestamp,
+    /// The entry is in "run" queue and needs to be placed back onto inbox because
+    /// the partition leader has changed.
+    #[bilrost(tag(1), message)]
+    PartitionLeaderChange,
+    /// The invocation exhausted its outbound memory budget.
+    #[bilrost(tag(2), message)]
+    ExhaustedMemoryBudget { needed_memory: NonZeroByteCount },
+    /// The invocation has been yielded due to an error during execution.
+    #[bilrost(tag(3), message)]
+    TransientError {
+        /// Controls the service retry policy related retries. This is the the
+        /// value that should be used to initialize the retry policy after resuming.
+        retry_attempts: u32,
+        /// For sdk-controlled retries. This defines the retry-count value that will be
+        /// sent downstream to the SDK to be used for its ctx.run() retries on the next
+        /// start message.
+        retry_count_since_last_stored_command: u32,
     },
+    /// The invocation has been yielded due to an error or cooperatively yielded
+    /// due to capacity constraints.
+    #[bilrost(tag(4), message)]
+    InvokerLoadShedding,
+    /// A yield reason not recognized by this node version or a yield that triggered
+    /// through a path that doesn't expect yields (harmless).
+    #[serde(other)]
+    #[bilrost(empty)]
+    Unknown,
+}
+
+impl std::fmt::Display for YieldReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            YieldReason::ExhaustedMemoryBudget { needed_memory } => {
+                write!(
+                    f,
+                    "exhausted invocation memory budget ({needed_memory} needed)",
+                )
+            }
+            YieldReason::TransientError { .. } => write!(f, "transient error"),
+            YieldReason::InvokerLoadShedding => write!(f, "invoker load shedding"),
+            YieldReason::PartitionLeaderChange => write!(f, "partition leader change"),
+            YieldReason::Unknown => write!(f, "unknown"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, bilrost::Oneof, bilrost::Message, derive_more::From)]
@@ -55,6 +108,8 @@ pub struct YieldAction {
     pub key: EntryKey,
     #[bilrost(tag(2))]
     pub next_run_at: Option<RoughTimestamp>,
+    #[bilrost(tag(3))]
+    pub reason: YieldReason,
 }
 
 #[derive(Debug, Clone, bilrost::Message)]
