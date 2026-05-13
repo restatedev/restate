@@ -757,8 +757,7 @@ async fn query_state_with_service_key_filter() {
         )
     );
 
-    // Unfortunately, this query will no longer be a single partition key scan but instead a full
-    // partition key range scan :-(
+    // With `scope IS NULL` explicit, the conditional extractor narrows to hash(service_key).
     let null_scope_service_key = engine
         .execute(
             "SELECT service_name FROM state \
