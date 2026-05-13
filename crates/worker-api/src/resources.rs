@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_storage_api::vqueue_table::EntryMetadata;
 use smallvec::SmallVec;
 use tokio::sync::mpsc;
 
@@ -72,6 +73,7 @@ impl SystemPermit {
 #[must_use]
 #[clippy::has_significant_drop]
 pub struct ReservedResources {
+    pub metadata: EntryMetadata,
     resources: SmallVec<[UserPermitKind; 1]>,
     system_permit: SystemPermit,
     manager_tx: Option<mpsc::UnboundedSender<ResourceManagerUpdate>>,
@@ -80,6 +82,7 @@ pub struct ReservedResources {
 impl ReservedResources {
     pub fn new_empty() -> Self {
         Self {
+            metadata: EntryMetadata::default(),
             resources: SmallVec::new(),
             system_permit: SystemPermit::default(),
             manager_tx: None,
@@ -87,11 +90,13 @@ impl ReservedResources {
     }
 
     pub const fn new(
+        metadata: EntryMetadata,
         resources: SmallVec<[UserPermitKind; 1]>,
         system_permit: SystemPermit,
         manager_tx: mpsc::UnboundedSender<ResourceManagerUpdate>,
     ) -> Self {
         Self {
+            metadata,
             resources,
             system_permit,
             manager_tx: Some(manager_tx),

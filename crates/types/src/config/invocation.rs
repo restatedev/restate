@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
 
+const DEFAULT_INVOCATION_YIELD_THRESHOLD: FriendlyDuration = FriendlyDuration::from_secs(2);
+
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder, PartialEq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "InvocationOptions", default))]
@@ -56,6 +58,19 @@ pub struct InvocationOptions {
     /// `None` means no limit, that is infinite retries is enabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_retry_policy_max_attempts: Option<NonZeroUsize>,
+
+    /// # Yield from invoker threshold
+    ///
+    /// If an invocation needs retrying, it'll hold its invoker concurrency slot and
+    /// while backing-off. This threshold allows the invoker to yield the invocation
+    /// back to the scheduler when the next back-off duration exceeds this value.
+    ///
+    /// When an invocation yields, its invoker concurrency slot is released and the
+    /// scheduler is given a chance to scheduler other invocations that may make progress
+    /// instead.
+    #[serde(default, skip_serializing_if = "is_default_yield_threshold")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    pub invocation_yield_threshold: FriendlyDuration,
 }
 
 impl Default for InvocationOptions {
@@ -65,8 +80,13 @@ impl Default for InvocationOptions {
             max_journal_retention: None,
             default_retry_policy: InvocationRetryPolicyOptions::default(),
             max_retry_policy_max_attempts: None,
+            invocation_yield_threshold: DEFAULT_INVOCATION_YIELD_THRESHOLD,
         }
     }
+}
+
+fn is_default_yield_threshold(i: &FriendlyDuration) -> bool {
+    *i == DEFAULT_INVOCATION_YIELD_THRESHOLD
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder, PartialEq)]

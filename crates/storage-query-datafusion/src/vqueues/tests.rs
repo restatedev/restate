@@ -60,6 +60,7 @@ async fn get_vqueue_entry_value_fields() {
         status: Status::BackingOff,
         metadata: EntryMetadata {
             deployment: Some("dp_123".to_string()),
+            ..Default::default()
         },
         stats,
     };
