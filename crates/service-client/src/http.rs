@@ -134,7 +134,7 @@ impl HttpClient {
                 .keep_alive_interval(keep_alive_interval)
                 .streams_per_connection_limit(options.streams_per_connection_limit)
                 .keep_alive_timeout(options.http_keep_alive_options.timeout.into())
-                .idle_authority_timeout(options.idle_pool_timeout.map(Into::into));
+                .idle_connection_timeout(options.idle_connection_timeout.map(Into::into));
 
             let builder = match options.initial_max_send_streams {
                 Some(value) => builder.initial_max_send_streams(value),

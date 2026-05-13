@@ -77,13 +77,13 @@ pub struct HttpOptions {
     /// Default: 128
     pub streams_per_connection_limit: NonZeroUsize,
 
-    /// # Idle Pool Timeout
+    /// # Idle Connection Timeout
     ///
-    /// How long a per-host connection pool can be idle before it is evicted
-    /// and its connections are closed. Set to `None` to disable eviction.
+    /// How long a connection can be idle before it is evicted
+    /// and closed. Set to `None` to disable eviction.
     ///
     /// Default: 5 minutes
-    pub idle_pool_timeout: Option<NonZeroFriendlyDuration>,
+    pub idle_connection_timeout: Option<NonZeroFriendlyDuration>,
 }
 
 impl Default for HttpOptions {
@@ -95,7 +95,7 @@ impl Default for HttpOptions {
             connect_timeout: NonZeroFriendlyDuration::from_secs_unchecked(10),
             initial_max_send_streams: None,
             streams_per_connection_limit: NonZeroUsize::new(128).unwrap(),
-            idle_pool_timeout: Some(NonZeroFriendlyDuration::from_secs_unchecked(300)),
+            idle_connection_timeout: Some(NonZeroFriendlyDuration::from_secs_unchecked(300)),
         }
     }
 }
