@@ -89,6 +89,9 @@ where
         in_flight_invocation_metadata
             .set_pinned_deployment(self.pinned_deployment, ctx.record_created_at);
 
+        // todo: set the pinned deployment in the vqueue entry metadata so that the scheduler can know
+        // about it.
+
         // We recreate the InvocationStatus in Invoked state as the invoker can notify the
         // chosen deployment_id only when the invocation is in-flight.
         ctx.storage
