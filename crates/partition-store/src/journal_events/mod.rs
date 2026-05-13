@@ -162,9 +162,9 @@ fn delete_journal_events<S: StorageAccess>(
 impl ReadJournalEventsTable for PartitionStore {
     fn get_journal_events(
         &mut self,
-        invocation_id: InvocationId,
+        invocation_id: &InvocationId,
     ) -> Result<impl Stream<Item = Result<EventView>> + Send> {
-        Ok(stream::iter(get_journal_events(self, &invocation_id)?))
+        Ok(stream::iter(get_journal_events(self, invocation_id)?))
     }
 }
 
@@ -223,25 +223,25 @@ impl ScanJournalEventsTable for PartitionStore {
 impl ReadJournalEventsTable for PartitionStoreTransaction<'_> {
     fn get_journal_events(
         &mut self,
-        invocation_id: InvocationId,
+        invocation_id: &InvocationId,
     ) -> Result<impl Stream<Item = Result<EventView>> + Send> {
-        Ok(stream::iter(get_journal_events(self, &invocation_id)?))
+        Ok(stream::iter(get_journal_events(self, invocation_id)?))
     }
 }
 
 impl WriteJournalEventsTable for PartitionStoreTransaction<'_> {
     fn put_journal_event(
         &mut self,
-        invocation_id: InvocationId,
+        invocation_id: &InvocationId,
         event: EventView,
         lsn: u64,
     ) -> Result<()> {
-        self.assert_partition_key(&invocation_id)?;
-        put_journal_event(self, &invocation_id, event, lsn)
+        self.assert_partition_key(invocation_id)?;
+        put_journal_event(self, invocation_id, event, lsn)
     }
 
-    fn delete_journal_events(&mut self, invocation_id: InvocationId) -> Result<()> {
-        self.assert_partition_key(&invocation_id)?;
-        delete_journal_events(self, &invocation_id)
+    fn delete_journal_events(&mut self, invocation_id: &InvocationId) -> Result<()> {
+        self.assert_partition_key(invocation_id)?;
+        delete_journal_events(self, invocation_id)
     }
 }

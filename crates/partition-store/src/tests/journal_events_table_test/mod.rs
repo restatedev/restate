@@ -41,11 +41,11 @@ async fn event() {
     let event_view = EventView::new(MillisSinceEpoch::now(), 0, event);
 
     // Populate
-    txn.put_journal_event(MOCK_INVOCATION_ID_1, event_view.clone(), 0)
+    txn.put_journal_event(&MOCK_INVOCATION_ID_1, event_view.clone(), 0)
         .unwrap();
 
     // Get all events
-    let mut journal_events = txn.get_journal_events(MOCK_INVOCATION_ID_1).unwrap();
+    let mut journal_events = txn.get_journal_events(&MOCK_INVOCATION_ID_1).unwrap();
     assert_eq!(journal_events.next().await.unwrap().unwrap(), event_view);
 
     assert!(journal_events.next().await.is_none());
@@ -56,11 +56,11 @@ async fn event() {
     // Verify we can remove events
 
     let mut txn = rocksdb.transaction();
-    txn.delete_journal_events(MOCK_INVOCATION_ID_1).unwrap();
+    txn.delete_journal_events(&MOCK_INVOCATION_ID_1).unwrap();
     txn.commit().await.expect("should not fail");
 
     // Should be empty
-    let mut journal_events = rocksdb.get_journal_events(MOCK_INVOCATION_ID_1).unwrap();
+    let mut journal_events = rocksdb.get_journal_events(&MOCK_INVOCATION_ID_1).unwrap();
     assert!(journal_events.next().await.is_none());
     drop(journal_events);
 

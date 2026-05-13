@@ -86,7 +86,7 @@ where
 
             if self.emit_event {
                 ApplyEventCommand {
-                    invocation_id: self.invocation_id,
+                    invocation_id: &self.invocation_id,
                     invocation_status: &invocation_status,
                     event: RawEvent::from(Event::Suspended(SuspendedEvent {
                         awaiting_on: self.awaiting_on.clone(),
@@ -701,7 +701,7 @@ mod tests {
             ok(is_variant(InvocationStatusDiscriminants::Suspended))
         );
         assert_that!(
-            test_env.read_journal_events(invocation_id).await,
+            test_env.read_journal_events(&invocation_id).await,
             elements_are![eq(Event::Suspended(SuspendedEvent {
                 awaiting_on: awaiting_on.clone()
             }))]
@@ -744,7 +744,7 @@ mod tests {
         );
         // Still exactly the one event from the first transition.
         assert_that!(
-            test_env.read_journal_events(invocation_id).await,
+            test_env.read_journal_events(&invocation_id).await,
             elements_are![eq(Event::Suspended(SuspendedEvent { awaiting_on }))]
         );
 
