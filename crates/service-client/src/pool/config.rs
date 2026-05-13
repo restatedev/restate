@@ -60,9 +60,9 @@ pub struct PoolConfig {
     /// How often to send HTTP/2 PING frames to keep idle connections alive.
     /// `None` disables keep-alive pings entirely. Defaults to `None`.
     pub(crate) keep_alive_interval: Option<Duration>,
-    /// How long an authority pool can be idle before it is evicted from the
+    /// How long a connection can be idle before it is evicted from the
     /// pool. `None` disables eviction entirely. Defaults to 5 minutes.
-    pub(crate) idle_authority_timeout: Option<Duration>,
+    pub(crate) idle_connection_timeout: Option<Duration>,
 }
 
 impl Default for PoolConfig {
@@ -73,7 +73,7 @@ impl Default for PoolConfig {
             streams_per_connection_limit: NonZeroUsize::new(128).unwrap(),
             keep_alive_interval: None,
             keep_alive_timeout: Duration::from_secs(20),
-            idle_authority_timeout: Some(Duration::from_secs(300)),
+            idle_connection_timeout: Some(Duration::from_secs(300)),
         }
     }
 }

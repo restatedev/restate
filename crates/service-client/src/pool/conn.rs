@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -84,6 +84,8 @@ struct ConnectionShared {
     concurrency: Concurrency,
     state: AtomicU8,
     h2: OnceLock<H2Handle>,
+    created_at: MillisSinceEpoch,
+    last_used_at: AtomicU64,
     /// Waiters registered during the Connecting phase. Narrowly-scoped lock.
     /// This is an Option<T> to mark waiters list as invalid
     /// (not in CONNECTING state anymore) and it's not possible
@@ -99,6 +101,7 @@ impl ConnectionShared {
                 .min(config.initial_max_send_streams as usize),
         );
 
+        let now = MillisSinceEpoch::now();
         Self {
             id: next_connection_id(),
             config,
@@ -106,6 +109,8 @@ impl ConnectionShared {
             state: AtomicU8::new(STATE_NEW),
             h2: OnceLock::new(),
             waiters: Mutex::new(Some(Vec::new())),
+            created_at: now,
+            last_used_at: AtomicU64::new(now.as_u64()),
         }
     }
 
@@ -190,6 +195,30 @@ impl<C> Connection<C> {
     pub(crate) fn inflight(&self) -> usize {
         self.shared.concurrency.acquired()
     }
+
+    /// Returns a unique connection id.
+    pub fn id(&self) -> usize {
+        self.shared.id
+    }
+
+    pub fn created_at(&self) -> MillisSinceEpoch {
+        self.shared.created_at
+    }
+
+    pub fn last_used_at(&self) -> MillisSinceEpoch {
+        self.shared.last_used_at.load(Ordering::Relaxed).into()
+    }
+
+    fn touch(&self) {
+        // Concurrent updates from multiple threads could race and move the
+        // timestamp slightly backwards, but millisecond resolution makes this
+        // unlikely and a small skew is harmless for our use case (detecting
+        // connections that have been idle for a long time).
+
+        self.shared
+            .last_used_at
+            .store(MillisSinceEpoch::now().as_u64(), Ordering::Relaxed);
+    }
 }
 
 impl<C> Connection<C>
@@ -206,11 +235,6 @@ where
             permit: None,
             acquire: None,
         }
-    }
-
-    /// Returns a unique connection id.
-    pub fn id(&self) -> usize {
-        self.shared.id
     }
 
     pub async fn ready(&mut self) -> Result<(), Error> {
@@ -316,6 +340,7 @@ where
     {
         // we should already have a permit.
         let permit = self.permit.take().expect("poll_ready() was called before");
+        self.touch();
 
         let state = match self.shared.state.load(Ordering::Acquire) {
             STATE_CLOSED => ResponseFutureState::error(Error::Closed),
