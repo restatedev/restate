@@ -10,7 +10,8 @@
 
 use std::collections::HashSet;
 
-use restate_memory::NonZeroByteCount;
+use restate_clock::RoughTimestamp;
+use restate_storage_api::vqueue_table::scheduler::YieldReason;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::InvocationId;
@@ -79,7 +80,12 @@ pub enum EffectKind {
     /// The invoker yielded the invocation back to the scheduler. The partition
     /// processor should re-schedule the invocation (via [`YieldReason`] the
     /// scheduler can apply reason-specific strategies in the future).
-    Yield(YieldReason),
+    Yield {
+        reason: YieldReason,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error_event: Option<RawEvent>,
+        resume_at: Option<RoughTimestamp>,
+    },
     /// This is sent always after [`Self::JournalEntry`] with `OutputStreamEntry`(s).
     End,
     /// This is sent when the invoker exhausted all its attempts to make progress on the specific invocation.
@@ -112,21 +118,4 @@ impl EffectKind {
         //     raw_entry: raw_entry.into(),
         // }
     }
-}
-
-/// Why the invoker yielded the invocation back to the scheduler.
-///
-/// New reasons can be added without a version barrier — nodes that don't
-/// recognize a reason will deserialize it as [`Unknown`](Self::Unknown) and
-/// apply the default re-scheduling strategy (immediate re-invoke).
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(tag = "reason"))]
-pub enum YieldReason {
-    /// The invocation exhausted its outbound memory budget.
-    ExhaustedMemoryBudget { needed_memory: NonZeroByteCount },
-    /// A yield reason not recognized by this node version. The partition
-    /// processor applies the default strategy (re-schedule immediately).
-    #[cfg_attr(feature = "serde", serde(other))]
-    Unknown,
 }
