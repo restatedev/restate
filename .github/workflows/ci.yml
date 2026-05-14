@@ -313,7 +313,7 @@ jobs:
 
       ### Run e2e tests
       - name: Run E2E tests
-        uses: restatedev/e2e@main
+        uses: restatedev/e2e/e2e-tests@main
         with:
           testArtifactOutput: e2e-test-report
           restateContainerImage: localhost/restatedev/restate-commit-download:latest
@@ -360,7 +360,7 @@ jobs:
 
       ### Run e2e tests
       - name: Run E2E tests
-        uses: restatedev/e2e@main
+        uses: restatedev/e2e/e2e-tests@main
         with:
           testArtifactOutput: e2e-journal-table-v2-test-report
           restateContainerImage: localhost/restatedev/restate-commit-download:latest
@@ -411,7 +411,7 @@ jobs:
 
       ### Run e2e tests with vqueues enabled.
       - name: Run E2E tests
-        uses: restatedev/e2e@main
+        uses: restatedev/e2e/e2e-tests@main
         with:
           testArtifactOutput: e2e-test-vqueues-report
           restateContainerImage: localhost/restatedev/restate-commit-download:latest
