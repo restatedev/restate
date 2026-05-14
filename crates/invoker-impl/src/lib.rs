@@ -53,7 +53,9 @@ use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal_events::raw::RawEvent;
 use restate_types::journal_events::{Event, PausedEvent, TransientErrorEvent};
 use restate_types::journal_v2::raw::{RawCommand, RawNotification};
-use restate_types::journal_v2::{CommandIndex, EntryMetadata, NotificationId, UnresolvedFuture};
+use restate_types::journal_v2::{
+    CommandIndex, CompletionId, EntryMetadata, NotificationId, UnresolvedFuture,
+};
 use restate_types::live::{Live, LiveLoad};
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
@@ -94,7 +96,9 @@ pub(crate) enum Notification {
     /// V2 notification signal: entry index.
     Entry(EntryIndex),
     /// V2 command ack: already signal-only.
-    Ack(CommandIndex),
+    CommandAck(CommandIndex),
+    /// Propose run completion ack (protocol >= v7).
+    ProposeRunCompletionAck(CompletionId),
 }
 
 // -- InvocationTask factory: we use this to mock the state machine in tests
@@ -521,6 +525,9 @@ where
                     InputCommand::StoredCommandAck { invocation_id, command_index } => {
                         self.handle_stored_command_ack(options, invocation_id, command_index);
                     }
+                    InputCommand::StoredNotificationProposalAck { invocation_id, completion_id } => {
+                        self.handle_stored_notification_proposal_ack(options, invocation_id, completion_id);
+                    }
                 }
             },
             Some(invoke_input_command) = segmented_input_queue.next(), if !segmented_input_queue.inner().is_empty() && self.quota.is_slot_available() && self.pending_memory_lease.is_some() => {
@@ -755,6 +762,18 @@ where
         trace!("Received a new stored command entry acknowledgement");
         self.handle_retry_event(options, invocation_id, |sm| {
             sm.notify_stored_ack(command_index)
+        });
+    }
+
+    fn handle_stored_notification_proposal_ack(
+        &mut self,
+        options: &InvokerOptions,
+        invocation_id: InvocationId,
+        completion_id: CompletionId,
+    ) {
+        trace!("Received a new stored notification proposal acknowledgement");
+        self.handle_retry_event(options, invocation_id, |sm| {
+            sm.notify_stored_notification_proposal_ack(completion_id)
         });
     }
 

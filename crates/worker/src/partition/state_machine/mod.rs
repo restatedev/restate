@@ -454,6 +454,20 @@ impl<S> StateMachineApplyContext<'_, S> {
         });
     }
 
+    fn forward_completion_ack(&mut self, invocation_id: InvocationId, completion_id: CompletionId) {
+        debug_if_leader!(
+            self.is_leader,
+            restate.journal.completion.id = completion_id,
+            "Forward completion ack to deployment",
+        );
+
+        self.action_collector
+            .push(Action::AckStoredNotificationProposal {
+                invocation_id,
+                completion_id,
+            });
+    }
+
     fn send_abort_invocation_to_invoker(&mut self, invocation_id: InvocationId) {
         debug_if_leader!(
             self.is_leader,

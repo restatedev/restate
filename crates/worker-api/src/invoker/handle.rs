@@ -13,7 +13,7 @@ use restate_errors::NotRunningError;
 use restate_types::LimitKey;
 use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::InvocationTarget;
-use restate_types::journal_v2::{CommandIndex, NotificationId};
+use restate_types::journal_v2::{CommandIndex, CompletionId, NotificationId};
 use restate_types::vqueues::VQueueId;
 use restate_util_string::ReString;
 
@@ -55,6 +55,12 @@ pub trait InvokerHandle {
         &mut self,
         invocation_id: InvocationId,
         command_index: CommandIndex,
+    ) -> Result<(), NotRunningError>;
+
+    fn notify_stored_notification_proposal_ack(
+        &mut self,
+        invocation_id: InvocationId,
+        completion_id: CompletionId,
     ) -> Result<(), NotRunningError>;
 
     fn abort_all(&mut self) -> Result<(), NotRunningError>;

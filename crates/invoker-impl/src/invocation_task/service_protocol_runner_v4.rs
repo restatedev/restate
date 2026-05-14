@@ -604,9 +604,13 @@ where
                         Some(Notification::Completion(_)) => {
                             panic!("We don't expect to receive Notification::Completion in v4+, this is an invoker bug.")
                         },
-                        Some(Notification::Ack(entry_index)) => {
+                        Some(Notification::CommandAck(entry_index)) => {
                             trace!("Sending the ack to the wire");
                             shortcircuit!(self.write(&mut http_stream_tx, Message::new_command_ack(entry_index)));
+                        },
+                        Some(Notification::ProposeRunCompletionAck(completion_id)) => {
+                            trace!("Sending ProposeRunCompletionAck to the wire");
+                            shortcircuit!(self.write(&mut http_stream_tx, Message::new_propose_run_completion_ack(completion_id)));
                         },
                         None => {
                             // Completion channel is closed,
@@ -933,6 +937,9 @@ where
             Message::CommandAck(_) => TerminalLoopState::Failed(InvokerError::UnexpectedMessageV4(
                 MessageType::CommandAck,
             )),
+            Message::ProposeRunCompletionAck(_) => TerminalLoopState::Failed(
+                InvokerError::UnexpectedMessageV4(MessageType::ProposeRunCompletionAck),
+            ),
             Message::Suspension(suspension) => self.handle_suspension_message(suspension),
             Message::AwaitingOn(awaiting_on) => self.handle_awaiting_on_message(awaiting_on),
             Message::Error(e) => self.handle_error_message(e),

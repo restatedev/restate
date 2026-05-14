@@ -336,6 +336,7 @@ gen_message!(
     CommandAck Control = 0x0004,
     ProposeRunCompletion Control = 0x0005,
     AwaitingOn Control = 0x0006,
+    ProposeRunCompletionAck Control = 0x0007,
 
     Input Command noparse allows_ack = 0x0400,
     Output Command noparse allows_ack = 0x0401,
@@ -419,5 +420,9 @@ impl Message {
 
     pub fn new_command_ack(command_index: CommandIndex) -> Self {
         Self::CommandAck(proto::CommandAckMessage { command_index })
+    }
+
+    pub fn new_propose_run_completion_ack(completion_id: u32) -> Self {
+        Self::ProposeRunCompletionAck(proto::ProposeRunCompletionAckMessage { completion_id })
     }
 }

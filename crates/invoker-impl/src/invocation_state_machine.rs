@@ -395,7 +395,10 @@ impl<K: TimerKey> InvocationStateMachine<K> {
                 ..
             } => {
                 if command_acks_to_propagate.remove(&command_index) {
-                    Self::try_send_notification(notifications_tx, Notification::Ack(command_index));
+                    Self::try_send_notification(
+                        notifications_tx,
+                        Notification::CommandAck(command_index),
+                    );
                 }
                 journal_tracker.notify_acked_command_from_partition_processor(command_index);
             }
@@ -403,6 +406,32 @@ impl<K: TimerKey> InvocationStateMachine<K> {
                 journal_tracker, ..
             } => {
                 journal_tracker.notify_acked_command_from_partition_processor(command_index);
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn notify_stored_notification_proposal_ack(&mut self, completion_id: CompletionId) {
+        match &mut self.invocation_state {
+            AttemptState::InFlight {
+                journal_tracker,
+                notifications_tx,
+                ..
+            } => {
+                journal_tracker.notify_acked_notification_from_partition_processor(
+                    NotificationId::CompletionId(completion_id),
+                );
+                Self::try_send_notification(
+                    notifications_tx,
+                    Notification::ProposeRunCompletionAck(completion_id),
+                );
+            }
+            AttemptState::WaitingRetry {
+                journal_tracker, ..
+            } => {
+                journal_tracker.notify_acked_notification_from_partition_processor(
+                    NotificationId::CompletionId(completion_id),
+                );
             }
             _ => {}
         }
@@ -726,9 +755,9 @@ mod tests {
 
         // Check notification was sent for ack 1 and 3
         let notification = rx.recv().await;
-        assert_that!(notification, some(pat!(Notification::Ack(eq(1)))));
+        assert_that!(notification, some(pat!(Notification::CommandAck(eq(1)))));
         let notification = rx.recv().await;
-        assert_that!(notification, some(pat!(Notification::Ack(eq(3)))));
+        assert_that!(notification, some(pat!(Notification::CommandAck(eq(3)))));
 
         // Channel should be empty
         let try_recv = rx.try_recv();

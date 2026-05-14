@@ -215,6 +215,16 @@ pub mod actions {
         })
     }
 
+    pub fn ack_stored_notification_proposal(
+        invocation_id: InvocationId,
+        completion_id: restate_types::journal_v2::CompletionId,
+    ) -> impl Matcher<ActualT = Action> {
+        pat!(Action::AckStoredNotificationProposal {
+            invocation_id: eq(invocation_id),
+            completion_id: eq(completion_id),
+        })
+    }
+
     pub fn invocation_response_to_partition_processor(
         caller_invocation_id: InvocationId,
         caller_entry_index: EntryIndex,
