@@ -58,9 +58,8 @@ impl InvokerConcurrencyQuota {
                 gauge!(INVOKER_CONCURRENCY_LIMIT, "invoker_id" => invoker_id.clone())
                     .set(available_slots.get() as f64);
 
-                let acquired_counter = counter!(INVOKER_CONCURRENCY_SLOTS_ACQUIRED, "invoker_id" => invoker_id.clone());
-                let released_counter =
-                    counter!(INVOKER_CONCURRENCY_SLOTS_RELEASED, "invoker_id" => invoker_id);
+                let acquired_counter = counter!(INVOKER_CONCURRENCY_SLOTS_ACQUIRED);
+                let released_counter = counter!(INVOKER_CONCURRENCY_SLOTS_RELEASED);
 
                 InvokerConcurrencyQuotaInner::Limited {
                     slots: Arc::new(LimitedSlots {
