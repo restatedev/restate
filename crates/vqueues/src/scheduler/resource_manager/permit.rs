@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_storage_api::vqueue_table::EntryMetadata;
 use smallvec::SmallVec;
 
 use restate_worker_api::resources::{
@@ -58,8 +59,13 @@ impl PermitBuilder {
         }
     }
 
-    pub(crate) fn build(self, resource_manager: &ResourceManager) -> ReservedResources {
+    pub(crate) fn build(
+        self,
+        metadata: EntryMetadata,
+        resource_manager: &ResourceManager,
+    ) -> ReservedResources {
         ReservedResources::new(
+            metadata,
             self.user_permit.expect("user permit must be set").resources,
             self.system_permit,
             resource_manager.tx.clone(),
