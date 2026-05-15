@@ -6,8 +6,8 @@ The following metric has been dropped:
 
 ## Added metrics
 Two new counter metrics have been added as replacements:
-- `restate.invoker.concurrency_slots.acquired` (counter)
-- `restate.invoker.concurrency_slots.released` (counter)
+- `restate.invoker.concurrency_slots.acquired` (counter) - cumulative per node
+- `restate.invoker.concurrency_slots.released` (counter) - cumulative per node
 
 These counters make it easy to derive:
 - Rate of slot acquisition and release
