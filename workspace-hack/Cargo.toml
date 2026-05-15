@@ -111,6 +111,7 @@ serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
 serde_json = { version = "1", features = ["alloc", "raw_value", "unbounded_depth"] }
 serde_with = { version = "3", features = ["hex", "json"] }
+sha2 = { version = "0.10", features = ["asm"] }
 simd-adler32 = { version = "0.3", default-features = false, features = ["std"] }
 slab = { version = "0.4" }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde", "union"] }
@@ -243,6 +244,7 @@ serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
 serde_json = { version = "1", features = ["alloc", "raw_value", "unbounded_depth"] }
 serde_with = { version = "3", features = ["hex", "json"] }
+sha2 = { version = "0.10", features = ["asm"] }
 simd-adler32 = { version = "0.3", default-features = false, features = ["std"] }
 slab = { version = "0.4" }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde", "union"] }
