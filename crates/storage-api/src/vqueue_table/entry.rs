@@ -11,6 +11,7 @@
 use std::num::NonZeroU16;
 
 use restate_clock::RoughTimestamp;
+use restate_memory::NonZeroByteCount;
 use restate_types::vqueues::{EntryId, EntryKind, Seq};
 
 use super::Status;
@@ -190,6 +191,14 @@ pub struct EntryMetadataRef<'a> {
     // or maybe service revision.
     #[bilrost(tag(1))]
     deployment: Option<&'a str>,
+    // If set, this is the amount of memory the invocation seems to require to
+    // run on the invoker side.
+    #[bilrost(tag(2))]
+    pub needed_memory: Option<NonZeroByteCount>,
+    #[bilrost(tag(3))]
+    pub retry_attempts: u32,
+    #[bilrost(tag(4))]
+    pub retry_count_since_last_stored_command: u32,
 }
 
 impl<'a> From<&'a EntryMetadata> for EntryMetadataRef<'a> {
@@ -197,6 +206,9 @@ impl<'a> From<&'a EntryMetadata> for EntryMetadataRef<'a> {
     fn from(value: &'a EntryMetadata) -> Self {
         Self {
             deployment: value.deployment.as_deref(),
+            needed_memory: value.needed_memory,
+            retry_attempts: value.retry_attempts,
+            retry_count_since_last_stored_command: value.retry_count_since_last_stored_command,
         }
     }
 }
@@ -206,6 +218,15 @@ pub struct EntryMetadata {
     // todo: This is temporary placeholder, type and name _will_ change.
     #[bilrost(tag(1))]
     pub deployment: Option<String>,
+
+    // If set, this is the amount of memory the invocation seems to require to
+    // run on the invoker side.
+    #[bilrost(tag(2))]
+    pub needed_memory: Option<NonZeroByteCount>,
+    #[bilrost(tag(3))]
+    pub retry_attempts: u32,
+    #[bilrost(tag(4))]
+    pub retry_count_since_last_stored_command: u32,
 }
 
 #[cfg(test)]
