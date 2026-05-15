@@ -3287,40 +3287,6 @@ impl<S> StateMachineApplyContext<'_, S> {
         match status {
             InvocationStatus::Scheduled(ScheduledInvocation { metadata, .. })
             | InvocationStatus::Inboxed(InboxedInvocation { metadata, .. }) => {
-                // Validate that if VO, that it's not locked already.
-                let invocation_target = &metadata.invocation_target;
-                if matches!(
-                    invocation_target.invocation_target_ty(),
-                    InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
-                ) {
-                    // todo(asoli): Remove this once we have confidence in the new locking mechanism
-                    let keyed_service_id = invocation_target.as_keyed_service_id().expect(
-                        "When the handler type is Exclusive, the invocation target must have a key",
-                    );
-                    match self
-                        .storage
-                        .get_virtual_object_status(&keyed_service_id)
-                        .await?
-                    {
-                        VirtualObjectStatus::Locked(iid) => {
-                            panic!(
-                                "invariant violated trying to run an invocation {invocation_id} on a VO while another invocation {iid} is holding the lock"
-                            );
-                        }
-                        VirtualObjectStatus::Unlocked => {
-                            // Lock the service
-                            // Obsolete: Remove in lieu of using Locks.
-                            // maintained for compatibility until full migration to locks.
-                            self.storage
-                                .put_virtual_object_status(
-                                    &keyed_service_id,
-                                    &VirtualObjectStatus::Locked(invocation_id),
-                                )
-                                .map_err(Error::Storage)?;
-                        }
-                    }
-                }
-
                 let (metadata, invocation_input) =
                     InFlightInvocationMetadata::from_pre_flight_invocation_metadata(
                         metadata,
