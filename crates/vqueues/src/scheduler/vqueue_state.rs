@@ -13,11 +13,13 @@ use std::time::Duration;
 
 use enum_map::{Enum, EnumMap};
 use metrics::counter;
-use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::metadata::VQueueMeta;
+use restate_storage_api::vqueue_table::EntryMetadata;
 use tokio::time::Instant;
 
 use restate_clock::RoughTimestamp;
+use restate_storage_api::StorageError;
+use restate_storage_api::vqueue_table::metadata::VQueueMeta;
+use restate_storage_api::vqueue_table::scheduler::YieldReason;
 use restate_storage_api::vqueue_table::{EntryKey, EntryValue, VQueueStore, stats::WaitStats};
 use restate_types::vqueues::{EntryId, VQueueId};
 use restate_worker_api::ResourceKind;
@@ -274,6 +276,7 @@ impl<S: VQueueStore> VQueueState<S> {
             let action = YieldAction {
                 key: *inbox_head_key,
                 next_run_at: None,
+                reason: YieldReason::PartitionLeaderChange,
             };
             self.queue.try_advance()?;
             return Ok(Pop::Yield(action));
@@ -288,8 +291,10 @@ impl<S: VQueueStore> VQueueState<S> {
             &mut self.current_permit,
         ) {
             AcquireOutcome::Acquired(resources) => {
-                self.unconfirmed_assignments
-                    .insert(*inbox_head_key, resources);
+                self.unconfirmed_assignments.insert(
+                    *inbox_head_key,
+                    (resources, inbox_head_value.metadata.clone()),
+                );
 
                 let action = RunAction {
                     key: *inbox_head_key,
@@ -364,7 +369,10 @@ impl<S: VQueueStore> VQueueState<S> {
         }
     }
 
-    pub fn remove_from_unconfirmed_assignments(&mut self, key: &EntryKey) -> Option<PermitBuilder> {
+    pub fn remove_from_unconfirmed_assignments(
+        &mut self,
+        key: &EntryKey,
+    ) -> Option<(PermitBuilder, EntryMetadata)> {
         self.unconfirmed_assignments.remove(key)
     }
 

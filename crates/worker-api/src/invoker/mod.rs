@@ -19,4 +19,5 @@ pub use effects::*;
 pub use entry_enricher::EntryEnricher;
 pub use handle::*;
 pub use invocation_reader::{InvocationReaderError, JournalKind, JournalMetadata};
+pub use restate_storage_api::vqueue_table::scheduler::YieldReason;
 pub use status_handle::{InvocationErrorReport, InvocationStatusReport, StatusHandle};

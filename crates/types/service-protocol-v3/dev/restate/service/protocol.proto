@@ -75,8 +75,8 @@ message StartMessage {
 
   // Retry count since the last stored entry.
   //
-  // Please note that this count might not be accurate, as it's not durably stored,
-  // thus it might get reset in case Restate crashes/changes leader.
+  // Please note that this count might not be accurate, as it's not durably stored on every update,
+  // thus it might get revert to an older value in case Restate crashes/changes leader.
   uint32 retry_count_since_last_stored_entry = 7;
 
   // Duration since the last stored entry, in milliseconds.

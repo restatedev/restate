@@ -59,7 +59,7 @@ use restate_storage_api::service_status_table::{
 use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_storage_api::timer_table::TimerKey;
 use restate_storage_api::timer_table::{Timer, WriteTimerTable};
-use restate_storage_api::vqueue_table::scheduler;
+use restate_storage_api::vqueue_table::scheduler::{self, YieldReason};
 use restate_storage_api::vqueue_table::{self, EntryKey, Stage};
 use restate_storage_api::vqueue_table::{EntryStatusHeader, ReadVQueueTable, WriteVQueueTable};
 use restate_storage_api::{Result as StorageResult, journal_table};
@@ -512,45 +512,16 @@ impl<S> StateMachineApplyContext<'_, S> {
                                     .await?;
                             }
                             scheduler::SchedulerAction::Yield(yield_action) => {
-                                let at = UniqueTimestamp::from_unix_millis_unchecked(
-                                    self.record_created_at,
-                                );
-                                let Some(header) = self
-                                    .storage
-                                    .get_vqueue_entry_status(
-                                        qid.partition_key(),
-                                        yield_action.key.entry_id(),
-                                    )
-                                    .await?
-                                else {
-                                    info!(
-                                        vqueue = %qid,
-                                        "Not yielding {} because it has no vqueue state",
-                                        yield_action.key.entry_id().display(qid.partition_key())
-                                    );
-                                    continue;
-                                };
-                                // move the entry from inbox and notify the scheduler that it has started
-                                // also, ship to invoker.
-                                let mut vqueue = VQueue::get(
-                                    qid,
-                                    self.storage,
-                                    self.vqueues_cache,
-                                    self.is_leader.then_some(self.action_collector),
-                                )
-                                .await?
-                                .expect("yielding in a non-existent vqueue");
-                                vqueue.yield_entry(
-                                    at,
-                                    &header,
-                                    None,
-                                    // todo: this would be a good place to pick up if the invocation
-                                    // metadata should be updated (i.e. a deployment was pinned)
-                                    None,
-                                    // We are assuming it's an invocation because state mutations
-                                    // can never be observed in the run stage.
-                                    vqueue_table::Status::Yielded,
-                                );
+                                let entry_id = yield_action.key.entry_id();
+                                lifecycle::YieldInvocationCommand {
+                                    invocation_id:
+                                        &entry_id.to_invocation_id(qid.partition_key())
+                                        .expect("This version does not support yielding vqueues entries other than invocations"),
+                                    resume_at: yield_action.next_run_at,
+                                    yield_reason: yield_action.reason,
+                                }
+                                .apply(self)
+                                .await?;
                             }
                         }
                     }
@@ -2826,14 +2797,53 @@ impl<S> StateMachineApplyContext<'_, S> {
                 )
                 .await?;
             }
-            InvokerEffectKind::Yield(ref reason) => {
-                let invocation_metadata = invocation_status
-                    .into_invocation_metadata()
-                    .expect("Must be present if status is invoked");
-                debug_if_leader!(self.is_leader, ?reason, "Effect: Yield invocation");
-                // todo pass memory requirements from the reason to the vqueue scheduler and invoker
-                self.do_resume_service(effect.invocation_id, invocation_metadata)
+            InvokerEffectKind::Yield {
+                reason,
+                error_event,
+                resume_at,
+            } => {
+                if let Some(event) = error_event {
+                    // Submit the journal event if we have one
+                    lifecycle::ApplyEventCommand {
+                        invocation_id: &effect.invocation_id,
+                        invocation_status: &invocation_status,
+                        event,
+                    }
+                    .apply(self)
                     .await?;
+                }
+
+                // Special casing for memory-budget yields when vqueues are disabled.
+                // todo: remove when vqueues are always enabled
+                if self.is_leader
+                    && let YieldReason::ExhaustedMemoryBudget { .. } = reason
+                    && !Configuration::pinned()
+                        .common
+                        .experimental
+                        .is_vqueues_enabled()
+                {
+                    let Some(invocation_target) = invocation_status.invocation_target().cloned()
+                    else {
+                        return Ok(());
+                    };
+
+                    debug_if_leader!(self.is_leader, "Effect: Yield");
+
+                    self.action_collector.push(Action::Invoke {
+                        invocation_id: effect.invocation_id,
+                        invocation_target,
+                    });
+                    return Ok(());
+                }
+
+                // Submit the journal event if we have one
+                lifecycle::YieldInvocationCommand {
+                    invocation_id: &effect.invocation_id,
+                    yield_reason: reason,
+                    resume_at,
+                }
+                .apply(self)
+                .await?;
             }
         }
 
@@ -3244,7 +3254,6 @@ impl<S> StateMachineApplyContext<'_, S> {
         if header.has_started() {
             // We fallthrough if the invocation was never started so we can initialize the journal.
             debug_if_leader!(self.is_leader, "Invoke");
-            info!("Resuming invocation {invocation_id}, scheduler stats: {wait_stats:?}");
 
             let status = self.get_invocation_status(&invocation_id).await?;
             let mut vqueue = VQueue::get(
@@ -5373,8 +5382,6 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         let now = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
 
-        // todo: this would be a good place to pick up if the invocation
-        // metadata should be updated (i.e. a deployment was pinned)
         match header.stage() {
             Stage::Suspended => {
                 vqueue.wake_up(now, &header, None, None);
@@ -5383,7 +5390,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 vqueue.wake_up(now, &header, None, None);
             }
             Stage::Running => {
-                vqueue.yield_entry(now, &header, None, None, header.status());
+                vqueue.yield_entry(now, &header, None, YieldReason::Unknown);
             }
             Stage::Inbox => {
                 // nothing to do if we are already in the inbox

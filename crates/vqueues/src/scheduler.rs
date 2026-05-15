@@ -18,7 +18,7 @@ use std::task::Poll;
 use restate_limiter::RuleUpdate;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::scheduler::{RunAction, SchedulerAction, YieldAction};
-use restate_storage_api::vqueue_table::{EntryKey, ScanVQueueTable, VQueueStore};
+use restate_storage_api::vqueue_table::{EntryKey, EntryMetadata, ScanVQueueTable, VQueueStore};
 use restate_types::identifiers::PartitionKey;
 use restate_types::vqueues::VQueueId;
 use restate_worker_api::resources::ReservedResources;
@@ -43,7 +43,7 @@ mod vqueue_state;
 // Re-exports
 pub use resource_manager::ResourceManager;
 
-type UnconfirmedAssignments = hashbrown::HashMap<EntryKey, PermitBuilder>;
+type UnconfirmedAssignments = hashbrown::HashMap<EntryKey, (PermitBuilder, EntryMetadata)>;
 
 fn status_from_detailed_eligibility(value: DetailedEligibility) -> SchedulingStatus {
     match value {
