@@ -1474,6 +1474,7 @@ where
         let result = ism.handle_task_error(
             error.is_transient(),
             error.next_retry_interval_override(),
+            error.should_pause(),
             error.should_bump_start_message_retry_count_since_last_stored_entry(),
             |duration| self.retry_timers.insert(invocation_id, duration),
         );
@@ -2482,6 +2483,7 @@ mod tests {
         let error_a = InvokerError::SdkV2(SdkInvocationErrorV2 {
             related_command: None,
             next_retry_interval_override: Some(Duration::from_millis(1)),
+            should_pause: false,
             error: InvocationError::new(codes::INTERNAL, "boom").into(),
         });
         service_inner
@@ -2506,6 +2508,7 @@ mod tests {
         let error_a_same = InvokerError::SdkV2(SdkInvocationErrorV2 {
             related_command: None,
             next_retry_interval_override: Some(Duration::from_millis(1)),
+            should_pause: false,
             error: InvocationError::new(codes::INTERNAL, "boom").into(),
         });
         service_inner
@@ -2523,6 +2526,7 @@ mod tests {
         let error_b = InvokerError::SdkV2(SdkInvocationErrorV2 {
             related_command: None,
             next_retry_interval_override: Some(Duration::from_millis(1)),
+            should_pause: false,
             error: InvocationError::new(codes::INTERNAL, "boom-2").into(),
         });
         service_inner
@@ -2536,6 +2540,69 @@ mod tests {
                 invocation_id: eq(invocation_id),
                 kind: pat!(EffectKind::JournalEvent {
                     event: predicate(|e: &RawEvent| e.ty() == EventType::TransientError)
+                })
+            })
+        );
+    }
+
+    #[test(restate_core::test(start_paused = true))]
+    async fn error_message_should_pause() {
+        // Enable proposing events and keep timers short for the test
+        let invoker_options = InvokerOptionsBuilder::default()
+            .inactivity_timeout(FriendlyDuration::ZERO)
+            .abort_timeout(FriendlyDuration::ZERO)
+            .disable_eager_state(false)
+            .build()
+            .unwrap();
+
+        let invocation_id = InvocationId::mock_random();
+
+        // Mock service
+        let (_, _status_tx, mut effects_rx, mut service_inner) = ServiceInner::mock(
+            (),
+            MockSchemas(
+                // fixed amount of retries so that an invocation eventually completes with a failure
+                Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(3))),
+                Some(OnMaxAttempts::Kill),
+            ),
+            None,
+            EmptyStorageReader,
+        );
+
+        // Start invocation epoch 0
+        let budget = service_inner.test_budget();
+        service_inner.handle_invoke(
+            &invoker_options,
+            invocation_id,
+            InvocationTarget::mock_virtual_object(),
+            budget,
+        );
+
+        // Select protocol V4 to allow proposing events
+        service_inner.handle_pinned_deployment(
+            invocation_id,
+            PinnedDeployment::new(DeploymentId::new(), ServiceProtocolVersion::V4),
+            false, // has_changed = false -> directly selects protocol without emitting effect
+        );
+
+        // Transient error with should_pause
+        let error_a = InvokerError::SdkV2(SdkInvocationErrorV2 {
+            related_command: None,
+            next_retry_interval_override: Some(Duration::from_millis(1)),
+            should_pause: true,
+            error: InvocationError::new(codes::INTERNAL, "boom").into(),
+        });
+        service_inner
+            .handle_invocation_task_failed(invocation_id, error_a, service_inner.test_budget())
+            .await;
+        assert_that!(
+            *effects_rx
+                .try_recv()
+                .expect("expected a proposed transient error event"),
+            pat!(Effect {
+                invocation_id: eq(invocation_id),
+                kind: pat!(EffectKind::Paused {
+                    paused_event: predicate(|e: &RawEvent| e.ty() == EventType::Paused)
                 })
             })
         );

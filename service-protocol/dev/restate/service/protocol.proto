@@ -44,6 +44,7 @@ enum ServiceProtocolVersion {
   // * WorkflowTarget.scope
   // * IdempotentRequestTarget.scope
   // * StartMessage.scope, StartMessage.limit_key and StartMessage.idempotency_key
+  // * ErrorMessage.should_pause
   V7 = 7;
 }
 
@@ -176,6 +177,10 @@ message ErrorMessage {
   // Delay before executing the next retry, specified as duration in milliseconds.
   // If provided, it will override the default retry policy used by Restate's invoker ONLY for the next retry attempt.
   optional uint64 next_retry_delay = 8;
+
+  // If true, Restate will pause instead of retrying.
+  // This field supersedes next_retry_delay.
+  bool should_pause = 9;
 }
 
 // Type: 0x0000 + 3

@@ -308,6 +308,13 @@ impl InvokerError {
         }
     }
 
+    pub(crate) fn should_pause(&self) -> bool {
+        match self {
+            InvokerError::SdkV2(SdkInvocationErrorV2 { should_pause, .. }) => *should_pause,
+            _ => false,
+        }
+    }
+
     pub(crate) fn into_invocation_error(self) -> InvocationError {
         match self {
             InvokerError::Sdk(sdk_error) => *sdk_error.error,
@@ -491,6 +498,7 @@ pub(crate) struct SdkInvocationErrorV2 {
     pub(crate) related_command: Option<InvocationErrorRelatedCommandV2>,
     pub(crate) next_retry_interval_override: Option<Duration>,
     pub(crate) error: Box<InvocationError>,
+    pub(crate) should_pause: bool,
 }
 
 impl SdkInvocationErrorV2 {
@@ -499,6 +507,7 @@ impl SdkInvocationErrorV2 {
             related_command: None,
             next_retry_interval_override: None,
             error: Default::default(),
+            should_pause: false,
         }
     }
 }
