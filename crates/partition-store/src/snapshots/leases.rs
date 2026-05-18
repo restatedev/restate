@@ -123,12 +123,16 @@ impl SnapshotLeaseValue {
         }
     }
 
-    fn expired(holder: GenerationalNodeId, lease_id: Ulid) -> Self {
+    /// Constructs a marker value used by the Drop path to release a lease via a
+    /// versioned CAS. The caller must pass the version they expect the metadata
+    /// store slot to currently hold; the resulting record will carry
+    /// `version.next()` once `put` returns Ok.
+    fn expired(holder: GenerationalNodeId, lease_id: Ulid, current_version: Version) -> Self {
         Self {
             holder,
             lease_id,
             expires_at: MillisSinceEpoch::UNIX_EPOCH,
-            version: Version::MIN,
+            version: current_version.next(),
         }
     }
 
@@ -480,8 +484,7 @@ mod inner {
                 if let Ok(handle) = tokio::runtime::Handle::try_current() {
                     handle.spawn(async move {
                         let key = lease_key(partition_id);
-                        let expired = SnapshotLeaseValue::expired(holder, lease_id)
-                            .with_version(version.next());
+                        let expired = SnapshotLeaseValue::expired(holder, lease_id, version);
 
                         match client
                             .put(key, &expired, Precondition::MatchesVersion(version))
