@@ -30,6 +30,9 @@ FROM base-$TARGETARCH AS builder
 ARG SCCACHE_SERVER_PORT
 ARG TARGETARCH
 
+RUN rustc --print=target-cpus
+RUN rustc --print=cfg -C target-cpu=native
+
 ENV RUSTC_WRAPPER=/usr/bin/sccache
 ENV SCCACHE_DIR=/var/cache/sccache
 
