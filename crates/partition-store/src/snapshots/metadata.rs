@@ -80,12 +80,24 @@ pub struct PartitionSnapshotMetadata {
     /// Mapping from SST filename to repository object key.
     /// Key: exact filename as it appears in LiveFile.name (e.g., "/000752.sst")
     /// Value: relative object store key (e.g., "`ssts/a1b2c3d4e5f67890a1b2c3d4e5f67890.sst`")
-    /// When empty/missing, fallback to legacy path: {lsn}-{snap_id}/{filename}
+    ///
+    /// This map is used as an implicit format discriminator: when empty the snapshot was
+    /// written by the legacy full-snapshot path and SSTs live at `{lsn}-{snap_id}/{filename}`;
+    /// when non-empty the snapshot is incremental and the map must cover every entry in
+    /// `files`. Mixed (partial) coverage is not produced by any writer in this crate;
+    /// readers treat per-file lookup misses as the legacy case for forward compatibility.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub file_keys: BTreeMap<String, String>,
 }
 
 impl PartitionSnapshotMetadata {
+    /// Returns true iff the metadata was written by the incremental snapshot path.
+    /// Detection is based on `file_keys` non-emptiness - kept as a single source of truth
+    /// so reader code does not duplicate the check.
+    pub fn is_incremental(&self) -> bool {
+        !self.file_keys.is_empty()
+    }
+
     pub fn validate(
         &self,
         cluster_name: &str,
