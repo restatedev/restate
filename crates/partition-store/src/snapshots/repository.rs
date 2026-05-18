@@ -67,6 +67,12 @@ impl LeaseProvider {
 }
 
 /// XXH3-128 content hash for SST files. Produces a 128-bit digest (32 hex characters).
+///
+/// XXH3 is a non-cryptographic hash. We rely on a 128-bit digest's collision space being
+/// large enough that random RocksDB SSTs do not collide in practice; the input is trusted
+/// data produced by this process (not attacker-controlled), so chosen-prefix collision
+/// resistance is not required. If snapshot inputs ever become reachable from untrusted
+/// sources, this hash must be replaced with a cryptographic one.
 #[derive(Clone, Copy)]
 struct ContentHash(u128);
 
