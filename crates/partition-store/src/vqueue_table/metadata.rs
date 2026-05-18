@@ -57,7 +57,6 @@ impl MetaKey {
     }
 }
 
-// todo: check if this is still needed
 impl From<&VQueueId> for MetaKey {
     #[inline]
     fn from(qid: &VQueueId) -> Self {
@@ -85,7 +84,8 @@ pub(crate) mod vqueue_meta_merge {
     use rocksdb::MergeOperands;
     use tracing::error;
 
-    use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaUpdates};
+    use restate_storage_api::vqueue_table;
+    use restate_storage_api::vqueue_table::metadata::VQueueMeta;
 
     use crate::keys::DecodeTableKey;
 
@@ -117,43 +117,21 @@ pub(crate) mod vqueue_meta_merge {
             }
         };
 
+        let mut update = <vqueue_table::metadata::Update as bilrost::encoding::RawMessage>::empty();
         for op in operands {
-            let batch = match VQueueMetaUpdates::decode(op) {
-                Err(err) => {
-                    let key = MetaKey::deserialize_from(&mut key);
-                    error!(
-                        ?err,
-                        ?key,
-                        "[full merge] Failed to decode vqueue meta batched updates ({} bytes)",
-                        op.len(),
-                    );
-                    return None;
-                }
-                Ok(batch) => batch,
-            };
-            for update in batch.updates.iter() {
-                vqueue_meta.apply_update(update);
+            if let Err(err) = update.replace_from_slice(op) {
+                let key = MetaKey::deserialize_from(&mut key);
+                error!(
+                    ?err,
+                    ?key,
+                    "[full merge] Failed to decode vqueue meta update ({} bytes)",
+                    op.len(),
+                );
+                return None;
             }
+            vqueue_meta.apply_update(&update);
         }
-        Some(vqueue_meta.encode_to_vec())
-    }
 
-    pub fn partial_merge(mut _key: &[u8], operands: &MergeOperands) -> Option<Vec<u8>> {
-        let mut updates =
-            VQueueMetaUpdates::with_capacity(operands.len() * VQueueMetaUpdates::INLINED_UPDATES);
-        for op in operands {
-            let partial_updates = match VQueueMetaUpdates::decode(op) {
-                Err(err) => {
-                    error!(
-                        ?err,
-                        "[partial merge] Failed to decode vqueue meta batched updates"
-                    );
-                    return None;
-                }
-                Ok(u) => u,
-            };
-            updates.extend(partial_updates);
-        }
-        Some(updates.encode_to_vec())
+        Some(vqueue_meta.encode_contiguous().into_vec())
     }
 }
