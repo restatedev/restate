@@ -477,6 +477,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         &mut self,
         error_is_transient: bool,
         next_retry_interval_override: Option<Duration>,
+        should_pause: bool,
         should_bump_start_message_retry_count_since_last_stored_command: bool,
         register_timer: impl FnOnce(Duration) -> K,
     ) -> OnTaskError {
@@ -501,7 +502,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             }
         };
 
-        if self.requested_pause {
+        if self.requested_pause || should_pause {
             // Shortcircuit to pause, as this is what the user asked for
             return OnTaskError::Pause;
         }
@@ -646,7 +647,7 @@ mod tests {
 
         let_assert!(
             OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, true, |_| 0)
+                invocation_state_machine.handle_task_error(true, None, false, true, |_| 0)
         );
         check!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 
@@ -655,7 +656,7 @@ mod tests {
         // We stay in `WaitingForRetry`
         let_assert!(
             OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, true, |_| 1)
+                invocation_state_machine.handle_task_error(true, None, false, true, |_| 1)
         );
         check!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
     }
@@ -700,7 +701,7 @@ mod tests {
         // Notify error
         let_assert!(
             OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, true, |_| 0)
+                invocation_state_machine.handle_task_error(true, None, false, true, |_| 0)
         );
         assert_eq!(
             invocation_state_machine.start_message_retry_count_since_last_stored_command,
@@ -716,7 +717,7 @@ mod tests {
         // Get error again
         let_assert!(
             OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, true, |_| 1)
+                invocation_state_machine.handle_task_error(true, None, false, true, |_| 1)
         );
         assert_eq!(
             invocation_state_machine.start_message_retry_count_since_last_stored_command,
@@ -754,7 +755,7 @@ mod tests {
         invocation_state_machine.notify_new_command(1, false);
         let_assert!(
             OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, true, |_| 0)
+                invocation_state_machine.handle_task_error(true, None, false, true, |_| 0)
         );
 
         // PP sends ack for command 1
@@ -781,7 +782,7 @@ mod tests {
         invocation_state_machine.notify_new_notification_proposal(NotificationId::CompletionId(1));
         let_assert!(
             OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, true, |_| 0)
+                invocation_state_machine.handle_task_error(true, None, false, true, |_| 0)
         );
 
         // Waiting notifications acks and retry timer fired
@@ -819,7 +820,7 @@ mod tests {
         // Put the ISM in WaitingRetry state with timer key 0
         let_assert!(
             OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, true, |_| 0)
+                invocation_state_machine.handle_task_error(true, None, false, true, |_| 0)
         );
         check!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 
