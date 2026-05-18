@@ -19,7 +19,7 @@ use super::Stage;
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct VQueueStatistics {
     /// Creation time of this vqueue metadata record.
-    #[bilrost(tag(1))]
+    #[bilrost(tag(1), encoding(fixed))]
     pub(crate) created_at: UniqueTimestamp,
     /// Exponential moving average (EMA) of first-attempt wait time.
     ///
@@ -33,37 +33,37 @@ pub struct VQueueStatistics {
     /// Last timestamp an entry was moved into `Inbox`.
     ///
     /// This covers items enqueued for the first time only.
-    #[bilrost(tag(3))]
+    #[bilrost(tag(3), encoding(fixed))]
     pub(crate) last_enqueued_at: Option<UniqueTimestamp>,
     /// Last timestamp an entry had its first transition to `Run`.
     ///
     /// This marks when a new entry starts for the first time.
-    #[bilrost(tag(4))]
+    #[bilrost(tag(4), encoding(fixed))]
     pub(crate) last_start_at: Option<UniqueTimestamp>,
     /// Last timestamp an entry completed (transitioned into `Finished`)
-    #[bilrost(tag(5))]
+    #[bilrost(tag(5), encoding(fixed))]
     pub(crate) last_finish_at: Option<UniqueTimestamp>,
     /// Last timestamp an entry transitioned to `Run`.
     ///
     /// This includes both first starts and retries/resumes.
-    #[bilrost(tag(6))]
+    #[bilrost(tag(6), encoding(fixed))]
     pub(crate) last_attempt_at: Option<UniqueTimestamp>,
     /// Number of entries currently in `inbox` stage.
-    #[bilrost(tag(7))]
+    #[bilrost(tag(7), encoding(fixed))]
     pub(crate) num_inbox: u64,
     /// Number of entries currently in `suspended` stage.
-    #[bilrost(tag(8))]
+    #[bilrost(tag(8), encoding(fixed))]
     pub(crate) num_suspended: u64,
     /// Number of entries currently in `paused` stage.
-    #[bilrost(tag(9))]
+    #[bilrost(tag(9), encoding(fixed))]
     pub(crate) num_paused: u64,
     /// Number of entries currently in `running` stage.
-    #[bilrost(tag(10))]
+    #[bilrost(tag(10), encoding(fixed))]
     pub(crate) num_running: u64,
     /// How many entries are in the `Finish` stage. When deleting entries from
     /// the `Finished` stage, we should decrement this counter. The vqueue becomes
     /// obsolete when it's completely empty (all counters are zero).
-    #[bilrost(tag(11))]
+    #[bilrost(tag(11), encoding(fixed))]
     pub(crate) num_finished: u64,
     /// Exponential moving average (EMA) of how long entries stay in `Inbox` before transitioning out of it.
     #[bilrost(tag(12))]
@@ -520,23 +520,23 @@ impl VQueueMeta {
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct MoveMetrics {
     /// Timestamp of the entry's previous stage transition.
-    #[bilrost(tag(1))]
+    #[bilrost(tag(1), encoding(fixed))]
     pub last_transition_at: UniqueTimestamp,
     /// Whether the entry has started at least once before this transition.
     #[bilrost(tag(2))]
     pub has_started: bool,
     /// Earliest timestamp at which the entry can realistically start.
-    #[bilrost(tag(3))]
+    #[bilrost(tag(3), encoding(fixed))]
     pub first_runnable_at: MillisSinceEpoch,
     /// Milliseconds the head item spent blocked on user-defined concurrency
     /// rules during this run attempt. Only populated on Inbox → Running moves;
     /// zero for every other transition. Feeds `avg_blocked_on_concurrency_rules_ms`.
-    #[bilrost(tag(4))]
+    #[bilrost(tag(4), encoding(fixed))]
     pub blocked_on_concurrency_rules_ms: u32,
     /// Milliseconds the head item spent in node-level invoker throttling
     /// during this run attempt. Only populated on Inbox → Running moves; zero
     /// for every other transition. Feeds `avg_blocked_on_invoker_throttling_ms`.
-    #[bilrost(tag(5))]
+    #[bilrost(tag(5), encoding(fixed))]
     pub blocked_on_invoker_throttling_ms: u32,
 }
 
@@ -551,7 +551,9 @@ pub enum Action {
     /// if new_stage is Finished, the item has completed.
     #[bilrost(tag(2), message)]
     Move {
+        #[bilrost(encoding(fixed))]
         prev_stage: Option<Stage>,
+        #[bilrost(encoding(fixed))]
         next_stage: Stage,
         metrics: MoveMetrics,
     },
@@ -559,14 +561,14 @@ pub enum Action {
     PauseVQueue {},
     #[bilrost(tag(4), message)]
     ResumeVQueue {},
-    #[bilrost(tag(5), message)]
+    #[bilrost(tag(5), encoding(fixed))]
     /// An item or have been removed from the (stage)
     RemoveEntry { stage: Stage },
 }
 
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct Update {
-    #[bilrost(tag(1))]
+    #[bilrost(tag(1), encoding(fixed))]
     pub(super) ts: UniqueTimestamp,
     #[bilrost(oneof(2, 3, 4, 5))]
     pub(super) action: Action,

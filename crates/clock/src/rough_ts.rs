@@ -378,6 +378,13 @@ mod bilrost_encoding {
         to encode proxied type (RoughTimestamp)
         with general encodings including distinguished
     );
+
+    bilrost::delegate_proxied_encoding!(
+        use encoding (bilrost::encoding::Fixed)
+        to encode proxied type (RoughTimestamp)
+        with encoding (bilrost::encoding::Fixed)
+        including distinguished
+    );
 }
 
 #[cfg(test)]
@@ -525,5 +532,24 @@ mod tests {
                 "bilrost round-trip failed for {val}"
             );
         }
+    }
+
+    #[test]
+    fn bilrost_fixed_round_trip() {
+        use bilrost::Message;
+
+        #[derive(bilrost::Message, PartialEq, Debug)]
+        struct TestMessage {
+            #[bilrost(tag(1), encoding(fixed))]
+            timestamp: RoughTimestamp,
+        }
+
+        let msg = TestMessage {
+            timestamp: RoughTimestamp::new(123),
+        };
+
+        let encoded = msg.encode_to_vec();
+        assert_eq!(encoded.len(), 5);
+        assert_eq!(TestMessage::decode(encoded.as_slice()), Ok(msg));
     }
 }
