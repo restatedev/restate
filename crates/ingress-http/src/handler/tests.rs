@@ -8,17 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::convert::Infallible;
 use std::future::ready;
 use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::FutureExt;
+use futures::{FutureExt, stream};
 use http::StatusCode;
 use http::{HeaderValue, Method, Request, Response};
-use http_body_util::{BodyExt, Empty, Full};
-use tower::ServiceExt;
+use http_body::Frame;
+use http_body_util::{BodyExt, Empty, Full, StreamBody};
+use tower::{ServiceBuilder, ServiceExt};
+use tower_http::limit::{RequestBodyLimitLayer, ResponseBody as LimitResponseBody};
 use tracing_test::traced_test;
 
 use restate_core::TestCoreEnv;
@@ -974,6 +977,57 @@ async fn invalid_input() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
+const SIZE_LIMIT_BYTES: usize = 1024;
+
+#[restate_core::test]
+#[traced_test]
+async fn request_with_content_length_exceeding_limit_rejected_early() {
+    // Content-Length declares the body is larger than the configured limit.
+    // tower-http's RequestBodyLimit rejects with 413 before the handler runs,
+    // so the dispatcher must never be touched (the strict mock would panic
+    // on any unexpected call).
+    let big_body = Bytes::from(vec![b'a'; SIZE_LIMIT_BYTES * 2]);
+    let req = hyper::Request::builder()
+        .uri("http://localhost/greeter.Greeter/greet")
+        .method(Method::POST)
+        .header("content-type", "application/json")
+        .header(http::header::CONTENT_LENGTH, big_body.len().to_string())
+        .body(Full::new(big_body))
+        .unwrap();
+
+    let response =
+        handle_with_size_limit(req, SIZE_LIMIT_BYTES, MockRequestDispatcher::default()).await;
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[restate_core::test]
+#[traced_test]
+async fn streaming_request_exceeding_limit_returns_413() {
+    // Body has no Content-Length and streams in 64-byte chunks past the limit.
+    // The handler starts reading; once cumulative bytes exceed the limit, the
+    // body emits a LengthLimitError, which the handler's error mapping turns
+    // into 413.
+    let chunk = Bytes::from(vec![b'a'; 64]);
+    let chunks = (SIZE_LIMIT_BYTES / chunk.len()) + 2;
+    let frames: Vec<Result<Frame<Bytes>, Infallible>> = (0..chunks)
+        .map(|_| Ok(Frame::data(chunk.clone())))
+        .collect();
+    let body = StreamBody::new(stream::iter(frames));
+
+    let req = hyper::Request::builder()
+        .uri("http://localhost/greeter.Greeter/greet")
+        .method(Method::POST)
+        .header("content-type", "application/json")
+        .body(body)
+        .unwrap();
+
+    let response =
+        handle_with_size_limit(req, SIZE_LIMIT_BYTES, MockRequestDispatcher::default()).await;
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
 #[restate_core::test]
 #[traced_test]
 async fn set_custom_content_type_on_response() {
@@ -1159,6 +1213,32 @@ where
     <B as http_body::Body>::Data: Send + Sync + 'static,
 {
     handle_with_schemas_and_dispatcher(req, mock_schemas(), mock_request_dispatcher).await
+}
+
+async fn handle_with_size_limit<B>(
+    mut req: Request<B>,
+    size_limit: usize,
+    dispatcher: MockRequestDispatcher,
+) -> Response<LimitResponseBody<Full<Bytes>>>
+where
+    B: http_body::Body + Send + 'static,
+    <B as http_body::Body>::Data: Send + Sync + 'static,
+    <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
+{
+    let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+
+    req.extensions_mut()
+        .insert(ConnectInfo::new(SocketAddress::Anonymous));
+    req.extensions_mut().insert(opentelemetry::Context::new());
+
+    let svc = ServiceBuilder::new()
+        .layer(RequestBodyLimitLayer::new(size_limit))
+        .service(Handler::new(
+            Live::from_value(mock_schemas()),
+            Arc::new(dispatcher),
+        ));
+
+    svc.oneshot(req).await.unwrap()
 }
 
 // -- /restate attach / output / lookup ------------------------------------

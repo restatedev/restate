@@ -21,13 +21,6 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tracing::{Instrument, debug, trace, trace_span};
 
-use super::HandlerError;
-use super::path_parsing::{InvokeType, ServiceRequestType, TargetType};
-use super::tracing::prepare_tracing_span;
-use super::{APPLICATION_JSON, Handler};
-use crate::RequestDispatcher;
-use crate::handler::responses::{IDEMPOTENCY_EXPIRES, X_RESTATE_ID};
-use crate::metric_definitions::{INGRESS_REQUEST_DURATION, INGRESS_REQUESTS, REQUEST_COMPLETED};
 use restate_types::Scope;
 use restate_types::config::Configuration;
 use restate_types::identifiers::{InvocationId, WithInvocationId};
@@ -41,6 +34,14 @@ use restate_types::schema::invocation_target::{
 };
 use restate_types::time::MillisSinceEpoch;
 use restate_util_string::{ReString, RestateString};
+
+use super::HandlerError;
+use super::path_parsing::{InvokeType, ServiceRequestType, TargetType};
+use super::tracing::prepare_tracing_span;
+use super::{APPLICATION_JSON, Handler};
+use crate::handler::responses::{IDEMPOTENCY_EXPIRES, X_RESTATE_ID};
+use crate::metric_definitions::{INGRESS_REQUEST_DURATION, INGRESS_REQUESTS, REQUEST_COMPLETED};
+use crate::{BoxError, RequestDispatcher};
 
 pub(crate) const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
 const LIMIT_KEY_HEADER: HeaderName = HeaderName::from_static("x-restate-limit-key");
@@ -81,7 +82,7 @@ where
         service_request: ServiceRequestType,
     ) -> Result<Response<Full<Bytes>>, HandlerError>
     where
-        <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
+        <B as http_body::Body>::Error: Into<BoxError>,
     {
         let start_time = Instant::now();
 

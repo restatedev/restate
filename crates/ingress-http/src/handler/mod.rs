@@ -21,10 +21,9 @@ mod tests;
 mod tracing;
 mod workflow;
 
-use super::*;
-use crate::handler::path_parsing::{
-    AwakeableRequestType, InvocationRequestType, ServiceRequestType, WorkflowRequestType,
-};
+use std::convert::Infallible;
+use std::task::{Context, Poll};
+
 use bytestring::ByteString;
 use error::HandlerError;
 use futures::FutureExt;
@@ -32,6 +31,8 @@ use futures::future::BoxFuture;
 use http_body_util::Full;
 use hyper::http::HeaderValue;
 use hyper::{Request, Response};
+use serde::Deserialize;
+
 use restate_types::Scope;
 use restate_types::identifiers::{IdempotencyId, ServiceId};
 use restate_types::invocation::InvocationQuery;
@@ -39,9 +40,11 @@ use restate_types::live::Live;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 use restate_util_string::{ReString, RestrictedValue};
-use serde::Deserialize;
-use std::convert::Infallible;
-use std::task::{Context, Poll};
+
+use super::*;
+use crate::handler::path_parsing::{
+    AwakeableRequestType, InvocationRequestType, ServiceRequestType, WorkflowRequestType,
+};
 
 const APPLICATION_JSON: HeaderValue = HeaderValue::from_static("application/json");
 
@@ -85,7 +88,7 @@ where
     Dispatcher: RequestDispatcher + Clone + Send + Sync + 'static,
     Body: http_body::Body + Send + 'static,
     <Body as http_body::Body>::Data: Send + 'static,
-    <Body as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
+    <Body as http_body::Body>::Error: Into<BoxError>,
 {
     type Response = Response<Full<Bytes>>;
     type Error = Infallible;
