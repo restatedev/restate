@@ -44,9 +44,11 @@ pub(crate) fn register_self(
         StateBuilder::schema(),
         state_sort_order(),
         remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
-        FirstMatchingPartitionKeyExtractor::default()
-            .with_scope("scope")
-            .with_service_key("service_key"),
+        // We can no longer extract the partition key for unscoped state entries based solely on
+        // the service_key as we might be missing scoped state entries for this service key. We
+        // could only do this if scope is null for which we don't have a partition key extractor
+        // construct yet.
+        FirstMatchingPartitionKeyExtractor::default().with_scope("scope"),
     );
     ctx.register_partitioned_table(NAME, Arc::new(table))
 }

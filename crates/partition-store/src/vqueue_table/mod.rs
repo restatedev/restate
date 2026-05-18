@@ -611,23 +611,41 @@ impl ScanVQueueEntries for PartitionStore {
             + 'static,
         S: IntoIterator<Item = Stage>,
     {
-        // The Arc is built here, cloned once per stage into each iterator closure,
-        // and immediately dropped from this scope. The async block below has *no*
-        // reference to it, so the wrapped callback never returns to the tokio
-        // runtime — see the comment in `scan_single_stage` for why that matters.
-        let scans: Vec<_> = {
-            let f = std::sync::Arc::new(tokio::sync::Mutex::new(f));
-            let mut stages = stages.into_iter().peekable();
-            let build = |stage| scanner_for_stage(self, range, stage, f.clone());
-            if stages.peek().is_some() {
-                stages.map(build).collect::<Result<Vec<_>>>()?
+        // The Arc must not outlive the iterator closures: BatchSender's Drop
+        // performs blocking I/O, so its final drop has to happen on a storage
+        // thread, not on a tokio worker. We achieve that by moving the *only*
+        // Arc handle through the loop — every stage but the last gets a clone,
+        // and the last stage consumes the remaining handle. Once this function
+        // returns, no Arc references survive outside the spawned iterator
+        // tasks, so the last task to finish runs the Drop on its storage
+        // thread. See also the comment in `scan_single_stage`.
+        let stages: Vec<Stage> = {
+            let mut iter = stages.into_iter().peekable();
+            if iter.peek().is_some() {
+                iter.collect()
             } else {
-                ALL_SCANNABLE_STAGES
-                    .into_iter()
-                    .map(build)
-                    .collect::<Result<Vec<_>>>()?
+                ALL_SCANNABLE_STAGES.to_vec()
             }
         };
+        debug_assert!(
+            !stages.is_empty(),
+            "stages iterator and fallback are both non-empty"
+        );
+
+        let last_idx = stages.len() - 1;
+        let mut f_opt = Some(std::sync::Arc::new(tokio::sync::Mutex::new(f)));
+        let mut scans = Vec::with_capacity(stages.len());
+        for (i, stage) in stages.into_iter().enumerate() {
+            let f_for_stage = if i < last_idx {
+                f_opt
+                    .as_ref()
+                    .expect("f_opt is taken only on the last stage")
+                    .clone()
+            } else {
+                f_opt.take().expect("f_opt is taken only on the last stage")
+            };
+            scans.push(scanner_for_stage(self, range, stage, f_for_stage)?);
+        }
 
         Ok(async move {
             for scan in scans {

@@ -43,9 +43,22 @@ tokio = { workspace = true, features = ["sync"] }
 tokio-util = { workspace = true, features = ["time"] }
 tracing = { workspace = true }
 
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+sha2 = { workspace = true, features = ["asm"] }
+
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
 restate-partition-store = { workspace = true }
+
+criterion = { workspace = true }
+pprof = { version = "0.15", features = ["criterion", "flamegraph", "frame-pointer"] }
+
+[target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
+tikv-jemallocator = { workspace = true }
+
+[[bench]]
+name = "generate_vqueue_id"
+harness = false
 
 [lints]
 workspace = true

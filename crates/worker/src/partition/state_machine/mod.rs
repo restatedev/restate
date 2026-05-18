@@ -3318,7 +3318,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                         self.record_created_at,
                     );
 
-                info!("Starting invocation {invocation_id}, scheduler stats: {wait_stats:?}");
                 let mut vqueue = VQueue::get(
                     qid,
                     self.storage,

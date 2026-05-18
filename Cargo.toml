@@ -227,10 +227,10 @@ reqwest = { version = "0.12", default-features = false, features = [
     "stream",
 ] }
 rlimit = { version = "0.10.2" }
-rocksdb = { version = "0.46.1", package = "rust-rocksdb", features = [
+rocksdb = { version = "0.48.0", package = "rust-rocksdb", features = [
     "multi-threaded-cf",
     "jemalloc",
-], git = "https://github.com/restatedev/rust-rocksdb", rev = "dcfba7946697d740e60f0b1060b6624dc1c7e94a" }
+], git = "https://github.com/restatedev/rust-rocksdb", rev = "432ac4288a219dd70d4c71ccfcd0ad51d6bcc0d1" }
 rstest = "0.26.1"
 rustls = { version = "0.23.35", default-features = false, features = ["ring"] }
 schemars = { version = "1.2", features = ["bytes1"] }
@@ -239,7 +239,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_core = { version = "1" }
 serde_json = "1.0"
 serde_with = "3.16"
-sha2 = "0.10.9"
+sha2 = { version = "0.10.9" }
 static_assertions = { version = "1.1.0" }
 strum = { version = "0.27.2", features = ["derive"] }
 smallvec = { version = "1.15.1", features = ["serde", "union"] }

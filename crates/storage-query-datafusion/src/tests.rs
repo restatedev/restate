@@ -637,7 +637,7 @@ async fn query_sys_invocation_status_scope() {
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn query_state_scoped_with_service_key_filter() {
+async fn query_scoped_state_with_service_key_filter() {
     // Regression: combining `scope = ...` and `service_key = ...` filters used to
     // return zero rows because the partition-key extractor narrowed the scan to
     // hash(service_key), but scoped rows live under hash(scope).
@@ -694,5 +694,87 @@ async fn query_state_scoped_with_service_key_filter() {
     assert_that!(
         scope_and_key,
         row!(0, { "service_key" => LargeStringArray: eq("i1") })
+    );
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_state_with_service_key_filter() {
+    // Regression: `service_key = ...` filters used to return only unscoped state entries
+    // because the partition-key extractor narrowed the scan to hash(service_key). This ignores
+    // scoped state entries for the same service_key.
+    let scope = Scope::try_from_static("c").unwrap();
+    let scoped_i1 = ServiceId::new(Some(scope.clone()), "scoped", "i1");
+    let unscoped_i1 = ServiceId::new(None, "unscoped", "i1");
+    let state_key = Bytes::from_static(b"a");
+    let value = b"\"b\"";
+
+    let mut engine = MockQueryEngine::create().await;
+
+    let mut tx = engine.partition_store().transaction();
+    tx.put_user_state(&scoped_i1, &state_key, value).unwrap();
+    tx.put_user_state(&unscoped_i1, &state_key, value).unwrap();
+    tx.commit().await.unwrap();
+
+    let scope_only = engine
+        .execute(
+            "SELECT service_name FROM state \
+             WHERE scope = 'c'",
+        )
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_eq!(scope_only.num_rows(), 1);
+    assert_that!(
+        scope_only,
+        row!(0, { "service_name" => LargeStringArray: eq("scoped") })
+    );
+
+    let service_key_only = engine
+        .execute(
+            "SELECT service_name FROM state \
+             WHERE service_key = 'i1' \
+             ORDER BY service_name",
+        )
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_eq!(service_key_only.num_rows(), 2);
+    assert_that!(
+        service_key_only,
+        all!(
+            row!(0, { "service_name" => LargeStringArray: eq("scoped") }),
+            row!(1, { "service_name" => LargeStringArray: eq("unscoped") })
+        )
+    );
+
+    // Unfortunately, this query will no longer be a single partition key scan but instead a full
+    // partition key range scan :-(
+    let null_scope_service_key = engine
+        .execute(
+            "SELECT service_name FROM state \
+             WHERE service_key = 'i1' AND scope IS NULL",
+        )
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_eq!(null_scope_service_key.num_rows(), 1);
+    assert_that!(
+        null_scope_service_key,
+        row!(0, { "service_name" => LargeStringArray: eq("unscoped") })
     );
 }

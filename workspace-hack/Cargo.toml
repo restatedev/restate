@@ -293,6 +293,7 @@ pprof_util = { version = "0.8", default-features = false, features = ["flamegrap
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
 quick-xml = { version = "0.39", features = ["overlapped-lists", "serialize"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
+sha2 = { version = "0.10", features = ["asm"] }
 signal-hook = { version = "0.3" }
 tikv-jemalloc-ctl = { version = "0.6", features = ["stats", "use_std"] }
 tikv-jemalloc-sys = { version = "0.6", features = ["profiling", "stats", "unprefixed_malloc_on_supported_platforms"] }
@@ -313,6 +314,7 @@ pprof_util = { version = "0.8", default-features = false, features = ["flamegrap
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
 quick-xml = { version = "0.39", features = ["overlapped-lists", "serialize"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
+sha2 = { version = "0.10", features = ["asm"] }
 signal-hook = { version = "0.3" }
 tikv-jemalloc-ctl = { version = "0.6", features = ["stats", "use_std"] }
 tikv-jemalloc-sys = { version = "0.6", features = ["profiling", "stats", "unprefixed_malloc_on_supported_platforms"] }
@@ -333,6 +335,7 @@ pprof_util = { version = "0.8", default-features = false, features = ["flamegrap
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
 quick-xml = { version = "0.39", features = ["overlapped-lists", "serialize"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
+sha2 = { version = "0.10", features = ["asm"] }
 signal-hook = { version = "0.3" }
 tikv-jemalloc-ctl = { version = "0.6", features = ["stats", "use_std"] }
 tikv-jemalloc-sys = { version = "0.6", features = ["profiling", "stats", "unprefixed_malloc_on_supported_platforms"] }
@@ -353,6 +356,7 @@ pprof_util = { version = "0.8", default-features = false, features = ["flamegrap
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
 quick-xml = { version = "0.39", features = ["overlapped-lists", "serialize"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
+sha2 = { version = "0.10", features = ["asm"] }
 signal-hook = { version = "0.3" }
 tikv-jemalloc-ctl = { version = "0.6", features = ["stats", "use_std"] }
 tikv-jemalloc-sys = { version = "0.6", features = ["profiling", "stats", "unprefixed_malloc_on_supported_platforms"] }

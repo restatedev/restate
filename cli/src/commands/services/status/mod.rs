@@ -16,6 +16,7 @@ use chrono_humanize::Tense;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
 
+use itertools::Itertools;
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::{Styled, StyledTable};
 use restate_cli_util::ui::stylesheet::Style;
@@ -126,7 +127,11 @@ async fn render_handlers_status(
     svc: ServiceMetadata,
     svc_status: &ServiceStatus,
 ) -> Result<()> {
-    for (_, handler) in svc.handlers {
+    for handler in svc
+        .handlers
+        .values()
+        .sorted_unstable_by(|a, b| a.name.cmp(&b.name))
+    {
         let mut row = vec![];
         row.push(Cell::new(format!("  {}", &handler.name)));
         // Pending
