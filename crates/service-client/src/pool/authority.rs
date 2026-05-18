@@ -16,7 +16,6 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
@@ -26,9 +25,7 @@ use metrics::histogram;
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tower::Service;
-use tracing::trace;
-
-use restate_types::time::MillisSinceEpoch;
+use tracing::{debug, trace};
 
 use crate::pool::PoolConfig;
 use crate::pool::conn::{ConnectionConfig, ConnectionConfigBuilder};
@@ -48,7 +45,6 @@ struct AuthorityPoolShared<C> {
     config: PoolConfig,
     connection_config: ConnectionConfig,
     inner: Arc<RwLock<AuthorityPoolInner<C>>>,
-    last_used: AtomicU64,
 }
 
 enum AuthorityPoolState<C> {
@@ -85,31 +81,25 @@ impl<C: Clone> Clone for AuthorityPool<C> {
 }
 
 impl<C> AuthorityPool<C> {
-    /// Updates the last-used timestamp to the current time.
-    pub(crate) fn touch(&self) {
-        self.shared
-            .last_used
-            .store(MillisSinceEpoch::now().as_u64(), Ordering::Relaxed);
-    }
+    // Retains the connections for which retain returns true and returns (remaining, evicted).
+    pub fn retain<F>(&self, mut retain: F) -> (usize, Vec<Connection<C>>)
+    where
+        F: FnMut(&Connection<C>) -> bool,
+    {
+        let mut drained = Vec::default();
+        let mut inner = self.shared.inner.write();
+        let mut i = 0;
 
-    /// Returns the last-used timestamp.
-    pub(crate) fn last_used(&self) -> MillisSinceEpoch {
-        MillisSinceEpoch::from(self.shared.last_used.load(Ordering::Relaxed))
-    }
+        while i < inner.connections.len() {
+            if retain(&inner.connections[i]) {
+                i += 1;
+                continue;
+            }
 
-    #[cfg(test)]
-    pub(crate) fn set_last_used(&self, ts: MillisSinceEpoch) {
-        self.shared.last_used.store(ts.as_u64(), Ordering::Relaxed);
-    }
+            drained.push(inner.connections.swap_remove_back(i).unwrap());
+        }
 
-    /// Returns `true` if any connection has in-flight H2 streams.
-    pub(crate) fn has_inflight(&self) -> bool {
-        self.shared
-            .inner
-            .read()
-            .connections
-            .iter()
-            .any(|c| c.inflight() > 0)
+        (inner.connections.len(), drained)
     }
 }
 
@@ -133,7 +123,6 @@ where
             connector,
             config,
             connection_config,
-            last_used: AtomicU64::new(MillisSinceEpoch::now().as_u64()),
             inner: Arc::new(RwLock::new(AuthorityPoolInner {
                 epoch: 0,
                 connections: VecDeque::new(),
@@ -329,6 +318,13 @@ where
                             });
 
                     if scaleup {
+                        debug!(
+                            "Try scaling up pool (connections: {}, available streams: {}, total streams:{})",
+                            inner.connections.len(),
+                            total_available_streams,
+                            total_max_concurrent_streams
+                        );
+
                         match self.try_expand_pool(&mut inner) {
                             Some(mut candidate) => {
                                 drop(inner);
