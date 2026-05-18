@@ -1156,6 +1156,50 @@ mod tests {
         assert_eq!(result, None, "Work should be aborted at deadline");
     }
 
+    /// If the lease is lost mid-operation (renewal failure, takeover by another node, etc.),
+    /// `run_under_lease` must abort the in-flight work and return `None` instead of letting
+    /// it finish under an invalid lease.
+    #[restate_core::test(start_paused = true)]
+    async fn run_under_lease_aborts_when_lease_lost_mid_operation() {
+        let env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let clock = TokioClock::new();
+        let manager = SnapshotLeaseManager::new_with_clock(
+            env.metadata_store_client.clone(),
+            GenerationalNodeId::new(1, 1),
+            clock,
+        );
+
+        let guard = Arc::new(
+            manager
+                .acquire(PartitionId::MIN)
+                .await
+                .expect("acquire should succeed"),
+        );
+
+        let lease_lost = guard.lease_lost();
+        let cancel_guard = guard.clone();
+
+        // Cancel the lease shortly into the work, simulating renewal-task failure.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            cancel_guard.test_mark_released();
+        });
+
+        let result = guard
+            .run_under_lease(async {
+                // Work that would otherwise complete well within the lease duration.
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                42
+            })
+            .await;
+
+        assert!(lease_lost.is_cancelled());
+        assert_eq!(
+            result, None,
+            "Work must be aborted once the lease is signalled lost"
+        );
+    }
+
     /// Handy for paused tokio tests, this clock reflects `tokio::time::advance()` calls eliminating
     /// the need to manipulate two time sources.
     #[derive(Clone)]
