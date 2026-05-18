@@ -347,6 +347,13 @@ mod bilrost_encoding {
         to encode proxied type (MillisSinceEpoch)
         with general encodings including distinguished
     );
+
+    bilrost::delegate_proxied_encoding!(
+        use encoding (bilrost::encoding::Fixed)
+        to encode proxied type (MillisSinceEpoch)
+        with encoding (bilrost::encoding::Fixed)
+        including distinguished
+    );
 }
 
 /// Nanos since the unix epoch. Used internally to get rough latency measurements across nodes.

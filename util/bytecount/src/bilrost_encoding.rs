@@ -45,6 +45,13 @@ bilrost::delegate_proxied_encoding!(
     with general encodings including distinguished
 );
 
+bilrost::delegate_proxied_encoding!(
+    use encoding (bilrost::encoding::Fixed)
+    to encode proxied type (ByteCount<true>)
+    with encoding (bilrost::encoding::Fixed)
+    including distinguished
+);
+
 impl Proxiable for ByteCount<false> {
     type Proxy = u64;
 
@@ -83,3 +90,42 @@ bilrost::delegate_proxied_encoding!(
     to encode proxied type (ByteCount<false>)
     with general encodings including distinguished
 );
+
+bilrost::delegate_proxied_encoding!(
+    use encoding (bilrost::encoding::Fixed)
+    to encode proxied type (ByteCount<false>)
+    with encoding (bilrost::encoding::Fixed)
+    including distinguished
+);
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroU64;
+
+    use bilrost::{Message, OwnedMessage};
+
+    use crate::{ByteCount, NonZeroByteCount};
+
+    #[derive(Debug, PartialEq, bilrost::Message)]
+    struct FixedByteCountMessage {
+        #[bilrost(tag(1), encoding(fixed))]
+        bytes: ByteCount,
+        #[bilrost(tag(2), encoding(fixed))]
+        non_zero_bytes: Option<NonZeroByteCount>,
+    }
+
+    #[test]
+    fn fixed_encoding_round_trips_byte_counts() {
+        let message = FixedByteCountMessage {
+            bytes: ByteCount::from(42_u64),
+            non_zero_bytes: Some(NonZeroByteCount::from(NonZeroU64::new(128).unwrap())),
+        };
+
+        let encoded = message.encode_to_vec();
+        assert_eq!(encoded.len(), 18);
+        assert_eq!(
+            FixedByteCountMessage::decode(encoded.as_slice()),
+            Ok(message)
+        );
+    }
+}

@@ -34,9 +34,9 @@ use super::stats::EntryStatistics;
 pub struct EntryKey {
     #[bilrost(tag(1))]
     has_lock: bool,
-    #[bilrost(tag(2))]
+    #[bilrost(tag(2), encoding(fixed))]
     run_at: RoughTimestamp,
-    #[bilrost(tag(3))]
+    #[bilrost(tag(3), encoding(fixed))]
     seq: Seq,
     #[bilrost(tag(4))]
     entry_id: EntryId,
@@ -160,7 +160,7 @@ impl EntryKey {
 pub struct EntryValue {
     /// Status is copied over from the entry status table when the last transition
     /// happened.
-    #[bilrost(tag(1))]
+    #[bilrost(tag(1), encoding(fixed))]
     pub status: Status,
     #[bilrost(tag(2))]
     pub metadata: EntryMetadata,
@@ -193,11 +193,11 @@ pub struct EntryMetadataRef<'a> {
     deployment: Option<&'a str>,
     // If set, this is the amount of memory the invocation seems to require to
     // run on the invoker side.
-    #[bilrost(tag(2))]
+    #[bilrost(tag(2), encoding(fixed))]
     pub needed_memory: Option<NonZeroByteCount>,
-    #[bilrost(tag(3))]
+    #[bilrost(tag(3), encoding(fixed))]
     pub retry_attempts: u32,
-    #[bilrost(tag(4))]
+    #[bilrost(tag(4), encoding(fixed))]
     pub retry_count_since_last_stored_command: u32,
 }
 
@@ -221,11 +221,11 @@ pub struct EntryMetadata {
 
     // If set, this is the amount of memory the invocation seems to require to
     // run on the invoker side.
-    #[bilrost(tag(2))]
+    #[bilrost(tag(2), encoding(fixed))]
     pub needed_memory: Option<NonZeroByteCount>,
-    #[bilrost(tag(3))]
+    #[bilrost(tag(3), encoding(fixed))]
     pub retry_attempts: u32,
-    #[bilrost(tag(4))]
+    #[bilrost(tag(4), encoding(fixed))]
     pub retry_count_since_last_stored_command: u32,
 }
 
