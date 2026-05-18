@@ -2163,4 +2163,30 @@ mod tests {
 
         Ok(())
     }
+
+    #[restate_core::test]
+    async fn acquire_lease_read_only_repository_returns_unavailable() -> anyhow::Result<()> {
+        use crate::snapshots::LeaseError;
+        let snapshots_destination = TempDir::new()?;
+        let destination = Url::from_file_path(snapshots_destination.path())
+            .unwrap()
+            .to_string();
+
+        let opts = SnapshotsOptions {
+            destination: Some(destination),
+            ..SnapshotsOptions::default()
+        };
+
+        let repository =
+            SnapshotRepository::new_read_only_from_config(&opts, TempDir::new().unwrap().keep())
+                .await?
+                .unwrap();
+
+        let result = repository.acquire_lease(PartitionId::MIN).await;
+        assert!(
+            matches!(result, Err(LeaseError::Unavailable)),
+            "expected Err(LeaseError::Unavailable) from a read-only repository"
+        );
+        Ok(())
+    }
 }
