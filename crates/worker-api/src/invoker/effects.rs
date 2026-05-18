@@ -82,7 +82,7 @@ pub enum EffectKind {
     /// scheduler can apply reason-specific strategies in the future).
     Yield {
         reason: YieldReason,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
         error_event: Option<RawEvent>,
         resume_at: Option<RoughTimestamp>,
     },
