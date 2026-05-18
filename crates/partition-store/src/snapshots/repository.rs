@@ -661,7 +661,7 @@ impl SnapshotRepository {
             }
         }
 
-        if matches!(self.snapshot_type, SnapshotType::Incremental) && files_skipped > 0 {
+        if matches!(self.snapshot_type, SnapshotType::Incremental) {
             let dedup_rate = if total_size > 0 {
                 ((total_size - uploaded_size) as f64 / total_size as f64) * 100.0
             } else {
@@ -676,7 +676,7 @@ impl SnapshotRepository {
                 bytes_uploaded = uploaded_size,
                 bytes_saved = total_size - uploaded_size,
                 dedup_rate = format!("{:.1}%", dedup_rate),
-                "Snapshot SST upload completed with deduplication"
+                "Snapshot SST upload completed"
             );
         }
 
