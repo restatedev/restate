@@ -67,7 +67,7 @@ impl From<ReplicatedLogletError> for crate::Error {
     fn from(value: ReplicatedLogletError) -> Self {
         match value {
             ReplicatedLogletError::Shutdown(e) => crate::Error::Shutdown(e),
-            e => crate::Error::LogletError(Arc::new(e)),
+            e => crate::Error::Loglet(Arc::new(e)),
         }
     }
 }

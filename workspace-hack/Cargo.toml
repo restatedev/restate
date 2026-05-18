@@ -117,6 +117,7 @@ smallvec = { version = "1", default-features = false, features = ["const_new", "
 stable_deref_trait = { version = "1" }
 syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 sync_wrapper = { version = "1", default-features = false, features = ["futures"] }
+thiserror = { version = "2" }
 time = { version = "0.3", features = ["formatting", "local-offset", "macros", "parsing"] }
 tokio-rustls = { version = "0.26", features = ["ring"] }
 tokio-stream = { version = "0.1", features = ["net", "sync"] }
@@ -248,6 +249,7 @@ smallvec = { version = "1", default-features = false, features = ["const_new", "
 stable_deref_trait = { version = "1" }
 syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 sync_wrapper = { version = "1", default-features = false, features = ["futures"] }
+thiserror = { version = "2" }
 time = { version = "0.3", features = ["formatting", "local-offset", "macros", "parsing"] }
 tokio-rustls = { version = "0.26", features = ["ring"] }
 tokio-stream = { version = "0.1", features = ["net", "sync"] }
@@ -291,6 +293,7 @@ pprof_util = { version = "0.8", default-features = false, features = ["flamegrap
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
 quick-xml = { version = "0.39", features = ["overlapped-lists", "serialize"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
+sha2 = { version = "0.10", features = ["asm"] }
 signal-hook = { version = "0.3" }
 tikv-jemalloc-ctl = { version = "0.6", features = ["stats", "use_std"] }
 tikv-jemalloc-sys = { version = "0.6", features = ["profiling", "stats", "unprefixed_malloc_on_supported_platforms"] }
@@ -311,6 +314,7 @@ pprof_util = { version = "0.8", default-features = false, features = ["flamegrap
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
 quick-xml = { version = "0.39", features = ["overlapped-lists", "serialize"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
+sha2 = { version = "0.10", features = ["asm"] }
 signal-hook = { version = "0.3" }
 tikv-jemalloc-ctl = { version = "0.6", features = ["stats", "use_std"] }
 tikv-jemalloc-sys = { version = "0.6", features = ["profiling", "stats", "unprefixed_malloc_on_supported_platforms"] }
@@ -331,6 +335,7 @@ pprof_util = { version = "0.8", default-features = false, features = ["flamegrap
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
 quick-xml = { version = "0.39", features = ["overlapped-lists", "serialize"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
+sha2 = { version = "0.10", features = ["asm"] }
 signal-hook = { version = "0.3" }
 tikv-jemalloc-ctl = { version = "0.6", features = ["stats", "use_std"] }
 tikv-jemalloc-sys = { version = "0.6", features = ["profiling", "stats", "unprefixed_malloc_on_supported_platforms"] }
@@ -351,8 +356,12 @@ pprof_util = { version = "0.8", default-features = false, features = ["flamegrap
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
 quick-xml = { version = "0.39", features = ["overlapped-lists", "serialize"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
+sha2 = { version = "0.10", features = ["asm"] }
 signal-hook = { version = "0.3" }
 tikv-jemalloc-ctl = { version = "0.6", features = ["stats", "use_std"] }
 tikv-jemalloc-sys = { version = "0.6", features = ["profiling", "stats", "unprefixed_malloc_on_supported_platforms"] }
 
 ### END HAKARI SECTION
+
+[lints]
+workspace = true

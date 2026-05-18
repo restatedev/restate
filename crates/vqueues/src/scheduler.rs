@@ -15,16 +15,19 @@ use std::pin::Pin;
 use std::future::poll_fn;
 use std::task::Poll;
 
+use restate_limiter::RuleUpdate;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::scheduler::{RunAction, SchedulerAction, YieldAction};
-use restate_storage_api::vqueue_table::{EntryKey, ScanVQueueTable, VQueueStore};
+use restate_storage_api::vqueue_table::{EntryKey, EntryMetadata, ScanVQueueTable, VQueueStore};
+use restate_types::identifiers::PartitionKey;
 use restate_types::vqueues::VQueueId;
 use restate_worker_api::resources::ReservedResources;
-use restate_worker_api::{SchedulingStatus, VQueueSchedulerStatus};
+use restate_worker_api::{SchedulingStatus, UserLimitCounterEntry, VQueueSchedulerStatus};
 
-use crate::VQueueEvent;
-use crate::VQueuesMetaCache;
+use crate::cache::VQueueHandle;
 use crate::metric_definitions::publish_scheduler_decision_metrics;
+use crate::{VQueueEvent, VQueuesMeta};
+use crate::{VQueuesMetaCache, cache};
 
 use self::drr::DRRScheduler;
 use self::resource_manager::PermitBuilder;
@@ -34,17 +37,13 @@ mod clock;
 mod drr;
 mod eligible;
 mod queue;
-mod queue_meta;
 mod resource_manager;
 mod vqueue_state;
 
 // Re-exports
-pub use self::queue_meta::{MetaLiteUpdate, VQueueMetaLite};
 pub use resource_manager::ResourceManager;
 
-type UnconfirmedAssignments = hashbrown::HashMap<EntryKey, PermitBuilder>;
-
-slotmap::new_key_type! { pub(crate) struct VQueueHandle; }
+type UnconfirmedAssignments = hashbrown::HashMap<EntryKey, (PermitBuilder, EntryMetadata)>;
 
 fn status_from_detailed_eligibility(value: DetailedEligibility) -> SchedulingStatus {
     match value {
@@ -64,7 +63,7 @@ pub struct Decisions {
     pub qids: BTreeMap<VQueueId, Vec<SchedulerAction>>,
     /// running items
     pub num_run: u32,
-    /// Items in run queue that need to go back to waiting inbox
+    /// Items in run queue that need to go back to the inbox stage
     pub num_yield: u32,
 }
 
@@ -159,9 +158,17 @@ impl<S: VQueueStore> SchedulerService<S> {
         Ok(Self { state })
     }
 
-    pub fn on_inbox_event(&mut self, event: VQueueEvent) {
+    pub fn on_inbox_event(&mut self, metas: VQueuesMeta<'_>, event: VQueueEvent) {
         if let State::Active(ref mut drr_scheduler) = self.state {
-            drr_scheduler.as_mut().on_inbox_event(event);
+            drr_scheduler.as_mut().on_inbox_event(metas, event);
+        }
+    }
+
+    /// Forward a batch of rule-book updates to the embedded resource
+    /// manager. No-op when the scheduler is disabled (followers).
+    pub fn on_rules_updated(&self, updates: Box<[RuleUpdate]>) {
+        if let State::Active(ref drr_scheduler) = self.state {
+            drr_scheduler.on_rules_updated(updates);
         }
     }
 
@@ -171,46 +178,79 @@ impl<S: VQueueStore> SchedulerService<S> {
     /// Resources will not be returned if the unconfirmed assignment was rejected or removed.
     pub fn confirm_run_attempt(
         &mut self,
-        qid: &VQueueId,
+        handle: VQueueHandle,
+        slot: &cache::Slot,
         key: &EntryKey,
     ) -> Option<ReservedResources> {
         if let State::Active(ref mut drr_scheduler) = self.state {
-            drr_scheduler.as_mut().confirm_run_attempt(qid, key)
+            drr_scheduler
+                .as_mut()
+                .confirm_run_attempt(handle, slot, key)
         } else {
             None
         }
     }
 
-    pub async fn schedule_next(&mut self) -> Result<Decisions, StorageError> {
-        poll_fn(|cx| self.poll_schedule_next(cx)).await
+    pub async fn schedule_next(
+        &mut self,
+        metas: VQueuesMeta<'_>,
+    ) -> Result<Decisions, StorageError> {
+        poll_fn(|cx| self.poll_schedule_next(metas, cx)).await
     }
 
     pub fn poll_schedule_next(
         &mut self,
+        metas: VQueuesMeta<'_>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Result<Decisions, StorageError>> {
         match self.state {
             // if scheduler is disabled, we always return pending.
             State::Disabled => Poll::Pending,
-            State::Active(ref mut drr_scheduler) => drr_scheduler.as_mut().poll_schedule_next(cx),
+            State::Active(ref mut drr_scheduler) => {
+                drr_scheduler.as_mut().poll_schedule_next(metas, cx)
+            }
         }
     }
 
     /// Returns the scheduling status for a specific vqueue.
-    pub fn get_status(&self, qid: &VQueueId) -> VQueueSchedulerStatus {
+    #[cfg(test)]
+    pub fn get_status(
+        &self,
+        metas: VQueuesMeta<'_>,
+        handle: VQueueHandle,
+    ) -> VQueueSchedulerStatus {
         match self.state {
             State::Disabled => VQueueSchedulerStatus::default(),
-            State::Active(ref drr_scheduler) => drr_scheduler.get_status(qid),
+            State::Active(ref drr_scheduler) => drr_scheduler.get_status(metas, handle),
         }
     }
 
     /// Returns an iterator over the scheduling status of all tracked vqueues.
     ///
     /// Returns `None` if the scheduler is disabled.
-    pub fn iter_status(&self) -> Option<impl Iterator<Item = (VQueueId, VQueueSchedulerStatus)>> {
+    pub fn iter_status(
+        &self,
+        metas: VQueuesMeta<'_>,
+    ) -> Option<impl Iterator<Item = (VQueueId, VQueueSchedulerStatus)>> {
         match self.state {
             State::Disabled => None,
-            State::Active(ref drr_scheduler) => Some(drr_scheduler.iter_status()),
+            State::Active(ref drr_scheduler) => Some(drr_scheduler.iter_status(metas)),
+        }
+    }
+
+    /// Returns a snapshot of every user-limit counter currently tracked by this
+    /// partition's scheduler, stamped with `partition_key` for DataFusion routing.
+    ///
+    /// Returns an empty vec when the scheduler is disabled.
+    pub fn scan_user_limit_counters(
+        &self,
+        partition_key: PartitionKey,
+    ) -> Vec<UserLimitCounterEntry> {
+        match self.state {
+            State::Disabled => Vec::new(),
+            State::Active(ref drr_scheduler) => {
+                drr_scheduler.scan_user_limit_counters(partition_key)
+            }
         }
     }
 }

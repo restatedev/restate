@@ -54,7 +54,7 @@ pub enum ParseError {
 ///
 /// The wildcard character is `*`. Component values must be valid restricted values
 /// (only `[a-zA-Z0-9_.-]`, non-empty, max 36 bytes).
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Hash, Clone)]
 pub enum RulePattern<S: StringLike> {
     /// A rule that defines a limit for the scope level
     Scope(Pattern<S>),
@@ -164,7 +164,7 @@ impl<S: StringLike> std::fmt::Display for RulePattern<S> {
 }
 
 /// A pattern component that matches either an exact value or any value (wildcard).
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
 pub enum Pattern<S: StringLike> {
     /// Match a specific value.
     Exact(RestrictedValue<S>),
@@ -276,7 +276,7 @@ mod tests {
         let err = "s*".parse::<RulePattern<String>>().unwrap_err();
         assert!(matches!(
             err,
-            ParseError::InvalidComponent(RestrictedValueError::InvalidChar('*')),
+            ParseError::InvalidComponent(RestrictedValueError::Invalid),
         ));
 
         let err = "".parse::<RulePattern<String>>().unwrap_err();

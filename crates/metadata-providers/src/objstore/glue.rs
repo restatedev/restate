@@ -215,7 +215,7 @@ mod tests {
     }
 
     #[test_log::test(tokio::test)]
-    async fn test_client_get() {
+    async fn client_get() {
         let (client, _server_handle) = setup_test_metadata_store().await;
         let key = ByteString::from_static("test_key");
 
@@ -226,7 +226,7 @@ mod tests {
     }
 
     #[test_log::test(tokio::test)]
-    async fn test_client_get_version() {
+    async fn client_get_version() {
         let (client, _server_handle) = setup_test_metadata_store().await;
         let key = ByteString::from_static("test_key");
 
@@ -237,7 +237,7 @@ mod tests {
     }
 
     #[test_log::test(tokio::test)]
-    async fn test_client_put() {
+    async fn client_put() {
         let (client, _server_handle) = setup_test_metadata_store().await;
         let key = ByteString::from_static("test_key");
         let value = VersionedValue::new(Version::MIN, Bytes::from_static(b"test_value"));
@@ -255,7 +255,7 @@ mod tests {
     }
 
     #[test_log::test(tokio::test)]
-    async fn test_client_delete() {
+    async fn client_delete() {
         let (client, _server_handle) = setup_test_metadata_store().await;
         let key = ByteString::from_static("test_key");
         let value = VersionedValue::new(Version::MIN, Bytes::from_static(b"test_value"));
@@ -276,7 +276,7 @@ mod tests {
     }
 
     #[test_log::test(tokio::test)]
-    async fn test_full_stack_with_preconditions() {
+    async fn full_stack_with_preconditions() {
         let (client, _server_handle) = setup_test_metadata_store().await;
         let key = ByteString::from_static("test_key");
         let value1 = VersionedValue::new(Version::MIN, Bytes::from_static(b"value1"));

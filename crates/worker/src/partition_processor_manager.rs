@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 use ahash::{HashMap, HashSet};
 use anyhow::{Context, bail};
+use futures::FutureExt;
 use futures::stream::{FuturesUnordered, StreamExt};
 use itertools::{Either, Itertools};
 use metrics::{counter, gauge};
@@ -54,7 +55,7 @@ use restate_partition_store::snapshots::{
     PartitionSnapshotStatus, SnapshotPartitionTask, SnapshotRepository,
 };
 use restate_partition_store::{SnapshotError, SnapshotErrorKind};
-use restate_time_util::DurationExt;
+use restate_types::GenerationalNodeId;
 use restate_types::cluster::cluster_state::ReplayStatus;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::config::Configuration;
@@ -78,7 +79,8 @@ use restate_types::partitions::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::retries::with_jitter;
-use restate_types::{GenerationalNodeId, SharedString};
+use restate_util_string::format_restring;
+use restate_util_time::DurationExt;
 use restate_wal_protocol::Envelope;
 use restate_worker_api::invoker::capacity::InvokerCapacity;
 use restate_worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
@@ -96,12 +98,12 @@ use crate::partition_processor_manager::processor_state::{
     LeaderEpochToken, ProcessorState, StartedProcessor,
 };
 use crate::partition_processor_manager::spawn_processor_task::SpawnPartitionProcessorTask;
+use crate::rule_book_cache::{RuleBookCache, RuleBookCacheHandle};
 
 pub struct PartitionProcessorManager<T> {
     health_status: HealthStatus<WorkerStatus>,
     updateable_config: Live<Configuration>,
     processor_states: BTreeMap<PartitionId, ProcessorState>,
-    name_cache: BTreeMap<PartitionId, SharedString>,
 
     metadata_writer: MetadataWriter,
     partition_store_manager: Arc<PartitionStoreManager>,
@@ -131,6 +133,10 @@ pub struct PartitionProcessorManager<T> {
     invoker_capacity: InvokerCapacity,
 
     ingestion_client: IngestionClient<T, Envelope>,
+
+    /// Built in `new`; the polling task is spawned at the start of `run`.
+    rule_book_cache_task: Option<RuleBookCache>,
+    rule_book_cache: RuleBookCacheHandle,
 }
 
 type SnapshotResult = Result<PartitionSnapshotStatus, SnapshotError>;
@@ -234,11 +240,17 @@ where
         );
 
         let (tx, rx) = mpsc::channel(updateable_config.pinned().worker.internal_queue_length());
+
+        let rule_book_poll_interval = config.worker.rule_book_poll_interval.into();
+        let (rule_book_cache_task, rule_book_cache) = RuleBookCache::create(
+            metadata_writer.raw_metadata_store_client().clone(),
+            rule_book_poll_interval,
+        );
+
         Self {
             health_status,
             updateable_config,
             processor_states: BTreeMap::default(),
-            name_cache: Default::default(),
             metadata_writer,
             partition_store_manager,
             ppm_svc_rx,
@@ -261,6 +273,8 @@ where
             wait_for_partition_table_update: false,
             invoker_capacity,
             ingestion_client,
+            rule_book_cache_task: Some(rule_book_cache_task),
+            rule_book_cache,
         }
     }
 
@@ -272,8 +286,20 @@ where
         ProcessorsManagerHandle::new(self.tx.clone())
     }
 
+    pub fn rule_book_cache_handle(&self) -> RuleBookCacheHandle {
+        self.rule_book_cache.clone()
+    }
+
     pub async fn run(mut self) -> anyhow::Result<()> {
         let mut shutdown = std::pin::pin!(cancellation_watcher());
+
+        if let Some(cache) = self.rule_book_cache_task.take() {
+            TaskCenter::spawn_child(
+                TaskKind::MetadataBackgroundSync,
+                "rule-book-cache",
+                cache.run().map(|()| Ok(())),
+            )?;
+        }
 
         let metadata = Metadata::current();
 
@@ -1239,7 +1265,7 @@ where
             .read_modify_write(partition_processor_epoch_key(partition_id), |epoch| {
                 let next_epoch = epoch
                     .map(|epoch: EpochMetadata| epoch.claim_leadership(node_id, partition_id))
-                    .ok_or("missing epoch metadata".to_owned())?;
+                    .ok_or_else(|| "missing epoch metadata".to_owned())?;
 
                 Ok(next_epoch)
             })
@@ -1348,15 +1374,8 @@ where
 
         debug!("Starting new partition processor",);
 
-        // the name is also used as thread names for the corresponding tokio runtimes, let's keep
-        // it short.
-        let task_name = self
-            .name_cache
-            .entry(partition_id)
-            .or_insert_with(|| SharedString::from(Arc::from(format!("pp-{partition_id}"))));
-
         let starting_task = SpawnPartitionProcessorTask::new(
-            task_name.clone(),
+            format_restring!("pp-{partition_id}"),
             partition,
             self.bifrost.clone(),
             self.replica_set_states.clone(),
@@ -1365,11 +1384,12 @@ where
             self.invoker_capacity.clone(),
             self.ingestion_client.clone(),
             self.leader_handles_registry.clone(),
+            self.rule_book_cache.clone(),
         );
 
         self.asynchronous_operations
             .build_task()
-            .name(&format!("start-pp-{partition_id}"))
+            .name(&format_restring!("start-pp-{partition_id}"))
             .spawn(
                 async move {
                     counter!(PARTITION_START, PARTITION_LABEL => partition_id.to_string())

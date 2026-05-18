@@ -35,6 +35,10 @@ pub async fn create_client(
 ) -> anyhow::Result<MetadataStoreClient> {
     let backoff_policy = Some(metadata_client_options.backoff_policy.clone());
 
+    #[allow(
+        clippy::redundant_clone,
+        reason = "Clone is needed in case any of the metadata store features is enabled"
+    )]
     match metadata_client_options.kind.clone() {
         MetadataClientKind::Replicated { mut addresses } => {
             #[cfg(feature = "replicated")]

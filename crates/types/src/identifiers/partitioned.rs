@@ -243,7 +243,7 @@ mod tests {
     partitioned_resource_id!(Test);
 
     #[test]
-    fn test_roundtrip() {
+    fn roundtrip() {
         let id = TestId::generate(13);
         assert_eq!(id.partition_key(), 13);
         let encoded = id.to_string();

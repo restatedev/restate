@@ -19,7 +19,7 @@ use comfy_table::{Color, Table};
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::{c_println, c_title};
 use restate_partition_store::keys::KeyKind;
-use restate_serde_util::ByteCount;
+use restate_util_bytecount::ByteCount;
 
 use crate::app::GlobalOpts;
 use crate::util::colorize::{color_legend, colorize_key_hex};
@@ -387,6 +387,7 @@ fn decode_key_details(kind: KeyKind, key: &[u8]) -> Option<String> {
             let ts = u64::from_be_bytes(ts_bytes);
             return Some(format!("timestamp={}", ts));
         }
+        #[allow(deprecated)]
         KeyKind::State | KeyKind::ServiceStatus | KeyKind::Promise | KeyKind::Idempotency
             if key.len() > 10 =>
         {
@@ -394,6 +395,7 @@ fn decode_key_details(kind: KeyKind, key: &[u8]) -> Option<String> {
             let mut pos = 10;
 
             // Try to decode variable-length fields
+            #[allow(deprecated)]
             let field_names: &[&str] = match kind {
                 KeyKind::State => &["service_name", "service_key", "state_key"],
                 KeyKind::ServiceStatus => &["service_name", "service_key"],

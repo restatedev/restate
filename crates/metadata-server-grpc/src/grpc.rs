@@ -71,7 +71,7 @@ pub mod pb_conversions {
                     .map_err(|_| ConversionError::invalid_data_static("key"))?,
                 kv_entry
                     .value
-                    .ok_or(ConversionError::missing_field("value"))?
+                    .ok_or_else(|| ConversionError::missing_field("value"))?
                     .try_into()?,
             ))
         }
@@ -98,7 +98,7 @@ mod test {
     use super::Ulid;
 
     #[test]
-    fn test_ulid_encoding() {
+    fn ulid_encoding() {
         let id = ulid::Ulid::new();
         let encoded = Ulid::from(id);
         let decoded = ulid::Ulid::from(encoded);

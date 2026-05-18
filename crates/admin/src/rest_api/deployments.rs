@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::error::*;
-use crate::state::AdminServiceState;
 use std::time::SystemTime;
 
 use axum::extract::{Path, Query, State};
@@ -17,6 +15,8 @@ use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use http::{Method, Uri};
+use serde::Deserialize;
+
 use restate_admin_rest_model::deployments::*;
 use restate_admin_rest_model::version::AdminApiVersion;
 use restate_errors::warn_it;
@@ -29,7 +29,10 @@ use restate_types::schema::registry::{
     Overwrite, TelemetryClient,
 };
 use restate_types::schema::service::ServiceMetadata;
-use serde::Deserialize;
+
+use super::error::*;
+use crate::rest_api::ErrorDescriptionResponse;
+use crate::state::AdminServiceState;
 
 /// Register deployment
 ///

@@ -18,9 +18,11 @@ restate-clock = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-limiter = { workspace = true }
 restate-memory = { workspace = true }
+restate-platform = { workspace = true }
 restate-rocksdb = { workspace = true }
-restate-serde-util = { workspace = true }
+restate-util-bytecount = { workspace = true, features = ["serde"] }
 restate-storage-api = { workspace = true }
+restate-util-time = { workspace = true }
 restate-types = { workspace = true }
 restate-util-string = { workspace = true }
 restate-worker-api = { workspace = true }
@@ -41,6 +43,22 @@ tokio = { workspace = true, features = ["sync"] }
 tokio-util = { workspace = true, features = ["time"] }
 tracing = { workspace = true }
 
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+sha2 = { workspace = true, features = ["asm"] }
+
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
 restate-partition-store = { workspace = true }
+
+criterion = { workspace = true }
+pprof = { version = "0.15", features = ["criterion", "flamegraph", "frame-pointer"] }
+
+[target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
+tikv-jemallocator = { workspace = true }
+
+[[bench]]
+name = "generate_vqueue_id"
+harness = false
+
+[lints]
+workspace = true

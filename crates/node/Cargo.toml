@@ -36,6 +36,7 @@ restate-core = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-ingestion-client = { workspace = true }
 restate-ingress-http = { workspace = true }
+restate-limiter = { workspace = true, features = ["rule-book"] }
 restate-log-server = { workspace = true }
 restate-memory = { workspace = true }
 restate-metadata-providers = { workspace = true }
@@ -93,3 +94,6 @@ tempfile = { workspace = true }
 test-log = { workspace = true }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

@@ -48,7 +48,7 @@ pub mod _format {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn test_format_restring() {
+    fn format_restring() {
         let s = format_restring!("Hello {}!", "world");
         assert_eq!(s, "Hello world!");
         assert!(!s.is_heap_allocated());

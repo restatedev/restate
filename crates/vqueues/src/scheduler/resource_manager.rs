@@ -24,14 +24,19 @@ use tokio::sync::mpsc;
 use tracing::trace;
 
 use restate_futures_util::concurrency::Concurrency;
+use restate_limiter::RuleHandle;
+use restate_limiter::RuleUpdate;
 use restate_memory::{MemoryPool, NonZeroByteCount};
 use restate_storage_api::StorageError;
 use restate_storage_api::lock_table::LoadLocks;
+use restate_storage_api::vqueue_table::metadata::VQueueMeta;
 use restate_storage_api::vqueue_table::{EntryKey, EntryMetadata};
+use restate_types::identifiers::PartitionKey;
 use restate_types::vqueues::EntryKind;
 use restate_types::{LockName, Scope};
-use restate_worker_api::ResourceKind;
+use restate_util_string::ReString;
 use restate_worker_api::resources::{ResourceManagerUpdate, UserPermitKind};
+use restate_worker_api::{ResourceKind, UserLimitCounterEntry};
 
 use self::invoker::InvokerConcurrencyLimiter;
 use self::invoker_memory::InvokerMemoryLimiter;
@@ -41,7 +46,6 @@ use self::permit::ProvisionalPermit;
 use self::user_limiter::UserLimiter;
 use super::VQueueHandle;
 use super::eligible::EligibilityTracker;
-use super::queue_meta::VQueueMetaLite;
 use crate::GlobalTokenBucket;
 
 // A set of queues waiting on a resource
@@ -89,6 +93,15 @@ impl ResourceManager {
         })
     }
 
+    /// Forward a batch of rule-book updates to the resource manager's
+    /// internal channel. Picked up on the next `poll_resources` tick and
+    /// applied to the `UserLimiter`.
+    pub fn on_rules_updated(&self, updates: Box<[RuleUpdate]>) {
+        // Sending via `tx` (which is held alongside `rx` for keep-alive)
+        // never fails: the receiver is owned by `self`.
+        let _ = self.tx.send(ResourceManagerUpdate::RulesUpdated(updates));
+    }
+
     /// Removes the vqueue from the resource it's blocked on
     pub(super) fn remove_vqueue(&mut self, handle: VQueueHandle, blocked_resource: &ResourceKind) {
         match blocked_resource {
@@ -123,19 +136,17 @@ impl ResourceManager {
         eligible: &mut EligibilityTracker,
         scope: &Option<Scope>,
         lock_name: &LockName,
-    ) -> bool {
+    ) {
         trace!("[release_lock] scope: {scope:?}, lock_name: {lock_name}");
 
         let Some(queues) = self.locks.release_lock(scope, lock_name) else {
-            return false;
+            return;
         };
 
-        let mut wake_up = false;
         for queue in queues {
             // notify the scheduler that those queues should be woken up.
-            wake_up |= eligible.wake_up_queue(queue);
+            eligible.wake_up_queue(queue);
         }
-        wake_up
     }
 
     /// Reverts will release the lock if the user permit has one
@@ -143,17 +154,16 @@ impl ResourceManager {
         &mut self,
         eligible: &mut EligibilityTracker,
         builder: PermitBuilder,
-    ) -> bool {
+    ) {
         let Some(permit) = builder.into_user_permit() else {
-            return false;
+            return;
         };
 
-        let mut wake_up = false;
         // Release the lock if we have one held
         if let Some(lock) = permit.lock
             && let Some(queues) = self.locks.release_lock(&lock.scope, &lock.lock_name)
         {
-            wake_up |= eligible.wake_up_queues(queues);
+            eligible.wake_up_queues(queues);
         }
 
         for resource in permit.resources {
@@ -162,19 +172,17 @@ impl ResourceManager {
                     let woken = self
                         .user_limiter
                         .release_action_concurrency(&scope, &limit_key);
-                    wake_up |= eligible.wake_up_queues(woken);
+                    eligible.wake_up_queues(woken);
                 }
             }
         }
-
-        wake_up
     }
 
     pub(super) fn poll_acquire_permit(
         &mut self,
         cx: &mut std::task::Context<'_>,
         vqueue: VQueueHandle,
-        meta: &VQueueMetaLite,
+        meta: &VQueueMeta,
         key: &EntryKey,
         _metadata: &EntryMetadata,
         current_permit: &mut PermitBuilder,
@@ -302,8 +310,8 @@ impl ResourceManager {
                         }
                     }
                 }
-                ResourceManagerUpdate::RulesUpdated(update) => {
-                    let woken = self.user_limiter.apply_rule_update(update);
+                ResourceManagerUpdate::RulesUpdated(updates) => {
+                    let woken = self.user_limiter.apply_rule_updates(updates);
                     eligible.wake_up_queues(woken);
                 }
             }
@@ -325,5 +333,24 @@ impl ResourceManager {
             );
             eligible.wake_up_queue(queue);
         }
+    }
+
+    /// Snapshot of every user-limit counter currently tracked by this partition's
+    /// `UserLimiter`. The rows are stamped with the owning partition's key so that
+    /// DataFusion can route them into the right scan.
+    pub(super) fn scan_user_limit_counters(
+        &self,
+        partition_key: PartitionKey,
+    ) -> Vec<UserLimitCounterEntry> {
+        self.user_limiter.scan_counters(partition_key)
+    }
+
+    /// Resolve a user-limit rule handle into its pattern string, or `None` if
+    /// the rule has been removed since the handle was captured. Used when
+    /// lifting internal `ResourceKind` into the public `BlockedResource`.
+    pub(super) fn resolve_user_rule(&self, handle: RuleHandle) -> Option<ReString> {
+        self.user_limiter
+            .resolve_rule(handle)
+            .map(|pattern| ReString::new(pattern.to_string()))
     }
 }

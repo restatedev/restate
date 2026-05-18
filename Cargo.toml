@@ -85,9 +85,10 @@ restate-service-protocol-v4 = { path = "crates/service-protocol-v4" }
 restate-storage-api = { path = "crates/storage-api" }
 restate-storage-query-datafusion = { path = "crates/storage-query-datafusion" }
 restate-sharding = { path = "crates/sharding" }
+restate-util-bytecount = { path = "util/bytecount" }
 restate-util-string = { path = "util/string" }
+restate-util-time = { path = "util/time" }
 restate-test-util = { path = "crates/test-util" }
-restate-time-util = { path = "crates/time-util" }
 restate-timer = { path = "crates/timer" }
 restate-timer-queue = { path = "crates/timer-queue" }
 restate-tracing-instrumentation = { path = "crates/tracing-instrumentation" }
@@ -165,6 +166,7 @@ futures = "0.3.31"
 futures-sink = "0.3.31"
 futures-util = "0.3.31"
 gardal = { version = "0.0.1-alpha.9" }
+generic-array = { version = "1.4.1" }
 googletest = { version = "0.10", features = ["anyhow"] }
 hashbrown = { version = "0.16" }
 slotmap = { version = "1" }
@@ -226,19 +228,20 @@ reqwest = { version = "0.12", default-features = false, features = [
     "stream",
 ] }
 rlimit = { version = "0.10.2" }
-rocksdb = { version = "0.46.1", package = "rust-rocksdb", features = [
+rocksdb = { version = "0.48.0", package = "rust-rocksdb", features = [
     "multi-threaded-cf",
     "jemalloc",
-], git = "https://github.com/restatedev/rust-rocksdb", rev = "dcfba7946697d740e60f0b1060b6624dc1c7e94a" }
+], git = "https://github.com/restatedev/rust-rocksdb", rev = "432ac4288a219dd70d4c71ccfcd0ad51d6bcc0d1" }
 rstest = "0.26.1"
 rustls = { version = "0.23.35", default-features = false, features = ["ring"] }
 rustls-pemfile = "2"
 schemars = { version = "1.2", features = ["bytes1"] }
 semver = { version = "1.0", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
+serde_core = { version = "1" }
 serde_json = "1.0"
 serde_with = "3.16"
-sha2 = "0.10.9"
+sha2 = { version = "0.10.9" }
 static_assertions = { version = "1.1.0" }
 strum = { version = "0.27.2", features = ["derive"] }
 smallvec = { version = "1.15.1", features = ["serde", "union"] }
@@ -346,6 +349,7 @@ unused_assignments = "allow"
 
 [workspace.lints.clippy]
 or_fun_call = "deny"
+redundant_test_prefix = "deny"
 clear_with_drain = "deny"
 collection_is_never_read = "deny"
 naive_bytecount = "deny"

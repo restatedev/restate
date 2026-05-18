@@ -8,46 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZeroU64;
-
 use smallvec::SmallVec;
 use tokio::sync::mpsc;
 
 use restate_futures_util::concurrency::Permit;
-use restate_limiter::{LimitKey, RulePattern};
+use restate_limiter::LimitKey;
 use restate_memory::MemoryLease;
+use restate_storage_api::vqueue_table::EntryMetadata;
 use restate_types::Scope;
 use restate_util_string::ReString;
 
-// This lives here temporarily until it finds a proper home
-#[derive(Debug, Default, Clone)]
-#[non_exhaustive]
-pub struct UserLimits {
-    // None means unlimited
-    pub action_concurrency: Option<NonZeroU64>,
-}
-
-impl UserLimits {
-    pub fn new(action_concurrency: Option<NonZeroU64>) -> Self {
-        Self { action_concurrency }
-    }
-}
-
-/// Describes a rule mutation.
-#[allow(dead_code)]
-pub enum RuleUpdate {
-    /// Insert a new rule or update an existing one with the same pattern.
-    Upsert {
-        pattern: RulePattern<ReString>,
-        limit: UserLimits,
-    },
-    /// Remove a rule by its pattern.
-    Remove { pattern: RulePattern<ReString> },
-}
+// Re-export so consumers can keep importing from `restate_worker_api::resources`.
+pub use restate_limiter::{RuleUpdate, UserLimits};
 
 pub enum ResourceManagerUpdate {
     PermitReleased(SmallVec<[UserPermitKind; 1]>),
-    RulesUpdated(RuleUpdate),
+    /// A batch of rule mutations to apply in order. Carries `Vec` rather
+    /// than a single `RuleUpdate` so initial seeding and bulk rule-book
+    /// diffs can ship as one channel message.
+    RulesUpdated(Box<[RuleUpdate]>),
 }
 
 pub enum UserPermitKind {
@@ -94,6 +73,7 @@ impl SystemPermit {
 #[must_use]
 #[clippy::has_significant_drop]
 pub struct ReservedResources {
+    pub metadata: EntryMetadata,
     resources: SmallVec<[UserPermitKind; 1]>,
     system_permit: SystemPermit,
     manager_tx: Option<mpsc::UnboundedSender<ResourceManagerUpdate>>,
@@ -102,6 +82,7 @@ pub struct ReservedResources {
 impl ReservedResources {
     pub fn new_empty() -> Self {
         Self {
+            metadata: EntryMetadata::default(),
             resources: SmallVec::new(),
             system_permit: SystemPermit::default(),
             manager_tx: None,
@@ -109,11 +90,13 @@ impl ReservedResources {
     }
 
     pub const fn new(
+        metadata: EntryMetadata,
         resources: SmallVec<[UserPermitKind; 1]>,
         system_permit: SystemPermit,
         manager_tx: mpsc::UnboundedSender<ResourceManagerUpdate>,
     ) -> Self {
         Self {
+            metadata,
             resources,
             system_permit,
             manager_tx: Some(manager_tx),

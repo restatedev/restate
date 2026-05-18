@@ -42,7 +42,7 @@ use restate_errors::warn_it;
 use restate_memory::{ByteCount, LocalMemoryPool, MemoryLease, MemoryPool, OutOfMemoryKind};
 use restate_queue::SegmentQueue;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
-use restate_time_util::DurationExt;
+use restate_types::clock::RoughTimestamp;
 use restate_types::config::{Configuration, InvokerOptions, ServiceClientOptions};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::PartitionId;
@@ -58,6 +58,7 @@ use restate_types::live::{Live, LiveLoad};
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::sharding::KeyRange;
+use restate_util_time::DurationExt;
 use restate_worker_api::invoker::capacity::TokenBucket;
 use restate_worker_api::invoker::invocation_reader::InvocationReader;
 use restate_worker_api::invoker::{
@@ -79,11 +80,12 @@ use crate::metric_definitions::{
 };
 use crate::status_store::InvocationStatusStore;
 
-pub use input_command::ChannelStatusReader;
-pub use input_command::InvokerHandle;
-
 use self::input_command::VQueueInvokeCommand;
 use self::state_machine_manager::InvocationStateMachineManager;
+pub use input_command::ChannelStatusReader;
+pub use input_command::InvokerHandle;
+use restate_types::LimitKey;
+use restate_util_string::ReString;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Notification {
@@ -104,6 +106,8 @@ trait InvocationTaskRunner<SR> {
         options: &InvokerOptions,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
+        limit_key: LimitKey<ReString>,
+        idempotency_key: Option<ReString>,
         retry_count_since_last_stored_entry: u32,
         storage_reader: SR,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
@@ -132,6 +136,8 @@ where
         opts: &InvokerOptions,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
+        limit_key: LimitKey<ReString>,
+        idempotency_key: Option<ReString>,
         retry_count_since_last_stored_entry: u32,
         storage_reader: IR,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
@@ -158,6 +164,8 @@ where
                     invoker_tx,
                     invoker_rx,
                     self.action_token_bucket.clone(),
+                    limit_key,
+                    idempotency_key,
                     self.allow_protocol_v7,
                 )
                 .run(storage_reader, budget),
@@ -257,7 +265,8 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
                     action_token_bucket,
                     allow_protocol_v7: Configuration::pinned()
                         .common
-                        .experimental_allow_protocol_v7,
+                        .experimental
+                        .is_protocol_v7_enabled(),
                 },
                 schemas,
                 invocation_tasks: Default::default(),
@@ -626,12 +635,20 @@ where
         )
     )]
     fn handle_vqueue_invoke(&mut self, options: &InvokerOptions, mut command: VQueueInvokeCommand) {
-        let (retry_iter, on_max_attempts) =
+        let (mut retry_iter, on_max_attempts) =
             self.schemas.live_load().resolve_invocation_retry_policy(
                 None,
                 command.invocation_target.service_name(),
                 command.invocation_target.handler_name(),
             );
+
+        // Adjust the retry_iter so it picks up the next retry period given the number of retry
+        // attempts we have already done prior to the creation of this task.
+        retry_iter.fast_forward(command.permit.metadata.retry_attempts as usize);
+        trace!(
+            "Invoking with retry policy {retry_iter:?}, next: {:?}",
+            retry_iter.peek_next()
+        );
 
         let storage_reader = self.invocation_state_machine_manager.storage_reader();
         let concurrency_slot = self.quota.acquire_slot();
@@ -647,6 +664,8 @@ where
                 Some(command.qid),
                 command.permit,
                 command.invocation_target,
+                command.limit_key,
+                command.idempotency_key,
                 retry_iter,
                 on_max_attempts,
                 concurrency_slot,
@@ -690,6 +709,8 @@ where
                 None,
                 fake_permit,
                 invocation_target,
+                LimitKey::None,
+                None,
                 retry_iter,
                 on_max_attempts,
                 concurrency_slot,
@@ -1289,9 +1310,11 @@ where
                     // Global pool exhausted — yielding may help because freeing
                     // the execution slot lets other invocations finish and return
                     // their memory.
-                    if Configuration::pinned()
-                        .common
-                        .experimental_enable_invoker_yield
+                    if ism.qid.is_some()
+                        || Configuration::pinned()
+                            .common
+                            .experimental
+                            .is_invoker_yield_enabled()
                     {
                         debug!(
                             restate.invocation.target = %ism.invocation_target,
@@ -1304,9 +1327,13 @@ where
                         let _ = sender
                             .send(Box::new(Effect {
                                 invocation_id,
-                                kind: EffectKind::Yield(YieldReason::ExhaustedMemoryBudget {
-                                    needed_memory: oom.needed,
-                                }),
+                                kind: EffectKind::Yield {
+                                    reason: YieldReason::ExhaustedMemoryBudget {
+                                        needed_memory: oom.needed,
+                                    },
+                                    error_event: None,
+                                    resume_at: None,
+                                },
                             }))
                             .await;
                     } else {
@@ -1461,6 +1488,7 @@ where
         let result = ism.handle_task_error(
             error.is_transient(),
             error.next_retry_interval_override(),
+            error.should_pause(),
             error.should_bump_start_message_retry_count_since_last_stored_entry(),
             |duration| self.retry_timers.insert(invocation_id, duration),
         );
@@ -1551,6 +1579,78 @@ where
                 // Timer was already registered inside handle_task_error via the closure
                 self.invocation_state_machine_manager
                     .register_invocation(invocation_id, ism);
+            }
+            OnTaskError::RetryViaScheduler {
+                retry_after,
+                retry_attempts,
+                retry_count_since_last_stored_command,
+            } => {
+                counter!(INVOKER_INVOCATION_TASKS,
+                    "status" => TASK_OP_FAILED,
+                    "transient" => "true",
+                    "partition_id" => self.invoker_id_label.clone()
+                )
+                .increment(1);
+                warn_it!(
+                        error,
+                        restate.invocation.id = %invocation_id,
+                        restate.invocation.target = %ism.invocation_target,
+                        restate.deployment.id = %attempt_deployment_id,
+                        "[{}] Invocation error, retrying via the scheduler after at least {}.",
+                        ism.retry_attempts(),
+                        retry_after.friendly());
+                trace!("Invocation state: {:?}.", ism.invocation_state_debug());
+
+                let journal_v2_related_command_type =
+                    if let InvokerError::SdkV2(SdkInvocationErrorV2 {
+                        related_command: Some(ref related_entry),
+                        ..
+                    }) = error
+                    {
+                        related_entry
+                            .related_entry_type
+                            .and_then(|e| e.try_as_command_ref().copied())
+                    } else {
+                        None
+                    };
+                let invocation_error_report = error.into_invocation_error_report();
+                let error_event = TransientErrorEvent {
+                    error_code: invocation_error_report.err.code(),
+                    error_message: invocation_error_report.err.message().to_owned(),
+                    error_stacktrace: invocation_error_report
+                        .err
+                        .stacktrace()
+                        .map(|s| s.to_owned()),
+                    restate_doc_error_code: invocation_error_report
+                        .doc_error_code
+                        .map(|c| c.code().to_owned()),
+                    related_command_index: invocation_error_report.related_entry_index,
+                    related_command_name: invocation_error_report.related_entry_name.clone(),
+                    related_command_type: journal_v2_related_command_type,
+                };
+
+                // Some trivial deduplication here: if we already sent this transient error in the previous retry, don't send it again
+                let error_event = ism
+                    .should_emit_transient_error_event(&error_event)
+                    .then(|| RawEvent::from(Event::TransientError(error_event)));
+
+                self.status_store.on_end(&invocation_id);
+
+                let _ = self
+                    .invocation_state_machine_manager
+                    .partition_sender()
+                    .send(Box::new(Effect {
+                        invocation_id,
+                        kind: EffectKind::Yield {
+                            reason: YieldReason::TransientError {
+                                retry_attempts,
+                                retry_count_since_last_stored_command,
+                            },
+                            error_event,
+                            resume_at: Some(RoughTimestamp::now() + retry_after),
+                        },
+                    }))
+                    .await;
             }
             OnTaskError::Pause => {
                 counter!(INVOKER_INVOCATION_TASKS,
@@ -1675,6 +1775,8 @@ where
             options,
             invocation_id,
             ism.invocation_target.clone(),
+            ism.limit_key.clone(),
+            ism.idempotency_key.clone(),
             ism.start_message_retry_count_since_last_stored_command,
             storage_reader,
             self.invocation_tasks_tx.clone(),
@@ -1765,10 +1867,8 @@ mod tests {
 
     use restate_core::{TaskCenter, TaskKind};
     use restate_memory::OutOfMemoryKind;
-    use restate_serde_util::NonZeroByteCount;
     use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
     use restate_test_util::check;
-    use restate_time_util::FriendlyDuration;
     use restate_types::config::InvokerOptionsBuilder;
     use restate_types::deployment::{DeploymentAddress, Headers};
     use restate_types::errors::{InvocationError, codes};
@@ -1787,6 +1887,8 @@ mod tests {
     use restate_types::schema::service::ServiceMetadata;
     use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_types::vqueues::VQueueId;
+    use restate_util_bytecount::NonZeroByteCount;
+    use restate_util_time::FriendlyDuration;
     use restate_worker_api::invoker::InvokerHandle;
 
     use crate::error::{InvocationMemoryExhausted, InvokerError, SdkInvocationErrorV2};
@@ -1895,6 +1997,8 @@ mod tests {
             _options: &InvokerOptions,
             invocation_id: InvocationId,
             invocation_target: InvocationTarget,
+            _limit_key: LimitKey<ReString>,
+            _idempotency_key: Option<ReString>,
             _retry_count_since_last_stored_entry: u32,
             storage_reader: IR,
             invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
@@ -1926,6 +2030,8 @@ mod tests {
             _options: &InvokerOptions,
             _invocation_id: InvocationId,
             _invocation_target: InvocationTarget,
+            _limit_key: LimitKey<ReString>,
+            _idempotency_key: Option<ReString>,
             _retry_count_since_last_stored_entry: u32,
             _storage_reader: SR,
             _invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
@@ -1946,6 +2052,8 @@ mod tests {
             _options: &InvokerOptions,
             _invocation_id: InvocationId,
             _invocation_target: InvocationTarget,
+            _limit_key: LimitKey<ReString>,
+            _idempotency_key: Option<ReString>,
             _retry_count_since_last_stored_entry: u32,
             _storage_reader: SR,
             _invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
@@ -2309,6 +2417,8 @@ mod tests {
             )),
             ReservedResources::new_empty(),
             invocation_target.clone(),
+            LimitKey::None,
+            None,
             RetryPolicy::fixed_delay(Duration::from_millis(100), None).into_iter(),
             OnMaxAttempts::Kill,
             ConcurrencySlot::empty(),
@@ -2459,6 +2569,7 @@ mod tests {
         let error_a = InvokerError::SdkV2(SdkInvocationErrorV2 {
             related_command: None,
             next_retry_interval_override: Some(Duration::from_millis(1)),
+            should_pause: false,
             error: InvocationError::new(codes::INTERNAL, "boom").into(),
         });
         service_inner
@@ -2483,6 +2594,7 @@ mod tests {
         let error_a_same = InvokerError::SdkV2(SdkInvocationErrorV2 {
             related_command: None,
             next_retry_interval_override: Some(Duration::from_millis(1)),
+            should_pause: false,
             error: InvocationError::new(codes::INTERNAL, "boom").into(),
         });
         service_inner
@@ -2500,6 +2612,7 @@ mod tests {
         let error_b = InvokerError::SdkV2(SdkInvocationErrorV2 {
             related_command: None,
             next_retry_interval_override: Some(Duration::from_millis(1)),
+            should_pause: false,
             error: InvocationError::new(codes::INTERNAL, "boom-2").into(),
         });
         service_inner
@@ -2513,6 +2626,69 @@ mod tests {
                 invocation_id: eq(invocation_id),
                 kind: pat!(EffectKind::JournalEvent {
                     event: predicate(|e: &RawEvent| e.ty() == EventType::TransientError)
+                })
+            })
+        );
+    }
+
+    #[test(restate_core::test(start_paused = true))]
+    async fn error_message_should_pause() {
+        // Enable proposing events and keep timers short for the test
+        let invoker_options = InvokerOptionsBuilder::default()
+            .inactivity_timeout(FriendlyDuration::ZERO)
+            .abort_timeout(FriendlyDuration::ZERO)
+            .disable_eager_state(false)
+            .build()
+            .unwrap();
+
+        let invocation_id = InvocationId::mock_random();
+
+        // Mock service
+        let (_, _status_tx, mut effects_rx, mut service_inner) = ServiceInner::mock(
+            (),
+            MockSchemas(
+                // fixed amount of retries so that an invocation eventually completes with a failure
+                Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(3))),
+                Some(OnMaxAttempts::Kill),
+            ),
+            None,
+            EmptyStorageReader,
+        );
+
+        // Start invocation epoch 0
+        let budget = service_inner.test_budget();
+        service_inner.handle_invoke(
+            &invoker_options,
+            invocation_id,
+            InvocationTarget::mock_virtual_object(),
+            budget,
+        );
+
+        // Select protocol V4 to allow proposing events
+        service_inner.handle_pinned_deployment(
+            invocation_id,
+            PinnedDeployment::new(DeploymentId::new(), ServiceProtocolVersion::V4),
+            false, // has_changed = false -> directly selects protocol without emitting effect
+        );
+
+        // Transient error with should_pause
+        let error_a = InvokerError::SdkV2(SdkInvocationErrorV2 {
+            related_command: None,
+            next_retry_interval_override: Some(Duration::from_millis(1)),
+            should_pause: true,
+            error: InvocationError::new(codes::INTERNAL, "boom").into(),
+        });
+        service_inner
+            .handle_invocation_task_failed(invocation_id, error_a, service_inner.test_budget())
+            .await;
+        assert_that!(
+            *effects_rx
+                .try_recv()
+                .expect("expected a proposed transient error event"),
+            pat!(Effect {
+                invocation_id: eq(invocation_id),
+                kind: pat!(EffectKind::Paused {
+                    paused_event: predicate(|e: &RawEvent| e.ty() == EventType::Paused)
                 })
             })
         );
@@ -3041,7 +3217,7 @@ mod tests {
     async fn yield_flag_enabled_sends_yield_effect() {
         // Enable the experimental yield flag
         let mut config = Configuration::default();
-        config.common.experimental_enable_invoker_yield = true;
+        config.common.experimental.set_invoker_yield(true);
         restate_types::config::set_current_config(config);
 
         let invoker_options = InvokerOptionsBuilder::default()
@@ -3093,11 +3269,11 @@ mod tests {
             *effect,
             pat!(Effect {
                 invocation_id: eq(invocation_id),
-                kind: pat!(EffectKind::Yield(pat!(
-                    YieldReason::ExhaustedMemoryBudget {
+                kind: pat!(EffectKind::Yield {
+                    reason: pat!(YieldReason::ExhaustedMemoryBudget {
                         needed_memory: eq(NonZeroByteCount::new(NonZeroUsize::new(32768).unwrap())),
-                    }
-                )))
+                    })
+                })
             })
         );
 

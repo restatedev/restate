@@ -66,7 +66,7 @@ pub enum CombinatorType {
     AllSucceededOrFirstFailed,
 }
 
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UnresolvedFuture {
     Single(NotificationId),
     FirstCompleted(Vec<UnresolvedFuture>),

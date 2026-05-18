@@ -18,7 +18,6 @@ use strum::VariantArray;
 
 use restate_partition_store::deduplication_table::DeduplicationKey;
 use restate_partition_store::fsm_table::PartitionStateMachineKey;
-use restate_partition_store::idempotency_table::IdempotencyKey;
 use restate_partition_store::inbox_table::InboxKey;
 use restate_partition_store::invocation_status_table::InvocationStatusKey;
 use restate_partition_store::journal_events::JournalEventKey;
@@ -39,7 +38,7 @@ use restate_partition_store::vqueue_table::{
 
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::{c_println, c_title};
-use restate_serde_util::ByteCount;
+use restate_util_bytecount::ByteCount;
 
 use crate::app::GlobalOpts;
 use crate::util::colorize::{color_legend, colorize_key_hex};
@@ -368,9 +367,8 @@ fn decode_key(key: &[u8]) -> (String, Option<String>, Option<KeyKind>) {
         KeyKind::Fsm => PartitionStateMachineKey::deserialize_from(&mut cursor)
             .ok()
             .map(|k| format!("{k:?}")),
-        KeyKind::Idempotency => IdempotencyKey::deserialize_from(&mut cursor)
-            .ok()
-            .map(|k| format!("{k:?}")),
+        #[allow(deprecated)]
+        KeyKind::Idempotency => Some("<deprecated idempotency key>".to_string()),
         KeyKind::Inbox => InboxKey::deserialize_from(&mut cursor)
             .ok()
             .map(|k| format!("{k:?}")),

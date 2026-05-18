@@ -160,7 +160,7 @@
 
 use std::collections::VecDeque;
 use std::fmt;
-use std::num::NonZeroU64;
+use std::num::NonZeroU32;
 
 use arrayvec::ArrayVec;
 use hashbrown::HashMap;
@@ -169,7 +169,9 @@ use restate_limiter::{
     Level, Limit, LimitKey, Pattern, RuleHandle, RulePattern, Rules, StructuredLimits,
 };
 use restate_types::Scope;
+use restate_types::identifiers::PartitionKey;
 use restate_util_string::{ReString, RestrictedValue};
+use restate_worker_api::UserLimitCounterEntry;
 use restate_worker_api::resources::{RuleUpdate, UserLimits};
 
 use crate::scheduler::VQueueHandle;
@@ -277,28 +279,36 @@ impl UserLimiter {
             .remove_from_waiters(handle, scope, limit_key, blocked_level);
     }
 
-    /// Applies a rule update (add, remove, or update) and returns vqueues that need re-evaluation.
+    /// Applies a batch of rule updates (add, remove, or update) in order and returns
+    /// the union of vqueues that need re-evaluation.
     ///
     /// This uses soft enforcement: existing permits that exceed new lower limits are not revoked;
     /// the system simply stops issuing new permits until usage drains below the new limit.
-    pub(super) fn apply_rule_update(&mut self, update: RuleUpdate) -> Vec<VQueueHandle> {
-        let pattern = match &update {
-            RuleUpdate::Upsert { pattern, .. } => pattern.clone(),
-            RuleUpdate::Remove { pattern } => pattern.clone(),
-        };
+    pub(super) fn apply_rule_updates(
+        &mut self,
+        updates: impl IntoIterator<Item = RuleUpdate>,
+    ) -> Vec<VQueueHandle> {
+        // allocate a fairly large sized vec to avoid frequent re-allocations when adding the woken
+        // vqueues
+        let mut woken = Vec::with_capacity(1024);
+        for update in updates {
+            // Apply the mutation to the rules store, capturing the pattern for the
+            // subsequent waiter-drain pass.
+            let pattern = match update {
+                RuleUpdate::Upsert { pattern, limit } => {
+                    self.rules.upsert_rule(pattern.clone(), limit);
+                    pattern
+                }
+                RuleUpdate::Remove { pattern } => {
+                    self.rules.remove_rule(&pattern);
+                    pattern
+                }
+            };
 
-        // Apply the mutation to the rules store
-        match update {
-            RuleUpdate::Upsert { pattern, limit } => {
-                self.rules.upsert_rule(pattern, limit);
-            }
-            RuleUpdate::Remove { pattern } => {
-                self.rules.remove_rule(&pattern);
-            }
+            // Walk the trie guided by the pattern and drain affected waiter lists
+            self.state.drain_affected_waiters(&pattern, &mut woken);
         }
-
-        // Walk the trie guided by the pattern and drain affected waiter lists
-        self.state.drain_affected_waiters(&pattern)
+        woken
     }
 
     /// Resolves a rule handle to its pattern. Returns `None` if the handle is stale
@@ -306,6 +316,88 @@ impl UserLimiter {
     #[allow(dead_code)]
     pub fn resolve_rule(&self, handle: RuleHandle) -> Option<&RulePattern<ReString>> {
         self.rules.get_pattern(handle)
+    }
+
+    /// Walks the entire counter trie (scope → L1 → L2) and emits one
+    /// [`UserLimitCounterEntry`] per non-empty node, tagging each with the
+    /// rule currently governing it (if any) and its waiter depth.
+    ///
+    /// The emitted rows are what the `sys_user_limits` DataFusion table
+    /// surfaces; callers stamp the `partition_key` from the owning partition
+    /// before handing the rows back.
+    pub fn scan_counters(&self, partition_key: PartitionKey) -> Vec<UserLimitCounterEntry> {
+        let mut out = Vec::new();
+        for (scope, scope_node) in &self.state.scopes {
+            let scope_name = scope.as_str().to_owned();
+
+            // Scope-level row
+            let scope_limits = self.rules.lookup(scope.as_str(), &LimitKey::None);
+            let (scope_limit, scope_rule) =
+                limit_and_pattern(scope_limits.limit_at(Level::Scope), &self.rules);
+            out.push(UserLimitCounterEntry {
+                partition_key,
+                scope: scope_name.clone(),
+                l1: None,
+                l2: None,
+                level: Level::Scope,
+                usage: scope_node.value.concurrency,
+                concurrency_limit: scope_limit,
+                rule_pattern: scope_rule,
+                num_waiters: scope_node.waiters.len() as u64,
+            });
+
+            for (l1_key, l1_node) in &scope_node.l1 {
+                let l1_limit_key = LimitKey::L1(l1_key.clone());
+                let l1_limits = self.rules.lookup(scope.as_str(), &l1_limit_key);
+                let (l1_limit, l1_rule) =
+                    limit_and_pattern(l1_limits.limit_at(Level::Level1), &self.rules);
+                out.push(UserLimitCounterEntry {
+                    partition_key,
+                    scope: scope_name.clone(),
+                    l1: Some(l1_key.as_str().to_owned()),
+                    l2: None,
+                    level: Level::Level1,
+                    usage: l1_node.value.concurrency,
+                    concurrency_limit: l1_limit,
+                    rule_pattern: l1_rule,
+                    num_waiters: l1_node.waiters.len() as u64,
+                });
+
+                for (l2_key, l2_leaf) in &l1_node.l2 {
+                    let l2_limit_key = LimitKey::L2(l1_key.clone(), l2_key.clone());
+                    let l2_limits = self.rules.lookup(scope.as_str(), &l2_limit_key);
+                    let (l2_limit, l2_rule) =
+                        limit_and_pattern(l2_limits.limit_at(Level::Level2), &self.rules);
+                    out.push(UserLimitCounterEntry {
+                        partition_key,
+                        scope: scope_name.clone(),
+                        l1: Some(l1_key.as_str().to_owned()),
+                        l2: Some(l2_key.as_str().to_owned()),
+                        level: Level::Level2,
+                        usage: l2_leaf.value.concurrency,
+                        concurrency_limit: l2_limit,
+                        rule_pattern: l2_rule,
+                        num_waiters: l2_leaf.waiters.len() as u64,
+                    });
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Resolve a `Limit<&UserLimits>` into its concrete (limit_value, pattern_display) pair.
+fn limit_and_pattern(
+    limit: &Limit<&UserLimits>,
+    rules: &Rules<ReString, UserLimits>,
+) -> (Option<u32>, Option<String>) {
+    match limit {
+        Limit::Undefined => (None, None),
+        Limit::Defined(handle, user_limits) => {
+            let value = user_limits.action_concurrency.map(NonZeroU32::get);
+            let pattern = rules.get_pattern(*handle).map(ToString::to_string);
+            (value, pattern)
+        }
     }
 }
 
@@ -574,8 +666,11 @@ impl State {
     ///
     /// Uses `Pattern::Exact` for O(1) lookups and `Pattern::Wildcard` for iterating all
     /// entries at that level. Only drains waiters at the rule's own level, not descendants.
-    fn drain_affected_waiters(&mut self, pattern: &RulePattern<ReString>) -> Vec<VQueueHandle> {
-        let mut woken = Vec::new();
+    fn drain_affected_waiters(
+        &mut self,
+        pattern: &RulePattern<ReString>,
+        woken: &mut Vec<VQueueHandle>,
+    ) {
         match pattern {
             RulePattern::Scope(scope_pat) => {
                 for_each_matching_scope(&mut self.scopes, scope_pat, |scope_node| {
@@ -606,7 +701,6 @@ impl State {
                 });
             }
         }
-        woken
     }
 
     fn check_capacity(
@@ -842,7 +936,7 @@ pub struct LevelStatus {
     /// Current usage at this level.
     pub usage: u32,
     /// The configured limit, or `None` if unlimited.
-    pub limit_value: Option<NonZeroU64>,
+    pub limit_value: Option<NonZeroU32>,
     /// Handle to the rule defining the limit. `None` if unlimited.
     /// Resolve via [`UserLimiter::resolve_rule`] for display.
     pub rule_handle: Option<RuleHandle>,
@@ -853,14 +947,14 @@ impl LevelStatus {
     /// Returns `true` if this level has capacity available.
     pub fn has_capacity(&self) -> bool {
         self.limit_value
-            .map(|limit| (self.usage as u64) < limit.get())
+            .map(|limit| self.usage < limit.get())
             .unwrap_or(true)
     }
 
     /// Returns the available capacity, or `None` if unlimited.
-    pub fn available(&self) -> Option<u64> {
+    pub fn available(&self) -> Option<u32> {
         self.limit_value
-            .map(|limit| limit.get().saturating_sub(self.usage as u64))
+            .map(|limit| limit.get().saturating_sub(self.usage))
     }
 }
 
@@ -893,15 +987,15 @@ fn make_level_status(
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU64;
+    use std::num::NonZeroU32;
 
     use restate_limiter::{LimitKey, RulePattern};
-    use restate_util_string::ReString;
+    use restate_util_string::{ReString, RestateString};
 
     use super::*;
 
     fn scope(s: &str) -> Scope {
-        Scope::new(s)
+        Scope::try_new(s).unwrap()
     }
 
     fn limit_key(s: &str) -> LimitKey<ReString> {
@@ -912,12 +1006,12 @@ mod tests {
         s.parse().unwrap()
     }
 
-    fn limits(concurrency: u64) -> UserLimits {
-        UserLimits::new(NonZeroU64::new(concurrency))
+    fn limits(concurrency: u32) -> UserLimits {
+        UserLimits::new(NonZeroU32::new(concurrency))
     }
 
     /// Creates a UserLimiter with the given rules.
-    fn limiter_with_rules(specs: &[(&str, u64)]) -> UserLimiter {
+    fn limiter_with_rules(specs: &[(&str, u32)]) -> UserLimiter {
         let rules = Rules::from_rules(specs.iter().map(|(pat, limit)| {
             (
                 pat.parse::<RulePattern<ReString>>().unwrap(),
@@ -1131,10 +1225,10 @@ mod tests {
         limiter.add_to_waiters(handles[2], &s, &lk, Level::Level1);
 
         // Upsert a scope-level rule: should drain scope waiters only
-        let woken = limiter.apply_rule_update(RuleUpdate::Upsert {
+        let woken = limiter.apply_rule_updates(vec![RuleUpdate::Upsert {
             pattern: rule("s1"),
             limit: limits(200),
-        });
+        }]);
         assert_eq!(woken.len(), 2);
         assert!(woken.contains(&handles[0]));
         assert!(woken.contains(&handles[1]));
@@ -1164,9 +1258,9 @@ mod tests {
         limiter.add_to_waiters(handles[3], &s, &LimitKey::None, Level::Scope);
 
         // Remove the L2 rule: should drain L2 waiters matching s1/*/t1
-        let woken = limiter.apply_rule_update(RuleUpdate::Remove {
+        let woken = limiter.apply_rule_updates(vec![RuleUpdate::Remove {
             pattern: rule("s1/*/t1"),
-        });
+        }]);
         assert_eq!(woken.len(), 2);
         assert!(woken.contains(&handles[0]));
         assert!(woken.contains(&handles[1]));
@@ -1191,10 +1285,10 @@ mod tests {
         limiter.add_to_waiters(handles[2], &scope("s3"), &LimitKey::None, Level::Scope);
 
         // Update wildcard scope rule: should drain ALL scope waiters
-        let woken = limiter.apply_rule_update(RuleUpdate::Upsert {
+        let woken = limiter.apply_rule_updates(vec![RuleUpdate::Upsert {
             pattern: rule("*"),
             limit: limits(200),
-        });
+        }]);
         assert_eq!(woken.len(), 3);
     }
 }

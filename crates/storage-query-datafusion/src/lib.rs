@@ -14,7 +14,6 @@ pub mod remote_query_scanner_server;
 
 pub mod bifrost_read_stream;
 mod deployment;
-mod idempotency;
 mod inbox;
 mod invocation_state;
 mod invocation_status;
@@ -31,7 +30,9 @@ mod partition_replica_set;
 mod partition_state;
 mod partition_store_scanner;
 mod promise;
+mod rules;
 mod scanner_task;
+mod scheduler_status;
 mod service;
 mod state;
 mod statistics;
@@ -39,7 +40,9 @@ mod statistics;
 pub mod table_docs;
 mod table_macro;
 mod table_providers;
+mod user_limits;
 mod vqueue_meta;
+mod vqueues;
 pub use table_providers::Scan;
 pub mod table_util;
 

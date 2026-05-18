@@ -54,3 +54,6 @@ tracing-subscriber = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true, features = ["unprefixed_malloc_on_supported_platforms"] }
+
+[lints]
+workspace = true

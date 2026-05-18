@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_limiter::RuleUpdate;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::TimerKey;
 use restate_storage_api::vqueue_table::EntryKey;
@@ -20,8 +21,8 @@ use restate_types::invocation::client::{
 use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::message::MessageIndex;
 use restate_types::time::MillisSinceEpoch;
-use restate_types::vqueues::VQueueId;
-use restate_vqueues::VQueueEvent;
+use restate_util_string::ReString;
+use restate_vqueues::{VQueueEvent, VQueueHandle};
 use restate_wal_protocol::timer::TimerKeyValue;
 
 pub type ActionCollector = Vec<Action>;
@@ -32,9 +33,10 @@ pub enum Action {
     VQEvent(VQueueEvent),
     /// Tells invoker to run this invocation (similar to Invoke) but carries more information
     VQInvoke {
-        qid: VQueueId,
+        vq_handle: VQueueHandle,
         key: EntryKey,
         invocation_target: InvocationTarget,
+        idempotency_key: Option<ReString>,
     },
     Invoke {
         invocation_id: InvocationId,
@@ -103,6 +105,12 @@ pub enum Action {
         request_id: PartitionProcessorRpcRequestId,
         response: RestartAsNewInvocationResponse,
     },
+    /// Forward a batch of rule-book diff entries to the leader's
+    /// `UserLimiter` via the resource-manager mpsc. Emitted by
+    /// `Command::UpsertRuleBook` apply when the rule book version
+    /// advances. Followers ignore this action (no live UserLimiter to
+    /// notify); only the leader's `leader_state` dispatches it onward.
+    RulesUpdated(Box<[RuleUpdate]>),
 }
 
 impl From<VQueueEvent> for Action {

@@ -93,7 +93,7 @@ impl LockName {
         }
         Ok(Self {
             service_name: ServiceName::new(service_name),
-            key: ReString::new_owned(key),
+            key: ReString::new(key),
         })
     }
 
@@ -144,6 +144,7 @@ impl<'a> std::fmt::Display for CanonicalLockId<'a> {
 #[cfg(test)]
 mod tests {
     use bytestring::ByteString;
+    use restate_util_string::RestateString;
 
     use super::*;
 
@@ -172,7 +173,7 @@ mod tests {
     fn canonical_lock_id_display() {
         let lock = LockName::parse("my-service/my-key").unwrap();
 
-        let scope: Option<Scope> = Some(Scope::new("my-scope"));
+        let scope: Option<Scope> = Some(Scope::try_from_static("my-scope").unwrap());
         let scoped = CanonicalLockId {
             scope: &scope,
             lock_name: &lock,
@@ -205,14 +206,14 @@ mod tests {
     #[test]
     fn scoped_partition_key_uses_scope() {
         let lock = LockName::parse("my-service/my-key").unwrap();
-        let scope: Option<Scope> = Some(Scope::new("my-scope"));
+        let scope: Option<Scope> = Some(Scope::try_from_static("my-scope").unwrap());
         let canonical = CanonicalLockId {
             scope: &scope,
             lock_name: &lock,
         };
         assert_eq!(
             canonical.partition_key(),
-            HashPartitioner::compute_partition_key(Scope::new("my-scope")),
+            HashPartitioner::compute_partition_key(Scope::try_from_static("my-scope").unwrap()),
         );
     }
 }

@@ -39,10 +39,12 @@ enum ServiceProtocolVersion {
   V6 = 6;
   // Added:
   // * Future & AwaitingOnMessage + Changed the SuspensionMessage
-  // * CallCommandMessage.scope
-  // * CallCommandMessage.limit_key
-  // * OneWayCallCommandMessage.scope
-  // * OneWayCallCommandMessage.limit_key
+  // * CallCommandMessage.scope and CallCommandMessage.limit_key
+  // * OneWayCallCommandMessage.scope and OneWayCallCommandMessage.limit_key
+  // * WorkflowTarget.scope
+  // * IdempotentRequestTarget.scope
+  // * StartMessage.scope, StartMessage.limit_key and StartMessage.idempotency_key
+  // * ErrorMessage.should_pause
   V7 = 7;
 }
 
@@ -89,6 +91,18 @@ message StartMessage {
   // Random seed to use to seed the deterministic RNG exposed in the context API.
   // This will be stable across restarts.
   uint64 random_seed = 9;
+
+  // If this invocation was called within a scope, returns the scope
+  // Since V7
+  optional string scope = 10;
+
+  // If this invocation was called with a limit key, returns the limit key
+  // Since V7
+  optional string limit_key = 11;
+
+  // If this invocation was called with an idempotency key, returns the idempotency key
+  // Since V7
+  optional string idempotency_key = 12;
 }
 
 // Defines how a set of child futures are combined.
@@ -163,6 +177,10 @@ message ErrorMessage {
   // Delay before executing the next retry, specified as duration in milliseconds.
   // If provided, it will override the default retry policy used by Restate's invoker ONLY for the next retry attempt.
   optional uint64 next_retry_delay = 8;
+
+  // If true, Restate will pause instead of retrying.
+  // This field supersedes next_retry_delay.
+  bool should_pause = 9;
 }
 
 // Type: 0x0000 + 3
@@ -480,9 +498,6 @@ message CallCommandMessage {
 
   // Limit key for the invocation. Empty string means no limit key.
   // A limit key is only valid if scope is set.
-  // TODO(tillrohrmann): Revisit string serialization of limit_key. Currently serialized as
-  // "level1" or "level1/level2" which requires parsing on read. Check whether a dedicated
-  // Protobuf message would be faster to serialize/deserialize.
   // Since V7.
   optional string limit_key = 8;
 
@@ -544,9 +559,6 @@ message OneWayCallCommandMessage {
 
   // Limit key for the invocation. Empty string means no limit key.
   // A limit key is only valid if scope is set.
-  // TODO(tillrohrmann): Revisit string serialization of limit_key. Currently serialized as
-  // "level1" or "level1/level2" which requires parsing on read. Check whether a dedicated
-  // Protobuf message would be faster to serialize/deserialize.
   // Since V7.
   optional string limit_key = 9;
 
@@ -731,6 +743,9 @@ message Header {
 message WorkflowTarget {
   string workflow_name = 1;
   string workflow_key = 2;
+  // Scope for the invocation target. Empty string means no scope (unscoped invocation).
+  // Since V7.
+  optional string scope = 3;
 }
 
 message IdempotentRequestTarget {
@@ -738,6 +753,9 @@ message IdempotentRequestTarget {
   optional string service_key = 2;
   string handler_name = 3;
   string idempotency_key = 4;
+  // Scope for the invocation target. Empty string means no scope (unscoped invocation).
+  // Since V7.
+  optional string scope = 5;
 }
 
 message Void {

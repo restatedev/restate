@@ -445,6 +445,7 @@ impl SchemaUpdater {
                 created_at: MillisSinceEpoch::now(),
                 metadata,
                 services: computed_services,
+                limits: None,
             },
         );
 
@@ -691,6 +692,10 @@ impl SchemaUpdater {
                     created_at: existing_deployment.created_at,
                     metadata: existing_deployment.metadata.clone(),
                     services: existing_deployment.services.clone(),
+                    // todo: limits should respect new values from
+                    // discovery_response once it has it, for now
+                    // we keep original value.
+                    limits: existing_deployment.limits,
                 },
             );
 
@@ -792,6 +797,10 @@ impl SchemaUpdater {
                     id: deployment_id,
                     created_at: existing_deployment.created_at,
                     metadata: existing_deployment.metadata.clone(),
+                    // todo: limits should respect new values from
+                    // discovery_response once it has it, for now
+                    // we keep original value.
+                    limits: existing_deployment.limits,
                 },
             );
 

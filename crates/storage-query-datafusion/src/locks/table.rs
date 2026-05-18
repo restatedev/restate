@@ -46,7 +46,7 @@ pub(crate) fn register_self(
         remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
         FirstMatchingPartitionKeyExtractor::default()
             .with_scope("scope")
-            .with_invocation_id("acquired_by"),
+            .with_vqueue_entry_id("acquired_by"),
     );
 
     ctx.register_partitioned_table(NAME, Arc::new(locks_table))

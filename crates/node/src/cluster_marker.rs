@@ -177,7 +177,7 @@ fn validate_and_update_cluster_marker_inner(
     let min_forward_compatible_version = cluster_marker
         .min_forward_compatible_version
         .clone()
-        .unwrap_or(cluster_marker.current_version.clone());
+        .unwrap_or_else(|| cluster_marker.current_version.clone());
 
     // The data directory required minimum version must be compatible with the running version.
     // Asserts that: this_version >= cluster_marker.min_forward_compatible_version
@@ -354,9 +354,7 @@ mod tests {
                 max_version: current_version,
                 cluster_name: CLUSTER_NAME.to_owned(),
                 min_forward_compatible_version: Some(
-                    TESTING_COMPATIBILITY_INFORMATION
-                        .min_forward_compatible_version
-                        .clone()
+                    TESTING_COMPATIBILITY_INFORMATION.min_forward_compatible_version
                 ),
                 is_provisioned: Some(false),
             }
@@ -374,9 +372,7 @@ mod tests {
             &ClusterMarker::new(
                 CLUSTER_NAME.to_owned(),
                 previous_version,
-                TESTING_COMPATIBILITY_INFORMATION
-                    .min_forward_compatible_version
-                    .clone(),
+                TESTING_COMPATIBILITY_INFORMATION.min_forward_compatible_version,
                 true,
             ),
             &file,
@@ -398,9 +394,7 @@ mod tests {
                 max_version: current_version,
                 cluster_name: CLUSTER_NAME.to_owned(),
                 min_forward_compatible_version: Some(
-                    TESTING_COMPATIBILITY_INFORMATION
-                        .min_forward_compatible_version
-                        .clone()
+                    TESTING_COMPATIBILITY_INFORMATION.min_forward_compatible_version
                 ),
                 is_provisioned: Some(true),
             }
@@ -419,9 +413,7 @@ mod tests {
             &ClusterMarker::new(
                 CLUSTER_NAME.to_owned(),
                 max_version.clone(),
-                TESTING_COMPATIBILITY_INFORMATION
-                    .min_forward_compatible_version
-                    .clone(),
+                TESTING_COMPATIBILITY_INFORMATION.min_forward_compatible_version,
                 false,
             ),
             &file,
@@ -439,13 +431,11 @@ mod tests {
         assert_eq!(
             cluster_marker,
             ClusterMarker {
-                current_version: current_version.clone(),
+                current_version,
                 max_version,
                 cluster_name: CLUSTER_NAME.to_owned(),
                 min_forward_compatible_version: Some(
-                    TESTING_COMPATIBILITY_INFORMATION
-                        .min_forward_compatible_version
-                        .clone()
+                    TESTING_COMPATIBILITY_INFORMATION.min_forward_compatible_version
                 ),
                 is_provisioned: Some(false),
             }
@@ -463,10 +453,8 @@ mod tests {
         write_cluster_marker(
             &ClusterMarker::new(
                 "other_cluster".to_owned(),
-                max_version.clone(),
-                TESTING_COMPATIBILITY_INFORMATION
-                    .min_forward_compatible_version
-                    .clone(),
+                max_version,
+                TESTING_COMPATIBILITY_INFORMATION.min_forward_compatible_version,
                 true,
             ),
             &file,
@@ -495,7 +483,7 @@ mod tests {
         write_cluster_marker(
             &ClusterMarker::new(
                 CLUSTER_NAME.to_owned(),
-                max_version.clone(),
+                max_version,
                 SemanticRestateVersion::new(2, 0, 0),
                 true,
             ),
@@ -524,7 +512,7 @@ mod tests {
         write_cluster_marker(
             &ClusterMarker::new(
                 CLUSTER_NAME.to_owned(),
-                max_version.clone(),
+                max_version,
                 SemanticRestateVersion::new(1, 4, 0),
                 true,
             ),
@@ -554,10 +542,8 @@ mod tests {
         write_cluster_marker(
             &ClusterMarker::new(
                 CLUSTER_NAME.to_owned(),
-                max_version.clone(),
-                TESTING_COMPATIBILITY_INFORMATION
-                    .min_forward_compatible_version
-                    .clone(),
+                max_version,
+                TESTING_COMPATIBILITY_INFORMATION.min_forward_compatible_version,
                 false,
             ),
             &file,
@@ -584,9 +570,7 @@ mod tests {
             &ClusterMarker::new(
                 CLUSTER_NAME.to_owned(),
                 version.clone(),
-                TESTING_COMPATIBILITY_INFORMATION
-                    .min_forward_compatible_version
-                    .clone(),
+                TESTING_COMPATIBILITY_INFORMATION.min_forward_compatible_version,
                 false,
             ),
             &file,
@@ -603,9 +587,7 @@ mod tests {
                 max_version: version,
                 cluster_name: CLUSTER_NAME.to_owned(),
                 min_forward_compatible_version: Some(
-                    TESTING_COMPATIBILITY_INFORMATION
-                        .min_forward_compatible_version
-                        .clone()
+                    TESTING_COMPATIBILITY_INFORMATION.min_forward_compatible_version
                 ),
                 is_provisioned: Some(true),
             }

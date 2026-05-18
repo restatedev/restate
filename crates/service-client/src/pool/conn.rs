@@ -905,7 +905,7 @@ mod test {
     }
 
     #[test]
-    fn test_connection_id() {
+    fn connection_id() {
         assert_ne!(next_connection_id(), next_connection_id());
     }
 

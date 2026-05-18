@@ -226,10 +226,12 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
             let unprefixed_environment_id = environment_info
                 .environment_id
                 .strip_prefix("env_")
-                .ok_or(anyhow::anyhow!(
-                    "Unexpected environment ID format: {}",
-                    environment_info.environment_id
-                ))?;
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Unexpected environment ID format: {}",
+                        environment_info.environment_id
+                    )
+                })?;
 
             let cloud_client = CloudClient::new(&env)?;
 

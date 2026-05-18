@@ -13,6 +13,7 @@ use std::collections::hash_map::Entry;
 use std::future::Future;
 use std::ops::RangeBounds;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll, ready};
 
 use bytes::BytesMut;
@@ -28,8 +29,10 @@ use restate_bifrost::CommitToken;
 use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{Metadata, MetadataKind, TaskCenter, TaskHandle, TaskId};
 use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
+use restate_limiter::RuleBook;
 use restate_partition_store::PartitionDb;
-use restate_storage_api::vqueue_table::scheduler::SchedulerDecisions;
+use restate_storage_api::vqueue_table::scheduler::SchedulerDecisionsCommand;
+use restate_types::config::Configuration;
 use restate_types::identifiers::{
     LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
@@ -42,14 +45,15 @@ use restate_types::net::partition_processor::{
 };
 use restate_types::sharding::KeyRange;
 use restate_types::{RESTATE_VERSION_1_7_0, SemanticRestateVersion, Version, Versioned, vqueues};
-use restate_vqueues::SchedulerService;
 use restate_vqueues::VQueueEvent;
 use restate_vqueues::scheduler::Decisions;
+use restate_vqueues::{SchedulerService, VQueuesMeta};
 use restate_wal_protocol::Command;
-use restate_wal_protocol::control::UpsertSchema;
-use restate_worker_api::SchedulerStatusEntry;
+use restate_wal_protocol::control::UpsertSchemaCommand;
+use restate_wal_protocol::v1::UpsertRuleBookCommandWrapper;
 use restate_worker_api::invoker::InvokerHandle;
 use restate_worker_api::resources::ReservedResources;
+use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
 
 use crate::metric_definitions::{PARTITION_HANDLE_LEADER_ACTIONS, USAGE_LEADER_ACTION_COUNT};
 use crate::partition::cleaner::{CleanerEffect, CleanerHandle};
@@ -90,6 +94,7 @@ pub struct LeaderState {
     invoker_stream: InvokerStream,
     shuffle_stream: ReceiverStream<shuffle::OutboxTruncation>,
     schema_stream: WatchStream<Version>,
+    rule_book_stream: WatchStream<Arc<RuleBook>>,
     cleaner_handle: CleanerHandle,
     trimmer_task_id: TaskId,
     durability_tracker: DurabilityTracker,
@@ -117,6 +122,7 @@ impl LeaderState {
         shuffle_rx: tokio::sync::mpsc::Receiver<shuffle::OutboxTruncation>,
         durability_tracker: DurabilityTracker,
         leader_query_guard: LeaderQueryGuard,
+        rule_book_rx: tokio::sync::watch::Receiver<Arc<RuleBook>>,
     ) -> Self {
         LeaderState {
             partition_id,
@@ -129,6 +135,7 @@ impl LeaderState {
             schema_stream: Metadata::with_current(|m| {
                 WatchStream::new(m.watch(MetadataKind::Schema))
             }),
+            rule_book_stream: WatchStream::new(rule_book_rx),
             timer_service: Box::pin(timer_service),
             scheduler,
             invoker_handle,
@@ -143,13 +150,24 @@ impl LeaderState {
         }
     }
 
-    pub fn read_scheduler_status(&self, keys: KeyRange) -> Vec<SchedulerStatusEntry> {
+    pub fn read_scheduler_status(
+        &self,
+        metas: VQueuesMeta<'_>,
+        keys: KeyRange,
+    ) -> Vec<SchedulerStatusEntry> {
         self.scheduler
-            .iter_status()
+            .iter_status(metas)
             .into_iter()
             .flatten()
             .filter(|(qid, _)| keys.contains(&qid.partition_key()))
             .collect()
+    }
+
+    pub fn read_user_limit_counters(&self, keys: KeyRange) -> Vec<UserLimitCounterEntry> {
+        // Stamp counters with a key inside this partition's range so DataFusion's
+        // partition-aware scan accepts the row. Use the range start — counters are
+        // partition-scoped, not per-item, so any key in range is fine.
+        self.scheduler.scan_user_limit_counters(keys.start())
     }
 
     /// Runs the leader specific task which is the awaiting of action effects and the monitoring
@@ -157,7 +175,11 @@ impl LeaderState {
     ///
     /// Important: The future needs to be cancellation safe since it is polled as a tokio::select
     /// arm!
-    pub async fn run(&mut self, state_machine: &StateMachine) -> Result<Vec<ActionEffect>, Error> {
+    pub async fn run(
+        &mut self,
+        state_machine: &StateMachine,
+        vqueue_metas: VQueuesMeta<'_>,
+    ) -> Result<Vec<ActionEffect>, Error> {
         let timer_stream = std::pin::pin!(stream::unfold(
             &mut self.timer_service,
             |timer_service| async {
@@ -170,7 +192,7 @@ impl LeaderState {
         // if we have problems with latency
         let scheduler_stream =
             std::pin::pin!(stream::unfold(&mut self.scheduler, |scheduler| async {
-                match scheduler.schedule_next().await {
+                match scheduler.schedule_next(vqueue_metas).await {
                     Ok(decisions) => Some((ActionEffect::Scheduler(decisions), scheduler)),
                     Err(e) => {
                         error!("Fatal error when polling scheduler: {e}");
@@ -194,6 +216,15 @@ impl LeaderState {
             )
         });
 
+        let rule_book_stream = (&mut self.rule_book_stream).filter_map(|book| {
+            // Only propose iff the cache holds a rule book that's
+            // newer than the partition's current in-memory book.
+            let current_version = state_machine.rule_book.version();
+            std::future::ready(
+                (book.version() > current_version).then(|| ActionEffect::UpsertRuleBook(book)),
+            )
+        });
+
         let invoker_stream = (&mut self.invoker_stream).map(ActionEffect::Invoker);
         let shuffle_stream = (&mut self.shuffle_stream).map(ActionEffect::Shuffle);
         let cleaner_stream = self.cleaner_handle.effects().map(ActionEffect::Cleaner);
@@ -212,7 +243,8 @@ impl LeaderState {
             cleaner_stream,
             awaiting_rpc_self_propose_stream,
             dur_tracker_stream,
-            schema_stream
+            schema_stream,
+            rule_book_stream
         );
         let mut all_streams = all_streams.ready_chunks(BATCH_READY_UP_TO);
 
@@ -330,7 +362,7 @@ impl LeaderState {
                         .into_iter()
                         // one command per partition key
                         .map(|(partition_key, group)| {
-                            let decisions = SchedulerDecisions {
+                            let decisions = SchedulerDecisionsCommand {
                                 qids: group.collect(),
                             };
 
@@ -413,11 +445,37 @@ impl LeaderState {
                         self.self_proposer
                             .self_propose(
                                 self.partition_key_range.start(),
-                                Command::UpsertSchema(UpsertSchema {
+                                Command::UpsertSchema(UpsertSchemaCommand {
                                     partition_key_range: Keys::RangeInclusive(
                                         self.partition_key_range.into(),
                                     ),
                                     schema,
+                                }),
+                            )
+                            .await?;
+                    }
+                }
+                ActionEffect::UpsertRuleBook(rule_book) => {
+                    // todo(tillrohrmann) also enable the feature once the partition has been migrated
+                    //  to use vqueues and then rolling back to v1.7
+                    if Configuration::pinned()
+                        .common
+                        .experimental
+                        .is_vqueues_enabled()
+                    {
+                        let cmd =
+                            restate_wal_protocol::control::UpsertRuleBookCommand { rule_book };
+
+                        arena.reserve(cmd.encoded_len());
+                        // safe to unwrap because we reserved enough space
+                        cmd.bilrost_encode(&mut arena).unwrap();
+
+                        self.self_proposer
+                            .self_propose(
+                                self.partition_key_range.start(),
+                                Command::UpsertRuleBook(UpsertRuleBookCommandWrapper {
+                                    partition_key_range: self.partition_key_range,
+                                    command: arena.split().freeze(),
                                 }),
                             )
                             .await?;
@@ -511,7 +569,11 @@ impl LeaderState {
         }
     }
 
-    pub fn handle_actions(&mut self, actions: impl Iterator<Item = Action>) -> Result<(), Error> {
+    pub fn handle_actions(
+        &mut self,
+        vqueues: VQueuesMeta<'_>,
+        actions: impl Iterator<Item = Action>,
+    ) -> Result<(), Error> {
         for action in actions {
             let action_name = action.name();
 
@@ -525,13 +587,13 @@ impl LeaderState {
             )
             .increment(1);
 
-            self.handle_action(action)?;
+            self.handle_action(vqueues, action)?;
         }
 
         Ok(())
     }
 
-    fn handle_action(&mut self, action: Action) -> Result<(), Error> {
+    fn handle_action(&mut self, metas: VQueuesMeta<'_>, action: Action) -> Result<(), Error> {
         match action {
             Action::Invoke {
                 invocation_id,
@@ -677,31 +739,43 @@ impl LeaderState {
                 }
             }
             Action::VQEvent(inbox_event) => {
-                self.handle_vqueue_inbox_event(inbox_event);
+                self.handle_vqueue_inbox_event(metas, inbox_event);
             }
             Action::VQInvoke {
-                qid,
+                vq_handle,
                 key,
                 invocation_target,
+                idempotency_key,
             } => {
+                let slot = metas.get(vq_handle).expect("vqueue meta must be in cache");
                 // state mutations should not create Invoke actions. At least for now.
                 assert!(matches!(key.kind(), vqueues::EntryKind::Invocation));
                 let invocation_id = key
                     .entry_id()
-                    .to_invocation_id(qid.partition_key())
+                    .to_invocation_id(slot.partition_key())
                     .unwrap();
 
-                let run_permit = self.scheduler.confirm_run_attempt(&qid, &key).unwrap_or_else(|| {
+                let run_permit = self.scheduler.confirm_run_attempt(vq_handle, slot, &key).unwrap_or_else(|| {
                     tracing::error!(
-                        vqueue = %qid,
+                        vqueue = %slot.vqueue_id(),
                         restate.invocation.id = %invocation_id,
                         "Cannot find a permit for entry key {key:?} in scheduler. Will not respect the invoker limit for this invocation"
                     );
                     ReservedResources::new_empty()
                 });
                 self.invoker_handle
-                    .vqueue_invoke(qid, run_permit, invocation_id, invocation_target)
+                    .vqueue_invoke(
+                        slot.vqueue_id().clone(),
+                        run_permit,
+                        invocation_id,
+                        invocation_target,
+                        slot.meta().limit_key().clone(),
+                        idempotency_key,
+                    )
                     .map_err(Error::Invoker)?
+            }
+            Action::RulesUpdated(updates) => {
+                self.scheduler.on_rules_updated(updates);
             }
         }
 
@@ -712,8 +786,8 @@ impl LeaderState {
         &mut self.invoker_handle
     }
 
-    fn handle_vqueue_inbox_event(&mut self, event: VQueueEvent) {
-        self.scheduler.on_inbox_event(event);
+    fn handle_vqueue_inbox_event(&mut self, metas: VQueuesMeta<'_>, event: VQueueEvent) {
+        self.scheduler.on_inbox_event(metas, event);
     }
 }
 

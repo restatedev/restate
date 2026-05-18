@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tracing::warn;
 
-use restate_serde_util::{ByteCount, NonZeroByteCount};
-use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
+use restate_util_bytecount::{ByteCount, NonZeroByteCount};
+use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
 
 use super::{
     BackgroundWorkBudget, CommonOptions, DEFAULT_MESSAGE_SIZE_LIMIT, NetworkingOptions,
@@ -113,6 +113,17 @@ pub struct WorkerOptions {
     ///
     /// Default is 256 MiB.
     pub data_service_memory_limit: NonZeroByteCount,
+
+    /// # Rule book poll interval
+    ///
+    /// How often each node's `RuleBookCache` polls the metadata store
+    /// for rule-book updates. The cache also receives push-style
+    /// notifications when partition processors apply
+    /// `Command::UpsertRuleBook` from Bifrost, so this poll interval
+    /// is mainly a fallback for cross-node propagation when no
+    /// partition leader has yet observed the change. Default: 30 s.
+    /// *Since v1.7.0*
+    pub rule_book_poll_interval: NonZeroFriendlyDuration,
 }
 
 impl WorkerOptions {
@@ -173,6 +184,7 @@ impl Default for WorkerOptions {
             data_service_memory_limit: NonZeroByteCount::new(
                 NonZeroUsize::new(256 * 1024 * 1024).unwrap(),
             ),
+            rule_book_poll_interval: NonZeroFriendlyDuration::from_secs_unchecked(30),
         }
     }
 }
@@ -895,9 +907,9 @@ impl From<ThrottlingOptions> for gardal::Limit {
         use gardal::Limit;
 
         let mut limit = match options.rate {
-            Rate::PerSecond(rate) => Limit::per_second(rate),
-            Rate::PerMinute(rate) => Limit::per_minute(rate),
-            Rate::PerHour(rate) => Limit::per_hour(rate),
+            Rate::Second(rate) => Limit::per_second(rate),
+            Rate::Minute(rate) => Limit::per_minute(rate),
+            Rate::Hour(rate) => Limit::per_hour(rate),
         };
 
         if let Some(capacity) = options.capacity {
@@ -911,7 +923,7 @@ impl From<ThrottlingOptions> for gardal::Limit {
 mod serde_helpers {
     use std::num::NonZeroUsize;
 
-    use restate_serde_util::ByteCount;
+    use restate_util_bytecount::ByteCount;
 
     pub const fn default_compact_on_deletions_window() -> NonZeroUsize {
         // SAFETY: 1000 is non-zero

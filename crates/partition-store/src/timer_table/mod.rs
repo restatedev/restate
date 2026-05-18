@@ -289,7 +289,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lexicographical_sorting_by_timestamp() {
+    fn lexicographical_sorting_by_timestamp() {
         let kinds = [
             TimerKeyKind::CompleteJournalEntry {
                 invocation_uuid: FIXTURE_INVOCATION,
@@ -322,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lexicographical_sorting_by_invocation_uuid_complete_journal_entry_kind() {
+    fn lexicographical_sorting_by_invocation_uuid_complete_journal_entry_kind() {
         // Higher random part should be sorted correctly in bytes
         let a = TimerKey {
             kind: TimerKeyKind::CompleteJournalEntry {
@@ -342,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lexicographical_sorting_by_invocation_uuid_invoke_kind() {
+    fn lexicographical_sorting_by_invocation_uuid_invoke_kind() {
         // Higher random part should be sorted correctly in bytes
         let a = TimerKey {
             kind: TimerKeyKind::Invoke {
@@ -360,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lexicographical_sorting_by_invocation_uuid_clean_invocation_status_kind() {
+    fn lexicographical_sorting_by_invocation_uuid_clean_invocation_status_kind() {
         // Higher random part should be sorted correctly in bytes
         let a = TimerKey {
             kind: TimerKeyKind::CleanInvocationStatus {
@@ -378,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lexicographical_sorting_by_invocation_uuid_neo_invoke_kind() {
+    fn lexicographical_sorting_by_invocation_uuid_neo_invoke_kind() {
         // Higher random part should be sorted correctly in bytes
         let a = TimerKey {
             kind: TimerKeyKind::NeoInvoke {
@@ -396,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lexicographical_sorting_by_journal_index() {
+    fn lexicographical_sorting_by_journal_index() {
         let a = TimerKey {
             kind: TimerKeyKind::CompleteJournalEntry {
                 invocation_uuid: FIXTURE_INVOCATION,
@@ -415,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lexicographical_sorting_timer_kind() {
+    fn lexicographical_sorting_timer_kind() {
         let a = TimerKey {
             kind: TimerKeyKind::Invoke {
                 invocation_uuid: FIXTURE_INVOCATION,

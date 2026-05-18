@@ -24,8 +24,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_with::serde_as;
 
-use restate_serde_util::{ByteCount, MapAsVecItem};
-use restate_time_util::FriendlyDuration;
+use restate_serde_util::MapAsVecItem;
+use restate_util_bytecount::ByteCount;
+use restate_util_time::FriendlyDuration;
 
 use crate::config::{Configuration, InvocationRetryPolicyOptions};
 use crate::deployment::{
@@ -170,6 +171,15 @@ impl DeliveryOptions {
     }
 }
 
+/// Since v1.7.0
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct DeploymentLimits {
+    /// Maximum number of concurrent invocations per node for this deployment.
+    /// A value of 0 means unlimited.
+    #[serde(default)]
+    pub invocations: u64,
+}
+
 #[serde_as]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Deployment {
@@ -187,6 +197,9 @@ struct Deployment {
 
     #[serde_as(as = "restate_serde_util::MapAsVec")]
     services: HashMap<String, Arc<ServiceRevision>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limits: Option<DeploymentLimits>,
 }
 
 impl MapAsVecItem for Deployment {
@@ -369,15 +382,6 @@ impl ServiceRevision {
         retry_policy.merge_with_service_revision_overrides(self);
 
         let mut info = vec![];
-
-        // TODO(tillrohrmann): Once service renaming is supported, upgrade this to a
-        //  hard error in validate_service_name() (reserve 'api' like 'restate'/'openapi').
-        if self.name.eq_ignore_ascii_case("api") {
-            info.push(SchemaInfo::new_with_code(
-                &restate_errors::RT0024,
-                "The service name 'api' will become a reserved keyword in a future version of Restate. Please rename this service.",
-            ));
-        }
 
         if let Some(inactivity_timeout) = self.inactivity_timeout
             && served_using_protocol_type == Some(ProtocolType::RequestResponse)

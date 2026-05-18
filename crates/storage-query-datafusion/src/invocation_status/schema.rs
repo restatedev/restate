@@ -47,6 +47,10 @@ define_table!(sys_invocation_status(
     /// The service type. Either `service` or `virtual_object` or `workflow`.
     target_service_ty: DataType::LargeUtf8,
 
+    /// The scope of the invocation for vqueue partitioning, if scoped. NULL for unscoped invocations.
+    /// Since v1.7.0.
+    scope: DataType::Utf8,
+
     /// Idempotency key, if any.
     idempotency_key: DataType::LargeUtf8,
 

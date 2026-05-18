@@ -136,7 +136,6 @@ pub enum TableKind {
     State,
     InvocationStatus,
     ServiceStatus,
-    Idempotency,
     Inbox,
     Journal,
     JournalEvent,
@@ -151,7 +150,6 @@ impl TableKind {
             Self::State => &[KeyKind::State, KeyKind::ScopedState],
             Self::InvocationStatus => &[KeyKind::InvocationStatus],
             Self::ServiceStatus => &[KeyKind::ServiceStatus],
-            Self::Idempotency => &[KeyKind::Idempotency],
             Self::Inbox => &[KeyKind::Inbox],
             Self::Outbox => &[KeyKind::Outbox],
             Self::Deduplication => &[KeyKind::Deduplication],
@@ -272,7 +270,7 @@ impl PartitionStore {
     fn new_prefix_iterator_opts(&self, _key_kind: KeyKind, prefix: Bytes) -> ReadOptions {
         let mut opts = ReadOptions::default();
         opts.set_prefix_same_as_start(true);
-        opts.set_iterate_range(PrefixRange(prefix.clone()));
+        opts.set_iterate_range(PrefixRange(prefix));
         opts.set_async_io(true);
         opts.set_total_order_seek(false);
         opts

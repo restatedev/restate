@@ -23,7 +23,7 @@ pub enum StorageEncodeError {
     SizeOverflow(usize),
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(derive_more::Debug, thiserror::Error)]
 pub enum StorageDecodeError {
     #[error("failed reading codec: {0}")]
     ReadingCodec(ReString),

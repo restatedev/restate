@@ -120,19 +120,19 @@ trait IdWithBytes {
 
 impl IdWithBytes for DeploymentId {
     fn to_bytes(&self) -> [u8; 16] {
-        DeploymentId::to_bytes(self)
+        DeploymentId::to_bytes(*self)
     }
 }
 
 impl IdWithBytes for SubscriptionId {
     fn to_bytes(&self) -> [u8; 16] {
-        SubscriptionId::to_bytes(self)
+        SubscriptionId::to_bytes(*self)
     }
 }
 
 impl IdWithBytes for SnapshotId {
     fn to_bytes(&self) -> [u8; 16] {
-        SnapshotId::to_bytes(self)
+        SnapshotId::to_bytes(*self)
     }
 }
 

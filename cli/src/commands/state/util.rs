@@ -93,10 +93,12 @@ pub(crate) async fn update_state(
     service_key: &str,
     new_state: HashMap<String, Bytes>,
 ) -> anyhow::Result<()> {
+    // TODO(tillrohrmann): allow CLI state commands to specify scope
     let req = ModifyServiceStateRequest {
         version: expected_version,
         new_state,
         object_key: service_key.to_string(),
+        scope: None,
     };
 
     let client = AdminClient::new(env).await?;

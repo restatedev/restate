@@ -1079,8 +1079,9 @@ dependencies = [
 
 [[package]]
 name = "base62"
-version = "2.2.3"
-source = "git+http://github.com/restatedev/base62?rev=dc62ff947d0ea84db0864e5c7e96c129e7b5874c#dc62ff947d0ea84db0864e5c7e96c129e7b5874c"
+version = "2.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd637ac531c60eb7fbc4684dc061c2d7d90d73d758181aa02eeff0464b9eee4b"
 
 [[package]]
 name = "base64"
@@ -3679,9 +3680,9 @@ dependencies = [
 
 [[package]]
 name = "generic-array"
-version = "1.3.5"
+version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eaf57c49a95fd1fe24b90b3033bee6dc7e8f1288d51494cb44e627c295e38542"
+checksum = "dab9e9188e97a93276e1fe7b56401b851e2b45a46d045ca658100c1303ada649"
 dependencies = [
  "rustversion",
  "typenum",
@@ -5062,10 +5063,10 @@ dependencies = [
  "restate-log-server",
  "restate-memory",
  "restate-rocksdb",
- "restate-serde-util",
- "restate-time-util",
  "restate-tracing-instrumentation",
  "restate-types",
+ "restate-util-bytecount",
+ "restate-util-time",
  "restate-workspace-hack",
  "rlimit",
  "rust-rocksdb",
@@ -6194,14 +6195,16 @@ dependencies = [
  "restate-cli-util",
  "restate-core",
  "restate-errors",
+ "restate-limiter",
  "restate-log-server",
  "restate-partition-store",
  "restate-rocksdb",
- "restate-serde-util",
  "restate-storage-api",
- "restate-time-util",
  "restate-tracing-instrumentation",
  "restate-types",
+ "restate-util-bytecount",
+ "restate-util-string",
+ "restate-util-time",
  "restate-vqueues",
  "restate-wal-protocol",
  "restate-worker",
@@ -7145,18 +7148,22 @@ dependencies = [
  "restate-core",
  "restate-errors",
  "restate-ingestion-client",
+ "restate-limiter",
  "restate-metadata-providers",
  "restate-metadata-store",
+ "restate-serde-util",
  "restate-service-client",
  "restate-service-protocol-v4",
  "restate-storage-query-datafusion",
- "restate-time-util",
  "restate-types",
+ "restate-util-string",
+ "restate-util-time",
  "restate-wal-protocol",
  "restate-web-ui",
  "restate-workspace-hack",
  "serde",
  "serde_json",
+ "serde_with",
  "test-log",
  "thiserror 2.0.18",
  "tokio",
@@ -7178,9 +7185,11 @@ dependencies = [
  "http 1.4.0",
  "http-serde",
  "humantime",
+ "restate-limiter",
  "restate-serde-util",
- "restate-time-util",
  "restate-types",
+ "restate-util-string",
+ "restate-util-time",
  "restate-workspace-hack",
  "serde",
  "serde_with",
@@ -7256,11 +7265,11 @@ dependencies = [
  "restate-memory",
  "restate-metadata-store",
  "restate-rocksdb",
- "restate-serde-util",
  "restate-storage-api",
  "restate-test-util",
- "restate-time-util",
  "restate-types",
+ "restate-util-bytecount",
+ "restate-util-time",
  "restate-wal-protocol",
  "restate-worker-api",
  "restate-workspace-hack",
@@ -7326,8 +7335,8 @@ dependencies = [
  "restate-futures-util",
  "restate-lite",
  "restate-serde-util",
- "restate-time-util",
  "restate-types",
+ "restate-util-time",
  "restate-workspace-hack",
  "rustls",
  "serde",
@@ -7452,8 +7461,9 @@ dependencies = [
  "restate-metadata-store",
  "restate-platform",
  "restate-test-util",
- "restate-time-util",
  "restate-types",
+ "restate-util-string",
+ "restate-util-time",
  "restate-workspace-hack",
  "rustls",
  "rustls-pemfile",
@@ -7508,9 +7518,9 @@ dependencies = [
  "restate-log-server",
  "restate-partition-store",
  "restate-rocksdb",
- "restate-serde-util",
  "restate-storage-api",
  "restate-types",
+ "restate-util-bytecount",
  "restate-wal-protocol",
  "restate-workspace-hack",
  "rlimit",
@@ -7645,10 +7655,10 @@ dependencies = [
  "restate-core",
  "restate-hyper-uds",
  "restate-test-util",
- "restate-time-util",
  "restate-tracing-instrumentation",
  "restate-types",
  "restate-util-string",
+ "restate-util-time",
  "restate-workspace-hack",
  "serde",
  "serde_json",
@@ -7705,7 +7715,6 @@ dependencies = [
  "bytestring",
  "chrono",
  "codederror",
- "dashmap",
  "derive_more",
  "futures",
  "gardal",
@@ -7724,17 +7733,17 @@ dependencies = [
  "restate-memory",
  "restate-platform",
  "restate-queue",
- "restate-serde-util",
  "restate-service-client",
  "restate-service-protocol",
  "restate-service-protocol-v4",
  "restate-test-util",
- "restate-time-util",
+ "restate-tracing-instrumentation",
  "restate-types",
+ "restate-util-bytecount",
  "restate-util-string",
+ "restate-util-time",
  "restate-worker-api",
  "restate-workspace-hack",
- "schemars 1.2.1",
  "serde",
  "tempfile",
  "test-log",
@@ -7750,12 +7759,17 @@ name = "restate-limiter"
 version = "1.7.0-dev"
 dependencies = [
  "bilrost",
+ "bytes",
+ "restate-clock",
+ "restate-encoding",
  "restate-limiter",
  "restate-types",
  "restate-util-string",
  "restate-workspace-hack",
+ "serde",
  "slotmap",
  "thiserror 2.0.18",
+ "utoipa",
 ]
 
 [[package]]
@@ -7773,9 +7787,9 @@ dependencies = [
  "restate-metadata-server",
  "restate-node",
  "restate-rocksdb",
- "restate-serde-util",
  "restate-service-client",
  "restate-types",
+ "restate-util-bytecount",
  "restate-workspace-hack",
  "rlimit",
  "serde_json",
@@ -7848,9 +7862,9 @@ dependencies = [
  "restate-metadata-store",
  "restate-platform",
  "restate-rocksdb",
- "restate-serde-util",
- "restate-time-util",
  "restate-types",
+ "restate-util-bytecount",
+ "restate-util-time",
  "restate-workspace-hack",
  "rust-rocksdb",
  "serde_json",
@@ -7887,7 +7901,7 @@ dependencies = [
  "metrics",
  "pin-project-lite",
  "restate-platform",
- "restate-serde-util",
+ "restate-util-bytecount",
  "restate-workspace-hack",
  "thiserror 2.0.18",
  "tokio",
@@ -7956,8 +7970,8 @@ dependencies = [
  "restate-metadata-server-grpc",
  "restate-metadata-store",
  "restate-rocksdb",
- "restate-time-util",
  "restate-types",
+ "restate-util-time",
  "restate-workspace-hack",
  "rust-rocksdb",
  "serde",
@@ -8005,9 +8019,9 @@ dependencies = [
  "bytestring",
  "metrics",
  "prost",
- "restate-serde-util",
- "restate-time-util",
  "restate-types",
+ "restate-util-bytecount",
+ "restate-util-time",
  "restate-workspace-hack",
  "static_assertions",
  "thiserror 2.0.18",
@@ -8048,6 +8062,7 @@ dependencies = [
  "restate-futures-util",
  "restate-ingestion-client",
  "restate-ingress-http",
+ "restate-limiter",
  "restate-log-server",
  "restate-memory",
  "restate-metadata-providers",
@@ -8126,14 +8141,15 @@ dependencies = [
  "restate-clock",
  "restate-core",
  "restate-errors",
+ "restate-limiter",
  "restate-memory",
  "restate-object-store-util",
  "restate-rocksdb",
- "restate-serde-util",
  "restate-service-protocol-v4",
  "restate-storage-api",
  "restate-test-util",
  "restate-types",
+ "restate-util-bytecount",
  "restate-util-string",
  "restate-workspace-hack",
  "rust-rocksdb",
@@ -8197,11 +8213,11 @@ dependencies = [
  "parking_lot",
  "restate-core",
  "restate-errors",
- "restate-serde-util",
  "restate-test-util",
- "restate-time-util",
  "restate-types",
+ "restate-util-bytecount",
  "restate-util-string",
+ "restate-util-time",
  "restate-workspace-hack",
  "rust-rocksdb",
  "static_assertions",
@@ -8219,7 +8235,6 @@ name = "restate-serde-util"
 version = "1.7.0-dev"
 dependencies = [
  "bytes",
- "bytesize",
  "http 1.4.0",
  "http-serde",
  "prost",
@@ -8346,10 +8361,10 @@ dependencies = [
  "paste",
  "prost",
  "restate-errors",
- "restate-serde-util",
  "restate-service-protocol",
  "restate-test-util",
  "restate-types",
+ "restate-util-bytecount",
  "restate-workspace-hack",
  "thiserror 2.0.18",
  "tokio",
@@ -8376,10 +8391,11 @@ dependencies = [
  "prost",
  "prost-build",
  "restate-errors",
- "restate-serde-util",
  "restate-service-client",
  "restate-test-util",
  "restate-types",
+ "restate-util-bytecount",
+ "restate-util-string",
  "restate-workspace-hack",
  "serde_json",
  "strum",
@@ -8423,6 +8439,7 @@ dependencies = [
  "restate-memory",
  "restate-sharding",
  "restate-types",
+ "restate-util-bytecount",
  "restate-util-string",
  "restate-workspace-hack",
  "serde",
@@ -8455,6 +8472,8 @@ dependencies = [
  "paste",
  "prost",
  "restate-core",
+ "restate-limiter",
+ "restate-metadata-store",
  "restate-partition-store",
  "restate-rocksdb",
  "restate-service-protocol",
@@ -8467,6 +8486,7 @@ dependencies = [
  "restate-workspace-hack",
  "schemars 1.2.1",
  "serde_json",
+ "strum",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -8486,19 +8506,6 @@ dependencies = [
  "prost-types",
  "rand 0.9.4",
  "restate-workspace-hack",
-]
-
-[[package]]
-name = "restate-time-util"
-version = "1.7.0-dev"
-dependencies = [
- "jiff",
- "restate-workspace-hack",
- "schemars 1.2.1",
- "serde",
- "serde_json",
- "serde_with",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -8587,7 +8594,7 @@ dependencies = [
  "flexbuffers",
  "futures",
  "gardal",
- "generic-array 1.3.5",
+ "generic-array 1.4.1",
  "googletest",
  "hostname",
  "http 1.4.0",
@@ -8596,7 +8603,6 @@ dependencies = [
  "jsonptr 0.7.1",
  "jsonschema",
  "listenfd",
- "metrics",
  "moka",
  "notify",
  "notify-debouncer-full",
@@ -8622,15 +8628,16 @@ dependencies = [
  "restate-serde-util",
  "restate-sharding",
  "restate-test-util",
- "restate-time-util",
  "restate-types",
+ "restate-util-bytecount",
  "restate-util-string",
+ "restate-util-time",
  "restate-utoipa",
  "restate-workspace-hack",
- "rustc-hash",
  "schemars 1.2.1",
  "semver",
  "serde",
+ "serde_core",
  "serde_json",
  "serde_path_to_error",
  "serde_with",
@@ -8657,17 +8664,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-util-bytecount"
+version = "1.7.0-dev"
+dependencies = [
+ "bilrost",
+ "bytesize",
+ "restate-util-bytecount",
+ "restate-util-string",
+ "restate-workspace-hack",
+ "schemars 1.2.1",
+ "serde",
+ "serde_core",
+ "serde_json",
+ "serde_with",
+]
+
+[[package]]
 name = "restate-util-string"
 version = "1.7.0-dev"
 dependencies = [
  "ahash",
  "bilrost",
  "bytes",
+ "bytestring",
  "compact_str",
  "hashbrown 0.16.1",
+ "metrics",
+ "opentelemetry",
  "restate-util-string",
  "restate-workspace-hack",
+ "serde_core",
+ "serde_json",
+]
+
+[[package]]
+name = "restate-util-time"
+version = "1.7.0-dev"
+dependencies = [
+ "jiff",
+ "restate-workspace-hack",
+ "schemars 1.2.1",
  "serde",
+ "serde_json",
+ "serde_with",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -8687,6 +8727,7 @@ version = "1.7.0-dev"
 dependencies = [
  "arrayvec",
  "bilrost",
+ "criterion",
  "derive_more",
  "enum-map",
  "gardal",
@@ -8694,22 +8735,26 @@ dependencies = [
  "itertools 0.14.0",
  "metrics",
  "pin-project",
+ "pprof",
  "restate-clock",
  "restate-core",
  "restate-futures-util",
  "restate-limiter",
  "restate-memory",
  "restate-partition-store",
+ "restate-platform",
  "restate-rocksdb",
- "restate-serde-util",
  "restate-storage-api",
  "restate-types",
+ "restate-util-bytecount",
  "restate-util-string",
+ "restate-util-time",
  "restate-worker-api",
  "restate-workspace-hack",
  "sha2 0.10.9",
  "slotmap",
  "smallvec",
+ "tikv-jemallocator",
  "tokio",
  "tokio-util",
  "tracing",
@@ -8719,11 +8764,15 @@ dependencies = [
 name = "restate-wal-protocol"
 version = "1.7.0-dev"
 dependencies = [
+ "anyhow",
  "bilrost",
  "bytes",
  "derive_more",
+ "restate-encoding",
+ "restate-limiter",
  "restate-storage-api",
  "restate-types",
+ "restate-util-string",
  "restate-worker-api",
  "restate-workspace-hack",
  "serde",
@@ -8734,8 +8783,8 @@ dependencies = [
 
 [[package]]
 name = "restate-web-ui"
-version = "0.1.58"
-source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v0.1.58#11912a7b09c178757482084362890014e0ca5766"
+version = "0.1.59"
+source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v0.1.59#2a9a0d27806c3048338315d6644c366a373f705f"
 dependencies = [
  "anyhow",
  "include_dir",
@@ -8784,11 +8833,11 @@ dependencies = [
  "restate-storage-api",
  "restate-storage-query-datafusion",
  "restate-test-util",
- "restate-time-util",
  "restate-timer",
  "restate-tracing-instrumentation",
  "restate-types",
  "restate-util-string",
+ "restate-util-time",
  "restate-vqueues",
  "restate-wal-protocol",
  "restate-worker-api",
@@ -8945,6 +8994,7 @@ dependencies = [
  "serde_core",
  "serde_json",
  "serde_with",
+ "sha2 0.10.9",
  "signal-hook",
  "simd-adler32",
  "slab",
@@ -8952,6 +9002,7 @@ dependencies = [
  "stable_deref_trait",
  "syn 2.0.117",
  "sync_wrapper",
+ "thiserror 2.0.18",
  "tikv-jemalloc-ctl",
  "tikv-jemalloc-sys",
  "time",
@@ -9019,8 +9070,8 @@ dependencies = [
  "restate-metadata-server-grpc",
  "restate-metadata-store",
  "restate-rocksdb",
- "restate-time-util",
  "restate-types",
+ "restate-util-time",
  "restate-wal-protocol",
  "restate-workspace-hack",
  "rlimit",
@@ -9109,8 +9160,8 @@ dependencies = [
 
 [[package]]
 name = "rust-librocksdb-sys"
-version = "0.42.0+10.10.1"
-source = "git+https://github.com/restatedev/rust-rocksdb?rev=dcfba7946697d740e60f0b1060b6624dc1c7e94a#dcfba7946697d740e60f0b1060b6624dc1c7e94a"
+version = "0.44.0+11.1.1"
+source = "git+https://github.com/restatedev/rust-rocksdb?rev=432ac4288a219dd70d4c71ccfcd0ad51d6bcc0d1#432ac4288a219dd70d4c71ccfcd0ad51d6bcc0d1"
 dependencies = [
  "bindgen",
  "bzip2-sys",
@@ -9125,8 +9176,8 @@ dependencies = [
 
 [[package]]
 name = "rust-rocksdb"
-version = "0.46.1"
-source = "git+https://github.com/restatedev/rust-rocksdb?rev=dcfba7946697d740e60f0b1060b6624dc1c7e94a#dcfba7946697d740e60f0b1060b6624dc1c7e94a"
+version = "0.48.0"
+source = "git+https://github.com/restatedev/rust-rocksdb?rev=432ac4288a219dd70d4c71ccfcd0ad51d6bcc0d1#432ac4288a219dd70d4c71ccfcd0ad51d6bcc0d1"
 dependencies = [
  "libc",
  "parking_lot",
@@ -9535,8 +9586,8 @@ dependencies = [
  "bytes",
  "mlua",
  "restate-service-protocol-v4",
- "restate-time-util",
  "restate-types",
+ "restate-util-time",
  "thiserror 2.0.18",
 ]
 
@@ -9560,6 +9611,7 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
  "digest 0.10.7",
+ "sha2-asm",
 ]
 
 [[package]]
@@ -9571,6 +9623,15 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
  "digest 0.11.2",
+]
+
+[[package]]
+name = "sha2-asm"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b845214d6175804686b2bd482bcffe96651bb2d1200742b712003504a2dac1ab"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

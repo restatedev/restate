@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+#![allow(clippy::large_futures)]
+
 mod common;
 
 mod tests {
@@ -55,7 +57,7 @@ mod tests {
     }
 
     #[test(restate_core::test)]
-    async fn test_append_local_sequencer_three_logserver() -> Result<()> {
+    async fn append_local_sequencer_three_logserver() -> Result<()> {
         run_in_test_env(
             Configuration::new_unix_sockets(),
             GenerationalNodeId::new(5, 1), // local sequencer
@@ -83,7 +85,7 @@ mod tests {
     }
 
     #[test(restate_core::test)]
-    async fn test_seal_local_sequencer_three_logserver() -> Result<()> {
+    async fn seal_local_sequencer_three_logserver() -> Result<()> {
         run_in_test_env(
             Configuration::new_unix_sockets(),
             GenerationalNodeId::new(5, 1), // local sequencer

@@ -78,6 +78,7 @@ impl From<ConversionError> for StorageError {
 }
 
 pub mod v1 {
+    #![allow(clippy::enum_variant_names)]
     #![allow(clippy::large_enum_variant)]
 
     include!(concat!(
@@ -107,6 +108,7 @@ pub mod v1 {
         use restate_types::service_protocol::ServiceProtocolVersion;
         use restate_types::time::MillisSinceEpoch;
         use restate_types::{GenerationalNodeId, Scope, journal_v2};
+        use restate_util_string::RestateString;
 
         use super::dedup_sequence_number::Variant;
         use super::enriched_entry_header::{
@@ -125,16 +127,15 @@ pub mod v1 {
         use super::{
             BackgroundCallResolutionResult, DedupSequenceNumber, Duration, EnrichedEntryHeader,
             Entry, EntryResult, EpochSequenceNumber, FailureMetadata, Header, IdempotencyId,
-            IdempotencyMetadata, InboxEntry, InvocationId, InvocationResolutionResult,
-            InvocationStatusV2, InvocationTarget, InvocationV2Lite, JournalCompletionTarget,
-            JournalEntry, JournalEntryIndex, JournalMeta, KvPair, OutboxMessage,
-            PartitionDurability, Promise, ResponseResult, RestateVersion, SequenceNumber,
-            ServiceId, ServiceInvocation, ServiceInvocationResponseSink, Source, SpanContext,
-            SpanRelation, StateMutation, SubmitNotificationSink, Timer, VirtualObjectStatus,
-            enriched_entry_header, entry, entry_result, inbox_entry, invocation_resolution_result,
-            invocation_status_v2, invocation_target, journal_entry, outbox_message, promise,
-            response_result, source, span_relation, submit_notification_sink, timer,
-            virtual_object_status,
+            InboxEntry, InvocationId, InvocationResolutionResult, InvocationStatusV2,
+            InvocationTarget, InvocationV2Lite, JournalCompletionTarget, JournalEntry,
+            JournalEntryIndex, JournalMeta, KvPair, OutboxMessage, PartitionDurability, Promise,
+            ResponseResult, RestateVersion, SequenceNumber, ServiceId, ServiceInvocation,
+            ServiceInvocationResponseSink, Source, SpanContext, SpanRelation, StateMutation,
+            SubmitNotificationSink, Timer, VirtualObjectStatus, enriched_entry_header, entry,
+            entry_result, inbox_entry, invocation_resolution_result, invocation_status_v2,
+            invocation_target, journal_entry, outbox_message, promise, response_result, source,
+            span_relation, submit_notification_sink, timer, virtual_object_status,
         };
         use crate::invocation_status_table::{
             PreFlightInvocationArgument, PreFlightInvocationInput, PreFlightInvocationJournal,
@@ -151,14 +152,14 @@ pub mod v1 {
                 Ok(
                     match value
                         .status
-                        .ok_or(ConversionError::missing_field("status"))?
+                        .ok_or_else(|| ConversionError::missing_field("status"))?
                     {
                         virtual_object_status::Status::Locked(locked) => {
                             crate::service_status_table::VirtualObjectStatus::Locked(
                                 restate_types::identifiers::InvocationId::try_from(
-                                    locked
-                                        .invocation_id
-                                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                    locked.invocation_id.ok_or_else(|| {
+                                        ConversionError::missing_field("invocation_id")
+                                    })?,
                                 )?,
                             )
                         }
@@ -224,6 +225,7 @@ pub mod v1 {
                     service_key: value.service_key.map(Into::into),
                     handler_name: value.service_handler.into(),
                     idempotency_key: value.idempotency_key.into(),
+                    scope: value.scope.map(|s| s.to_string()),
                 }
             }
         }
@@ -232,11 +234,17 @@ pub mod v1 {
             type Error = ConversionError;
 
             fn try_from(value: IdempotencyId) -> Result<Self, ConversionError> {
+                let scope = value
+                    .scope
+                    .map(|scope| Scope::try_new(&scope))
+                    .transpose()
+                    .map_err(ConversionError::invalid_data)?;
                 Ok(restate_types::identifiers::IdempotencyId::new(
                     value.service_name.into(),
                     value.service_key.map(Into::into),
                     value.handler_name.into(),
                     value.idempotency_key.into(),
+                    scope,
                 ))
             }
         }
@@ -296,7 +304,7 @@ pub mod v1 {
                 Ok(
                     match value
                         .result
-                        .ok_or(ConversionError::missing_field("result"))?
+                        .ok_or_else(|| ConversionError::missing_field("result"))?
                     {
                         entry_result::Result::Value(s) => {
                             restate_types::journal::EntryResult::Success(s)
@@ -358,7 +366,7 @@ pub mod v1 {
                 Ok(
                     match value
                         .result
-                        .ok_or(ConversionError::missing_field("result"))?
+                        .ok_or_else(|| ConversionError::missing_field("result"))?
                     {
                         entry_result::Result::Value(s) => {
                             crate::promise_table::PromiseResult::Success(s)
@@ -380,7 +388,7 @@ pub mod v1 {
         // Little macro to try conversion or fail
         macro_rules! expect_or_fail {
             ($field:ident) => {
-                $field.ok_or(ConversionError::missing_field(stringify!($field)))
+                $field.ok_or_else(|| ConversionError::missing_field(stringify!($field)))
             };
         }
         pub(super) use expect_or_fail;
@@ -442,7 +450,7 @@ pub mod v1 {
                             restate_types::invocation::ServiceInvocationResponseSink,
                         >::try_from(s)
                             .transpose()
-                            .ok_or(ConversionError::missing_field("response_sink"))?
+                            .ok_or_else(|| ConversionError::missing_field("response_sink"))?
                     })
                     .collect::<Result<HashSet<_>, _>>()?;
                 let headers = headers
@@ -1393,7 +1401,7 @@ pub mod v1 {
                     restate_types::invocation::ServiceInvocationSpanContext::try_from(
                         value
                             .span_context
-                            .ok_or(ConversionError::missing_field("span_context"))?,
+                            .ok_or_else(|| ConversionError::missing_field("span_context"))?,
                     )?;
                 Ok(crate::invocation_status_table::JournalMetadata {
                     length,
@@ -1424,7 +1432,7 @@ pub mod v1 {
             fn try_from(value: Source) -> Result<Self, ConversionError> {
                 let source = match value
                     .source
-                    .ok_or(ConversionError::missing_field("source"))?
+                    .ok_or_else(|| ConversionError::missing_field("source"))?
                 {
                     source::Source::Ingress(ingress) => restate_types::invocation::Source::Ingress(
                         PartitionProcessorRpcRequestId::from_slice(&ingress.rpc_id)
@@ -1443,20 +1451,20 @@ pub mod v1 {
                         restate_types::identifiers::InvocationId::try_from(
                             service
                                 .invocation_id
-                                .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                .ok_or_else(|| ConversionError::missing_field("invocation_id"))?,
                         )?,
                         restate_types::invocation::InvocationTarget::try_from(
-                            service
-                                .invocation_target
-                                .ok_or(ConversionError::missing_field("invocation_target"))?,
+                            service.invocation_target.ok_or_else(|| {
+                                ConversionError::missing_field("invocation_target")
+                            })?,
                         )?,
                     ),
                     source::Source::RestartAsNew(service) => {
                         restate_types::invocation::Source::RestartAsNew(
                             restate_types::identifiers::InvocationId::try_from(
-                                service
-                                    .invocation_id
-                                    .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                service.invocation_id.ok_or_else(|| {
+                                    ConversionError::missing_field("invocation_id")
+                                })?,
                             )?,
                         )
                     }
@@ -1540,18 +1548,21 @@ pub mod v1 {
 
             fn try_from(value: InboxEntry) -> Result<Self, ConversionError> {
                 Ok(
-                    match value.entry.ok_or(ConversionError::missing_field("entry"))? {
+                    match value
+                        .entry
+                        .ok_or_else(|| ConversionError::missing_field("entry"))?
+                    {
                         inbox_entry::Entry::Invocation(invocation) => {
                             crate::inbox_table::InboxEntry::Invocation(
                                 restate_types::identifiers::ServiceId::try_from(
-                                    invocation
-                                        .service_id
-                                        .ok_or(ConversionError::missing_field("service_id"))?,
+                                    invocation.service_id.ok_or_else(|| {
+                                        ConversionError::missing_field("service_id")
+                                    })?,
                                 )?,
                                 restate_types::identifiers::InvocationId::try_from(
-                                    invocation
-                                        .invocation_id
-                                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                    invocation.invocation_id.ok_or_else(|| {
+                                        ConversionError::missing_field("invocation_id")
+                                    })?,
                                 )?,
                             )
                         }
@@ -1609,25 +1620,28 @@ pub mod v1 {
                 } = value;
 
                 let invocation_id = restate_types::identifiers::InvocationId::try_from(
-                    invocation_id.ok_or(ConversionError::missing_field("invocation_id"))?,
+                    invocation_id.ok_or_else(|| ConversionError::missing_field("invocation_id"))?,
                 )?;
 
                 let invocation_target = restate_types::invocation::InvocationTarget::try_from(
-                    invocation_target.ok_or(ConversionError::missing_field("invocation_target"))?,
+                    invocation_target
+                        .ok_or_else(|| ConversionError::missing_field("invocation_target"))?,
                 )?;
 
                 let span_context =
                     restate_types::invocation::ServiceInvocationSpanContext::try_from(
-                        span_context.ok_or(ConversionError::missing_field("span_context"))?,
+                        span_context
+                            .ok_or_else(|| ConversionError::missing_field("span_context"))?,
                     )?;
 
-                let response_sink =
-                    Option::<restate_types::invocation::ServiceInvocationResponseSink>::try_from(
-                        response_sink.ok_or(ConversionError::missing_field("response_sink"))?,
-                    )?;
+                let response_sink = Option::<
+                    restate_types::invocation::ServiceInvocationResponseSink,
+                >::try_from(
+                    response_sink.ok_or_else(|| ConversionError::missing_field("response_sink"))?,
+                )?;
 
                 let source = restate_types::invocation::Source::try_from(
-                    source.ok_or(ConversionError::missing_field("source"))?,
+                    source.ok_or_else(|| ConversionError::missing_field("source"))?,
                 )?;
 
                 let headers = headers
@@ -1716,7 +1730,7 @@ pub mod v1 {
         impl From<&restate_types::invocation::ServiceInvocation> for ServiceInvocation {
             fn from(value: &restate_types::invocation::ServiceInvocation) -> Self {
                 let invocation_target = InvocationTarget::from(&value.invocation_target);
-                let span_context = SpanContext::from(&value.span_context);
+                let span_context = value.span_context.clone().into();
                 let response_sink =
                     ServiceInvocationResponseSink::from(value.response_sink.as_ref());
                 let source = Source::from(&value.source);
@@ -1747,7 +1761,7 @@ pub mod v1 {
             fn try_from(value: SubmitNotificationSink) -> Result<Self, ConversionError> {
                 let notification_sink = match value
                     .notification_sink
-                    .ok_or(ConversionError::missing_field("notification_sink"))?
+                    .ok_or_else(|| ConversionError::missing_field("notification_sink"))?
                 {
                     submit_notification_sink::NotificationSink::Ingress(
                         submit_notification_sink::Ingress { request_id },
@@ -1789,7 +1803,7 @@ pub mod v1 {
                 let service_id = restate_types::identifiers::ServiceId::try_from(
                     state_mutation
                         .service_id
-                        .ok_or(ConversionError::missing_field("service_id"))?,
+                        .ok_or_else(|| ConversionError::missing_field("service_id"))?,
                 )?;
                 let state = state_mutation
                     .kv_pairs
@@ -1830,10 +1844,8 @@ pub mod v1 {
                     ByteString::try_from(value.name).map_err(ConversionError::invalid_data)?;
                 let handler =
                     ByteString::try_from(value.handler).map_err(ConversionError::invalid_data)?;
-                let scope = if let Some(scope) = value.scope
-                    && !scope.is_empty()
-                {
-                    Some(Scope::new(&scope))
+                let scope = if let Some(ref scope) = value.scope {
+                    Some(Scope::try_new(scope).map_err(ConversionError::invalid_data)?)
                 } else {
                     None
                 };
@@ -2017,8 +2029,15 @@ pub mod v1 {
             type Error = ConversionError;
 
             fn try_from(service_id: ServiceId) -> Result<Self, ConversionError> {
+                // Safety: In principle, data is meant to be validated _before_ they
+                // are written to storage.
+                // RestrictedValue. Therefore, we validate it here.
+                let scope = service_id
+                    .scope
+                    .as_ref()
+                    .map(|scope| unsafe { Scope::new_unchecked(scope) });
                 Ok(restate_types::identifiers::ServiceId::new(
-                    None,
+                    scope,
                     ByteString::try_from(service_id.service_name)
                         .map_err(ConversionError::invalid_data)?,
                     ByteString::try_from(service_id.service_key)
@@ -2032,6 +2051,7 @@ pub mod v1 {
                 ServiceId {
                     service_key: service_id.key.into_bytes(),
                     service_name: service_id.service_name.into_bytes(),
+                    scope: service_id.scope.map(|s| s.to_string()),
                 }
             }
         }
@@ -2090,8 +2110,7 @@ pub mod v1 {
                 let trace_id = Bytes::copy_from_slice(&span_context.trace_id().to_bytes());
                 let is_remote = span_context.is_remote();
                 let trace_state = span_context.into_trace_state().into_header();
-                let span_relation =
-                    span_cause.map(|span_relation| SpanRelation::from(span_relation.clone()));
+                let span_relation = span_cause.map(SpanRelation::from);
 
                 SpanContext {
                     trace_state,
@@ -2131,7 +2150,10 @@ pub mod v1 {
             type Error = ConversionError;
 
             fn try_from(value: SpanRelation) -> Result<Self, ConversionError> {
-                match value.kind.ok_or(ConversionError::missing_field("kind"))? {
+                match value
+                    .kind
+                    .ok_or_else(|| ConversionError::missing_field("kind"))?
+                {
                     span_relation::Kind::Parent(span_relation::Parent { span_id }) => {
                         let span_id =
                             opentelemetry::trace::SpanId::from_bytes(span_id.to_be_bytes());
@@ -2188,7 +2210,7 @@ pub mod v1 {
             fn try_from(value: ServiceInvocationResponseSink) -> Result<Self, ConversionError> {
                 let response_sink = match value
                     .response_sink
-                    .ok_or(ConversionError::missing_field("response_sink"))?
+                    .ok_or_else(|| ConversionError::missing_field("response_sink"))?
                 {
                     ResponseSink::PartitionProcessor(partition_processor) => {
                         Some(
@@ -2314,7 +2336,7 @@ pub mod v1 {
             fn try_from(value: JournalEntry) -> Result<Self, ConversionError> {
                 let journal_entry = match value
                     .kind
-                    .ok_or(ConversionError::missing_field("kind"))?
+                    .ok_or_else(|| ConversionError::missing_field("kind"))?
                 {
                     Kind::Entry(journal_entry) => crate::journal_table::JournalEntry::Entry(
                         restate_types::journal::enriched::EnrichedRawEntry::try_from(
@@ -2368,7 +2390,7 @@ pub mod v1 {
                 let journal_entry::Entry { header, raw_entry } = value;
 
                 let header = restate_types::journal::enriched::EnrichedEntryHeader::try_from(
-                    header.ok_or(ConversionError::missing_field("header"))?,
+                    header.ok_or_else(|| ConversionError::missing_field("header"))?,
                 )?;
 
                 Ok(restate_types::journal::enriched::EnrichedRawEntry::new(
@@ -2393,7 +2415,7 @@ pub mod v1 {
             fn try_from(value: CompletionResult) -> Result<Self, ConversionError> {
                 let result = match value
                     .result
-                    .ok_or(ConversionError::missing_field("result"))?
+                    .ok_or_else(|| ConversionError::missing_field("result"))?
                 {
                     completion_result::Result::Empty(_) => {
                         restate_types::journal::CompletionResult::Empty
@@ -2449,7 +2471,7 @@ pub mod v1 {
 
                 let enriched_header = match value
                     .kind
-                    .ok_or(ConversionError::missing_field("kind"))?
+                    .ok_or_else(|| ConversionError::missing_field("kind"))?
                 {
                     enriched_entry_header::Kind::Input(_) => {
                         restate_types::journal::enriched::EnrichedEntryHeader::Input {}
@@ -2500,9 +2522,9 @@ pub mod v1 {
                         let enrichment_result = Option::<
                             restate_types::journal::enriched::CallEnrichmentResult,
                         >::try_from(
-                            invoke
-                                .resolution_result
-                                .ok_or(ConversionError::missing_field("resolution_result"))?,
+                            invoke.resolution_result.ok_or_else(|| {
+                                ConversionError::missing_field("resolution_result")
+                            })?,
                         )?;
 
                         restate_types::journal::enriched::EnrichedEntryHeader::Call {
@@ -2513,9 +2535,9 @@ pub mod v1 {
                     enriched_entry_header::Kind::BackgroundCall(background_call) => {
                         let enrichment_result =
                             restate_types::journal::enriched::CallEnrichmentResult::try_from(
-                                background_call
-                                    .resolution_result
-                                    .ok_or(ConversionError::missing_field("resolution_result"))?,
+                                background_call.resolution_result.ok_or_else(|| {
+                                    ConversionError::missing_field("resolution_result")
+                                })?,
                             )?;
 
                         restate_types::journal::enriched::EnrichedEntryHeader::OneWayCall {
@@ -2534,8 +2556,9 @@ pub mod v1 {
                         restate_types::journal::enriched::EnrichedEntryHeader::CompleteAwakeable {
                             enrichment_result: AwakeableEnrichmentResult {
                                 invocation_id: restate_types::identifiers::InvocationId::try_from(
-                                    invocation_id
-                                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                    invocation_id.ok_or_else(|| {
+                                        ConversionError::missing_field("invocation_id")
+                                    })?,
                                 )
                                 .map_err(ConversionError::invalid_data)?,
                                 entry_index,
@@ -2688,28 +2711,28 @@ pub mod v1 {
             fn try_from(value: InvocationResolutionResult) -> Result<Self, ConversionError> {
                 let result = match value
                     .result
-                    .ok_or(ConversionError::missing_field("result"))?
+                    .ok_or_else(|| ConversionError::missing_field("result"))?
                 {
                     invocation_resolution_result::Result::None(_) => None,
                     invocation_resolution_result::Result::Success(success) => {
                         let invocation_id = restate_types::identifiers::InvocationId::try_from(
                             success
                                 .invocation_id
-                                .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                .ok_or_else(|| ConversionError::missing_field("invocation_id"))?,
                         )?;
 
                         let invocation_target =
                             restate_types::invocation::InvocationTarget::try_from(
-                                success
-                                    .invocation_target
-                                    .ok_or(ConversionError::missing_field("invocation_target"))?,
+                                success.invocation_target.ok_or_else(|| {
+                                    ConversionError::missing_field("invocation_target")
+                                })?,
                             )?;
 
                         let span_context =
                             restate_types::invocation::ServiceInvocationSpanContext::try_from(
-                                success
-                                    .span_context
-                                    .ok_or(ConversionError::missing_field("span_context"))?,
+                                success.span_context.ok_or_else(|| {
+                                    ConversionError::missing_field("span_context")
+                                })?,
                             )?;
 
                         let completion_retention_time = Some(std::time::Duration::try_from(
@@ -2771,19 +2794,19 @@ pub mod v1 {
                 let invocation_id = restate_types::identifiers::InvocationId::try_from(
                     value
                         .invocation_id
-                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                        .ok_or_else(|| ConversionError::missing_field("invocation_id"))?,
                 )?;
 
                 let invocation_target = restate_types::invocation::InvocationTarget::try_from(
                     value
                         .invocation_target
-                        .ok_or(ConversionError::missing_field("invocation_target"))?,
+                        .ok_or_else(|| ConversionError::missing_field("invocation_target"))?,
                 )?;
                 let span_context =
                     restate_types::invocation::ServiceInvocationSpanContext::try_from(
                         value
                             .span_context
-                            .ok_or(ConversionError::missing_field("span_context"))?,
+                            .ok_or_else(|| ConversionError::missing_field("span_context"))?,
                     )?;
 
                 let completion_retention_time = Some(std::time::Duration::try_from(
@@ -2821,19 +2844,19 @@ pub mod v1 {
                 let invocation_id = restate_types::identifiers::InvocationId::try_from(
                     value
                         .invocation_id
-                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                        .ok_or_else(|| ConversionError::missing_field("invocation_id"))?,
                 )?;
 
                 let invocation_target = restate_types::invocation::InvocationTarget::try_from(
                     value
                         .invocation_target
-                        .ok_or(ConversionError::missing_field("invocation_target"))?,
+                        .ok_or_else(|| ConversionError::missing_field("invocation_target"))?,
                 )?;
                 let span_context =
                     restate_types::invocation::ServiceInvocationSpanContext::try_from(
                         value
                             .span_context
-                            .ok_or(ConversionError::missing_field("span_context"))?,
+                            .ok_or_else(|| ConversionError::missing_field("span_context"))?,
                     )?;
 
                 let completion_retention_duration = std::time::Duration::try_from(
@@ -3132,7 +3155,7 @@ pub mod v1 {
                         journal_v2::EntryType::Notification(notification_ty) => {
                             let notification_id = match value
                                 .notification_id
-                                .ok_or(ConversionError::missing_field("notification_id"))?
+                                .ok_or_else(|| ConversionError::missing_field("notification_id"))?
                             {
                                 entry::NotificationId::CompletionIdx(c) => {
                                     journal_v2::NotificationId::CompletionId(c)
@@ -3174,11 +3197,11 @@ pub mod v1 {
                                 .with_command_specific_metadata(
                                 journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(Box::new(
                                     journal_v2::raw::CallOrSendMetadata::try_from(
-                                        value.call_or_send_command_metadata.ok_or(
+                                        value.call_or_send_command_metadata.ok_or_else(|| {
                                             ConversionError::missing_field(
                                                 "call_command_journal_entry_additional_metadata",
-                                            ),
-                                        )?,
+                                            )
+                                        })?,
                                     )?,
                                 )),
                             ),
@@ -3299,7 +3322,7 @@ pub mod v1 {
                 Ok(
                     Self {
                         invocation_query: match query
-                            .ok_or(ConversionError::missing_field("query"))?
+                            .ok_or_else(|| ConversionError::missing_field("query"))?
                         {
                             outbox_message::attach_invocation_request::Query::InvocationId(id) => {
                                 restate_types::invocation::InvocationQuery::Invocation(
@@ -3319,10 +3342,11 @@ pub mod v1 {
                         response_sink: Option::<
                             restate_types::invocation::ServiceInvocationResponseSink,
                         >::try_from(
-                            response_sink.ok_or(ConversionError::missing_field("response_sink"))?,
+                            response_sink
+                                .ok_or_else(|| ConversionError::missing_field("response_sink"))?,
                         )
                         .transpose()
-                        .ok_or(ConversionError::missing_field("response_sink"))??,
+                        .ok_or_else(|| ConversionError::missing_field("response_sink"))??,
                     },
                 )
             }
@@ -3359,12 +3383,14 @@ pub mod v1 {
                 Ok(Self {
                     target: restate_types::invocation::JournalCompletionTarget {
                         caller_id: restate_types::identifiers::InvocationId::try_from(
-                            invocation_id.ok_or(ConversionError::missing_field("invocation_id"))?,
+                            invocation_id
+                                .ok_or_else(|| ConversionError::missing_field("invocation_id"))?,
                         )?,
                         caller_completion_id: entry_index,
                     },
                     result: restate_types::invocation::ResponseResult::try_from(
-                        response_result.ok_or(ConversionError::missing_field("response_result"))?,
+                        response_result
+                            .ok_or_else(|| ConversionError::missing_field("response_result"))?,
                     )?,
                 })
             }
@@ -3461,14 +3487,14 @@ pub mod v1 {
             fn try_from(value: OutboxMessage) -> Result<Self, ConversionError> {
                 let result = match value
                     .outbox_message
-                    .ok_or(ConversionError::missing_field("outbox_message"))?
+                    .ok_or_else(|| ConversionError::missing_field("outbox_message"))?
                 {
                     outbox_message::OutboxMessage::ServiceInvocationCase(service_invocation) => {
                         crate::outbox_table::OutboxMessage::ServiceInvocation(Box::new(
                             restate_types::invocation::ServiceInvocation::try_from(
-                                service_invocation
-                                    .service_invocation
-                                    .ok_or(ConversionError::missing_field("service_invocation"))?,
+                                service_invocation.service_invocation.ok_or_else(|| {
+                                    ConversionError::missing_field("service_invocation")
+                                })?,
                             )?,
                         ))
                     }
@@ -3481,9 +3507,9 @@ pub mod v1 {
                         crate::outbox_table::OutboxMessage::InvocationTermination(
                             InvocationTermination {
                                 invocation_id: restate_types::identifiers::InvocationId::try_from(
-                                    outbox_kill
-                                        .invocation_id
-                                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                    outbox_kill.invocation_id.ok_or_else(|| {
+                                        ConversionError::missing_field("invocation_id")
+                                    })?,
                                 )?,
                                 flavor: TerminationFlavor::Kill,
                                 response_sink: None,
@@ -3494,9 +3520,9 @@ pub mod v1 {
                         crate::outbox_table::OutboxMessage::InvocationTermination(
                             InvocationTermination {
                                 invocation_id: restate_types::identifiers::InvocationId::try_from(
-                                    outbox_cancel
-                                        .invocation_id
-                                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                    outbox_cancel.invocation_id.ok_or_else(|| {
+                                        ConversionError::missing_field("invocation_id")
+                                    })?,
                                 )?,
                                 flavor: TerminationFlavor::Cancel,
                                 response_sink: None,
@@ -3588,7 +3614,7 @@ pub mod v1 {
             fn try_from(value: ResponseResult) -> Result<Self, ConversionError> {
                 let result = match value
                     .response_result
-                    .ok_or(ConversionError::missing_field("response_result"))?
+                    .ok_or_else(|| ConversionError::missing_field("response_result"))?
                 {
                     response_result::ResponseResult::ResponseSuccess(success) => {
                         restate_types::invocation::ResponseResult::Success(success.value)
@@ -3649,12 +3675,16 @@ pub mod v1 {
 
             fn try_from(value: Timer) -> Result<Self, ConversionError> {
                 Ok(
-                    match value.value.ok_or(ConversionError::missing_field("value"))? {
+                    match value
+                        .value
+                        .ok_or_else(|| ConversionError::missing_field("value"))?
+                    {
                         timer::Value::CompleteSleepEntry(cse) => {
                             crate::timer_table::Timer::CompleteJournalEntry(
                                 restate_types::identifiers::InvocationId::try_from(
-                                    cse.invocation_id
-                                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                    cse.invocation_id.ok_or_else(|| {
+                                        ConversionError::missing_field("invocation_id")
+                                    })?,
                                 )?,
                                 cse.entry_index,
                             )
@@ -3668,9 +3698,9 @@ pub mod v1 {
                         timer::Value::CleanInvocationStatus(clean_invocation_status) => {
                             crate::timer_table::Timer::CleanInvocationStatus(
                                 restate_types::identifiers::InvocationId::try_from(
-                                    clean_invocation_status
-                                        .invocation_id
-                                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                    clean_invocation_status.invocation_id.ok_or_else(|| {
+                                        ConversionError::missing_field("invocation_id")
+                                    })?,
                                 )?,
                             )
                         }
@@ -3732,7 +3762,7 @@ pub mod v1 {
                 Ok(
                     match value
                         .variant
-                        .ok_or(ConversionError::missing_field("variant"))?
+                        .ok_or_else(|| ConversionError::missing_field("variant"))?
                     {
                         Variant::SequenceNumber(sn) => {
                             crate::deduplication_table::DedupSequenceNumber::Sn(sn)
@@ -3784,29 +3814,6 @@ pub mod v1 {
             }
         }
 
-        impl From<crate::idempotency_table::IdempotencyMetadata> for IdempotencyMetadata {
-            fn from(value: crate::idempotency_table::IdempotencyMetadata) -> Self {
-                IdempotencyMetadata {
-                    invocation_id: Some(InvocationId::from(value.invocation_id)),
-                }
-            }
-        }
-
-        impl TryFrom<IdempotencyMetadata> for crate::idempotency_table::IdempotencyMetadata {
-            type Error = ConversionError;
-
-            fn try_from(value: IdempotencyMetadata) -> Result<Self, ConversionError> {
-                Ok(crate::idempotency_table::IdempotencyMetadata {
-                    invocation_id: restate_types::identifiers::InvocationId::try_from(
-                        value
-                            .invocation_id
-                            .ok_or(ConversionError::missing_field("invocation_id"))?,
-                    )
-                    .map_err(ConversionError::invalid_data)?,
-                })
-            }
-        }
-
         impl From<crate::promise_table::Promise> for Promise {
             fn from(value: crate::promise_table::Promise) -> Self {
                 match value.state {
@@ -3834,11 +3841,14 @@ pub mod v1 {
 
             fn try_from(value: Promise) -> Result<Self, ConversionError> {
                 Ok(crate::promise_table::Promise {
-                    state: match value.state.ok_or(ConversionError::missing_field("state"))? {
+                    state: match value
+                        .state
+                        .ok_or_else(|| ConversionError::missing_field("state"))?
+                    {
                         promise::State::CompletedState(s) => {
                             crate::promise_table::PromiseState::Completed(
                                 s.result
-                                    .ok_or(ConversionError::missing_field("result"))?
+                                    .ok_or_else(|| ConversionError::missing_field("result"))?
                                     .try_into()?,
                             )
                         }
@@ -4298,7 +4308,7 @@ pub mod v1 {
 
                 source
                     .source
-                    .ok_or(ConversionError::missing_field("source"))
+                    .ok_or_else(|| ConversionError::missing_field("source"))
             }
 
             pub fn trace_id(&self) -> Result<opentelemetry::trace::TraceId, ConversionError> {
@@ -4416,14 +4426,14 @@ pub mod v1 {
                 self.invocation_target
                     .as_ref()
                     .map(InvocationTargetLazy::from)
-                    .ok_or(ConversionError::missing_field("invocation_target"))
+                    .ok_or_else(|| ConversionError::missing_field("invocation_target"))
             }
 
             pub fn invocation_id(&self) -> std::result::Result<InvocationId, ConversionError> {
                 InvocationId::try_from(
                     self.invocation_id
                         .as_ref()
-                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                        .ok_or_else(|| ConversionError::missing_field("invocation_id"))?,
                 )
                 .map_err(|_| ConversionError::invalid_data_static("invocation_id"))
             }
@@ -4441,7 +4451,7 @@ pub mod v1 {
                 InvocationId::try_from(
                     self.invocation_id
                         .as_ref()
-                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                        .ok_or_else(|| ConversionError::missing_field("invocation_id"))?,
                 )
                 .map_err(|_| ConversionError::invalid_data_static("invocation_id"))
             }
@@ -4457,6 +4467,8 @@ pub mod v1 {
             pub handler: &'a [u8],
             // tag 4
             pub key: &'a [u8],
+            // tag 5
+            pub scope: Option<&'a str>,
         }
 
         impl<'a> InvocationTargetLazy<'a> {
@@ -4504,6 +4516,20 @@ pub mod v1 {
                                     error.push(STRUCT_NAME, "key");
                                     error
                                 })?
+                        }
+                        5u32 => {
+                            let mut bytes: &'a [u8] = &[];
+                            merge_bytes_zerocopy(wire_type, &mut bytes, &mut buf, ctx.clone())
+                                .map_err(|mut error| {
+                                    error.push(STRUCT_NAME, "scope");
+                                    error
+                                })?;
+                            self.scope = Some(str::from_utf8(bytes).map_err(|_| {
+                                #[allow(deprecated)]
+                                let mut error = prost::DecodeError::new("scope is not valid UTF-8");
+                                error.push(STRUCT_NAME, "scope");
+                                error
+                            })?);
                         }
                         _ => {
                             skip_field(wire_type, tag, &mut buf, ctx.clone())?;
@@ -4565,6 +4591,10 @@ pub mod v1 {
                 let handler_name = self.handler_name()?;
                 Ok(TargetFormatter(service_name, key, handler_name))
             }
+
+            pub fn scope(&self) -> Option<&str> {
+                self.scope
+            }
         }
 
         impl<'a> From<&'a InvocationTarget> for InvocationTargetLazy<'a> {
@@ -4574,6 +4604,7 @@ pub mod v1 {
                     name: &value.name,
                     handler: &value.handler,
                     key: &value.key,
+                    scope: value.scope.as_deref(),
                 }
             }
         }

@@ -623,7 +623,8 @@ async fn attach_with_idempotency_id_to_unkeyed_service() {
                     "greeter.Greeter".into(),
                     None,
                     "greet".into(),
-                    "myid".into()
+                    "myid".into(),
+                    None,
                 )),
                 actual_invocation_query
             );
@@ -681,7 +682,8 @@ async fn attach_with_idempotency_id_to_keyed_service() {
                     "greeter.Greeter".into(),
                     Some("mygreet".into()),
                     "greet".into(),
-                    "myid".into()
+                    "myid".into(),
+                    None,
                 )),
                 actual_invocation_query
             );
@@ -1157,4 +1159,236 @@ where
     <B as http_body::Body>::Data: Send + Sync + 'static,
 {
     handle_with_schemas_and_dispatcher(req, mock_schemas(), mock_request_dispatcher).await
+}
+
+// -- /restate attach / output / lookup ------------------------------------
+
+#[restate_core::test]
+#[traced_test]
+async fn attach_with_id_path() {
+    let invocation_id = InvocationId::mock_random();
+
+    let req = hyper::Request::builder()
+        .uri(format!("http://localhost/restate/attach/{invocation_id}"))
+        .method(Method::GET)
+        .body(Empty::<Bytes>::new())
+        .unwrap();
+
+    let mut mock_dispatcher = MockRequestDispatcher::default();
+    mock_dispatcher
+        .expect_attach_invocation()
+        .return_once(move |actual_invocation_query| {
+            assert_eq!(
+                InvocationQuery::Invocation(invocation_id),
+                actual_invocation_query
+            );
+
+            ready(Ok(AttachInvocationResponse::Ready(InvocationOutput {
+                request_id: Default::default(),
+                invocation_id: Some(invocation_id),
+                completion_expiry_time: None,
+                response: InvocationOutputResponse::Success(
+                    InvocationTarget::service("greeter.Greeter", "greet"),
+                    serde_json::to_vec(&GreetingResponse {
+                        greeting: "Igal".to_string(),
+                    })
+                    .unwrap()
+                    .into(),
+                ),
+            })))
+            .boxed()
+        });
+
+    let response = handle(req, mock_dispatcher).await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[restate_core::test]
+#[traced_test]
+async fn output_with_id_path() {
+    let invocation_id = InvocationId::mock_random();
+
+    let req = hyper::Request::builder()
+        .uri(format!("http://localhost/restate/output/{invocation_id}"))
+        .method(Method::GET)
+        .body(Empty::<Bytes>::new())
+        .unwrap();
+
+    let mut mock_dispatcher = MockRequestDispatcher::default();
+    mock_dispatcher
+        .expect_get_invocation_output()
+        .return_once(move |actual_invocation_query| {
+            assert_eq!(
+                InvocationQuery::Invocation(invocation_id),
+                actual_invocation_query
+            );
+
+            ready(Ok(GetInvocationOutputResponse::Ready(InvocationOutput {
+                request_id: Default::default(),
+                invocation_id: Some(invocation_id),
+                completion_expiry_time: None,
+                response: InvocationOutputResponse::Success(
+                    InvocationTarget::service("greeter.Greeter", "greet"),
+                    serde_json::to_vec(&GreetingResponse {
+                        greeting: "Igal".to_string(),
+                    })
+                    .unwrap()
+                    .into(),
+                ),
+            })))
+            .boxed()
+        });
+
+    let response = handle(req, mock_dispatcher).await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[restate_core::test]
+#[traced_test]
+async fn lookup_idempotency_unkeyed_returns_deterministic_id() {
+    let body = serde_json::json!({
+        "type": "idempotency",
+        "service": "greeter.Greeter",
+        "handler": "greet",
+        "idempotencyKey": "K1"
+    });
+    let req = hyper::Request::builder()
+        .uri("http://localhost/restate/lookup")
+        .method(Method::POST)
+        .header("content-type", "application/json")
+        .body(Full::new(Bytes::from(serde_json::to_vec(&body).unwrap())))
+        .unwrap();
+
+    let response = handle(req, MockRequestDispatcher::default()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LookupReply {
+        invocation_id: InvocationId,
+    }
+    let lookup_reply: LookupReply = serde_json::from_slice(&response_bytes).unwrap();
+
+    let expected = InvocationId::generate(
+        &InvocationTarget::service("greeter.Greeter", "greet"),
+        Some("K1"),
+    );
+    assert_eq!(lookup_reply.invocation_id, expected);
+}
+
+#[restate_core::test]
+#[traced_test]
+async fn attach_by_target_with_idempotency() {
+    let invocation_id = InvocationId::mock_random();
+    let body = serde_json::json!({
+        "type": "idempotency",
+        "service": "greeter.Greeter",
+        "handler": "greet",
+        "idempotencyKey": "K1"
+    });
+    let req = hyper::Request::builder()
+        .uri("http://localhost/restate/attach")
+        .method(Method::POST)
+        .header("content-type", "application/json")
+        .body(Full::new(Bytes::from(serde_json::to_vec(&body).unwrap())))
+        .unwrap();
+
+    let mut mock_dispatcher = MockRequestDispatcher::default();
+    mock_dispatcher
+        .expect_attach_invocation()
+        .return_once(move |actual_invocation_query| {
+            assert_eq!(
+                InvocationQuery::IdempotencyId(IdempotencyId::new(
+                    "greeter.Greeter".into(),
+                    None,
+                    "greet".into(),
+                    "K1".into(),
+                    None,
+                )),
+                actual_invocation_query
+            );
+
+            ready(Ok(AttachInvocationResponse::Ready(InvocationOutput {
+                request_id: Default::default(),
+                invocation_id: Some(invocation_id),
+                completion_expiry_time: None,
+                response: InvocationOutputResponse::Success(
+                    InvocationTarget::service("greeter.Greeter", "greet"),
+                    serde_json::to_vec(&GreetingResponse {
+                        greeting: "Igal".to_string(),
+                    })
+                    .unwrap()
+                    .into(),
+                ),
+            })))
+            .boxed()
+        });
+
+    let response = handle(req, mock_dispatcher).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let response_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let response_value: GreetingResponse = serde_json::from_slice(&response_bytes).unwrap();
+    assert_eq!(response_value.greeting, "Igal");
+}
+
+#[restate_core::test]
+#[traced_test]
+async fn output_by_target_with_workflow() {
+    let invocation_id = InvocationId::mock_random();
+    let body = serde_json::json!({
+        "type": "workflow",
+        "name": "MyWorkflow",
+        "key": "wf-1"
+    });
+    let req = hyper::Request::builder()
+        .uri("http://localhost/restate/output")
+        .method(Method::POST)
+        .header("content-type", "application/json")
+        .body(Full::new(Bytes::from(serde_json::to_vec(&body).unwrap())))
+        .unwrap();
+
+    let mock_schemas = MockSchemas::default().with_service_and_target(
+        "MyWorkflow",
+        "run",
+        InvocationTargetMetadata::mock(InvocationTargetType::Workflow(
+            WorkflowHandlerType::Workflow,
+        )),
+    );
+
+    let mut mock_dispatcher = MockRequestDispatcher::default();
+    mock_dispatcher
+        .expect_get_invocation_output()
+        .return_once(move |actual_invocation_query| {
+            assert_eq!(
+                InvocationQuery::Workflow(ServiceId::new(None, "MyWorkflow", "wf-1")),
+                actual_invocation_query
+            );
+
+            ready(Ok(GetInvocationOutputResponse::Ready(InvocationOutput {
+                request_id: Default::default(),
+                invocation_id: Some(invocation_id),
+                completion_expiry_time: None,
+                response: InvocationOutputResponse::Success(
+                    InvocationTarget::workflow(
+                        "MyWorkflow",
+                        "wf-1",
+                        "run",
+                        WorkflowHandlerType::Workflow,
+                    ),
+                    serde_json::to_vec(&GreetingResponse {
+                        greeting: "done".to_string(),
+                    })
+                    .unwrap()
+                    .into(),
+                ),
+            })))
+            .boxed()
+        });
+
+    let response = handle_with_schemas_and_dispatcher(req, mock_schemas, mock_dispatcher).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let response_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let response_value: GreetingResponse = serde_json::from_slice(&response_bytes).unwrap();
+    assert_eq!(response_value.greeting, "done");
 }

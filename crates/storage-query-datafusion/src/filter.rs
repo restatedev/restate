@@ -20,11 +20,15 @@ use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::split_conjunction;
 use datafusion::physical_expr_common::physical_expr::snapshot_physical_expr;
 use datafusion::physical_plan::PhysicalExpr;
-use datafusion::physical_plan::expressions::{BinaryExpr, Column, InListExpr, Literal};
+use datafusion::physical_plan::expressions::{BinaryExpr, Column, InListExpr, IsNullExpr, Literal};
+use strum::EnumCount;
 
+use restate_storage_api::vqueue_table::Stage;
 use restate_types::PartitionedResourceId;
 use restate_types::identifiers::partitioner::HashPartitioner;
-use restate_types::identifiers::{InvocationId, PartitionKey, ResourceId, WithPartitionKey};
+use restate_types::identifiers::{
+    InvocationId, PartitionKey, ResourceId, StateMutationId, WithPartitionKey,
+};
 use restate_types::sharding::KeyRange;
 
 use crate::partition_store_scanner::ScanLocalPartitionFilter;
@@ -86,14 +90,44 @@ impl FirstMatchingPartitionKeyExtractor {
     }
 
     pub fn with_service_key(self, column_name: impl Into<String>) -> Self {
-        let e = MatchingColumnExtractor::new(column_name, |value: &ScalarValue| {
+        self.append(Self::create_service_key_partition_key_extractor(
+            column_name,
+        ))
+    }
+
+    fn create_service_key_partition_key_extractor(
+        column_name: impl Into<String>,
+    ) -> MatchingColumnExtractor<fn(&ScalarValue) -> anyhow::Result<PartitionKey>> {
+        MatchingColumnExtractor::new(column_name, |value: &ScalarValue| {
             let value = value
                 .try_as_str()
                 .context("expected string service key")?
                 .context("unexpected null service key")?;
             Ok(HashPartitioner::compute_partition_key(value))
+        })
+    }
+
+    /// For tables sharded by `scope_column` when scoped and by `service_key_column` when
+    /// unscoped (i.e. `scope_column IS NULL`). Extracts a partition key from either:
+    /// - `scope = '...'` / `scope IN (...)` (sharded under `hash(scope)`), or
+    /// - `scope IS NULL AND service_key = '...'` / `IN (...)` (sharded under `hash(service_key)`).
+    pub fn with_scope_or_service_key(
+        self,
+        scope_column: impl Into<String>,
+        service_key_column: impl Into<String>,
+    ) -> Self {
+        let scope_column: String = scope_column.into();
+        let by_scope = MatchingColumnExtractor::new(scope_column.clone(), |value: &ScalarValue| {
+            let value = value
+                .try_as_str()
+                .context("expected scope")?
+                .context("null scopes cannot be used for partition-key matching")?;
+            Ok(HashPartitioner::compute_partition_key(value))
         });
-        self.append(e)
+        self.append(by_scope).append(WhenNullExtractor::new(
+            scope_column,
+            Self::create_service_key_partition_key_extractor(service_key_column),
+        ))
     }
 
     pub fn with_invocation_id(self, column_name: impl Into<String>) -> Self {
@@ -104,6 +138,26 @@ impl FirstMatchingPartitionKeyExtractor {
                 .context("unexpected null invocation id")?;
             let invocation_id = InvocationId::from_str(value).context("non valid invocation id")?;
             Ok(invocation_id.partition_key())
+        });
+        self.append(e)
+    }
+
+    pub fn with_vqueue_entry_id(self, column_name: impl Into<String>) -> Self {
+        let e = MatchingColumnExtractor::new(column_name, |value: &ScalarValue| {
+            let value = value
+                .try_as_str()
+                .context("expected string entry id")?
+                .context("unexpected null entry id")?;
+
+            if let Ok(invocation_id) = InvocationId::from_str(value) {
+                return Ok(invocation_id.partition_key());
+            }
+
+            if let Ok(state_mutation_id) = StateMutationId::from_str(value) {
+                return Ok(WithPartitionKey::partition_key(&state_mutation_id));
+            }
+
+            anyhow::bail!("non valid entry id")
         });
         self.append(e)
     }
@@ -185,6 +239,64 @@ where
     }
 }
 
+/// Gates an inner [`PartitionKeyExtractor`] on the presence of a top-level
+/// `<null_column_name> IS NULL` conjunct.
+///
+/// Used for tables that are sharded differently depending on whether a column is null
+/// (e.g. `state` and `sys_promise`: scoped rows live at `hash(scope)`, unscoped rows at
+/// `hash(service_key)`). When the user writes `... AND <null_column> IS NULL`, scoped
+/// rows are filtered out by the predicate anyway, so it's safe to narrow the scan
+/// using a key derived from another column.
+pub(crate) struct WhenNullExtractor<E> {
+    null_column_name: String,
+    inner: E,
+}
+
+impl<E> Debug for WhenNullExtractor<E> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!(
+            "WhenNullExtractor({:?})",
+            self.null_column_name
+        ))
+    }
+}
+
+impl<E> WhenNullExtractor<E> {
+    pub(crate) fn new(null_column_name: impl Into<String>, inner: E) -> Self {
+        Self {
+            null_column_name: null_column_name.into(),
+            inner,
+        }
+    }
+}
+
+impl<E> PartitionKeyExtractor for WhenNullExtractor<E>
+where
+    E: PartitionKeyExtractor,
+{
+    fn try_extract(
+        &self,
+        filters: &[Arc<dyn PhysicalExpr>],
+    ) -> anyhow::Result<Option<BTreeSet<PartitionKey>>> {
+        // Only accept a bare top-level `IsNullExpr` against a `Column`. An `IsNullExpr`
+        // nested in `Or`/`Not`/etc. does not count: e.g. `(scope IS NULL OR scope IS NOT NULL)`
+        // would otherwise spuriously gate the inner extractor open.
+        let has_null_check = filters.iter().any(|filter| {
+            filter
+                .as_any()
+                .downcast_ref::<IsNullExpr>()
+                .and_then(|is_null| is_null.arg().as_any().downcast_ref::<Column>())
+                .is_some_and(|column| column.name() == self.null_column_name)
+        });
+
+        if !has_null_check {
+            return Ok(None);
+        }
+
+        self.inner.try_extract(filters)
+    }
+}
+
 /// A normalized representation of predicates that compare a column to literal values.
 /// Handles `col = lit`, `col IN (lit, ...)`, and `col = lit OR col = lit ...` patterns.
 struct InList<'a> {
@@ -261,6 +373,81 @@ fn extract_column_literal<'a>(
 }
 
 #[derive(Debug, Clone)]
+pub struct VQueueFilter {
+    pub partition_keys: KeyRange,
+    pub stages: Option<BTreeSet<Stage>>,
+}
+
+impl ScanLocalPartitionFilter for VQueueFilter {
+    fn new(range: KeyRange, predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
+        let mut stages: Option<BTreeSet<Stage>> = None;
+
+        if let Some(predicate) = predicate
+            && let Ok(predicate) = snapshot_physical_expr(predicate)
+        {
+            for conjunct in split_conjunction(&predicate) {
+                let Some(conjunct_stages) = parse_vqueue_stages("stage", conjunct) else {
+                    continue;
+                };
+
+                stages = Some(match stages {
+                    Some(current) => current.intersection(&conjunct_stages).copied().collect(),
+                    None => conjunct_stages,
+                });
+            }
+        }
+
+        Self {
+            partition_keys: range,
+            stages,
+        }
+    }
+}
+
+fn parse_vqueue_stages(
+    column_name: &str,
+    predicate: &Arc<dyn PhysicalExpr>,
+) -> Option<BTreeSet<Stage>> {
+    // OR-chain recursion depth budget. Each `Or` node consumes one unit and the
+    // leaf check requires the remaining budget to be > 1, so an N-leaf chain
+    // needs depth >= N + 1. `Stage::COUNT` covers every variant (incl. `Unknown`)
+    // and the `+ 1` satisfies the leaf threshold.
+    let in_list = InList::parse(predicate, Stage::COUNT + 1)?;
+
+    if in_list.col.name() != column_name || in_list.negated {
+        return None;
+    }
+
+    let mut stages = BTreeSet::new();
+    for literal in in_list.list {
+        let Some(Some(stage_str)) = literal.try_as_str() else {
+            continue;
+        };
+
+        if let Some(stage) = parse_stage_literal(stage_str) {
+            stages.insert(stage);
+        }
+    }
+
+    if stages.is_empty() {
+        None
+    } else {
+        Some(stages)
+    }
+}
+
+fn parse_stage_literal(value: &str) -> Option<Stage> {
+    match value.to_ascii_lowercase().as_str() {
+        "inbox" => Some(Stage::Inbox),
+        "run" | "running" => Some(Stage::Running),
+        "suspended" => Some(Stage::Suspended),
+        "paused" => Some(Stage::Paused),
+        "finished" => Some(Stage::Finished),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct InvocationIdFilter {
     pub partition_keys: KeyRange,
     pub invocation_ids: Option<RangeInclusive<InvocationId>>,
@@ -323,14 +510,17 @@ mod tests {
 
     use datafusion::common::ScalarValue;
     use datafusion::physical_plan::PhysicalExpr;
-    use datafusion::physical_plan::expressions::{BinaryExpr, Column, InListExpr, Literal};
+    use datafusion::physical_plan::expressions::{
+        BinaryExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr, Literal,
+    };
 
-    use restate_types::identifiers::{InvocationId, ServiceId, WithPartitionKey};
+    use restate_storage_api::vqueue_table::Stage;
+    use restate_types::identifiers::{InvocationId, ServiceId, StateMutationId, WithPartitionKey};
     use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType};
     use restate_types::sharding::KeyRange;
 
     use crate::filter::{
-        FirstMatchingPartitionKeyExtractor, InvocationIdFilter, PartitionKeyExtractor,
+        FirstMatchingPartitionKeyExtractor, InvocationIdFilter, PartitionKeyExtractor, VQueueFilter,
     };
     use crate::partition_store_scanner::ScanLocalPartitionFilter;
 
@@ -340,6 +530,14 @@ mod tests {
 
     fn utf8_lit(value: impl Into<String>) -> Arc<dyn PhysicalExpr> {
         Arc::new(Literal::new(ScalarValue::LargeUtf8(Some(value.into()))))
+    }
+
+    fn is_null(name: &str) -> Arc<dyn PhysicalExpr> {
+        Arc::new(IsNullExpr::new(col(name)))
+    }
+
+    fn is_not_null(name: &str) -> Arc<dyn PhysicalExpr> {
+        Arc::new(IsNotNullExpr::new(col(name)))
     }
 
     fn eq(left: Arc<dyn PhysicalExpr>, right: Arc<dyn PhysicalExpr>) -> Arc<dyn PhysicalExpr> {
@@ -385,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn test_service_key() {
+    fn service_key() {
         let extractor =
             FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
 
@@ -402,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_service_keys() {
+    fn multiple_service_keys() {
         let extractor =
             FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
 
@@ -426,7 +624,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_service_keys_ored() {
+    fn multiple_service_keys_ored() {
         let extractor =
             FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
 
@@ -450,7 +648,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_service_keys_nested_or() {
+    fn multiple_service_keys_nested_or() {
         let extractor =
             FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
 
@@ -486,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_service_keys_too_deep_nesting() {
+    fn multiple_service_keys_too_deep_nesting() {
         let extractor =
             FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
 
@@ -510,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn test_invocation_id() {
+    fn invocation_id() {
         let extractor = FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id");
 
         let invocation_id = make_invocation_id("key-2");
@@ -526,7 +724,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_invocation_ids() {
+    fn multiple_invocation_ids() {
         let extractor = FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id");
 
         let invocation_id_1 = make_invocation_id("key-1");
@@ -552,7 +750,47 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_in_list() {
+    fn vqueue_entry_id_invocation_id() {
+        let extractor =
+            FirstMatchingPartitionKeyExtractor::default().with_vqueue_entry_id("head_entry_id");
+
+        let invocation_id = make_invocation_id("key-2");
+        let expected_key = invocation_id.partition_key();
+
+        let got_keys = extractor
+            .try_extract(&[eq(
+                col("head_entry_id"),
+                utf8_lit(invocation_id.to_string()),
+            )])
+            .expect("extract")
+            .expect("to find a value");
+
+        assert_eq!(1, got_keys.len());
+        assert_eq!(expected_key, got_keys.into_iter().next().unwrap());
+    }
+
+    #[test]
+    fn vqueue_entry_id_state_mutation_id() {
+        let extractor =
+            FirstMatchingPartitionKeyExtractor::default().with_vqueue_entry_id("head_entry_id");
+
+        let state_mutation_id = StateMutationId::generate(42);
+        let expected_key = state_mutation_id.partition_key();
+
+        let got_keys = extractor
+            .try_extract(&[eq(
+                col("head_entry_id"),
+                utf8_lit(state_mutation_id.to_string()),
+            )])
+            .expect("extract")
+            .expect("to find a value");
+
+        assert_eq!(1, got_keys.len());
+        assert_eq!(expected_key, got_keys.into_iter().next().unwrap());
+    }
+
+    #[test]
+    fn invalid_in_list() {
         let extractor = FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id");
 
         let invocation_id = make_invocation_id("key-1");
@@ -566,6 +804,105 @@ mod tests {
             .expect("extract");
 
         assert_eq!(None, got_keys);
+    }
+
+    fn scope_or_service_key_extractor() -> FirstMatchingPartitionKeyExtractor {
+        FirstMatchingPartitionKeyExtractor::default()
+            .with_scope_or_service_key("scope", "service_key")
+    }
+
+    #[test]
+    fn service_key_when_scope_is_null_extracts_partition_key() {
+        let expected = ServiceId::new(None, "svc", "k").partition_key();
+
+        let got = scope_or_service_key_extractor()
+            .try_extract(&[is_null("scope"), eq(col("service_key"), utf8_lit("k"))])
+            .expect("extract")
+            .expect("partition key");
+
+        assert_eq!(1, got.len());
+        assert_eq!(expected, got.into_iter().next().unwrap());
+    }
+
+    #[test]
+    fn service_key_in_list_when_scope_is_null() {
+        let expected_a = ServiceId::new(None, "svc", "a").partition_key();
+        let expected_b = ServiceId::new(None, "svc", "b").partition_key();
+
+        let got = scope_or_service_key_extractor()
+            .try_extract(&[
+                is_null("scope"),
+                in_list("service_key", vec![utf8_lit("a"), utf8_lit("b")]),
+            ])
+            .expect("extract")
+            .expect("partition keys");
+
+        assert_eq!(2, got.len());
+        assert!(got.contains(&expected_a));
+        assert!(got.contains(&expected_b));
+    }
+
+    #[test]
+    fn service_key_without_scope_is_null_returns_none() {
+        // Without the explicit `scope IS NULL` guard, the extractor cannot narrow because
+        // scoped rows for the same service_key live at hash(scope), not hash(service_key).
+        let got = scope_or_service_key_extractor()
+            .try_extract(&[eq(col("service_key"), utf8_lit("k"))])
+            .expect("extract");
+
+        assert_eq!(None, got);
+    }
+
+    #[test]
+    fn scope_is_null_alone_returns_none() {
+        let got = scope_or_service_key_extractor()
+            .try_extract(&[is_null("scope")])
+            .expect("extract");
+
+        assert_eq!(None, got);
+    }
+
+    #[test]
+    fn scope_is_not_null_does_not_trigger() {
+        // IsNotNullExpr is a distinct type from IsNullExpr; the gate must stay closed.
+        let got = scope_or_service_key_extractor()
+            .try_extract(&[is_not_null("scope"), eq(col("service_key"), utf8_lit("k"))])
+            .expect("extract");
+
+        assert_eq!(None, got);
+    }
+
+    #[test]
+    fn scope_is_null_inside_or_does_not_trigger() {
+        // `(scope IS NULL OR scope IS NOT NULL)` is a top-level Or, not a bare IsNullExpr.
+        // The gate must stay closed so we don't narrow under a tautology.
+        let got = scope_or_service_key_extractor()
+            .try_extract(&[
+                or(is_null("scope"), is_not_null("scope")),
+                eq(col("service_key"), utf8_lit("k")),
+            ])
+            .expect("extract");
+
+        assert_eq!(None, got);
+    }
+
+    #[test]
+    fn scope_is_null_or_service_key_does_not_trigger() {
+        // Single Or conjunct: neither side is a bare top-level IsNullExpr against scope.
+        let got = scope_or_service_key_extractor()
+            .try_extract(&[or(is_null("scope"), eq(col("service_key"), utf8_lit("k")))])
+            .expect("extract");
+
+        assert_eq!(None, got);
+    }
+
+    #[test]
+    fn scope_is_null_on_different_column_does_not_trigger() {
+        let got = scope_or_service_key_extractor()
+            .try_extract(&[is_null("other_col"), eq(col("service_key"), utf8_lit("k"))])
+            .expect("extract");
+
+        assert_eq!(None, got);
     }
 
     #[test]
@@ -653,5 +990,81 @@ mod tests {
 
         let filter = InvocationIdFilter::new(FULL_RANGE, Some(predicate));
         assert!(filter.invocation_ids.is_none());
+    }
+
+    #[test]
+    fn vqueue_filter_single_stage_eq() {
+        let predicate = eq(col("stage"), utf8_lit("running"));
+
+        let filter = VQueueFilter::new(FULL_RANGE, Some(predicate));
+        assert_eq!(
+            filter.stages,
+            Some(std::collections::BTreeSet::from([Stage::Running]))
+        );
+    }
+
+    #[test]
+    fn vqueue_filter_in_list() {
+        let predicate = in_list("stage", vec![utf8_lit("running"), utf8_lit("paused")]);
+
+        let filter = VQueueFilter::new(FULL_RANGE, Some(predicate));
+        assert_eq!(
+            filter.stages,
+            Some(std::collections::BTreeSet::from([
+                Stage::Running,
+                Stage::Paused,
+            ]))
+        );
+    }
+
+    #[test]
+    fn vqueue_filter_or_expression() {
+        let predicate = or(
+            eq(col("stage"), utf8_lit("finished")),
+            eq(col("stage"), utf8_lit("inbox")),
+        );
+
+        let filter = VQueueFilter::new(FULL_RANGE, Some(predicate));
+        assert_eq!(
+            filter.stages,
+            Some(std::collections::BTreeSet::from([
+                Stage::Finished,
+                Stage::Inbox,
+            ]))
+        );
+    }
+
+    #[test]
+    fn vqueue_filter_conjunction_intersection() {
+        let predicate = and(
+            in_list(
+                "stage",
+                vec![utf8_lit("running"), utf8_lit("paused"), utf8_lit("inbox")],
+            ),
+            eq(col("stage"), utf8_lit("paused")),
+        );
+
+        let filter = VQueueFilter::new(FULL_RANGE, Some(predicate));
+        assert_eq!(
+            filter.stages,
+            Some(std::collections::BTreeSet::from([Stage::Paused]))
+        );
+    }
+
+    #[test]
+    fn vqueue_filter_invalid_stage_falls_back() {
+        let predicate = eq(col("stage"), utf8_lit("not-a-stage"));
+
+        let filter = VQueueFilter::new(FULL_RANGE, Some(predicate));
+        assert!(filter.stages.is_none());
+        assert_eq!(filter.partition_keys, FULL_RANGE);
+    }
+
+    #[test]
+    fn vqueue_filter_no_predicate() {
+        let filter = VQueueFilter::new(FULL_RANGE, None);
+
+        assert!(filter.stages.is_none());
+        assert_eq!(filter.partition_keys, FULL_RANGE);
     }
 }

@@ -30,7 +30,6 @@ use restate_types::state_mut::ExternalStateMutation;
 
 mod barrier_test;
 mod durable_lsn_tracking_test;
-mod idempotency_table_test;
 mod inbox_table_test;
 mod invocation_status_table_test;
 mod journal_events_table_test;
@@ -70,7 +69,7 @@ async fn storage_test_environment_with_manager() -> (Arc<PartitionStoreManager>,
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_read_write() {
+async fn read_write() {
     let _env = TestCoreEnv::create_with_single_node(1, 1).await;
 
     let (manager, store) = storage_test_environment_with_manager().await;

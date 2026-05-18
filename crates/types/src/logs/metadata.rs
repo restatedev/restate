@@ -1045,7 +1045,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_chain_new() {
+    fn chain_new() {
         let chain = Chain::new(ProviderKind::Local, LogletParams::from("test".to_string()));
         assert_eq!(chain.chain.len(), 1);
         let Segment {

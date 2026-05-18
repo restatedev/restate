@@ -474,11 +474,13 @@ mod pb_into {
                 idempotency_key,
             }: IdempotentRequestTarget,
         ) -> Self {
+            // V3 protocol types don't carry scope
             IdempotencyId::new(
                 service_name.into(),
                 service_key.map(Into::into),
                 handler_name.into(),
                 idempotency_key.into(),
+                None,
             )
         }
     }
@@ -490,7 +492,7 @@ mod pb_into {
                 workflow_key,
             }: WorkflowTarget,
         ) -> Self {
-            // todo(tillrohrmann) teach the service protocol to select a scoped workflow target
+            // V3 protocol types don't carry scope
             ServiceId::new(None, workflow_name, workflow_key)
         }
     }

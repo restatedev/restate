@@ -180,8 +180,8 @@ impl HttpClient {
                     existing_path
                         .path()
                         .strip_suffix('/')
-                        .unwrap_or(existing_path.path()),
-                    path.path().strip_prefix('/').unwrap_or(path.path()),
+                        .unwrap_or_else(|| existing_path.path()),
+                    path.path().strip_prefix('/').unwrap_or_else(|| path.path()),
                 );
                 let path = if let Some(query) = existing_path.query() {
                     format!("{path}?{query}")

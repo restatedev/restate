@@ -126,7 +126,7 @@ fn main() {
 
     let config_loader = config_loader_builder
         .load_env(true)
-        .path(config_path.clone())
+        .path(config_path)
         .cli_override(cli_args.opts_overrides.clone())
         .metadata_migration_mode(cli_args.metadata_migration_mode)
         .build()

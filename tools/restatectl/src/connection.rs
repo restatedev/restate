@@ -466,7 +466,7 @@ impl ConnectionInfo {
             return Err(ConnectionInfoError::NodesErrors(errors));
         }
 
-        *guard = latest_value.clone();
+        (*guard).clone_from(&latest_value);
         latest_value.ok_or(ConnectionInfoError::MetadataValueNotAvailable {
             contacted_nodes: ident_responses,
         })

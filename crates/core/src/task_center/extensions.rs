@@ -15,7 +15,7 @@ use pin_project_lite::pin_project;
 use tokio::task::futures::TaskLocalFuture;
 use tokio_util::sync::CancellationToken;
 
-use restate_types::SharedString;
+use restate_platform::prelude::ReString;
 
 use crate::Metadata;
 use crate::task_center::TaskContext;
@@ -44,7 +44,7 @@ pub trait TaskCenterFutureExt: Sized {
         name: S,
     ) -> WithTaskCenter<Self>
     where
-        S: Into<SharedString>;
+        S: Into<ReString>;
 
     /// Ensures that a future will run within the task-center in current scope. This will inherit the current
     /// task context (if there is one). Otherwise, it'll run in the context of the root task (task-id=0).
@@ -60,7 +60,7 @@ pub trait TaskCenterFutureExt: Sized {
     /// manage its lifecycle.
     fn in_current_tc_as_task<S>(self, kind: TaskKind, name: S) -> WithTaskCenter<Self>
     where
-        S: Into<SharedString>;
+        S: Into<ReString>;
 }
 
 pin_project! {
@@ -89,7 +89,7 @@ where
 
     fn in_tc_as_task<S>(self, task_center: &Handle, kind: TaskKind, name: S) -> WithTaskCenter<Self>
     where
-        S: Into<SharedString>,
+        S: Into<ReString>,
     {
         let name = name.into();
         let ctx = task_center.with_task_context(move |parent| TaskContext {
@@ -120,7 +120,7 @@ where
     #[track_caller]
     fn in_current_tc_as_task<S>(self, kind: TaskKind, name: S) -> WithTaskCenter<Self>
     where
-        S: Into<SharedString>,
+        S: Into<ReString>,
     {
         TaskCenter::with_current(|tc| self.in_tc_as_task(tc, kind, name))
     }

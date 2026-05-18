@@ -78,12 +78,12 @@ async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> an
     let partition_replication = set_opts
         .partition_replication
         .clone()
-        .or(set_opts.replication.clone());
+        .or_else(|| set_opts.replication.clone());
 
     let log_replication = set_opts
         .log_replication
         .clone()
-        .or(set_opts.replication.clone());
+        .or_else(|| set_opts.replication.clone());
 
     if let Some(replication_property) = partition_replication {
         current.partition_replication = Some(replication_property.into());

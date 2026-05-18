@@ -12,7 +12,7 @@ use crate::table_macro::*;
 
 use datafusion::arrow::datatypes::DataType;
 
-define_sort_order!(sys_promise(partition_key, service_name, service_key));
+define_sort_order!(sys_promise(partition_key));
 
 define_table!(sys_promise(
     /// Internal column that is used for partitioning the services invocations. Can be ignored.

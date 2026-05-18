@@ -12,7 +12,6 @@ pub mod deduplication_table;
 mod durable_lsn_tracking;
 pub mod error;
 pub mod fsm_table;
-pub mod idempotency_table;
 pub mod inbox_table;
 pub mod invocation_status_table;
 pub mod journal_events;

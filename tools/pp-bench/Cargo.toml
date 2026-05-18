@@ -16,14 +16,16 @@ restate-workspace-hack = { workspace = true }
 restate-cli-util = { workspace = true }
 restate-core = { workspace = true, features = ["message-util"] }
 restate-errors = { workspace = true }
+restate-limiter = { workspace = true, features = ["rule-book"]}
 restate-log-server = { workspace = true, features = ["expose-internals"] }
 restate-partition-store = { workspace = true }
 restate-rocksdb = { workspace = true }
-restate-serde-util = { workspace = true }
+restate-util-bytecount = { workspace = true, features = ["serde"] }
 restate-storage-api = { workspace = true }
-restate-time-util = { workspace = true }
+restate-util-time = { workspace = true }
 restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio"] }
 restate-types = { workspace = true, features = ["clap"] }
+restate-util-string = { workspace = true }
 restate-vqueues = { workspace = true }
 restate-wal-protocol = { workspace = true }
 restate-worker = { workspace = true, features = ["expose-internals"] }
@@ -53,3 +55,6 @@ tikv-jemalloc-ctl = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[lints]
+workspace = true

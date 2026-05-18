@@ -14,6 +14,7 @@ use bytes::Bytes;
 
 use restate_errors::NotRunningError;
 use restate_memory::{IgnorePinnableMemoryStream, LocalMemoryLease, LocalMemoryPool};
+use restate_types::LimitKey;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{EntryIndex, InvocationId, InvocationUuid, ServiceId};
 use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
@@ -24,6 +25,7 @@ use restate_types::journal::raw::{PlainEntryHeader, PlainRawEntry, RawEntry};
 use restate_types::journal_v2::CommandIndex;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::VQueueId;
+use restate_util_string::ReString;
 use restate_worker_api::invoker::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry, JournalKind,
 };
@@ -142,6 +144,8 @@ impl InvokerHandle for MockInvokerHandle {
         _permit: ReservedResources,
         _invocation_id: InvocationId,
         _invocation_target: InvocationTarget,
+        _limit_key: LimitKey<ReString>,
+        _idempotency_key: Option<ReString>,
     ) -> Result<(), NotRunningError> {
         Ok(())
     }

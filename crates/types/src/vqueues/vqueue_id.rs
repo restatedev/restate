@@ -228,7 +228,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_vqueue_id_roundtrip() {
+    fn vqueue_id_roundtrip() {
         let id = VQueueId::custom(2, "test");
         let mut buf: Vec<u8> = Vec::with_capacity(100);
         id.encode_raw_bytes(&mut buf);
@@ -240,13 +240,13 @@ mod tests {
     }
 
     #[test]
-    fn test_vqueue_id_partition_key() {
+    fn vqueue_id_partition_key() {
         let id = VQueueId::custom(88891122323, "test");
         assert_eq!(id.partition_key(), 88891122323);
     }
 
     #[test]
-    fn test_vqueue_id_encode_decode() {
+    fn vqueue_id_encode_decode() {
         let id = VQueueId::custom(2247781, "some_test_value");
         let mut buf = Vec::new();
         id.encode_raw_bytes(&mut buf);
@@ -255,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn test_vqueue_ord_by_partition_key() {
+    fn vqueue_ord_by_partition_key() {
         // vqueue ids's ord implementation should allow them to be sorted by their partition key
         // This means that if I collect a number of vqueue ids in a BtreeSet, I should be able to
         // scan through them by grouping partition key.

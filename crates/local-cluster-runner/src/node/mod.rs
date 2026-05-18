@@ -588,10 +588,10 @@ impl StartedNode {
         info!("Restarting node '{}'", self.config().node_name());
 
         match termination_signal {
-            TerminationSignal::SIGKILL => {
+            TerminationSignal::Sigkill => {
                 self.kill().await?;
             }
-            TerminationSignal::SIGTERM => {
+            TerminationSignal::Sigterm => {
                 self.terminate()?;
                 (&mut self.status).await?;
             }
@@ -968,8 +968,8 @@ impl StartedNode {
 /// How to terminate a running Restate process
 #[derive(Debug, Clone, Copy, strum::EnumIter)]
 pub enum TerminationSignal {
-    SIGKILL,
-    SIGTERM,
+    Sigkill,
+    Sigterm,
 }
 
 impl TerminationSignal {

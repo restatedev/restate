@@ -35,7 +35,7 @@ pub enum Error {
     #[error("operation failed due to an ongoing shutdown")]
     Shutdown(#[from] ShutdownError),
     #[error(transparent)]
-    LogletError(#[from] Arc<dyn MaybeRetryableError + Send + Sync>),
+    Loglet(#[from] Arc<dyn MaybeRetryableError + Send + Sync>),
     #[error("failed syncing logs metadata: {0}")]
     MetadataSync(#[from] SyncError),
     /// Provider is unknown or disabled
@@ -44,7 +44,7 @@ pub enum Error {
     #[error(transparent)]
     AdminError(#[from] AdminError),
     #[error(transparent)]
-    MetadataStoreError(#[from] Arc<ReadWriteError>),
+    MetadataStore(#[from] Arc<ReadWriteError>),
     #[error("record batch too large: {batch_size_bytes} bytes exceeds limit of {limit} bytes")]
     BatchTooLarge {
         batch_size_bytes: usize,
@@ -92,7 +92,7 @@ impl From<OperationError> for Error {
     fn from(value: OperationError) -> Self {
         match value {
             OperationError::Shutdown(e) => Error::Shutdown(e),
-            OperationError::Other(e) => Error::LogletError(e),
+            OperationError::Other(e) => Error::Loglet(e),
         }
     }
 }
@@ -113,6 +113,6 @@ impl From<BuilderError> for AdminError {
 
 impl From<ReadWriteError> for Error {
     fn from(value: ReadWriteError) -> Self {
-        Error::MetadataStoreError(Arc::new(value))
+        Error::MetadataStore(Arc::new(value))
     }
 }

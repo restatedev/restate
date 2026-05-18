@@ -14,8 +14,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
-use restate_time_util::FriendlyDuration;
 use restate_types::schema::service::ServiceMetadata;
+use restate_util_time::FriendlyDuration;
 
 /// List of all registered services.
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
@@ -106,6 +106,13 @@ pub struct ModifyServiceStateRequest {
     ///
     /// To what virtual object key to apply this change
     pub object_key: String,
+
+    /// # Scope
+    ///
+    /// Optional scope for the virtual object instance. When set, targets the scoped
+    /// instance instead of the unscoped one. Since v1.7.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 
     /// # New State
     ///

@@ -18,7 +18,7 @@ use comfy_table::{Cell, Color, Table};
 
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::{c_println, c_title};
-use restate_serde_util::ByteCount;
+use restate_util_bytecount::ByteCount;
 
 use crate::app::GlobalOpts;
 use crate::util::rocksdb::{
@@ -439,6 +439,7 @@ fn key_kind_abbrev(kind: restate_partition_store::keys::KeyKind) -> &'static str
     match kind {
         KeyKind::Deduplication => "Dedup",
         KeyKind::Fsm => "FSM",
+        #[allow(deprecated)]
         KeyKind::Idempotency => "Idemp",
         KeyKind::Inbox => "Inbox",
         #[allow(deprecated)]

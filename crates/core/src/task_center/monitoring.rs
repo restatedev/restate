@@ -13,14 +13,14 @@ use std::time::Duration;
 use metrics::{counter, gauge};
 use tokio::runtime::RuntimeMetrics;
 
-use restate_types::SharedString;
+use restate_platform::prelude::ReString;
 
 use super::Handle;
 
 pub trait TaskCenterMonitoring {
     fn default_runtime_metrics(&self) -> RuntimeMetrics;
 
-    fn managed_runtime_metrics(&self) -> Vec<(SharedString, RuntimeMetrics)>;
+    fn managed_runtime_metrics(&self) -> Vec<(ReString, RuntimeMetrics)>;
 
     /// How long has the task-center been running?
     fn age(&self) -> Duration;
@@ -34,7 +34,7 @@ impl TaskCenterMonitoring for Handle {
         self.inner.default_runtime_handle.metrics()
     }
 
-    fn managed_runtime_metrics(&self) -> Vec<(SharedString, RuntimeMetrics)> {
+    fn managed_runtime_metrics(&self) -> Vec<(ReString, RuntimeMetrics)> {
         let guard = self.inner.managed_runtimes.lock();
         guard
             .iter()
@@ -59,8 +59,8 @@ impl TaskCenterMonitoring for Handle {
     }
 }
 
-fn submit_runtime_metrics(runtime: impl Into<SharedString>, stats: RuntimeMetrics) {
-    let runtime: SharedString = runtime.into();
+fn submit_runtime_metrics(runtime: impl Into<ReString>, stats: RuntimeMetrics) {
+    let runtime: ReString = runtime.into();
     #[cfg(debug_assertions)]
     {
         let labels = [("runtime", runtime.clone())];

@@ -28,6 +28,8 @@ use datafusion::sql::TableReference;
 
 use codederror::CodedError;
 use restate_core::{Metadata, TaskCenter};
+use restate_limiter::rule_book::RuleBookObserver;
+use restate_metadata_store::MetadataStoreClient;
 use restate_partition_store::PartitionStoreManager;
 use restate_sharding::KeyRange;
 use restate_types::cluster::cluster_state::LegacyClusterState;
@@ -39,8 +41,8 @@ use restate_types::partition_table::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
-use restate_worker_api::SchedulerStatusEntry;
 use restate_worker_api::invoker::StatusHandle;
+use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
 
 use crate::node_fan_out::NodeWarnings;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
@@ -52,6 +54,7 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
             ss.target_service_key,
             ss.target_handler_name,
             ss.target_service_ty,
+            ss.scope,
             ss.idempotency_key,
             ss.invoked_by,
             ss.invoked_by_service_name,
@@ -172,15 +175,20 @@ pub struct UserTables<P, S, D> {
     partition_leader_status: Option<S>,
     schemas: Live<D>,
     remote_scanner_manager: RemoteScannerManager,
+    metadata_store_client: MetadataStoreClient,
+    rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
 }
 
 impl<P, S, D> UserTables<P, S, D> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         partition_selector: P,
         partition_store_manager: Arc<PartitionStoreManager>,
         partition_leader_status: Option<S>,
         schemas: Live<D>,
         remote_scanner_manager: RemoteScannerManager,
+        metadata_store_client: MetadataStoreClient,
+        rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
     ) -> Self {
         Self {
             partition_selector,
@@ -188,6 +196,8 @@ impl<P, S, D> UserTables<P, S, D> {
             partition_leader_status,
             schemas,
             remote_scanner_manager,
+            metadata_store_client,
+            rule_book_observer,
         }
     }
 }
@@ -195,15 +205,37 @@ impl<P, S, D> UserTables<P, S, D> {
 impl<P, S, D> RegisterTable for UserTables<P, S, D>
 where
     P: SelectPartitions + Clone,
-    S: PartitionLeaderStatusHandle<SchedulerStatus = SchedulerStatusEntry>,
+    S: PartitionLeaderStatusHandle<
+            SchedulerStatus = SchedulerStatusEntry,
+            UserLimitCounter = UserLimitCounterEntry,
+        >,
     D: DeploymentResolver + ServiceMetadataResolver + Send + Sync + Debug + Clone + 'static,
 {
     async fn register(&self, ctx: &QueryContext) -> Result<(), BuildError> {
         // ----- non partitioned tables -----
         crate::deployment::register_self(ctx, self.schemas.clone())?;
         crate::service::register_self(ctx, self.schemas.clone())?;
+        crate::rules::register_self(
+            ctx,
+            self.metadata_store_client.clone(),
+            self.rule_book_observer.clone(),
+        )?;
         // ----- partition-key-based -----
         crate::invocation_state::register_self(
+            ctx,
+            self.partition_selector.clone(),
+            self.partition_leader_status.clone(),
+            self.partition_store_manager.clone(),
+            &self.remote_scanner_manager,
+        )?;
+        crate::scheduler_status::register_self(
+            ctx,
+            self.partition_selector.clone(),
+            self.partition_leader_status.clone(),
+            self.partition_store_manager.clone(),
+            &self.remote_scanner_manager,
+        )?;
+        crate::user_limits::register_self(
             ctx,
             self.partition_selector.clone(),
             self.partition_leader_status.clone(),
@@ -252,12 +284,6 @@ where
             self.partition_store_manager.clone(),
             &self.remote_scanner_manager,
         )?;
-        crate::idempotency::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
         crate::promise::register_self(
             ctx,
             self.partition_selector.clone(),
@@ -266,6 +292,12 @@ where
         )?;
         // VQueues Tables
         crate::vqueue_meta::register_self(
+            ctx,
+            self.partition_selector.clone(),
+            self.partition_store_manager.clone(),
+            &self.remote_scanner_manager,
+        )?;
+        crate::vqueues::register_self(
             ctx,
             self.partition_selector.clone(),
             self.partition_store_manager.clone(),
@@ -375,12 +407,17 @@ impl QueryContext {
         partition_selector: impl SelectPartitions + Clone,
         partition_store_manager: Arc<PartitionStoreManager>,
         partition_leader_status: Option<
-            impl PartitionLeaderStatusHandle<SchedulerStatus = SchedulerStatusEntry>,
+            impl PartitionLeaderStatusHandle<
+                SchedulerStatus = SchedulerStatusEntry,
+                UserLimitCounter = UserLimitCounterEntry,
+            >,
         >,
         schemas: Live<
             impl DeploymentResolver + ServiceMetadataResolver + Send + Sync + Debug + Clone + 'static,
         >,
         remote_scanner_manager: RemoteScannerManager,
+        metadata_store_client: MetadataStoreClient,
+        rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
     ) -> Result<QueryContext, BuildError> {
         let tables = UserTables::new(
             partition_selector,
@@ -388,6 +425,8 @@ impl QueryContext {
             partition_leader_status,
             schemas,
             remote_scanner_manager,
+            metadata_store_client,
+            rule_book_observer,
         );
 
         Self::create(options, tables).await

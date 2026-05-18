@@ -12,7 +12,7 @@ use crate::table_macro::*;
 
 use datafusion::arrow::datatypes::DataType;
 
-define_sort_order!(sys_locks(partition_key, scope, lock_name));
+define_sort_order!(sys_locks(partition_key));
 
 define_table!(sys_locks(
     /// Internal column that is used for partitioning. Can be ignored.

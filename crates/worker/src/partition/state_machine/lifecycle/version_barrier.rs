@@ -9,13 +9,13 @@
 // by the Apache License, Version 2.0.
 
 use restate_storage_api::fsm_table::WriteFsmTable;
-use restate_wal_protocol::control::VersionBarrier;
+use restate_wal_protocol::control::VersionBarrierCommand;
 
 use crate::debug_if_leader;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub struct OnVersionBarrierCommand {
-    pub barrier: VersionBarrier,
+    pub barrier: VersionBarrierCommand,
 }
 
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
@@ -46,17 +46,18 @@ where
 #[cfg(test)]
 mod tests {
     use googletest::prelude::*;
-
+    use restate_limiter::RuleBook;
     use restate_storage_api::fsm_table::ReadFsmTable;
     use restate_types::SemanticRestateVersion;
     use restate_types::identifiers::PartitionKey;
     use restate_types::logs::Keys;
     use restate_types::sharding::KeyRange;
-    use restate_wal_protocol::Command;
-    use restate_wal_protocol::control::VersionBarrier;
+    use restate_wal_protocol::control::VersionBarrierCommand;
+    use restate_wal_protocol::v2::{Command, commands};
 
     use crate::partition::state_machine::StateMachine;
     use crate::partition::state_machine::tests::TestEnv;
+    use crate::rule_book_cache::RuleBookCacheHandle;
 
     #[restate_core::test]
     async fn stop_at_version_barrier() {
@@ -66,8 +67,10 @@ mod tests {
             0,    /* outbox_seq_number */
             None, /* outbox_head_seq_number */
             KeyRange::FULL,
-            SemanticRestateVersion::unknown().clone(),
-            Default::default(),
+            SemanticRestateVersion::unknown(),
+            Default::default(), /* schema */
+            std::sync::Arc::new(RuleBook::default()),
+            RuleBookCacheHandle::detached(),
         );
         // this is fine as we are always above the unknown version (current > 0.0.0)
         let mut test_env = TestEnv::create_with_state_machine(state_machine).await;
@@ -80,11 +83,15 @@ mod tests {
         );
 
         let result = test_env
-            .apply_fallible(Command::VersionBarrier(VersionBarrier {
-                version: SemanticRestateVersion::parse("99.0.0").unwrap(),
-                human_reason: Some("testing".to_string()),
-                partition_key_range: Keys::RangeInclusive(PartitionKey::MIN..=PartitionKey::MAX),
-            }))
+            .apply_fallible(commands::VersionBarrierCommand::test_envelope(
+                VersionBarrierCommand {
+                    version: SemanticRestateVersion::parse("99.0.0").unwrap(),
+                    human_reason: Some("testing".to_string()),
+                    partition_key_range: Keys::RangeInclusive(
+                        PartitionKey::MIN..=PartitionKey::MAX,
+                    ),
+                },
+            ))
             .await;
 
         assert_that!(
@@ -108,18 +115,24 @@ mod tests {
             0,    /* outbox_seq_number */
             None, /* outbox_head_seq_number */
             KeyRange::FULL,
-            SemanticRestateVersion::unknown().clone(),
-            Default::default(),
+            SemanticRestateVersion::unknown(),
+            Default::default(), /* schema */
+            std::sync::Arc::new(RuleBook::default()),
+            RuleBookCacheHandle::detached(),
         );
         // this is fine as we are always above the unknown version (current > 0.0.0)
         let mut test_env = TestEnv::create_with_state_machine(state_machine).await;
 
         let result = test_env
-            .apply_fallible(Command::VersionBarrier(VersionBarrier {
-                version: SemanticRestateVersion::current().clone(),
-                human_reason: Some("testing".to_string()),
-                partition_key_range: Keys::RangeInclusive(PartitionKey::MIN..=PartitionKey::MAX),
-            }))
+            .apply_fallible(commands::VersionBarrierCommand::test_envelope(
+                VersionBarrierCommand {
+                    version: SemanticRestateVersion::current().clone(),
+                    human_reason: Some("testing".to_string()),
+                    partition_key_range: Keys::RangeInclusive(
+                        PartitionKey::MIN..=PartitionKey::MAX,
+                    ),
+                },
+            ))
             .await;
 
         assert_that!(result, ok(empty()));
@@ -130,11 +143,15 @@ mod tests {
         }
         // re-apply the same version, no-op
         let result = test_env
-            .apply_fallible(Command::VersionBarrier(VersionBarrier {
-                version: SemanticRestateVersion::current().clone(),
-                human_reason: Some("testing".to_string()),
-                partition_key_range: Keys::RangeInclusive(PartitionKey::MIN..=PartitionKey::MAX),
-            }))
+            .apply_fallible(commands::VersionBarrierCommand::test_envelope(
+                VersionBarrierCommand {
+                    version: SemanticRestateVersion::current().clone(),
+                    human_reason: Some("testing".to_string()),
+                    partition_key_range: Keys::RangeInclusive(
+                        PartitionKey::MIN..=PartitionKey::MAX,
+                    ),
+                },
+            ))
             .await;
 
         assert_that!(result, ok(empty()));
@@ -145,11 +162,15 @@ mod tests {
 
         // apply an older version, success but without effect.
         let result = test_env
-            .apply_fallible(Command::VersionBarrier(VersionBarrier {
-                version: SemanticRestateVersion::parse("0.1.0").unwrap(),
-                human_reason: Some("testing".to_string()),
-                partition_key_range: Keys::RangeInclusive(PartitionKey::MIN..=PartitionKey::MAX),
-            }))
+            .apply_fallible(commands::VersionBarrierCommand::test_envelope(
+                VersionBarrierCommand {
+                    version: SemanticRestateVersion::parse("0.1.0").unwrap(),
+                    human_reason: Some("testing".to_string()),
+                    partition_key_range: Keys::RangeInclusive(
+                        PartitionKey::MIN..=PartitionKey::MAX,
+                    ),
+                },
+            ))
             .await;
 
         assert_that!(result, ok(empty()));

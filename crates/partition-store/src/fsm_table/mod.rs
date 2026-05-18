@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_limiter::RuleBook;
 use restate_storage_api::Result;
 use restate_storage_api::fsm_table::{
     CachedEpochMetadata, PartitionDurability, ReadFsmTable, SequenceNumber, WriteFsmTable,
@@ -66,6 +67,13 @@ pub(crate) mod fsm_variable {
     /// deployments.
     /// *Since v1.6.3*
     pub(crate) const JC_ORPHAN_CLEANUP_DONE: u64 = 8;
+
+    /// Cluster-global rule book persisted per-partition. Each partition writes
+    /// the same logical rule book (via `Command::UpsertRuleBook` log entries),
+    /// and reads it back on PP startup so leader transitions inherit the same
+    /// rule set without an extra metadata-store round trip.
+    /// *Since v1.7.0*
+    pub(crate) const RULE_BOOK: u64 = 9;
 }
 
 fn get<T: PartitionStoreProtobufValue, S: StorageAccess>(
@@ -196,6 +204,11 @@ impl ReadFsmTable for PartitionStore {
         let key = create_key(self.partition_id(), fsm_variable::PARTITION_CONFIG_STATE);
         self.get_value_storage_codec(key)
     }
+
+    async fn get_rule_book(&mut self) -> Result<Option<RuleBook>> {
+        let key = create_key(self.partition_id(), fsm_variable::RULE_BOOK);
+        self.get_value_storage_codec(key)
+    }
 }
 
 impl WriteFsmTable for PartitionStoreTransaction<'_> {
@@ -252,5 +265,10 @@ impl WriteFsmTable for PartitionStoreTransaction<'_> {
     fn put_partition_config_state(&mut self, state: &CachedEpochMetadata) -> Result<()> {
         let key = create_key(self.partition_id(), fsm_variable::PARTITION_CONFIG_STATE);
         self.put_kv_storage_codec(key, state)
+    }
+
+    fn put_rule_book(&mut self, rule_book: &RuleBook) -> Result<()> {
+        let key = create_key(self.partition_id(), fsm_variable::RULE_BOOK);
+        self.put_kv_storage_codec(key, rule_book)
     }
 }

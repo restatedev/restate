@@ -8,13 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::resources::ReservedResources;
 use restate_errors::NotRunningError;
+use restate_types::LimitKey;
 use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::vqueues::VQueueId;
-
-use crate::resources::ReservedResources;
+use restate_util_string::ReString;
 
 pub trait InvokerHandle {
     fn invoke(
@@ -29,6 +30,8 @@ pub trait InvokerHandle {
         permit: ReservedResources,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
+        limit_key: LimitKey<ReString>,
+        idempotency_key: Option<ReString>,
     ) -> Result<(), NotRunningError>;
 
     fn notify_completion(

@@ -15,8 +15,10 @@ mod leader_query;
 mod partition_processor_manager;
 mod partition_processor_rpc_client;
 mod scheduler_status;
+mod user_limits;
 
 pub use leader_query::*;
 pub use partition_processor_manager::*;
 pub use partition_processor_rpc_client::*;
 pub use scheduler_status::*;
+pub use user_limits::*;

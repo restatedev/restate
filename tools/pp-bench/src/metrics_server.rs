@@ -14,6 +14,7 @@
 use std::fmt::Write;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::thread;
 
 use axum::extract::State;
 use axum::routing::get;
@@ -21,6 +22,7 @@ use indexmap::IndexMap;
 use metrics_exporter_prometheus::PrometheusHandle;
 use metrics_exporter_prometheus::formatting;
 use rocksdb::statistics::{Histogram, Ticker};
+use tokio::runtime::LocalOptions;
 use tracing::info;
 
 use restate_rocksdb::{CfName, RocksDbManager};
@@ -177,6 +179,10 @@ struct MetricsState {
     prometheus_handle: Arc<PrometheusHandle>,
 }
 
+/// Spawn a dedicated OS thread running its own single-threaded tokio LocalRuntime
+/// to serve Prometheus metrics. Isolating the metrics server on its own thread
+/// keeps HTTP request handling and RocksDB property polling off the bench's
+/// apply-loop runtime, so it doesn't perturb measurements.
 pub fn start_metrics_server(port: u16, prometheus_handle: PrometheusHandle) {
     if port == 0 {
         return;
@@ -188,20 +194,39 @@ pub fn start_metrics_server(port: u16, prometheus_handle: PrometheusHandle) {
         .route("/metrics", get(render_metrics))
         .with_state(state);
 
-    tokio::spawn(async move {
-        let addr = SocketAddr::from(([0, 0, 0, 0], port));
-        let listener = match tokio::net::TcpListener::bind(addr).await {
-            Ok(l) => l,
-            Err(e) => {
-                restate_cli_util::c_warn!("Failed to bind metrics server on port {port}: {e}");
-                return;
-            }
-        };
-        info!("Metrics server listening on http://{addr}/metrics");
-        if let Err(e) = axum::serve(listener, app).await {
-            restate_cli_util::c_error!("Metrics server error: {e}");
-        }
-    });
+    thread::Builder::new()
+        .name("pp-bench-metrics".to_owned())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .thread_name("pp-bench-metrics")
+                .build_local(LocalOptions::default())
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    restate_cli_util::c_error!("Failed to build metrics runtime: {e}");
+                    return;
+                }
+            };
+
+            runtime.block_on(async move {
+                let addr = SocketAddr::from(([0, 0, 0, 0], port));
+                let listener = match tokio::net::TcpListener::bind(addr).await {
+                    Ok(l) => l,
+                    Err(e) => {
+                        restate_cli_util::c_warn!(
+                            "Failed to bind metrics server on port {port}: {e}"
+                        );
+                        return;
+                    }
+                };
+                info!("Metrics server listening on http://{addr}/metrics");
+                if let Err(e) = axum::serve(listener, app).await {
+                    restate_cli_util::c_error!("Metrics server error: {e}");
+                }
+            });
+        })
+        .expect("metrics thread spawns");
 }
 
 async fn render_metrics(State(state): State<MetricsState>) -> String {

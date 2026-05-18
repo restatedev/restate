@@ -27,3 +27,6 @@ restate-sharding = { path = ".", default-features = false, features = ["serde", 
 flexbuffers = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[lints]
+workspace = true

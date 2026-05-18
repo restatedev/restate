@@ -148,7 +148,7 @@ impl UniqueTimestamp {
         Self::from_parts_unchecked(unix_millis.as_u64() - RESTATE_EPOCH.as_u64(), 0)
     }
 
-    pub const fn to_unix_millis(&self) -> MillisSinceEpoch {
+    pub const fn to_unix_millis(self) -> MillisSinceEpoch {
         MillisSinceEpoch::new(self.physical_raw() + RESTATE_EPOCH.as_u64())
     }
 

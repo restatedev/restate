@@ -91,9 +91,11 @@ impl Credentials {
             }
         };
 
-        chrono::DateTime::from_timestamp(claims.exp, 0).ok_or(anyhow::anyhow!(
-            "Restate Cloud credentials are invalid; first run `restate cloud login`"
-        ))
+        chrono::DateTime::from_timestamp(claims.exp, 0).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Restate Cloud credentials are invalid; first run `restate cloud login`"
+            )
+        })
     }
 
     pub fn access_token(&self) -> anyhow::Result<&str> {

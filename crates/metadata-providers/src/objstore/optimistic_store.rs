@@ -389,7 +389,7 @@ mod tests {
     }
 
     #[test]
-    fn test_encoding() {
+    fn encoding() {
         let mut store = OptimisticLockingMetadataStore::new(Box::new(
             ObjectStoreVersionRepository::new_for_testing(),
         ));

@@ -28,14 +28,13 @@ mod state_machine;
 pub mod types;
 
 use std::fmt::Debug;
-use std::ops::RangeBounds;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
 use assert2::let_assert;
 use futures::{FutureExt, Stream, StreamExt};
-use metrics::{SharedString, gauge, histogram};
+use metrics::{gauge, histogram};
 use tokio::sync::watch;
 use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{Span, debug, error, info, instrument, trace, warn};
@@ -59,12 +58,13 @@ use restate_storage_api::fsm_table::{
 };
 use restate_storage_api::outbox_table::ReadOutboxTable;
 use restate_storage_api::{StorageError, Transaction};
-use restate_time_util::DurationExt;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
 use restate_types::config::Configuration;
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::LeaderEpoch;
-use restate_types::logs::{KeyFilter, Lsn, Record, SequenceNumber};
+use restate_types::logs::{
+    KeyFilter, Keys, Lsn, MatchKeyQuery, Record, RecordDecodeError, SequenceNumber,
+};
 use restate_types::net::ingest::{
     DedupSequenceNrQueryRequest, DedupSequenceNrQueryResponse, ReceivedIngestRequest,
     ResponseStatus,
@@ -80,11 +80,14 @@ use restate_types::schema::Schema;
 use restate_types::storage::StorageDecodeError;
 use restate_types::time::{MillisSinceEpoch, NanosSinceEpoch};
 use restate_types::{GenerationalNodeId, SemanticRestateVersion, Version};
-use restate_vqueues::VQueuesMetaCache;
+use restate_util_string::{ReString, ToReString};
+use restate_util_time::DurationExt;
+use restate_vqueues::{VQueuesMeta, VQueuesMetaCache};
 use restate_wal_protocol::control::{
-    AnnounceLeader, CurrentReplicaSetConfiguration, NextReplicaSetConfiguration,
+    AnnounceLeaderCommand, CurrentReplicaSetConfiguration, NextReplicaSetConfiguration,
 };
-use restate_wal_protocol::{Command, Destination, Envelope, Header};
+use restate_wal_protocol::v2::commands;
+use restate_wal_protocol::{Envelope, v2};
 use restate_worker_api::invoker::capacity::InvokerCapacity;
 use restate_worker_api::{LeaderQueryCommand, LeaderQueryReceiver};
 
@@ -97,6 +100,12 @@ use crate::metric_definitions::{
 use crate::partition::leadership::LeadershipState;
 use crate::partition::state_machine::{ActionCollector, StateMachine};
 use crate::partition_processor_manager::PartitionLeaderHandlesRegistry;
+use crate::rule_book_cache::RuleBookCacheHandle;
+
+// Soft cap for the in-memory vqueue cache; once reached, inactive
+// entries are evicted at insert time. The cache will still grow past
+// this if compaction frees nothing.
+const VQUEUE_CACHE_CAPACITY: usize = 10_000;
 
 /// Information needed to run as leader, including the epoch and partition configurations.
 #[derive(Clone, Debug)]
@@ -135,6 +144,7 @@ pub(super) struct PartitionProcessorBuilder {
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
     invoker_capacity: InvokerCapacity,
     leader_handles_registry: PartitionLeaderHandlesRegistry,
+    rule_book_cache: RuleBookCacheHandle,
 }
 
 impl PartitionProcessorBuilder {
@@ -146,6 +156,7 @@ impl PartitionProcessorBuilder {
         status_watch_tx: watch::Sender<PartitionProcessorStatus>,
         invoker_capacity: InvokerCapacity,
         leader_handles_registry: PartitionLeaderHandlesRegistry,
+        rule_book_cache: RuleBookCacheHandle,
     ) -> Self {
         Self {
             status,
@@ -154,6 +165,7 @@ impl PartitionProcessorBuilder {
             status_watch_tx,
             invoker_capacity,
             leader_handles_registry,
+            rule_book_cache,
         }
     }
 
@@ -174,10 +186,12 @@ impl PartitionProcessorBuilder {
             status,
             invoker_capacity,
             leader_handles_registry,
+            rule_book_cache,
         } = self;
 
-        let partition_id_str = SharedString::from(partition_store.partition_id().to_string());
-        let state_machine = Self::create_state_machine(&mut partition_store).await?;
+        let partition_id_str = partition_store.partition_id().to_restring();
+        let state_machine =
+            Self::create_state_machine(&mut partition_store, rule_book_cache.clone()).await?;
 
         let trim_queue = TrimQueue::default();
         if let Some(ref partition_durability) = partition_store.get_partition_durability().await? {
@@ -223,11 +237,13 @@ impl PartitionProcessorBuilder {
             trim_queue.clone(),
             leader_query_tx,
             leader_handles_registry,
+            rule_book_cache,
         );
 
         let last_applied_log_lsn_watch = watch::Sender::new(Lsn::INVALID);
 
         Ok(PartitionProcessor {
+            key_filter: KeyFilter::Within(partition_store.partition_key_range().into()),
             partition_id_str,
             leadership_state,
             state_machine,
@@ -247,12 +263,14 @@ impl PartitionProcessorBuilder {
 
     async fn create_state_machine(
         partition_store: &mut PartitionStore,
+        rule_book_cache: RuleBookCacheHandle,
     ) -> Result<StateMachine, state_machine::Error> {
         let inbox_seq_number = partition_store.get_inbox_seq_number().await?;
         let outbox_seq_number = partition_store.get_outbox_seq_number().await?;
         let outbox_head_seq_number = partition_store.get_outbox_head_seq_number().await?;
         let min_restate_version = partition_store.get_min_restate_version().await?;
         let schema = partition_store.get_schema().await?;
+        let rule_book = Arc::new(partition_store.get_rule_book().await?.unwrap_or_default());
 
         if !SemanticRestateVersion::current().is_equal_or_newer_than(&min_restate_version) {
             gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL =>
@@ -266,6 +284,12 @@ impl PartitionProcessorBuilder {
             });
         }
 
+        // Seed the cache with whatever we just loaded from the FSM
+        // table, so a freshly-restarted PP doesn't briefly serve the
+        // empty default to subscribers between PP boot and the first
+        // metadata-store poll.
+        rule_book_cache.notify_observed(&rule_book);
+
         let state_machine = StateMachine::new(
             inbox_seq_number,
             outbox_seq_number,
@@ -273,6 +297,8 @@ impl PartitionProcessorBuilder {
             partition_store.partition_key_range(),
             min_restate_version,
             schema,
+            rule_book,
+            rule_book_cache,
         );
 
         Ok(state_machine)
@@ -280,7 +306,7 @@ impl PartitionProcessorBuilder {
 }
 
 pub struct PartitionProcessor<T> {
-    partition_id_str: SharedString,
+    partition_id_str: ReString,
     leadership_state: LeadershipState<T>,
     state_machine: StateMachine,
     bifrost: Bifrost,
@@ -296,6 +322,7 @@ pub struct PartitionProcessor<T> {
 
     last_applied_log_lsn_watch: watch::Sender<Lsn>,
     cached_epoch_metadata: Option<CachedEpochMetadata>,
+    key_filter: KeyFilter,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -345,8 +372,9 @@ pub enum ProcessorError {
 
 struct LsnEnvelope {
     pub lsn: Lsn,
+    pub keys: Keys,
     pub created_at: NanosSinceEpoch,
-    pub envelope: Arc<Envelope>,
+    pub envelope: Arc<v2::Envelope<v2::Raw>>,
 }
 
 /// OrderedOperations are scheduled operations that
@@ -382,7 +410,7 @@ where
                             "Shutting partition processor down because it encountered a trim gap in the log."
                         ),
                     Err(ProcessorError::StateMachine(state_machine::Error::VersionBarrier { .. })) => {
-                        gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL => self.partition_id_str.clone(), REASON_LABEL => FLARE_REASON_VERSION_BARRIER).set(1);
+                        gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL => self.partition_id_str, REASON_LABEL => FLARE_REASON_VERSION_BARRIER).set(1);
                     }
                     Err(err) => warn!("Shutting partition processor down because of error: {err}"),
                 }
@@ -405,6 +433,33 @@ where
         }
 
         res
+    }
+
+    /// Decode record tries to decode the record first as v2 Envelope, if it failed,
+    /// it decodes as v1 Envelope then converts into v2.
+    fn decode_record(record: Record) -> Result<Arc<v2::Envelope<v2::Raw>>, StorageDecodeError> {
+        let envelope = match record.decode_arc::<v2::Envelope<v2::Raw>>() {
+            Ok(envelope) => envelope,
+            Err(RecordDecodeError::TypedValueMismatch(v1_envelope)) => {
+                let v1_envelope: Arc<Envelope> = v1_envelope
+                    .downcast_arc()
+                    .map_err(|_| StorageDecodeError::DecodeValue("Type mismatch. Record value in PolyBytes::Typed does not match requested type".into()))?;
+
+                let v1_envelope = match Arc::try_unwrap(v1_envelope) {
+                    Ok(v1_envelope) => v1_envelope,
+                    Err(arc) => arc.as_ref().clone(),
+                };
+
+                let envelope: v2::Envelope<v2::Raw> = v1_envelope
+                    .try_into()
+                    .map_err(|err: anyhow::Error| StorageDecodeError::DecodeValue(err.into()))?;
+
+                Arc::new(envelope)
+            }
+            Err(RecordDecodeError::StorageDecodeError(err)) => return Err(err),
+        };
+
+        Ok(envelope)
     }
 
     async fn run_inner(&mut self) -> Result<(), ProcessorError> {
@@ -515,7 +570,11 @@ where
             tokio::time::interval(with_jitter(Duration::from_millis(500), 0.5));
         status_update_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-        let mut vqueues = VQueuesMetaCache::create(partition_store.partition_db().clone()).await?;
+        let mut vqueues = VQueuesMetaCache::create(
+            partition_store.partition_db().clone(),
+            VQUEUE_CACHE_CAPACITY,
+        )
+        .await?;
 
         let mut action_collector = ActionCollector::default();
         let mut command_buffer =
@@ -585,7 +644,7 @@ where
                     action_collector.clear();
 
                     for entry in command_buffer.drain(..) {
-                        let Some((lsn, record)) = self.maybe_advance(entry, &mut transaction, &started_at).await? else {
+                        let Some((lsn, record)) = self.maybe_advance(entry, &mut transaction, &started_at)? else {
                             // this happens when we are reading a filtered gap
                             continue;
                         };
@@ -598,8 +657,9 @@ where
 
                         let record = LsnEnvelope {
                             lsn,
+                            keys: record.keys().clone(),
                             created_at: record.created_at(),
-                            envelope: record.decode_arc()?,
+                            envelope: Self::decode_record(record)?,
                         };
 
                         let maybe_announce_leader = self.apply_record(
@@ -653,7 +713,8 @@ where
                                 &mut partition_store,
                                 &self.replica_set_states,
                                 config,
-                                &mut vqueues
+                                &mut vqueues,
+                                &self.state_machine.rule_book,
                             ).await?;
 
                             Span::current().record("is_leader", is_leader);
@@ -687,9 +748,9 @@ where
                     if let Some(lsn) = &self.status.last_applied_log_lsn {
                         self.last_applied_log_lsn_watch.send_replace(*lsn);
                     }
-                    self.leadership_state.handle_actions(action_collector.drain(..))?;
+                    self.leadership_state.handle_actions(vqueues.view(), action_collector.drain(..))?;
                 },
-                result = self.leadership_state.run(&self.state_machine) => {
+                result = self.leadership_state.run(&self.state_machine, vqueues.view()) => {
                     let action_effects = result?;
                     // We process the action_effects not directly in the run future because it
                     // requires the run future to be cancellation safe. In the future this could be
@@ -697,7 +758,7 @@ where
                     self.leadership_state.handle_action_effects(action_effects).await?;
                 }
                 Some(leader_query_cmd) = self.leader_query_rx.recv() => {
-                    self.on_leader_query(leader_query_cmd);
+                    self.on_leader_query(vqueues.view(), leader_query_cmd);
                 }
             }
             // Allow other tasks on this thread to run, but only if we have exhausted the coop
@@ -728,8 +789,9 @@ where
         Ok(())
     }
 
-    fn on_leader_query(&mut self, leader_query_cmd: LeaderQueryCommand) {
-        self.leadership_state.handle_leader_query(leader_query_cmd);
+    fn on_leader_query(&mut self, metas: VQueuesMeta<'_>, leader_query_cmd: LeaderQueryCommand) {
+        self.leadership_state
+            .handle_leader_query(metas, leader_query_cmd);
     }
 
     async fn on_pp_rpc_request(
@@ -895,7 +957,7 @@ where
             .await;
     }
 
-    async fn maybe_advance<'a>(
+    fn maybe_advance<'a>(
         &mut self,
         maybe_record: LogEntry,
         transaction: &mut PartitionStoreTransaction<'a>,
@@ -966,38 +1028,56 @@ where
         transaction: &mut PartitionStoreTransaction<'_>,
         action_collector: &mut ActionCollector,
         vqueues_cache: &mut VQueuesMetaCache,
-    ) -> Result<Option<Box<AnnounceLeader>>, state_machine::Error> {
-        trace!(lsn = %record.lsn, "Processing bifrost record for '{}': {:?}", record.envelope.command.name(), record.envelope.header);
+    ) -> Result<Option<Box<AnnounceLeaderCommand>>, state_machine::Error> {
+        trace!(lsn = %record.lsn, "Processing bifrost record for '{}': {:?}", record.envelope.kind(), record.envelope.header());
 
-        if let Some(dedup_information) = self.is_targeted_to_me(&record.envelope.header) {
-            // deduplicate if deduplication information has been provided
-            if let Some(dedup_information) = dedup_information {
-                if Self::is_outdated_or_duplicate(dedup_information, transaction).await? {
-                    debug!(
-                        "Ignoring outdated or duplicate message: {:?}",
-                        record.envelope.header
-                    );
-                    return Ok(None);
-                }
-                transaction
-                    .put_dedup_seq_number(
-                        dedup_information.producer_id.clone(),
-                        &dedup_information.sequence_number,
-                    )
-                    .map_err(state_machine::Error::Storage)?;
+        if !self.is_targeted_to_me(&record.keys) {
+            self.status.num_skipped_records += 1;
+            trace!(
+                "Ignore message which is not targeted to me Partition Range: {:?} Key: {:?}, Header: {:?}",
+                self.key_filter,
+                record.keys,
+                record.envelope.header()
+            );
+            return Ok(None);
+        }
+
+        // todo(azmy): use dedup() directly without first converting to DedupInformation
+        let dedup_information: Option<DedupInformation> = record.envelope.dedup().clone().into();
+
+        // deduplicate if deduplication information has been provided
+        if let Some(dedup_information) = dedup_information {
+            if Self::is_outdated_or_duplicate(&dedup_information, transaction).await? {
+                debug!(
+                    "Ignoring outdated or duplicate message: {:?}",
+                    record.envelope.header()
+                );
+                return Ok(None);
             }
+            transaction
+                .put_dedup_seq_number(
+                    dedup_information.producer_id.clone(),
+                    &dedup_information.sequence_number,
+                )
+                .map_err(state_machine::Error::Storage)?;
+        }
 
-            // todo: redesign to pass the arc (or reference) further down
-            let record_created_at = record.created_at;
-            let record_lsn = record.lsn;
-            let envelope = Arc::unwrap_or_clone(record.envelope);
+        // todo: redesign to pass the arc (or reference) further down
+        let record_created_at = record.created_at;
+        let record_lsn = record.lsn;
+        // note: v2 envelope is cheaply clonable since it holds either `Bytes` or
+        // Arc of the payload record.
+        let envelope = Arc::unwrap_or_clone(record.envelope);
 
-            if let Command::AnnounceLeader(announce_leader) = envelope.command {
-                // leadership change detected, let's finish our transaction here
-                return Ok(Some(announce_leader));
-            } else if let Command::UpdatePartitionDurability(partition_durability) =
-                envelope.command
-            {
+        match envelope.kind() {
+            v2::CommandKind::AnnounceLeader => {
+                let envelope = envelope.into_typed::<commands::AnnounceLeaderCommand>();
+                let announce_leader = envelope.into_inner()?;
+                return Ok(Some(Box::new(announce_leader)));
+            }
+            v2::CommandKind::UpdatePartitionDurability => {
+                let envelope = envelope.into_typed::<commands::UpdatePartitionDurabilityCommand>();
+                let partition_durability = envelope.into_inner()?;
                 if partition_durability.partition_id != self.partition_store.partition_id() {
                     self.status.num_skipped_records += 1;
                     trace!(
@@ -1015,10 +1095,11 @@ where
                 if self.trim_queue.push(&partition_durability) {
                     transaction.put_partition_durability(&partition_durability)?;
                 }
-            } else {
+            }
+            _ => {
                 self.state_machine
                     .apply(
-                        envelope.command,
+                        envelope,
                         record_created_at.into(),
                         record_lsn,
                         transaction,
@@ -1028,31 +1109,13 @@ where
                     )
                     .await?;
             }
-        } else {
-            self.status.num_skipped_records += 1;
-            trace!(
-                "Ignore message which is not targeted to me: {:?}",
-                record.envelope.header
-            );
         }
 
         Ok(None)
     }
 
-    fn is_targeted_to_me<'a>(&self, header: &'a Header) -> Option<&'a Option<DedupInformation>> {
-        match &header.dest {
-            Destination::Processor {
-                partition_key,
-                dedup,
-            } if self
-                .partition_store
-                .partition_key_range()
-                .contains(partition_key) =>
-            {
-                Some(dedup)
-            }
-            _ => None,
-        }
+    fn is_targeted_to_me(&self, keys: &Keys) -> bool {
+        keys.matches_key_query(&self.key_filter)
     }
 
     async fn is_outdated_or_duplicate(

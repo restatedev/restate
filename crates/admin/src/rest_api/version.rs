@@ -39,5 +39,6 @@ pub async fn version() -> Json<VersionInformation> {
                 .ingress
                 .advertised_address(tc.address_book())
         })),
+        features: Configuration::pinned().common.experimental.features(),
     })
 }

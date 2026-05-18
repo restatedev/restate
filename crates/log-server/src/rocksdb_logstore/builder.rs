@@ -17,10 +17,10 @@ use restate_core::ShutdownError;
 use restate_rocksdb::{
     CfExactPattern, CfName, DbName, DbSpecBuilder, OpenMode, RocksDb, RocksDbManager,
 };
-use restate_serde_util::ByteCount;
 use restate_types::config::{Configuration, LogServerOptions};
 use restate_types::health::HealthStatus;
 use restate_types::protobuf::common::{DatabaseKind, LogServerStatus};
+use restate_util_bytecount::ByteCount;
 
 use super::writer::LogStoreWriterBuilder;
 use super::{DATA_CF, METADATA_CF};

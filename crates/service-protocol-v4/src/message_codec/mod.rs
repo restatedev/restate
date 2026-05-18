@@ -17,6 +17,7 @@ use std::time::Duration;
 mod encoding;
 mod header;
 
+pub use crate::proto;
 pub(crate) use encoding::default_encode_decode;
 pub use encoding::{
     Decoder, Encoder, EncodingError, MessageEncodingError, ServiceWireDecoder, ServiceWireEncoder,
@@ -26,8 +27,8 @@ pub use proto::start_message::StateEntry;
 use restate_types::journal_v2::{
     CommandIndex, CommandType, CompletionType, EntryType, NotificationType,
 };
-
-pub use crate::proto;
+use restate_types::{LimitKey, Scope};
+use restate_util_string::ReString;
 
 const CUSTOM_MESSAGE_MASK: u16 = 0xFC00;
 
@@ -390,6 +391,9 @@ impl Message {
         retry_count_since_last_stored_entry: u32,
         duration_since_last_stored_entry: Duration,
         random_seed: u64,
+        scope: Option<&Scope>,
+        limit_key: &LimitKey<ReString>,
+        idempotency_key: Option<&ReString>,
     ) -> Self {
         Self::Start(proto::StartMessage {
             id,
@@ -403,6 +407,13 @@ impl Message {
             retry_count_since_last_stored_entry,
             duration_since_last_stored_entry: duration_since_last_stored_entry.as_millis() as u64,
             random_seed,
+            scope: scope.map(|scope| scope.to_string()),
+            limit_key: if limit_key == &LimitKey::None {
+                None
+            } else {
+                Some(limit_key.to_string())
+            },
+            idempotency_key: idempotency_key.map(|value| value.to_string()),
         })
     }
 

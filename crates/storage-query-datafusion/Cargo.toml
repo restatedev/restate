@@ -16,6 +16,8 @@ table_docs = []
 restate-workspace-hack = { workspace = true }
 
 restate-core = { workspace = true }
+restate-limiter = { workspace = true, features = ["rule-book"] }
+restate-metadata-store = { workspace = true }
 restate-partition-store = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["codec"] }
 restate-service-protocol-v4 = { workspace = true, features = ["entry-codec"]  }
@@ -44,6 +46,7 @@ paste = { workspace = true }
 prost = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde_json = { workspace = true }
+strum = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
@@ -57,3 +60,6 @@ restate-storage-api = { workspace = true, features = ["test-util"] }
 restate-types = { workspace = true, features = ["test-util"] }
 
 googletest = { workspace = true }
+
+[lints]
+workspace = true

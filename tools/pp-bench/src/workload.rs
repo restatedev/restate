@@ -24,22 +24,25 @@
 //! with the apply loop for thread time, which can perturb measurements
 //! slightly compared to the isolated production runtime.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use hdrhistogram::Histogram;
 
 use restate_cli_util::{c_println, c_success};
+use restate_limiter::RuleBook;
 use restate_partition_store::PartitionStoreManager;
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
-use restate_time_util::FriendlyDuration;
 use restate_types::SemanticRestateVersion;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::partitions::Partition;
 use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
+use restate_util_time::FriendlyDuration;
 use restate_vqueues::VQueuesMetaCache;
+use restate_worker::RuleBookCacheHandle;
 use restate_worker::partition::state_machine::{ActionCollector, StateMachine};
 
 use crate::RunOpts;
@@ -63,12 +66,17 @@ pub async fn run(
     // -----------------------------------------------------------------------
     let mut pool = if let Some(ref path) = opts.command_file {
         c_println!("Loading commands from {}", path.display());
+        let start_time = MillisSinceEpoch::now();
         let loaded = command_gen::load_commands_from_file(path)?;
-        c_println!("Command pool: {} commands loaded", loaded.commands.len());
+        c_println!(
+            "Command pool: {} commands loaded (took: {}ms)",
+            loaded.envelopes.len(),
+            start_time.elapsed().as_millis()
+        );
         if let Some(ref lsns) = loaded.lsns {
-            CommandPool::with_lsns(loaded.commands, lsns.clone())
+            CommandPool::with_lsns(loaded.envelopes, lsns.clone())
         } else {
-            CommandPool::new(loaded.commands)
+            CommandPool::new(loaded.envelopes)
         }
     } else {
         let total_needed = opts.warmup + opts.num_commands;
@@ -100,11 +108,14 @@ pub async fn run(
         KeyRange::FULL,
         SemanticRestateVersion::unknown(),
         None, /* schema */
+        Arc::new(RuleBook::default()),
+        RuleBookCacheHandle::detached(),
     );
 
     // Initialize the vqueue cache from the (empty) partition store — this follows
     // the production init path and avoids requiring test-util features.
-    let mut vq_cache = VQueuesMetaCache::create(partition_store.partition_db().clone()).await?;
+    let mut vq_cache =
+        VQueuesMetaCache::create(partition_store.partition_db().clone(), 100_000).await?;
 
     let workload_name = format!("{:?}", opts.spec.workload);
     let batch_size = opts.batch_size;
@@ -125,10 +136,10 @@ pub async fn run(
     // -----------------------------------------------------------------------
     // 4. Warmup
     // -----------------------------------------------------------------------
+    let mut action_collector = ActionCollector::default();
     if warmup > 0 {
         c_println!("Warming up ({} commands)...", warmup);
         let mut lsn = Lsn::OLDEST;
-        let mut action_collector = ActionCollector::default();
 
         let warmup_batch_count = warmup.div_ceil(batch_size as u64);
         let mut cmds_applied: u64 = 0;
@@ -137,7 +148,7 @@ pub async fn run(
             let mut txn = partition_store.transaction();
             let batch_cmds = (batch_size as u64).min(warmup - cmds_applied);
             for _ in 0..batch_cmds {
-                let (cmd, _real_lsn) = pool.next_command();
+                let (cmd, _real_lsn) = pool.next_envelope();
                 state_machine
                     .apply(
                         cmd,
@@ -165,7 +176,6 @@ pub async fn run(
 
     let mut latencies = Histogram::<u64>::new(3).unwrap();
     let mut lsn = Lsn::from(1_000_000);
-    let mut action_collector = ActionCollector::default();
 
     let num_batches = num_commands.div_ceil(batch_size as u64);
     let mut total_cmds: u64 = 0;
@@ -176,7 +186,7 @@ pub async fn run(
 
         let mut txn = partition_store.transaction();
         for _ in 0..batch_cmds {
-            let (cmd, _real_lsn) = pool.next_command();
+            let (cmd, _real_lsn) = pool.next_envelope();
             state_machine
                 .apply(
                     cmd,
@@ -211,6 +221,8 @@ pub async fn run(
     reporter_handle.abort();
     let _ = reporter_handle.await;
 
+    RocksDbManager::get().shutdown().await;
+
     // -----------------------------------------------------------------------
     // 7. Summary
     // -----------------------------------------------------------------------
@@ -234,6 +246,5 @@ pub async fn run(
         print_summary(&summary);
     }
 
-    RocksDbManager::get().shutdown().await;
     Ok(())
 }

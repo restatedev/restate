@@ -17,11 +17,11 @@ use std::sync::atomic::Ordering;
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use restate_memory::MemoryController;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
-use restate_types::SharedString;
+use restate_memory::MemoryController;
+use restate_platform::prelude::ReString;
 use restate_types::cluster_state::{ClusterState, ClusterStateUpdater};
 use restate_types::health::{Health, NodeStatus};
 use restate_types::identifiers::PartitionId;
@@ -132,7 +132,7 @@ impl Handle {
     pub fn start_runtime<F, R>(
         &self,
         root_task_kind: TaskKind,
-        runtime_name: impl Into<SharedString>,
+        runtime_name: impl Into<ReString>,
         partition_id: Option<PartitionId>,
         root_future: impl FnOnce() -> F + Send + 'static,
     ) -> Result<RuntimeTaskHandle<R>, RuntimeError>
@@ -148,7 +148,7 @@ impl Handle {
     pub fn spawn<F>(
         &self,
         kind: TaskKind,
-        name: impl Into<SharedString>,
+        name: impl Into<ReString>,
         future: F,
     ) -> Result<TaskId, ShutdownError>
     where
@@ -164,7 +164,7 @@ impl Handle {
     pub fn spawn_child<F>(
         &self,
         kind: TaskKind,
-        name: impl Into<SharedString>,
+        name: impl Into<ReString>,
         future: F,
     ) -> Result<TaskId, ShutdownError>
     where
@@ -179,7 +179,7 @@ impl Handle {
     pub fn spawn_unmanaged<F, T>(
         &self,
         kind: TaskKind,
-        name: impl Into<SharedString>,
+        name: impl Into<ReString>,
         future: F,
     ) -> Result<TaskHandle<T>, ShutdownError>
     where
@@ -200,7 +200,7 @@ impl Handle {
     pub fn spawn_unmanaged_child<F, T>(
         &self,
         kind: TaskKind,
-        name: impl Into<SharedString>,
+        name: impl Into<ReString>,
         future: F,
     ) -> Result<TaskHandle<T>, ShutdownError>
     where
@@ -216,7 +216,7 @@ impl Handle {
     pub fn spawn_local<F>(
         &self,
         kind: TaskKind,
-        name: impl Into<SharedString>,
+        name: impl Into<ReString>,
         future: F,
     ) -> Result<TaskId, ShutdownError>
     where

@@ -18,8 +18,8 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytes_utils::SegmentedBuf;
 use tracing::warn;
 
-use restate_serde_util::ByteCount;
 use restate_types::{errors::GenericError, service_protocol::ServiceProtocolVersion};
+use restate_util_bytecount::ByteCount;
 
 #[derive(Debug, codederror::CodedError, thiserror::Error)]
 #[code(restate_errors::RT0012)]
@@ -329,6 +329,9 @@ mod tests {
             10,
             Duration::ZERO,
             10,
+            None,
+            &LimitKey::None,
+            None,
         );
 
         let expected_msg_1 = Message::InputCommand(Bytes::from_static(b"123"));
@@ -405,7 +408,7 @@ mod tests {
         let expected_msg_size = message.encoded_len(ServiceProtocolVersion::V1);
         let msg = encoder.encode(message);
 
-        decoder.push(msg.clone());
+        decoder.push(msg);
         let_assert!(
             EncodingError::MessageSizeLimit(msg_size, limit) = decoder.consume_next().unwrap_err()
         );

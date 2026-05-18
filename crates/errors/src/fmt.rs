@@ -180,21 +180,21 @@ mod tests {
     pub struct MyError;
 
     #[test]
-    fn test_printing_error() {
+    fn printing_error() {
         let error = MyError {};
         error_it!(error);
         error_it!(&error, "My error message {}", 1);
     }
 
     #[test]
-    fn test_printing_warn() {
+    fn printing_warn() {
         let error = MyError {};
         warn_it!(error);
         warn_it!(&error, "My error message {}", 1);
     }
 
     #[test]
-    fn test_printing_info() {
+    fn printing_info() {
         let error = MyError {};
         info_it!(error);
         info_it!(&error, "My error message {}", 1);

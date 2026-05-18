@@ -32,7 +32,7 @@ pub(crate) fn register_self(
     resolver: Live<impl ServiceMetadataResolver + Send + Sync + 'static>,
 ) -> datafusion::common::Result<()> {
     let schema = SysServiceBuilder::schema();
-    let statistics = TableStatisticsBuilder::new(schema.clone())
+    let statistics = TableStatisticsBuilder::new(schema)
         .with_num_rows_estimate(SERVICE_ROW_ESTIMATE)
         .with_primary_key("name");
     let service_table = GenericTableProvider::new(

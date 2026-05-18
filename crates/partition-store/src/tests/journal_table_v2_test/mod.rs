@@ -99,7 +99,7 @@ fn mock_one_way_call_command(invocation_id_completion_id: CompletionId) -> Entry
 fn populate_sleep_journal<T: WriteJournalTable>(txn: &mut T) {
     for i in 0..5 {
         txn.put_journal_entry(
-            MOCK_INVOCATION_ID_1,
+            &MOCK_INVOCATION_ID_1,
             i,
             &StoredRawEntry::new(
                 StoredRawEntryHeader::new(MillisSinceEpoch::now()),
@@ -111,7 +111,7 @@ fn populate_sleep_journal<T: WriteJournalTable>(txn: &mut T) {
     }
     for i in 5..10 {
         txn.put_journal_entry(
-            MOCK_INVOCATION_ID_1,
+            &MOCK_INVOCATION_ID_1,
             i,
             &StoredRawEntry::new(
                 StoredRawEntryHeader::new(MillisSinceEpoch::now()),
@@ -199,7 +199,7 @@ async fn sleep_point_lookups<T: ReadJournalTable>(txn: &mut T) {
 }
 
 fn delete_journal<T: WriteJournalTable>(txn: &mut T, length: usize) {
-    txn.delete_journal(MOCK_INVOCATION_ID_1, length as u32)
+    txn.delete_journal(&MOCK_INVOCATION_ID_1, length as u32)
         .unwrap();
 }
 
@@ -229,7 +229,7 @@ async fn verify_journal_deleted<T: ReadJournalTable>(txn: &mut T, length: usize)
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_sleep_journal() {
+async fn sleep_journal() {
     let mut rocksdb = storage_test_environment().await;
 
     let mut txn = rocksdb.transaction();
@@ -252,14 +252,14 @@ async fn test_sleep_journal() {
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_call_journal() {
+async fn call_journal() {
     let mut rocksdb = storage_test_environment().await;
 
     let mut txn = rocksdb.transaction();
 
     // Populate
     txn.put_journal_entry(
-        MOCK_INVOCATION_ID_1,
+        &MOCK_INVOCATION_ID_1,
         0,
         &StoredRawEntry::new(
             StoredRawEntryHeader::new(MillisSinceEpoch::now()),
@@ -269,7 +269,7 @@ async fn test_call_journal() {
     )
     .unwrap();
     txn.put_journal_entry(
-        MOCK_INVOCATION_ID_1,
+        &MOCK_INVOCATION_ID_1,
         1,
         &StoredRawEntry::new(
             StoredRawEntryHeader::new(MillisSinceEpoch::now()),

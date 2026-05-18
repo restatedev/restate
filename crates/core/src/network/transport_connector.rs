@@ -171,9 +171,9 @@ pub mod test_util {
             .await?;
 
             // NodeId **must** be generational at this layer
-            let _peer_node_id = hello.my_node_id.ok_or(HandshakeError::Failed(
-                "NodeId is not set in the Hello message".to_owned(),
-            ))?;
+            let _peer_node_id = hello.my_node_id.ok_or_else(|| {
+                HandshakeError::Failed("NodeId is not set in the Hello message".to_owned())
+            })?;
 
             // Are we both from the same cluster?
             if hello.cluster_name != nodes_config.cluster_name() {

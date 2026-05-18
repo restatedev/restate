@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::task::{Poll, ready};
 use std::time::Duration;
 
 use enum_map::{Enum, EnumMap};
@@ -16,10 +17,14 @@ use tokio::time::Instant;
 
 use restate_clock::RoughTimestamp;
 use restate_storage_api::StorageError;
+use restate_storage_api::vqueue_table::EntryMetadata;
+use restate_storage_api::vqueue_table::metadata::VQueueMeta;
+use restate_storage_api::vqueue_table::scheduler::YieldReason;
 use restate_storage_api::vqueue_table::{EntryKey, EntryValue, VQueueStore, stats::WaitStats};
-use restate_types::vqueues::VQueueId;
+use restate_types::vqueues::{EntryId, VQueueId};
 use restate_worker_api::ResourceKind;
 
+use crate::cache::{self, VQueueHandle};
 use crate::metric_definitions::{
     VQUEUE_CONCURRENCY_RULES_WAIT_MS, VQUEUE_DEPLOYMENT_CONCURRENCY_WAIT_MS,
     VQUEUE_INVOKER_CONCURRENCY_WAIT_MS, VQUEUE_INVOKER_MEMORY_WAIT_MS,
@@ -29,10 +34,8 @@ use crate::scheduler::queue::QueueItem;
 
 use super::clock::SchedulerClock;
 use super::queue::Queue;
-use super::queue_meta::MetaLiteUpdate;
-pub use super::queue_meta::VQueueMetaLite;
 use super::resource_manager::{AcquireOutcome, PermitBuilder};
-use super::{ResourceManager, RunAction, UnconfirmedAssignments, VQueueHandle, YieldAction};
+use super::{ResourceManager, RunAction, UnconfirmedAssignments, YieldAction};
 
 const QUANTUM: i32 = 1;
 
@@ -210,9 +213,6 @@ impl Stats {
 
 #[derive(derive_more::Debug)]
 pub struct VQueueState<S: VQueueStore> {
-    pub handle: VQueueHandle,
-    pub qid: VQueueId,
-    meta: VQueueMetaLite,
     deficit: i32,
     #[debug(skip)]
     unconfirmed_assignments: UnconfirmedAssignments,
@@ -224,17 +224,9 @@ pub struct VQueueState<S: VQueueStore> {
 }
 
 impl<S: VQueueStore> VQueueState<S> {
-    pub fn new(
-        qid: VQueueId,
-        handle: VQueueHandle,
-        meta: VQueueMetaLite,
-        num_running: u32,
-    ) -> Self {
-        let queue = Queue::new(num_running);
+    pub fn new(qid: &VQueueId, storage: &S, num_running: u32) -> Self {
+        let queue = Queue::new(num_running, storage, qid);
         Self {
-            handle,
-            qid,
-            meta,
             deficit: QUANTUM,
             unconfirmed_assignments: UnconfirmedAssignments::new(),
             queue,
@@ -243,15 +235,8 @@ impl<S: VQueueStore> VQueueState<S> {
         }
     }
 
-    pub fn apply_meta_update(&mut self, update: &MetaLiteUpdate) {
-        self.meta.apply_update(update)
-    }
-
-    pub fn new_empty(qid: VQueueId, handle: VQueueHandle, meta: VQueueMetaLite) -> Self {
+    pub fn new_empty() -> Self {
         Self {
-            qid,
-            handle,
-            meta,
             unconfirmed_assignments: UnconfirmedAssignments::new(),
             queue: Queue::new_closed(),
             deficit: 0,
@@ -263,7 +248,8 @@ impl<S: VQueueStore> VQueueState<S> {
     pub fn try_pop(
         &mut self,
         cx: &mut std::task::Context<'_>,
-        storage: &S,
+        handle: VQueueHandle,
+        slot: &cache::Slot,
         resources: &mut ResourceManager,
     ) -> Result<Pop, StorageError> {
         let (inbox_head_key, inbox_head_value, is_running) = match self.queue.head() {
@@ -271,8 +257,8 @@ impl<S: VQueueStore> VQueueState<S> {
             Some(QueueItem::Running { key, value }) => (key, value, true),
             e @ Some(QueueItem::None) | e @ None => {
                 unreachable!(
-                    "cannot pop from empty queue or attempted to pop before polling {:?}/{e:?}",
-                    self.handle
+                    "cannot pop from empty queue or attempted to pop before polling {}/{e:?}",
+                    slot.vqueue_id()
                 )
             }
         };
@@ -290,31 +276,32 @@ impl<S: VQueueStore> VQueueState<S> {
             let action = YieldAction {
                 key: *inbox_head_key,
                 next_run_at: None,
+                reason: YieldReason::PartitionLeaderChange,
             };
-            self.queue
-                .advance(storage, &self.unconfirmed_assignments, &self.qid)?;
+            self.queue.try_advance()?;
             return Ok(Pop::Yield(action));
         }
 
         match resources.poll_acquire_permit(
             cx,
-            self.handle,
-            &self.meta,
+            handle,
+            slot.meta(),
             inbox_head_key,
             &inbox_head_value.metadata,
             &mut self.current_permit,
         ) {
             AcquireOutcome::Acquired(resources) => {
-                self.unconfirmed_assignments
-                    .insert(*inbox_head_key, resources);
+                self.unconfirmed_assignments.insert(
+                    *inbox_head_key,
+                    (resources, inbox_head_value.metadata.clone()),
+                );
 
                 let action = RunAction {
                     key: *inbox_head_key,
                     wait_stats: self.head_stats.finalize(),
                 };
 
-                self.queue
-                    .advance(storage, &self.unconfirmed_assignments, &self.qid)?;
+                self.queue.try_advance()?;
                 Ok(Pop::Run(action))
             }
             AcquireOutcome::BlockedOn(resource) => {
@@ -327,22 +314,33 @@ impl<S: VQueueStore> VQueueState<S> {
         }
     }
 
-    pub fn is_dormant(&self) -> bool {
+    pub fn is_dormant(&self, meta: &VQueueMeta) -> bool {
         // We hold on to the vqueue until we confirm/reject all pending assignments. If we didn't
         // do so, we risk revisiting/redequeuing the unconfirmed items if the vqueue popped back to life
         // (i.e., on enqueue). This is the reason why we check for `unconfirmed_assignments`
-        (self.queue.is_empty() || self.meta.is_inbox_empty() || self.meta.is_queue_paused())
+        (self.queue.is_empty() || meta.is_inbox_empty() || meta.queue_is_paused())
             && self.unconfirmed_assignments.is_empty()
     }
 
-    pub fn poll_eligibility(&mut self, storage: &S) -> Result<DetailedEligibility, StorageError> {
-        self.queue
-            .advance_if_needed(storage, &self.unconfirmed_assignments, &self.qid)?;
+    pub fn poll_eligibility(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+        slot: &cache::Slot,
+        storage: &S,
+    ) -> Poll<Result<Eligibility, StorageError>> {
+        ready!(self.queue.poll_advance_if_needed(
+            cx,
+            storage,
+            &self.unconfirmed_assignments,
+            slot.vqueue_id(),
+            self.num_waiting_inbox(slot.meta()) == 0,
+            false,
+        ))?;
 
-        Ok(self.check_eligibility())
+        Poll::Ready(Ok(self.check_eligibility(slot.meta()).as_compact()))
     }
 
-    pub fn check_eligibility(&self) -> DetailedEligibility {
+    pub fn check_eligibility(&self, meta: &VQueueMeta) -> DetailedEligibility {
         let inbox_head_key = match self.queue.head() {
             Some(QueueItem::Running { .. }) => return DetailedEligibility::EligibleRunning,
             Some(QueueItem::Inbox { key, .. }) => key,
@@ -350,7 +348,7 @@ impl<S: VQueueStore> VQueueState<S> {
             None if self.queue.remaining_in_running_stage() > 0 => {
                 return DetailedEligibility::EligibleRunning;
             }
-            None if self.meta.inbox_len() > 0 => return DetailedEligibility::EligibleInbox,
+            None if meta.total_waiting() > 0 => return DetailedEligibility::EligibleInbox,
             None => return DetailedEligibility::Empty,
         };
 
@@ -371,7 +369,10 @@ impl<S: VQueueStore> VQueueState<S> {
         }
     }
 
-    pub fn remove_from_unconfirmed_assignments(&mut self, key: &EntryKey) -> Option<PermitBuilder> {
+    pub fn remove_from_unconfirmed_assignments(
+        &mut self,
+        key: &EntryKey,
+    ) -> Option<(PermitBuilder, EntryMetadata)> {
         self.unconfirmed_assignments.remove(key)
     }
 
@@ -389,6 +390,18 @@ impl<S: VQueueStore> VQueueState<S> {
         self.head_stats.snapshot()
     }
 
+    /// Returns the `EntryId` of the queue's current head if it has already been
+    /// advanced, without performing any storage IO.
+    ///
+    /// Returns `None` when the head has not yet been read (brand-new queue) or
+    /// the queue is known to be empty.
+    pub fn head_entry_id(&self) -> Option<EntryId> {
+        match self.queue.head()? {
+            QueueItem::Inbox { key, .. } | QueueItem::Running { key, .. } => Some(*key.entry_id()),
+            QueueItem::None => None,
+        }
+    }
+
     /// How many items left in the running stage
     pub fn num_remaining_in_running_stage(&self) -> u32 {
         self.queue.remaining_in_running_stage()
@@ -396,10 +409,9 @@ impl<S: VQueueStore> VQueueState<S> {
 
     /// Takes into account the number of unconfirmed assignments when calculating
     /// the inbox length
-    pub fn num_waiting_inbox(&self) -> u64 {
-        self.meta
-            .inbox_len()
-            .saturating_sub(self.unconfirmed_assignments.len()) as u64
+    pub fn num_waiting_inbox(&self, meta: &VQueueMeta) -> u64 {
+        meta.total_waiting()
+            .saturating_sub(self.unconfirmed_assignments.len() as u64)
     }
 }
 

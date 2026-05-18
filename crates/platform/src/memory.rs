@@ -166,7 +166,7 @@ mod tests {
     use bytes::{Bytes, BytesMut};
 
     #[test]
-    fn test_primitives() {
+    fn primitives() {
         assert_eq!(().estimated_memory_size(), 0);
 
         let slice: &[u8] = &[1, 2, 3, 4, 5];
@@ -174,14 +174,14 @@ mod tests {
     }
 
     #[test]
-    fn test_string_and_bytes() {
+    fn string_and_bytes() {
         assert_eq!("hello".to_string().estimated_memory_size(), 5);
         assert_eq!(Bytes::from_static(b"world").estimated_memory_size(), 5);
         assert_eq!(BytesMut::from(&b"test"[..]).estimated_memory_size(), 4);
     }
 
     #[test]
-    fn test_option() {
+    fn option() {
         let none: Option<String> = None;
         assert_eq!(none.estimated_memory_size(), 0);
 
@@ -190,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn test_vec_and_slice() {
+    fn vec_and_slice() {
         let vec: Vec<String> = vec!["hello".to_string(), "world".to_string()];
         assert_eq!(vec.estimated_memory_size(), 10);
 
@@ -200,7 +200,7 @@ mod tests {
 
     #[test]
     #[allow(clippy::needless_borrow, clippy::unnecessary_mut_passed)]
-    fn test_references() {
+    fn references() {
         // These explicit borrows are intentional - we're testing the
         // EstimatedMemorySize implementations for &T and &mut T
         let s = "hello".to_string();
@@ -212,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn test_smart_pointers() {
+    fn smart_pointers() {
         use std::borrow::Cow;
         use std::rc::Rc;
         use std::sync::Arc;

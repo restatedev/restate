@@ -85,7 +85,7 @@ pub async fn run_configure(State(env): State<CliEnv>, opts: &Configure) -> Resul
         match accounts
             .iter()
             .find_position(|acc| acc.account_id == account)
-            .or(accounts.iter().find_position(|env| env.name == account))
+            .or_else(|| accounts.iter().find_position(|env| env.name == account))
         {
             Some((i, _)) => i,
             None => return Err(anyhow::anyhow!("Couldn't find account {account}",)),
@@ -117,10 +117,11 @@ pub async fn run_configure(State(env): State<CliEnv>, opts: &Configure) -> Resul
         match environments
             .iter()
             .find_position(|env| env.environment_id == environment)
-            .or(environments
-                .iter()
-                .find_position(|env| env.name == environment))
-        {
+            .or_else(|| {
+                environments
+                    .iter()
+                    .find_position(|env| env.name == environment)
+            }) {
             Some((i, _)) => i,
             None => {
                 return Err(anyhow::anyhow!(

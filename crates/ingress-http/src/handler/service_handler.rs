@@ -40,7 +40,7 @@ use restate_types::schema::invocation_target::{
     DeploymentStatus, InvocationTargetMetadata, InvocationTargetResolver,
 };
 use restate_types::time::MillisSinceEpoch;
-use restate_util_string::{ReString, RestrictedValue};
+use restate_util_string::{ReString, RestateString};
 
 pub(crate) const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
 const LIMIT_KEY_HEADER: HeaderName = HeaderName::from_static("x-restate-limit-key");
@@ -130,17 +130,18 @@ where
 
         // Parse scope from path
         let scope = if let Some(scope) = scope {
-            Some(Scope::new(
-                RestrictedValue::new(scope)
-                    .map_err(HandlerError::BadScopeValue)?
-                    .as_str(),
-            ))
+            Some(Scope::try_from_restring(scope).map_err(HandlerError::BadScopeValue)?)
         } else {
             None
         };
 
         // Scoped invocations require vqueues to be enabled
-        if scope.is_some() && !Configuration::pinned().common.experimental_enable_vqueues {
+        if scope.is_some()
+            && !Configuration::pinned()
+                .common
+                .experimental
+                .is_vqueues_enabled()
+        {
             return Err(HandlerError::ScopeRequiresVQueues);
         }
 
@@ -364,7 +365,7 @@ fn parse_headers(parts: http::request::Parts) -> Result<Vec<Header>, HandlerErro
 #[serde_as]
 #[derive(Deserialize)]
 #[serde(transparent)]
-struct DurationQueryParam(#[serde_as(as = "restate_time_util::FriendlyDuration")] Duration);
+struct DurationQueryParam(#[serde_as(as = "restate_util_time::FriendlyDuration")] Duration);
 
 fn parse_delay(query: Option<&str>) -> Result<Option<Duration>, HandlerError> {
     if query.is_none() {

@@ -205,7 +205,7 @@ impl InvocationUuid {
         Self::from_u128(u128::from_be_bytes(b))
     }
 
-    pub const fn to_bytes(&self) -> [u8; Self::RAW_BYTES_LEN] {
+    pub const fn to_bytes(self) -> [u8; Self::RAW_BYTES_LEN] {
         self.0.to_be_bytes()
     }
 
@@ -526,7 +526,7 @@ impl InvocationId {
         self.inner
     }
 
-    pub fn to_bytes(&self) -> EncodedInvocationId {
+    pub fn to_bytes(self) -> EncodedInvocationId {
         let mut buf = EncodedInvocationId::default();
         self.encode_raw_bytes(&mut buf);
         buf
@@ -545,7 +545,7 @@ impl InvocationId {
     }
 
     /// Generate random seed to feed RNG in SDKs.
-    pub fn to_random_seed(&self) -> u64 {
+    pub fn to_random_seed(self) -> u64 {
         use std::hash::{DefaultHasher, Hash, Hasher};
 
         let mut hasher = DefaultHasher::new();
@@ -674,6 +674,8 @@ pub struct IdempotencyId {
     pub service_handler: ByteString,
     /// The user supplied idempotency_key
     pub idempotency_key: ByteString,
+    /// Optional scope for vqueue partitioning
+    pub scope: Option<Scope>,
 
     partition_key: PartitionKey,
 }
@@ -684,23 +686,29 @@ impl IdempotencyId {
         service_key: Option<ByteString>,
         service_handler: ByteString,
         idempotency_key: ByteString,
+        scope: Option<Scope>,
     ) -> Self {
-        // The ownership model for idempotent invocations is the following:
-        //
+        // When scoped, the partition key comes from the scope.
+        // Otherwise:
         // * For services without key, the partition key is the hash(idempotency key).
-        //   This makes sure that for a given idempotency key and its scope, we always land in the same partition.
-        // * For services with key, the partition key is the hash(service key), this due to the virtual object locking requirement.
-        let partition_key = deterministic_partition_key(
-            service_key.as_ref().map(|bs| bs.as_ref()),
-            Some(&idempotency_key),
-        )
-        .expect("A deterministic partition key can always be generated for idempotency id");
+        // * For services with key, the partition key is the hash(service key).
+        let partition_key = scope
+            .as_ref()
+            .map(|s| s.partition_key())
+            .or_else(|| {
+                deterministic_partition_key(
+                    service_key.as_ref().map(|bs| bs.as_ref()),
+                    Some(&idempotency_key),
+                )
+            })
+            .expect("A deterministic partition key can always be generated for idempotency id");
 
         Self {
             service_name,
             service_key,
             service_handler,
             idempotency_key,
+            scope,
             partition_key,
         }
     }
@@ -715,6 +723,7 @@ impl IdempotencyId {
             service_key: invocation_target.key().cloned(),
             service_handler: invocation_target.handler_name().clone(),
             idempotency_key,
+            scope: invocation_target.scope().cloned(),
             partition_key: invocation_id.partition_key(),
         }
     }
@@ -1043,7 +1052,7 @@ macro_rules! ulid_backed_id {
                     Self(ulid)
                 }
 
-                pub fn to_bytes(&self) -> [u8; 16] {
+                pub fn to_bytes(self) -> [u8; 16] {
                     self.0.to_bytes()
                 }
             }
@@ -1383,6 +1392,7 @@ mod mocks {
                 service_key: None,
                 service_handler: ByteString::from_static(service_handler),
                 idempotency_key: ByteString::from_static(idempotency_key),
+                scope: None,
                 partition_key,
             }
         }
@@ -1393,6 +1403,7 @@ mod mocks {
                 Some(Alphanumeric.sample_string(&mut rand::rng(), 16).into()),
                 Alphanumeric.sample_string(&mut rand::rng(), 8).into(),
                 Alphanumeric.sample_string(&mut rand::rng(), 8).into(),
+                None,
             )
         }
     }
@@ -1574,7 +1585,7 @@ mod tests {
     }
 
     #[test]
-    fn test_subscription_id_format() {
+    fn subscription_id_format() {
         let a = SubscriptionId::new();
         assert!(a.timestamp().as_u64() > 0);
         let a_str = a.to_string();
@@ -1582,7 +1593,7 @@ mod tests {
     }
 
     #[test]
-    fn test_subscription_roundtrip() {
+    fn subscription_roundtrip() {
         let a = SubscriptionId::new();
         let b: SubscriptionId = a.to_string().parse().unwrap();
         assert_eq!(a, b);
@@ -1590,7 +1601,7 @@ mod tests {
     }
 
     #[test]
-    fn test_deployment_id_from_str() {
+    fn deployment_id_from_str() {
         let deployment_id = "dp_11nGQpCRmau6ypL82KH2TnP";
         let from_str_result = DeploymentId::from_str(deployment_id);
         assert!(from_str_result.is_ok());

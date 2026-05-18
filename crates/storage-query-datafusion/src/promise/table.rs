@@ -42,7 +42,8 @@ pub(crate) fn register_self(
         SysPromiseBuilder::schema(),
         sys_promise_sort_order(),
         remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
-        FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key"),
+        FirstMatchingPartitionKeyExtractor::default()
+            .with_scope_or_service_key("scope", "service_key"),
     );
     ctx.register_partitioned_table(NAME, Arc::new(table))
 }

@@ -387,7 +387,7 @@ mod tests {
 
     //test display of NodeId and equality
     #[test]
-    fn test_display() {
+    fn display() {
         let plain = NodeId::Plain(PlainNodeId(1));
         let generational = NodeId::Generational(GenerationalNodeId(PlainNodeId(1), 2));
         assert_eq!("N1", plain.to_string());
@@ -397,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_plain_node_id_string() {
+    fn parse_plain_node_id_string() {
         let plain = NodeId::Plain(PlainNodeId(25));
         assert_eq!("N25", plain.to_string());
         let parsed_1: PlainNodeId = "N25".parse().unwrap();
@@ -413,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_generational_node_id_string() {
+    fn parse_generational_node_id_string() {
         let generational = GenerationalNodeId::new(25, 18);
         assert_eq!("N25:18", generational.to_string());
         let parsed_1: GenerationalNodeId = "N25:18".parse().unwrap();
@@ -427,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn test_equality() {
+    fn equality() {
         let plain1 = NodeId::Plain(PlainNodeId(1));
         let generational1 = NodeId::Generational(GenerationalNodeId(PlainNodeId(1), 2));
         let generational1_3 = NodeId::Generational(GenerationalNodeId(PlainNodeId(1), 3));

@@ -18,7 +18,7 @@ use restate_storage_api::lock_table::{LoadLocks, LockState, ScanLocksTable, Writ
 use restate_types::identifiers::{PartitionKey, WithPartitionKey};
 use restate_types::sharding::KeyRange;
 use restate_types::{CanonicalLockId, LockName, Scope};
-use restate_util_string::InternedReString;
+use restate_util_string::RestateString;
 
 use crate::TableKind::Locks;
 use crate::keys::{
@@ -84,9 +84,9 @@ impl KeyDecode for Option<Scope> {
                 // We are always decoding keys that we have serialized by this type, therefore
                 // they are valid utf-8 strings.
                 let raw = unsafe { std::str::from_utf8_unchecked(string_data.chunk()) };
-                let scope = InternedReString::new(raw);
+                let scope = unsafe { Scope::new_unchecked(raw) };
                 string_data.advance(scope_len);
-                Ok(Some(Scope::from(scope)))
+                Ok(Some(scope))
             }
             b'u' => Ok(None),
             _ => Err(StorageError::Generic(anyhow::anyhow!(

@@ -10,14 +10,15 @@
 
 mod entry;
 mod inbox;
+mod inbox_reader;
 mod input;
 mod key_codec;
 mod metadata;
 mod reader;
 mod running_reader;
-mod waiting_reader;
 
 use std::io::Cursor;
+use std::pin::Pin;
 
 pub use entry::{EntryStatusKey, EntryStatusKeyRef, StatusHeaderRaw};
 pub use inbox::InboxKey;
@@ -28,16 +29,17 @@ use anyhow::Context;
 use bilrost::{BorrowedMessage, Message, OwnedMessage};
 use bytes::BytesMut;
 use rocksdb::{DBRawIteratorWithThreadMode, ReadOptions};
+use strum::EnumCount;
 use tracing::error;
 
 use restate_rocksdb::Priority;
 use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::ScanVQueueMetaTable;
 use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaRef, VQueueMetaUpdates};
 use restate_storage_api::vqueue_table::{
     EntryKey, EntryMetadata, EntryStatusHeader, EntryValue, LazyEntryStatus, ReadVQueueTable,
     ScanVQueueTable, Stage, Status, WriteVQueueTable, stats::EntryStatistics,
 };
+use restate_storage_api::vqueue_table::{ScanVQueueEntries, ScanVQueueMetaTable};
 use restate_types::sharding::{KeyRange, PartitionKey};
 use restate_types::vqueues::{EntryId, Seq, VQueueId};
 
@@ -471,6 +473,186 @@ impl ScanVQueueMetaTable for PartitionStore {
             },
         )
         .map_err(|_| StorageError::OperationalError)
+    }
+}
+
+/// Default scan order when no stages are explicitly requested. Skips
+/// `Stage::Unknown` which has no on-disk representation.
+const ALL_SCANNABLE_STAGES: [Stage; Stage::COUNT - 1] = [
+    Stage::Inbox,
+    Stage::Running,
+    Stage::Suspended,
+    Stage::Paused,
+    Stage::Finished,
+];
+
+fn scan_single_stage<'store, K, F>(
+    partition_store: &'store PartitionStore,
+    scanner_name: &'static str,
+    range: KeyRange,
+    stage: Stage,
+    f: std::sync::Arc<tokio::sync::Mutex<F>>,
+) -> Result<Pin<Box<dyn Future<Output = Result<()>> + Send + 'store>>>
+where
+    K: EncodeTableKeyPrefix + 'store,
+    F: for<'a> FnMut(
+            (&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue),
+        ) -> std::ops::ControlFlow<()>
+        + Send
+        + 'static,
+{
+    // Each stage holds its own Arc clone exclusively inside the iterator
+    // closure. Once iteration acquires the first row, the closure takes the
+    // Arc and converts it to an owned mutex guard that it holds for the rest
+    // of the scan; the guard (and thus the Arc) is dropped on the iterator's
+    // background thread. This keeps the wrapped callback off the tokio
+    // runtime, which is required because data-fusion's `BatchSender` performs
+    // blocking I/O during `Drop`.
+    let mut f_arc = Some(f);
+    let mut f_guard: Option<tokio::sync::OwnedMutexGuard<F>> = None;
+
+    let future = partition_store
+        .iterator_for_each(
+            scanner_name,
+            Priority::Low,
+            TableScan::FullScanPartitionKeyRange::<K>(range),
+            move |(mut key, mut value)| {
+                // Skip the key-kind byte; the iterator was opened with a stage-specific
+                // prefix so every row belongs to `stage`.
+                break_on_err(KeyKind::deserialize(&mut key))?;
+                let qid: VQueueId = break_on_err(crate::keys::deserialize(&mut key))?;
+                let entry_key: EntryKey = break_on_err(crate::keys::deserialize(&mut key))?;
+                let entry = break_on_err(
+                    EntryValue::decode(&mut value).map_err(StorageError::BilrostDecode),
+                )?;
+
+                let f = f_guard.get_or_insert_with(|| {
+                    f_arc
+                        .take()
+                        .expect("Arc is taken at most once per iterator")
+                        .blocking_lock_owned()
+                });
+                f((&qid, stage, &entry_key, &entry)).map_break(Ok)
+            },
+        )
+        .map_err(|_| StorageError::OperationalError)?;
+
+    Ok(Box::pin(future))
+}
+
+fn scanner_for_stage<'store, F>(
+    partition_store: &'store PartitionStore,
+    range: KeyRange,
+    stage: Stage,
+    f: std::sync::Arc<tokio::sync::Mutex<F>>,
+) -> Result<Pin<Box<dyn Future<Output = Result<()>> + Send + 'store>>>
+where
+    F: for<'a> FnMut(
+            (&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue),
+        ) -> std::ops::ControlFlow<()>
+        + Send
+        + 'static,
+{
+    match stage {
+        Stage::Unknown => Err(StorageError::Generic(anyhow::anyhow!(
+            "Unknown stage can't be scanned"
+        ))),
+        Stage::Inbox => scan_single_stage::<inbox::InboxKey, _>(
+            partition_store,
+            "df-vqueue-inbox",
+            range,
+            stage,
+            f,
+        ),
+        Stage::Running => scan_single_stage::<inbox::RunningKey, _>(
+            partition_store,
+            "df-vqueue-running",
+            range,
+            stage,
+            f,
+        ),
+        Stage::Suspended => scan_single_stage::<inbox::SuspendedKey, _>(
+            partition_store,
+            "df-vqueue-suspended",
+            range,
+            stage,
+            f,
+        ),
+        Stage::Paused => scan_single_stage::<inbox::PausedKey, _>(
+            partition_store,
+            "df-vqueue-paused",
+            range,
+            stage,
+            f,
+        ),
+        Stage::Finished => scan_single_stage::<inbox::FinishedKey, _>(
+            partition_store,
+            "df-vqueue-finished",
+            range,
+            stage,
+            f,
+        ),
+    }
+}
+
+impl ScanVQueueEntries for PartitionStore {
+    fn for_each_vqueue_entry<F, S>(
+        &self,
+        range: KeyRange,
+        stages: S,
+        f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send>
+    where
+        F: for<'a> FnMut(
+                (&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue),
+            ) -> std::ops::ControlFlow<()>
+            + Send
+            + Sync
+            + 'static,
+        S: IntoIterator<Item = Stage>,
+    {
+        // The Arc must not outlive the iterator closures: BatchSender's Drop
+        // performs blocking I/O, so its final drop has to happen on a storage
+        // thread, not on a tokio worker. We achieve that by moving the *only*
+        // Arc handle through the loop — every stage but the last gets a clone,
+        // and the last stage consumes the remaining handle. Once this function
+        // returns, no Arc references survive outside the spawned iterator
+        // tasks, so the last task to finish runs the Drop on its storage
+        // thread. See also the comment in `scan_single_stage`.
+        let stages: Vec<Stage> = {
+            let mut iter = stages.into_iter().peekable();
+            if iter.peek().is_some() {
+                iter.collect()
+            } else {
+                ALL_SCANNABLE_STAGES.to_vec()
+            }
+        };
+        debug_assert!(
+            !stages.is_empty(),
+            "stages iterator and fallback are both non-empty"
+        );
+
+        let last_idx = stages.len() - 1;
+        let mut f_opt = Some(std::sync::Arc::new(tokio::sync::Mutex::new(f)));
+        let mut scans = Vec::with_capacity(stages.len());
+        for (i, stage) in stages.into_iter().enumerate() {
+            let f_for_stage = if i < last_idx {
+                f_opt
+                    .as_ref()
+                    .expect("f_opt is taken only on the last stage")
+                    .clone()
+            } else {
+                f_opt.take().expect("f_opt is taken only on the last stage")
+            };
+            scans.push(scanner_for_stage(self, range, stage, f_for_stage)?);
+        }
+
+        Ok(async move {
+            for scan in scans {
+                scan.await?;
+            }
+            Ok(())
+        })
     }
 }
 

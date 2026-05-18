@@ -26,6 +26,7 @@ use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceState};
 pub use opentelemetry::trace::TraceId;
 use serde_with::{DisplayFromStr, FromInto, serde_as};
 
+use restate_memory::ByteCount;
 use restate_util_string::ReString;
 
 use crate::Scope;
@@ -305,7 +306,7 @@ impl InvocationTarget {
                 ..
             } if handler_ty == &VirtualObjectHandlerType::Exclusive => Some(LockName::new(
                 ServiceName::new(name.as_ref()),
-                ReString::from(key.as_ref()),
+                ReString::new(key),
             )),
             // NOTE: Workflows don't have locks as their invariant (run once per ID) is enforced by
             // the partition processor at ingestion/creation time (via invocation/entry status)
@@ -514,7 +515,7 @@ impl WithInvocationId for InvocationRequest {
 }
 
 /// Struct representing an invocation to a service. This struct is processed by Restate to execute the invocation.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(derive_more::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(
     from = "serde_hacks::ServiceInvocation",
     into = "serde_hacks::ServiceInvocation"
@@ -522,6 +523,7 @@ impl WithInvocationId for InvocationRequest {
 pub struct ServiceInvocation {
     pub invocation_id: InvocationId,
     pub invocation_target: InvocationTarget,
+    #[debug("Bytes({})", ByteCount::from(argument.len()))]
     pub argument: Bytes,
     pub source: Source,
     pub span_context: ServiceInvocationSpanContext,
@@ -992,6 +994,12 @@ impl From<ServiceInvocationSpanContext> for SpanContextDef {
     }
 }
 
+impl From<ServiceInvocationSpanContext> for SpanContext {
+    fn from(value: ServiceInvocationSpanContext) -> Self {
+        value.span_context.into()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Header {
     pub name: ByteString,
@@ -1400,7 +1408,7 @@ impl InvocationQuery {
                     handler: Default::default(),
                     // Must be the workflow handler type
                     handler_ty: WorkflowHandlerType::Workflow,
-                    scope: None,
+                    scope: wfid.scope.clone(),
                 },
                 None,
             ),
@@ -1409,6 +1417,7 @@ impl InvocationQuery {
                 service_key,
                 service_handler,
                 idempotency_key,
+                scope,
                 ..
             }) => {
                 let target = match service_key {
@@ -1422,7 +1431,8 @@ impl InvocationQuery {
                         // Doesn't really matter
                         VirtualObjectHandlerType::Exclusive,
                     ),
-                };
+                }
+                .with_scope(scope.clone());
                 InvocationId::generate(&target, Some(idempotency_key.deref()))
             }
         }

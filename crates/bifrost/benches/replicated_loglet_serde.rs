@@ -111,7 +111,7 @@ fn invoker_effect_cmd() -> Command {
 
     Command::InvokerEffect(Box::new(Effect {
         invocation_id: InvocationId::generate(
-            &InvocationTarget::service("MyWonderfulService", handler.clone()),
+            &InvocationTarget::service("MyWonderfulService", handler),
             Some(&idempotency_key),
         ),
         kind: EffectKind::journal_entry(

@@ -157,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn test_simple_increment() {
+    fn simple_increment() {
         let mut bytes = BytesMut::new();
         for i in 0..1024 {
             bytes.clear();
@@ -209,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_stays_within_partition_bounds() {
+    fn scan_stays_within_partition_bounds() {
         verify_partition_covers_exactly(0);
         verify_partition_covers_exactly(255);
         verify_partition_covers_exactly(256);
@@ -220,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn test_binary_increment_suffix() {
+    fn binary_increment_suffix() {
         let mut bytes = BytesMut::new();
         bytes.put_u64(257);
         bytes.put_u64(u64::MAX);

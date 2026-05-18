@@ -84,20 +84,16 @@ impl Record {
     /// the value from the underlying Arc delivered from the loglet. Use this approach if you need
     /// to mutate the value in-place and the cost of cloning sections is high. It's generally
     /// recommended to use `decode_arc` whenever possible for large payloads.
-    pub fn decode<T: StorageDecode + StorageEncode + Clone>(self) -> Result<T, StorageDecodeError> {
+    pub fn decode<T: StorageDecode + StorageEncode + Clone>(self) -> Result<T, RecordDecodeError> {
         let decoded = match self.body {
             PolyBytes::Bytes(slice) => {
                 let mut buf = std::io::Cursor::new(slice);
                 StorageCodec::decode(&mut buf)?
             }
             PolyBytes::Both(value, _) | PolyBytes::Typed(value) => {
-                let target_arc: Arc<T> = value.downcast_arc().map_err(|_| {
-                StorageDecodeError::DecodeValue(
-                    anyhow::anyhow!(
-                        "Type mismatch. Original value in PolyBytes::Typed does not match requested type"
-                    )
-                    .into(),
-                )})?;
+                let target_arc: Arc<T> = value
+                    .downcast_arc()
+                    .map_err(RecordDecodeError::TypedValueMismatch)?;
                 // Attempts to move the inner value (T) if this Arc has exactly one strong
                 // reference. Otherwise, it clones the inner value.
                 match Arc::try_unwrap(target_arc) {
@@ -112,25 +108,38 @@ impl Record {
     /// Decode the record body into an Arc<T>. This is the most efficient way to access the entry
     /// if you need read-only access or if it's acceptable to selectively clone inner sections. If
     /// the record is in record cache, this will avoid cloning or deserialization of the value.
-    pub fn decode_arc<T: StorageDecode + StorageEncode>(
-        self,
-    ) -> Result<Arc<T>, StorageDecodeError> {
+    pub fn decode_arc<T: StorageDecode + StorageEncode>(self) -> Result<Arc<T>, RecordDecodeError> {
         let decoded = match self.body {
             PolyBytes::Bytes(slice) => {
                 let mut buf = std::io::Cursor::new(slice);
                 Arc::new(StorageCodec::decode(&mut buf)?)
             }
-            PolyBytes::Typed(value) | PolyBytes::Both(value, _) => {
-                value.downcast_arc().map_err(|_| {
-                StorageDecodeError::DecodeValue(
-                    anyhow::anyhow!(
-                        "Type mismatch. Original value in PolyBytes::Typed does not match requested type"
-                    )
-                    .into(),
-                )})?
-            },
+            PolyBytes::Typed(value) | PolyBytes::Both(value, _) => value
+                .downcast_arc()
+                .map_err(RecordDecodeError::TypedValueMismatch)?,
         };
         Ok(decoded)
+    }
+}
+
+#[derive(derive_more::Debug, thiserror::Error)]
+pub enum RecordDecodeError {
+    #[error(transparent)]
+    StorageDecodeError(#[from] StorageDecodeError),
+    #[error("Type mismatch. Original value in PolyBytes::Typed does not match requested type")]
+    #[debug("TypedValueMismatch")]
+    TypedValueMismatch(Arc<dyn StorageEncode>),
+}
+
+impl From<RecordDecodeError> for StorageDecodeError {
+    fn from(value: RecordDecodeError) -> Self {
+        match value {
+            RecordDecodeError::StorageDecodeError(err) => err,
+            RecordDecodeError::TypedValueMismatch(_) => StorageDecodeError::DecodeValue(
+                "Type mismatch. Original value in PolyBytes::Typed does not match requested type"
+                    .into(),
+            ),
+        }
     }
 }
 
