@@ -18,6 +18,7 @@ use restate_memory::LocalMemoryPool;
 use restate_types::identifiers::EntryIndex;
 use restate_types::retries;
 use restate_types::schema::invocation_target::OnMaxAttempts;
+use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::vqueues::VQueueId;
 use restate_worker_api::resources::ReservedResources;
 
@@ -147,6 +148,12 @@ enum AttemptState<K: TimerKey> {
         // Acks that should be propagated back to the SDK
         command_acks_to_propagate: HashSet<CommandIndex>,
 
+        // Run completions the SDK proposed during this attempt. When the partition
+        // processor echoes the stored notification back via [`Self::notify_entry`],
+        // we swap [`Notification::Entry`] for [`Notification::ProposeRunCompletionAck`]
+        // so the SDK gets the compact ack message on the wire (protocol >= v7).
+        run_completion_proposals_to_ack: HashSet<CompletionId>,
+
         // Deployment being used during this attempt
         using_deployment: Option<PinnedDeployment>,
         // If true, we need to notify the deployment id to the partition processor
@@ -253,6 +260,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             journal_tracker: Default::default(),
             abort_handle,
             command_acks_to_propagate: Default::default(),
+            run_completion_proposals_to_ack: Default::default(),
             using_deployment: None,
             should_notify_pinned_deployment: false,
         };
@@ -379,9 +387,22 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         ));
 
         if let AttemptState::InFlight {
-            journal_tracker, ..
+            journal_tracker,
+            run_completion_proposals_to_ack,
+            using_deployment,
+            ..
         } = &mut self.invocation_state
         {
+            // We track the run completion proposals to ack only if we're using protocol v7
+            if let Some(pinned_deployment) = using_deployment
+                && pinned_deployment.service_protocol_version >= ServiceProtocolVersion::V7
+            {
+                run_completion_proposals_to_ack.insert(
+                    *notification_id
+                        .try_as_completion_id_ref()
+                        .expect("run proposals notification id must be completion id."),
+                );
+            }
             journal_tracker.notify_notification_proposed_to_partition_processor(notification_id);
         }
     }
@@ -411,32 +432,6 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         }
     }
 
-    pub(super) fn notify_stored_notification_proposal_ack(&mut self, completion_id: CompletionId) {
-        match &mut self.invocation_state {
-            AttemptState::InFlight {
-                journal_tracker,
-                notifications_tx,
-                ..
-            } => {
-                journal_tracker.notify_acked_notification_from_partition_processor(
-                    NotificationId::CompletionId(completion_id),
-                );
-                Self::try_send_notification(
-                    notifications_tx,
-                    Notification::ProposeRunCompletionAck(completion_id),
-                );
-            }
-            AttemptState::WaitingRetry {
-                journal_tracker, ..
-            } => {
-                journal_tracker.notify_acked_notification_from_partition_processor(
-                    NotificationId::CompletionId(completion_id),
-                );
-            }
-            _ => {}
-        }
-    }
-
     pub(super) fn notify_completion(&mut self, entry_index: EntryIndex) {
         if let AttemptState::InFlight {
             notifications_tx, ..
@@ -455,11 +450,20 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             AttemptState::InFlight {
                 journal_tracker,
                 notifications_tx,
+                run_completion_proposals_to_ack,
                 ..
             } => {
+                let to_send = match &notification_id {
+                    // We send RunCompletionAck only if we're tracking this specific run completion.
+                    NotificationId::CompletionId(c)
+                        if run_completion_proposals_to_ack.remove(c) =>
+                    {
+                        Notification::ProposeRunCompletionAck(*c)
+                    }
+                    _ => Notification::Entry(entry_index),
+                };
                 journal_tracker.notify_acked_notification_from_partition_processor(notification_id);
-
-                Self::try_send_notification(notifications_tx, Notification::Entry(entry_index));
+                Self::try_send_notification(notifications_tx, to_send);
             }
             AttemptState::WaitingRetry {
                 journal_tracker, ..
@@ -762,6 +766,70 @@ mod tests {
         // Channel should be empty
         let try_recv = rx.try_recv();
         assert_that!(try_recv, err(eq(TryRecvError::Empty)));
+    }
+
+    fn start_with_protocol(
+        ism: &mut InvocationStateMachine<u64>,
+        version: ServiceProtocolVersion,
+    ) -> mpsc::UnboundedReceiver<Notification> {
+        let abort_handle = tokio::spawn(async {}).abort_handle();
+        let (tx, rx) = mpsc::unbounded_channel();
+        ism.start(abort_handle, tx);
+        ism.notify_pinned_deployment(
+            PinnedDeployment::new(DeploymentId::default(), version),
+            true,
+        );
+        rx
+    }
+
+    #[test(tokio::test)]
+    async fn notify_entry_swaps_proposed_run_completion_to_ack_on_v7() {
+        let mut ism = create_test_invocation_state_machine();
+        let mut rx = start_with_protocol(&mut ism, ServiceProtocolVersion::V7);
+
+        // Track a proposal for CompletionId 5
+        ism.notify_new_notification_proposal(NotificationId::CompletionId(5));
+
+        // PP echoes back the stored notification — the ISM must swap to the ack
+        ism.notify_entry(7, NotificationId::CompletionId(5));
+        assert_that!(
+            rx.recv().await,
+            some(pat!(Notification::ProposeRunCompletionAck(eq(5))))
+        );
+
+        // The proposal was consumed: a second notify_entry for the same id falls
+        // back to the regular Entry path.
+        ism.notify_entry(7, NotificationId::CompletionId(5));
+        assert_that!(rx.recv().await, some(pat!(Notification::Entry(eq(7)))));
+    }
+
+    #[test(tokio::test)]
+    async fn notify_entry_does_not_swap_on_v6_old_path_preserved() {
+        let mut ism = create_test_invocation_state_machine();
+        let mut rx = start_with_protocol(&mut ism, ServiceProtocolVersion::V6);
+
+        // Proposal is recorded in the journal tracker (for retry safety) but NOT
+        // tracked for swapping, because the deployment is on protocol v6.
+        ism.notify_new_notification_proposal(NotificationId::CompletionId(5));
+
+        // PP echoes back the stored notification — the ISM forwards the full Entry,
+        // exactly like before protocol v7 existed.
+        ism.notify_entry(7, NotificationId::CompletionId(5));
+        assert_that!(rx.recv().await, some(pat!(Notification::Entry(eq(7)))));
+    }
+
+    #[test(tokio::test)]
+    async fn notify_entry_on_v7_without_proposal_falls_through_to_entry() {
+        let mut ism = create_test_invocation_state_machine();
+        let mut rx = start_with_protocol(&mut ism, ServiceProtocolVersion::V7);
+
+        // No prior proposal: a completion notification flows through as Entry.
+        ism.notify_entry(3, NotificationId::CompletionId(5));
+        assert_that!(rx.recv().await, some(pat!(Notification::Entry(eq(3)))));
+
+        // Signals are also never swapped — only completion ids tracked at propose time qualify.
+        ism.notify_entry(4, NotificationId::SignalIndex(17));
+        assert_that!(rx.recv().await, some(pat!(Notification::Entry(eq(4)))));
     }
 
     #[test(tokio::test)]

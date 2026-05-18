@@ -21,7 +21,7 @@ use crate::journal_v2::{
 };
 
 /// See [`Notification`].
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, strum::EnumTryAs)]
 pub enum NotificationId {
     CompletionId(CompletionId),
     SignalIndex(SignalIndex),

@@ -18,8 +18,9 @@ use restate_types::identifiers::InvocationId;
 use restate_types::journal::EntryIndex;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal_events::raw::RawEvent;
+use restate_types::journal_v2::CommandIndex;
 use restate_types::journal_v2::raw::RawEntry;
-use restate_types::journal_v2::{self, CommandIndex, UnresolvedFuture};
+use restate_types::journal_v2::{self, UnresolvedFuture};
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
 
@@ -70,7 +71,7 @@ pub enum EffectKind {
     // Introduced in Restate v1.7. With the new service-protocol v7
     SuspendedV3 {
         /// Future tree describing the notifications this invocation is waiting on.
-        /// Introduced in Restate v1.7 (protocol version V7).
+        /// Introduced in Restate v1.7 (protocol version V7). `None` for older invocations.
         awaiting_on: UnresolvedFuture,
     },
     Paused {

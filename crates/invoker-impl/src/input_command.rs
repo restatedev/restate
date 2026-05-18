@@ -14,7 +14,7 @@ use restate_errors::NotRunningError;
 use restate_types::LimitKey;
 use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::InvocationTarget;
-use restate_types::journal_v2::{CommandIndex, CompletionId, NotificationId};
+use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::VQueueId;
 use restate_util_string::ReString;
@@ -57,10 +57,6 @@ pub(crate) enum InputCommand {
     StoredCommandAck {
         invocation_id: InvocationId,
         command_index: CommandIndex,
-    },
-    StoredNotificationProposalAck {
-        invocation_id: InvocationId,
-        completion_id: CompletionId,
     },
 
     /// Abort specific invocation id
@@ -161,19 +157,6 @@ impl restate_worker_api::invoker::InvokerHandle for InvokerHandle {
             .send(InputCommand::StoredCommandAck {
                 invocation_id,
                 command_index,
-            })
-            .map_err(|_| NotRunningError)
-    }
-
-    fn notify_stored_notification_proposal_ack(
-        &mut self,
-        invocation_id: InvocationId,
-        completion_id: CompletionId,
-    ) -> Result<(), NotRunningError> {
-        self.input
-            .send(InputCommand::StoredNotificationProposalAck {
-                invocation_id,
-                completion_id,
             })
             .map_err(|_| NotRunningError)
     }

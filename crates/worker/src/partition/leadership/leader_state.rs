@@ -622,14 +622,6 @@ impl LeaderState {
                     .notify_stored_command_ack(invocation_id, command_index)
                     .map_err(Error::Invoker)?;
             }
-            Action::AckStoredNotificationProposal {
-                invocation_id,
-                completion_id,
-            } => {
-                self.invoker_handle
-                    .notify_stored_notification_proposal_ack(invocation_id, completion_id)
-                    .map_err(Error::Invoker)?;
-            }
             Action::ForwardCompletion {
                 invocation_id,
                 entry_index,

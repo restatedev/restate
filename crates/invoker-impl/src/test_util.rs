@@ -22,7 +22,7 @@ use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
 };
 use restate_types::journal::raw::{PlainEntryHeader, PlainRawEntry, RawEntry};
-use restate_types::journal_v2::{CommandIndex, CompletionId};
+use restate_types::journal_v2::CommandIndex;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::VQueueId;
 use restate_util_string::ReString;
@@ -171,14 +171,6 @@ impl InvokerHandle for MockInvokerHandle {
         &mut self,
         _invocation_id: InvocationId,
         _command_index: CommandIndex,
-    ) -> Result<(), NotRunningError> {
-        Ok(())
-    }
-
-    fn notify_stored_notification_proposal_ack(
-        &mut self,
-        _invocation_id: InvocationId,
-        _completion_id: CompletionId,
     ) -> Result<(), NotRunningError> {
         Ok(())
     }

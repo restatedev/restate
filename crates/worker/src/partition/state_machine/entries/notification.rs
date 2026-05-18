@@ -1,4 +1,3 @@
-use assert2::let_assert;
 use restate_storage_api::lock_table::WriteLockTable;
 // Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
@@ -12,16 +11,14 @@ use restate_storage_api::lock_table::WriteLockTable;
 
 use tracing::debug;
 
-use crate::partition::state_machine::lifecycle::ResumeInvocationCommand;
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_types::identifiers::{EntryIndex, InvocationId};
+use restate_types::journal_v2::CANCEL_NOTIFICATION_ID;
 use restate_types::journal_v2::raw::RawNotification;
-use restate_types::journal_v2::{
-    CANCEL_NOTIFICATION_ID, CompletionType, NotificationId, NotificationType,
-};
-use restate_types::service_protocol::ServiceProtocolVersion;
+
+use crate::partition::state_machine::lifecycle::ResumeInvocationCommand;
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub(super) struct ApplyNotificationCommand<'e> {
     pub(super) invocation_id: InvocationId,
@@ -54,20 +51,9 @@ where
                     .await?;
                 }
             }
-            InvocationStatus::Invoked(in_flight_invocation_metadata) => {
-                if self.entry.ty() == NotificationType::Completion(CompletionType::Run)
-                    && in_flight_invocation_metadata
-                        .pinned_deployment
-                        .as_ref()
-                        .is_some_and(|pd| pd.service_protocol_version >= ServiceProtocolVersion::V7)
-                {
-                    let_assert!(NotificationId::CompletionId(completion_id) = self.entry.id());
-                    ctx.forward_completion_ack(self.invocation_id, completion_id);
-                } else {
-                    ctx.forward_notification(self.invocation_id, self.entry_index, self.entry.id());
-                }
-                // if completion_id_to_ack is Some, the caller emits AckStoredNotificationProposal;
-                // no need to forward the full notification to the SDK.
+            InvocationStatus::Invoked(_) => {
+                // Just forward the notification if we're invoked
+                ctx.forward_notification(self.invocation_id, self.entry_index, self.entry.id());
             }
             InvocationStatus::Paused(_) => {
                 // If we're paused, resume only if the notification was a cancellation signal.
@@ -95,8 +81,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use bytes::Bytes;
     use bytestring::ByteString;
@@ -109,11 +93,11 @@ mod tests {
     use restate_types::invocation::{
         InvocationTermination, NotifySignalRequest, TerminationFlavor,
     };
+    use restate_types::journal_v2::EntryMetadata;
     use restate_types::journal_v2::{
-        BuiltInSignal, CommandType, Entry, EntryType, Failure, FailureMetadata, RunCompletion,
+        BuiltInSignal, CommandType, Entry, EntryType, Failure, FailureMetadata, NotificationId,
         Signal, SignalId, SignalResult, SleepCommand, SleepCompletion,
     };
-    use restate_types::journal_v2::{EntryMetadata, RunCommand, RunResult};
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{RESTATE_VERSION_1_6_0, SemanticRestateVersion};
     use restate_wal_protocol::timer::TimerKeyValue;
@@ -327,102 +311,6 @@ mod tests {
         assert_eq!(
             cancel_signal.id,
             SignalId::for_builtin_signal(BuiltInSignal::Cancel)
-        );
-
-        test_env.shutdown().await;
-    }
-
-    #[restate_core::test]
-    async fn run_completion_proposal_protocol_v7_acks_instead_of_forwarding() {
-        let mut test_env = TestEnv::create().await;
-        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
-        fixtures::mock_pinned_deployment_v7(&mut test_env, invocation_id).await;
-
-        let completion_id = 1;
-        // Command must precede notification
-        let _ = test_env
-            .apply(fixtures::invoker_entry_effect(
-                invocation_id,
-                RunCommand {
-                    completion_id,
-                    name: Default::default(),
-                },
-            ))
-            .await;
-
-        let actions = test_env
-            .apply(fixtures::invoker_entry_effect(
-                invocation_id,
-                RunCompletion {
-                    completion_id,
-                    result: RunResult::Success(Bytes::new()),
-                },
-            ))
-            .await;
-
-        // Protocol v7: compact ack sent back, NOT the full notification
-        assert_that!(
-            actions,
-            all!(
-                not(contains(matchers::actions::forward_notification(
-                    invocation_id,
-                    2,
-                    NotificationId::CompletionId(completion_id),
-                ))),
-                contains(matchers::actions::ack_stored_notification_proposal(
-                    invocation_id,
-                    completion_id,
-                ))
-            )
-        );
-
-        test_env.shutdown().await;
-    }
-
-    #[restate_core::test]
-    async fn run_completion_protocol_v5_forwards_notification() {
-        let mut test_env = TestEnv::create().await;
-        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
-        fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
-
-        let completion_id = 1;
-        // Command must precede notification
-        let _ = test_env
-            .apply(fixtures::invoker_entry_effect(
-                invocation_id,
-                RunCommand {
-                    completion_id,
-                    name: Default::default(),
-                },
-            ))
-            .await;
-
-        let actions = test_env
-            .apply(fixtures::invoker_entry_effect(
-                invocation_id,
-                RunCompletion {
-                    completion_id,
-                    result: RunResult::Success(Bytes::new()),
-                },
-            ))
-            .await;
-
-        // Protocol <= v6: full notification forwarded, no ack
-        assert_that!(
-            actions,
-            all!(
-                contains(matchers::actions::forward_notification(
-                    invocation_id,
-                    2,
-                    NotificationId::CompletionId(completion_id),
-                )),
-                not(contains(
-                    matchers::actions::ack_stored_notification_proposal(
-                        invocation_id,
-                        completion_id,
-                    )
-                ))
-            )
         );
 
         test_env.shutdown().await;

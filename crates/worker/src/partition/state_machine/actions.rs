@@ -18,7 +18,7 @@ use restate_types::invocation::client::{
     CancelInvocationResponse, InvocationOutputResponse, KillInvocationResponse,
     PurgeInvocationResponse, RestartAsNewInvocationResponse, ResumeInvocationResponse,
 };
-use restate_types::journal_v2::{CommandIndex, CompletionId, NotificationId};
+use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::message::MessageIndex;
 use restate_types::time::MillisSinceEpoch;
 use restate_util_string::ReString;
@@ -55,10 +55,6 @@ pub enum Action {
     AckStoredCommand {
         invocation_id: InvocationId,
         command_index: CommandIndex,
-    },
-    AckStoredNotificationProposal {
-        invocation_id: InvocationId,
-        completion_id: CompletionId,
     },
     ForwardCompletion {
         invocation_id: InvocationId,
