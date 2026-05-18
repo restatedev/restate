@@ -132,6 +132,10 @@ impl SnapshotLeaseValue {
         }
     }
 
+    /// Returns true at and after `expires_at`. Used by acquirers to decide
+    /// whether an existing slot is up for takeover. The current holder's
+    /// `is_valid` returns false `LEASE_SAFETY_MARGIN` earlier so that operations
+    /// drain before any other node can take over.
     fn is_expired(&self, clock: &impl Clock) -> bool {
         clock.recent() >= self.expires_at
     }
@@ -339,6 +343,15 @@ mod inner {
             MillisSinceEpoch::new(self.expires_at.load(Ordering::Acquire))
         }
 
+        /// Returns true while the current time is strictly before
+        /// `expires_at - LEASE_SAFETY_MARGIN` - i.e. the lease holder still has
+        /// useful work time before they must stop and let the lease expire.
+        ///
+        /// Acquirers, by contrast, use [`SnapshotLeaseValue::is_expired`] which
+        /// triggers takeover only at the true `expires_at`. The
+        /// `LEASE_SAFETY_MARGIN` gap between the two predicates is intentional:
+        /// it gives the current holder time to drain its operation while
+        /// preventing a different node from believing the lease is up for grabs.
         pub(super) fn is_valid(&self) -> bool {
             self.clock.recent() + LEASE_SAFETY_MARGIN < self.expires_at()
         }
