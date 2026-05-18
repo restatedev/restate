@@ -553,6 +553,22 @@ impl CommonOptions {
             .advertised_address(address_book)
     }
 
+    pub fn advertised_address_with_tls(
+        &self,
+        address_book: &AddressBook,
+        tls: bool,
+    ) -> AdvertisedAddress<FabricPort> {
+        self.fabric_listener_options
+            .advertised_address
+            .clone()
+            .unwrap_or_else(|| {
+                address_book.guess_advertised_address_with_tls(
+                    self.fabric_listener_options.advertised_host.as_deref(),
+                    tls,
+                )
+            })
+    }
+
     #[cfg(feature = "unsafe-mutable-config")]
     pub fn set_node_name(&mut self, node_name: impl Into<String>) {
         self.node_name = Some(node_name.into())

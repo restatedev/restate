@@ -249,15 +249,23 @@ where
                         };
 
                         if let Some(acceptor) = use_tls {
-                            let connection = match acceptor.accept(tcp_stream).await {
-                                Ok(tls_stream) => {
+                            let tls_handshake = tokio::time::timeout(
+                                Duration::from_secs(5),
+                                acceptor.accept(tcp_stream),
+                            );
+                            let connection = match tls_handshake.await {
+                                Ok(Ok(tls_stream)) => {
                                     let io = TokioIo::new(tls_stream);
                                     graceful_shutdown.watch(
                                         builder.serve_connection(io, service).into_owned(),
                                     )
                                 }
-                                Err(e) => {
+                                Ok(Err(e)) => {
                                     debug!("TLS handshake failed: {e}");
+                                    continue;
+                                }
+                                Err(_) => {
+                                    debug!("TLS handshake timed out");
                                     continue;
                                 }
                             };

@@ -144,7 +144,12 @@ fn create_channel<P: ListenerPort + GrpcPort>(
 
                     let client_config = resolver.client_config();
                     let connector = TlsConnector::from(client_config);
-                    let server_name = ServerName::try_from(host)
+                    // Strip brackets from IPv6 addresses (e.g., "[::1]" -> "::1")
+                    let host_for_sni = host
+                        .strip_prefix('[')
+                        .and_then(|h| h.strip_suffix(']'))
+                        .unwrap_or(&host);
+                    let server_name = ServerName::try_from(host_for_sni.to_owned())
                         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
                     let tls_stream = connector.connect(server_name, tcp_stream).await?;
                     Ok::<_, io::Error>(TokioIo::new(tls_stream))

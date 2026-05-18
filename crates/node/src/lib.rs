@@ -754,14 +754,18 @@ async fn provision_cluster_metadata(
     Ok(result)
 }
 
-fn create_initial_nodes_configuration(common_opts: &CommonOptions) -> NodesConfiguration {
+fn create_initial_nodes_configuration(
+    common_opts: &CommonOptions,
+    fabric_tls: bool,
+) -> NodesConfiguration {
     let mut initial_nodes_configuration = NodesConfiguration::new(
         Version::MIN,
         common_opts.cluster_name().to_owned(),
         ClusterFingerprint::generate(),
     );
-    let my_advertised_address =
-        TaskCenter::with_current(|tc| common_opts.advertised_address(tc.address_book()));
+    let my_advertised_address = TaskCenter::with_current(|tc| {
+        common_opts.advertised_address_with_tls(tc.address_book(), fabric_tls)
+    });
 
     let node_config = NodeConfig::builder()
         .name(common_opts.node_name().to_owned())
@@ -796,7 +800,8 @@ fn generate_initial_metadata(
         cluster_configuration.bifrost_provider.clone(),
     ));
 
-    let initial_nodes_configuration = create_initial_nodes_configuration(common_opts);
+    let fabric_tls = Configuration::pinned().networking.tls.is_some();
+    let initial_nodes_configuration = create_initial_nodes_configuration(common_opts, fabric_tls);
 
     (
         initial_nodes_configuration,
