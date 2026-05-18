@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -315,7 +315,6 @@ mod inner {
         expires_at: AtomicU64,
         metadata_store_client: MetadataStoreClient,
         version: Mutex<Version>,
-        released: AtomicBool,
         renewal_task: Mutex<Option<TaskHandle<()>>>,
         pub(super) lease_lost: CancellationToken,
         clock: C,
@@ -336,7 +335,6 @@ mod inner {
                 expires_at: AtomicU64::new(lease.expires_at.as_u64()),
                 metadata_store_client,
                 version: Mutex::new(version),
-                released: AtomicBool::new(false),
                 renewal_task: Mutex::new(None),
                 lease_lost: CancellationToken::new(),
                 clock,
@@ -474,56 +472,53 @@ mod inner {
         }
 
         fn spawn_release_task(&mut self) {
-            if !self.released.swap(true, Ordering::AcqRel) {
-                let client = self.metadata_store_client.clone();
-                let partition_id = self.partition_id;
-                let version = *self.version.lock();
-                let lease_id = self.lease_id;
-                let holder = self.holder;
+            let client = self.metadata_store_client.clone();
+            let partition_id = self.partition_id;
+            let version = *self.version.lock();
+            let lease_id = self.lease_id;
+            let holder = self.holder;
 
-                if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                    handle.spawn(async move {
-                        let key = lease_key(partition_id);
-                        let expired = SnapshotLeaseValue::expired(holder, lease_id, version);
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    let key = lease_key(partition_id);
+                    let expired = SnapshotLeaseValue::expired(holder, lease_id, version);
 
-                        match client
-                            .put(key, &expired, Precondition::MatchesVersion(version))
-                            .await
-                        {
-                            Ok(()) => {
-                                debug!(%partition_id, "Lease released via Drop");
-                            }
-                            Err(WriteError::FailedPrecondition(_)) => {
-                                debug!(
-                                    %partition_id,
-                                    "Lease release via Drop failed: version mismatch (lease was likely taken over)"
-                                );
-                            }
-                            Err(err) => {
-                                warn!(
-                                    %partition_id,
-                                    %err,
-                                    "Lease release via Drop failed"
-                                );
-                            }
+                    match client
+                        .put(key, &expired, Precondition::MatchesVersion(version))
+                        .await
+                    {
+                        Ok(()) => {
+                            debug!(%partition_id, "Lease released via Drop");
                         }
-                    });
-                    debug!(
-                        partition_id = %partition_id,
-                        "Snapshot lease dropped, spawned async release"
-                    );
-                } else {
-                    warn!(
-                        partition_id = %partition_id,
-                        "Snapshot lease dropped without release - no runtime available"
-                    );
-                }
+                        Err(WriteError::FailedPrecondition(_)) => {
+                            debug!(
+                                %partition_id,
+                                "Lease release via Drop failed: version mismatch (lease was likely taken over)"
+                            );
+                        }
+                        Err(err) => {
+                            warn!(
+                                %partition_id,
+                                %err,
+                                "Lease release via Drop failed"
+                            );
+                        }
+                    }
+                });
+                debug!(
+                    partition_id = %partition_id,
+                    "Snapshot lease dropped, spawned async release"
+                );
+            } else {
+                warn!(
+                    partition_id = %partition_id,
+                    "Snapshot lease dropped without release - no runtime available"
+                );
             }
         }
 
         #[cfg(test)]
         pub(super) fn test_mark_released(&self) {
-            self.released.store(true, Ordering::Release);
             self.lease_lost.cancel();
         }
 
