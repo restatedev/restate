@@ -1254,17 +1254,25 @@ impl SnapshotRepository {
             let filename = strip_leading_slash(&file.name);
             let expected_size = file.size;
             let key = if let Some(relative_key) = snapshot_metadata.file_keys.get(&file.name) {
-                // Incremental snapshot: parse the relative key and build proper path
-                // Format: "ssts/{hash}.sst" (content-addressed) or legacy "ssts/{node_id}_{filename}"
+                // Incremental snapshot: parse the relative key and build the object key.
+                // Expected format is exactly two segments: "ssts/{hash}.sst".
                 let parts: Vec<&str> = relative_key.split('/').collect();
                 if parts.len() == 2 {
                     self.prefix
                         .clone()
                         .join(partition_id.to_string())
-                        .join(parts[0]) // "ssts"
-                        .join(parts[1]) // "{node_id}_{filename}"
+                        .join(parts[0])
+                        .join(parts[1])
                 } else {
-                    // Fallback if format is unexpected
+                    // Unexpected key shape - join as opaque path and warn. Future writers
+                    // that produce a different layout would need a corresponding download
+                    // path; getting here indicates either metadata corruption or a partial
+                    // upgrade from a future version of the snapshot format.
+                    warn!(
+                        sst = %file.name,
+                        relative_key = %relative_key,
+                        "Unexpected file_keys entry shape; treating as opaque path"
+                    );
                     self.prefix
                         .clone()
                         .join(partition_id.to_string())
