@@ -980,8 +980,16 @@ mod tests {
 
         assert!(guard.is_valid());
 
-        guard.start_renewal_task().expect("starts renewal task");
-        guard.start_renewal_task().expect("no-op");
+        assert_eq!(
+            guard.start_renewal_task().expect("starts renewal task"),
+            RenewalTaskStart::Started,
+        );
+        assert_eq!(
+            guard
+                .start_renewal_task()
+                .expect("second call must succeed"),
+            RenewalTaskStart::AlreadyRunning,
+        );
 
         let initial_deadline = guard.operation_deadline();
 
@@ -1099,7 +1107,10 @@ mod tests {
                 .await
                 .expect("acquire should succeed"),
         );
-        guard.start_renewal_task().expect("should start renewal");
+        assert_eq!(
+            guard.start_renewal_task().expect("should start renewal"),
+            RenewalTaskStart::Started,
+        );
         let initial_deadline = guard.operation_deadline();
 
         // the mock work future sleeps slightly longer than the renewal interval
