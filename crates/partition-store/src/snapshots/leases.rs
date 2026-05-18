@@ -494,17 +494,21 @@ mod inner {
                         .await
                     {
                         Ok(()) => {
-                            debug!(%partition_id, "Lease released via Drop");
+                            debug!(%partition_id, %lease_id, "Lease released via Drop");
                         }
                         Err(WriteError::FailedPrecondition(_)) => {
                             debug!(
                                 %partition_id,
+                                %lease_id,
+                                %holder,
                                 "Lease release via Drop failed: version mismatch (lease was likely taken over)"
                             );
                         }
                         Err(err) => {
                             warn!(
                                 %partition_id,
+                                %lease_id,
+                                %holder,
                                 %err,
                                 "Lease release via Drop failed"
                             );
