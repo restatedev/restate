@@ -599,7 +599,23 @@ impl SnapshotRepository {
                         .join("ssts")
                         .join(sst_name.as_str());
 
+                    // Content-addressed dedup: if an object already exists at this key, we
+                    // trust that its content matches the local file (xxh3-128 collisions are
+                    // astronomically unlikely on random RocksDB content). We still verify the
+                    // stored object's size matches, which catches truncated/partial uploads
+                    // from a prior crashed put.
                     let must_upload = match self.object_store.head(&sst_key).await {
+                        Ok(meta) if meta.size as usize != file.size => {
+                            warn!(
+                                sst = %filename,
+                                hash = %content_hash,
+                                expected_size = file.size,
+                                actual_size = meta.size,
+                                "Existing object at content-addressed key has unexpected size; \
+                                re-uploading to overwrite the corrupt object"
+                            );
+                            true
+                        }
                         Ok(_) => {
                             debug!(
                                 sst = %filename,
