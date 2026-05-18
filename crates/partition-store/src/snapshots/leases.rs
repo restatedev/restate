@@ -407,6 +407,11 @@ mod inner {
             let lease_lost = self.lease_lost.clone();
             let partition_id = self.partition_id;
 
+            let retry_policy: RetryPolicy = Configuration::pinned()
+                .common
+                .network_error_retry_policy
+                .clone();
+
             let handle = TaskCenter::current().spawn_unmanaged_child(
                 TaskKind::Disposable,
                 "snapshot-lease-renewal",
@@ -421,7 +426,19 @@ mod inner {
                                 };
                                 match guard.as_ref() {
                                     SnapshotLeaseGuard::Lease(g) => {
-                                        if let Err(e) = g.renew().await {
+                                        // Retry transient metadata-store errors while the lease
+                                        // is still valid. A single network blip should not cost
+                                        // us the lease - acquire uses the same policy.
+                                        let result = retry_policy
+                                            .clone()
+                                            .retry_if(
+                                                || async { g.renew().await },
+                                                |e: &LeaseError| {
+                                                    e.retryable() && g.is_valid()
+                                                },
+                                            )
+                                            .await;
+                                        if let Err(e) = result {
                                             warn!(%partition_id, error = %e, "Lease renewal failed");
                                             g.lease_lost.cancel();
                                             break;
