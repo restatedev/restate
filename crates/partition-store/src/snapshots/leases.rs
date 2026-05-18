@@ -55,6 +55,15 @@ pub const LEASE_SAFETY_MARGIN: Duration = Duration::from_mins(1);
 /// we have to renew.
 pub const LEASE_RENEWAL_INTERVAL: Duration = Duration::from_mins(2);
 
+/// Outcome of `SnapshotLeaseGuard::start_renewal_task`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenewalTaskStart {
+    /// A new renewal task was spawned by this call.
+    Started,
+    /// A renewal task was already running for this guard; no new task was spawned.
+    AlreadyRunning,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum LeaseError {
     #[error("Lease held by {holder} (lease_id: {lease_id}), expires at: {expires_at}")]
@@ -242,12 +251,13 @@ impl<C: Clock + Clone + Send + Sync + 'static> SnapshotLeaseGuard<C> {
 
     /// Start a background task that renews the lease at a fixed renewal interval.
     /// The task holds a weak reference to the lease and stops when the guard is dropped.
-    /// The guard ensures that at most one renewal task is spawned.
-    pub fn start_renewal_task(self: &Arc<Self>) -> Result<(), ShutdownError> {
+    /// The guard ensures that at most one renewal task is spawned per guard. Subsequent calls
+    /// after the first successful start return `Ok(RenewalTaskStart::AlreadyRunning)`.
+    pub fn start_renewal_task(self: &Arc<Self>) -> Result<RenewalTaskStart, ShutdownError> {
         match self.as_ref() {
             Self::Lease(g) => g.start_renewal_task(Arc::downgrade(self)),
             #[cfg(any(test, feature = "test-util"))]
-            Self::NoOp(_) => Ok(()),
+            Self::NoOp(_) => Ok(RenewalTaskStart::Started),
         }
     }
 
@@ -388,10 +398,10 @@ mod inner {
         pub(super) fn start_renewal_task(
             &self,
             guard: Weak<SnapshotLeaseGuard<C>>,
-        ) -> Result<(), ShutdownError> {
+        ) -> Result<RenewalTaskStart, ShutdownError> {
             let mut renewal_task = self.renewal_task.lock();
             if renewal_task.is_some() {
-                return Ok(());
+                return Ok(RenewalTaskStart::AlreadyRunning);
             }
 
             let lease_lost = self.lease_lost.clone();
@@ -426,7 +436,7 @@ mod inner {
                 },
             )?;
             *renewal_task = Some(handle);
-            Ok(())
+            Ok(RenewalTaskStart::Started)
         }
 
         fn spawn_release_task(&mut self) {
