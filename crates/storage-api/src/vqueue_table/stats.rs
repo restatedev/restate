@@ -42,28 +42,28 @@ pub struct WaitStats {
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct EntryStatistics {
     /// Creation timestamp of the entry.
-    #[bilrost(tag(1))]
+    #[bilrost(tag(1), encoding(fixed))]
     pub created_at: UniqueTimestamp,
     /// Timestamp of the last stage transition.
     ///
     /// This is always initialized to `created_at` and updated on every stage move.
-    #[bilrost(tag(2))]
+    #[bilrost(tag(2), encoding(fixed))]
     pub transitioned_at: UniqueTimestamp,
     /// How many times did we move this entry to the run queue?
     /// '0` means that it's never been started.
-    #[bilrost(tag(3))]
+    #[bilrost(tag(3), encoding(fixed))]
     pub num_attempts: u32,
-    #[bilrost(tag(4))]
+    #[bilrost(tag(4), encoding(fixed))]
     pub num_paused: u32,
-    #[bilrost(tag(5))]
+    #[bilrost(tag(5), encoding(fixed))]
     pub num_suspensions: u32,
-    #[bilrost(tag(6))]
+    #[bilrost(tag(6), encoding(fixed))]
     pub num_yields: u32,
     /// Timestamp of the first attempt to run this entry
-    #[bilrost(tag(7))]
+    #[bilrost(tag(7), encoding(fixed))]
     pub first_attempt_at: Option<UniqueTimestamp>,
     /// Timestamp of the last attempt to run this entry
-    #[bilrost(tag(8))]
+    #[bilrost(tag(8), encoding(fixed))]
     pub latest_attempt_at: Option<UniqueTimestamp>,
     /// Earliest timestamp at which the first run can realistically start.
     ///
@@ -72,7 +72,7 @@ pub struct EntryStatistics {
     ///
     /// We clamp to `created_at` when `original_run_at` is in the past to avoid
     /// inflating the first-attempt wait time.
-    #[bilrost(tag(9))]
+    #[bilrost(tag(9), encoding(fixed))]
     pub first_runnable_at: MillisSinceEpoch,
 }
 

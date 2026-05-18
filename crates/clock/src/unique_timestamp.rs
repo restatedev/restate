@@ -300,6 +300,13 @@ mod bilrost_encoding {
         to encode proxied type (UniqueTimestamp)
         with general encodings including distinguished
     );
+
+    bilrost::delegate_proxied_encoding!(
+        use encoding (bilrost::encoding::Fixed)
+        to encode proxied type (UniqueTimestamp)
+        with encoding (bilrost::encoding::Fixed)
+        including distinguished
+    );
 }
 
 #[cfg(test)]
