@@ -40,8 +40,7 @@ adaptive-timeout = { workspace = true, features = ["serde"] }
 ahash = {workspace = true }
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
-# pending release of https://github.com/fbernier/base62/pull/28
-base62 = { git = "http://github.com/restatedev/base62", rev = "dc62ff947d0ea84db0864e5c7e96c129e7b5874c" }
+base62 = { version = "2.2.4" }
 base64 = { workspace = true }
 bitflags = { workspace = true }
 bytes = { workspace = true }
