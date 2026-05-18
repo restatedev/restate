@@ -34,7 +34,7 @@ use tracing::error;
 
 use restate_rocksdb::Priority;
 use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaRef, VQueueMetaUpdates};
+use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaRef};
 use restate_storage_api::vqueue_table::{
     EntryKey, EntryMetadata, EntryStatusHeader, EntryValue, LazyEntryStatus, ReadVQueueTable,
     ScanVQueueTable, Stage, Status, WriteVQueueTable, stats::EntryStatistics,
@@ -180,15 +180,12 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         update: &restate_storage_api::vqueue_table::metadata::Update,
     ) {
         let key_buffer = MetaKey::from(qid).to_bytes();
-        let updates = VQueueMetaUpdates::new(update.clone());
-        let value_buf = {
-            let value_buf = self.cleared_value_buffer_mut(updates.encoded_len());
-            // unwrap is safe because we know the buffer is big enough.
-            updates.encode(value_buf).unwrap();
-            value_buf.split()
-        };
-
-        self.raw_merge_cf(KeyKind::VQueueMeta, key_buffer, value_buf);
+        // todo: add support for vectored writes in WBI's binding (in rust-rocksdb fork)
+        self.raw_merge_cf(
+            KeyKind::VQueueMeta,
+            key_buffer,
+            update.encode_contiguous().into_vec(),
+        );
     }
 
     fn put_vqueue_inbox(

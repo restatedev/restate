@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use smallvec::SmallVec;
-
 use restate_clock::time::MillisSinceEpoch;
 use restate_limiter::LimitKey;
 use restate_types::clock::UniqueTimestamp;
@@ -519,16 +517,6 @@ impl VQueueMeta {
     }
 }
 
-/// A collection of differential updates to the vqueue meta data structure.
-///
-/// Those updates can be applied to the storage layer via a merge operator and at the same
-/// time they can be accepted by the vqueue's cache to keep them in sync.
-#[derive(Clone, Default, Debug, bilrost::Message)]
-pub struct VQueueMetaUpdates {
-    #[bilrost(1)]
-    pub updates: SmallVec<[Update; VQueueMetaUpdates::INLINED_UPDATES]>,
-}
-
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct MoveMetrics {
     /// Timestamp of the entry's previous stage transition.
@@ -550,42 +538,6 @@ pub struct MoveMetrics {
     /// for every other transition. Feeds `avg_blocked_on_invoker_throttling_ms`.
     #[bilrost(tag(5))]
     pub blocked_on_invoker_throttling_ms: u32,
-}
-
-impl VQueueMetaUpdates {
-    pub const INLINED_UPDATES: usize = 1;
-
-    pub fn new(update: Update) -> Self {
-        let updates = smallvec::smallvec_inline![update];
-        Self { updates }
-    }
-
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            updates: SmallVec::with_capacity(capacity),
-        }
-    }
-
-    #[inline(always)]
-    pub fn push(&mut self, ts: UniqueTimestamp, action: Action) {
-        self.updates.push(Update { ts, action });
-    }
-
-    pub fn len(&self) -> usize {
-        self.updates.len()
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &Update> {
-        self.updates.iter()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.updates.is_empty()
-    }
-
-    pub fn extend(&mut self, other: Self) {
-        self.updates.extend(other.updates);
-    }
 }
 
 #[derive(Debug, Clone, Default, bilrost::Oneof, bilrost::Message)]
