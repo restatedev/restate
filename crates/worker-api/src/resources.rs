@@ -14,6 +14,7 @@ use tokio::sync::mpsc;
 use restate_futures_util::concurrency::Permit;
 use restate_limiter::LimitKey;
 use restate_memory::MemoryLease;
+use restate_storage_api::vqueue_table::EntryMetadata;
 use restate_types::Scope;
 use restate_util_string::ReString;
 
@@ -72,6 +73,7 @@ impl SystemPermit {
 #[must_use]
 #[clippy::has_significant_drop]
 pub struct ReservedResources {
+    pub metadata: EntryMetadata,
     resources: SmallVec<[UserPermitKind; 1]>,
     system_permit: SystemPermit,
     manager_tx: Option<mpsc::UnboundedSender<ResourceManagerUpdate>>,
@@ -80,6 +82,7 @@ pub struct ReservedResources {
 impl ReservedResources {
     pub fn new_empty() -> Self {
         Self {
+            metadata: EntryMetadata::default(),
             resources: SmallVec::new(),
             system_permit: SystemPermit::default(),
             manager_tx: None,
@@ -87,11 +90,13 @@ impl ReservedResources {
     }
 
     pub const fn new(
+        metadata: EntryMetadata,
         resources: SmallVec<[UserPermitKind; 1]>,
         system_permit: SystemPermit,
         manager_tx: mpsc::UnboundedSender<ResourceManagerUpdate>,
     ) -> Self {
         Self {
+            metadata,
             resources,
             system_permit,
             manager_tx: Some(manager_tx),

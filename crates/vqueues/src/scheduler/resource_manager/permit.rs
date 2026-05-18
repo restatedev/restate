@@ -10,12 +10,12 @@
 
 use smallvec::SmallVec;
 
+use restate_futures_util::concurrency::Permit;
+use restate_storage_api::vqueue_table::EntryMetadata;
+use restate_types::{LockName, Scope};
 use restate_worker_api::resources::{
     ReservedResources, SystemPermit, ThrottlingToken, UserPermitKind,
 };
-
-use restate_futures_util::concurrency::Permit;
-use restate_types::{LockName, Scope};
 
 use super::ResourceManager;
 
@@ -58,8 +58,13 @@ impl PermitBuilder {
         }
     }
 
-    pub(crate) fn build(self, resource_manager: &ResourceManager) -> ReservedResources {
+    pub(crate) fn build(
+        self,
+        metadata: EntryMetadata,
+        resource_manager: &ResourceManager,
+    ) -> ReservedResources {
         ReservedResources::new(
+            metadata,
             self.user_permit.expect("user permit must be set").resources,
             self.system_permit,
             resource_manager.tx.clone(),

@@ -1286,11 +1286,15 @@ async fn yield_effect_resumes_invocation() {
     let actions = test_env
         .apply(commands::InvokerEffectCommand::test_envelope(Effect {
             invocation_id,
-            kind: EffectKind::Yield(YieldReason::ExhaustedMemoryBudget {
-                needed_memory: restate_memory::NonZeroByteCount::new(
-                    NonZeroUsize::new(32768).unwrap(),
-                ),
-            }),
+            kind: EffectKind::Yield {
+                error_event: None,
+                resume_at: None,
+                reason: YieldReason::ExhaustedMemoryBudget {
+                    needed_memory: restate_memory::NonZeroByteCount::new(
+                        NonZeroUsize::new(32768).unwrap(),
+                    ),
+                },
+            },
         }))
         .await;
 

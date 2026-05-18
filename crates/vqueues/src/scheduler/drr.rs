@@ -220,7 +220,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
         let qstate = self.q.get_mut(handle)?;
 
         // I've the resources. Let's run it.
-        let permit = qstate.remove_from_unconfirmed_assignments(key)?;
+        let (permit, metadata) = qstate.remove_from_unconfirmed_assignments(key)?;
         counter!(VQUEUE_RUN_CONFIRMED).increment(1);
 
         if qstate.is_dormant(slot.meta()) {
@@ -231,7 +231,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
             self.q.remove(handle);
             self.eligible.remove(handle);
         }
-        Some(permit.build(&self.resource_manager))
+        Some(permit.build(metadata, &self.resource_manager))
     }
 
     /// Forward a batch of rule-book updates to the embedded resource manager.
@@ -301,7 +301,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
                     // 3. None of the above, removing only changes the vqueue metadata.
                     //
                     // If we have been holding a concurrency permit for this item, we release it.
-                    if let Some(permit) = qstate.remove_from_unconfirmed_assignments(key) {
+                    if let Some((permit, _)) = qstate.remove_from_unconfirmed_assignments(key) {
                         // Case 1:
                         // This item is _not_ going to run, so we revert its built up permit
                         self.resource_manager

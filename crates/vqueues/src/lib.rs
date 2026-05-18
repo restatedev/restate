@@ -42,6 +42,7 @@ use restate_types::vqueues::{EntryId, Seq, VQueueId};
 #[cfg(test)]
 use restate_types::{LockName, Scope};
 use restate_util_string::ReString;
+use restate_worker_api::invoker::YieldReason;
 
 // Token bucket used for throttling over all vqueues
 type GlobalTokenBucket<C = gardal::TokioClock> =
@@ -307,10 +308,10 @@ where
         };
 
         debug!(
+            entry = %entry_id.display(meta.vqueue_id().partition_key()),
             qid = %meta.vqueue_id(),
-            key = ?key,
-            "[enqueue] entry: {}, next_stage: 'inbox', status: {status}",
-            entry_id.display(meta.vqueue_id().partition_key()),
+            "->{}, status: {status}, run_at: {run_at}",
+            Stage::Inbox,
         );
 
         self.storage
@@ -400,20 +401,20 @@ where
             *header.entry_key()
         };
 
-        debug!(
-            header = ?header,
-            modified_key = ?modified_key,
-            "[run] entry: {},  next_stage: '{}', prev_status: {}",
-            header.display_entry_id(),
-            Stage::Running,
-            header.status(),
-        );
-
         let new_status = if !header.has_started() {
             Status::Started
         } else {
             header.status()
         };
+
+        debug!(
+            entry = %header.display_entry_id(),
+            qid = %header.vqueue_id(),
+            "{}->{}, status: {}->{new_status}",
+            header.stage(),
+            Stage::Running,
+            header.status(),
+        );
 
         self.storage.put_vqueue_inbox(
             vqueue_id,
@@ -501,10 +502,10 @@ where
         let maybe_new_metadata = updated_metadata.unwrap_or_else(|| header.metadata().clone());
 
         debug!(
-            header = ?header,
-            modified_key = ?modified_key,
-            "[wake-up] entry: {},  next_stage: '{}', last_status: {}",
-            header.display_entry_id(),
+            entry = %header.display_entry_id(),
+            qid = %header.vqueue_id(),
+            "{}->{}, status: {}",
+            header.stage(),
             Stage::Inbox,
             header.status(),
         );
@@ -570,9 +571,12 @@ where
         assert!(matches!(next_stage, Stage::Paused | Stage::Suspended));
 
         debug!(
-            header = ?header,
-            "[park] entry: {},  next_stage: '{next_stage}', status remains the same",
-            header.display_entry_id()
+            entry = %header.display_entry_id(),
+            qid = %header.vqueue_id(),
+            "{}->{}, status: {}",
+            header.stage(),
+            next_stage,
+            header.status(),
         );
 
         self.storage
@@ -642,20 +646,13 @@ where
         &mut self,
         at: UniqueTimestamp,
         header: &impl EntryStatusHeader,
-        run_at: Option<MillisSinceEpoch>,
-        updated_metadata: Option<EntryMetadata>,
-        new_status: Status,
+        run_at: Option<RoughTimestamp>,
+        reason: YieldReason,
     ) {
         let vqueue_id = header.vqueue_id();
         let meta = self.cache.get_mut(self.handle).unwrap();
         assert_eq!(vqueue_id, meta.vqueue_id());
 
-        debug!(
-            header = ?header,
-            "[yield] entry: {}, next_stage: '{}', new_status: {new_status}",
-            Stage::Inbox,
-            header.display_entry_id()
-        );
         // Remove from running and move to waiting
         self.storage
             .delete_vqueue_inbox(vqueue_id, header.stage(), header.entry_key());
@@ -679,37 +676,67 @@ where
 
         // We can be asked to wake up but not run immediately (or get a lower run_at for priority
         // boosting). If that's the case, we mutate the entry key to reflect that.
-        let modified_key = {
-            let run_at = match run_at {
-                // Future: ceil to the next whole second so we never fire early.
-                Some(t) if t > at.to_unix_millis() => {
-                    Some(RoughTimestamp::from_unix_millis_ceil(t))
-                }
-                // Already past: floor is safe — it's eligible immediately regardless.
-                Some(t) => Some(RoughTimestamp::from_unix_millis_clamped(t)),
-                // Leave as is
-                None => None,
-            };
-            header.entry_key().set_run_at(run_at)
-        };
+        let modified_key = header.entry_key().set_run_at(run_at);
 
         let stats = Self::mark_yield(at, header.stats());
 
-        let maybe_new_metadata = updated_metadata.unwrap_or_else(|| header.metadata().clone());
+        let (status, metadata) = match reason {
+            YieldReason::Unknown
+            | YieldReason::InvokerLoadShedding
+            | YieldReason::PartitionLeaderChange => {
+                // The reason could be coming from a future version of restate.
+                // It's okay to have an unknown reason, we'll continue to yield as usual.
+                (Status::Yielded, header.metadata().clone())
+            }
+            YieldReason::ExhaustedMemoryBudget { needed_memory } => {
+                let current_metadata = header.metadata().clone();
+                (
+                    Status::Yielded,
+                    EntryMetadata {
+                        needed_memory: Some(needed_memory),
+                        ..current_metadata
+                    },
+                )
+            }
+            YieldReason::TransientError {
+                retry_attempts,
+                retry_count_since_last_stored_command,
+            } => {
+                let current_metadata = header.metadata().clone();
+                (
+                    Status::BackingOff,
+                    EntryMetadata {
+                        retry_attempts,
+                        retry_count_since_last_stored_command,
+                        ..current_metadata
+                    },
+                )
+            }
+        };
+
+        debug!(
+            entry = %header.display_entry_id(),
+            qid = %header.vqueue_id(),
+            "{}->{} due to '{}', status: {}->{status}",
+            header.stage(),
+            Stage::Inbox,
+            reason,
+            header.status(),
+        );
 
         self.storage.put_vqueue_entry_status(
             vqueue_id,
             Stage::Inbox,
             &modified_key,
-            &maybe_new_metadata,
+            &metadata,
             stats.clone(),
-            new_status,
+            status,
         );
 
         let value = EntryValue {
             stats,
-            status: new_status,
-            metadata: maybe_new_metadata,
+            status,
+            metadata,
         };
 
         // We add the entry back into the inbox stage
@@ -754,11 +781,12 @@ where
             .delete_vqueue_inbox(vqueue_id, header.stage(), header.entry_key());
 
         debug!(
-            header = ?header,
-            key = ?header.entry_key(),
-            "[end] entry: {},  next_stage: '{}', new_status: {new_status}",
-            header.display_entry_id(),
+            entry = %header.display_entry_id(),
+            qid = %header.vqueue_id(),
+            "{}->{}, status: {}->{new_status}",
+            header.stage(),
             Stage::Finished,
+            header.status(),
         );
 
         let update = metadata::Update::new(
@@ -982,7 +1010,7 @@ where
             return;
         }
 
-        debug!("Pausing vqueue {}", meta.vqueue_id());
+        debug!(qid = %meta.vqueue_id(), "Pausing vqueue");
         let update = metadata::Update::new(at, metadata::Action::PauseVQueue {});
 
         // Update cache
@@ -1010,7 +1038,7 @@ where
             // queue is not paused
             return;
         }
-        debug!("Resuming vqueue {}", meta.vqueue_id());
+        debug!(qid = %meta.vqueue_id(), "Resuming vqueue");
         let update = metadata::Update::new(at, metadata::Action::ResumeVQueue {});
 
         // Update cache
