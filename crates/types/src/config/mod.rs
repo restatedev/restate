@@ -290,7 +290,9 @@ impl Configuration {
         config.worker.set_derived_values(&config.networking);
         config.bifrost.set_derived_values(&config.networking);
         config.admin.set_derived_values(&config.common);
-        config.ingress.set_derived_values(&config.common);
+        config
+            .ingress
+            .set_derived_values(&config.common, &config.networking);
         config
     }
 
@@ -304,7 +306,9 @@ impl Configuration {
         config.worker.set_derived_values(&config.networking);
         config.bifrost.set_derived_values(&config.networking);
         config.admin.set_derived_values(&config.common);
-        config.ingress.set_derived_values(&config.common);
+        config
+            .ingress
+            .set_derived_values(&config.common, &config.networking);
         config
     }
 

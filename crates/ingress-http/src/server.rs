@@ -22,6 +22,7 @@ use tokio_util::either::Either;
 use tower::{ServiceBuilder, ServiceExt};
 use tower_http::classify::ServerErrorsFailureClass;
 use tower_http::cors::CorsLayer;
+use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::normalize_path::NormalizePathLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{Span, debug, info, info_span, instrument};
@@ -50,6 +51,7 @@ pub enum IngressServerError {
 pub struct HyperServerIngress<Schemas, Dispatcher> {
     listeners: Listeners<HttpIngressPort>,
     concurrency_limit: usize,
+    request_size_limit: usize,
 
     // Parameters to build the layers
     schemas: Live<Schemas>,
@@ -74,6 +76,7 @@ where
         HyperServerIngress::new(
             listeners,
             ingress_options.concurrent_api_requests_limit(),
+            ingress_options.request_size_limit().get(),
             schemas,
             dispatcher,
             health,
@@ -89,6 +92,7 @@ where
     pub(crate) fn new(
         listeners: Listeners<HttpIngressPort>,
         concurrency_limit: usize,
+        request_size_limit: usize,
         schemas: Live<Schemas>,
         dispatcher: Dispatcher,
         health: HealthStatus<IngressStatus>,
@@ -98,6 +102,7 @@ where
         Self {
             listeners,
             concurrency_limit,
+            request_size_limit,
             schemas,
             dispatcher,
             health,
@@ -114,6 +119,7 @@ where
         let HyperServerIngress {
             mut listeners,
             concurrency_limit,
+            request_size_limit,
             schemas,
             dispatcher,
             health,
@@ -169,6 +175,7 @@ where
                     ),
             )
             .layer(NormalizePathLayer::trim_trailing_slash())
+            .layer(RequestBodyLimitLayer::new(request_size_limit))
             .layer(layers::load_shed::LoadShedLayer::new(concurrency_limit))
             .layer(CorsLayer::very_permissive())
             .layer(layers::tracing_context_extractor::HttpTraceContextExtractorLayer)
@@ -226,7 +233,7 @@ where
         F: Send,
         B: http_body::Body + Send + 'static,
         <B as http_body::Body>::Data: Send + 'static,
-        <B as http_body::Body>::Error: std::error::Error + Sync + Send + 'static,
+        <B as http_body::Body>::Error: Into<BoxError>,
         T: tower::Service<
                 Request<Incoming>,
                 Response = Response<B>,
@@ -402,6 +409,7 @@ mod tests {
         let ingress = HyperServerIngress::new(
             listeners,
             Semaphore::MAX_PERMITS,
+            10 * 1024 * 1024, // 10MB
             Live::from_value(mock_schemas()),
             Arc::new(mock_request_dispatcher),
             health.ingress_status(),
