@@ -79,7 +79,7 @@ impl From<ActiveKey> for MetaKey {
 }
 
 // Rocksdb merge operator for the vqueue keys
-pub(crate) mod vqueue_meta_merge {
+pub mod vqueue_meta_merge {
     use bilrost::{Message, OwnedMessage};
     use rocksdb::MergeOperands;
     use tracing::error;
@@ -92,9 +92,17 @@ pub(crate) mod vqueue_meta_merge {
     use super::MetaKey;
 
     pub fn full_merge(
-        mut key: &[u8],
+        key: &[u8],
         existing_val: Option<&[u8]>,
         operands: &MergeOperands,
+    ) -> Option<Vec<u8>> {
+        full_merge_slices(key, existing_val, operands)
+    }
+
+    pub fn full_merge_slices<'a>(
+        mut key: &[u8],
+        existing_val: Option<&[u8]>,
+        operands: impl IntoIterator<Item = &'a [u8]>,
     ) -> Option<Vec<u8>> {
         let Some(mut existing_val) = existing_val else {
             let key = MetaKey::deserialize_from(&mut key);

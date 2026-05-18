@@ -123,6 +123,13 @@ mod bilrost_encoding {
         to encode proxied type (Seq)
         with general encodings including distinguished
     );
+
+    bilrost::delegate_proxied_encoding!(
+        use encoding (bilrost::encoding::Fixed)
+        to encode proxied type (Seq)
+        with encoding (bilrost::encoding::Fixed)
+        including distinguished
+    );
 }
 
 #[cfg(test)]
@@ -134,5 +141,22 @@ mod tests {
         assert_eq!(Seq::new(Seq::MAX.as_u64()).as_u64(), Seq::MAX.as_u64());
         assert_eq!(Seq::new(1u64 << 56).as_u64(), 0);
         assert_eq!(Seq::new((1u64 << 56) + 7).as_u64(), 7);
+    }
+
+    #[test]
+    fn fixed_encoding_round_trips() {
+        use bilrost::{Message, OwnedMessage};
+
+        #[derive(Debug, PartialEq, bilrost::Message)]
+        struct EncodedSeq {
+            #[bilrost(tag(1), encoding(fixed))]
+            value: Seq,
+        }
+
+        let value = EncodedSeq { value: Seq::MAX };
+        let encoded = value.encode_to_bytes();
+
+        assert_eq!(encoded.len(), 9);
+        assert_eq!(EncodedSeq::decode(encoded).unwrap(), value);
     }
 }
