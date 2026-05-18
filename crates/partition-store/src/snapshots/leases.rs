@@ -358,6 +358,12 @@ mod inner {
             self.clock.recent() + LEASE_SAFETY_MARGIN < self.expires_at()
         }
 
+        #[instrument(
+            level = "debug",
+            skip_all,
+            fields(partition_id = %self.partition_id, lease_id = %self.lease_id),
+            err,
+        )]
         pub(super) async fn renew(&self) -> Result<(), LeaseError> {
             if self.lease_lost.is_cancelled() {
                 debug!(
