@@ -17,9 +17,10 @@ mod server;
 pub use rpc_request_dispatcher::InvocationClientRequestDispatcher;
 pub use server::{HyperServerIngress, IngressServerError};
 
-use bytes::Bytes;
 use std::future::Future;
 use std::sync::Arc;
+
+use bytes::Bytes;
 
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::client::{
@@ -29,6 +30,8 @@ use restate_types::invocation::client::{
 use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use restate_types::journal_v2::Signal;
 use restate_types::net::address::SocketAddress;
+
+pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 /// Client connection information for a given RPC request
 #[derive(Clone, Debug)]

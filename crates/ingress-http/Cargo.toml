@@ -46,7 +46,7 @@ tracing-opentelemetry = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tower = { workspace = true, features = ["util"] }
-tower-http = { workspace = true, features = ["cors", "normalize-path", "trace"] }
+tower-http = { workspace = true, features = ["cors", "normalize-path", "trace", "limit"] }
 url = { workspace = true }
 urlencoding = { workspace = true }
 

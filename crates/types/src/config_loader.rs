@@ -80,7 +80,9 @@ impl ConfigLoader {
         // network base options need to be propagated downstream
         config.common.set_derived_values(&config.networking)?;
         config.admin.set_derived_values(&config.common);
-        config.ingress.set_derived_values(&config.common);
+        config
+            .ingress
+            .set_derived_values(&config.common, &config.networking);
         config.worker.set_derived_values(&config.networking);
 
         if self.metadata_migration_mode {
