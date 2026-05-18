@@ -215,6 +215,9 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         on_max_attempts: OnMaxAttempts,
         concurrency_slot: ConcurrencySlot,
     ) -> InvocationStateMachine<K> {
+        let start_message_retry_count_since_last_stored_command =
+            permit.metadata.retry_count_since_last_stored_command;
+
         Self {
             qid,
             _permit: permit,
@@ -228,7 +231,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
                 retry_iter,
                 on_max_attempts,
             },
-            start_message_retry_count_since_last_stored_command: 0,
+            start_message_retry_count_since_last_stored_command,
             requested_pause: false,
             _concurrency_slot: concurrency_slot,
             budget: None,
@@ -255,6 +258,11 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         };
     }
 
+    /// The cumulative number of retry attempts this invocation has made so far
+    pub(super) fn retry_attempts(&self) -> usize {
+        self.retry_policy_state.retry_iter.attempts()
+    }
+
     pub(super) fn abort(&mut self) {
         if let AttemptState::InFlight { abort_handle, .. } = &mut self.invocation_state {
             abort_handle.abort();
@@ -275,11 +283,14 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             return;
         }
 
-        let (retry_iter, on_max_attempts) = target_resolver.resolve_invocation_retry_policy(
+        let (mut retry_iter, on_max_attempts) = target_resolver.resolve_invocation_retry_policy(
             Some(&selected_deployment_id),
             self.invocation_target.service_name(),
             self.invocation_target.handler_name(),
         );
+        // We advance the retry iterator to continue the same retry journey as previous
+        // incarinations.
+        retry_iter.fast_forward(self.retry_policy_state.retry_iter.attempts());
         self.retry_policy_state = RetryPolicyState {
             selected_from_deployment_id: Some(selected_deployment_id),
             retry_iter,
@@ -481,24 +492,30 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         should_bump_start_message_retry_count_since_last_stored_command: bool,
         register_timer: impl FnOnce(Duration) -> K,
     ) -> OnTaskError {
-        let journal_tracker = match &self.invocation_state {
+        if self.requested_pause {
+            // Shortcircuit to pause, as this is what the user asked for
+            return OnTaskError::Pause;
+        }
+
+        let journal_tracker = match self.invocation_state {
             AttemptState::InFlight {
-                journal_tracker, ..
-            } => journal_tracker.clone(),
-            AttemptState::New => JournalTracker::default(),
+                ref journal_tracker,
+                ..
+            } => Some(journal_tracker),
+            AttemptState::New => None,
             AttemptState::WaitingRetry {
-                journal_tracker,
+                ref journal_tracker,
                 timer_fired,
                 ..
             } => {
                 // TODO: https://github.com/restatedev/restate/issues/538
                 assert!(
-                    *timer_fired,
+                    timer_fired,
                     "Restate does not support multiple retry timers yet. This would require \
                         deduplicating timers by some mean (e.g. fencing them off, overwriting \
                         old timers, not registering a new timer if an old timer has not fired yet, etc.)"
                 );
-                journal_tracker.clone()
+                Some(journal_tracker)
             }
         };
 
@@ -514,10 +531,30 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             if should_bump_start_message_retry_count_since_last_stored_command {
                 self.start_message_retry_count_since_last_stored_command += 1;
             }
+
+            // if Qid is present, vqueues are used so we switch into retrying via the scheduler
+            // when the retry interval is greater >1 second.
+            if let Some(ref qid) = self.qid
+                && next_timer
+                    >= Configuration::pinned()
+                        .invocation
+                        .invocation_yield_threshold()
+            {
+                trace!(
+                    vqueue = %qid,
+                    "Invocation is using vqueues, switching to retrying via scheduler");
+                return OnTaskError::RetryViaScheduler {
+                    retry_after: next_timer,
+                    retry_attempts: u32::try_from(self.retry_policy_state.retry_iter.attempts())
+                        .unwrap_or(u32::MAX),
+                    retry_count_since_last_stored_command: self
+                        .start_message_retry_count_since_last_stored_command,
+                };
+            };
             let retry_timer_key = register_timer(next_timer);
             self.invocation_state = AttemptState::WaitingRetry {
                 timer_fired: false,
-                journal_tracker,
+                journal_tracker: journal_tracker.cloned().unwrap_or_default(),
                 retry_timer_key,
             };
             OnTaskError::Retrying(next_timer)
@@ -598,6 +635,16 @@ impl<K: TimerKey> InvocationStateMachine<K> {
 
 #[derive(Debug)]
 pub(super) enum OnTaskError {
+    RetryViaScheduler {
+        retry_after: Duration,
+        /// For service-level retry configuration. This is the total number of retries
+        /// we have performed throughout.
+        retry_attempts: u32,
+        /// For sdk-controlled retries. This defines the retry-count value that will be
+        /// sent downstream to the SDK to be used for its ctx.run() retries on the next
+        /// start message.
+        retry_count_since_last_stored_command: u32,
+    },
     Retrying(Duration),
     Pause,
     Kill,

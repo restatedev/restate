@@ -14,6 +14,9 @@ mod serde;
 #[cfg(feature = "schema")]
 mod schema;
 
+#[cfg(feature = "bilrost")]
+mod bilrost_encoding;
+
 use std::cmp::Ordering;
 use std::fmt::{self, Display};
 use std::num::{NonZeroU64, NonZeroUsize};

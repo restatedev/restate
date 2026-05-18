@@ -8356,6 +8356,7 @@ dependencies = [
  "restate-memory",
  "restate-sharding",
  "restate-types",
+ "restate-util-bytecount",
  "restate-util-string",
  "restate-workspace-hack",
  "serde",
@@ -8583,6 +8584,7 @@ dependencies = [
 name = "restate-util-bytecount"
 version = "1.7.0-dev"
 dependencies = [
+ "bilrost",
  "bytesize",
  "restate-util-bytecount",
  "restate-util-string",
