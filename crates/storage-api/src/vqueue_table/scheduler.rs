@@ -42,16 +42,21 @@ pub enum YieldReason {
     PartitionLeaderChange,
     /// The invocation exhausted its outbound memory budget.
     #[bilrost(tag(2), message)]
-    ExhaustedMemoryBudget { needed_memory: NonZeroByteCount },
+    ExhaustedMemoryBudget {
+        #[bilrost(encoding(fixed))]
+        needed_memory: NonZeroByteCount,
+    },
     /// The invocation has been yielded due to an error during execution.
     #[bilrost(tag(3), message)]
     TransientError {
         /// Controls the service retry policy related retries. This is the the
         /// value that should be used to initialize the retry policy after resuming.
+        #[bilrost(encoding(fixed))]
         retry_attempts: u32,
         /// For sdk-controlled retries. This defines the retry-count value that will be
         /// sent downstream to the SDK to be used for its ctx.run() retries on the next
         /// start message.
+        #[bilrost(encoding(fixed))]
         retry_count_since_last_stored_command: u32,
     },
     /// The invocation has been yielded due to an error or cooperatively yielded
