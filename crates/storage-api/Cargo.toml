@@ -23,7 +23,7 @@ restate-util-bytecount = { workspace = true, features = ["bilrost"] }
 
 ahash = { workspace = true }
 anyhow = { workspace = true }
-bilrost = { workspace = true, features = ["smallvec"] }
+bilrost = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 derive_more = { workspace = true, features = ["from", "into"] }
@@ -31,7 +31,6 @@ futures = { workspace = true }
 opentelemetry = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }
-smallvec = { workspace = true, features = ["const_new"] }
 static_assertions = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
