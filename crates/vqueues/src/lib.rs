@@ -173,15 +173,14 @@ where
 
     pub async fn vqueue_from_invocation_target(
         at: UniqueTimestamp,
-        partition_key: PartitionKey,
+        qid: &VQueueId,
         invocation_target: &InvocationTarget,
         storage: &'a mut S,
         cache: &'a mut VQueuesMetaCache,
         action_collector: Option<&'a mut Vec<A>>,
         limit_key: &LimitKey<ReString>,
     ) -> Result<Self, StorageError> {
-        let qid = infer_vqueue_id_from_invocation(partition_key, invocation_target, limit_key);
-        let cache_key = match cache.load(storage, &qid).await? {
+        let cache_key = match cache.load(storage, qid).await? {
             Some(key) => key,
             None => {
                 let link = if let Some(lock_name) = invocation_target.lock_name() {
@@ -196,7 +195,7 @@ where
                     limit_key.clone(),
                     link,
                 );
-                storage.create_vqueue(&qid, &meta);
+                storage.create_vqueue(qid, &meta);
                 cache.insert(qid.clone(), meta)
             }
         };
