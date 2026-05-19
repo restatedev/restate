@@ -7,18 +7,20 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
+use std::string;
 
-use super::APPLICATION_JSON;
-
-use crate::RequestDispatcherError;
 use bytes::Bytes;
 use http::{Response, StatusCode, header};
-use restate_types::errors::{IdDecodeError, InvocationError};
+use http_body_util::LengthLimitError;
+use serde::Serialize;
+
+use restate_types::errors::{GenericError, IdDecodeError, InvocationError};
 use restate_types::identifiers::DeploymentId;
 use restate_types::schema::invocation_target::InputValidationError;
 use restate_util_string::RestrictedValueError;
-use serde::Serialize;
-use std::string;
+
+use super::APPLICATION_JSON;
+use crate::RequestDispatcherError;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum HandlerError {
@@ -75,7 +77,7 @@ pub(crate) enum HandlerError {
     #[error("the invoked service is not public")]
     PrivateService,
     #[error("cannot read body: {0:?}")]
-    Body(anyhow::Error),
+    Body(GenericError),
     #[error("unavailable")]
     Unavailable,
     #[error("the invocation exists but has not completed yet")]
@@ -159,6 +161,9 @@ impl HandlerError {
             HandlerError::DispatcherError(_) => {
                 // TODO add more distinctions between different dispatcher errors (unavailable, etc)
                 StatusCode::INTERNAL_SERVER_ERROR
+            }
+            HandlerError::Body(inner) if inner.downcast_ref::<LengthLimitError>().is_some() => {
+                StatusCode::PAYLOAD_TOO_LARGE
             }
             HandlerError::Body(_) => StatusCode::INTERNAL_SERVER_ERROR,
             HandlerError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,

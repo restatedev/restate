@@ -17,9 +17,10 @@ mod server;
 pub use rpc_request_dispatcher::InvocationClientRequestDispatcher;
 pub use server::{HyperServerIngress, IngressServerError};
 
-use bytes::Bytes;
 use std::future::Future;
 use std::sync::Arc;
+
+use bytes::Bytes;
 
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::client::{

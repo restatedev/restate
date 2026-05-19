@@ -13,6 +13,7 @@ use http::{Method, Request, Response};
 use http_body_util::{BodyExt, Full};
 use tracing::warn;
 
+use restate_types::errors::GenericError;
 use restate_types::identifiers::IdempotencyId;
 use restate_types::invocation::InvocationQuery;
 use restate_types::invocation::client::{AttachInvocationResponse, GetInvocationOutputResponse};
@@ -34,7 +35,7 @@ where
         invocation_request_type: InvocationRequestType,
     ) -> Result<Response<Full<Bytes>>, HandlerError>
     where
-        <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
+        <B as http_body::Body>::Error: Into<GenericError>,
     {
         match invocation_request_type {
             InvocationRequestType::Attach(invocation_target_type) => {
@@ -86,7 +87,7 @@ where
         invocation_query: InvocationQuery,
     ) -> Result<Response<Full<Bytes>>, HandlerError>
     where
-        <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
+        <B as http_body::Body>::Error: Into<GenericError>,
     {
         if req.method() != Method::GET {
             return Err(HandlerError::MethodNotAllowed);
@@ -100,7 +101,7 @@ where
         invocation_query: InvocationQuery,
     ) -> Result<Response<Full<Bytes>>, HandlerError>
     where
-        <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
+        <B as http_body::Body>::Error: Into<GenericError>,
     {
         if req.method() != Method::GET {
             return Err(HandlerError::MethodNotAllowed);
@@ -113,7 +114,7 @@ where
         req: Request<B>,
     ) -> Result<Response<Full<Bytes>>, HandlerError>
     where
-        <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
+        <B as http_body::Body>::Error: Into<GenericError>,
     {
         let invocation_query = Self::parse_invocation_target_body(req).await?;
         self.attach_invocation_query(invocation_query).await
@@ -124,7 +125,7 @@ where
         req: Request<B>,
     ) -> Result<Response<Full<Bytes>>, HandlerError>
     where
-        <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
+        <B as http_body::Body>::Error: Into<GenericError>,
     {
         let invocation_query = Self::parse_invocation_target_body(req).await?;
         self.get_invocation_output_query(invocation_query).await
@@ -134,7 +135,7 @@ where
         req: Request<B>,
     ) -> Result<InvocationQuery, HandlerError>
     where
-        <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
+        <B as http_body::Body>::Error: Into<GenericError>,
     {
         if req.method() != Method::POST {
             return Err(HandlerError::MethodNotAllowed);
@@ -148,7 +149,7 @@ where
             .to_bytes();
 
         let target_request: InvocationTargetRequest = serde_json::from_slice(&body_bytes)
-            .map_err(|e| HandlerError::Body(anyhow::anyhow!("invalid request body: {e}")))?;
+            .map_err(|e| HandlerError::Body(anyhow::anyhow!("invalid request body: {e}").into()))?;
 
         target_request.into_invocation_query()
     }

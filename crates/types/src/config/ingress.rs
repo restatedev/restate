@@ -10,10 +10,11 @@
 
 use std::num::NonZeroUsize;
 
+use restate_memory::NonZeroByteCount;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
-use crate::config::IngestionOptions;
+use crate::config::{DEFAULT_MESSAGE_SIZE_LIMIT, IngestionOptions, NetworkingOptions};
 use crate::net::address::{AdvertisedAddress, BindAddress, HttpIngressPort};
 use crate::net::listener::AddressBook;
 
@@ -48,6 +49,19 @@ pub struct IngressOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     advertised_ingress_endpoint: Option<AdvertisedAddress<HttpIngressPort>>,
 
+    /// # Request size limit
+    ///
+    /// Maximum size of request that can be received over ingress. If a request size is
+    /// larger than this limit, the request will fail.
+    ///
+    /// If unset, defaults to `networking.message-size-limit`. If set, it will be clamped at
+    /// the value of `networking.message-size-limit` since larger requests cannot be transmitted
+    /// over the cluster internal network.
+    ///
+    /// Since v1.7.0
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_size_limit: Option<NonZeroByteCount>,
+
     /// # Ingestion Options
     ///
     /// Settings for the ingestion client
@@ -56,6 +70,12 @@ pub struct IngressOptions {
 }
 
 impl IngressOptions {
+    pub fn request_size_limit(&self) -> NonZeroUsize {
+        self.request_size_limit
+            .map(|v| v.as_non_zero_usize())
+            .unwrap_or(DEFAULT_MESSAGE_SIZE_LIMIT)
+    }
+
     pub fn bind_address(&self) -> BindAddress<HttpIngressPort> {
         self.ingress_listener_options.bind_address()
     }
@@ -96,8 +116,18 @@ impl IngressOptions {
     }
 
     /// set derived values if they are not configured to reduce verbose configurations
-    pub fn set_derived_values(&mut self, common: &CommonOptions) {
+    pub fn set_derived_values(&mut self, common: &CommonOptions, networking: &NetworkingOptions) {
         self.ingress_listener_options
             .merge(common.fabric_listener_options());
+
+        self.merge(networking);
+    }
+
+    fn merge(&mut self, opts: &NetworkingOptions) {
+        self.request_size_limit = Some(
+            self.request_size_limit
+                .map(|limit| limit.min(opts.message_size_limit))
+                .unwrap_or(opts.message_size_limit),
+        );
     }
 }
