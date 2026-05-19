@@ -58,8 +58,8 @@ fn decode_packages(lua: &Lua, buf_lua: Value) -> LuaResult<Table> {
         );
 
         // Optional flags
-        if let Some(requires_ack) = header.requires_ack() {
-            set_table_values!(message_table, "requires_ack" => requires_ack);
+        if let Some(requested_ack) = header.requested_ack() {
+            set_table_values!(message_table, "requested_ack" => requested_ack);
         }
 
         // For some messages, spit out more stuff
