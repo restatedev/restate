@@ -563,11 +563,11 @@ where
                             requires_ack
                         ).await
                     },
-                    InvocationTaskOutputInner::NewNotificationProposal { notification, requires_ack } => {
+                    InvocationTaskOutputInner::NewNotificationProposal { notification, requested_ack } => {
                         self.handle_new_notification_proposal(
                             invocation_id,
                             notification,
-                            requires_ack,
+                            requested_ack,
                         ).await
                     },
                     InvocationTaskOutputInner::AwaitingOn { unresolved_future } => {
@@ -585,12 +585,12 @@ where
                     InvocationTaskOutputInner::Suspended(indexes) => {
                         self.handle_invocation_task_suspended(invocation_id, indexes).await
                     }
-                    InvocationTaskOutputInner::NewCommand { command, command_index, requires_ack } => {
+                    InvocationTaskOutputInner::NewCommand { command, command_index, requested_ack } => {
                         self.handle_new_command(
                             invocation_id,
                             command_index,
                             command,
-                            requires_ack
+                            requested_ack
                         ).await
                     }
                     InvocationTaskOutputInner::SuspendedV2(future) => {
@@ -888,7 +888,7 @@ where
         &mut self,
         invocation_id: InvocationId,
         notification: RawNotification,
-        requires_ack: bool,
+        requested_ack: bool,
     ) {
         if let Some((output_tx, ism)) = self
             .invocation_state_machine_manager
@@ -897,7 +897,7 @@ where
             ism.notify_new_notification_proposal(
                 notification.ty(),
                 notification.id(),
-                requires_ack,
+                requested_ack,
             );
             trace!(
                 restate.invocation.target = %ism.invocation_target,
@@ -939,13 +939,13 @@ where
         invocation_id: InvocationId,
         command_index: CommandIndex,
         command: RawCommand,
-        requires_ack: bool,
+        requested_ack: bool,
     ) {
         if let Some((output_tx, ism)) = self
             .invocation_state_machine_manager
             .resolve_invocation(&invocation_id)
         {
-            ism.notify_new_command(command_index, requires_ack);
+            ism.notify_new_command(command_index, requested_ack);
             trace!(
                 restate.invocation.target = %ism.invocation_target,
                 "Received a new command. Invocation state: {:?}",

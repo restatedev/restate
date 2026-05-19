@@ -194,10 +194,14 @@ message CommandAckMessage {
   uint32 command_index = 1;
 }
 
+// Type: 0x0000 + 5
+//
 // This is a special control message to propose ctx.run completions to the runtime.
 // This won't be written to the journal immediately, but will appear later as a new notification (meaning the result was stored).
 //
-// Type: 0x0000 + 5
+// In response to this message, the SDK expects the runtime to either:
+// * if requested_ack = true -> Send back ProposeRunCompletionAckMessage with the related completion_id
+// * if requested_ack = false -> Send back the whole notification just proposed
 message ProposeRunCompletionMessage {
   uint32 result_completion_id = 1;
   oneof result {

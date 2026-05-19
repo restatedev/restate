@@ -10,7 +10,7 @@
 
 use super::{MessageType, UnknownMessageType};
 
-const REQUIRES_ACK_MASK: u64 = 0x8000_0000_0000;
+const REQUESTED_ACK_MASK: u64 = 0x8000_0000_0000;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct MessageHeader {
@@ -18,7 +18,7 @@ pub struct MessageHeader {
     length: u32,
 
     // --- Flags
-    requires_ack_flag: Option<bool>,
+    requested_ack_flag: Option<bool>,
 }
 
 impl MessageHeader {
@@ -28,11 +28,11 @@ impl MessageHeader {
     }
 
     #[inline]
-    fn _new(ty: MessageType, requires_ack_flag: Option<bool>, length: u32) -> Self {
+    fn _new(ty: MessageType, requested_ack_flag: Option<bool>, length: u32) -> Self {
         MessageHeader {
             ty,
             length,
-            requires_ack_flag,
+            requested_ack_flag,
         }
     }
 
@@ -41,9 +41,11 @@ impl MessageHeader {
         self.ty
     }
 
+    /// For commands: requested_ack forces the runtime to send back CommandAckMessage
+    /// For run proposals: requested_ack forces the runtime to send back ProposeRunCompletionAckMessage instead of the whole RunCompletionMessage.
     #[inline]
-    pub fn requires_ack(&self) -> Option<bool> {
-        self.requires_ack_flag
+    pub fn requested_ack(&self) -> Option<bool> {
+        self.requested_ack_flag
     }
 
     #[inline]
@@ -65,16 +67,14 @@ macro_rules! read_flag_if {
 impl TryFrom<u64> for MessageHeader {
     type Error = UnknownMessageType;
 
-    /// Deserialize the protocol header.
-    /// See https://github.com/restatedev/service-protocol/blob/main/service-invocation-protocol.md#message-header
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         let ty_code = (value >> 48) as u16;
         let ty: MessageType = ty_code.try_into()?;
 
-        let requires_ack_flag = read_flag_if!(ty.allows_ack(), value, REQUIRES_ACK_MASK);
+        let requested_ack_flag = read_flag_if!(ty.allows_ack(), value, REQUESTED_ACK_MASK);
         let length = value as u32;
 
-        Ok(MessageHeader::_new(ty, requires_ack_flag, length))
+        Ok(MessageHeader::_new(ty, requested_ack_flag, length))
     }
 }
 
@@ -87,16 +87,14 @@ macro_rules! write_flag {
 }
 
 impl From<MessageHeader> for u64 {
-    /// Serialize the protocol header.
-    /// See https://github.com/restatedev/service-protocol/blob/main/service-invocation-protocol.md#message-header
     fn from(message_header: crate::message_codec::MessageHeader) -> Self {
         let mut res =
             ((u16::from(message_header.ty) as u64) << 48) | (message_header.length as u64);
 
         write_flag!(
-            message_header.requires_ack_flag,
+            message_header.requested_ack_flag,
             &mut res,
-            REQUIRES_ACK_MASK
+            REQUESTED_ACK_MASK
         );
 
         res
@@ -121,7 +119,7 @@ mod tests {
                 let header: MessageHeader = serialized.try_into().unwrap();
 
                 assert_eq!(header.message_type(), $ty);
-                assert_eq!(header.requires_ack(), $requires_ack);
+                assert_eq!(header.requested_ack(), $requires_ack);
                 assert_eq!(header.frame_length(), $len);
             }
         };
@@ -155,6 +153,14 @@ mod tests {
         MessageHeader::_new(SetStateCommand, Some(true), 10341),
         SetStateCommand,
         10341,
+        requires_ack: true
+    );
+
+    roundtrip_test!(
+        propose_run_completion,
+        MessageHeader::_new(ProposeRunCompletion, Some(true), 1),
+        ProposeRunCompletion,
+        1,
         requires_ack: true
     );
 

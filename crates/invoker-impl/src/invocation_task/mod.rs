@@ -175,15 +175,16 @@ pub(super) enum InvocationTaskOutputInner {
         /// When reading the entry from the storage this flag will always be false, as we never need to send acks for entries sent during a journal replay.
         ///
         /// See https://github.com/restatedev/service-protocol/blob/main/service-invocation-protocol.md#acknowledgment-of-stored-entries
-        requires_ack: bool,
+        requested_ack: bool,
     },
     NewNotificationProposal {
         notification: RawNotification,
         /// If true, the SDK requested to be notified when the proposed notification
-        /// is durably stored — the runtime will send back a compact
-        /// `ProposeRunCompletionAckMessage` instead of forwarding the full
-        /// notification. Only honoured on protocol >= v7.
-        requires_ack: bool,
+        /// is durably stored.
+        ///
+        /// The runtime will send back `ProposeRunCompletionAckMessage` instead of `RunCompletionMessage`.
+        /// Only protocol >= v7.
+        requested_ack: bool,
     },
     AwaitingOn {
         unresolved_future: UnresolvedFuture,

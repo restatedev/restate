@@ -362,7 +362,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         }
     }
 
-    pub(super) fn notify_new_command(&mut self, command_index: CommandIndex, requires_ack: bool) {
+    pub(super) fn notify_new_command(&mut self, command_index: CommandIndex, requested_ack: bool) {
         debug_assert!(matches!(
             &self.invocation_state,
             AttemptState::InFlight { .. }
@@ -378,7 +378,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             ..
         } = &mut self.invocation_state
         {
-            if requires_ack {
+            if requested_ack {
                 entries_to_ack.insert(command_index);
             }
             journal_tracker.notify_command_sent_to_partition_processor(command_index);
@@ -389,7 +389,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         &mut self,
         notification_type: NotificationType,
         notification_id: NotificationId,
-        requires_ack: bool,
+        requested_ack: bool,
     ) {
         debug_assert!(matches!(
             &self.invocation_state,
@@ -421,7 +421,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             // If either condition is missing, the proposal flows through the normal
             // `notify_entry` → `Notification::Entry` path and the SDK receives the
             // full `RunCompletionNotificationMessage` like on older protocols.
-            if requires_ack
+            if requested_ack
                 && let Some(pinned_deployment) = using_deployment
                 && pinned_deployment.service_protocol_version >= ServiceProtocolVersion::V7
             {
@@ -766,7 +766,7 @@ mod tests {
     }
 
     #[test(tokio::test)]
-    async fn handle_requires_ack() {
+    async fn handle_requested_ack() {
         let mut invocation_state_machine = create_test_invocation_state_machine();
 
         let abort_handle = tokio::spawn(async {}).abort_handle();
@@ -811,7 +811,7 @@ mod tests {
         let mut ism = create_test_invocation_state_machine();
         let mut rx = start_with_protocol(&mut ism, ServiceProtocolVersion::V7);
 
-        // Track a proposal for CompletionId 5 with requires_ack=true
+        // Track a proposal for CompletionId 5 with requested_ack=true
         ism.notify_new_notification_proposal(
             NotificationType::Completion(CompletionType::Run),
             NotificationId::CompletionId(5),
@@ -838,7 +838,7 @@ mod tests {
 
         // Proposal is recorded in the journal tracker (for retry safety) but NOT
         // tracked for swapping, because the deployment is on protocol v6 — even
-        // if the SDK had set requires_ack, the runtime caps the behaviour at v7.
+        // if the SDK had set requested_ack, the runtime caps the behaviour at v7.
         ism.notify_new_notification_proposal(
             NotificationType::Completion(CompletionType::Run),
             NotificationId::CompletionId(5),
@@ -852,11 +852,11 @@ mod tests {
     }
 
     #[test(tokio::test)]
-    async fn notify_entry_on_v7_without_requires_ack_falls_through_to_entry() {
+    async fn notify_entry_on_v7_without_requested_ack_falls_through_to_entry() {
         let mut ism = create_test_invocation_state_machine();
         let mut rx = start_with_protocol(&mut ism, ServiceProtocolVersion::V7);
 
-        // V7 deployment but SDK did NOT set the requires_ack header flag — the
+        // V7 deployment but SDK did NOT set the requested_ack header flag — the
         // proposal is tracked in the journal tracker for retry safety, but no
         // swap happens, and the SDK gets the full notification back.
         ism.notify_new_notification_proposal(
@@ -974,7 +974,7 @@ mod tests {
 
         invocation_state_machine.start(abort_handle, tx);
         // Only RunCompletion notifications are valid proposals today; the ISM asserts this.
-        // requires_ack=false because this test is about journal-tracker accounting for
+        // requested_ack=false because this test is about journal-tracker accounting for
         // retry safety, not about the v7 ack swap.
         invocation_state_machine.notify_new_notification_proposal(
             NotificationType::Completion(CompletionType::Run),

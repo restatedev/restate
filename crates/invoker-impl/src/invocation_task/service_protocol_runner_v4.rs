@@ -910,9 +910,9 @@ where
         self.invocation_task
             .send_invoker_tx(InvocationTaskOutputInner::NewCommand {
                 command_index: self.command_index,
-                requires_ack: mh
-                    .requires_ack()
-                    .expect("All command messages support requires_ack"),
+                requested_ack: mh
+                    .requested_ack()
+                    .expect("All command messages support requested_ack"),
                 command,
             });
         self.command_index += 1;
@@ -979,9 +979,9 @@ where
                 self.invocation_task.send_invoker_tx(
                     InvocationTaskOutputInner::NewNotificationProposal {
                         notification: raw_notification,
-                        requires_ack: mh
-                            .requires_ack()
-                            .expect("ProposeRunCompletion message supports requires_ack"),
+                        requested_ack: mh
+                            .requested_ack()
+                            .expect("ProposeRunCompletion message supports requested_ack"),
                     },
                 );
 
