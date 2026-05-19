@@ -54,7 +54,8 @@ use restate_types::journal_events::raw::RawEvent;
 use restate_types::journal_events::{Event, PausedEvent, TransientErrorEvent};
 use restate_types::journal_v2::raw::{RawCommand, RawNotification};
 use restate_types::journal_v2::{
-    CommandIndex, CompletionId, EntryMetadata, NotificationId, UnresolvedFuture,
+    CommandIndex, CompletionId, CompletionType, EntryMetadata, NotificationId, NotificationType,
+    UnresolvedFuture,
 };
 use restate_types::live::{Live, LiveLoad};
 use restate_types::schema::deployment::DeploymentResolver;
@@ -891,7 +892,7 @@ where
             .invocation_state_machine_manager
             .resolve_invocation(&invocation_id)
         {
-            ism.notify_new_notification_proposal(notification.id());
+            ism.notify_new_notification_proposal(notification.ty(), notification.id());
             trace!(
                 restate.invocation.target = %ism.invocation_target,
                 "Received a new notification. Invocation state: {:?}",
@@ -2431,7 +2432,10 @@ mod tests {
         ism.start(tokio::spawn(async {}).abort_handle(), tx);
 
         // Add a notification proposal
-        ism.notify_new_notification_proposal(NotificationId::CompletionId(1));
+        ism.notify_new_notification_proposal(
+            NotificationType::Completion(CompletionType::Run),
+            NotificationId::CompletionId(1),
+        );
 
         // Register the ISM and use handle_invocation_task_failed to put it in WaitingRetry state.
         // This will register the timer in the real DelayQueue.

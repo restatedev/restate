@@ -380,11 +380,28 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         }
     }
 
-    pub(super) fn notify_new_notification_proposal(&mut self, notification_id: NotificationId) {
+    pub(super) fn notify_new_notification_proposal(
+        &mut self,
+        notification_type: NotificationType,
+        notification_id: NotificationId,
+    ) {
         debug_assert!(matches!(
             &self.invocation_state,
             AttemptState::InFlight { .. }
         ));
+
+        // The only notification proposal currently defined in the protocol is
+        // ProposeRunCompletionMessage. We assert the invariant explicitly so that
+        // if/when new proposal-like messages are added, this code is forced to be
+        // revisited rather than silently mistreating them as run completions.
+        assert_eq!(
+            notification_type,
+            NotificationType::Completion(CompletionType::Run),
+            "the only notification proposal currently defined in the protocol is ProposeRunCompletionMessage",
+        );
+        let completion_id = *notification_id
+            .try_as_completion_id_ref()
+            .expect("RunCompletion notification id must be a CompletionId");
 
         if let AttemptState::InFlight {
             journal_tracker,
@@ -397,11 +414,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             if let Some(pinned_deployment) = using_deployment
                 && pinned_deployment.service_protocol_version >= ServiceProtocolVersion::V7
             {
-                run_completion_proposals_to_ack.insert(
-                    *notification_id
-                        .try_as_completion_id_ref()
-                        .expect("run proposals notification id must be completion id."),
-                );
+                run_completion_proposals_to_ack.insert(completion_id);
             }
             journal_tracker.notify_notification_proposed_to_partition_processor(notification_id);
         }
@@ -788,7 +801,10 @@ mod tests {
         let mut rx = start_with_protocol(&mut ism, ServiceProtocolVersion::V7);
 
         // Track a proposal for CompletionId 5
-        ism.notify_new_notification_proposal(NotificationId::CompletionId(5));
+        ism.notify_new_notification_proposal(
+            NotificationType::Completion(CompletionType::Run),
+            NotificationId::CompletionId(5),
+        );
 
         // PP echoes back the stored notification — the ISM must swap to the ack
         ism.notify_entry(7, NotificationId::CompletionId(5));
@@ -810,7 +826,10 @@ mod tests {
 
         // Proposal is recorded in the journal tracker (for retry safety) but NOT
         // tracked for swapping, because the deployment is on protocol v6.
-        ism.notify_new_notification_proposal(NotificationId::CompletionId(5));
+        ism.notify_new_notification_proposal(
+            NotificationType::Completion(CompletionType::Run),
+            NotificationId::CompletionId(5),
+        );
 
         // PP echoes back the stored notification — the ISM forwards the full Entry,
         // exactly like before protocol v7 existed.
@@ -922,8 +941,15 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
 
         invocation_state_machine.start(abort_handle, tx);
-        invocation_state_machine.notify_new_notification_proposal(NotificationId::SignalIndex(18));
-        invocation_state_machine.notify_new_notification_proposal(NotificationId::CompletionId(1));
+        // Only RunCompletion notifications are valid proposals today; the ISM asserts this.
+        invocation_state_machine.notify_new_notification_proposal(
+            NotificationType::Completion(CompletionType::Run),
+            NotificationId::CompletionId(18),
+        );
+        invocation_state_machine.notify_new_notification_proposal(
+            NotificationType::Completion(CompletionType::Run),
+            NotificationId::CompletionId(1),
+        );
         let_assert!(
             OnTaskError::Retrying(_) =
                 invocation_state_machine.handle_task_error(true, None, false, true, |_| 0)
@@ -933,8 +959,8 @@ mod tests {
         assert!(!invocation_state_machine.is_ready_to_retry());
         assert!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 
-        // Got signal 18
-        invocation_state_machine.notify_entry(0, NotificationId::SignalIndex(18));
+        // Got completion 18
+        invocation_state_machine.notify_entry(0, NotificationId::CompletionId(18));
 
         // Retry timer fired
         invocation_state_machine.notify_retry_timer_fired(0);
