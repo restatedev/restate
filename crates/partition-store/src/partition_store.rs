@@ -287,69 +287,12 @@ impl PartitionStore {
     }
 
     #[track_caller]
-    fn iterator_from<K: EncodeTableKeyPrefix>(
+    pub(super) fn iterator_from<K: EncodeTableKeyPrefix>(
         &self,
         scan: TableScan<K>,
     ) -> Result<DBRawIteratorWithThreadMode<'_, DB>> {
         let scan: PhysicalScan = scan.into();
-        match scan {
-            PhysicalScan::Prefix(table, key_kind, prefix) => {
-                assert!(table.has_key_kind(&prefix));
-                let prefix = prefix.freeze();
-                let opts = self.new_prefix_iterator_opts(key_kind, prefix.clone());
-                let table = self.table_handle(table);
-                let mut it = self
-                    .db
-                    .rocksdb()
-                    .inner()
-                    .as_raw_db()
-                    .raw_iterator_cf_opt(table, opts);
-                it.seek(prefix);
-                Ok(it)
-            }
-            PhysicalScan::RangeExclusive(table, _key_kind, scan_mode, start, end) => {
-                assert!(table.has_key_kind(&start));
-                let start = start.freeze();
-                let end = end.freeze();
-                let opts = self.new_range_iterator_opts(scan_mode, start.clone(), end);
-                let table = self.table_handle(table);
-                let mut it = self
-                    .db
-                    .rocksdb()
-                    .inner()
-                    .as_raw_db()
-                    .raw_iterator_cf_opt(table, opts);
-                it.seek(start);
-                Ok(it)
-            }
-            PhysicalScan::RangeOpen(table, _key_kind, start) => {
-                // We delayed the generate the synthetic iterator upper bound until this point
-                // because we might have different prefix length requirements based on the
-                // table+key_kind combination and we should keep this knowledge as low-level as
-                // possible.
-                //
-                // make the end has the same length as all prefixes to ensure rocksdb key
-                // comparator can leverage bloom filters when applicable
-                // (if auto_prefix_mode is enabled)
-                let mut end = BytesMut::zeroed(DB_PREFIX_LENGTH);
-                // We want to ensure that Range scans fall within the same key kind.
-                // So, we limit the iterator to the upper bound of this prefix
-                let kind_upper_bound = K::KEY_KIND.exclusive_upper_bound();
-                end[..kind_upper_bound.len()].copy_from_slice(&kind_upper_bound);
-                let start = start.freeze();
-                let end = end.freeze();
-                let opts = self.new_range_iterator_opts(ScanMode::TotalOrder, start.clone(), end);
-                let table = self.table_handle(table);
-                let mut it = self
-                    .db
-                    .rocksdb()
-                    .inner()
-                    .as_raw_db()
-                    .raw_iterator_cf_opt(table, opts);
-                it.seek(start);
-                Ok(it)
-            }
-        }
+        self.db.scan(scan)
     }
 
     #[allow(clippy::type_complexity)]
