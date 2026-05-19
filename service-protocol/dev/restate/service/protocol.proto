@@ -219,7 +219,24 @@ message AwaitingOnMessage {
 // Type: 0x0000 + 7
 //
 // This is a message sent as response to ProposeRunCompletionMessage to acknowledge the proposal was correctly stored and replicated.
+//
 // Its ordering is considered to be "relative" to the ordering of notifications.
+// In other words, the SDK expects that on replay the RunCompletionMessage,
+// to which the ProposeRunCompletionAckMessage relates to,
+// is sent in the same order relative to the other notifications.
+//
+// For example, if when PROCESSING the first time the SDK sees:
+//
+// -> SleepCompletionMessage id = 1
+// -> ProposeRunCompletionAckMessage id = 3
+// -> SleepCompletionMessage id = 2
+//
+// Then on the next replay, the SDK expects to see notifications in the following order:
+//
+// -> SleepCompletionMessage id = 1
+// -> RunCompletionMessage id = 3 (the actual completion here replaces the ack)
+// -> SleepCompletionMessage id = 2
+
 //
 // This message will only ever be sent as response to ProposeRunCompletionMessage, and will be sent only in the PROCESSING phase of the protocol, never during REPLAY.
 message ProposeRunCompletionAckMessage {

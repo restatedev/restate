@@ -151,7 +151,12 @@ enum AttemptState<K: TimerKey> {
         // Run completions the SDK proposed during this attempt. When the partition
         // processor echoes the stored notification back via [`Self::notify_entry`],
         // we swap [`Notification::Entry`] for [`Notification::ProposeRunCompletionAck`]
-        // so the SDK gets the compact ack message on the wire (protocol >= v7).
+        // so the SDK gets the ack message on the wire (only protocol >= v7).
+        //
+        // The SDK will replace the ack message with the full notification, kept around locally.
+        //
+        // This mechanism is used only in PROCESSING, for run completions proposed during the current attempt,
+        // and not when the invocation is REPLAYING.
         run_completion_proposals_to_ack: HashSet<CompletionId>,
 
         // Deployment being used during this attempt
