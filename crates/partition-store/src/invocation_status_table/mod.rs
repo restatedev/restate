@@ -90,12 +90,15 @@ fn delete_invocation_status<S: StorageAccess>(
     storage.delete_key(&create_invocation_status_key(invocation_id))
 }
 
+// NOTE: This will only consider invoked invocations that have not been migrated to vqueues
 fn read_invoked_full_invocation_id(
     mut kv: (&[u8], &[u8]),
 ) -> Result<Option<InvokedInvocationStatusLite>> {
     let invocation_id = invocation_id_from_key_bytes(&mut kv.0)?;
     let invocation_status = InvocationLite::decode(&mut kv.1)?;
-    if let InvocationStatusDiscriminants::Invoked = invocation_status.status {
+    if invocation_status.vqueue_id.is_none()
+        && let InvocationStatusDiscriminants::Invoked = invocation_status.status
+    {
         Ok(Some(InvokedInvocationStatusLite {
             invocation_id,
             invocation_target: invocation_status.invocation_target,
@@ -116,7 +119,7 @@ impl ReadInvocationStatusTable for PartitionStore {
 }
 
 impl ScanInvocationStatusTable for PartitionStore {
-    fn scan_invoked_invocations(
+    fn scan_legacy_invoked_invocations(
         &self,
     ) -> Result<impl Stream<Item = Result<InvokedInvocationStatusLite>> + Send> {
         self.iterator_filter_map(

@@ -25,9 +25,9 @@ use restate_storage_api::service_status_table::{
     ReadVirtualObjectStatusTable, WriteVirtualObjectStatusTable,
 };
 use restate_storage_api::timer_table::WriteTimerTable;
-use restate_storage_api::vqueue_table::{EntryStatusHeader, ReadVQueueTable, WriteVQueueTable};
+use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_storage_api::{journal_table as journal_table_v1, journal_table_v2};
-use restate_types::LimitKey;
+use restate_types::config::Configuration;
 use restate_types::identifiers::{DeploymentId, EntryIndex, InvocationId, WithPartitionKey};
 use restate_types::invocation::client::RestartAsNewInvocationResponse;
 use restate_types::invocation::{
@@ -35,7 +35,7 @@ use restate_types::invocation::{
 };
 use restate_types::journal_v2;
 use restate_types::journal_v2::{CommandMetadata, EntryMetadata, EntryType, NotificationId};
-use restate_types::vqueues::EntryId;
+use restate_vqueues::VQueue;
 
 use crate::debug_if_leader;
 use crate::partition::state_machine::{Action, CommandHandler, Error, StateMachineApplyContext};
@@ -245,6 +245,21 @@ where
         );
 
         // Let's prep the PreFlightInvocationMetadata
+        //
+        // If the old invocation was already vqueue-enabled, we carry down the same vqueue id.
+        // if not and we are now in vqueue-enabled mode, we assign a vqueue id to it.
+        let qid = completed_invocation.vqueue_id.or_else(|| {
+            Configuration::pinned()
+                .common
+                .experimental
+                .is_vqueues_enabled()
+                .then_some(VQueue::infer_vqueue_id_from_invocation(
+                    new_invocation_id.partition_key(),
+                    &completed_invocation.invocation_target,
+                    &completed_invocation.limit_key,
+                ))
+        });
+
         let pre_flight_invocation_metadata = PreFlightInvocationMetadata {
             timestamps: StatusTimestamps::init(ctx.record_created_at),
             invocation_target: completed_invocation.invocation_target,
@@ -261,6 +276,8 @@ where
                 pinned_deployment,
             }),
             source: Source::RestartAsNew(invocation_id),
+            vqueue_id: qid,
+            limit_key: completed_invocation.limit_key,
             completion_retention_duration: completed_invocation.completion_retention_duration,
             journal_retention_duration: completed_invocation.journal_retention_duration,
             random_seed: completed_invocation.random_seed,
@@ -272,51 +289,8 @@ where
         };
 
         // --- Invocation metadata ready, now go through the usual flow
-
-        // Look up limit_key from the original invocation's vqueue entry.
-        //
-        // Scope is already on the InvocationTarget (carried from the original invocation).
-        //
-        // TODO(vqueues): Revalidate this approach. It relies on VQueueMeta outliving
-        // all its entries — specifically, that the vqueue metadata is not removed
-        // before the vqueue entry itself is cleaned up (i.e., retention is over).
-        // If this assumption is violated, we'd silently lose limit_key on
-        // restart. Consider storing limit_key directly in the vqueue
-        // EntryStatus to avoid the extra lookup.
-        let limit_key = {
-            let entry_id = EntryId::from(&invocation_id);
-            if let Some(entry_status) = ctx
-                .storage
-                .get_vqueue_entry_status(invocation_id.partition_key(), &entry_id)
-                .await?
-            {
-                if let Some(vqueue_cache_key) = ctx
-                    .vqueues_cache
-                    .load(ctx.storage, entry_status.vqueue_id())
-                    .await?
-                {
-                    ctx.vqueues_cache
-                        .get_mut(vqueue_cache_key)
-                        .unwrap()
-                        .meta()
-                        .limit_key()
-                        .clone()
-                } else {
-                    LimitKey::None
-                }
-            } else {
-                // No vqueue entry (e.g., invocation predates vqueues)
-                LimitKey::None
-            }
-        };
-
-        ctx.on_pre_flight_invocation(
-            &new_invocation_id,
-            pre_flight_invocation_metadata,
-            None,
-            &limit_key,
-        )
-        .await?;
+        ctx.on_pre_flight_invocation(&new_invocation_id, pre_flight_invocation_metadata, None)
+            .await?;
 
         // --- Reply all good
         ctx.reply(
