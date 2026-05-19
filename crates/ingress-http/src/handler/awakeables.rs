@@ -7,22 +7,24 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
+use std::str::FromStr;
 
-use super::Handler;
-use super::HandlerError;
-use super::path_parsing::AwakeableRequestType;
-
-use crate::RequestDispatcher;
 use bytes::Bytes;
 use http::{Method, Request, Response, StatusCode};
 use http_body_util::BodyExt;
 use http_body_util::Full;
+use tracing::{debug, trace, warn};
+
+use restate_types::errors::GenericError;
 use restate_types::errors::{InvocationError, codes};
 use restate_types::identifiers::{AwakeableIdentifier, ExternalSignalIdentifier, WithInvocationId};
 use restate_types::invocation::{InvocationResponse, JournalCompletionTarget, ResponseResult};
 use restate_types::journal_v2::{Signal, SignalResult};
-use std::str::FromStr;
-use tracing::{debug, trace, warn};
+
+use super::Handler;
+use super::HandlerError;
+use super::path_parsing::AwakeableRequestType;
+use crate::RequestDispatcher;
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
@@ -34,7 +36,7 @@ where
         awakeable_request_type: AwakeableRequestType,
     ) -> Result<Response<Full<Bytes>>, HandlerError>
     where
-        <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
+        <B as http_body::Body>::Error: Into<GenericError>,
     {
         // Check HTTP Method
         if req.method() != Method::POST {

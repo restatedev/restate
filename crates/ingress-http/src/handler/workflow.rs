@@ -8,19 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::Handler;
-use super::HandlerError;
-use super::path_parsing::WorkflowRequestType;
-
-use crate::RequestDispatcher;
 use bytes::Bytes;
 use http::{Method, Request, Response};
 use http_body_util::Full;
+use tracing::{info, warn};
+
+use restate_types::errors::GenericError;
 use restate_types::identifiers::ServiceId;
 use restate_types::invocation::InvocationQuery;
 use restate_types::invocation::client::{AttachInvocationResponse, GetInvocationOutputResponse};
 use restate_types::schema::invocation_target::InvocationTargetResolver;
-use tracing::{info, warn};
+
+use super::Handler;
+use super::HandlerError;
+use super::path_parsing::WorkflowRequestType;
+use crate::RequestDispatcher;
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
@@ -33,7 +35,7 @@ where
         workflow_request_type: WorkflowRequestType,
     ) -> Result<Response<Full<Bytes>>, HandlerError>
     where
-        <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
+        <B as http_body::Body>::Error: Into<GenericError>,
     {
         match workflow_request_type {
             WorkflowRequestType::Attach(name, key) => {
@@ -56,7 +58,7 @@ where
         workflow_id: ServiceId,
     ) -> Result<Response<Full<Bytes>>, HandlerError>
     where
-        <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
+        <B as http_body::Body>::Error: Into<GenericError>,
     {
         // Check HTTP Method
         if req.method() != Method::GET {
@@ -100,7 +102,7 @@ where
         workflow_id: ServiceId,
     ) -> Result<Response<Full<Bytes>>, HandlerError>
     where
-        <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
+        <B as http_body::Body>::Error: Into<GenericError>,
     {
         // Check HTTP Method
         if req.method() != Method::GET {

@@ -13,7 +13,7 @@ use http::{Method, Request, Response, StatusCode, header};
 use http_body_util::{BodyExt, Full};
 use serde::Serialize;
 
-use restate_types::identifiers::InvocationId;
+use restate_types::{errors::GenericError, identifiers::InvocationId};
 
 use super::{APPLICATION_JSON, Handler, HandlerError, InvocationTargetRequest};
 
@@ -30,7 +30,7 @@ impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
         req: Request<B>,
     ) -> Result<Response<Full<Bytes>>, HandlerError>
     where
-        <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
+        <B as http_body::Body>::Error: Into<GenericError>,
     {
         if req.method() != Method::POST {
             return Err(HandlerError::MethodNotAllowed);
@@ -44,7 +44,7 @@ impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
             .to_bytes();
 
         let target_request: InvocationTargetRequest = serde_json::from_slice(&body_bytes)
-            .map_err(|e| HandlerError::Body(anyhow::anyhow!("invalid lookup body: {e}")))?;
+            .map_err(|e| HandlerError::Body(anyhow::anyhow!("invalid lookup body: {e}").into()))?;
 
         let invocation_query = target_request.into_invocation_query()?;
         let invocation_id = invocation_query.to_invocation_id();
