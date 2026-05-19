@@ -7,7 +7,7 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
-pub mod authority;
+mod authority;
 mod config;
 pub mod conn;
 mod metric_definitions;
@@ -76,7 +76,7 @@ impl<C: Clone + Send + Sync + 'static> Pool<C> {
 
         let authorities = Arc::new(DashMap::default());
 
-        if let Some(idle_timeout) = config.idle_authority_timeout {
+        if let Some(idle_timeout) = config.idle_connection_timeout {
             tokio::task::Builder::new()
                 .name("h2:eviction-task")
                 .spawn(eviction_task(Arc::downgrade(&authorities), idle_timeout))
@@ -115,7 +115,6 @@ where
             .or_insert_with(|| AuthorityPool::new(self.connector.clone(), self.config))
             .value()
             .clone();
-        authority_pool.touch();
 
         async move {
             let mut request = request;
@@ -136,56 +135,61 @@ where
     }
 }
 
-/// Background task that periodically evicts idle authority pools.
+/// Background task that periodically evicts idle connections.
 ///
-/// Eviction uses two phases because simply removing a pool from the map and
-/// dropping it would close the underlying H2 connections immediately — aborting
-/// any requests that are still in flight. By splitting the process we decouple
-/// "stop routing new requests here" from "shut down the connections":
+/// On each tick the task walks every authority pool and removes connections
+/// that are idle: `inflight() == 0` **and** `last_used_at` is older than
+/// `idle_timeout`. Connections with in-flight streams are left in place so
+/// that ongoing requests — including long-lived streams whose `last_used_at`
+/// has gone stale — continue to be reused by new callers. Authority pools
+/// whose connection list becomes empty are removed from the [`DashMap`].
 ///
-/// 1. **Evict** — Remove idle pools from the active [`DashMap`] into a
-///    task-local drain list. New requests to the same authority will create a
-///    fresh pool, while existing in-flight requests continue on the evicted
-///    connection until all permits are dropped (has_inflight() is false).
-/// 2. **Drain** — On each subsequent tick, check whether every connection in a
-///    draining pool has zero in-flight streams. Once that is true the pool is
-///    dropped, which triggers [`AuthorityPoolInner::Drop`] and gracefully
-///    closes all connections.
+/// Evicted connections do not need to be tracked here: each in-flight
+/// [`PermittedRecvStream`] holds an `Arc<ConnectionShared>`, so the
+/// underlying H2 handle stays alive until the last outstanding stream
+/// completes. This also covers the race in [`AuthorityPool::poll_ready`]
+/// where a caller clones a `Connection` under the read lock and acquires a
+/// stream permit on it after the lock is released — even if the eviction
+/// task removes that connection in between, the late-arriving request still
+/// has a live H2 handle to use, and graceful close via
+/// [`conn::Connection`]'s `Drop` fires once the last `Arc` is released.
 ///
-/// The task exits when all [`Pool`] clones are dropped (weak upgrade fails)
-/// **and** the drain list is empty.
+/// The task exits as soon as all [`Pool`] clones are dropped (weak upgrade
+/// fails).
 async fn eviction_task<C: Clone>(
     authorities: Weak<DashMap<PoolKey, AuthorityPool<C>>>,
     idle_timeout: Duration,
 ) {
     let interval = (idle_timeout / 4).max(Duration::from_secs(10));
-    let mut draining: Vec<AuthorityPool<C>> = Vec::new();
 
     loop {
         tokio::time::sleep(interval).await;
 
-        // Phase 2: drop drained pools that have no in-flight streams.
-        draining.retain(|pool| pool.has_inflight());
-
-        // Phase 1: evict idle pools from the active map.
+        // Evict idle connections from each authority pool.
         match authorities.upgrade() {
             Some(map) => {
                 let now = MillisSinceEpoch::now();
                 map.retain(|key, pool| {
-                    if now.duration_since(pool.last_used()) > idle_timeout {
-                        trace!("evicting idle authority pool ({})", key);
-                        draining.push(pool.clone());
-                        false
-                    } else {
-                        true
+                    let (size, evicted) = pool.retain(|con| {
+                        con.inflight() > 0 || now.duration_since(con.last_used_at()) < idle_timeout
+                    });
+
+                    if !evicted.is_empty() {
+                        debug!(
+                            "evicting {} idle connections from pool ({})",
+                            evicted.len(),
+                            key
+                        );
                     }
+
+                    if size == 0 {
+                        debug!("evicting empty authority pool ({})", key);
+                    }
+                    size != 0
                 });
             }
             None => {
-                // All Pool clones dropped. Keep draining until empty, then exit.
-                if draining.is_empty() {
-                    return;
-                }
+                return;
             }
         }
     }
@@ -362,7 +366,6 @@ mod test {
     use bytes::Bytes;
     use http::{Request, Uri};
     use http_body_util::BodyExt;
-    use restate_types::time::MillisSinceEpoch;
 
     use crate::pool::PoolBuilder;
     use crate::pool::test_util::TestConnector;
@@ -379,7 +382,7 @@ mod test {
     ) -> super::Pool<TestConnector> {
         PoolBuilder::default()
             .initial_max_send_streams(std::num::NonZeroU32::new(max_concurrent_streams).unwrap())
-            .idle_authority_timeout(Some(idle_timeout))
+            .idle_connection_timeout(Some(idle_timeout))
             .build(TestConnector::new(max_concurrent_streams))
     }
 
@@ -461,71 +464,13 @@ mod test {
         assert_eq!(pool.authorities.len(), 3);
     }
 
-    /// Idle authority pools are evicted by the background task.
-    /// Active pools (recently touched) are retained.
+    /// A connection removed from the authority pool keeps reporting its
+    /// in-flight count for as long as the response body is held, and the
+    /// count drops to zero once the body is released — the permit (and the
+    /// `Arc<ConnectionShared>` inside [`PermittedRecvStream`]) is what
+    /// keeps the stream slot occupied past eviction.
     #[tokio::test]
-    async fn evicts_idle_authority_pools() {
-        let idle_timeout = Duration::from_secs(10);
-        let pool = make_pool_with_eviction(10, idle_timeout);
-
-        // Send requests to two authorities to create their pools.
-        for host in ["host-a", "host-b"] {
-            pool.request(
-                Request::builder()
-                    .uri(format!("http://{}:80", host))
-                    .body(http_body_util::Empty::<Bytes>::new())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        }
-        assert_eq!(pool.authorities.len(), 2);
-
-        // Backdate host-a's last_used to simulate it being idle longer than the timeout.
-        let stale = MillisSinceEpoch::from(MillisSinceEpoch::now().as_u64().saturating_sub(20_000));
-        pool.authorities
-            .iter()
-            .find(|entry| {
-                entry
-                    .key()
-                    .authority
-                    .as_ref()
-                    .is_some_and(|a| a.as_str() == "host-a:80")
-            })
-            .unwrap()
-            .value()
-            .set_last_used(stale);
-
-        // Run eviction directly to avoid timing dependencies.
-        let now = MillisSinceEpoch::now();
-        pool.authorities
-            .retain(|_key, ap| now.duration_since(ap.last_used()) <= idle_timeout);
-
-        // host-a should be evicted, host-b should remain.
-        assert_eq!(pool.authorities.len(), 1);
-        assert!(pool.authorities.iter().any(|e| {
-            e.key()
-                .authority
-                .as_ref()
-                .is_some_and(|a| a.as_str() == "host-b:80")
-        }));
-
-        // A new request to host-a creates a fresh pool.
-        pool.request(
-            Request::builder()
-                .uri("http://host-a:80")
-                .body(http_body_util::Empty::<Bytes>::new())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(pool.authorities.len(), 2);
-    }
-
-    /// Evicted authority pools with in-flight streams are kept in the drain
-    /// list until streams complete, then dropped (closing connections via Drop).
-    #[tokio::test]
-    async fn draining_waits_for_inflight_streams() {
+    async fn inflight_reflects_body_after_eviction() {
         let pool = make_pool_with_eviction(10, Duration::from_secs(10));
 
         // Send a request and hold the response body to keep the stream alive.
@@ -542,20 +487,27 @@ mod test {
 
         assert_eq!(pool.authorities.len(), 1);
 
-        // Clone the authority pool before removing it (simulates what eviction_task does).
-        let draining_pool = pool.authorities.iter().next().unwrap().value().clone();
+        // Drain all connections
+        let (remaining, draining_pool) = pool
+            .authorities
+            .iter()
+            .next()
+            .unwrap()
+            .value()
+            .retain(|_| false);
 
+        assert_eq!(remaining, 0);
         // Remove from DashMap.
         pool.authorities.clear();
         assert_eq!(pool.authorities.len(), 0);
 
         // The draining pool should report in-flight streams.
-        assert!(draining_pool.has_inflight());
+        assert_ne!(draining_pool.iter().fold(0, |acc, v| acc + v.inflight()), 0);
 
         // Drop the response body to complete the stream.
         drop(body);
 
         // Now the draining pool should have no in-flight streams.
-        assert!(!draining_pool.has_inflight());
+        assert_eq!(draining_pool.iter().fold(0, |acc, v| acc + v.inflight()), 0);
     }
 }
