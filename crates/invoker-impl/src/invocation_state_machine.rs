@@ -389,6 +389,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         &mut self,
         notification_type: NotificationType,
         notification_id: NotificationId,
+        requires_ack: bool,
     ) {
         debug_assert!(matches!(
             &self.invocation_state,
@@ -415,8 +416,13 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             ..
         } = &mut self.invocation_state
         {
-            // We track the run completion proposals to ack only if we're using protocol v7
-            if let Some(pinned_deployment) = using_deployment
+            // We track the run completion proposal to ack only if the SDK asked for
+            // an ack (header flag) AND the negotiated protocol supports it (>= v7).
+            // If either condition is missing, the proposal flows through the normal
+            // `notify_entry` → `Notification::Entry` path and the SDK receives the
+            // full `RunCompletionNotificationMessage` like on older protocols.
+            if requires_ack
+                && let Some(pinned_deployment) = using_deployment
                 && pinned_deployment.service_protocol_version >= ServiceProtocolVersion::V7
             {
                 run_completion_proposals_to_ack.insert(completion_id);
@@ -805,10 +811,11 @@ mod tests {
         let mut ism = create_test_invocation_state_machine();
         let mut rx = start_with_protocol(&mut ism, ServiceProtocolVersion::V7);
 
-        // Track a proposal for CompletionId 5
+        // Track a proposal for CompletionId 5 with requires_ack=true
         ism.notify_new_notification_proposal(
             NotificationType::Completion(CompletionType::Run),
             NotificationId::CompletionId(5),
+            true,
         );
 
         // PP echoes back the stored notification — the ISM must swap to the ack
@@ -830,14 +837,34 @@ mod tests {
         let mut rx = start_with_protocol(&mut ism, ServiceProtocolVersion::V6);
 
         // Proposal is recorded in the journal tracker (for retry safety) but NOT
-        // tracked for swapping, because the deployment is on protocol v6.
+        // tracked for swapping, because the deployment is on protocol v6 — even
+        // if the SDK had set requires_ack, the runtime caps the behaviour at v7.
         ism.notify_new_notification_proposal(
             NotificationType::Completion(CompletionType::Run),
             NotificationId::CompletionId(5),
+            true,
         );
 
         // PP echoes back the stored notification — the ISM forwards the full Entry,
         // exactly like before protocol v7 existed.
+        ism.notify_entry(7, NotificationId::CompletionId(5));
+        assert_that!(rx.recv().await, some(pat!(Notification::Entry(eq(7)))));
+    }
+
+    #[test(tokio::test)]
+    async fn notify_entry_on_v7_without_requires_ack_falls_through_to_entry() {
+        let mut ism = create_test_invocation_state_machine();
+        let mut rx = start_with_protocol(&mut ism, ServiceProtocolVersion::V7);
+
+        // V7 deployment but SDK did NOT set the requires_ack header flag — the
+        // proposal is tracked in the journal tracker for retry safety, but no
+        // swap happens, and the SDK gets the full notification back.
+        ism.notify_new_notification_proposal(
+            NotificationType::Completion(CompletionType::Run),
+            NotificationId::CompletionId(5),
+            false,
+        );
+
         ism.notify_entry(7, NotificationId::CompletionId(5));
         assert_that!(rx.recv().await, some(pat!(Notification::Entry(eq(7)))));
     }
@@ -947,13 +974,17 @@ mod tests {
 
         invocation_state_machine.start(abort_handle, tx);
         // Only RunCompletion notifications are valid proposals today; the ISM asserts this.
+        // requires_ack=false because this test is about journal-tracker accounting for
+        // retry safety, not about the v7 ack swap.
         invocation_state_machine.notify_new_notification_proposal(
             NotificationType::Completion(CompletionType::Run),
             NotificationId::CompletionId(18),
+            false,
         );
         invocation_state_machine.notify_new_notification_proposal(
             NotificationType::Completion(CompletionType::Run),
             NotificationId::CompletionId(1),
+            false,
         );
         let_assert!(
             OnTaskError::Retrying(_) =

@@ -563,10 +563,11 @@ where
                             requires_ack
                         ).await
                     },
-                    InvocationTaskOutputInner::NewNotificationProposal { notification } => {
+                    InvocationTaskOutputInner::NewNotificationProposal { notification, requires_ack } => {
                         self.handle_new_notification_proposal(
                             invocation_id,
-                            notification
+                            notification,
+                            requires_ack,
                         ).await
                     },
                     InvocationTaskOutputInner::AwaitingOn { unresolved_future } => {
@@ -887,12 +888,17 @@ where
         &mut self,
         invocation_id: InvocationId,
         notification: RawNotification,
+        requires_ack: bool,
     ) {
         if let Some((output_tx, ism)) = self
             .invocation_state_machine_manager
             .resolve_invocation(&invocation_id)
         {
-            ism.notify_new_notification_proposal(notification.ty(), notification.id());
+            ism.notify_new_notification_proposal(
+                notification.ty(),
+                notification.id(),
+                requires_ack,
+            );
             trace!(
                 restate.invocation.target = %ism.invocation_target,
                 "Received a new notification. Invocation state: {:?}",
@@ -2435,6 +2441,7 @@ mod tests {
         ism.notify_new_notification_proposal(
             NotificationType::Completion(CompletionType::Run),
             NotificationId::CompletionId(1),
+            false,
         );
 
         // Register the ISM and use handle_invocation_task_failed to put it in WaitingRetry state.

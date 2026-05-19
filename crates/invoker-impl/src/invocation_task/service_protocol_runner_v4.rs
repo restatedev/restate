@@ -979,6 +979,9 @@ where
                 self.invocation_task.send_invoker_tx(
                     InvocationTaskOutputInner::NewNotificationProposal {
                         notification: raw_notification,
+                        requires_ack: mh
+                            .requires_ack()
+                            .expect("ProposeRunCompletion message supports requires_ack"),
                     },
                 );
 

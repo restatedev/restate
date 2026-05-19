@@ -179,6 +179,11 @@ pub(super) enum InvocationTaskOutputInner {
     },
     NewNotificationProposal {
         notification: RawNotification,
+        /// If true, the SDK requested to be notified when the proposed notification
+        /// is durably stored — the runtime will send back a compact
+        /// `ProposeRunCompletionAckMessage` instead of forwarding the full
+        /// notification. Only honoured on protocol >= v7.
+        requires_ack: bool,
     },
     AwaitingOn {
         unresolved_future: UnresolvedFuture,
