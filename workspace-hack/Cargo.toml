@@ -102,6 +102,8 @@ regex-automata = { version = "0.4", default-features = false, features = ["dfa",
 regex-syntax = { version = "0.8" }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "http2", "json", "rustls-tls", "rustls-tls-native-roots", "stream"] }
 ring = { version = "0.17", features = ["std"] }
+rust-librocksdb-sys = { git = "https://github.com/restatedev/rust-rocksdb", rev = "432ac4288a219dd70d4c71ccfcd0ad51d6bcc0d1", default-features = false, features = ["bindgen-runtime", "bzip2", "io-uring", "jemalloc", "lz4", "snappy", "static", "zlib", "zstd"] }
+rust-rocksdb = { git = "https://github.com/restatedev/rust-rocksdb", rev = "432ac4288a219dd70d4c71ccfcd0ad51d6bcc0d1", features = ["io-uring", "jemalloc", "multi-threaded-cf"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "prefer-post-quantum", "ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", features = ["std"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "ring", "std"] }
@@ -234,6 +236,8 @@ regex-automata = { version = "0.4", default-features = false, features = ["dfa",
 regex-syntax = { version = "0.8" }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "http2", "json", "rustls-tls", "rustls-tls-native-roots", "stream"] }
 ring = { version = "0.17", features = ["std"] }
+rust-librocksdb-sys = { git = "https://github.com/restatedev/rust-rocksdb", rev = "432ac4288a219dd70d4c71ccfcd0ad51d6bcc0d1", default-features = false, features = ["bindgen-runtime", "bzip2", "io-uring", "jemalloc", "lz4", "snappy", "static", "zlib", "zstd"] }
+rust-rocksdb = { git = "https://github.com/restatedev/rust-rocksdb", rev = "432ac4288a219dd70d4c71ccfcd0ad51d6bcc0d1", features = ["io-uring", "jemalloc", "multi-threaded-cf"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "prefer-post-quantum", "ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", features = ["std"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "ring", "std"] }
