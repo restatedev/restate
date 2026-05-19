@@ -433,11 +433,11 @@ where
                             trace!("Sending the completion to the wire");
                             crate::shortcircuit!(self.write_with_lease(&mut http_stream_tx, completion.into(), Some(lease)));
                         },
-                        Some(Notification::Ack(entry_index)) => {
+                        Some(Notification::CommandAck(entry_index)) => {
                             trace!("Sending the ack to the wire");
                             crate::shortcircuit!(self.write(&mut http_stream_tx, ProtocolMessage::new_entry_ack(entry_index)));
                         },
-                        Some(Notification::Entry { .. }) => {
+                        Some(Notification::Entry { .. }) | Some(Notification::ProposeRunCompletionAck(_)) => {
                             panic!("We don't expect to receive journal_v2 entries, this is an invoker bug.")
                         },
                         None => {

@@ -55,7 +55,7 @@ macro_rules! gen_message {
             Custom(u16, bytes::Bytes)
         }
     };
-    (@gen_message_enum [$variant:ident Control = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+    (@gen_message_enum [$variant:ident Control $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
         paste::paste! { gen_message!(@gen_message_enum [$($tail)*] -> [$variant(proto::[< $variant Message >]), $($body)*]); }
     };
     (@gen_message_enum [$variant:ident $ty:ident noparse $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
@@ -75,7 +75,7 @@ macro_rules! gen_message {
             }
         }
     };
-    (@gen_message_enum_encoded_len [$variant:ident Control = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+    (@gen_message_enum_encoded_len [$variant:ident Control $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
         paste::paste! { gen_message!(@gen_message_enum_encoded_len [$($tail)*] -> [(Message::$variant(msg), service_protocol_version) => <proto::[< $variant Message >] as $crate::message_codec::encoding::ServiceWireEncoder>::encoded_len(msg, service_protocol_version), $($body)*]); }
     };
     (@gen_message_enum_encoded_len [$variant:ident $ty:ident noparse $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
@@ -113,7 +113,7 @@ macro_rules! gen_message {
             }
         }
     };
-    (@gen_message_enum_encode [$variant:ident Control = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+    (@gen_message_enum_encode [$variant:ident Control $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
         paste::paste! { gen_message!(@gen_message_enum_encode [$($tail)*] -> [(Message::$variant(msg), service_protocol_version, buf) => <proto::[< $variant Message >] as $crate::message_codec::encoding::ServiceWireEncoder>::encode(msg, buf, service_protocol_version)?, $($body)*]); }
     };
     (@gen_message_enum_encode [$variant:ident $ty:ident noparse $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
@@ -133,7 +133,7 @@ macro_rules! gen_message {
             }
         }
     };
-    (@gen_message_enum_proto_debug [$variant:ident Control = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+    (@gen_message_enum_proto_debug [$variant:ident Control $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
         gen_message!(@gen_message_enum_proto_debug [$($tail)*] -> [Message::$variant(msg) => format!("{msg:?}"), $($body)*]);
     };
     (@gen_message_enum_proto_debug [$variant:ident $ty:ident noparse $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
@@ -167,6 +167,9 @@ macro_rules! gen_message {
             }
         }
     };
+    (@gen_message_type_enum_allows_ack [$variant:ident Control allows_ack = $id:literal, $($tail:tt)*] -> [$($variants:tt)*]) => {
+        gen_message!(@gen_message_type_enum_allows_ack [$($tail)*] -> [MessageType::$variant | $($variants)*]);
+    };
     (@gen_message_type_enum_allows_ack [$variant:ident Control = $id:literal, $($tail:tt)*] -> [$($variants:tt)*]) => {
         gen_message!(@gen_message_type_enum_allows_ack [$($tail)*] -> [$($variants)*]);
     };
@@ -190,7 +193,7 @@ macro_rules! gen_message {
             }
         }
     };
-    (@gen_message_type_enum_decode [$variant:ident Control = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+    (@gen_message_type_enum_decode [$variant:ident Control $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
         paste::paste! { gen_message!(@gen_message_type_enum_decode [$($tail)*] -> [(MessageType::$variant, buf, service_protocol_version) => Ok(Message::$variant(<proto::[< $variant Message >] as $crate::message_codec::encoding::ServiceWireDecoder>::decode(buf, service_protocol_version)?)), $($body)*]); }
     };
     (@gen_message_type_enum_decode [$variant:ident $ty:ident noparse $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
@@ -334,8 +337,9 @@ gen_message!(
     Error Control = 0x0002,
     End Control = 0x0003,
     CommandAck Control = 0x0004,
-    ProposeRunCompletion Control = 0x0005,
+    ProposeRunCompletion Control allows_ack = 0x0005,
     AwaitingOn Control = 0x0006,
+    ProposeRunCompletionAck Control = 0x0007,
 
     Input Command noparse allows_ack = 0x0400,
     Output Command noparse allows_ack = 0x0401,
@@ -419,5 +423,9 @@ impl Message {
 
     pub fn new_command_ack(command_index: CommandIndex) -> Self {
         Self::CommandAck(proto::CommandAckMessage { command_index })
+    }
+
+    pub fn new_propose_run_completion_ack(completion_id: u32) -> Self {
+        Self::ProposeRunCompletionAck(proto::ProposeRunCompletionAckMessage { completion_id })
     }
 }

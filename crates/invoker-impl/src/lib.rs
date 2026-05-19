@@ -53,7 +53,10 @@ use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal_events::raw::RawEvent;
 use restate_types::journal_events::{Event, PausedEvent, TransientErrorEvent};
 use restate_types::journal_v2::raw::{RawCommand, RawNotification};
-use restate_types::journal_v2::{CommandIndex, EntryMetadata, NotificationId, UnresolvedFuture};
+use restate_types::journal_v2::{
+    CommandIndex, CompletionId, CompletionType, EntryMetadata, NotificationId, NotificationType,
+    UnresolvedFuture,
+};
 use restate_types::live::{Live, LiveLoad};
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
@@ -94,7 +97,9 @@ pub(crate) enum Notification {
     /// V2 notification signal: entry index.
     Entry(EntryIndex),
     /// V2 command ack: already signal-only.
-    Ack(CommandIndex),
+    CommandAck(CommandIndex),
+    /// Propose run completion ack (protocol >= v7).
+    ProposeRunCompletionAck(CompletionId),
 }
 
 // -- InvocationTask factory: we use this to mock the state machine in tests
@@ -558,10 +563,11 @@ where
                             requires_ack
                         ).await
                     },
-                    InvocationTaskOutputInner::NewNotificationProposal { notification } => {
+                    InvocationTaskOutputInner::NewNotificationProposal { notification, requested_ack } => {
                         self.handle_new_notification_proposal(
                             invocation_id,
-                            notification
+                            notification,
+                            requested_ack,
                         ).await
                     },
                     InvocationTaskOutputInner::AwaitingOn { unresolved_future } => {
@@ -579,12 +585,12 @@ where
                     InvocationTaskOutputInner::Suspended(indexes) => {
                         self.handle_invocation_task_suspended(invocation_id, indexes).await
                     }
-                    InvocationTaskOutputInner::NewCommand { command, command_index, requires_ack } => {
+                    InvocationTaskOutputInner::NewCommand { command, command_index, requested_ack } => {
                         self.handle_new_command(
                             invocation_id,
                             command_index,
                             command,
-                            requires_ack
+                            requested_ack
                         ).await
                     }
                     InvocationTaskOutputInner::SuspendedV2(future) => {
@@ -882,12 +888,17 @@ where
         &mut self,
         invocation_id: InvocationId,
         notification: RawNotification,
+        requested_ack: bool,
     ) {
         if let Some((output_tx, ism)) = self
             .invocation_state_machine_manager
             .resolve_invocation(&invocation_id)
         {
-            ism.notify_new_notification_proposal(notification.id());
+            ism.notify_new_notification_proposal(
+                notification.ty(),
+                notification.id(),
+                requested_ack,
+            );
             trace!(
                 restate.invocation.target = %ism.invocation_target,
                 "Received a new notification. Invocation state: {:?}",
@@ -928,13 +939,13 @@ where
         invocation_id: InvocationId,
         command_index: CommandIndex,
         command: RawCommand,
-        requires_ack: bool,
+        requested_ack: bool,
     ) {
         if let Some((output_tx, ism)) = self
             .invocation_state_machine_manager
             .resolve_invocation(&invocation_id)
         {
-            ism.notify_new_command(command_index, requires_ack);
+            ism.notify_new_command(command_index, requested_ack);
             trace!(
                 restate.invocation.target = %ism.invocation_target,
                 "Received a new command. Invocation state: {:?}",
@@ -2427,7 +2438,11 @@ mod tests {
         ism.start(tokio::spawn(async {}).abort_handle(), tx);
 
         // Add a notification proposal
-        ism.notify_new_notification_proposal(NotificationId::CompletionId(1));
+        ism.notify_new_notification_proposal(
+            NotificationType::Completion(CompletionType::Run),
+            NotificationId::CompletionId(1),
+            false,
+        );
 
         // Register the ISM and use handle_invocation_task_failed to put it in WaitingRetry state.
         // This will register the timer in the real DelayQueue.

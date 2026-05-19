@@ -318,6 +318,22 @@ impl RocksAccess {
             });
     }
 
+    /// Runs a manual compaction on the Range of keys given on the
+    /// given column family.
+    pub fn compact_cf<A, B>(
+        &self,
+        cf_handle: &Arc<rocksdb::BoundColumnFamily<'_>>,
+        opts: &CompactOptions,
+        start_key: Option<A>,
+        end_key: Option<B>,
+    ) where
+        A: AsRef<[u8]>,
+        B: AsRef<[u8]>,
+    {
+        self.db
+            .compact_range_cf_opt(cf_handle, start_key, end_key, opts)
+    }
+
     pub fn set_options_cf(
         &self,
         cf: impl AsRef<str>,
