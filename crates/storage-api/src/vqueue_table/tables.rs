@@ -63,6 +63,43 @@ impl Stage {
     }
 }
 
+mod bilrost_encoding {
+    use bilrost::encoding::{DistinguishedProxiable, Proxiable};
+    use bilrost::{Canonicity, DecodeErrorKind, Enumeration};
+
+    use super::Stage;
+
+    impl Proxiable for Stage {
+        type Proxy = u32;
+
+        fn encode_proxy(&self) -> Self::Proxy {
+            <Stage as Enumeration>::to_number(self)
+        }
+
+        fn decode_proxy(&mut self, proxy: Self::Proxy) -> Result<(), DecodeErrorKind> {
+            *self = <Stage as Enumeration>::try_from_number(proxy).unwrap_or(Stage::Unknown);
+            Ok(())
+        }
+    }
+
+    impl DistinguishedProxiable for Stage {
+        fn decode_proxy_distinguished(
+            &mut self,
+            proxy: Self::Proxy,
+        ) -> Result<Canonicity, DecodeErrorKind> {
+            self.decode_proxy(proxy)?;
+            Ok(Canonicity::Canonical)
+        }
+    }
+
+    bilrost::delegate_proxied_encoding!(
+        use encoding (bilrost::encoding::Fixed)
+        to encode proxied type (Stage)
+        with encoding (bilrost::encoding::Fixed)
+        including distinguished
+    );
+}
+
 pub trait WriteVQueueTable {
     /// Initializes a new vqueue
     fn create_vqueue(&mut self, qid: &VQueueId, meta: &VQueueMeta);
