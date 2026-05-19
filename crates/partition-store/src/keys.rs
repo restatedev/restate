@@ -232,25 +232,15 @@ impl KeyKind {
     }
 
     // Rocksdb merge operator function (partial merge)
+    #[inline]
     pub fn partial_merge(
-        key: &[u8],
+        _key: &[u8],
         _unused: Option<&[u8]>,
-        operands: &MergeOperands,
+        _operands: &MergeOperands,
     ) -> Option<Vec<u8>> {
-        let mut kind_buf = key;
-        let kind = match KeyKind::deserialize(&mut kind_buf) {
-            Ok(kind) => kind,
-            Err(e) => {
-                error!("Cannot apply merge operator; {e}");
-                return None;
-            }
-        };
-        trace!(?kind, "partial merge");
-
-        match kind {
-            KeyKind::VQueueMeta => vqueue_meta_merge::partial_merge(key, operands),
-            _ => None,
-        }
+        // Currently, we have no partial merge operator for any key. Change this
+        // if/when this is needed.
+        None
     }
 }
 
