@@ -37,13 +37,13 @@ mod sealed {
 /// and serialization details required to interpret the payload.
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct Header {
-    #[bilrost(1)]
+    #[bilrost(tag(1))]
     dedup: Dedup,
     /// Payload record kind
-    #[bilrost(2)]
+    #[bilrost(tag(2), encoding(fixed))]
     kind: CommandKind,
     /// Payload codec
-    #[bilrost(3)]
+    #[bilrost(tag(3), encoding(fixed))]
     codec: Option<StorageCodecKind>,
 }
 
@@ -311,6 +311,46 @@ pub enum CommandKind {
     VQueuesResume = 24,
 }
 
+mod bilrost_encoding {
+    use bilrost::encoding::{DistinguishedProxiable, Proxiable};
+    use bilrost::{Canonicity, DecodeErrorKind, Enumeration};
+
+    use super::CommandKind;
+
+    struct FixedCommandKindTag;
+
+    impl Proxiable<FixedCommandKindTag> for CommandKind {
+        type Proxy = u32;
+
+        fn encode_proxy(&self) -> Self::Proxy {
+            <CommandKind as Enumeration>::to_number(self)
+        }
+
+        fn decode_proxy(&mut self, proxy: Self::Proxy) -> Result<(), DecodeErrorKind> {
+            *self = <CommandKind as Enumeration>::try_from_number(proxy)
+                .unwrap_or(CommandKind::Unknown);
+            Ok(())
+        }
+    }
+
+    impl DistinguishedProxiable<FixedCommandKindTag> for CommandKind {
+        fn decode_proxy_distinguished(
+            &mut self,
+            proxy: Self::Proxy,
+        ) -> Result<Canonicity, DecodeErrorKind> {
+            self.decode_proxy(proxy)?;
+            Ok(Canonicity::Canonical)
+        }
+    }
+
+    bilrost::delegate_proxied_encoding!(
+        use encoding (bilrost::encoding::Fixed)
+        to encode proxied type (CommandKind) using proxy tag (FixedCommandKindTag)
+        with encoding (bilrost::encoding::Fixed)
+        including distinguished
+    );
+}
+
 /// Specifies the deduplication strategy that allows receivers to discard
 /// duplicate WAL records safely.
 #[derive(Debug, Clone, PartialEq, Eq, Default, bilrost::Oneof, bilrost::Message)]
@@ -322,17 +362,17 @@ pub enum Dedup {
     /// predecessor).
     #[bilrost(tag(1), message)]
     SelfProposal {
-        #[bilrost(0)]
+        #[bilrost(tag(0), encoding(fixed))]
         leader_epoch: LeaderEpoch,
-        #[bilrost(1)]
+        #[bilrost(tag(1), encoding(fixed))]
         seq: u64,
     },
     /// Sequence number to deduplicate messages from a foreign partition.
     #[bilrost(tag(2), message)]
     ForeignPartition {
-        #[bilrost(0)]
+        #[bilrost(tag(0), encoding(fixed))]
         partition: PartitionId,
-        #[bilrost(1)]
+        #[bilrost(tag(1), encoding(fixed))]
         seq: u64,
     },
     /// Sequence number to deduplicate messages from an arbitrary string prefix.
@@ -340,11 +380,11 @@ pub enum Dedup {
     Arbitrary {
         // For backward compatibility with ProducerID::Other variant
         // Drop in Restate v1.8
-        #[bilrost(0)]
+        #[bilrost(tag(0))]
         prefix: Option<ReString>,
-        #[bilrost(1)]
+        #[bilrost(tag(1), encoding(fixed))]
         producer_id: U128,
-        #[bilrost(2)]
+        #[bilrost(tag(2), encoding(fixed))]
         seq: u64,
     },
 }
@@ -413,21 +453,85 @@ where
 #[cfg(test)]
 mod test {
 
+    use bilrost::{Message, OwnedMessage};
     use bytes::BytesMut;
 
+    use restate_encoding::U128;
     use restate_types::{
         GenerationalNodeId,
         logs::{BodyWithKeys, Keys},
         sharding::KeyRange,
-        storage::StorageCodec,
+        storage::{StorageCodec, StorageCodecKind},
         time::MillisSinceEpoch,
     };
 
     use super::Dedup;
     use crate::{
         control::{AnnounceLeaderCommand, UpdatePartitionDurabilityCommand},
-        v2::{Command, CommandKind, CommandWithKeys, Envelope, Raw},
+        v2::{Command, CommandKind, CommandWithKeys, Envelope, Header, Raw},
     };
+
+    #[test]
+    fn header_fixed_fields_round_trip() {
+        let header = Header {
+            dedup: Dedup::None,
+            kind: CommandKind::AnnounceLeader,
+            codec: Some(StorageCodecKind::Custom),
+        };
+        let encoded = header.encode_to_bytes();
+
+        assert_eq!(encoded.as_ref(), &[0x0a, 1, 0, 0, 0, 0x06, 7, 0, 0, 0]);
+
+        let decoded = Header::decode(encoded).unwrap();
+        assert_eq!(decoded.dedup, header.dedup);
+        assert_eq!(decoded.kind, header.kind);
+        assert_eq!(decoded.codec, header.codec);
+    }
+
+    #[test]
+    fn dedup_fixed_fields_round_trip() {
+        let self_proposal = Dedup::SelfProposal {
+            leader_epoch: 10.into(),
+            seq: 120,
+        };
+        let encoded = self_proposal.encode_to_bytes();
+        assert_eq!(encoded.len(), 20);
+        assert_eq!(Dedup::decode(encoded).unwrap(), self_proposal);
+
+        let foreign_partition = Dedup::ForeignPartition {
+            partition: 10.into(),
+            seq: 120,
+        };
+        let encoded = foreign_partition.encode_to_bytes();
+        assert_eq!(encoded.len(), 16);
+        assert_eq!(Dedup::decode(encoded).unwrap(), foreign_partition);
+
+        let arbitrary = Dedup::Arbitrary {
+            prefix: None,
+            producer_id: U128::from(0x1234_5678_90ab_cdef_0123_4567_89ab_cdef),
+            seq: 120,
+        };
+        let encoded = arbitrary.encode_to_bytes();
+        assert_eq!(encoded.len(), 29);
+        assert_eq!(Dedup::decode(encoded).unwrap(), arbitrary);
+    }
+
+    #[test]
+    fn general_encoding_keeps_command_kind_varint() {
+        #[derive(Debug, PartialEq, bilrost::Message)]
+        struct EncodedCommandKind {
+            #[bilrost(tag(1))]
+            kind: CommandKind,
+        }
+
+        let value = EncodedCommandKind {
+            kind: CommandKind::Invoke,
+        };
+        let encoded = value.encode_to_bytes();
+
+        assert_eq!(encoded.as_ref(), &[0x04, 8]);
+        assert_eq!(EncodedCommandKind::decode(encoded).unwrap(), value);
+    }
 
     #[test]
     fn envelope_encode_decode() {

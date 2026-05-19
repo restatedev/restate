@@ -90,6 +90,47 @@ pub enum StorageCodecKind {
     Custom = 7,
 }
 
+#[cfg(feature = "bilrost")]
+mod bilrost_encoding {
+    use bilrost::encoding::{DistinguishedProxiable, Proxiable};
+    use bilrost::{Canonicity, DecodeErrorKind, Enumeration};
+
+    use super::StorageCodecKind;
+
+    struct FixedStorageCodecKindTag;
+
+    impl Proxiable<FixedStorageCodecKindTag> for StorageCodecKind {
+        type Proxy = u32;
+
+        fn encode_proxy(&self) -> Self::Proxy {
+            <StorageCodecKind as Enumeration>::to_number(self)
+        }
+
+        fn decode_proxy(&mut self, proxy: Self::Proxy) -> Result<(), DecodeErrorKind> {
+            *self = <StorageCodecKind as Enumeration>::try_from_number(proxy)
+                .map_err(|_| DecodeErrorKind::OutOfDomainValue)?;
+            Ok(())
+        }
+    }
+
+    impl DistinguishedProxiable<FixedStorageCodecKindTag> for StorageCodecKind {
+        fn decode_proxy_distinguished(
+            &mut self,
+            proxy: Self::Proxy,
+        ) -> Result<Canonicity, DecodeErrorKind> {
+            self.decode_proxy(proxy)?;
+            Ok(Canonicity::Canonical)
+        }
+    }
+
+    bilrost::delegate_proxied_encoding!(
+        use encoding (bilrost::encoding::Fixed)
+        to encode proxied type (StorageCodecKind) using proxy tag (FixedStorageCodecKindTag)
+        with encoding (bilrost::encoding::Fixed)
+        including distinguished
+    );
+}
+
 impl From<StorageCodecKind> for u8 {
     #[inline]
     fn from(value: StorageCodecKind) -> Self {
@@ -205,5 +246,46 @@ impl StorageEncode for bytes::Bytes {
         }
         buf.put_slice(&self[..]);
         Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "bilrost"))]
+mod tests {
+    use bilrost::{Message, OwnedMessage};
+
+    use super::*;
+
+    #[test]
+    fn fixed_encoding_round_trips_storage_codec_kind() {
+        #[derive(Debug, PartialEq, bilrost::Message)]
+        struct EncodedStorageCodecKind {
+            #[bilrost(tag(1), encoding(fixed))]
+            value: Option<StorageCodecKind>,
+        }
+
+        let value = EncodedStorageCodecKind {
+            value: Some(StorageCodecKind::Custom),
+        };
+        let encoded = value.encode_to_bytes();
+
+        assert_eq!(encoded.as_ref(), &[0x06, 7, 0, 0, 0]);
+        assert_eq!(EncodedStorageCodecKind::decode(encoded).unwrap(), value);
+    }
+
+    #[test]
+    fn general_encoding_keeps_storage_codec_kind_varint() {
+        #[derive(Debug, PartialEq, bilrost::Message)]
+        struct EncodedStorageCodecKind {
+            #[bilrost(tag(1))]
+            value: Option<StorageCodecKind>,
+        }
+
+        let value = EncodedStorageCodecKind {
+            value: Some(StorageCodecKind::Custom),
+        };
+        let encoded = value.encode_to_bytes();
+
+        assert_eq!(encoded.as_ref(), &[0x04, 7]);
+        assert_eq!(EncodedStorageCodecKind::decode(encoded).unwrap(), value);
     }
 }

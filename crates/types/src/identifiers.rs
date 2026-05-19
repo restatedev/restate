@@ -83,6 +83,45 @@ impl Default for LeaderEpoch {
     }
 }
 
+mod bilrost_encoding {
+    use bilrost::encoding::{DistinguishedProxiable, Proxiable};
+    use bilrost::{Canonicity, DecodeErrorKind};
+
+    use super::LeaderEpoch;
+
+    struct FixedLeaderEpochTag;
+
+    impl Proxiable<FixedLeaderEpochTag> for LeaderEpoch {
+        type Proxy = u64;
+
+        fn encode_proxy(&self) -> Self::Proxy {
+            self.0
+        }
+
+        fn decode_proxy(&mut self, proxy: Self::Proxy) -> Result<(), DecodeErrorKind> {
+            self.0 = proxy;
+            Ok(())
+        }
+    }
+
+    impl DistinguishedProxiable<FixedLeaderEpochTag> for LeaderEpoch {
+        fn decode_proxy_distinguished(
+            &mut self,
+            proxy: Self::Proxy,
+        ) -> Result<Canonicity, DecodeErrorKind> {
+            self.decode_proxy(proxy)?;
+            Ok(Canonicity::Canonical)
+        }
+    }
+
+    bilrost::delegate_proxied_encoding!(
+        use encoding (bilrost::encoding::Fixed)
+        to encode proxied type (LeaderEpoch) using proxy tag (FixedLeaderEpochTag)
+        with encoding (bilrost::encoding::Fixed)
+        including distinguished
+    );
+}
+
 impl From<crate::protobuf::common::LeaderEpoch> for LeaderEpoch {
     fn from(epoch: crate::protobuf::common::LeaderEpoch) -> Self {
         Self::from(epoch.value)
@@ -1598,6 +1637,44 @@ mod tests {
         let b: SubscriptionId = a.to_string().parse().unwrap();
         assert_eq!(a, b);
         assert_eq!(a.to_string(), b.to_string());
+    }
+
+    #[test]
+    fn fixed_encoding_round_trips_leader_epoch() {
+        use bilrost::{Message, OwnedMessage};
+
+        #[derive(Debug, PartialEq, bilrost::Message)]
+        struct EncodedLeaderEpoch {
+            #[bilrost(tag(1), encoding(fixed))]
+            value: LeaderEpoch,
+        }
+
+        let value = EncodedLeaderEpoch {
+            value: LeaderEpoch::from(42),
+        };
+        let encoded = value.encode_to_bytes();
+
+        assert_eq!(encoded.len(), 9);
+        assert_eq!(EncodedLeaderEpoch::decode(encoded).unwrap(), value);
+    }
+
+    #[test]
+    fn general_encoding_keeps_leader_epoch_varint() {
+        use bilrost::{Message, OwnedMessage};
+
+        #[derive(Debug, PartialEq, bilrost::Message)]
+        struct EncodedLeaderEpoch {
+            #[bilrost(tag(1))]
+            value: LeaderEpoch,
+        }
+
+        let value = EncodedLeaderEpoch {
+            value: LeaderEpoch::from(42),
+        };
+        let encoded = value.encode_to_bytes();
+
+        assert_eq!(encoded.as_ref(), &[0x04, 42]);
+        assert_eq!(EncodedLeaderEpoch::decode(encoded).unwrap(), value);
     }
 
     #[test]
