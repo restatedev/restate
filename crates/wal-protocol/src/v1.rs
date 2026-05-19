@@ -209,6 +209,12 @@ pub enum Command {
     /// payload is bilrost encoded [`vqueues::VQueuesResume`]
     /// *Since v1.7.0
     VQueuesResume(#[debug(skip)] Bytes),
+    /// Storage-format migration barrier. Carries the partition's `KeyRange` alongside
+    /// the bilrost-encoded [`crate::control::MigrationBarrierCommand`] payload, similar
+    /// to [`UpsertRuleBookCommandWrapper`]. Once self-proposing switches to v2 envelopes
+    /// the wrapper can be dropped — the range will live in the envelope header.
+    /// *Since v1.8.0*
+    MigrationBarrier(MigrationBarrierCommandWrapper),
 }
 
 impl Command {
@@ -268,6 +274,9 @@ impl HasRecordKeys for Envelope {
             Command::VQSchedulerDecisions(_) => Keys::Single(self.partition_key()),
             Command::VQueuesPause(_) => Keys::Single(self.partition_key()),
             Command::VQueuesResume(_) => Keys::Single(self.partition_key()),
+            Command::MigrationBarrier(wrapper) => {
+                Keys::RangeInclusive(wrapper.partition_key_range.into())
+            }
         }
     }
 }
@@ -284,5 +293,16 @@ impl MatchKeyQuery for Envelope {
 pub struct UpsertRuleBookCommandWrapper {
     pub partition_key_range: KeyRange,
     /// Bytes are bilrost encoded [`UpsertRuleBookCommand`]
+    pub command: Bytes,
+}
+
+/// A temporary wrapper for [`crate::control::MigrationBarrierCommand`] only used in v1
+/// to carry the partition's `KeyRange` alongside the bilrost-encoded payload. Once the
+/// self-proposer emits v2 envelopes natively, the range will live in the envelope header
+/// and this wrapper can be removed.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MigrationBarrierCommandWrapper {
+    pub partition_key_range: KeyRange,
+    /// Bytes are bilrost encoded [`crate::control::MigrationBarrierCommand`]
     pub command: Bytes,
 }

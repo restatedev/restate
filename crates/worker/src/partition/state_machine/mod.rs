@@ -36,7 +36,7 @@ use restate_limiter::RuleBook;
 use crate::rule_book_cache::RuleBookCacheHandle;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
-use restate_storage_api::fsm_table::WriteFsmTable;
+use restate_storage_api::fsm_table::{StorageFormatVersion, WriteFsmTable};
 use restate_storage_api::inbox_table::{InboxEntry, WriteInboxTable};
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, JournalMetadata,
@@ -66,7 +66,6 @@ use restate_storage_api::{Result as StorageResult, journal_table};
 use restate_storage_api::{StorageError, journal_table_v2};
 use restate_tracing_instrumentation as instrumentation;
 use restate_types::clock::UniqueTimestamp;
-use restate_types::config::Configuration;
 use restate_types::errors::{
     ALREADY_COMPLETED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, GenericError, InvocationError,
     KILLED_INVOCATION_ERROR, NOT_FOUND_INVOCATION_ERROR, NOT_READY_INVOCATION_ERROR,
@@ -153,6 +152,10 @@ pub struct StateMachine {
     pub(crate) outbox_head_seq_number: Option<MessageIndex>,
     /// The minimum version of restate server that we currently support
     pub(crate) min_restate_version: SemanticRestateVersion,
+    /// The partition's storage format version (FSM `STORAGE_VERSION`). Cached here so
+    /// hot-path routing checks (e.g., vqueues) don't have to re-read the FSM. Updated
+    /// in lock-step with the FSM by the `MigrationBarrierCommand` apply handler.
+    pub(crate) storage_version: StorageFormatVersion,
     /// Sequence number of the next outbox message to be appended.
     pub(crate) outbox_seq_number: MessageIndex,
     /// Consistent schema
@@ -191,6 +194,15 @@ pub enum Error {
     VersionBarrier {
         required_min_version: SemanticRestateVersion,
         barrier_reason: String,
+    },
+    #[error(
+        "partition is blocked; storage format upgrade required from {current:?} to {target}; \
+        hint={hint:?}; upgrade restate-server to a version that supports storage format {target}"
+    )]
+    MigrationBarrier {
+        current: StorageFormatVersion,
+        target: u16,
+        hint: Option<String>,
     },
     #[error("failed to deserialize entry: {0}")]
     Codec(#[from] RawEntryCodecError),
@@ -251,6 +263,14 @@ macro_rules! info_span_if_leader {
 }
 
 impl StateMachine {
+    /// True if this partition uses the vqueue storage layout. Mirrors
+    /// `StateMachineApplyContext::use_vqueues` — both read the same `storage_version`
+    /// field, so they always agree. Exposed here so callers that hold a `&StateMachine`
+    /// (e.g., `LeaderState::run`) can gate work without going through the apply context.
+    pub(crate) fn use_vqueues(&self) -> bool {
+        self.storage_version >= StorageFormatVersion::Vqueues
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         inbox_seq_number: MessageIndex,
@@ -258,6 +278,7 @@ impl StateMachine {
         outbox_head_seq_number: Option<MessageIndex>,
         partition_key_range: KeyRange,
         min_restate_version: SemanticRestateVersion,
+        storage_version: StorageFormatVersion,
         schema: Option<Schema>,
         rule_book: Arc<RuleBook>,
         rule_book_cache: RuleBookCacheHandle,
@@ -268,6 +289,7 @@ impl StateMachine {
             outbox_head_seq_number,
             partition_key_range,
             min_restate_version,
+            storage_version,
             schema,
             rule_book,
             rule_book_cache,
@@ -285,6 +307,7 @@ pub(crate) struct StateMachineApplyContext<'a, S> {
     outbox_seq_number: &'a mut MessageIndex,
     outbox_head_seq_number: &'a mut Option<MessageIndex>,
     min_restate_version: &'a mut SemanticRestateVersion,
+    storage_version: &'a mut StorageFormatVersion,
     schema: &'a mut Option<Schema>,
     rule_book: &'a mut Arc<RuleBook>,
     rule_book_cache: &'a RuleBookCacheHandle,
@@ -326,6 +349,7 @@ impl StateMachine {
                 outbox_seq_number: &mut self.outbox_seq_number,
                 outbox_head_seq_number: &mut self.outbox_head_seq_number,
                 min_restate_version: &mut self.min_restate_version,
+                storage_version: &mut self.storage_version,
                 vqueues_cache,
                 schema: &mut self.schema,
                 rule_book: &mut self.rule_book,
@@ -344,6 +368,17 @@ impl StateMachine {
 }
 
 impl<S> StateMachineApplyContext<'_, S> {
+    /// True if this partition uses the vqueue storage layout. Driven solely by the
+    /// FSM's storage format version — i.e., by whether the `MigrationBarrierCommand`
+    /// for vqueues has been applied at or before this LSN. The experimental config
+    /// flag does not gate runtime behavior; it only controls whether the leader
+    /// proposes the barrier in the first place (see `leadership::mod`). Once the
+    /// barrier is in the log, every replica observing it switches in lock-step,
+    /// regardless of how its local config flag is set.
+    pub(crate) fn use_vqueues(&self) -> bool {
+        *self.storage_version >= StorageFormatVersion::Vqueues
+    }
+
     async fn get_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
@@ -574,6 +609,14 @@ impl<S> StateMachineApplyContext<'_, S> {
                         barrier_reason: barrier.human_reason.unwrap_or_default(),
                     })
                 }
+            }
+            CommandKind::MigrationBarrier => {
+                let barrier = envelope
+                    .into_typed::<commands::MigrationBarrierCommand>()
+                    .into_inner()?;
+                lifecycle::OnMigrationBarrierCommand { barrier }
+                    .apply(self)
+                    .await
             }
             CommandKind::Invoke => {
                 let service_invocation = envelope
@@ -1026,11 +1069,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 });
         }
 
-        if Configuration::pinned()
-            .common
-            .experimental
-            .is_vqueues_enabled()
-        {
+        if self.use_vqueues() {
             // skips the rest of this logic and jumps straight to vqueues' implementation
             return self
                 .vqueue_enqueue(
@@ -1642,11 +1681,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteLockTable
             + ReadVQueueTable,
     {
-        if Configuration::pinned()
-            .common
-            .experimental
-            .is_vqueues_enabled()
-        {
+        if self.use_vqueues() {
             self.vqueue_enqueue_state_mutation(mutation).await?;
         } else {
             let service_status = self
@@ -1985,11 +2020,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             Some(&invocation_target),
         )?;
 
-        if Configuration::pinned()
-            .common
-            .experimental
-            .is_vqueues_enabled()
-        {
+        if self.use_vqueues() {
             let record_unique_ts =
                 UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
             let new_status = match termination_flavor {
@@ -2101,11 +2132,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             Some(&invocation_target),
         )?;
 
-        if Configuration::pinned()
-            .common
-            .experimental
-            .is_vqueues_enabled()
-        {
+        if self.use_vqueues() {
             let record_unique_ts =
                 UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
             let new_status = match termination_flavor {
@@ -2817,10 +2844,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 // todo: remove when vqueues are always enabled
                 if self.is_leader
                     && let YieldReason::ExhaustedMemoryBudget { .. } = reason
-                    && !Configuration::pinned()
-                        .common
-                        .experimental
-                        .is_vqueues_enabled()
+                    && !self.use_vqueues()
                 {
                     let Some(invocation_target) = invocation_status.invocation_target().cloned()
                     else {
@@ -3007,11 +3031,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             .await?;
         }
 
-        if Configuration::pinned()
-            .common
-            .experimental
-            .is_vqueues_enabled()
-        {
+        if self.use_vqueues() {
             if invocation_target.invocation_target_ty()
                 == InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
             {
@@ -3367,11 +3387,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteJournalTable
             + journal_table_v2::WriteJournalTable,
     {
-        if Configuration::pinned()
-            .common
-            .experimental
-            .is_vqueues_enabled()
-        {
+        if self.use_vqueues() {
             return Ok(());
         }
 
@@ -4676,11 +4692,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             .put_invocation_status(&invocation_id, &InvocationStatus::Invoked(metadata))
             .map_err(Error::Storage)?;
 
-        if Configuration::pinned()
-            .common
-            .experimental
-            .is_vqueues_enabled()
-        {
+        if self.use_vqueues() {
             self.vqueue_move_invocation_to_inbox_stage(&invocation_id)
                 .await?;
         } else {
@@ -4721,11 +4733,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         metadata.timestamps.update(self.record_created_at);
 
-        if Configuration::pinned()
-            .common
-            .experimental
-            .is_vqueues_enabled()
-        {
+        if self.use_vqueues() {
             let now = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
             let entry_id = EntryId::from(&invocation_id);
             let Some(header) = self

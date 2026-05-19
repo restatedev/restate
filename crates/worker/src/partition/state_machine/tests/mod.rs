@@ -97,6 +97,12 @@ impl TestEnv {
             None, /* outbox_head_seq_number */
             KeyRange::FULL,
             min_restate_version,
+            // Start tests at the highest pre-vqueues format so `use_vqueues()` is false
+            // by default — most existing tests exercise the legacy (non-vqueue) routing.
+            // Tests that want the vqueue path should construct a StateMachine explicitly
+            // at `StorageFormatVersion::Vqueues`.
+            // todo(tillrohrmann) migrate tests
+            restate_storage_api::fsm_table::INIT_STORAGE_FORMAT,
             None, /* schema */
             Arc::new(RuleBook::default()),
             RuleBookCacheHandle::detached(),
@@ -1080,6 +1086,7 @@ async fn truncate_outbox_with_gap() -> Result<(), Error> {
         Some(outbox_head_index),
         KeyRange::FULL,
         SemanticRestateVersion::unknown().clone(),
+        restate_storage_api::fsm_table::INIT_STORAGE_FORMAT,
         None, /* schema */
         Arc::new(RuleBook::default()),
         RuleBookCacheHandle::detached(),

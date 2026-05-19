@@ -30,7 +30,7 @@ use tracing::{debug, trace};
 
 use restate_core::ShutdownError;
 use restate_rocksdb::{IoMode, IterAction, Priority, RocksDb, RocksError};
-use restate_storage_api::fsm_table::ReadFsmTable;
+use restate_storage_api::fsm_table::{INIT_STORAGE_FORMAT, ReadFsmTable};
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 use restate_storage_api::{IsolationLevel, Storage, StorageError, Transaction};
 use restate_types::config::Configuration;
@@ -47,7 +47,7 @@ use crate::fsm_table::{
     put_jc_orphan_cleanup_done, put_storage_version,
 };
 use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
-use crate::migrations::{LATEST_VERSION, SchemaVersion};
+use crate::migrations::StorageFormatVersionExt;
 use crate::partition_db::PartitionDb;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
@@ -710,23 +710,27 @@ impl PartitionStore {
         // also updates the applied lsn field.
         let is_empty = self.get_applied_lsn().await?.is_none();
         if is_empty {
-            put_storage_version(self, self.partition_id(), LATEST_VERSION as u16).await?;
+            // Fresh partition: initialize FSM to the highest version reachable by local
+            // migrations. Any further coordinated migrations (e.g., vqueues) advance via
+            // a MigrationBarrierCommand once the partition processor is up.
+            put_storage_version(self, self.partition_id(), INIT_STORAGE_FORMAT).await?;
             // A fresh partition store cannot have orphaned jc index entries, so mark the
             // cleanup as already done to avoid a needless scan on first startup.
             put_jc_orphan_cleanup_done(self, self.partition_id())?;
             return Ok(());
         }
 
-        let mut schema_version: SchemaVersion =
-            get_storage_version(self, self.partition_id()).await?.into();
-        if schema_version != LATEST_VERSION {
-            // We need to run some migrations!
+        let mut storage_version = get_storage_version(self, self.partition_id()).await?;
+        let target_local = INIT_STORAGE_FORMAT;
+        if storage_version < target_local {
             debug!(
-                "Running storage migration from {:?} to {:?}",
-                schema_version, LATEST_VERSION
+                "Running local storage migrations from {:?} to {:?}",
+                storage_version, target_local
             );
-            schema_version = schema_version.run_all_migrations(self).await?;
-            put_storage_version(self, self.partition_id(), schema_version as u16).await?;
+            storage_version = storage_version
+                .run_migrations_up_to(INIT_STORAGE_FORMAT, self)
+                .await?;
+            put_storage_version(self, self.partition_id(), storage_version).await?;
         }
 
         Ok(())

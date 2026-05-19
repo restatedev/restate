@@ -309,6 +309,13 @@ pub enum CommandKind {
     /// payload is bilrost encoded [`vqueues::VQueuesResume`]
     /// *Since v1.7.0
     VQueuesResume = 24,
+
+    /// Seals the WAL at this LSN with a storage-format migration. All replicas advance
+    /// the partition's `STORAGE_VERSION` to the carried `target_version` deterministically,
+    /// performing any coordinated migrations needed to reach it.
+    ///
+    /// *Since v1.8.0*
+    MigrationBarrier = 25,
 }
 
 /// Specifies the deduplication strategy that allows receivers to discard

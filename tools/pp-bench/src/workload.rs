@@ -107,6 +107,7 @@ pub async fn run(
         None, /* outbox_head_seq_number */
         KeyRange::FULL,
         SemanticRestateVersion::unknown(),
+        restate_storage_api::fsm_table::LATEST_STORAGE_FORMAT,
         None, /* schema */
         Arc::new(RuleBook::default()),
         RuleBookCacheHandle::detached(),

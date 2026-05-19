@@ -10,61 +10,57 @@
 
 use crate::{PartitionStore, Result};
 use restate_storage_api::StorageError;
-use strum::EnumCount;
+pub use restate_storage_api::fsm_table::{LATEST_STORAGE_FORMAT, StorageFormatVersion};
 
-// NOTE: The representation numbers here must be strictly monotonically increasing.
-#[derive(Debug, Eq, PartialEq, strum::FromRepr, strum::EnumCount)]
-#[repr(u16)]
-pub(crate) enum SchemaVersion {
-    /// Before 1.5
-    None = 0,
-    /// Migrations:
-    /// * Invocation status V1 -> V2
-    V1_5 = 1,
+/// Extension trait on `StorageFormatVersion` providing the migration runners. Rust
+/// requires a trait to add methods to a type defined in another crate; this trait
+/// lives in `restate-partition-store` because the runners need `&mut PartitionStore`.
+// todo(tillrohrmann) validate usefulness and signatures
+pub trait StorageFormatVersionExt: Sized {
+    /// Eager entry point: run forward through all migrations up to `target`, regardless
+    /// of local/coordinated kind. Called from the `MigrationBarrierCommand` apply path,
+    /// where the barrier itself provides the cross-replica coordination.
+    fn run_migrations_up_to(
+        self,
+        target: StorageFormatVersion,
+        storage: &mut PartitionStore,
+    ) -> impl std::future::Future<Output = Result<Self>> + Send;
 }
 
-pub(crate) const LATEST_VERSION: SchemaVersion =
-    SchemaVersion::from_repr((SchemaVersion::COUNT as u16) - 1).unwrap();
-
-impl From<u16> for SchemaVersion {
-    fn from(value: u16) -> Self {
-        SchemaVersion::from_repr(value).unwrap_or(SchemaVersion::V1_5)
-    }
-}
-
-impl SchemaVersion {
-    fn next(self) -> Self {
-        ((self as u16) + 1).into()
-    }
-
-    pub(crate) async fn run_all_migrations(mut self, storage: &mut PartitionStore) -> Result<Self> {
-        while self != LATEST_VERSION {
-            self.do_migration(storage).await?;
+impl StorageFormatVersionExt for StorageFormatVersion {
+    async fn run_migrations_up_to(
+        mut self,
+        target: StorageFormatVersion,
+        storage: &mut PartitionStore,
+    ) -> Result<StorageFormatVersion> {
+        while self != target {
+            do_migration(self, storage).await?;
             self = self.next();
         }
         Ok(self)
     }
+}
 
-    // Add migrations here!
-    async fn do_migration(&self, _storage: &mut PartitionStore) -> Result<()> {
-        match self {
-            SchemaVersion::None => {
-                // Version 1.6+ does not support upgrading from pre-1.5
-                // The InvocationStatusV1 migration was removed in 1.6
-                return Err(StorageError::Generic(anyhow::anyhow!(
-                    "Cannot upgrade from version <1.5 directly to 1.6 or later. \
-                     Please upgrade to version 1.5 first, which will migrate your data, \
-                     and then upgrade to 1.6+"
-                )));
-            }
-            SchemaVersion::V1_5 => {
-                // todo(tillrohrmann) add migrations for:
-                //  * service_status_table -> locks_table
-                //  * promise_table -> scoped promise_table
-                //  * state_table -> scoped state_table
-                //  * and more
-            }
+// Add migrations here!
+async fn do_migration(version: StorageFormatVersion, _storage: &mut PartitionStore) -> Result<()> {
+    match version {
+        StorageFormatVersion::None => {
+            // Version 1.6+ does not support upgrading from pre-1.5
+            // The InvocationStatusV1 migration was removed in 1.6
+            return Err(StorageError::Generic(anyhow::anyhow!(
+                "Cannot upgrade from version <1.5 directly to 1.6 or later. \
+                 Please upgrade to version 1.5 first, which will migrate your data, \
+                 and then upgrade to 1.6+"
+            )));
         }
-        Ok(())
+        StorageFormatVersion::V1_5 => {
+            // todo(tillrohrmann) follow-up: migrate inbox / invocation_status /
+            //  state / promise / timer tables to vqueue layout. This is a coordinated
+            //  migration — only ever invoked via MigrationBarrierCommand apply.
+        }
+        StorageFormatVersion::Vqueues => {
+            // Latest known version — no migration past this yet.
+        }
     }
+    Ok(())
 }

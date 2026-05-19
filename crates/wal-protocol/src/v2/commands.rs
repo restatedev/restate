@@ -28,8 +28,8 @@ use crate::timer;
 pub use crate::vqueues::{VQueuesPauseCommand, VQueuesResumeCommand};
 
 pub use crate::control::{
-    AnnounceLeaderCommand, UpdatePartitionDurabilityCommand, UpsertSchemaCommand,
-    VersionBarrierCommand,
+    AnnounceLeaderCommand, MigrationBarrierCommand, UpdatePartitionDurabilityCommand,
+    UpsertSchemaCommand, VersionBarrierCommand,
 };
 
 // Create type wrappers to implement storage encode/decode
@@ -356,6 +356,11 @@ command! {
 command! {
     @kind=CommandKind::VersionBarrier,
     @command=VersionBarrierCommand
+}
+
+command! {
+    @kind=CommandKind::MigrationBarrier,
+    @command=MigrationBarrierCommand
 }
 
 command! {

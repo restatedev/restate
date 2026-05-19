@@ -18,7 +18,6 @@ use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table_v2::ReadJournalTable;
 use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::vqueue_table::{EntryStatusHeader, ReadVQueueTable, WriteVQueueTable};
-use restate_types::config::Configuration;
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::journal_events::raw::RawEvent;
 use restate_types::journal_events::{Event, SuspendedEvent};
@@ -109,11 +108,7 @@ where
                 .timestamps
                 .update(ctx.record_created_at);
 
-            if Configuration::pinned()
-                .common
-                .experimental
-                .is_vqueues_enabled()
-            {
+            if ctx.use_vqueues() {
                 let now = UniqueTimestamp::from_unix_millis_unchecked(ctx.record_created_at);
                 let entry_id = EntryId::from(&self.invocation_id);
                 let Some(header) = ctx
