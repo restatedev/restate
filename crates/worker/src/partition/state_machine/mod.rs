@@ -225,11 +225,12 @@ impl Debug for StateMachine {
 pub enum Error {
     #[error(
         "partition is blocked; requires an upgrade to restate-server version \
-        {required_min_version} or higher; reason='{barrier_reason}'"
+        {required_min_version} or higher; reason='{barrier_reason}'; feature changes={feature_changes:?}"
     )]
     VersionBarrier {
         required_min_version: SemanticRestateVersion,
         barrier_reason: String,
+        feature_changes: Vec<u16>,
     },
     /// *Since v1.7.0*
     #[error(
@@ -624,6 +625,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     Err(Error::VersionBarrier {
                         required_min_version: barrier.version,
                         barrier_reason: barrier.human_reason.unwrap_or_default(),
+                        feature_changes: barrier.feature_changes,
                     })
                 }
             }

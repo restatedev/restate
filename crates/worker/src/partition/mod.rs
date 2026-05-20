@@ -299,6 +299,7 @@ impl PartitionProcessorBuilder {
             return Err(state_machine::Error::VersionBarrier {
                 required_min_version: min_restate_version,
                 barrier_reason: String::new(),
+                feature_changes: Vec::default(),
             });
         }
 

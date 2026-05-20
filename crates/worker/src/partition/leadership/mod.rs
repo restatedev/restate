@@ -560,10 +560,18 @@ where
                 };
 
             // In v1.7.0 we enable by default writing to the journal v2.
-            if !state_machine_features.use_journal_v2_as_default()
-                && !feature_changes.contains(&PartitionFeatureChange::EnableJournalV2)
-            {
+            if !state_machine_features.use_journal_v2_as_default() {
                 feature_changes.push(PartitionFeatureChange::EnableJournalV2);
+            }
+
+            // Opt this partition in to vqueues if the operator has flipped the experimental config
+            // flag on and the FSM hasn't already recorded the opt-in. The FSM update itself
+            // happens via `OnVersionBarrierCommand` once this proposed barrier is applied; we do
+            // not touch the local FSM mirror here.
+            if config.common.experimental.is_vqueues_enabled()
+                && !state_machine_features.is_vqueues_enabled()
+            {
+                feature_changes.push(PartitionFeatureChange::EnableVqueues);
             }
 
             if !feature_changes.is_empty() {
@@ -586,7 +594,7 @@ where
                                 self.partition.key_range.into(),
                             ),
                             human_reason: Some("Apply state-machine feature changes".to_owned()),
-                            feature_changes: feature_changes.iter().map(|c| c.id()).collect(),
+                            feature_changes: feature_changes.into_iter().map(|c| c.id()).collect(),
                         }),
                     )
                     .await?;
