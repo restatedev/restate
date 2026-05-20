@@ -67,8 +67,8 @@ impl PartitionId {
 mod bilrost_impl {
     use super::PartitionId;
 
-    use bilrost::DecodeErrorKind;
-    use bilrost::encoding::{EmptyState, ForOverwrite, Proxiable};
+    use bilrost::encoding::{DistinguishedProxiable, EmptyState, ForOverwrite, Proxiable};
+    use bilrost::{Canonicity, DecodeErrorKind};
 
     impl Proxiable for PartitionId {
         type Proxy = u16;
@@ -80,6 +80,33 @@ mod bilrost_impl {
         fn decode_proxy(&mut self, proxy: Self::Proxy) -> Result<(), DecodeErrorKind> {
             self.0 = proxy;
             Ok(())
+        }
+    }
+
+    struct FixedPartitionIdTag;
+
+    impl Proxiable<FixedPartitionIdTag> for PartitionId {
+        type Proxy = u32;
+
+        fn encode_proxy(&self) -> Self::Proxy {
+            u32::from(self.0)
+        }
+
+        fn decode_proxy(&mut self, proxy: Self::Proxy) -> Result<(), DecodeErrorKind> {
+            self.0 = proxy
+                .try_into()
+                .map_err(|_| DecodeErrorKind::OutOfDomainValue)?;
+            Ok(())
+        }
+    }
+
+    impl DistinguishedProxiable<FixedPartitionIdTag> for PartitionId {
+        fn decode_proxy_distinguished(
+            &mut self,
+            proxy: Self::Proxy,
+        ) -> Result<Canonicity, DecodeErrorKind> {
+            <PartitionId as Proxiable<FixedPartitionIdTag>>::decode_proxy(self, proxy)?;
+            Ok(Canonicity::Canonical)
         }
     }
 
@@ -108,4 +135,52 @@ mod bilrost_impl {
         to encode proxied type (PartitionId)
         with general encodings
     );
+
+    bilrost::delegate_proxied_encoding!(
+        use encoding (bilrost::encoding::Fixed)
+        to encode proxied type (PartitionId) using proxy tag (FixedPartitionIdTag)
+        with encoding (bilrost::encoding::Fixed)
+        including distinguished
+    );
+}
+
+#[cfg(all(test, feature = "bilrost"))]
+mod tests {
+    use bilrost::{Message, OwnedMessage};
+
+    use super::*;
+
+    #[test]
+    fn fixed_encoding_round_trips_partition_id() {
+        #[derive(Debug, PartialEq, bilrost::Message)]
+        struct EncodedPartitionId {
+            #[bilrost(tag(1), encoding(fixed))]
+            value: PartitionId,
+        }
+
+        let value = EncodedPartitionId {
+            value: PartitionId::MAX,
+        };
+        let encoded = value.encode_to_bytes();
+
+        assert_eq!(encoded.len(), 5);
+        assert_eq!(EncodedPartitionId::decode(encoded).unwrap(), value);
+    }
+
+    #[test]
+    fn general_encoding_keeps_partition_id_varint() {
+        #[derive(Debug, PartialEq, bilrost::Message)]
+        struct EncodedPartitionId {
+            #[bilrost(tag(1))]
+            value: PartitionId,
+        }
+
+        let value = EncodedPartitionId {
+            value: PartitionId::MAX,
+        };
+        let encoded = value.encode_to_bytes();
+
+        assert_eq!(encoded.as_ref(), &[0x04, 0xff, 0xfe, 0x02]);
+        assert_eq!(EncodedPartitionId::decode(encoded).unwrap(), value);
+    }
 }

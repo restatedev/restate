@@ -49,6 +49,43 @@ pub enum Status {
     Succeeded,
 }
 
+mod bilrost_encoding {
+    use bilrost::encoding::{DistinguishedProxiable, Proxiable};
+    use bilrost::{Canonicity, DecodeErrorKind, Enumeration};
+
+    use super::Status;
+
+    impl Proxiable for Status {
+        type Proxy = u32;
+
+        fn encode_proxy(&self) -> Self::Proxy {
+            <Status as Enumeration>::to_number(self)
+        }
+
+        fn decode_proxy(&mut self, proxy: Self::Proxy) -> Result<(), DecodeErrorKind> {
+            *self = <Status as Enumeration>::try_from_number(proxy).unwrap_or(Status::Unknown);
+            Ok(())
+        }
+    }
+
+    impl DistinguishedProxiable for Status {
+        fn decode_proxy_distinguished(
+            &mut self,
+            proxy: Self::Proxy,
+        ) -> Result<Canonicity, DecodeErrorKind> {
+            self.decode_proxy(proxy)?;
+            Ok(Canonicity::Canonical)
+        }
+    }
+
+    bilrost::delegate_proxied_encoding!(
+        use encoding (bilrost::encoding::Fixed)
+        to encode proxied type (Status)
+        with encoding (bilrost::encoding::Fixed)
+        including distinguished
+    );
+}
+
 pub trait EntryStatusHeader: std::fmt::Debug {
     fn vqueue_id(&self) -> &VQueueId;
     fn status(&self) -> Status;
@@ -92,3 +129,27 @@ pub trait LazyEntryStatus: EntryStatusHeader {
 
 /// A marker trait for types that can be used as entry extra state values.
 pub trait EntryStatusExtra {}
+
+#[cfg(test)]
+mod tests {
+    use bilrost::{Message, OwnedMessage};
+
+    use super::*;
+
+    #[test]
+    fn fixed_encoding_round_trips_status() {
+        #[derive(Debug, PartialEq, bilrost::Message)]
+        struct EncodedStatus {
+            #[bilrost(tag(1), encoding(fixed))]
+            value: Status,
+        }
+
+        let value = EncodedStatus {
+            value: Status::Succeeded,
+        };
+        let encoded = value.encode_to_bytes();
+
+        assert_eq!(encoded.as_ref(), &[0x06, 9, 0, 0, 0]);
+        assert_eq!(EncodedStatus::decode(encoded).unwrap(), value);
+    }
+}

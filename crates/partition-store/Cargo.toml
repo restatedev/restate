@@ -80,5 +80,9 @@ tracing-subscriber = { workspace = true }
 name = "basic_benchmark"
 harness = false
 
+[[bench]]
+name = "vqueue_meta_merge"
+harness = false
+
 [lints]
 workspace = true

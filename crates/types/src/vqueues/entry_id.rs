@@ -36,11 +36,49 @@ impl EntryKind {
     }
 }
 
+mod bilrost_encoding {
+    use bilrost::encoding::{DistinguishedProxiable, Proxiable};
+    use bilrost::{Canonicity, DecodeErrorKind, Enumeration};
+
+    use super::EntryKind;
+
+    impl Proxiable for EntryKind {
+        type Proxy = u32;
+
+        fn encode_proxy(&self) -> Self::Proxy {
+            <EntryKind as Enumeration>::to_number(self)
+        }
+
+        fn decode_proxy(&mut self, proxy: Self::Proxy) -> Result<(), DecodeErrorKind> {
+            *self =
+                <EntryKind as Enumeration>::try_from_number(proxy).unwrap_or(EntryKind::Unknown);
+            Ok(())
+        }
+    }
+
+    impl DistinguishedProxiable for EntryKind {
+        fn decode_proxy_distinguished(
+            &mut self,
+            proxy: Self::Proxy,
+        ) -> Result<Canonicity, DecodeErrorKind> {
+            self.decode_proxy(proxy)?;
+            Ok(Canonicity::Canonical)
+        }
+    }
+
+    bilrost::delegate_proxied_encoding!(
+        use encoding (bilrost::encoding::Fixed)
+        to encode proxied type (EntryKind)
+        with encoding (bilrost::encoding::Fixed)
+        including distinguished
+    );
+}
+
 #[derive(
     derive_more::Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash, bilrost::Message,
 )]
 pub struct EntryId {
-    #[bilrost(tag(1))]
+    #[bilrost(tag(1), encoding(fixed))]
     kind: EntryKind,
     // The remainder of the original resource identifier but without the partition-key prefix.
     // to reconstruct the original resource, you'll need to supply the partition_key.
@@ -198,5 +236,38 @@ impl std::fmt::Display for EntryIdDisplay<'_> {
                 f,
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bilrost::{Message, OwnedMessage};
+
+    use super::*;
+
+    #[test]
+    fn fixed_encoding_round_trips_entry_kind() {
+        #[derive(Debug, PartialEq, bilrost::Message)]
+        struct EncodedEntryKind {
+            #[bilrost(tag(1), encoding(fixed))]
+            kind: EntryKind,
+        }
+
+        let value = EncodedEntryKind {
+            kind: EntryKind::Invocation,
+        };
+        let encoded = value.encode_to_bytes();
+
+        assert_eq!(encoded.as_ref(), &[0x06, 1, 0, 0, 0]);
+        assert_eq!(EncodedEntryKind::decode(encoded).unwrap(), value);
+    }
+
+    #[test]
+    fn entry_id_bilrost_round_trips_with_fixed_kind() {
+        let value = EntryId::new(EntryKind::Invocation, [1; EntryId::REMAINDER_LEN]);
+        let encoded = value.encode_to_bytes();
+
+        assert_eq!(encoded.len(), 23);
+        assert_eq!(EntryId::decode(encoded).unwrap(), value);
     }
 }
