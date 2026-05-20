@@ -92,10 +92,10 @@ async fn collect_locks(rocksdb: &PartitionStore) -> HashMap<String, (PartitionKe
         .await
         .expect("lock scan should succeed");
 
-    Arc::try_unwrap(observed)
-        .expect("scan should drop its observer clone")
-        .into_inner()
-        .expect("lock should not be poisoned")
+    // The background iterator thread may still be tearing down its closure
+    // (which holds another Arc clone) when this future resolves, so we drain
+    // the mutex instead of relying on unique Arc ownership.
+    std::mem::take(&mut *observed.lock().expect("lock should not be poisoned"))
 }
 
 #[restate_core::test]
