@@ -161,7 +161,7 @@ jobs:
       serviceImage: "ghcr.io/restatedev/test-services-java:main"
       testArtifactOutput: sdk-java-integration-journal-table-v2-test-report
       envVars: |
-        RESTATE_INTERNAL_FORCE_MIN_RESTATE_VERSION=1.6.0-dev
+        RESTATE_INTERNAL_STATE_MACHINE_FEATURES=EnableJournalV2
 
   sdk-java-vqueues:
     name: Vqueues Run SDK-Java integration tests
@@ -366,7 +366,7 @@ jobs:
           testArtifactOutput: e2e-journal-table-v2-test-report
           restateContainerImage: localhost/restatedev/restate-commit-download:latest
           envVars: |
-            RESTATE_INTERNAL_FORCE_MIN_RESTATE_VERSION=1.6.0-dev
+            RESTATE_INTERNAL_STATE_MACHINE_FEATURES=EnableJournalV2
           # Ignore forward compatibility tests as long as the previous version is not at least v1.6.0-dev. Otherwise,
           # the previous version will hang at applying the version barrier with version 1.6.0-dev.
           exclusions: |

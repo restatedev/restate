@@ -25,6 +25,7 @@ use restate_types::invocation::{IngressInvocationResponseSink, TerminationFlavor
 use restate_types::journal::enriched::EnrichedEntryHeader;
 use restate_types::journal_v2::NotificationId;
 use restate_types::journal_v2::UnresolvedFuture;
+use restate_types::partitions::PartitionFeatureChange;
 use restate_types::service_protocol;
 use rstest::rstest;
 use test_log::test;
@@ -32,20 +33,23 @@ use test_log::test;
 #[restate_core::test]
 async fn kill_inboxed_invocation() -> anyhow::Result<()> {
     Box::pin(run_kill_inboxed_invocation(
-        SemanticRestateVersion::unknown(),
+        PersistedStateMachineFeatures::default(),
     ))
     .await
 }
 
 #[restate_core::test]
 async fn kill_inboxed_invocation_journal_v2_enabled() -> anyhow::Result<()> {
-    Box::pin(run_kill_inboxed_invocation(RESTATE_VERSION_1_6_0.clone())).await
+    Box::pin(run_kill_inboxed_invocation(
+        PersistedStateMachineFeatures::from_iter([PartitionFeatureChange::EnableJournalV2]),
+    ))
+    .await
 }
 
 async fn run_kill_inboxed_invocation(
-    min_restate_version: SemanticRestateVersion,
+    features: PersistedStateMachineFeatures,
 ) -> anyhow::Result<()> {
-    let mut test_env = TestEnv::create_with_min_restate_version(min_restate_version).await;
+    let mut test_env = TestEnv::create_with_features(features).await;
 
     let invocation_target = InvocationTarget::mock_virtual_object();
     let invocation_id = InvocationId::mock_generate(&invocation_target);

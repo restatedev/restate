@@ -85,20 +85,18 @@ impl TestEnv {
     }
 
     pub async fn create() -> Self {
-        Self::create_with_min_restate_version(SemanticRestateVersion::unknown()).await
+        Self::create_with_features(PersistedStateMachineFeatures::default()).await
     }
 
-    pub async fn create_with_min_restate_version(
-        min_restate_version: SemanticRestateVersion,
-    ) -> Self {
+    pub async fn create_with_features(features: PersistedStateMachineFeatures) -> Self {
         Self::create_with_state_machine(StateMachine::new(
             0,    /* inbox_seq_number */
             0,    /* outbox_seq_number */
             None, /* outbox_head_seq_number */
             KeyRange::FULL,
-            min_restate_version,
-            PersistedStateMachineFeatures::default(), /* enabled_features */
-            None,                                     /* schema */
+            SemanticRestateVersion::current().clone(),
+            features, /* enabled_features */
+            None,     /* schema */
             Arc::new(RuleBook::default()),
             RuleBookCacheHandle::detached(),
         ))
@@ -312,8 +310,8 @@ impl TestEnv {
         );
     }
 
-    pub fn set_min_restate_version(&mut self, min_restate_version: SemanticRestateVersion) {
-        self.state_machine.min_restate_version = min_restate_version;
+    pub fn set_enabled_features(&mut self, features: PersistedStateMachineFeatures) {
+        self.state_machine.enabled_features = features;
     }
 }
 

@@ -16,6 +16,7 @@ pub mod trim_queue;
 use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::mem;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -56,14 +57,12 @@ use restate_types::net::ingest::IngestRecord;
 use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
-use restate_types::partitions::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
+use restate_types::partitions::{Partition, PartitionFeatureChange};
 use restate_types::retries::with_jitter;
 use restate_types::schema::Schema;
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
-use restate_types::{
-    GenerationalNodeId, RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, SemanticRestateVersion,
-};
+use restate_types::{GenerationalNodeId, SemanticRestateVersion};
 use restate_vqueues::scheduler::{self};
 use restate_vqueues::{ResourceManager, SchedulerService, VQueuesMeta, VQueuesMetaCache};
 use restate_wal_protocol::control::{
@@ -87,7 +86,7 @@ use crate::partition::leadership::leader_state::LeaderState;
 use crate::partition::leadership::self_proposer::SelfProposer;
 use crate::partition::shuffle;
 use crate::partition::shuffle::{OutboxReaderError, Shuffle, ShuffleMetadata};
-use crate::partition::state_machine::{Action, StateMachine};
+use crate::partition::state_machine::{Action, StateMachine, StateMachineFeatures};
 use crate::partition::types::InvokerEffect;
 use crate::partition_processor_manager::PartitionLeaderHandlesRegistry;
 use crate::rule_book_cache::RuleBookCacheHandle;
@@ -333,6 +332,7 @@ where
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[instrument(level = "debug", skip_all, fields(leader_epoch = %announce_leader.leader_epoch))]
     pub async fn on_announce_leader(
         &mut self,
@@ -342,6 +342,8 @@ where
         config: &Configuration,
         vqueues_cache: &mut VQueuesMetaCache,
         rule_book: &RuleBook,
+        state_machine_features: impl StateMachineFeatures,
+        min_restate_version: &SemanticRestateVersion,
     ) -> Result<bool, Error> {
         self.last_seen_leader_epoch = Some(announce_leader.leader_epoch);
 
@@ -363,6 +365,8 @@ where
                             vqueues_cache,
                             config,
                             rule_book,
+                            state_machine_features,
+                            min_restate_version,
                         )
                         .await?
                     }
@@ -400,6 +404,7 @@ where
         Ok(self.is_leader())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn become_leader(
         &mut self,
         partition_store: &mut PartitionStore,
@@ -407,6 +412,8 @@ where
         vqueues_cache: &mut VQueuesMetaCache,
         config: &Configuration,
         rule_book: &RuleBook,
+        state_machine_features: impl StateMachineFeatures,
+        min_restate_version: &SemanticRestateVersion,
     ) -> Result<(), Error> {
         if let State::Candidate {
             leader_epoch,
@@ -527,47 +534,59 @@ where
             let mut self_proposer = self_proposer.take().expect("must be present");
             self_proposer.mark_as_leader();
 
-            let mut min_restate_version = partition_store.get_min_restate_version().await?;
+            // Collect feature changes to apply as a single VersionBarrierCommand.
+            //
+            // RESTATE_INTERNAL_STATE_MACHINE_FEATURES is a comma-separated list of
+            // PartitionFeatureChange variant names (case-insensitive) used by internal
+            // testing to enable specific features explicitly.
+            let mut feature_changes: Vec<PartitionFeatureChange> =
+                if let Ok(raw) = std::env::var("RESTATE_INTERNAL_STATE_MACHINE_FEATURES") {
+                    raw.split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .filter_map(|name| match PartitionFeatureChange::from_str(name) {
+                            Ok(change) => Some(change),
+                            Err(_) => {
+                                warn!(
+                                    "Ignoring unknown state-machine feature \
+                                     '{name}' from RESTATE_INTERNAL_STATE_MACHINE_FEATURES"
+                                );
+                                None
+                            }
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
 
-            // Force the provided min Restate version, this is used for internal testing only
-            if let Some(forced_min_restate_version) =
-                std::env::var("RESTATE_INTERNAL_FORCE_MIN_RESTATE_VERSION")
-                    .ok()
-                    .and_then(|min_restate_version| {
-                        SemanticRestateVersion::parse(&min_restate_version).ok()
-                    })
+            // In v1.7.0 we enable by default writing to the journal v2.
+            if !state_machine_features.use_journal_v2_as_default()
+                && !feature_changes.contains(&PartitionFeatureChange::EnableJournalV2)
             {
-                self_proposer
-                    .self_propose(
-                        self.partition.key_range.start(),
-                        Command::VersionBarrier(VersionBarrierCommand {
-                            version: forced_min_restate_version.clone(),
-                            partition_key_range: Keys::RangeInclusive(
-                                self.partition.key_range.into(),
-                            ),
-                            human_reason: Some("Force min Restate version".to_owned()),
-                            feature_changes: Vec::new(),
-                        }),
-                    )
-                    .await?;
-
-                min_restate_version = min_restate_version.max(forced_min_restate_version);
+                feature_changes.push(PartitionFeatureChange::EnableJournalV2);
             }
 
-            // In v1.7.0 we enable by default writing to the journal v2 which requires min Restate v1.6.0
-            if SemanticRestateVersion::current().is_equal_or_newer_than(&RESTATE_VERSION_1_7_0)
-                && RESTATE_VERSION_1_6_0.is_newer_than(&min_restate_version)
-            {
+            if !feature_changes.is_empty() {
+                // Smallest version that supports every listed feature, but never below
+                // the partition's current min_restate_version.
+                let barrier_version = feature_changes
+                    .iter()
+                    .map(|c| c.min_required_version())
+                    .max()
+                    .expect("non-empty")
+                    .max(min_restate_version)
+                    .clone();
+
                 self_proposer
                     .self_propose(
                         self.partition.key_range.start(),
                         Command::VersionBarrier(VersionBarrierCommand {
-                            version: RESTATE_VERSION_1_6_0.clone(),
+                            version: barrier_version,
                             partition_key_range: Keys::RangeInclusive(
                                 self.partition.key_range.into(),
                             ),
-                            human_reason: Some("Enable journal v2 by default".to_owned()),
-                            feature_changes: Vec::new(),
+                            human_reason: Some("Apply state-machine feature changes".to_owned()),
+                            feature_changes: feature_changes.iter().map(|c| c.id()).collect(),
                         }),
                     )
                     .await?;
@@ -874,6 +893,7 @@ mod tests {
     use crate::partition::LeadershipInfo;
     use crate::partition::leadership::trim_queue::TrimQueue;
     use crate::partition::leadership::{LeadershipState, State};
+    use crate::partition::state_machine::StateMachineFeatures;
     use crate::partition_processor_manager::PartitionLeaderHandlesRegistry;
     use crate::rule_book_cache::RuleBookCacheHandle;
     use assert2::let_assert;
@@ -890,7 +910,7 @@ mod tests {
     use restate_types::partitions::state::PartitionReplicaSetStates;
     use restate_types::partitions::{Partition, PartitionConfiguration};
     use restate_types::sharding::KeyRange;
-    use restate_types::{GenerationalNodeId, Version};
+    use restate_types::{GenerationalNodeId, SemanticRestateVersion, Version};
     use restate_vqueues::VQueuesMetaCache;
     use restate_wal_protocol::Command;
     use restate_wal_protocol::Envelope;
@@ -904,6 +924,18 @@ mod tests {
     const NODE_ID: GenerationalNodeId = GenerationalNodeId::new(0, 0);
     const PARTITION_KEY_RANGE: KeyRange = KeyRange::FULL;
     const PARTITION: Partition = Partition::new(PARTITION_ID, PARTITION_KEY_RANGE);
+
+    struct MockStateMachineFeatures;
+
+    impl StateMachineFeatures for MockStateMachineFeatures {
+        fn use_journal_v2_as_default(&self) -> bool {
+            true
+        }
+
+        fn is_vqueues_enabled(&self) -> bool {
+            false
+        }
+    }
 
     #[test(restate_core::test)]
     async fn become_leader_then_step_down() -> googletest::Result<()> {
@@ -976,6 +1008,8 @@ mod tests {
                 &Configuration::pinned(),
                 &mut VQueuesMetaCache::new_empty(1024),
                 &rule_book,
+                MockStateMachineFeatures,
+                SemanticRestateVersion::current(),
             )
             .await?;
 

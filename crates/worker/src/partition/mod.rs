@@ -74,6 +74,7 @@ use restate_types::net::partition_processor::{
     PartitionProcessorRpcResponse,
 };
 use restate_types::net::{RpcRequest, ingest};
+use restate_types::partitions::PartitionFeatureChange;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::retries::{RetryPolicy, with_jitter};
 use restate_types::schema::Schema;
@@ -269,7 +270,23 @@ impl PartitionProcessorBuilder {
         let outbox_seq_number = partition_store.get_outbox_seq_number().await?;
         let outbox_head_seq_number = partition_store.get_outbox_head_seq_number().await?;
         let min_restate_version = partition_store.get_min_restate_version().await?;
-        let enabled_features = partition_store.get_state_machine_features().await?;
+        let mut enabled_features = partition_store.get_state_machine_features().await?;
+
+        // for backward compatibility because PartitionFeatureChanges were only introduced with v1.7,
+        // we need to enable journal v2 if the min restate version is >= v1.6.0
+        if !enabled_features.journal_v2
+            && min_restate_version.is_equal_or_newer_than(
+                PartitionFeatureChange::EnableJournalV2.min_required_version(),
+            )
+        {
+            PartitionFeatureChange::EnableJournalV2.apply_to(&mut enabled_features);
+
+            // update the internal storage
+            let mut txn = partition_store.transaction();
+            txn.put_state_machine_features(&enabled_features)?;
+            txn.commit().await?;
+        }
+
         let schema = partition_store.get_schema().await?;
         let rule_book = Arc::new(partition_store.get_rule_book().await?.unwrap_or_default());
 
@@ -722,6 +739,8 @@ where
                                 config,
                                 &mut vqueues,
                                 &self.state_machine.rule_book,
+                                &self.state_machine,
+                                &self.state_machine.min_restate_version,
                             ).await?;
 
                             Span::current().record("is_leader", is_leader);

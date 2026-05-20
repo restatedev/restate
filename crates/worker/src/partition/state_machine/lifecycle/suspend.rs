@@ -171,8 +171,8 @@ mod tests {
         SignalResult, SleepCommand, SleepCompletion, UnresolvedFuture, all_completed,
         all_succeeded_or_first_failed, first_completed, first_succeeded_or_all_failed, unknown,
     };
+    use restate_types::partitions::{PartitionFeatureChange, PersistedStateMachineFeatures};
     use restate_types::time::MillisSinceEpoch;
-    use restate_types::{RESTATE_VERSION_1_6_0, SemanticRestateVersion};
     use restate_wal_protocol::timer::TimerKeyValue;
     use restate_wal_protocol::v2::{Command, commands};
     use std::time::{Duration, SystemTime};
@@ -292,16 +292,19 @@ mod tests {
 
     #[restate_core::test]
     async fn suspend_waiting_on_signal() {
-        run_suspend_waiting_on_signal(SemanticRestateVersion::unknown()).await;
+        run_suspend_waiting_on_signal(PersistedStateMachineFeatures::default()).await;
     }
 
     #[restate_core::test]
     async fn suspend_waiting_on_signal_journal_v2_enabled() {
-        run_suspend_waiting_on_signal(RESTATE_VERSION_1_6_0.clone()).await;
+        run_suspend_waiting_on_signal(PersistedStateMachineFeatures::from_iter([
+            PartitionFeatureChange::EnableJournalV2,
+        ]))
+        .await;
     }
 
-    async fn run_suspend_waiting_on_signal(min_restate_version: SemanticRestateVersion) {
-        let mut test_env = TestEnv::create_with_min_restate_version(min_restate_version).await;
+    async fn run_suspend_waiting_on_signal(features: PersistedStateMachineFeatures) {
+        let mut test_env = TestEnv::create_with_features(features).await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
         // We don't pin the deployment here, but this should work nevertheless.
 
