@@ -4149,6 +4149,7 @@ pub mod v1 {
         use bytes::Bytes;
         use prost::Message;
         use restate_types::journal_v2::UnresolvedFuture;
+        use restate_types::vqueues::VQueueId;
         use restate_types::{
             errors::ConversionError,
             identifiers::{DeploymentId, InvocationId, SubscriptionId},
@@ -4166,7 +4167,6 @@ pub mod v1 {
             wire_type: prost::encoding::WireType,
             value: &mut &'a [u8],
             buf: &mut &'a [u8],
-            _ctx: prost::encoding::DecodeContext,
         ) -> Result<(), prost::DecodeError> {
             use prost::encoding::*;
             check_wire_type(WireType::LengthDelimited, wire_type)?;
@@ -4202,6 +4202,10 @@ pub mod v1 {
             pub journal_retention_duration_lazy: Option<&'a [u8]>,
             // 30
             pub created_using_restate_version: &'a [u8],
+            // 34
+            pub vqueue_id: Option<&'a [u8]>,
+            // 35
+            pub limit_key: &'a [u8],
         }
 
         impl<'a> InvocationStatusV2Lazy<'a> {
@@ -4226,76 +4230,113 @@ pub mod v1 {
                 match tag {
                     2u32 => {
                         let value = &mut self.invocation_target_lazy;
-                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
-                            .map_err(|mut error| {
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf).map_err(
+                            |mut error| {
                                 error.push(STRUCT_NAME, "invocation_target_lazy");
                                 error
-                            })
+                            },
+                        )
                     }
                     3u32 => {
                         let value = &mut self.source_lazy;
-                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
-                            .map_err(|mut error| {
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf).map_err(
+                            |mut error| {
                                 error.push(STRUCT_NAME, "source_lazy");
                                 error
-                            })
+                            },
+                        )
                     }
                     4u32 => {
                         let value = &mut self.span_context_lazy;
-                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
-                            .map_err(|mut error| {
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf).map_err(
+                            |mut error| {
                                 error.push(STRUCT_NAME, "span_context_lazy");
                                 error
-                            })
+                            },
+                        )
                     }
                     11u32 => {
                         let value = &mut self.completion_retention_duration_lazy;
-                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
-                            .map_err(|mut error| {
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf).map_err(
+                            |mut error| {
                                 error.push(STRUCT_NAME, "completion_retention_duration_lazy");
                                 error
-                            })
+                            },
+                        )
                     }
                     12u32 => {
                         let value = &mut self.idempotency_key;
-                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
-                            .map_err(|mut error| {
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf).map_err(
+                            |mut error| {
                                 error.push(STRUCT_NAME, "idempotency_key");
                                 error
-                            })
+                            },
+                        )
                     }
                     15u32 => {
                         let value = &mut self.deployment_id;
-                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
-                            .map_err(|mut error| {
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf).map_err(
+                            |mut error| {
                                 error.push(STRUCT_NAME, "deployment_id");
                                 error
-                            })
+                            },
+                        )
                     }
                     18u32 => {
                         let value = &mut self.result_lazy;
-                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
-                            .map_err(|mut error| {
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf).map_err(
+                            |mut error| {
                                 error.push(STRUCT_NAME, "result_lazy");
                                 error
-                            })
+                            },
+                        )
                     }
                     29u32 => {
                         let value = &mut self.journal_retention_duration_lazy;
-                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
-                            .map_err(|mut error| {
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf).map_err(
+                            |mut error| {
                                 error.push(STRUCT_NAME, "journal_retention_duration_lazy");
                                 error
-                            })
+                            },
+                        )
                     }
                     30u32 => {
                         let value = &mut self.created_using_restate_version;
-                        merge_bytes_zerocopy(wire_type, value, buf, ctx).map_err(|mut error| {
+                        merge_bytes_zerocopy(wire_type, value, buf).map_err(|mut error| {
                             error.push(STRUCT_NAME, "created_using_restate_version");
                             error
                         })
                     }
+                    34u32 => {
+                        let value = &mut self.vqueue_id;
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf).map_err(
+                            |mut error| {
+                                error.push(STRUCT_NAME, "vqueue_id");
+                                error
+                            },
+                        )
+                    }
+                    35u32 => {
+                        let value = &mut self.limit_key;
+                        merge_bytes_zerocopy(wire_type, value, buf).map_err(|mut error| {
+                            error.push(STRUCT_NAME, "limit_key");
+                            error
+                        })
+                    }
                     _ => prost::Message::merge_field(&mut self.inner, tag, wire_type, buf, ctx),
+                }
+            }
+
+            pub fn vqueue_id(&'a self) -> Option<VQueueId> {
+                self.vqueue_id
+                    .map(|buf| VQueueId::from_raw_bytes(&mut &buf[..]))
+            }
+
+            pub fn limit_key_fmt(&'a self) -> Option<impl std::fmt::Display + 'a> {
+                if self.limit_key.is_empty() {
+                    None
+                } else {
+                    Some(StrFormatter(self.limit_key))
                 }
             }
 
@@ -4552,38 +4593,29 @@ pub mod v1 {
                             })?;
                         }
                         2u32 => {
-                            merge_bytes_zerocopy(wire_type, &mut self.name, &mut buf, ctx.clone())
-                                .map_err(|mut error| {
+                            merge_bytes_zerocopy(wire_type, &mut self.name, &mut buf).map_err(
+                                |mut error| {
                                     error.push(STRUCT_NAME, "name");
                                     error
-                                })?;
+                                },
+                            )?;
                         }
                         3u32 => {
-                            merge_bytes_zerocopy(
-                                wire_type,
-                                &mut self.handler,
-                                &mut buf,
-                                ctx.clone(),
-                            )
-                            .map_err(|mut error| {
-                                error.push(STRUCT_NAME, "handler");
-                                error
-                            })?;
-                        }
-                        4u32 => {
-                            merge_bytes_zerocopy(wire_type, &mut self.key, &mut buf, ctx.clone())
-                                .map_err(|mut error| {
-                                    error.push(STRUCT_NAME, "key");
+                            merge_bytes_zerocopy(wire_type, &mut self.handler, &mut buf).map_err(
+                                |mut error| {
+                                    error.push(STRUCT_NAME, "handler");
                                     error
-                                })?
+                                },
+                            )?;
                         }
                         5u32 => {
                             let mut bytes: &'a [u8] = &[];
-                            merge_bytes_zerocopy(wire_type, &mut bytes, &mut buf, ctx.clone())
-                                .map_err(|mut error| {
+                            merge_bytes_zerocopy(wire_type, &mut bytes, &mut buf).map_err(
+                                |mut error| {
                                     error.push(STRUCT_NAME, "scope");
                                     error
-                                })?;
+                                },
+                            )?;
                             self.scope = Some(str::from_utf8(bytes).map_err(|_| {
                                 #[allow(deprecated)]
                                 let mut error = prost::DecodeError::new("scope is not valid UTF-8");
@@ -4678,6 +4710,14 @@ pub mod v1 {
                 } else {
                     write!(f, "{}/{}", self.0, self.2)
                 }
+            }
+        }
+
+        struct StrFormatter<'a>(&'a [u8]);
+
+        impl<'a> Display for StrFormatter<'a> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(str::from_utf8(self.0).map_err(|_| std::fmt::Error)?)
             }
         }
     }
