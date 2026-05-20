@@ -2806,10 +2806,8 @@ impl<S> StateMachineApplyContext<'_, S> {
                 // todo: remove when vqueues are always enabled
                 if self.is_leader
                     && let YieldReason::ExhaustedMemoryBudget { .. } = reason
-                    && !Configuration::pinned()
-                        .common
-                        .experimental
-                        .is_vqueues_enabled()
+                    && let Some(metadata) = invocation_status.get_invocation_metadata()
+                    && metadata.vqueue_id.is_none()
                 {
                     let Some(invocation_target) = invocation_status.invocation_target().cloned()
                     else {
@@ -3317,14 +3315,6 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteJournalTable
             + journal_table_v2::WriteJournalTable,
     {
-        if Configuration::pinned()
-            .common
-            .experimental
-            .is_vqueues_enabled()
-        {
-            return Ok(());
-        }
-
         // Inbox exists only for virtual object exclusive handler cases
         if invocation_target.invocation_target_ty()
             == InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
@@ -4621,24 +4611,20 @@ impl<S> StateMachineApplyContext<'_, S> {
         );
 
         metadata.timestamps.update(self.record_created_at);
-        let invocation_target = metadata.invocation_target.clone();
-        self.storage
-            .put_invocation_status(&invocation_id, &InvocationStatus::Invoked(metadata))
-            .map_err(Error::Storage)?;
 
-        if Configuration::pinned()
-            .common
-            .experimental
-            .is_vqueues_enabled()
-        {
+        if metadata.vqueue_id.is_some() {
             self.vqueue_move_invocation_to_inbox_stage(&invocation_id)
                 .await?;
         } else {
             self.action_collector.push(Action::Invoke {
                 invocation_id,
-                invocation_target,
+                invocation_target: metadata.invocation_target.clone(),
             });
         }
+
+        self.storage
+            .put_invocation_status(&invocation_id, &InvocationStatus::Invoked(metadata))
+            .map_err(Error::Storage)?;
 
         Ok(())
     }
@@ -4671,11 +4657,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         metadata.timestamps.update(self.record_created_at);
 
-        if Configuration::pinned()
-            .common
-            .experimental
-            .is_vqueues_enabled()
-        {
+        if metadata.vqueue_id.is_some() {
             let now = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
             let entry_id = EntryId::from(&invocation_id);
             let Some(header) = self
