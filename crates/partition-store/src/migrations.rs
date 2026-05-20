@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod migrate_to_locks_table;
+mod migrate_to_scoped_promise_table;
 mod migrate_to_scoped_state_table;
 
 use std::num::NonZeroU16;
