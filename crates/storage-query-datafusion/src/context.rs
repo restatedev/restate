@@ -49,12 +49,14 @@ use crate::remote_query_scanner_manager::RemoteScannerManager;
 
 const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
             ss.id,
+            ss.vqueue_id,
             ss.target,
             ss.target_service_name,
             ss.target_service_key,
             ss.target_handler_name,
             ss.target_service_ty,
             ss.scope,
+            ss.limit_key,
             ss.idempotency_key,
             ss.invoked_by,
             ss.invoked_by_service_name,
