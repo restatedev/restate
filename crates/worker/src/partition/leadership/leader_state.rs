@@ -32,7 +32,6 @@ use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
 use restate_limiter::RuleBook;
 use restate_partition_store::PartitionDb;
 use restate_storage_api::vqueue_table::scheduler::SchedulerDecisionsCommand;
-use restate_types::config::Configuration;
 use restate_types::identifiers::{
     LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
@@ -456,30 +455,20 @@ impl LeaderState {
                     }
                 }
                 ActionEffect::UpsertRuleBook(rule_book) => {
-                    // todo(tillrohrmann) also enable the feature once the partition has been migrated
-                    //  to use vqueues and then rolling back to v1.7
-                    if Configuration::pinned()
-                        .common
-                        .experimental
-                        .is_vqueues_enabled()
-                    {
-                        let cmd =
-                            restate_wal_protocol::control::UpsertRuleBookCommand { rule_book };
+                    let cmd = restate_wal_protocol::control::UpsertRuleBookCommand { rule_book };
+                    arena.reserve(cmd.encoded_len());
+                    // safe to unwrap because we reserved enough space
+                    cmd.bilrost_encode(&mut arena).unwrap();
 
-                        arena.reserve(cmd.encoded_len());
-                        // safe to unwrap because we reserved enough space
-                        cmd.bilrost_encode(&mut arena).unwrap();
-
-                        self.self_proposer
-                            .self_propose(
-                                self.partition_key_range.start(),
-                                Command::UpsertRuleBook(UpsertRuleBookCommandWrapper {
-                                    partition_key_range: self.partition_key_range,
-                                    command: arena.split().freeze(),
-                                }),
-                            )
-                            .await?;
-                    }
+                    self.self_proposer
+                        .self_propose(
+                            self.partition_key_range.start(),
+                            Command::UpsertRuleBook(UpsertRuleBookCommandWrapper {
+                                partition_key_range: self.partition_key_range,
+                                command: arena.split().freeze(),
+                            }),
+                        )
+                        .await?;
                 }
                 ActionEffect::AwaitingRpcSelfProposeDone => {
                     // Nothing to do here

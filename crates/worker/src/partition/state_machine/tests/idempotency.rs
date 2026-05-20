@@ -115,6 +115,8 @@ async fn complete_already_completed_invocation() {
     txn.put_invocation_status(
         &invocation_id,
         &InvocationStatus::Completed(CompletedInvocation {
+            vqueue_id: None,
+            limit_key: LimitKey::None,
             invocation_target: invocation_target.clone(),
             created_using_restate_version: RestateVersion::current(),
             source: Source::Ingress(PartitionProcessorRpcRequestId::new()),
