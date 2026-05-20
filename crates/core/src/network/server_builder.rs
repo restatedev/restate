@@ -22,12 +22,14 @@ use restate_types::net::listener::{AddressBook, Listeners};
 use restate_types::protobuf::common::NodeRpcStatus;
 
 use super::net_util::run_hyper_server;
+use super::tls::TlsCertResolver;
 
 pub struct NetworkServerBuilder {
     grpc_descriptors: Vec<&'static [u8]>,
     grpc_routes: Option<Routes>,
     axum_router: Option<axum::routing::Router>,
     listeners: Listeners<FabricPort>,
+    tls: Option<TlsCertResolver>,
 }
 
 impl NetworkServerBuilder {
@@ -37,7 +39,12 @@ impl NetworkServerBuilder {
             grpc_routes: None,
             axum_router: None,
             listeners: address_book.take_listeners::<FabricPort>(),
+            tls: None,
         }
+    }
+
+    pub fn set_tls(&mut self, tls: Option<TlsCertResolver>) {
+        self.tls = tls;
     }
 
     pub fn is_empty(&self) -> bool {
@@ -115,9 +122,12 @@ impl NetworkServerBuilder {
 
         node_rpc_health.update(NodeRpcStatus::Ready);
 
-        run_hyper_server(self.listeners, service, || {
-            node_rpc_health.update(NodeRpcStatus::Stopping)
-        })
+        run_hyper_server(
+            self.listeners,
+            service,
+            || node_rpc_health.update(NodeRpcStatus::Stopping),
+            self.tls,
+        )
         .await?;
 
         Ok(())
