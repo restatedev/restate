@@ -24,13 +24,13 @@ use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, JournalMetadata, ReadInvocationStatusTable,
     StatusTimestamps, WriteInvocationStatusTable,
 };
-use restate_types::RestateVersion;
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::{
     InvocationTarget, ServiceInvocationSpanContext, Source, VirtualObjectHandlerType,
 };
 use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::time::MillisSinceEpoch;
+use restate_types::{LimitKey, RestateVersion};
 
 const INVOCATION_TARGET_1: InvocationTarget = InvocationTarget::VirtualObject {
     name: ByteString::from_static("abc"),
@@ -79,6 +79,8 @@ fn invoked_status(invocation_target: InvocationTarget) -> InvocationStatus {
     InvocationStatus::Invoked(InFlightInvocationMetadata {
         invocation_target,
         created_using_restate_version: RestateVersion::current(),
+        vqueue_id: None,
+        limit_key: LimitKey::None,
         journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
         pinned_deployment: None,
         response_sinks: HashSet::new(),
@@ -104,6 +106,8 @@ fn suspended_status(invocation_target: InvocationTarget) -> InvocationStatus {
     InvocationStatus::Suspended {
         metadata: InFlightInvocationMetadata {
             invocation_target,
+            vqueue_id: None,
+            limit_key: LimitKey::None,
             created_using_restate_version: RestateVersion::current(),
             journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
             pinned_deployment: None,

@@ -923,21 +923,36 @@ impl<S> StateMachineApplyContext<'_, S> {
             return Ok(());
         };
 
-        // Extract limit_key before consuming the ServiceInvocation
-        let limit_key = std::mem::take(&mut service_invocation.limit_key);
+        // Invariant: limit_key requires scope (defense-in-depth, ingress should also validate)
+        debug_assert!(
+            service_invocation.limit_key.is_empty()
+                || service_invocation.invocation_target.scope().is_some(),
+            "limit_key set without scope — this should have been rejected at the ingress"
+        );
 
         // Prepare PreFlightInvocationMetadata structure
         let submit_notification_sink = service_invocation.submit_notification_sink.take();
+
+        let qid = Configuration::pinned()
+            .common
+            .experimental
+            .is_vqueues_enabled()
+            .then_some(VQueue::infer_vqueue_id_from_invocation(
+                service_invocation.partition_key(),
+                &service_invocation.invocation_target,
+                &service_invocation.limit_key,
+            ));
+
         let pre_flight_invocation_metadata = PreFlightInvocationMetadata::from_service_invocation(
             self.record_created_at,
             service_invocation,
+            qid,
         );
 
         self.on_pre_flight_invocation(
             &invocation_id,
             pre_flight_invocation_metadata,
             submit_notification_sink,
-            &limit_key,
         )
         .await
     }
@@ -947,7 +962,6 @@ impl<S> StateMachineApplyContext<'_, S> {
         invocation_id: &InvocationId,
         mut pre_flight_invocation_metadata: PreFlightInvocationMetadata,
         submit_notification_sink: Option<SubmitNotificationSink>,
-        limit_key: &LimitKey<ReString>,
     ) -> Result<(), Error>
     where
         S: WriteInvocationStatusTable
@@ -964,16 +978,6 @@ impl<S> StateMachineApplyContext<'_, S> {
             + journal_table_v2::WriteJournalTable,
     {
         // A pre-flight invocation has been already deduplicated
-
-        // Invariant: limit_key requires scope (defense-in-depth, ingress should also validate)
-        debug_assert!(
-            limit_key.is_empty()
-                || pre_flight_invocation_metadata
-                    .invocation_target
-                    .scope()
-                    .is_some(),
-            "limit_key set without scope — this should have been rejected at the ingress"
-        );
 
         // 0. Prepare the journal table v2. This ensures that all newly created invocations will
         // have a journal v2 created. To handle already existing invocations for which we didn't
@@ -1026,18 +1030,13 @@ impl<S> StateMachineApplyContext<'_, S> {
                 });
         }
 
-        if Configuration::pinned()
-            .common
-            .experimental
-            .is_vqueues_enabled()
-        {
+        if pre_flight_invocation_metadata.vqueue_id.is_some() {
             // skips the rest of this logic and jumps straight to vqueues' implementation
             return self
                 .vqueue_enqueue(
                     invocation_id,
                     pre_flight_invocation_metadata,
                     submit_notification_sink,
-                    limit_key,
                 )
                 .await;
         }
@@ -1100,12 +1099,12 @@ impl<S> StateMachineApplyContext<'_, S> {
     }
 
     // Uses vqueues, replaces on_pre_flight_invocation
+    // Invocations landing here must have the vqueue_id set in metadata.
     async fn vqueue_enqueue(
         &mut self,
         invocation_id: &InvocationId,
         metadata: PreFlightInvocationMetadata,
         submit_notification_sink: Option<SubmitNotificationSink>,
-        limit_key: &LimitKey<ReString>,
     ) -> Result<(), Error>
     where
         S: WriteInvocationStatusTable
@@ -1122,14 +1121,18 @@ impl<S> StateMachineApplyContext<'_, S> {
     {
         let record_unique_ts = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
 
+        let qid = metadata
+            .vqueue_id
+            .as_ref()
+            .expect("invariant violation: vqueue id must be set");
         VQueue::vqueue_from_invocation_target(
             record_unique_ts,
-            invocation_id.partition_key(),
+            qid,
             &metadata.invocation_target,
             self.storage,
             self.vqueues_cache,
             self.is_leader.then_some(self.action_collector),
-            limit_key,
+            &metadata.limit_key,
         )
         .await?
         .enqueue_new(
@@ -1972,6 +1975,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     response_sinks,
                     invocation_target,
                     input,
+                    vqueue_id,
                     ..
                 },
         } = inboxed_invocation;
@@ -1985,38 +1989,31 @@ impl<S> StateMachineApplyContext<'_, S> {
             Some(&invocation_target),
         )?;
 
-        if Configuration::pinned()
-            .common
-            .experimental
-            .is_vqueues_enabled()
-        {
-            let record_unique_ts =
-                UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
-            let new_status = match termination_flavor {
-                TerminationFlavor::Kill => vqueue_table::Status::Killed,
-                TerminationFlavor::Cancel => vqueue_table::Status::Cancelled,
-            };
-            // Is this an invocation that has a vqueue inbox?
-            if !VQueue::end_by_id(
-                self.storage,
-                self.vqueues_cache,
-                self.is_leader.then_some(self.action_collector),
-                record_unique_ts,
-                invocation_id.partition_key(),
-                &EntryId::from(invocation_id),
-                new_status,
-            )
-            .await?
-            {
-                // Assuming it's an old-style inbox, fallback to deleting it from inbox since we
-                // can't find the entry state.
-                self.do_delete_inbox_entry(
-                    invocation_target.as_keyed_service_id().expect(
-                        "Because the invocation is inboxed, it must have a keyed service id",
-                    ),
-                    inbox_sequence_number,
+        if let Some(vqueue_id) = vqueue_id {
+            if let Some(entry_status) = self
+                .storage
+                .get_vqueue_entry_status(
+                    invocation_id.partition_key(),
+                    &EntryId::from(invocation_id),
                 )
-                .await?;
+                .await?
+            {
+                let record_unique_ts =
+                    UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
+                let new_status = match termination_flavor {
+                    TerminationFlavor::Kill => vqueue_table::Status::Killed,
+                    TerminationFlavor::Cancel => vqueue_table::Status::Cancelled,
+                };
+
+                VQueue::get(
+                    &vqueue_id,
+                    self.storage,
+                    self.vqueues_cache,
+                    self.is_leader.then_some(self.action_collector),
+                )
+                .await?
+                .expect("terminate expects vqueue to exist")
+                .end(record_unique_ts, &entry_status, new_status);
             }
         } else {
             // Delete inbox entry and invocation status.
@@ -2088,6 +2085,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     input,
                     invocation_target,
                     execution_time,
+                    vqueue_id,
                     ..
                 },
         } = scheduled_invocation;
@@ -2101,40 +2099,31 @@ impl<S> StateMachineApplyContext<'_, S> {
             Some(&invocation_target),
         )?;
 
-        if Configuration::pinned()
-            .common
-            .experimental
-            .is_vqueues_enabled()
-        {
-            let record_unique_ts =
-                UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
-            let new_status = match termination_flavor {
-                TerminationFlavor::Kill => vqueue_table::Status::Killed,
-                TerminationFlavor::Cancel => vqueue_table::Status::Cancelled,
-            };
-
-            // Is this an invocation that has a vqueue inbox?
-            if !VQueue::end_by_id(
-                self.storage,
-                self.vqueues_cache,
-                self.is_leader.then_some(self.action_collector),
-                record_unique_ts,
-                invocation_id.partition_key(),
-                &EntryId::from(invocation_id),
-                new_status,
-            )
-            .await?
+        if let Some(vqueue_id) = vqueue_id {
+            if let Some(entry_status) = self
+                .storage
+                .get_vqueue_entry_status(
+                    invocation_id.partition_key(),
+                    &EntryId::from(invocation_id),
+                )
+                .await?
             {
-                // Assuming it's an old-style inbox, fallback to deleting the timer
-                if let Some(execution_time) = execution_time {
-                    self.do_delete_timer(TimerKey::neo_invoke(
-                        execution_time.as_u64(),
-                        invocation_id.invocation_uuid(),
-                    ))
-                    .await?;
-                } else {
-                    warn!("Scheduled invocations must always have an execution time.");
-                }
+                let record_unique_ts =
+                    UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
+                let new_status = match termination_flavor {
+                    TerminationFlavor::Kill => vqueue_table::Status::Killed,
+                    TerminationFlavor::Cancel => vqueue_table::Status::Cancelled,
+                };
+
+                VQueue::get(
+                    &vqueue_id,
+                    self.storage,
+                    self.vqueues_cache,
+                    self.is_leader.then_some(self.action_collector),
+                )
+                .await?
+                .expect("terminate expects vqueue to exist")
+                .end(record_unique_ts, &entry_status, new_status);
             }
         } else {
             // Delete timer
@@ -2817,10 +2806,8 @@ impl<S> StateMachineApplyContext<'_, S> {
                 // todo: remove when vqueues are always enabled
                 if self.is_leader
                     && let YieldReason::ExhaustedMemoryBudget { .. } = reason
-                    && !Configuration::pinned()
-                        .common
-                        .experimental
-                        .is_vqueues_enabled()
+                    && let Some(metadata) = invocation_status.get_invocation_metadata()
+                    && metadata.vqueue_id.is_none()
                 {
                     let Some(invocation_target) = invocation_status.invocation_target().cloned()
                     else {
@@ -2925,6 +2912,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             .as_ref()
             .map(|pd| pd.service_protocol_version);
 
+        let vqueue_id = invocation_metadata.vqueue_id.clone();
+        let mut end_status = vqueue_table::Status::Succeeded;
         // If there are any response sinks, or we need to store back the completed status,
         //  we need to find the latest output entry
         if !invocation_metadata.response_sinks.is_empty() || !completion_retention.is_zero() {
@@ -2948,6 +2937,10 @@ impl<S> StateMachineApplyContext<'_, S> {
                 warn!("Invocation completed without an output entry. This is not supported yet.");
                 return Ok(());
             };
+
+            if let ResponseResult::Failure(_) = &response_result {
+                end_status = vqueue_table::Status::Failed;
+            }
 
             // Send responses out
             self.send_response_to_sinks(
@@ -3007,41 +3000,30 @@ impl<S> StateMachineApplyContext<'_, S> {
             .await?;
         }
 
-        if Configuration::pinned()
-            .common
-            .experimental
-            .is_vqueues_enabled()
-        {
-            if invocation_target.invocation_target_ty()
-                == InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
-            {
-                let keyed_service_id = invocation_target.as_keyed_service_id().expect(
-                    "When the handler type is Exclusive, the invocation target must have a key",
-                );
-                // We consumed the inbox, nothing else to do here
-                self.storage
-                    .put_virtual_object_status(&keyed_service_id, &VirtualObjectStatus::Unlocked)
-                    .map_err(Error::Storage)?;
-            }
-
+        if let Some(vqueue_id) = vqueue_id {
+            let Some(entry_status) = self
+                .storage
+                .get_vqueue_entry_status(
+                    invocation_id.partition_key(),
+                    &EntryId::from(invocation_id),
+                )
+                .await?
+            else {
+                // Invocation has been removed already!
+                return Ok(());
+            };
             let record_unique_ts =
                 UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
 
-            // we need to remove the invocation from the running list
-            VQueue::end_by_id(
+            VQueue::get(
+                &vqueue_id,
                 self.storage,
                 self.vqueues_cache,
                 self.is_leader.then_some(self.action_collector),
-                record_unique_ts,
-                invocation_id.partition_key(),
-                &EntryId::from(invocation_id),
-                // todo(tillrohrmann): This is a temporary, we should extract the new state from the code
-                // above and use that instead.
-                vqueue_table::Status::Succeeded,
             )
-            .await?;
-
-            return Ok(());
+            .await?
+            .expect("terminate expects vqueue to exist")
+            .end(record_unique_ts, &entry_status, end_status);
         } else {
             // Consume inbox and move on
             self.consume_inbox(&invocation_target).await?;
@@ -3333,14 +3315,6 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteJournalTable
             + journal_table_v2::WriteJournalTable,
     {
-        if Configuration::pinned()
-            .common
-            .experimental
-            .is_vqueues_enabled()
-        {
-            return Ok(());
-        }
-
         // Inbox exists only for virtual object exclusive handler cases
         if invocation_target.invocation_target_ty()
             == InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
@@ -4637,24 +4611,20 @@ impl<S> StateMachineApplyContext<'_, S> {
         );
 
         metadata.timestamps.update(self.record_created_at);
-        let invocation_target = metadata.invocation_target.clone();
-        self.storage
-            .put_invocation_status(&invocation_id, &InvocationStatus::Invoked(metadata))
-            .map_err(Error::Storage)?;
 
-        if Configuration::pinned()
-            .common
-            .experimental
-            .is_vqueues_enabled()
-        {
+        if metadata.vqueue_id.is_some() {
             self.vqueue_move_invocation_to_inbox_stage(&invocation_id)
                 .await?;
         } else {
             self.action_collector.push(Action::Invoke {
                 invocation_id,
-                invocation_target,
+                invocation_target: metadata.invocation_target.clone(),
             });
         }
+
+        self.storage
+            .put_invocation_status(&invocation_id, &InvocationStatus::Invoked(metadata))
+            .map_err(Error::Storage)?;
 
         Ok(())
     }
@@ -4687,11 +4657,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         metadata.timestamps.update(self.record_created_at);
 
-        if Configuration::pinned()
-            .common
-            .experimental
-            .is_vqueues_enabled()
-        {
+        if metadata.vqueue_id.is_some() {
             let now = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
             let entry_id = EntryId::from(&invocation_id);
             let Some(header) = self
@@ -5404,7 +5370,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         let mut vqueue = VQueue::vqueue_from_invocation_target(
             now,
-            service_id.partition_key(),
+            &qid,
             &target,
             self.storage,
             self.vqueues_cache,

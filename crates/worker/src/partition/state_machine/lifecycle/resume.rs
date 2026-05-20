@@ -11,7 +11,6 @@
 use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
-use restate_types::config::Configuration;
 use restate_types::identifiers::InvocationId;
 
 use crate::debug_if_leader;
@@ -41,11 +40,7 @@ where
 
         metadata.timestamps.update(ctx.record_created_at);
 
-        if Configuration::pinned()
-            .common
-            .experimental
-            .is_vqueues_enabled()
-        {
+        if metadata.vqueue_id.is_some() {
             ctx.vqueue_move_invocation_to_inbox_stage(&self.invocation_id)
                 .await?;
         } else {
