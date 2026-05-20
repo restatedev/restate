@@ -11,6 +11,7 @@
 use std::future::Future;
 
 use bytes::BytesMut;
+use strum::EnumCount;
 
 use restate_limiter::RuleBook;
 use restate_types::identifiers::LeaderEpoch;
@@ -28,6 +29,74 @@ use restate_types::{GenerationalNodeId, SemanticRestateVersion, Version};
 
 use crate::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
+
+/// Partition storage format version. Strictly monotonically increasing — each variant
+/// represents the cumulative storage layout produced by applying every preceding
+/// migration. Variants are tagged as either *local* (safe to run on each replica
+/// independently at PP startup before any commands are applied) or *coordinated*
+/// (must be reached via a `MigrationBarrierCommand` so every replica observes the
+/// cutover at the same WAL LSN).
+///
+/// The actual migration runners live in `restate-partition-store` since they need
+/// concrete access to the partition store; the type itself lives here so it can be
+/// referenced by the `FsmTable` traits.
+// NOTE: The representation numbers here must be strictly monotonically increasing.
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, strum::FromRepr, strum::EnumCount)]
+#[repr(u16)]
+pub enum StorageFormatVersion {
+    /// Before 1.5
+    None = 0,
+    /// Migrations:
+    /// * Invocation status V1 -> V2
+    ///
+    /// *Since v1.5.0*
+    V1_5 = 1,
+    /// Migrations (coordinated):
+    /// * Inbox, invocation status, state, promise, timer tables → vqueue layout.
+    ///
+    /// Coordinated migration — must be reached via a `MigrationBarrierCommand` so every
+    /// replica observes the cutover at the same WAL LSN.
+    ///
+    /// *Since v1.7.0*
+    Vqueues = 2,
+}
+
+pub const LATEST_STORAGE_FORMAT: StorageFormatVersion =
+    StorageFormatVersion::from_repr((StorageFormatVersion::COUNT as u16) - 1).unwrap();
+
+/// The storage format an empty partition store can be initialized with. It is the last version
+/// which only requires local migration steps.
+pub const INIT_STORAGE_FORMAT: StorageFormatVersion = StorageFormatVersion::V1_5;
+
+impl From<u16> for StorageFormatVersion {
+    fn from(value: u16) -> Self {
+        StorageFormatVersion::from_repr(value).unwrap_or(StorageFormatVersion::V1_5)
+    }
+}
+
+impl StorageFormatVersion {
+    /// True if this version's migration (from `self.prev()` to `self`) needs to be
+    /// coordinated across the replica set via a `MigrationBarrierCommand` so every
+    /// replica observes the cutover at the same WAL LSN. Local migrations can run on
+    /// each replica independently at PP startup before any commands are applied.
+    pub const fn requires_coordinated_migration(self) -> bool {
+        match self {
+            StorageFormatVersion::None => false,
+            StorageFormatVersion::V1_5 => false,
+            StorageFormatVersion::Vqueues => true,
+        }
+    }
+
+    /// The next version in the sequence. Callers must ensure `self != LATEST_STORAGE_FORMAT`
+    /// before invoking — calling on the last variant clamps to `V1_5` via the lossy
+    /// `From<u16>` impl (an artifact of the wire-compat fallback).
+    pub fn next(self) -> Self {
+        (self as u16)
+            .checked_add(1)
+            .expect("storage format must be <= u16::MAX")
+            .into()
+    }
+}
 
 pub trait ReadFsmTable {
     fn get_inbox_seq_number(&mut self) -> impl Future<Output = Result<MessageIndex>> + Send + '_;
@@ -55,6 +124,15 @@ pub trait ReadFsmTable {
     /// callers should treat it as the empty default.
     /// *Since v1.7.0*
     fn get_rule_book(&mut self) -> impl Future<Output = Result<Option<RuleBook>>> + Send + '_;
+
+    /// The partition's storage format version (FSM variable `STORAGE_VERSION`).
+    /// Identifies which storage-layout migrations have been applied. Used by the
+    /// `MigrationBarrierCommand` apply path for idempotency, and by runtime
+    /// feature gates that must wait until a barrier has crossed the WAL.
+    /// *Since v1.7.0*
+    fn get_storage_version(
+        &mut self,
+    ) -> impl Future<Output = Result<StorageFormatVersion>> + Send + '_;
 }
 
 pub trait WriteFsmTable {
@@ -75,6 +153,10 @@ pub trait WriteFsmTable {
     /// Persist the rule book for this partition.
     /// *Since v1.7.0*
     fn put_rule_book(&mut self, rule_book: &RuleBook) -> Result<()>;
+
+    /// Set the partition's storage format version (FSM variable `STORAGE_VERSION`).
+    /// *Since v1.7.0*
+    fn put_storage_version(&mut self, version: StorageFormatVersion) -> Result<()>;
 }
 
 #[derive(Debug, Clone, Copy, derive_more::From, derive_more::Into)]

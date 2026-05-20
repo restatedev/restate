@@ -68,6 +68,7 @@ mod tests {
             None, /* outbox_head_seq_number */
             KeyRange::FULL,
             SemanticRestateVersion::unknown(),
+            restate_storage_api::fsm_table::INIT_STORAGE_FORMAT,
             Default::default(), /* schema */
             std::sync::Arc::new(RuleBook::default()),
             RuleBookCacheHandle::detached(),
@@ -116,6 +117,7 @@ mod tests {
             None, /* outbox_head_seq_number */
             KeyRange::FULL,
             SemanticRestateVersion::unknown(),
+            restate_storage_api::fsm_table::INIT_STORAGE_FORMAT,
             Default::default(), /* schema */
             std::sync::Arc::new(RuleBook::default()),
             RuleBookCacheHandle::detached(),

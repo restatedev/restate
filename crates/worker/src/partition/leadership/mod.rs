@@ -37,7 +37,7 @@ use restate_partition_store::PartitionStore;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::StorageError;
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
-use restate_storage_api::fsm_table::ReadFsmTable;
+use restate_storage_api::fsm_table::{LATEST_STORAGE_FORMAT, ReadFsmTable, StorageFormatVersion};
 use restate_storage_api::invocation_status_table::{
     InvokedInvocationStatusLite, ScanInvocationStatusTable,
 };
@@ -62,12 +62,14 @@ use restate_types::retries::with_jitter;
 use restate_types::schema::Schema;
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use restate_types::{
-    GenerationalNodeId, RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, SemanticRestateVersion,
+    GenerationalNodeId, RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, RESTATE_VERSION_1_8_0,
+    SemanticRestateVersion,
 };
 use restate_vqueues::scheduler::{self};
 use restate_vqueues::{ResourceManager, SchedulerService, VQueuesMeta, VQueuesMetaCache};
 use restate_wal_protocol::control::{
-    AnnounceLeaderCommand, UpdatePartitionDurabilityCommand, VersionBarrierCommand,
+    AnnounceLeaderCommand, MigrationBarrierCommand, UpdatePartitionDurabilityCommand,
+    VersionBarrierCommand,
 };
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::{Command, Envelope};
@@ -333,6 +335,7 @@ where
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[instrument(level = "debug", skip_all, fields(leader_epoch = %announce_leader.leader_epoch))]
     pub async fn on_announce_leader(
         &mut self,
@@ -342,6 +345,7 @@ where
         config: &Configuration,
         vqueues_cache: &mut VQueuesMetaCache,
         rule_book: &RuleBook,
+        storage_version: StorageFormatVersion,
     ) -> Result<bool, Error> {
         self.last_seen_leader_epoch = Some(announce_leader.leader_epoch);
 
@@ -363,6 +367,7 @@ where
                             vqueues_cache,
                             config,
                             rule_book,
+                            storage_version,
                         )
                         .await?
                     }
@@ -407,6 +412,7 @@ where
         vqueues_cache: &mut VQueuesMetaCache,
         config: &Configuration,
         rule_book: &RuleBook,
+        storage_version: StorageFormatVersion,
     ) -> Result<(), Error> {
         if let State::Candidate {
             leader_epoch,
@@ -466,7 +472,13 @@ where
                 })?
                 .into_guard();
 
-            let scheduler_service = if config.common.experimental.is_vqueues_enabled() {
+            // The scheduler can only be constructed safely once the partition's storage
+            // format is at Vqueues — `SchedulerService::create` seeds its caches from the
+            // partition store (locks table, etc.) and that state isn't yet correct on a
+            // pre-barrier partition. For partitions that haven't migrated, start with a
+            // disabled stub and let `Action::InitializeVqueuesScheduler` (emitted by the
+            // migration barrier apply path) swap in the real service after the migration.
+            let scheduler_service = if storage_version >= StorageFormatVersion::Vqueues {
                 let scheduler = SchedulerService::create(
                     ResourceManager::create(
                         partition_store.partition_db().clone(),
@@ -481,18 +493,17 @@ where
                 )
                 .await?;
 
-                // Seed the scheduler's UserLimiter with whatever rules
-                // have already been applied to this partition.
                 let initial_diff = rule_book.diff_from_empty();
                 if !initial_diff.is_empty() {
                     scheduler.on_rules_updated(initial_diff);
                 }
                 scheduler
             } else {
-                // we only perform the mass-resumption if vqueues are disabled
+                // For partitions that haven't crossed the vqueues barrier yet, invocations
+                // still live in the legacy invocation-status table; resume them so the
+                // invoker picks them back up. After the barrier, entries live in vqueue
+                // tables and resumption is driven by the scheduler instead.
                 Self::resume_invoked_invocations(&mut invoker_handle, partition_store).await?;
-
-                // noop scheduler if vqueues are disabled
                 SchedulerService::new_disabled()
             };
 
@@ -574,6 +585,34 @@ where
                             ),
                             human_reason: Some("Enable journal v2 by default".to_owned()),
                         }),
+                    )
+                    .await?;
+            }
+
+            // In v1.8.0 we move every partition forward to the latest storage format. The
+            // experimental `vqueues` config flag pulls the same trigger pre-1.8.0 for operators
+            // who want to opt in early. The barrier is observed in the WAL by every replica,
+            // which makes the cutover deterministic across the replica set.
+            let opt_in = config.common.experimental.is_vqueues_enabled()
+                || SemanticRestateVersion::current().is_equal_or_newer_than(&RESTATE_VERSION_1_8_0);
+            if opt_in && storage_version < LATEST_STORAGE_FORMAT {
+                let inner = MigrationBarrierCommand {
+                    target_version: LATEST_STORAGE_FORMAT as u16,
+                    hint: Some(format!(
+                        "upgrade restate-server to a version that supports \
+                         storage format {:?}",
+                        LATEST_STORAGE_FORMAT
+                    )),
+                };
+                self_proposer
+                    .self_propose(
+                        self.partition.key_range.start(),
+                        Command::MigrationBarrier(
+                            restate_wal_protocol::v1::MigrationBarrierCommandWrapper {
+                                partition_key_range: self.partition.key_range,
+                                command: inner.bilrost_encode_to_bytes(),
+                            },
+                        ),
                     )
                     .await?;
             }
@@ -670,17 +709,29 @@ where
         }
     }
 
-    pub fn handle_actions(
+    pub async fn handle_actions(
         &mut self,
+        partition_store: &PartitionStore,
+        state_machine: &StateMachine,
+        vqueues_cache: &VQueuesMetaCache,
         vqueues: VQueuesMeta<'_>,
-        actions: impl Iterator<Item = Action>,
+        actions: impl IntoIterator<Item = Action>,
     ) -> Result<(), Error> {
         match &mut self.state {
             State::Follower | State::Candidate { .. } => {
                 // nothing to do :-)
             }
             State::Leader(leader_state) => {
-                leader_state.handle_actions(vqueues, actions)?;
+                leader_state
+                    .handle_actions(
+                        partition_store,
+                        state_machine,
+                        vqueues_cache,
+                        &self.invoker_capacity,
+                        vqueues,
+                        actions,
+                    )
+                    .await?;
             }
         }
 
@@ -979,6 +1030,7 @@ mod tests {
                 &Configuration::pinned(),
                 &mut VQueuesMetaCache::new_empty(1024),
                 &rule_book,
+                restate_storage_api::fsm_table::INIT_STORAGE_FORMAT,
             )
             .await?;
 

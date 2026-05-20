@@ -269,6 +269,7 @@ impl PartitionProcessorBuilder {
         let outbox_seq_number = partition_store.get_outbox_seq_number().await?;
         let outbox_head_seq_number = partition_store.get_outbox_head_seq_number().await?;
         let min_restate_version = partition_store.get_min_restate_version().await?;
+        let storage_version = partition_store.get_storage_version().await?;
         let schema = partition_store.get_schema().await?;
         let rule_book = Arc::new(partition_store.get_rule_book().await?.unwrap_or_default());
 
@@ -296,6 +297,7 @@ impl PartitionProcessorBuilder {
             outbox_head_seq_number,
             partition_store.partition_key_range(),
             min_restate_version,
+            storage_version,
             schema,
             rule_book,
             rule_book_cache,
@@ -715,6 +717,7 @@ where
                                 config,
                                 &mut vqueues,
                                 &self.state_machine.rule_book,
+                                self.state_machine.storage_version,
                             ).await?;
 
                             Span::current().record("is_leader", is_leader);
@@ -748,7 +751,15 @@ where
                     if let Some(lsn) = &self.status.last_applied_log_lsn {
                         self.last_applied_log_lsn_watch.send_replace(*lsn);
                     }
-                    self.leadership_state.handle_actions(vqueues.view(), action_collector.drain(..))?;
+                    self.leadership_state
+                        .handle_actions(
+                            &partition_store,
+                            &self.state_machine,
+                            &vqueues,
+                            vqueues.view(),
+                            action_collector.drain(..),
+                        )
+                        .await?;
                 },
                 result = self.leadership_state.run(&self.state_machine, vqueues.view()) => {
                     let action_effects = result?;

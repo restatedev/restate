@@ -155,6 +155,12 @@ impl TryFrom<v1::Envelope> for v2::Envelope<Raw> {
                 dedup,
                 payload,
             ),
+            v1::Command::MigrationBarrier(wrapper) => Envelope::from_bytes_unchecked(
+                v2::CommandKind::MigrationBarrier,
+                StorageCodecKind::Bilrost,
+                dedup,
+                wrapper.command,
+            ),
         };
 
         Ok(envelope)

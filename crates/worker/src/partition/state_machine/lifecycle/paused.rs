@@ -17,7 +17,6 @@ use restate_storage_api::invocation_status_table::{
 use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::vqueue_table::{EntryStatusHeader, ReadVQueueTable, WriteVQueueTable};
-use restate_types::config::Configuration;
 use restate_types::identifiers::{InvocationId, WithPartitionKey as _};
 use restate_types::journal_events::raw::RawEvent;
 use restate_types::vqueues::EntryId;
@@ -65,11 +64,7 @@ where
         // Invoker paused the invocation, let's record the event, then set the status to paused
         debug_if_leader!(ctx.is_leader, "Paused the invocation");
 
-        if Configuration::pinned()
-            .common
-            .experimental
-            .is_vqueues_enabled()
-        {
+        if ctx.use_vqueues() {
             // todo: use the new status
             let entry_id = EntryId::from(invocation_id);
             let Some(header) = ctx

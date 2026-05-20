@@ -111,6 +111,13 @@ pub enum Action {
     /// advances. Followers ignore this action (no live UserLimiter to
     /// notify); only the leader's `leader_state` dispatches it onward.
     RulesUpdated(Box<[RuleUpdate]>),
+    /// Bootstrap the vqueues scheduler now that the partition has crossed the
+    /// vqueues storage-format migration barrier. Emitted by `OnMigrationBarrierCommand`
+    /// apply on the transition from `< Vqueues` to `>= Vqueues`. Handled by the
+    /// leader's `LeadershipState::handle_actions`, which constructs a fresh
+    /// `SchedulerService` against the now-migrated partition store and swaps it into
+    /// `LeaderState`. Followers receive the same action and silently drop it.
+    InitializeVqueuesScheduler,
 }
 
 impl From<VQueueEvent> for Action {

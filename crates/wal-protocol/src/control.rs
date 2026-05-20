@@ -182,6 +182,58 @@ impl HasRecordKeys for VersionBarrierCommand {
     }
 }
 
+/// A migration barrier that seals the WAL at a specific log position so every replica
+/// performs the storage-format migration to `target_version` deterministically. Commands
+/// before this barrier apply to the pre-migration storage layout; commands after apply
+/// to the post-migration layout.
+///
+/// Used to roll out coordinated migrations (e.g., vqueues) that require coordinated PP state
+/// across replicas and cannot run lazily on startup. The leader auto-emits this command
+/// when the previous version supports a higher storage format than the partition's FSM
+/// records.
+///
+/// Forward compatibility: `target_version` is a raw `u16` preserved verbatim. An older
+/// binary that doesn't recognize the target value hard-fails with `hint` surfaced in the
+/// error, blocking the partition until the operator upgrades.
+///
+/// The `partition_key_range` is carried out-of-band by the v1 wrapper / v2 envelope, not
+/// inside this struct — once the self-proposer emits v2 envelopes natively, the range
+/// will live entirely in the record metadata.
+///
+/// *Since v1.7.0*
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct MigrationBarrierCommand {
+    /// Target storage format version. Preserved verbatim as `u16` so older binaries
+    /// that don't recognize the value can still surface it in their hard-fail error.
+    #[bilrost(tag(1))]
+    pub target_version: u16,
+    /// Operator-facing hint rendered in the fatal error when the local binary cannot
+    /// reach `target_version`. E.g. "upgrade to restate-server v1.8.0 to migrate to
+    /// the vqueues storage format".
+    #[bilrost(tag(2))]
+    pub hint: Option<String>,
+}
+
+bilrost_storage_encode_decode!(MigrationBarrierCommand);
+
+impl MigrationBarrierCommand {
+    pub fn bilrost_encode<B: BufMut>(&self, b: &mut B) -> Result<(), bilrost::EncodeError> {
+        bilrost::Message::encode(self, b)
+    }
+
+    pub fn encoded_len(&self) -> usize {
+        bilrost::Message::encoded_len(self)
+    }
+
+    pub fn bilrost_encode_to_bytes(&self) -> Bytes {
+        bilrost::Message::encode_to_bytes(self)
+    }
+
+    pub fn bilrost_decode<B: Buf>(buf: B) -> Result<Self, bilrost::DecodeError> {
+        bilrost::OwnedMessage::decode(buf)
+    }
+}
+
 /// Updates the `PARTITION_DURABILITY` FSM variable to the given value. Note that durability
 /// only applies to partitions with the same `partition_id`. At replay time, the partition will
 /// ignore updates that are not targeted to its own ID.

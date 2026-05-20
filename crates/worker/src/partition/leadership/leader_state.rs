@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll, ready};
 
 use bytes::BytesMut;
-use futures::future::OptionFuture;
+use futures::future::{Either, OptionFuture};
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt, stream};
 use itertools::Itertools;
@@ -30,9 +30,8 @@ use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{Metadata, MetadataKind, TaskCenter, TaskHandle, TaskId};
 use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
 use restate_limiter::RuleBook;
-use restate_partition_store::PartitionDb;
+use restate_partition_store::{PartitionDb, PartitionStore};
 use restate_storage_api::vqueue_table::scheduler::SchedulerDecisionsCommand;
-use restate_types::config::Configuration;
 use restate_types::identifiers::{
     LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
@@ -47,11 +46,12 @@ use restate_types::sharding::KeyRange;
 use restate_types::{RESTATE_VERSION_1_7_0, SemanticRestateVersion, Version, Versioned, vqueues};
 use restate_vqueues::VQueueEvent;
 use restate_vqueues::scheduler::Decisions;
-use restate_vqueues::{SchedulerService, VQueuesMeta};
+use restate_vqueues::{ResourceManager, SchedulerService, VQueuesMeta, VQueuesMetaCache};
 use restate_wal_protocol::Command;
 use restate_wal_protocol::control::UpsertSchemaCommand;
 use restate_wal_protocol::v1::UpsertRuleBookCommandWrapper;
 use restate_worker_api::invoker::InvokerHandle;
+use restate_worker_api::invoker::capacity::InvokerCapacity;
 use restate_worker_api::resources::ReservedResources;
 use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
 
@@ -83,6 +83,10 @@ pub struct LeaderState {
     // returns a [`Error:TaskFailed`] error.
     shuffle_task_handle: Option<TaskHandle<anyhow::Result<()>>>,
     pub timer_service: Pin<Box<TimerService>>,
+    /// Constructed at leader election when the partition is already at the Vqueues
+    /// storage format; otherwise starts as `SchedulerService::new_disabled()` and is
+    /// swapped to a real service when the migration barrier emits
+    /// `Action::InitializeVqueuesScheduler`.
     scheduler: SchedulerService<PartitionDb>,
     invoker_handle: InvokerChannelServiceHandle,
     invoker_task_handle: Option<TaskHandle<()>>,
@@ -190,8 +194,14 @@ impl LeaderState {
 
         // todo(asoli): consider adding the scheduler pick_next() directly to the tokio::select!
         // if we have problems with latency
-        let scheduler_stream =
-            std::pin::pin!(stream::unfold(&mut self.scheduler, |scheduler| async {
+        //
+        // The scheduler is always present (constructed unconditionally in `become_leader`),
+        // but we only poll it once the partition has crossed the vqueues storage-format
+        // barrier — there are no vqueue entries to schedule before that. Skipping the
+        // `schedule_next` call avoids spinning on empty tables and matches the runtime
+        // contract that vqueues-driven behavior is FSM-gated.
+        let scheduler_stream = std::pin::pin!(if state_machine.use_vqueues() {
+            Either::Left(stream::unfold(&mut self.scheduler, |scheduler| async {
                 match scheduler.schedule_next(vqueue_metas).await {
                     Ok(decisions) => Some((ActionEffect::Scheduler(decisions), scheduler)),
                     Err(e) => {
@@ -199,7 +209,10 @@ impl LeaderState {
                         None
                     }
                 }
-            }));
+            }))
+        } else {
+            Either::Right(stream::empty::<ActionEffect>())
+        });
 
         let schema_stream = (&mut self.schema_stream).filter_map(|_| {
             // only upsert schema iff version is newer than current version
@@ -216,14 +229,23 @@ impl LeaderState {
             )
         });
 
-        let rule_book_stream = (&mut self.rule_book_stream).filter_map(|book| {
-            // Only propose iff the cache holds a rule book that's
-            // newer than the partition's current in-memory book.
-            let current_version = state_machine.rule_book.version();
-            std::future::ready(
-                (book.version() > current_version).then(|| ActionEffect::UpsertRuleBook(book)),
-            )
-        });
+        // The rule book is only consulted by the vqueues scheduler/user-limiter, so we
+        // skip polling the watch entirely pre-Vqueues. Once the partition crosses the
+        // barrier mid-term, the next invocation of `run()` reconstructs `all_streams`,
+        // observes the latest book sitting in the watch, and self-proposes it. Using
+        // `Either` keeps both branches on the stack (no per-call allocation).
+        let rule_book_stream = if state_machine.use_vqueues() {
+            Either::Left((&mut self.rule_book_stream).filter_map(|book| {
+                // Only propose iff the cache holds a rule book that's
+                // newer than the partition's current in-memory book.
+                let current_version = state_machine.rule_book.version();
+                std::future::ready(
+                    (book.version() > current_version).then(|| ActionEffect::UpsertRuleBook(book)),
+                )
+            }))
+        } else {
+            Either::Right(stream::empty::<ActionEffect>())
+        };
 
         let invoker_stream = (&mut self.invoker_stream).map(ActionEffect::Invoker);
         let shuffle_stream = (&mut self.shuffle_stream).map(ActionEffect::Shuffle);
@@ -456,30 +478,24 @@ impl LeaderState {
                     }
                 }
                 ActionEffect::UpsertRuleBook(rule_book) => {
-                    // todo(tillrohrmann) also enable the feature once the partition has been migrated
-                    //  to use vqueues and then rolling back to v1.7
-                    if Configuration::pinned()
-                        .common
-                        .experimental
-                        .is_vqueues_enabled()
-                    {
-                        let cmd =
-                            restate_wal_protocol::control::UpsertRuleBookCommand { rule_book };
+                    // Producing this effect is already gated upstream in `LeaderState::run`
+                    // on `state_machine.use_vqueues()`, so by the time we get here the
+                    // partition has crossed the vqueues storage-format barrier.
+                    let cmd = restate_wal_protocol::control::UpsertRuleBookCommand { rule_book };
 
-                        arena.reserve(cmd.encoded_len());
-                        // safe to unwrap because we reserved enough space
-                        cmd.bilrost_encode(&mut arena).unwrap();
+                    arena.reserve(cmd.encoded_len());
+                    // safe to unwrap because we reserved enough space
+                    cmd.bilrost_encode(&mut arena).unwrap();
 
-                        self.self_proposer
-                            .self_propose(
-                                self.partition_key_range.start(),
-                                Command::UpsertRuleBook(UpsertRuleBookCommandWrapper {
-                                    partition_key_range: self.partition_key_range,
-                                    command: arena.split().freeze(),
-                                }),
-                            )
-                            .await?;
-                    }
+                    self.self_proposer
+                        .self_propose(
+                            self.partition_key_range.start(),
+                            Command::UpsertRuleBook(UpsertRuleBookCommandWrapper {
+                                partition_key_range: self.partition_key_range,
+                                command: arena.split().freeze(),
+                            }),
+                        )
+                        .await?;
                 }
                 ActionEffect::AwaitingRpcSelfProposeDone => {
                     // Nothing to do here
@@ -569,10 +585,14 @@ impl LeaderState {
         }
     }
 
-    pub fn handle_actions(
+    pub async fn handle_actions(
         &mut self,
+        partition_store: &PartitionStore,
+        state_machine: &StateMachine,
+        vqueues_cache: &VQueuesMetaCache,
+        invoker_capacity: &InvokerCapacity,
         vqueues: VQueuesMeta<'_>,
-        actions: impl Iterator<Item = Action>,
+        actions: impl IntoIterator<Item = Action>,
     ) -> Result<(), Error> {
         for action in actions {
             let action_name = action.name();
@@ -587,13 +607,29 @@ impl LeaderState {
             )
             .increment(1);
 
-            self.handle_action(vqueues, action)?;
+            self.handle_action(
+                partition_store,
+                state_machine,
+                vqueues_cache,
+                invoker_capacity,
+                vqueues,
+                action,
+            )
+            .await?;
         }
 
         Ok(())
     }
 
-    fn handle_action(&mut self, metas: VQueuesMeta<'_>, action: Action) -> Result<(), Error> {
+    async fn handle_action(
+        &mut self,
+        partition_store: &PartitionStore,
+        state_machine: &StateMachine,
+        vqueues_cache: &VQueuesMetaCache,
+        invoker_capacity: &InvokerCapacity,
+        metas: VQueuesMeta<'_>,
+        action: Action,
+    ) -> Result<(), Error> {
         match action {
             Action::Invoke {
                 invocation_id,
@@ -776,6 +812,32 @@ impl LeaderState {
             }
             Action::RulesUpdated(updates) => {
                 self.scheduler.on_rules_updated(updates);
+            }
+            Action::InitializeVqueuesScheduler => {
+                // The vqueues migration barrier just advanced this partition's storage
+                // format past Vqueues. Replace the disabled stub (installed by
+                // `become_leader` for pre-barrier partitions) with a real scheduler that
+                // seeds its caches from the now-migrated partition store.
+                let scheduler = SchedulerService::create(
+                    ResourceManager::create(
+                        partition_store.partition_db().clone(),
+                        invoker_capacity.concurrency.clone(),
+                        invoker_capacity.invocation_token_bucket.clone(),
+                        invoker_capacity.memory_pool.clone(),
+                        invoker_capacity.initial_invocation_memory,
+                    )
+                    .await?,
+                    partition_store.partition_db().clone(),
+                    vqueues_cache,
+                )
+                .await?;
+
+                let initial_diff = state_machine.rule_book.diff_from_empty();
+                if !initial_diff.is_empty() {
+                    scheduler.on_rules_updated(initial_diff);
+                }
+
+                self.scheduler = scheduler;
             }
         }
 

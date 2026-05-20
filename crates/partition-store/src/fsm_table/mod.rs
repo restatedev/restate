@@ -8,12 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use anyhow::Context;
 use restate_limiter::RuleBook;
-use restate_storage_api::Result;
 use restate_storage_api::fsm_table::{
-    CachedEpochMetadata, PartitionDurability, ReadFsmTable, SequenceNumber, WriteFsmTable,
+    CachedEpochMetadata, PartitionDurability, ReadFsmTable, SequenceNumber, StorageFormatVersion,
+    WriteFsmTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
+use restate_storage_api::{Result, StorageError};
 use restate_types::SemanticRestateVersion;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::Lsn;
@@ -124,21 +126,28 @@ pub async fn get_locally_durable_lsn(partition_store: &mut PartitionStore) -> Re
 pub(crate) async fn get_storage_version<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
-) -> Result<u16> {
-    get::<SequenceNumber, _>(storage, partition_id, fsm_variable::STORAGE_VERSION)
-        .map(|opt| opt.map(|s| s.0 as u16).unwrap_or_default())
+) -> Result<StorageFormatVersion> {
+    get::<SequenceNumber, _>(storage, partition_id, fsm_variable::STORAGE_VERSION).and_then(|opt| {
+        opt.map(|s| {
+            u16::try_from(s.0)
+                .context("storage format version should be <= u16::MAX")
+                .map_err(StorageError::from)
+                .map(StorageFormatVersion::from)
+        })
+        .unwrap_or(Ok(StorageFormatVersion::None))
+    })
 }
 
 pub(crate) async fn put_storage_version<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
-    last_executed_migration: u16,
+    version: StorageFormatVersion,
 ) -> Result<()> {
     put(
         storage,
         partition_id,
         fsm_variable::STORAGE_VERSION,
-        &SequenceNumber::from(last_executed_migration as u64),
+        &SequenceNumber::from(version as u64),
     )
 }
 
@@ -209,6 +218,10 @@ impl ReadFsmTable for PartitionStore {
         let key = create_key(self.partition_id(), fsm_variable::RULE_BOOK);
         self.get_value_storage_codec(key)
     }
+
+    async fn get_storage_version(&mut self) -> Result<StorageFormatVersion> {
+        get_storage_version(self, self.partition_id()).await
+    }
 }
 
 impl WriteFsmTable for PartitionStoreTransaction<'_> {
@@ -270,5 +283,14 @@ impl WriteFsmTable for PartitionStoreTransaction<'_> {
     fn put_rule_book(&mut self, rule_book: &RuleBook) -> Result<()> {
         let key = create_key(self.partition_id(), fsm_variable::RULE_BOOK);
         self.put_kv_storage_codec(key, rule_book)
+    }
+
+    fn put_storage_version(&mut self, version: StorageFormatVersion) -> Result<()> {
+        put(
+            self,
+            self.partition_id(),
+            fsm_variable::STORAGE_VERSION,
+            &SequenceNumber::from(version as u64),
+        )
     }
 }
