@@ -994,6 +994,16 @@ impl<S> StateMachineApplyContext<'_, S> {
             "limit_key set without scope — this should have been rejected at the ingress"
         );
 
+        // Write down the random seed only if min restate version is 1.8
+        let random_seed = if self
+            .min_restate_version
+            .is_equal_or_newer_than(&RESTATE_VERSION_1_8_0)
+        {
+            Some(invocation_id.to_random_seed_with_entropy(self.record_created_at.as_u64()))
+        } else {
+            None
+        };
+
         // Prepare PreFlightInvocationMetadata structure
         let submit_notification_sink = service_invocation.submit_notification_sink.take();
 
@@ -1009,6 +1019,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             self.record_created_at,
             service_invocation,
             qid,
+            random_seed,
         );
 
         self.on_pre_flight_invocation(

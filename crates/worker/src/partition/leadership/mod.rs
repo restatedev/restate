@@ -599,6 +599,23 @@ where
                     )
                     .await?;
             }
+            // In v1.9.0 we enable by default writing the random seed which requires min Restate v1.8.0
+            if SemanticRestateVersion::current().is_equal_or_newer_than(&RESTATE_VERSION_1_9_0)
+                && RESTATE_VERSION_1_8_0.is_newer_than(&min_restate_version)
+            {
+                self_proposer
+                    .self_propose(
+                        self.partition.key_range.start(),
+                        Command::VersionBarrier(VersionBarrierCommand {
+                            version: RESTATE_VERSION_1_8_0.clone(),
+                            partition_key_range: Keys::RangeInclusive(
+                                self.partition.key_range.into(),
+                            ),
+                            human_reason: Some("Enable storing random seed by default".to_owned()),
+                        }),
+                    )
+                    .await?;
+            }
 
             let last_reported_durable_lsn = partition_store
                 .get_partition_durability()

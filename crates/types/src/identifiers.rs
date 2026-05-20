@@ -629,6 +629,16 @@ impl InvocationId {
         self.to_bytes().hash(&mut hasher);
         hasher.finish()
     }
+
+    /// Generate random seed combining the invocation id with additional entropy.
+    pub fn to_random_seed_with_entropy(self, entropy: u64) -> u64 {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        self.to_bytes().hash(&mut hasher);
+        entropy.hash(&mut hasher);
+        hasher.finish()
+    }
 }
 
 impl From<InvocationId> for Bytes {
