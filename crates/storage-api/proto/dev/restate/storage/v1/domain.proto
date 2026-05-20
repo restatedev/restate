@@ -256,6 +256,11 @@ message InvocationStatusV2 {
 
   // Completed
   ResponseResult result = 18;
+
+  // Binary-encoded vqueue id. Empty if this invocation was not migrated to vqueues.
+  optional bytes vqueue_id = 34;
+  // If empty, no limit was set
+  string limit_key = 35;
 }
 
 
@@ -267,6 +272,9 @@ message InvocationV2Lite {
   InvocationTarget invocation_target = 2;
   // removed in v1.6
   // uint32 current_invocation_epoch = 27;
+
+  // Binary-encoded vqueue id. Empty if this invocation was not migrated to vqueues.
+  optional bytes vqueue_id = 34;
 }
 
 // A somewhat slimmer version of InvocationStatusV2 with nested messages left
@@ -311,6 +319,9 @@ message InvocationStatusV2Lazy {
 
   // Completed
   // optional bytes result_lazy = 18;
+
+  // Binary-encoded vqueue id. Empty if this invocation was not migrated to vqueues.
+  optional bytes vqueue_id = 34;
 }
 
 message VirtualObjectStatus {
