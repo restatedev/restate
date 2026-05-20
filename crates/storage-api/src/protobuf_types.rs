@@ -4569,7 +4569,7 @@ pub mod v1 {
             // tag 4
             pub key: &'a [u8],
             // tag 5
-            pub scope: Option<&'a str>,
+            pub scope: Option<&'a [u8]>,
         }
 
         impl<'a> InvocationTargetLazy<'a> {
@@ -4617,19 +4617,15 @@ pub mod v1 {
                             )?;
                         }
                         5u32 => {
-                            let mut bytes: &'a [u8] = &[];
-                            merge_bytes_zerocopy(wire_type, &mut bytes, &mut buf).map_err(
-                                |mut error| {
-                                    error.push(STRUCT_NAME, "scope");
-                                    error
-                                },
-                            )?;
-                            self.scope = Some(str::from_utf8(bytes).map_err(|_| {
-                                #[allow(deprecated)]
-                                let mut error = prost::DecodeError::new("scope is not valid UTF-8");
+                            merge_bytes_zerocopy(
+                                wire_type,
+                                self.scope.get_or_insert_default(),
+                                &mut buf,
+                            )
+                            .map_err(|mut error| {
                                 error.push(STRUCT_NAME, "scope");
                                 error
-                            })?);
+                            })?;
                         }
                         _ => {
                             skip_field(wire_type, tag, &mut buf, ctx.clone())?;
@@ -4639,8 +4635,9 @@ pub mod v1 {
                 Ok(())
             }
 
-            pub fn service_name(&self) -> std::result::Result<&str, ConversionError> {
-                str::from_utf8(self.name).map_err(|_| ConversionError::invalid_data_static("name"))
+            pub fn service_name(&self) -> &str {
+                // Safety: Storage is trusted. Data is validated on the write path.
+                unsafe { str::from_utf8_unchecked(self.name) }
             }
 
             pub fn key(&self) -> std::result::Result<Option<&str>, ConversionError> {
@@ -4652,8 +4649,8 @@ pub mod v1 {
                         | Ty::WorkflowWorkflow
                         | Ty::WorkflowShared,
                     ) => {
-                        let key = str::from_utf8(self.key)
-                            .map_err(|_| ConversionError::invalid_data_static("key"))?;
+                        // Safety: Storage is trusted. Data is validated on the write path.
+                        let key = unsafe { str::from_utf8_unchecked(self.key) };
 
                         Ok(Some(key))
                     }
@@ -4664,9 +4661,9 @@ pub mod v1 {
                 }
             }
 
-            pub fn handler_name(&self) -> std::result::Result<&str, ConversionError> {
-                str::from_utf8(self.handler)
-                    .map_err(|_| ConversionError::invalid_data_static("name"))
+            pub fn handler_name(&self) -> &str {
+                // Safety: Storage is trusted. Data is validated on the write path.
+                unsafe { str::from_utf8_unchecked(self.handler) }
             }
 
             pub fn service_ty(&self) -> Result<ServiceType, ConversionError> {
@@ -4686,14 +4683,16 @@ pub mod v1 {
             pub fn target_fmt(
                 &'a self,
             ) -> std::result::Result<TargetFormatter<'a>, ConversionError> {
-                let service_name = self.service_name()?;
+                let service_name = self.service_name();
                 let key = self.key()?;
-                let handler_name = self.handler_name()?;
+                let handler_name = self.handler_name();
                 Ok(TargetFormatter(service_name, key, handler_name))
             }
 
             pub fn scope(&self) -> Option<&str> {
+                // Safety: Storage is trusted. Data is validated on the write path.
                 self.scope
+                    .map(|buf| unsafe { str::from_utf8_unchecked(buf) })
             }
         }
 
@@ -4704,7 +4703,7 @@ pub mod v1 {
                     name: &value.name,
                     handler: &value.handler,
                     key: &value.key,
-                    scope: value.scope.as_deref(),
+                    scope: value.scope.as_deref().map(|x| x.as_bytes()),
                 }
             }
         }
@@ -4725,7 +4724,8 @@ pub mod v1 {
 
         impl<'a> Display for StrFormatter<'a> {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str(str::from_utf8(self.0).map_err(|_| std::fmt::Error)?)
+                // Safety: Storage is trusted. Data is validated on the write path.
+                f.write_str(unsafe { str::from_utf8_unchecked(self.0) })
             }
         }
     }
