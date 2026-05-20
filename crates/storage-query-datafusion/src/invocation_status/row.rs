@@ -37,7 +37,7 @@ pub(crate) fn append_invocation_status_row<'a>(
         && let Some(invocation_target) = invocation_status.invocation_target()?
     {
         if row.is_target_service_name_defined() {
-            row.target_service_name(invocation_target.service_name()?);
+            row.fmt_target_service_name(invocation_target.service_name());
         }
         if row.is_target_service_key_defined()
             && let Some(key) = invocation_target.key()?
@@ -45,7 +45,7 @@ pub(crate) fn append_invocation_status_row<'a>(
             row.target_service_key(key);
         }
         if row.is_target_handler_name_defined() {
-            row.target_handler_name(invocation_target.handler_name()?);
+            row.target_handler_name(invocation_target.handler_name());
         }
         if row.is_target_defined() {
             row.fmt_target(invocation_target.target_fmt()?);
@@ -318,7 +318,7 @@ fn fill_invoked_by(
                 let invocation_target = service.invocation_target()?;
 
                 if row.is_invoked_by_service_name_defined() {
-                    row.invoked_by_service_name(invocation_target.service_name()?);
+                    row.invoked_by_service_name(invocation_target.service_name());
                 }
 
                 if row.is_invoked_by_target_defined() {
