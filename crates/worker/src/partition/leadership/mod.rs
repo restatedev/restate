@@ -466,35 +466,28 @@ where
                 })?
                 .into_guard();
 
-            let scheduler_service = if config.common.experimental.is_vqueues_enabled() {
-                let scheduler = SchedulerService::create(
-                    ResourceManager::create(
-                        partition_store.partition_db().clone(),
-                        self.invoker_capacity.concurrency.clone(),
-                        self.invoker_capacity.invocation_token_bucket.clone(),
-                        self.invoker_capacity.memory_pool.clone(),
-                        self.invoker_capacity.initial_invocation_memory,
-                    )
-                    .await?,
+            let scheduler_service = SchedulerService::create(
+                ResourceManager::create(
                     partition_store.partition_db().clone(),
-                    vqueues_cache,
+                    self.invoker_capacity.concurrency.clone(),
+                    self.invoker_capacity.invocation_token_bucket.clone(),
+                    self.invoker_capacity.memory_pool.clone(),
+                    self.invoker_capacity.initial_invocation_memory,
                 )
-                .await?;
+                .await?,
+                partition_store.partition_db().clone(),
+                vqueues_cache,
+            )
+            .await?;
 
-                // Seed the scheduler's UserLimiter with whatever rules
-                // have already been applied to this partition.
-                let initial_diff = rule_book.diff_from_empty();
-                if !initial_diff.is_empty() {
-                    scheduler.on_rules_updated(initial_diff);
-                }
-                scheduler
-            } else {
-                // we only perform the mass-resumption if vqueues are disabled
-                Self::resume_invoked_invocations(&mut invoker_handle, partition_store).await?;
+            // Seed the scheduler's UserLimiter with whatever rules
+            // have already been applied to this partition.
+            let initial_diff = rule_book.diff_from_empty();
+            if !initial_diff.is_empty() {
+                scheduler_service.on_rules_updated(initial_diff);
+            }
 
-                // noop scheduler if vqueues are disabled
-                SchedulerService::new_disabled()
-            };
+            Self::resume_invoked_invocations(&mut invoker_handle, partition_store).await?;
 
             let timer_service = TimerService::new(
                 TokioClock,
@@ -621,31 +614,33 @@ where
         invoker_handle: &mut InvokerChannelServiceHandle,
         partition_store: &mut PartitionStore,
     ) -> Result<(), Error> {
-        {
-            let mut invoked_invocations = std::pin::pin!(
-                partition_store
-                    .scan_invoked_invocations()
-                    .map_err(Error::Storage)?
-            );
+        // todo(asoli): If we are asked to migrate to vqueues (or vqueues are enabled).
+        // we must migrate all invoked invocations here (through a wal command).
+        // (blocker to v1.7.0)
 
-            let start = tokio::time::Instant::now();
-            let mut count = 0;
-            while let Some(invoked_invocation) = invoked_invocations.next().await {
-                let InvokedInvocationStatusLite {
-                    invocation_id,
-                    invocation_target,
-                } = invoked_invocation?;
-                invoker_handle
-                    .invoke(invocation_id, invocation_target)
-                    .map_err(Error::Invoker)?;
-                count += 1;
-            }
-            debug!(
-                "Leader partition resumed {} invocations in {:?}",
-                count,
-                start.elapsed(),
-            );
+        let mut invoked_invocations = std::pin::pin!(
+            partition_store
+                .scan_legacy_invoked_invocations()
+                .map_err(Error::Storage)?
+        );
+
+        let start = tokio::time::Instant::now();
+        let mut count = 0;
+        while let Some(invoked_invocation) = invoked_invocations.next().await {
+            let InvokedInvocationStatusLite {
+                invocation_id,
+                invocation_target,
+            } = invoked_invocation?;
+            invoker_handle
+                .invoke(invocation_id, invocation_target)
+                .map_err(Error::Invoker)?;
+            count += 1;
         }
+        debug!(
+            "Leader partition resumed {} invocations in {:?}",
+            count,
+            start.elapsed(),
+        );
 
         Ok(())
     }
