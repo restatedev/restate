@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod migrate_to_locks_table;
+mod migrate_to_scoped_state_table;
 
 use std::num::NonZeroU16;
 use std::sync::Arc;
@@ -134,12 +135,30 @@ impl<'a> MigrationContext<'a> {
 mod tests {
     use restate_clock::ClockUpkeep;
     use restate_rocksdb::RocksDbManager;
-    use restate_types::identifiers::{PartitionId, PartitionKey};
+    use restate_types::identifiers::{PartitionId, PartitionKey, ServiceId, WithPartitionKey};
     use restate_types::partitions::Partition;
+    use std::collections::HashSet;
 
     use crate::PartitionStoreManager;
 
     use super::*;
+
+    pub fn distinct_service_ids(count: usize) -> Vec<ServiceId> {
+        let mut service_ids = Vec::with_capacity(count);
+        let mut partition_keys = HashSet::with_capacity(count);
+
+        for idx in 0..10_000 {
+            let service_id = ServiceId::new(None, "migration-svc", format!("migration-key-{idx}"));
+            if partition_keys.insert(service_id.partition_key()) {
+                service_ids.push(service_id);
+                if service_ids.len() == count {
+                    return service_ids;
+                }
+            }
+        }
+
+        panic!("failed to find distinct service partition keys");
+    }
 
     #[restate_core::test]
     async fn split_returns_independent_sub_contexts() {

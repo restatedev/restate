@@ -30,6 +30,7 @@ use restate_types::partitions::Partition;
 use restate_types::sharding::KeyRange;
 
 use crate::migrations::MigrationContext;
+use crate::migrations::tests::distinct_service_ids;
 use crate::{PartitionStore, PartitionStoreManager};
 
 async fn storage_test_environment() -> PartitionStore {
@@ -44,23 +45,6 @@ async fn storage_test_environment() -> PartitionStore {
         )
         .await
         .expect("DB storage creation succeeds")
-}
-
-fn distinct_service_ids(count: usize) -> Vec<ServiceId> {
-    let mut service_ids = Vec::with_capacity(count);
-    let mut partition_keys = HashSet::with_capacity(count);
-
-    for idx in 0..10_000 {
-        let service_id = ServiceId::new(None, "migration-svc", format!("migration-key-{idx}"));
-        if partition_keys.insert(service_id.partition_key()) {
-            service_ids.push(service_id);
-            if service_ids.len() == count {
-                return service_ids;
-            }
-        }
-    }
-
-    panic!("failed to find distinct service partition keys");
 }
 
 fn lock_name(service_id: &ServiceId) -> LockName {
@@ -128,8 +112,10 @@ async fn migrate_to_locks_table_moves_service_status_locks_to_lock_table() {
         rocksdb.partition_db(),
         rocksdb.partition_key_range(),
     );
-    super::migrate_to_locks_table(&mut ctx).expect("migration should succeed");
-    super::delete_service_status_data(&mut ctx).expect("service status cleanup should succeed");
+    crate::migrations::migrate_to_locks_table::migrate_to_locks_table(&mut ctx)
+        .expect("migration should succeed");
+    crate::migrations::migrate_to_locks_table::delete_service_status_data(&mut ctx)
+        .expect("service status cleanup should succeed");
 
     for service_id in &service_ids {
         assert_eq!(
@@ -221,8 +207,8 @@ async fn migrate_to_locks_table_runs_split_ranges_concurrently_with_shared_conte
         let mut migrations = Vec::with_capacity(contexts.len());
         for mut ctx in contexts {
             migrations.push(scope.spawn(move || {
-                super::migrate_to_locks_table(&mut ctx)?;
-                super::delete_service_status_data(&mut ctx)
+                crate::migrations::migrate_to_locks_table::migrate_to_locks_table(&mut ctx)?;
+                crate::migrations::migrate_to_locks_table::delete_service_status_data(&mut ctx)
             }));
         }
 
