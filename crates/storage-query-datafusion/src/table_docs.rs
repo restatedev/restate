@@ -107,6 +107,9 @@ pub fn sys_invocation_table_docs() -> OwnedTableDocs {
     let columns = vec![
         sys_invocation_status.remove("id").expect("id should exist"),
         sys_invocation_status
+            .remove("vqueue_id")
+            .expect("vqueue_id should exist"),
+        sys_invocation_status
             .remove("target")
             .expect("target should exist"),
         sys_invocation_status
@@ -124,6 +127,9 @@ pub fn sys_invocation_table_docs() -> OwnedTableDocs {
         sys_invocation_status
             .remove("scope")
             .expect("scope should exist"),
+        sys_invocation_status
+            .remove("limit_key")
+            .expect("limit_key should exist"),
         sys_invocation_status
             .remove("idempotency_key")
             .expect("idempotency_key should exist"),
