@@ -69,6 +69,18 @@ pub(crate) fn append_invocation_status_row<'a>(
         row.fmt_id(invocation_id);
     }
 
+    if row.is_vqueue_id_defined()
+        && let Some(vqueue_id) = invocation_status.vqueue_id()
+    {
+        row.fmt_vqueue_id(vqueue_id);
+    }
+
+    if row.is_limit_key_defined()
+        && let Some(limit_key) = invocation_status.limit_key_fmt()
+    {
+        row.fmt_limit_key(limit_key);
+    }
+
     if row.is_idempotency_key_defined()
         && let Some(key) = invocation_status.idempotency_key()?
     {
