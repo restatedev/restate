@@ -300,6 +300,14 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
             return Err(SchemaError::NotFound(deployment_id.to_string()).into());
         };
 
+        // Capture the persisted HTTP auth before consuming existing_deployment.ty;
+        // every HTTP merge arm reapplies it so an update that touches uri,
+        // use_http_11, or additional_headers preserves auth instead of wiping it.
+        let existing_http_auth = match &existing_deployment.ty {
+            DeploymentType::Http { auth, .. } => auth.clone(),
+            DeploymentType::Lambda { .. } => None,
+        };
+
         // Merge with update changes requested
         let (deployment_address, use_http_11) =
             match (update_deployment_address, existing_deployment.ty) {
@@ -310,7 +318,9 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                     }),
                     _,
                 ) => (
-                    DeploymentAddress::Http(HttpDeploymentAddress::new(uri)),
+                    DeploymentAddress::Http(
+                        HttpDeploymentAddress::new(uri).with_auth(existing_http_auth.clone()),
+                    ),
                     use_http_11.unwrap_or(false),
                 ),
                 (
@@ -334,7 +344,9 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                         ..
                     },
                 ) => (
-                    DeploymentAddress::Http(HttpDeploymentAddress::new(address)),
+                    DeploymentAddress::Http(
+                        HttpDeploymentAddress::new(address).with_auth(existing_http_auth.clone()),
+                    ),
                     use_http_11.unwrap_or(http_version == http::Version::HTTP_11),
                 ),
                 (
@@ -376,7 +388,9 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                         ..
                     },
                 ) => (
-                    DeploymentAddress::Http(HttpDeploymentAddress::new(address)),
+                    DeploymentAddress::Http(
+                        HttpDeploymentAddress::new(address).with_auth(existing_http_auth.clone()),
+                    ),
                     http_version == http::Version::HTTP_11,
                 ),
                 (

@@ -20,7 +20,7 @@ use serde::Deserialize;
 use restate_admin_rest_model::deployments::*;
 use restate_admin_rest_model::version::AdminApiVersion;
 use restate_errors::warn_it;
-use restate_types::deployment::{HttpDeploymentAddress, LambdaDeploymentAddress};
+use restate_types::deployment::{HttpAuth, HttpDeploymentAddress, LambdaDeploymentAddress};
 use restate_types::identifiers::{DeploymentId, InvalidLambdaARN, ServiceRevision};
 use restate_types::schema;
 use restate_types::schema::deployment::{Deployment, DeploymentType};
@@ -99,12 +99,16 @@ where
             additional_headers,
             metadata,
             use_http_11,
+            auth,
             ..
         } => {
             validate_uri(&uri)?;
+            if let Some(auth) = &auth {
+                validate_http_auth(&uri, auth, additional_headers.as_ref())?;
+            }
 
             schema::registry::RegisterDeploymentRequest {
-                deployment_address: HttpDeploymentAddress::new(uri).into(),
+                deployment_address: HttpDeploymentAddress::new(uri).with_auth(auth).into(),
                 additional_headers: additional_headers.unwrap_or_default().into(),
                 metadata,
                 use_http_11,
@@ -451,6 +455,7 @@ fn to_deployment_response(
             http_version,
             protocol_type,
             address,
+            auth,
         } => DeploymentResponse::Http {
             id,
             uri: address,
@@ -467,6 +472,7 @@ fn to_deployment_response(
                 .map(|(name, revision)| ServiceNameRevPair { name, revision })
                 .collect(),
             info,
+            auth,
         },
         DeploymentType::Lambda {
             arn,
@@ -511,6 +517,7 @@ fn to_detailed_deployment_response(
             http_version,
             protocol_type,
             address,
+            auth,
         } => DetailedDeploymentResponse::Http {
             id,
             uri: address,
@@ -524,6 +531,7 @@ fn to_detailed_deployment_response(
             sdk_version,
             services,
             info,
+            auth,
         },
         DeploymentType::Lambda {
             arn,
@@ -556,4 +564,172 @@ fn validate_uri(uri: &Uri) -> Result<(), MetaApiError> {
         ));
     }
     Ok(())
+}
+
+/// Validate the per-deployment `auth` field against REQ-VAL-01..02.
+/// Per-field input hygiene (audience whitespace, service-account email
+/// shape) was deliberately dropped: typos surface as Cloud Run 401s at
+/// first invocation with a clearer error than any local regex could
+/// give.
+#[allow(clippy::result_large_err)]
+fn validate_http_auth(
+    uri: &Uri,
+    _auth: &HttpAuth,
+    additional_headers: Option<&restate_serde_util::SerdeableHeaderHashMap>,
+) -> Result<(), MetaApiError> {
+    // REQ-VAL-01: scheme must be https UNLESS host is loopback/private.
+    let scheme_ok = uri
+        .scheme()
+        .map(|s| s.as_str().eq_ignore_ascii_case("https"))
+        .unwrap_or(false);
+    if !scheme_ok && !is_loopback_or_private_host(uri) {
+        return Err(MetaApiError::InvalidField(
+            "auth",
+            format!(
+                "GCP authentication requires an https URI for non-loopback/private hosts; got {uri}"
+            ),
+        ));
+    }
+
+    // REQ-VAL-02: when auth is set, additional_headers may carry either
+    // Authorization OR X-Serverless-Authorization, but not both.
+    if let Some(headers) = additional_headers {
+        let map: std::collections::HashMap<http::HeaderName, http::HeaderValue> =
+            headers.clone().into();
+        let has_auth = map
+            .keys()
+            .any(|k| k.as_str().eq_ignore_ascii_case("authorization"));
+        let has_xserv = map.keys().any(|k| {
+            k.as_str()
+                .eq_ignore_ascii_case("x-serverless-authorization")
+        });
+        if has_auth && has_xserv {
+            return Err(MetaApiError::InvalidField(
+                "additional_headers",
+                "Cannot set both Authorization and X-Serverless-Authorization in \
+                 additional_headers when GCP auth is enabled."
+                    .to_owned(),
+            ));
+        }
+    }
+
+    // Loopback/private host with auth set is allowed by REQ-VAL-01's
+    // exception clause; emit a warning so operators see it in node
+    // logs. Not a numbered requirement, just useful for ops.
+    if is_loopback_or_private_host(uri) {
+        tracing::warn!(
+            uri = %uri,
+            "GCP auth configured for a loopback/private deployment URI; \
+             tokens will still be minted and attached"
+        );
+    }
+
+    Ok(())
+}
+
+fn is_loopback_or_private_host(uri: &Uri) -> bool {
+    let Some(authority) = uri.authority() else {
+        return false;
+    };
+    let host = authority.host();
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    // Strip IPv6 brackets if present.
+    let host_clean = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    if let Ok(ipv4) = host_clean.parse::<std::net::Ipv4Addr>() {
+        return ipv4.is_loopback() || ipv4.is_private();
+    }
+    if let Ok(ipv6) = host_clean.parse::<std::net::Ipv6Addr>() {
+        // Loopback, ULA (fc00::/7), or link-local (fe80::/10).
+        if ipv6.is_loopback() {
+            return true;
+        }
+        let segs = ipv6.segments();
+        let ula = (segs[0] & 0xfe00) == 0xfc00;
+        let ll = (segs[0] & 0xffc0) == 0xfe80;
+        return ula || ll;
+    }
+    false
+}
+
+#[cfg(test)]
+mod gcp_auth_validation_tests {
+    use super::*;
+    use restate_types::deployment::{GoogleIdTokenAuth, HttpAuth};
+
+    fn http_auth() -> HttpAuth {
+        HttpAuth::GoogleIdToken(GoogleIdTokenAuth {
+            impersonate_service_account: None,
+            audience: None,
+        })
+    }
+
+    fn assert_invalid_field(result: Result<(), MetaApiError>, expected_field: &str) {
+        match result {
+            Err(MetaApiError::InvalidField(field, _)) => assert_eq!(field, expected_field),
+            other => panic!("expected InvalidField({expected_field}), got {other:?}"),
+        }
+    }
+
+    // REQ-VAL-01: non-https rejected for public hosts; allowed for loopback/private.
+    #[test]
+    fn req_val_01_rejects_non_https_public_host() {
+        let uri: Uri = "http://example.com/".parse().unwrap();
+        assert_invalid_field(validate_http_auth(&uri, &http_auth(), None), "auth");
+    }
+
+    #[test]
+    fn req_val_01_accepts_https_public_host() {
+        let uri: Uri = "https://svc.example.com/".parse().unwrap();
+        validate_http_auth(&uri, &http_auth(), None).expect("https public host accepted");
+    }
+
+    #[test]
+    fn req_val_01_accepts_non_https_loopback() {
+        for host in ["localhost", "127.0.0.1", "[::1]", "10.0.0.1", "[fc00::1]"] {
+            let uri: Uri = format!("http://{host}/").parse().unwrap();
+            validate_http_auth(&uri, &http_auth(), None)
+                .unwrap_or_else(|e| panic!("expected accept for {host}, got {e:?}"));
+        }
+    }
+
+    // REQ-VAL-02: reject when additional_headers carries BOTH Authorization
+    // AND X-Serverless-Authorization.
+    #[test]
+    fn req_val_02_rejects_dual_authorization_headers() {
+        let uri: Uri = "https://svc.example.com/".parse().unwrap();
+        let mut headers_map = std::collections::HashMap::new();
+        headers_map.insert(
+            http::HeaderName::from_static("authorization"),
+            http::HeaderValue::from_static("Bearer x"),
+        );
+        headers_map.insert(
+            http::HeaderName::from_static("x-serverless-authorization"),
+            http::HeaderValue::from_static("Bearer y"),
+        );
+        let serdeable: restate_serde_util::SerdeableHeaderHashMap = headers_map.into();
+
+        assert_invalid_field(
+            validate_http_auth(&uri, &http_auth(), Some(&serdeable)),
+            "additional_headers",
+        );
+    }
+
+    #[test]
+    fn req_val_02_accepts_single_authorization_header() {
+        let uri: Uri = "https://svc.example.com/".parse().unwrap();
+        let mut headers_map = std::collections::HashMap::new();
+        headers_map.insert(
+            http::HeaderName::from_static("authorization"),
+            http::HeaderValue::from_static("Bearer x"),
+        );
+        let serdeable: restate_serde_util::SerdeableHeaderHashMap = headers_map.into();
+
+        validate_http_auth(&uri, &http_auth(), Some(&serdeable))
+            .expect("single Authorization header is allowed");
+    }
 }

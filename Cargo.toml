@@ -167,6 +167,7 @@ futures-sink = "0.3.31"
 futures-util = "0.3.31"
 gardal = { version = "0.0.1-alpha.9" }
 generic-array = { version = "1.4.1" }
+google-cloud-auth = { version = "1.10", features = ["idtoken"] }
 googletest = { version = "0.10", features = ["anyhow"] }
 hashbrown = { version = "0.16" }
 slotmap = { version = "1" }

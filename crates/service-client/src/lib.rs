@@ -11,6 +11,17 @@
 pub use crate::http::HttpClient;
 use crate::lambda::LambdaClient;
 
+pub use crate::gcp::{GcpAuthError, GcpTokenClient, IdTokenCacheMode, derive_audience};
+
+#[cfg(any(test, feature = "test_util"))]
+impl ServiceClient {
+    /// Test-only accessor for the underlying GCP token client. Lets
+    /// integration tests seed the cache so token mint does not need
+    /// to contact a real metadata server.
+    pub fn gcp_for_test(&self) -> &GcpTokenClient {
+        &self.gcp
+    }
+}
 pub use crate::http::HttpError;
 pub use crate::lambda::AssumeRoleCacheMode;
 use crate::request_identity::SignRequest;
@@ -25,6 +36,7 @@ use hyper::body::Body;
 use hyper::http::uri::PathAndQuery;
 use hyper::{HeaderMap, Response, Uri};
 use restate_types::config::ServiceClientOptions;
+use restate_types::deployment::HttpAuth;
 use restate_types::identifiers::LambdaARN;
 use restate_types::schema::deployment::{Deployment, DeploymentType, EndpointLambdaCompression};
 use std::collections::HashMap;
@@ -32,6 +44,7 @@ use std::error::Error;
 use std::fmt::Formatter;
 use std::sync::Arc;
 
+mod gcp;
 mod http;
 mod lambda;
 pub mod pool;
@@ -47,6 +60,7 @@ pub struct ServiceClient {
     //  See https://github.com/restatedev/restate/issues/76 for more background on the topic.
     http: HttpClient,
     lambda: LambdaClient,
+    gcp: GcpTokenClient,
     // this can be changed to re-read periodically if necessary
     request_identity_key: Arc<ArcSwapOption<request_identity::v1::SigningKey>>,
     additional_request_headers: HashMap<HeaderName, HeaderValue>,
@@ -56,12 +70,14 @@ impl ServiceClient {
     pub(crate) fn new(
         http: HttpClient,
         lambda: LambdaClient,
+        gcp: GcpTokenClient,
         request_identity_key: Arc<ArcSwapOption<request_identity::v1::SigningKey>>,
         additional_request_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Self {
         Self {
             http,
             lambda,
+            gcp,
             request_identity_key,
             additional_request_headers,
         }
@@ -71,6 +87,14 @@ impl ServiceClient {
         options: &ServiceClientOptions,
         assume_role_cache_mode: AssumeRoleCacheMode,
     ) -> Result<Self, BuildError> {
+        // The GCP token-cache mode mirrors the Lambda assume-role-cache mode.
+        // None on admin/discovery dispatch, Unbounded on the worker/invoker
+        // dispatch. AssumeRoleCacheMode is the carrier we already plumb.
+        let gcp_cache_mode = match assume_role_cache_mode {
+            AssumeRoleCacheMode::None => IdTokenCacheMode::None,
+            AssumeRoleCacheMode::Unbounded => IdTokenCacheMode::Unbounded,
+        };
+
         let request_identity_key = if let Some(request_identity_private_key_pem_file) =
             options.request_identity_private_key_pem_file.clone()
         {
@@ -86,6 +110,7 @@ impl ServiceClient {
         Ok(Self::new(
             HttpClient::from_options(&options.http),
             LambdaClient::from_options(&options.lambda, assume_role_cache_mode),
+            GcpTokenClient::new(gcp_cache_mode),
             request_identity_key,
             options
                 .additional_request_headers
@@ -136,20 +161,56 @@ impl ServiceClient {
         );
 
         match parts.address {
-            Endpoint::Http(uri, version) => {
-                let fut = self.http.request(
-                    uri.clone(),
-                    version,
-                    parts.method.into(),
-                    body,
-                    parts.path,
-                    parts.headers,
-                );
+            Endpoint::Http(uri, version, auth) => {
+                let http = self.http.clone();
+                let gcp = self.gcp.clone();
+                let method = parts.method.into();
+                let path = parts.path;
+                let mut headers = parts.headers;
                 async move {
-                    Ok(fut
+                    if let Some(HttpAuth::GoogleIdToken(auth)) = &auth {
+                        let audience = match &auth.audience {
+                            Some(a) => a.to_string(),
+                            None => gcp::derive_audience(&uri)
+                                .map_err(|e| ServiceClientError::GcpAuth(uri.clone(), e))?,
+                        };
+                        let token = gcp
+                            .mint(auth.impersonate_service_account.as_deref(), &audience)
+                            .await
+                            .map_err(|e| ServiceClientError::GcpAuth(uri.clone(), e))?;
+
+                        let bearer = ::http::HeaderValue::try_from(format!("Bearer {token}"))
+                            .map_err(|e| {
+                                ServiceClientError::GcpAuth(
+                                    uri.clone(),
+                                    gcp::GcpAuthError::Mint {
+                                        audience: audience.clone(),
+                                        impersonate: auth
+                                            .impersonate_service_account
+                                            .as_deref()
+                                            .unwrap_or("(ambient)")
+                                            .to_owned(),
+                                        message: format!(
+                                            "minted token cannot be used as an HTTP header value: {e}"
+                                        ),
+                                    },
+                                )
+                            })?;
+                        let conflict = headers.contains_key(::http::header::AUTHORIZATION);
+                        if conflict {
+                            headers.insert(
+                                ::http::HeaderName::from_static("x-serverless-authorization"),
+                                bearer,
+                            );
+                        } else {
+                            headers.insert(::http::header::AUTHORIZATION, bearer);
+                        }
+                    }
+                    let resp = http
+                        .request(uri.clone(), version, method, body, path, headers)
                         .await
-                        .map_err(|e| ServiceClientError::Http(uri, e))?
-                        .map(http_body_util::Either::Left))
+                        .map_err(|e| ServiceClientError::Http(uri, e))?;
+                    Ok(resp.map(http_body_util::Either::Left))
                 }
                 .left_future()
             }
@@ -182,6 +243,8 @@ pub enum ServiceClientError {
     Http(Uri, #[source] http::HttpError),
     #[error("error when calling '{0}': {1}")]
     Lambda(LambdaARN, #[source] lambda::LambdaError),
+    #[error("error minting GCP ID token for '{0}': {1}")]
+    GcpAuth(Uri, #[source] gcp::GcpAuthError),
     #[error(transparent)]
     IdentityV1(#[from] <request_identity::v1::Signer<'static, 'static> as SignRequest>::Error),
 }
@@ -193,6 +256,9 @@ impl ServiceClientError {
         match self {
             ServiceClientError::Http(_, http_error) => http_error.is_retryable(),
             ServiceClientError::Lambda(_, lambda_error) => lambda_error.is_retryable(),
+            // Token-mint failures from GCP are not retried here; the
+            // calling layer owns retry policy (REQ-TOK-05).
+            ServiceClientError::GcpAuth(_, _) => false,
             ServiceClientError::IdentityV1(_) => false, // this really should never happen
         }
     }
@@ -281,8 +347,9 @@ impl Parts {
             DeploymentType::Http {
                 address,
                 http_version,
+                auth,
                 ..
-            } => Endpoint::Http(address, Some(http_version)),
+            } => Endpoint::Http(address, Some(http_version), auth),
         };
 
         headers.extend(deployment.additional_headers);
@@ -293,7 +360,7 @@ impl Parts {
 
 #[derive(Clone, Debug)]
 pub enum Endpoint {
-    Http(Uri, Option<Version>),
+    Http(Uri, Option<Version>, Option<HttpAuth>),
     Lambda(
         LambdaARN,
         Option<ByteString>,
@@ -304,7 +371,7 @@ pub enum Endpoint {
 impl fmt::Display for Endpoint {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Http(uri, _) => uri.fmt(f),
+            Self::Http(uri, _, _) => uri.fmt(f),
             Self::Lambda(arn, _, _) => write!(f, "lambda://{arn}"),
         }
     }

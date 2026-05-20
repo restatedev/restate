@@ -454,8 +454,9 @@ where
             DeploymentType::Http {
                 address,
                 http_version,
+                auth,
                 ..
-            } => Endpoint::Http(address, Some(http_version)),
+            } => Endpoint::Http(address, Some(http_version), auth),
         };
 
         headers.extend(deployment_metadata.additional_headers);

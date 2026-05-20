@@ -29,6 +29,7 @@ bytestring = { workspace = true }
 dashmap = { workspace = true }
 derive_builder = { workspace = true }
 futures = { workspace = true }
+google-cloud-auth = { workspace = true }
 h2 = "0.4.12"
 http = { workspace = true }
 http-body = { workspace = true }

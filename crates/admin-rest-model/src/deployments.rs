@@ -10,6 +10,7 @@
 
 use http::{Uri, Version};
 use restate_serde_util::SerdeableHeaderHashMap;
+use restate_types::deployment::HttpAuth;
 use restate_types::identifiers::ServiceRevision;
 use restate_types::identifiers::{DeploymentId, LambdaARN};
 use restate_types::schema::deployment::{EndpointLambdaCompression, ProtocolType};
@@ -85,6 +86,17 @@ pub enum RegisterDeploymentRequest {
         /// `force` and `breaking` will be respected.
         #[serde(default = "restate_serde_util::default::bool::<false>")]
         dry_run: bool,
+
+        /// # Authentication
+        ///
+        /// Optional per-deployment authentication configuration. When
+        /// set to `GoogleIdToken`, Restate mints a Google-signed OIDC
+        /// ID token for each request and attaches it to the
+        /// `Authorization` header (or `X-Serverless-Authorization` if
+        /// the deployment's `additional_headers` already carries
+        /// `Authorization`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auth: Option<HttpAuth>,
     },
     /// Register Lambda deployment request
     #[cfg_attr(feature = "schema", schema(title = "RegisterLambdaDeploymentRequest"))]
@@ -259,6 +271,12 @@ pub enum DeploymentResponse {
         /// List of configuration/deprecation information related to this deployment.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         info: Vec<SchemaInfo>,
+
+        /// # Authentication
+        ///
+        /// Per-deployment authentication, if configured.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auth: Option<HttpAuth>,
     },
     /// Deployment response for Lambda deployments
     #[cfg_attr(feature = "schema", schema(title = "LambdaDeploymentResponse"))]
@@ -409,6 +427,12 @@ pub enum DetailedDeploymentResponse {
         /// List of configuration/deprecation information related to this deployment.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         info: Vec<SchemaInfo>,
+
+        /// # Authentication
+        ///
+        /// Per-deployment authentication, if configured.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auth: Option<HttpAuth>,
     },
     /// Detailed deployment response for Lambda deployments
     #[cfg_attr(feature = "schema", schema(title = "LambdaDetailedDeploymentResponse"))]
