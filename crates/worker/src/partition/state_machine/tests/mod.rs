@@ -97,7 +97,8 @@ impl TestEnv {
             None, /* outbox_head_seq_number */
             KeyRange::FULL,
             min_restate_version,
-            None, /* schema */
+            PersistedStateMachineFeatures::default(), /* enabled_features */
+            None,                                     /* schema */
             Arc::new(RuleBook::default()),
             RuleBookCacheHandle::detached(),
         ))
@@ -1080,7 +1081,8 @@ async fn truncate_outbox_with_gap() -> Result<(), Error> {
         Some(outbox_head_index),
         KeyRange::FULL,
         SemanticRestateVersion::unknown().clone(),
-        None, /* schema */
+        PersistedStateMachineFeatures::default(), /* enabled_features */
+        None,                                     /* schema */
         Arc::new(RuleBook::default()),
         RuleBookCacheHandle::detached(),
     ))

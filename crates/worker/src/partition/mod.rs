@@ -269,6 +269,7 @@ impl PartitionProcessorBuilder {
         let outbox_seq_number = partition_store.get_outbox_seq_number().await?;
         let outbox_head_seq_number = partition_store.get_outbox_head_seq_number().await?;
         let min_restate_version = partition_store.get_min_restate_version().await?;
+        let enabled_features = partition_store.get_state_machine_features().await?;
         let schema = partition_store.get_schema().await?;
         let rule_book = Arc::new(partition_store.get_rule_book().await?.unwrap_or_default());
 
@@ -296,6 +297,7 @@ impl PartitionProcessorBuilder {
             outbox_head_seq_number,
             partition_store.partition_key_range(),
             min_restate_version,
+            enabled_features,
             schema,
             rule_book,
             rule_book_cache,

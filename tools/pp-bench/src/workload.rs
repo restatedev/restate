@@ -37,7 +37,7 @@ use restate_storage_api::Transaction;
 use restate_types::SemanticRestateVersion;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::{Lsn, SequenceNumber};
-use restate_types::partitions::Partition;
+use restate_types::partitions::{Partition, PersistedStateMachineFeatures};
 use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
 use restate_util_time::FriendlyDuration;
@@ -107,7 +107,8 @@ pub async fn run(
         None, /* outbox_head_seq_number */
         KeyRange::FULL,
         SemanticRestateVersion::unknown(),
-        None, /* schema */
+        PersistedStateMachineFeatures::default(), /* enabled_features */
+        None,                                     /* schema */
         Arc::new(RuleBook::default()),
         RuleBookCacheHandle::detached(),
     );

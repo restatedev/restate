@@ -105,6 +105,7 @@ use restate_types::journal_v2::{
 };
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
+use restate_types::partitions::features::PersistedStateMachineFeatures;
 use restate_types::schema::Schema;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::sharding::KeyRange;
@@ -153,6 +154,10 @@ pub struct StateMachine {
     pub(crate) outbox_head_seq_number: Option<MessageIndex>,
     /// The minimum version of restate server that we currently support
     pub(crate) min_restate_version: SemanticRestateVersion,
+    /// Set of state-machine features currently enabled on this partition.
+    /// Mutated via `VersionBarrierCommand` entries carrying feature changes.
+    /// *Since v1.7.0*
+    pub(crate) enabled_features: PersistedStateMachineFeatures,
     /// Sequence number of the next outbox message to be appended.
     pub(crate) outbox_seq_number: MessageIndex,
     /// Consistent schema
@@ -178,6 +183,7 @@ impl Debug for StateMachine {
             .field("outbox_head_seq_number", &self.outbox_head_seq_number)
             .field("outbox_seq_number", &self.outbox_seq_number)
             .field("min_restate_version", &self.min_restate_version)
+            .field("enabled_features", &self.enabled_features)
             .finish()
     }
 }
@@ -189,6 +195,15 @@ pub enum Error {
         {required_min_version} or higher; reason='{barrier_reason}'"
     )]
     VersionBarrier {
+        required_min_version: SemanticRestateVersion,
+        barrier_reason: String,
+    },
+    /// *Since v1.7.0*
+    #[error(
+        "partition is blocked; restate-server does not recognize feature change IDs {unknown_ids:?}; reason='{barrier_reason}'"
+    )]
+    UnknownFeatureFlags {
+        unknown_ids: Vec<u16>,
         required_min_version: SemanticRestateVersion,
         barrier_reason: String,
     },
@@ -258,6 +273,7 @@ impl StateMachine {
         outbox_head_seq_number: Option<MessageIndex>,
         partition_key_range: KeyRange,
         min_restate_version: SemanticRestateVersion,
+        enabled_features: PersistedStateMachineFeatures,
         schema: Option<Schema>,
         rule_book: Arc<RuleBook>,
         rule_book_cache: RuleBookCacheHandle,
@@ -268,6 +284,7 @@ impl StateMachine {
             outbox_head_seq_number,
             partition_key_range,
             min_restate_version,
+            enabled_features,
             schema,
             rule_book,
             rule_book_cache,
@@ -285,6 +302,7 @@ pub(crate) struct StateMachineApplyContext<'a, S> {
     outbox_seq_number: &'a mut MessageIndex,
     outbox_head_seq_number: &'a mut Option<MessageIndex>,
     min_restate_version: &'a mut SemanticRestateVersion,
+    enabled_features: &'a mut PersistedStateMachineFeatures,
     schema: &'a mut Option<Schema>,
     rule_book: &'a mut Arc<RuleBook>,
     rule_book_cache: &'a RuleBookCacheHandle,
@@ -326,6 +344,7 @@ impl StateMachine {
                 outbox_seq_number: &mut self.outbox_seq_number,
                 outbox_head_seq_number: &mut self.outbox_head_seq_number,
                 min_restate_version: &mut self.min_restate_version,
+                enabled_features: &mut self.enabled_features,
                 vqueues_cache,
                 schema: &mut self.schema,
                 rule_book: &mut self.rule_book,
