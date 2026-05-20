@@ -297,7 +297,7 @@ mod tests {
             )
         }
 
-        fn scan_invoked_invocations(
+        fn scan_legacy_invoked_invocations(
             &self,
         ) -> restate_storage_api::Result<
             impl Stream<Item = restate_storage_api::Result<InvokedInvocationStatusLite>> + Send,

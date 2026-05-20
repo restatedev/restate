@@ -88,6 +88,7 @@ pub mod v1 {
 
     pub mod pb_conversion {
         use std::collections::HashSet;
+        use std::str::FromStr;
 
         use anyhow::anyhow;
         use bytes::{Buf, Bytes};
@@ -107,7 +108,8 @@ pub mod v1 {
         use restate_types::logs::Lsn;
         use restate_types::service_protocol::ServiceProtocolVersion;
         use restate_types::time::MillisSinceEpoch;
-        use restate_types::{GenerationalNodeId, Scope, journal_v2};
+        use restate_types::vqueues::VQueueId;
+        use restate_types::{GenerationalNodeId, LimitKey, Scope, journal_v2};
         use restate_util_string::RestateString;
 
         use super::dedup_sequence_number::Variant;
@@ -399,6 +401,8 @@ pub mod v1 {
             fn try_from(value: InvocationStatusV2) -> Result<Self, ConversionError> {
                 let InvocationStatusV2 {
                     status,
+                    vqueue_id,
+                    limit_key,
                     invocation_target,
                     source,
                     span_context,
@@ -432,6 +436,9 @@ pub mod v1 {
                 } = value;
 
                 let invocation_target = expect_or_fail!(invocation_target)?.try_into()?;
+                let vqueue_id = vqueue_id.map(|buf| VQueueId::from_raw_bytes(&mut buf.as_ref()));
+
+                let limit_key = LimitKey::from_str(&limit_key).expect("valid limit key format");
                 let created_using_restate_version =
                     restate_version_from_pb(created_using_restate_version);
                 let timestamps = crate::invocation_status_table::StatusTimestamps::new(
@@ -486,6 +493,8 @@ pub mod v1 {
                             crate::invocation_status_table::ScheduledInvocation {
                                 metadata:
                                     crate::invocation_status_table::PreFlightInvocationMetadata {
+                                        vqueue_id,
+                                        limit_key,
                                         response_sinks,
                                         timestamps,
                                         invocation_target,
@@ -534,6 +543,8 @@ pub mod v1 {
                                 inbox_sequence_number: expect_or_fail!(inbox_sequence_number)?,
                                 metadata:
                                     crate::invocation_status_table::PreFlightInvocationMetadata {
+                                        vqueue_id,
+                                        limit_key,
                                         response_sinks,
                                         timestamps,
                                         invocation_target,
@@ -557,6 +568,8 @@ pub mod v1 {
                     invocation_status_v2::Status::Invoked => {
                         Ok(crate::invocation_status_table::InvocationStatus::Invoked(
                             crate::invocation_status_table::InFlightInvocationMetadata {
+                                vqueue_id,
+                                limit_key,
                                 response_sinks,
                                 timestamps,
                                 invocation_target,
@@ -597,6 +610,8 @@ pub mod v1 {
                             crate::invocation_status_table::InvocationStatus::Suspended {
                                 metadata:
                                     crate::invocation_status_table::InFlightInvocationMetadata {
+                                        vqueue_id,
+                                        limit_key,
                                         response_sinks,
                                         timestamps,
                                         invocation_target,
@@ -632,6 +647,8 @@ pub mod v1 {
                     invocation_status_v2::Status::Paused => {
                         Ok(crate::invocation_status_table::InvocationStatus::Paused(
                             crate::invocation_status_table::InFlightInvocationMetadata {
+                                vqueue_id,
+                                limit_key,
                                 response_sinks,
                                 timestamps,
                                 invocation_target,
@@ -662,6 +679,8 @@ pub mod v1 {
                     invocation_status_v2::Status::Completed => {
                         Ok(crate::invocation_status_table::InvocationStatus::Completed(
                             crate::invocation_status_table::CompletedInvocation {
+                                vqueue_id,
+                                limit_key,
                                 timestamps,
                                 invocation_target,
                                 created_using_restate_version,
@@ -703,6 +722,8 @@ pub mod v1 {
                             metadata:
                                 crate::invocation_status_table::PreFlightInvocationMetadata {
                                     response_sinks,
+                                    vqueue_id,
+                                    limit_key,
                                     timestamps,
                                     invocation_target,
                                     created_using_restate_version,
@@ -722,6 +743,8 @@ pub mod v1 {
                         },
                     ) => InvocationStatusV2 {
                         status: invocation_status_v2::Status::Scheduled.into(),
+                        vqueue_id: vqueue_id.map(|qid| Bytes::copy_from_slice(qid.as_raw_bytes())),
+                        limit_key: limit_key.to_string(),
                         invocation_target: Some(invocation_target.into()),
                         source: Some(source.into()),
                         span_context: Some(span_context.into()),
@@ -768,6 +791,8 @@ pub mod v1 {
                         crate::invocation_status_table::ScheduledInvocation {
                             metadata:
                                 crate::invocation_status_table::PreFlightInvocationMetadata {
+                                    vqueue_id,
+                                    limit_key,
                                     response_sinks,
                                     timestamps,
                                     invocation_target,
@@ -798,6 +823,9 @@ pub mod v1 {
 
                         InvocationStatusV2 {
                             status: invocation_status_v2::Status::Scheduled.into(),
+                            vqueue_id: vqueue_id
+                                .map(|qid| Bytes::copy_from_slice(qid.as_raw_bytes())),
+                            limit_key: limit_key.to_string(),
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
@@ -848,6 +876,8 @@ pub mod v1 {
                         crate::invocation_status_table::InboxedInvocation {
                             metadata:
                                 crate::invocation_status_table::PreFlightInvocationMetadata {
+                                    vqueue_id,
+                                    limit_key,
                                     response_sinks,
                                     timestamps,
                                     invocation_target,
@@ -869,6 +899,8 @@ pub mod v1 {
                         },
                     ) => InvocationStatusV2 {
                         status: invocation_status_v2::Status::Inboxed.into(),
+                        vqueue_id: vqueue_id.map(|qid| Bytes::copy_from_slice(qid.as_raw_bytes())),
+                        limit_key: limit_key.to_string(),
                         invocation_target: Some(invocation_target.into()),
                         source: Some(source.into()),
                         span_context: Some(span_context.into()),
@@ -915,6 +947,8 @@ pub mod v1 {
                         crate::invocation_status_table::InboxedInvocation {
                             metadata:
                                 crate::invocation_status_table::PreFlightInvocationMetadata {
+                                    vqueue_id,
+                                    limit_key,
                                     response_sinks,
                                     timestamps,
                                     invocation_target,
@@ -945,6 +979,9 @@ pub mod v1 {
                         };
                         InvocationStatusV2 {
                             status: invocation_status_v2::Status::Inboxed.into(),
+                            vqueue_id: vqueue_id
+                                .map(|qid| Bytes::copy_from_slice(qid.as_raw_bytes())),
+                            limit_key: limit_key.to_string(),
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
@@ -993,6 +1030,8 @@ pub mod v1 {
                     }
                     crate::invocation_status_table::InvocationStatus::Invoked(
                         crate::invocation_status_table::InFlightInvocationMetadata {
+                            vqueue_id,
+                            limit_key,
                             invocation_target,
                             created_using_restate_version,
                             journal_metadata,
@@ -1018,6 +1057,9 @@ pub mod v1 {
 
                         InvocationStatusV2 {
                             status: invocation_status_v2::Status::Invoked.into(),
+                            vqueue_id: vqueue_id
+                                .map(|qid| Bytes::copy_from_slice(qid.as_raw_bytes())),
+                            limit_key: limit_key.to_string(),
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
@@ -1067,6 +1109,8 @@ pub mod v1 {
                     crate::invocation_status_table::InvocationStatus::Suspended {
                         metadata:
                             crate::invocation_status_table::InFlightInvocationMetadata {
+                                vqueue_id,
+                                limit_key,
                                 invocation_target,
                                 created_using_restate_version,
                                 journal_metadata,
@@ -1114,6 +1158,9 @@ pub mod v1 {
 
                         InvocationStatusV2 {
                             status: invocation_status_v2::Status::Suspended.into(),
+                            vqueue_id: vqueue_id
+                                .map(|qid| Bytes::copy_from_slice(qid.as_raw_bytes())),
+                            limit_key: limit_key.to_string(),
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
@@ -1162,6 +1209,8 @@ pub mod v1 {
                     }
                     crate::invocation_status_table::InvocationStatus::Paused(
                         crate::invocation_status_table::InFlightInvocationMetadata {
+                            vqueue_id,
+                            limit_key,
                             invocation_target,
                             created_using_restate_version,
                             journal_metadata,
@@ -1187,6 +1236,9 @@ pub mod v1 {
 
                         InvocationStatusV2 {
                             status: invocation_status_v2::Status::Paused.into(),
+                            vqueue_id: vqueue_id
+                                .map(|qid| Bytes::copy_from_slice(qid.as_raw_bytes())),
+                            limit_key: limit_key.to_string(),
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
@@ -1235,6 +1287,8 @@ pub mod v1 {
                     }
                     crate::invocation_status_table::InvocationStatus::Completed(
                         crate::invocation_status_table::CompletedInvocation {
+                            vqueue_id,
+                            limit_key,
                             invocation_target,
                             created_using_restate_version,
                             source,
@@ -1259,6 +1313,9 @@ pub mod v1 {
 
                         InvocationStatusV2 {
                             status: invocation_status_v2::Status::Completed.into(),
+                            vqueue_id: vqueue_id
+                                .map(|qid| Bytes::copy_from_slice(qid.as_raw_bytes())),
+                            limit_key: limit_key.to_string(),
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
@@ -1318,6 +1375,7 @@ pub mod v1 {
                 let InvocationV2Lite {
                     status,
                     invocation_target,
+                    vqueue_id,
                 } = value;
 
                 let invocation_target = expect_or_fail!(invocation_target)?.try_into()?;
@@ -1348,9 +1406,11 @@ pub mod v1 {
                     }
                 };
 
+                let vqueue_id = vqueue_id.map(|buf| VQueueId::from_raw_bytes(&mut buf.as_ref()));
                 Ok(crate::invocation_status_table::InvocationLite {
                     status,
                     invocation_target,
+                    vqueue_id,
                 })
             }
         }

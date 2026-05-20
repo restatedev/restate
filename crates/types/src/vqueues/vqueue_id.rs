@@ -95,6 +95,17 @@ impl VQueueId {
         Self(raw)
     }
 
+    /// The dual of `from_raw_bytes`
+    ///
+    /// The key is encoded as follows:
+    /// - PartitionKey (u64) (big-endian)
+    /// - u8 For the size of the rest of the bytes (to support future evolution) with max 255
+    ///   bytes. and 0 being a special marker to indicate format change.
+    /// - [u8; SIZE]
+    pub fn as_raw_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
     // 25 bytes
     pub const fn serialized_length_fixed() -> usize {
         std::mem::size_of::<PartitionKey>() + 1 + DIGEST_LEN

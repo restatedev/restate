@@ -18,7 +18,7 @@ use metrics::counter;
 use pin_project::pin_project;
 use slotmap::SecondaryMap;
 use tokio::time::Instant;
-use tracing::{info, trace, warn};
+use tracing::{debug, trace, warn};
 
 use restate_limiter::RuleUpdate;
 use restate_storage_api::StorageError;
@@ -88,7 +88,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
             eligible.insert_eligible(handle);
         }
 
-        info!(
+        debug!(
             "Scheduler started. num_vqueues={}, total_running_items={total_running}, total_waiting_items={total_waiting}",
             q.len(),
         );
