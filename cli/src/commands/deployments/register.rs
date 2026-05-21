@@ -60,6 +60,9 @@ pub struct Register {
     /// it as the Authorization Bearer header (or X-Serverless-Authorization
     /// if the deployment's additional headers already carry Authorization).
     /// Implied by --impersonate-service-account and --audience.
+    /// Note: Workload Identity Federation (external_account) and gcloud
+    /// user credentials (authorized_user) cannot mint ID tokens directly
+    /// and must be paired with --impersonate-service-account.
     #[clap(long)]
     id_token: bool,
 
@@ -229,6 +232,19 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     let wants_id_token = discover_opts.id_token
         || discover_opts.impersonate_service_account.is_some()
         || discover_opts.audience.is_some();
+    // Gate the GCP auth flags by the negotiated admin API version. The
+    // server-side `auth` field was introduced alongside admin API V4; on
+    // older servers the field is silently dropped by serde and the user
+    // gets an unauthenticated deployment instead of an error. Refuse to
+    // proceed if the flags are set but the server cannot honour them.
+    if wants_id_token && client.admin_api_version < AdminApiVersion::V4 {
+        bail!(
+            "--id-token, --impersonate-service-account, and --audience require Restate \
+             admin API V4 or later (detected: {:?}). Upgrade the Restate server, or omit \
+             the GCP auth flags.",
+            client.admin_api_version
+        );
+    }
     let auth = if wants_id_token {
         Some(restate_types::deployment::HttpAuth::GoogleIdToken(
             restate_types::deployment::GoogleIdTokenAuth {
