@@ -42,6 +42,13 @@ define_table_key!(
     )
 );
 
+fn any_inbox_entry_in_range<S: StorageAccess>(storage: &mut S, range: KeyRange) -> Result<bool> {
+    storage.get_first_blocking(
+        TableScan::FullScanPartitionKeyRange::<InboxKey>(range),
+        |kv| Ok(kv.is_some()),
+    )
+}
+
 fn peek_inbox<S: StorageAccess>(
     storage: &mut S,
     service_id: &ServiceId,
@@ -97,6 +104,10 @@ impl ReadInboxTable for PartitionStore {
         self.assert_partition_key(service_id)?;
         inbox(self, service_id)
     }
+
+    async fn any_inbox_entry_in_range(&mut self, range: KeyRange) -> Result<bool> {
+        any_inbox_entry_in_range(self, range)
+    }
 }
 
 impl ScanInboxTable for PartitionStore {
@@ -141,6 +152,10 @@ impl ReadInboxTable for PartitionStoreTransaction<'_> {
     ) -> Result<impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send> {
         self.assert_partition_key(service_id)?;
         inbox(self, service_id)
+    }
+
+    async fn any_inbox_entry_in_range(&mut self, range: KeyRange) -> Result<bool> {
+        any_inbox_entry_in_range(self, range)
     }
 }
 

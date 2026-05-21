@@ -713,6 +713,13 @@ mod tests {
         ) -> impl Future<Output = restate_storage_api::Result<InvocationStatus>> + Send {
             ready(Ok(self.status.clone()))
         }
+
+        fn any_non_completed_invocation_in_range(
+            &mut self,
+            _: restate_types::sharding::KeyRange,
+        ) -> impl Future<Output = restate_storage_api::Result<bool>> + Send {
+            ready(Ok(false))
+        }
     }
 
     #[test(restate_core::test)]

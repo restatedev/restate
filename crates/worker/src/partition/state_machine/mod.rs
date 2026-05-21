@@ -37,7 +37,7 @@ use crate::rule_book_cache::RuleBookCacheHandle;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::WriteFsmTable;
-use restate_storage_api::inbox_table::{InboxEntry, WriteInboxTable};
+use restate_storage_api::inbox_table::{InboxEntry, ReadInboxTable, WriteInboxTable};
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, JournalMetadata,
     JournalRetentionPolicy, PreFlightInvocationArgument, PreFlightInvocationInput,
@@ -105,7 +105,7 @@ use restate_types::journal_v2::{
 };
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
-use restate_types::partitions::features::PersistedStateMachineFeatures;
+use restate_types::partitions::features::{PartitionFeatureChange, PersistedStateMachineFeatures};
 use restate_types::schema::Schema;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::sharding::KeyRange;
@@ -240,6 +240,15 @@ pub enum Error {
         unknown_ids: Vec<u16>,
         required_min_version: SemanticRestateVersion,
         barrier_reason: String,
+    },
+    /// *Since v1.7.0*
+    #[error(
+        "partition is blocked; pre-existing in-flight data must be migrated before applying \
+         feature changes {features:?}; consult the Restate documentation for the server version \
+         that supports this migration"
+    )]
+    MigrationRequired {
+        features: Vec<PartitionFeatureChange>,
     },
     #[error("failed to deserialize entry: {0}")]
     Codec(#[from] RawEntryCodecError),
@@ -531,6 +540,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteTimerTable
             + ReadVirtualObjectStatusTable
             + WriteVirtualObjectStatusTable
+            + ReadInboxTable
             + WriteInboxTable
             + ReadStateTable
             + WriteStateTable

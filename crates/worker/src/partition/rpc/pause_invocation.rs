@@ -100,6 +100,15 @@ mod tests {
                 panic!("storage should not be accessed on non-leader");
                 std::future::ready(Ok(InvocationStatus::Free))
             }
+
+            #[allow(unreachable_code)]
+            fn any_non_completed_invocation_in_range(
+                &mut self,
+                _: restate_types::sharding::KeyRange,
+            ) -> impl Future<Output = restate_storage_api::Result<bool>> + Send {
+                panic!("storage should not be accessed on non-leader");
+                std::future::ready(Ok(false))
+            }
         }
 
         let mut storage = NoopStorage;

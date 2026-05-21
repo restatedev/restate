@@ -807,6 +807,15 @@ pub trait ReadInvocationStatusTable {
         &mut self,
         invocation_id: &InvocationId,
     ) -> impl Future<Output = Result<InvocationStatus>> + Send;
+
+    /// Returns `true` as soon as an [`InvocationStatus`] that is not
+    /// [`InvocationStatus::Completed`] is found in `range`. The iterator walks
+    /// entries decoding only the variant discriminator and early-exits on the
+    /// first non-`Completed` hit.
+    fn any_non_completed_invocation_in_range(
+        &mut self,
+        range: KeyRange,
+    ) -> impl Future<Output = Result<bool>> + Send;
 }
 
 #[derive(Debug, Clone)]
