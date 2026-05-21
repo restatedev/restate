@@ -21,6 +21,7 @@ use std::hash::Hash;
 use std::mem::size_of;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use base64::Engine;
 use bytes::Bytes;
@@ -153,8 +154,7 @@ fn deterministic_partition_key(
         .map(partitioner::HashPartitioner::compute_partition_key)
         .or_else(|| {
             idempotency_key.map(|idempotency_key| {
-                // todo: replace this with a flag.
-                if true {
+                if !is_controlled_idempotent_sharding_enabled() {
                     partitioner::HashPartitioner::compute_partition_key(idempotency_key)
                 } else {
                     unscoped_idempotent_service_partition_key(service_name, idempotency_key)
@@ -175,6 +175,16 @@ fn deterministic_partition_key(
 /// partitions and break deduplication. If you ever need to tune the scatter width for
 /// non-idempotent services only, split this into two separate constants first.
 const UNSCOPED_SERVICE_PARTITION_KEY_FANOUT: u8 = 255;
+
+static CONTROLLED_IDEMPOTENT_SHARDING: AtomicBool = AtomicBool::new(false);
+
+fn is_controlled_idempotent_sharding_enabled() -> bool {
+    CONTROLLED_IDEMPOTENT_SHARDING.load(Ordering::Relaxed)
+}
+
+pub fn enable_controlled_idempotent_sharding() {
+    CONTROLLED_IDEMPOTENT_SHARDING.store(true, Ordering::Relaxed)
+}
 
 /// Computes one of the deterministic partition keys assigned to an unscoped service.
 ///
