@@ -485,16 +485,22 @@ impl Node {
                     config.common.cluster_name()
                 );
             } else {
+                let mut default_features = ClusterFeature::default_features();
+                if config.common.disable_unscoped_idempotent_service_bucketing {
+                    default_features -= ClusterFeature::UnscopedIdempotentServiceBucketing
+                }
+
                 TaskCenter::spawn(TaskKind::SystemBoot, "auto-provision-cluster", {
                     let cluster_configuration = ClusterConfiguration::from_configuration(&config);
                     let metadata_writer = metadata_writer.clone();
                     let common_opts = config.common.clone();
+
                     async move {
                         let response = provision_cluster_metadata(
                             &metadata_writer,
                             &common_opts,
                             &cluster_configuration,
-                            ClusterFeature::default_features(),
+                            default_features,
                         )
                         .await;
 
@@ -536,6 +542,15 @@ impl Node {
         .await
             .context("Giving up trying to initialize the node. Make sure that it can reach the metadata store and don't forget to provision the cluster on a fresh start")?
             .context("Failed initializing the node")?;
+
+        if metadata
+            .nodes_config_ref()
+            .features()
+            .contains(ClusterFeature::UnscopedIdempotentServiceBucketing)
+        {
+            debug!("Globally enable unscoped idempotent service bucketing");
+            restate_types::identifiers::enable_unscoped_idempotent_service_bucketing();
+        }
 
         self.failure_detector
             .start(self.updateable_config.clone().map(|c| &c.common.gossip))?;

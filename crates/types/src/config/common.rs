@@ -484,6 +484,15 @@ pub struct CommonOptions {
 
     #[serde(flatten)]
     pub experimental: Experimental,
+
+    /// # Explicitly disable the `unscoped-idempotent-service-bucketing`
+    ///
+    /// TODO: Removed in Restate v1.8. This is a stopgap solution to
+    /// fix e2e forward compatibility tests.
+    ///
+    /// Since v1.7
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disable_unscoped_idempotent_service_bucketing: bool,
 }
 
 /// Declares the [`Experimental`] feature-flag struct from a list of feature names.
@@ -825,6 +834,7 @@ impl Default for CommonOptions {
             gossip: GossipOptions::default(),
             hlc_max_drift: FriendlyDuration::from_millis(5000),
             experimental: Experimental::default(),
+            disable_unscoped_idempotent_service_bucketing: false,
         }
     }
 }
