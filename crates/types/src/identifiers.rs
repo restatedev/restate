@@ -21,6 +21,7 @@ use std::hash::Hash;
 use std::mem::size_of;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use base64::Engine;
 use bytes::Bytes;
@@ -153,8 +154,7 @@ fn deterministic_partition_key(
         .map(partitioner::HashPartitioner::compute_partition_key)
         .or_else(|| {
             idempotency_key.map(|idempotency_key| {
-                // todo: replace this with a flag.
-                if true {
+                if !is_unscoped_idempotent_service_bucketing_enabled() {
                     partitioner::HashPartitioner::compute_partition_key(idempotency_key)
                 } else {
                     unscoped_idempotent_service_partition_key(service_name, idempotency_key)
@@ -177,6 +177,16 @@ const UNSCOPED_SERVICE_PARTITION_KEY_FANOUT: u8 = 255;
 /// immutable once set: changing it would re-shard idempotent invocations onto
 /// different partitions, breaking deduplication.
 const UNSCOPED_IDEMPOTENT_SERVICE_PARTITION_KEY_FANOUT: u8 = 255;
+
+static UNSCOPED_IDEMPOTENT_SERVICE_BUCKETING: AtomicBool = AtomicBool::new(false);
+
+fn is_unscoped_idempotent_service_bucketing_enabled() -> bool {
+    UNSCOPED_IDEMPOTENT_SERVICE_BUCKETING.load(Ordering::Relaxed)
+}
+
+pub fn enable_unscoped_idempotent_service_bucketing() {
+    UNSCOPED_IDEMPOTENT_SERVICE_BUCKETING.store(true, Ordering::Relaxed)
+}
 
 /// Computes one of the deterministic partition keys assigned to an unscoped service.
 ///
