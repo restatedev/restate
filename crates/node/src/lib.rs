@@ -19,6 +19,7 @@ mod roles;
 use std::time::Duration;
 
 use anyhow::Context;
+use enumset::EnumSet;
 use prost_dto::IntoProst;
 use std::sync::Arc;
 use tracing::{debug, info, trace, warn};
@@ -57,7 +58,9 @@ use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfigurati
 use restate_types::logs::{self, RecordCache};
 use restate_types::metadata::{GlobalMetadata, Precondition};
 use restate_types::net::listener::AddressBook;
-use restate_types::nodes_config::{ClusterFingerprint, NodeConfig, NodesConfiguration, Role};
+use restate_types::nodes_config::{
+    ClusterFeature, ClusterFingerprint, NodeConfig, NodesConfiguration, Role,
+};
 use restate_types::partition_table::{PartitionReplication, PartitionTable, PartitionTableBuilder};
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::{
@@ -482,15 +485,22 @@ impl Node {
                     config.common.cluster_name()
                 );
             } else {
+                let mut default_features = ClusterFeature::default_features();
+                if config.common.disable_controlled_idempotent_sharding {
+                    default_features -= ClusterFeature::ControlledIdempotentSharding
+                }
+
                 TaskCenter::spawn(TaskKind::SystemBoot, "auto-provision-cluster", {
                     let cluster_configuration = ClusterConfiguration::from_configuration(&config);
                     let metadata_writer = metadata_writer.clone();
                     let common_opts = config.common.clone();
+
                     async move {
                         let response = provision_cluster_metadata(
                             &metadata_writer,
                             &common_opts,
                             &cluster_configuration,
+                            default_features,
                         )
                         .await;
 
@@ -532,6 +542,16 @@ impl Node {
         .await
             .context("Giving up trying to initialize the node. Make sure that it can reach the metadata store and don't forget to provision the cluster on a fresh start")?
             .context("Failed initializing the node")?;
+
+        if metadata
+            .nodes_config_ref()
+            .features()
+            .contains(ClusterFeature::ControlledIdempotentSharding)
+        {
+            restate_types::identifiers::enable_controlled_idempotent_sharding();
+        } else {
+            debug!("Feature `controlled-idempotent-sharding` is disabled");
+        }
 
         self.failure_detector
             .start(self.updateable_config.clone().map(|c| &c.common.gossip))?;
@@ -713,9 +733,10 @@ async fn provision_cluster_metadata(
     metadata_writer: &MetadataWriter,
     common_opts: &CommonOptions,
     cluster_configuration: &ClusterConfiguration,
+    features: EnumSet<ClusterFeature>,
 ) -> anyhow::Result<bool> {
     let (initial_nodes_configuration, initial_partition_table, initial_logs) =
-        generate_initial_metadata(common_opts, cluster_configuration);
+        generate_initial_metadata(common_opts, cluster_configuration, features);
 
     let result = retry_on_retryable_error(common_opts.network_error_retry_policy.clone(), || {
         metadata_writer
@@ -747,12 +768,16 @@ async fn provision_cluster_metadata(
     Ok(result)
 }
 
-fn create_initial_nodes_configuration(common_opts: &CommonOptions) -> NodesConfiguration {
+fn create_initial_nodes_configuration(
+    common_opts: &CommonOptions,
+    features: EnumSet<ClusterFeature>,
+) -> NodesConfiguration {
     let mut initial_nodes_configuration = NodesConfiguration::new(
         Version::MIN,
         common_opts.cluster_name().to_owned(),
         ClusterFingerprint::generate(),
     );
+    initial_nodes_configuration.set_features(features);
     let my_advertised_address =
         TaskCenter::with_current(|tc| common_opts.advertised_address(tc.address_book()));
 
@@ -776,6 +801,7 @@ fn create_initial_nodes_configuration(common_opts: &CommonOptions) -> NodesConfi
 fn generate_initial_metadata(
     common_opts: &CommonOptions,
     cluster_configuration: &ClusterConfiguration,
+    features: EnumSet<ClusterFeature>,
 ) -> (NodesConfiguration, PartitionTable, Logs) {
     let mut initial_partition_table_builder = PartitionTableBuilder::default();
     initial_partition_table_builder
@@ -789,7 +815,7 @@ fn generate_initial_metadata(
         cluster_configuration.bifrost_provider.clone(),
     ));
 
-    let initial_nodes_configuration = create_initial_nodes_configuration(common_opts);
+    let initial_nodes_configuration = create_initial_nodes_configuration(common_opts, features);
 
     (
         initial_nodes_configuration,

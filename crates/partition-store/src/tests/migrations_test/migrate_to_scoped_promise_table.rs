@@ -79,6 +79,7 @@ async fn migrate_to_scoped_promise_table_moves_unscoped_promises_to_scoped_table
             .expect("promise write should succeed");
     }
     txn.commit().await.expect("commit should succeed");
+    drop(txn);
 
     let config = Configuration::default();
     let mut ctx = MigrationContext::new(
