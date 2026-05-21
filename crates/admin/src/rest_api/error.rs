@@ -401,25 +401,3 @@ impl From<HttpAuthValidationError> for MetaApiError {
         MetaApiError::InvalidField(value.field(), value.message().to_owned())
     }
 }
-
-pub(crate) struct GenericRestError {
-    status_code: StatusCode,
-    error_message: String,
-}
-
-impl GenericRestError {
-    pub fn new(status_code: StatusCode, error_message: impl Into<String>) -> Self {
-        Self {
-            status_code,
-            error_message: error_message.into(),
-        }
-    }
-}
-
-impl IntoResponse for GenericRestError {
-    fn into_response(self) -> Response {
-        (self.status_code, self.error_message).into_response()
-    }
-}
-
-// ToResponses removed - errors listed explicitly in handler annotations
