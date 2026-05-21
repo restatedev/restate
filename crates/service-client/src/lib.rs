@@ -43,8 +43,6 @@ pub type ResponseBody = http_body_util::Either<http::ResponseBody, Full<Bytes>>;
 
 #[derive(Clone)]
 pub struct ServiceClient {
-    // TODO a single client uses the pooling provided by hyper, but this is not enough.
-    //  See https://github.com/restatedev/restate/issues/76 for more background on the topic.
     http: HttpClient,
     lambda: LambdaClient,
     // this can be changed to re-read periodically if necessary
