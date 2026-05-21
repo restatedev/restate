@@ -148,6 +148,13 @@ pub(crate) trait StateMachineFeatures {
     ///
     /// *Since v1.7.0*
     fn is_vqueues_enabled(&self) -> bool;
+
+    /// Whether new invocations should persist a unique random seed
+    /// (invocation_id + record_created_at entropy). When off, SDKs derive the
+    /// seed from `InvocationId::to_random_seed()` at invoke time.
+    ///
+    /// *Since v1.7.0*
+    fn is_unique_random_seeds_enabled(&self) -> bool;
 }
 
 impl<T: StateMachineFeatures> StateMachineFeatures for &T {
@@ -157,6 +164,10 @@ impl<T: StateMachineFeatures> StateMachineFeatures for &T {
 
     fn is_vqueues_enabled(&self) -> bool {
         (*self).is_vqueues_enabled()
+    }
+
+    fn is_unique_random_seeds_enabled(&self) -> bool {
+        (*self).is_unique_random_seeds_enabled()
     }
 }
 
@@ -168,6 +179,10 @@ impl StateMachineFeatures for StateMachine {
     fn is_vqueues_enabled(&self) -> bool {
         self.enabled_features.vqueues
     }
+
+    fn is_unique_random_seeds_enabled(&self) -> bool {
+        self.enabled_features.unique_random_seeds
+    }
 }
 
 impl<S> StateMachineFeatures for StateMachineApplyContext<'_, S> {
@@ -177,6 +192,10 @@ impl<S> StateMachineFeatures for StateMachineApplyContext<'_, S> {
 
     fn is_vqueues_enabled(&self) -> bool {
         self.enabled_features.vqueues
+    }
+
+    fn is_unique_random_seeds_enabled(&self) -> bool {
+        self.enabled_features.unique_random_seeds
     }
 }
 
@@ -994,15 +1013,9 @@ impl<S> StateMachineApplyContext<'_, S> {
             "limit_key set without scope — this should have been rejected at the ingress"
         );
 
-        // Write down the random seed only if min restate version is 1.8
-        let random_seed = if self
-            .min_restate_version
-            .is_equal_or_newer_than(&RESTATE_VERSION_1_8_0)
-        {
-            Some(invocation_id.to_random_seed_with_entropy(self.record_created_at.as_u64()))
-        } else {
-            None
-        };
+        let random_seed = self
+            .is_unique_random_seeds_enabled()
+            .then(|| invocation_id.to_random_seed_with_entropy(self.record_created_at.as_u64()));
 
         // Prepare PreFlightInvocationMetadata structure
         let submit_notification_sink = service_invocation.submit_notification_sink.take();

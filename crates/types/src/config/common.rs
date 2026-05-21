@@ -598,6 +598,13 @@ experimental! {
     /// Once enabled, you **cannot** rollback back to previous versions
     /// where v7 is not supported < v1.7
     protocol_v7,
+
+    /// # Enables unique random seeds
+    ///
+    /// When enabled, invocations get a unique random seed assigned.
+    ///
+    /// Since v1.7.0
+    unique_random_seeds,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
