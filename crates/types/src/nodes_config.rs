@@ -145,6 +145,27 @@ pub enum Role {
     MetadataServer,
 }
 
+#[derive(
+    Debug, Hash, EnumSetType, Ord, PartialOrd, strum::Display, serde::Serialize, serde::Deserialize,
+)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[enumset(serialize_repr = "list")]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+#[cfg_attr(feature = "clap", clap(rename_all = "kebab-case"))]
+pub enum ClusterFeature {
+    #[cfg_attr(feature = "clap", clap(skip))]
+    Unknown,
+    UnscopedIdempotentServiceBucketing,
+}
+
+impl ClusterFeature {
+    pub fn default_features() -> EnumSet<Self> {
+        enumset::enum_set!(Self::UnscopedIdempotentServiceBucketing)
+    }
+}
+
 #[serde_as]
 #[derive(derive_more::Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NodesConfiguration {
@@ -162,6 +183,10 @@ pub struct NodesConfiguration {
     // The last modification time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     modified_at: Option<UniqueTimestamp>,
+    // A set of enabled cluster wide features.
+    // Those features can be only enabled during cluster provisioning
+    #[serde(default)]
+    features: EnumSet<ClusterFeature>,
 }
 
 impl Default for NodesConfiguration {
@@ -173,6 +198,7 @@ impl Default for NodesConfiguration {
             nodes: Default::default(),
             name_lookup: Default::default(),
             modified_at: None,
+            features: EnumSet::empty(),
         }
     }
 }
@@ -270,6 +296,7 @@ impl NodesConfiguration {
             modified_at: Some(UniqueTimestamp::from_unix_millis_unchecked(
                 WallClock::now_ms(),
             )),
+            features: EnumSet::empty(),
         }
     }
 
@@ -284,6 +311,7 @@ impl NodesConfiguration {
             modified_at: Some(UniqueTimestamp::from_unix_millis_unchecked(
                 WallClock::now_ms(),
             )),
+            features: EnumSet::empty(),
         }
     }
 
@@ -308,6 +336,14 @@ impl NodesConfiguration {
 
     pub fn cluster_name(&self) -> &str {
         &self.cluster_name
+    }
+
+    pub fn features(&self) -> EnumSet<ClusterFeature> {
+        self.features
+    }
+
+    pub fn set_features(&mut self, features: EnumSet<ClusterFeature>) {
+        self.features &= features;
     }
 
     pub fn increment_version(&mut self) {

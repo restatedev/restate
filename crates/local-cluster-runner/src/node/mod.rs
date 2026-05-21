@@ -59,7 +59,7 @@ use restate_types::logs::metadata::ProviderConfiguration;
 use restate_types::net::address::{
     AdminPort, AdvertisedAddress, FabricPort, HttpIngressPort, ListenerPort, PeerNetAddress,
 };
-use restate_types::nodes_config::MetadataServerState;
+use restate_types::nodes_config::{ClusterFeature, MetadataServerState};
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::replication::ReplicationProperty;
 use restate_types::retries::RetryPolicy;
@@ -855,6 +855,7 @@ impl StartedNode {
         num_partitions: Option<NonZeroU16>,
         partition_replication: ReplicationProperty,
         provider_configuration: Option<ProviderConfiguration>,
+        features: EnumSet<ClusterFeature>,
     ) -> anyhow::Result<bool> {
         let channel = create_tonic_channel(
             self.advertised_address().clone(),
@@ -878,6 +879,10 @@ impl StartedNode {
                     .target_nodeset_size()
                     .map(|nodeset_size| nodeset_size.as_u32())
             }),
+            features: features
+                .iter()
+                .map(|f| restate_core::protobuf::node_ctl_svc::ClusterFeature::from(f) as i32)
+                .collect(),
         };
 
         let retry_policy = RetryPolicy::exponential(
