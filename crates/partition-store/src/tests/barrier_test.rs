@@ -58,6 +58,7 @@ async fn barrier_fsm() -> googletest::Result<()> {
 
     // commit.
     txn.commit().await?;
+    drop(txn);
 
     // did it persist?
     let current_min = partition_store.get_min_restate_version().await?;
