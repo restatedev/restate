@@ -36,11 +36,13 @@ use restate_core::Metadata;
 use restate_types::nodes_config::ClusterFeature;
 use serde::Deserialize;
 
+use restate_core::Metadata;
 use restate_types::Scope;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{IdempotencyId, ServiceId};
 use restate_types::invocation::InvocationQuery;
 use restate_types::live::Live;
+use restate_types::nodes_config::ClusterFeature;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 use restate_util_string::{ReString, RestrictedValue};

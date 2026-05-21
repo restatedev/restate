@@ -20,6 +20,7 @@ use serde::de::IntoDeserializer;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tracing::{Instrument, debug, trace, trace_span};
+use ulid::Ulid;
 
 use restate_types::Scope;
 use restate_types::config::Configuration;
