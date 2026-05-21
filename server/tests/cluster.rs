@@ -82,6 +82,7 @@ async fn replicated_loglet() -> googletest::Result<()> {
             None,
             ReplicationProperty::new_unchecked(3),
             Some(ProviderConfiguration::Replicated(replicated_loglet_config)),
+            EnumSet::empty(),
         )
         .await
         .into_test_result()?;
@@ -135,6 +136,7 @@ async fn cluster_chaos_test() -> googletest::Result<()> {
             None,
             ReplicationProperty::new_unchecked(3),
             Some(ProviderConfiguration::Replicated(replicated_loglet_config)),
+            EnumSet::empty(),
         )
         .await
         .into_test_result()?;

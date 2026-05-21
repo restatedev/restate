@@ -145,6 +145,43 @@ pub enum Role {
     MetadataServer,
 }
 
+#[derive(
+    Debug, Hash, EnumSetType, Ord, PartialOrd, strum::Display, serde::Serialize, serde::Deserialize,
+)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[enumset(serialize_repr = "list")]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+#[cfg_attr(feature = "clap", clap(rename_all = "kebab-case"))]
+pub enum ClusterFeature {
+    #[cfg_attr(feature = "clap", clap(skip))]
+    Unknown,
+    /// Confines idempotent invocations on unscoped services to a bounded, per-service
+    /// set of partition-key buckets instead of hashing the idempotency key over the
+    /// full partition-key space.
+    ///
+    /// When disabled, the partition key for an idempotent invocation is derived by
+    /// hashing the idempotency key directly, spreading invocations across all
+    /// partitions. When enabled, each unscoped service is assigned a deterministic
+    /// set of partition-key buckets, and an idempotent invocation is routed to
+    /// one bucket selected by its idempotency key — colocating a service's
+    /// idempotent traffic on a small, predictable subset of partitions.
+    ///
+    /// This is a one-way, cluster-wide decision: once idempotent invocations have
+    /// been accepted under a given sharding scheme, switching schemes would
+    /// re-shard them onto different partitions and break deduplication. For that
+    /// reason this flag is persisted in [`NodesConfiguration`] at provisioning
+    /// time and cannot be toggled afterward.
+    ControlledIdempotentSharding,
+}
+
+impl ClusterFeature {
+    pub fn default_features() -> EnumSet<Self> {
+        enumset::enum_set!(Self::ControlledIdempotentSharding)
+    }
+}
+
 #[serde_as]
 #[derive(derive_more::Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NodesConfiguration {
@@ -162,6 +199,10 @@ pub struct NodesConfiguration {
     // The last modification time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     modified_at: Option<UniqueTimestamp>,
+    // A set of enabled cluster wide features.
+    // Those features can be only enabled during cluster provisioning
+    #[serde(default)]
+    features: EnumSet<ClusterFeature>,
 }
 
 impl Default for NodesConfiguration {
@@ -173,6 +214,7 @@ impl Default for NodesConfiguration {
             nodes: Default::default(),
             name_lookup: Default::default(),
             modified_at: None,
+            features: EnumSet::empty(),
         }
     }
 }
@@ -270,6 +312,7 @@ impl NodesConfiguration {
             modified_at: Some(UniqueTimestamp::from_unix_millis_unchecked(
                 WallClock::now_ms(),
             )),
+            features: EnumSet::empty(),
         }
     }
 
@@ -284,6 +327,7 @@ impl NodesConfiguration {
             modified_at: Some(UniqueTimestamp::from_unix_millis_unchecked(
                 WallClock::now_ms(),
             )),
+            features: EnumSet::empty(),
         }
     }
 
@@ -308,6 +352,14 @@ impl NodesConfiguration {
 
     pub fn cluster_name(&self) -> &str {
         &self.cluster_name
+    }
+
+    pub fn features(&self) -> EnumSet<ClusterFeature> {
+        self.features
+    }
+
+    pub fn set_features(&mut self, features: EnumSet<ClusterFeature>) {
+        self.features |= features;
     }
 
     pub fn increment_version(&mut self) {
