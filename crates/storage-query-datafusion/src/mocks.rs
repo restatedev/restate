@@ -205,7 +205,7 @@ impl MockQueryEngine {
     ) -> Self {
         // Prepare Rocksdb
         RocksDbManager::init();
-        let manager = PartitionStoreManager::create()
+        let manager = PartitionStoreManager::create(true)
             .await
             .expect("DB creation succeeds");
         let partition_store = manager

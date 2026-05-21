@@ -31,7 +31,7 @@ use crate::state_table::{ScopedStateKey, StateKey};
 #[restate_core::test]
 async fn migrate_to_scoped_state_table_moves_unscoped_state_to_scoped_table() {
     RocksDbManager::init();
-    let manager = PartitionStoreManager::create()
+    let manager = PartitionStoreManager::create(true)
         .await
         .expect("DB storage creation succeeds");
     let mut rocksdb = manager

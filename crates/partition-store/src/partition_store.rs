@@ -1331,7 +1331,7 @@ mod tests {
     #[restate_core::test]
     async fn concurrent_writes_and_reads() -> googletest::Result<()> {
         let rocksdb = RocksDbManager::init();
-        let partition_store_manager = PartitionStoreManager::create().await?;
+        let partition_store_manager = PartitionStoreManager::create(true).await?;
         let mut partition_store = partition_store_manager
             .open(
                 &Partition::new(
