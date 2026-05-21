@@ -314,8 +314,21 @@ panic = "unwind"
 inherits = "release"
 debug = true
 
+# Iteration profile for perf experiments: same opt-level as release, but trades
+# ThinLTO and single-codegen-unit (which dominate link time) for faster rebuilds.
+# Use `release-debug` for final measurements.
+[profile.release-lite]
+inherits = "release"
+lto = "off"
+codegen-units = 256
+split-debuginfo = "unpacked"
+debug = true
+
 [profile.dev]
 panic = "unwind"
+
+[profile.release-lite.package."*"]
+debug = "line-tables-only"
 
 # Reduce debug info for third-party dependencies to speed up linking.
 # Keeps full debuginfo for workspace crates (useful for debugging our code)
