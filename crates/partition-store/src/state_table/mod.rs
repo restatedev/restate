@@ -560,7 +560,10 @@ impl<DB: DBAccess + Send> Stream for BudgetedStateStream<'_, DB> {
                     *this.pending_deficit = 0;
                     this.notified.set(None);
                     // Fall through to try_produce_next below.
-                } else if let Err(oom) = this.budget.check_out_of_memory(deficit, *this.pinned) {
+                } else if let Err(oom) = this
+                    .budget
+                    .check_out_of_memory(deficit, *this.pinned + this.lease.size())
+                {
                     *this.pending_deficit = 0;
                     this.notified.set(None);
                     return Poll::Ready(Some(Err(oom.into())));
