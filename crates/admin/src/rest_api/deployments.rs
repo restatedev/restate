@@ -354,6 +354,31 @@ where
                 validate_uri(uri)?;
             }
 
+            // Re-validate the auth invariants against the post-merge
+            // (uri, additional_headers) tuple. PATCH preserves the
+            // persisted auth (see schema::registry::update_deployment);
+            // a PATCH that changes the URI to http:// or adds an
+            // X-Serverless-Authorization header must be rejected just
+            // like the equivalent register call would be.
+            let existing_deployment = state
+                .schema_registry
+                .get_deployment(deployment_id)
+                .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
+            if let DeploymentType::Http {
+                address: existing_uri,
+                auth: Some(existing_auth),
+                ..
+            } = &existing_deployment.ty
+            {
+                let (effective_uri, effective_headers) = effective_http_patch_inputs(
+                    uri.as_ref(),
+                    additional_headers.as_ref(),
+                    existing_uri,
+                    &existing_deployment.additional_headers,
+                );
+                validate_http_auth(effective_uri, existing_auth, Some(&effective_headers))?;
+            }
+
             (
                 if uri.is_none() && use_http_11.is_none() {
                     None
@@ -566,7 +591,30 @@ fn validate_uri(uri: &Uri) -> Result<(), MetaApiError> {
     Ok(())
 }
 
+/// Compute the post-merge (uri, additional_headers) tuple a PATCH would
+/// produce so it can be fed back into `validate_http_auth`. Mirrors the
+/// merge in `schema::registry::update_deployment`: a missing field on
+/// the PATCH inherits from the persisted record.
+fn effective_http_patch_inputs<'a>(
+    patch_uri: Option<&'a Uri>,
+    patch_headers: Option<&'a restate_serde_util::SerdeableHeaderHashMap>,
+    existing_uri: &'a Uri,
+    existing_headers: &std::collections::HashMap<http::HeaderName, http::HeaderValue>,
+) -> (&'a Uri, restate_serde_util::SerdeableHeaderHashMap) {
+    let effective_uri = patch_uri.unwrap_or(existing_uri);
+    let effective_headers = match patch_headers {
+        Some(h) => h.clone(),
+        None => existing_headers.clone().into(),
+    };
+    (effective_uri, effective_headers)
+}
+
 /// Validate the per-deployment `auth` field against REQ-VAL-01..02.
+/// REQ-VAL-01 enforces the https-or-loopback scheme constraint;
+/// REQ-VAL-02 rejects a user-supplied `X-Serverless-Authorization`
+/// header because the dispatch path uses that header as the fallback
+/// slot for the minted ID token and a static value there would shadow
+/// the mint.
 /// Per-field input hygiene (audience whitespace, service-account email
 /// shape) was deliberately dropped: typos surface as Cloud Run 401s at
 /// first invocation with a clearer error than any local regex could
@@ -591,23 +639,27 @@ fn validate_http_auth(
         ));
     }
 
-    // REQ-VAL-02: when auth is set, additional_headers may carry either
-    // Authorization OR X-Serverless-Authorization, but not both.
+    // REQ-VAL-02: when auth is set, the minted token is placed on
+    // Authorization, falling back to X-Serverless-Authorization only when
+    // the deployment's additional_headers already supply Authorization.
+    // To prevent a user-supplied X-Serverless-Authorization from shadowing
+    // the minted token (Cloud Run prefers X-Serverless-Authorization when
+    // both are present), reject both headers up front. Operators that need
+    // a static bearer must put it on Authorization only; the minted token
+    // is then dispatched to X-Serverless-Authorization.
     if let Some(headers) = additional_headers {
         let map: std::collections::HashMap<http::HeaderName, http::HeaderValue> =
             headers.clone().into();
-        let has_auth = map
-            .keys()
-            .any(|k| k.as_str().eq_ignore_ascii_case("authorization"));
         let has_xserv = map.keys().any(|k| {
             k.as_str()
                 .eq_ignore_ascii_case("x-serverless-authorization")
         });
-        if has_auth && has_xserv {
+        if has_xserv {
             return Err(MetaApiError::InvalidField(
                 "additional_headers",
-                "Cannot set both Authorization and X-Serverless-Authorization in \
-                 additional_headers when GCP auth is enabled."
+                "X-Serverless-Authorization in additional_headers is not allowed when \
+                 GCP auth is enabled; the minted ID token uses this header and would be \
+                 shadowed. Place any static bearer on Authorization instead."
                     .to_owned(),
             ));
         }
@@ -697,10 +749,30 @@ mod gcp_auth_validation_tests {
         }
     }
 
-    // REQ-VAL-02: reject when additional_headers carries BOTH Authorization
-    // AND X-Serverless-Authorization.
+    // REQ-VAL-02: reject any user-supplied X-Serverless-Authorization
+    // header. The dispatch path uses this header as the fallback slot for
+    // the minted ID token; a static value there would shadow the mint and
+    // Cloud Run prefers X-Serverless-Authorization when both are present.
     #[test]
-    fn req_val_02_rejects_dual_authorization_headers() {
+    fn req_val_02_rejects_x_serverless_authorization_header() {
+        let uri: Uri = "https://svc.example.com/".parse().unwrap();
+        let mut headers_map = std::collections::HashMap::new();
+        headers_map.insert(
+            http::HeaderName::from_static("x-serverless-authorization"),
+            http::HeaderValue::from_static("Bearer y"),
+        );
+        let serdeable: restate_serde_util::SerdeableHeaderHashMap = headers_map.into();
+
+        assert_invalid_field(
+            validate_http_auth(&uri, &http_auth(), Some(&serdeable)),
+            "additional_headers",
+        );
+    }
+
+    // Same rejection applies when both headers are supplied: the
+    // X-Serverless-Authorization slot is reserved for the minted token.
+    #[test]
+    fn req_val_02_rejects_x_serverless_authorization_alongside_authorization() {
         let uri: Uri = "https://svc.example.com/".parse().unwrap();
         let mut headers_map = std::collections::HashMap::new();
         headers_map.insert(
@@ -731,5 +803,67 @@ mod gcp_auth_validation_tests {
 
         validate_http_auth(&uri, &http_auth(), Some(&serdeable))
             .expect("single Authorization header is allowed");
+    }
+
+    // PATCH-side regression: the helper `effective_http_patch_inputs`
+    // must reproduce the merge the schema registry does, so that a PATCH
+    // which would change the URI to http:// against an https-registered
+    // deployment with auth still fails REQ-VAL-01.
+    #[test]
+    fn patch_validation_rejects_http_uri_change_when_auth_persisted() {
+        let existing_uri: Uri = "https://svc.example.com/".parse().unwrap();
+        let existing_headers = std::collections::HashMap::new();
+        let new_uri: Uri = "http://attacker.example.com/".parse().unwrap();
+
+        let (effective_uri, effective_headers) =
+            effective_http_patch_inputs(Some(&new_uri), None, &existing_uri, &existing_headers);
+
+        assert_invalid_field(
+            validate_http_auth(effective_uri, &http_auth(), Some(&effective_headers)),
+            "auth",
+        );
+    }
+
+    // PATCH-side regression: a PATCH that adds an
+    // X-Serverless-Authorization header to an auth-enabled deployment
+    // must fail REQ-VAL-02 (the minted token would be shadowed).
+    #[test]
+    fn patch_validation_rejects_added_x_serverless_authorization_header() {
+        let existing_uri: Uri = "https://svc.example.com/".parse().unwrap();
+        let existing_headers = std::collections::HashMap::new();
+
+        let mut patched = std::collections::HashMap::new();
+        patched.insert(
+            http::HeaderName::from_static("x-serverless-authorization"),
+            http::HeaderValue::from_static("Bearer attacker"),
+        );
+        let patched_serdeable: restate_serde_util::SerdeableHeaderHashMap = patched.into();
+
+        let (effective_uri, effective_headers) = effective_http_patch_inputs(
+            None,
+            Some(&patched_serdeable),
+            &existing_uri,
+            &existing_headers,
+        );
+
+        assert_invalid_field(
+            validate_http_auth(effective_uri, &http_auth(), Some(&effective_headers)),
+            "additional_headers",
+        );
+    }
+
+    // A no-op PATCH (no uri, no headers) must still pass validation: the
+    // effective tuple is just the persisted record's tuple, which was
+    // accepted at registration time.
+    #[test]
+    fn patch_validation_accepts_noop_against_persisted_safe_record() {
+        let existing_uri: Uri = "https://svc.example.com/".parse().unwrap();
+        let existing_headers = std::collections::HashMap::new();
+
+        let (effective_uri, effective_headers) =
+            effective_http_patch_inputs(None, None, &existing_uri, &existing_headers);
+
+        validate_http_auth(effective_uri, &http_auth(), Some(&effective_headers))
+            .expect("no-op PATCH against safe persisted record is accepted");
     }
 }
