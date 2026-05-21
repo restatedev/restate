@@ -35,8 +35,11 @@ use parking_lot::Mutex;
 /// effectiveness depends on it.
 const CACHE_EVICTION_SKEW: Duration = Duration::from_secs(60);
 
-/// Per-attempt hard timeout on a single mint call. The calling layer
-/// owns retry policy.
+/// Per-attempt hard timeout on a single mint call. Retry policy is
+/// signaled to the caller via `ServiceClientError::is_retryable`, which
+/// inspects the inner `GcpAuthError` variant: transient/network-shaped
+/// errors (`Adc`, `Timeout`) are retryable, config-shaped ones (`Build`,
+/// `Mint`) are not.
 const MINT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Cache mode for minted ID tokens. Matches the Lambda
@@ -54,8 +57,14 @@ pub enum IdTokenCacheMode {
 
 #[derive(Debug, Error)]
 pub enum GcpAuthError {
-    #[error("failed to load Application Default Credentials: {0}")]
-    Adc(String),
+    #[error(
+        "failed to load Application Default Credentials (audience '{audience}', impersonating '{impersonate}'): {message}"
+    )]
+    Adc {
+        audience: String,
+        impersonate: String,
+        message: String,
+    },
     #[error("failed to build ID token credentials for audience '{audience}': {message}")]
     Build { audience: String, message: String },
     #[error(
@@ -66,8 +75,14 @@ pub enum GcpAuthError {
         impersonate: String,
         message: String,
     },
-    #[error("token mint timed out after {0:?}")]
-    Timeout(Duration),
+    #[error(
+        "token mint timed out after {duration:?} (audience '{audience}', impersonating '{impersonate}')"
+    )]
+    Timeout {
+        audience: String,
+        impersonate: String,
+        duration: Duration,
+    },
 }
 
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -162,7 +177,13 @@ impl GcpTokenClient {
         let mint_fut = self.mint_via_sdk(impersonate_service_account, audience);
         let token = tokio::time::timeout(MINT_ATTEMPT_TIMEOUT, mint_fut)
             .await
-            .map_err(|_| GcpAuthError::Timeout(MINT_ATTEMPT_TIMEOUT))??;
+            .map_err(|_| GcpAuthError::Timeout {
+                audience: audience.to_owned(),
+                impersonate: impersonate_service_account
+                    .unwrap_or("(ambient)")
+                    .to_owned(),
+                duration: MINT_ATTEMPT_TIMEOUT,
+            })??;
 
         // Cache insert (Unbounded mode only).
         if let Some(cache) = &self.inner.cache {
@@ -221,7 +242,11 @@ impl GcpTokenClient {
                 // then build the impersonated ID token builder.
                 let source = google_cloud_auth::credentials::Builder::default()
                     .build()
-                    .map_err(|e| GcpAuthError::Adc(e.to_string()))?;
+                    .map_err(|e| GcpAuthError::Adc {
+                        audience: audience.to_owned(),
+                        impersonate: sa.to_owned(),
+                        message: e.to_string(),
+                    })?;
                 let creds = idtoken::impersonated::Builder::from_source_credentials(
                     audience.to_owned(),
                     sa.to_owned(),

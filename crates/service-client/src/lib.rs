@@ -256,9 +256,14 @@ impl ServiceClientError {
         match self {
             ServiceClientError::Http(_, http_error) => http_error.is_retryable(),
             ServiceClientError::Lambda(_, lambda_error) => lambda_error.is_retryable(),
-            // Token-mint failures from GCP are not retried here; the
-            // calling layer owns retry policy (REQ-TOK-05).
-            ServiceClientError::GcpAuth(_, _) => false,
+            // GCP token-mint errors split by shape: transient/network
+            // failures (ADC load blips, metadata-server slowness) are
+            // retryable; config-shaped failures (bad audience, missing
+            // permissions surfaced through Build/Mint) are not.
+            ServiceClientError::GcpAuth(_, gcp_error) => match gcp_error {
+                gcp::GcpAuthError::Adc { .. } | gcp::GcpAuthError::Timeout { .. } => true,
+                gcp::GcpAuthError::Build { .. } | gcp::GcpAuthError::Mint { .. } => false,
+            },
             ServiceClientError::IdentityV1(_) => false, // this really should never happen
         }
     }
@@ -373,6 +378,104 @@ impl fmt::Display for Endpoint {
         match self {
             Self::Http(uri, _, _) => uri.fmt(f),
             Self::Lambda(arn, _, _) => write!(f, "lambda://{arn}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn uri() -> Uri {
+        "https://svc.example.com/".parse().unwrap()
+    }
+
+    #[test]
+    fn gcp_auth_retryability_splits_by_inner_variant() {
+        let cases: &[(gcp::GcpAuthError, bool)] = &[
+            (
+                gcp::GcpAuthError::Adc {
+                    audience: "https://svc.example.com".into(),
+                    impersonate: "(ambient)".into(),
+                    message: "metadata server unreachable".into(),
+                },
+                true,
+            ),
+            (
+                gcp::GcpAuthError::Timeout {
+                    audience: "https://svc.example.com".into(),
+                    impersonate: "(ambient)".into(),
+                    duration: Duration::from_secs(10),
+                },
+                true,
+            ),
+            (
+                gcp::GcpAuthError::Build {
+                    audience: "https://svc.example.com".into(),
+                    message: "bad audience".into(),
+                },
+                false,
+            ),
+            (
+                gcp::GcpAuthError::Mint {
+                    audience: "https://svc.example.com".into(),
+                    impersonate: "sa@p.iam.gserviceaccount.com".into(),
+                    message: "permission denied".into(),
+                },
+                false,
+            ),
+        ];
+        for (err, expected) in cases {
+            let wrapped = ServiceClientError::GcpAuth(uri(), err.clone_for_test());
+            assert_eq!(
+                wrapped.is_retryable(),
+                *expected,
+                "unexpected retryability for {err:?}"
+            );
+        }
+    }
+
+    // Local trait to clone GcpAuthError in tests without making the
+    // public type Clone (Errors are typically not Clone).
+    trait CloneForTest {
+        fn clone_for_test(&self) -> Self;
+    }
+    impl CloneForTest for gcp::GcpAuthError {
+        fn clone_for_test(&self) -> Self {
+            match self {
+                gcp::GcpAuthError::Adc {
+                    audience,
+                    impersonate,
+                    message,
+                } => gcp::GcpAuthError::Adc {
+                    audience: audience.clone(),
+                    impersonate: impersonate.clone(),
+                    message: message.clone(),
+                },
+                gcp::GcpAuthError::Build { audience, message } => gcp::GcpAuthError::Build {
+                    audience: audience.clone(),
+                    message: message.clone(),
+                },
+                gcp::GcpAuthError::Mint {
+                    audience,
+                    impersonate,
+                    message,
+                } => gcp::GcpAuthError::Mint {
+                    audience: audience.clone(),
+                    impersonate: impersonate.clone(),
+                    message: message.clone(),
+                },
+                gcp::GcpAuthError::Timeout {
+                    audience,
+                    impersonate,
+                    duration,
+                } => gcp::GcpAuthError::Timeout {
+                    audience: audience.clone(),
+                    impersonate: impersonate.clone(),
+                    duration: *duration,
+                },
+            }
         }
     }
 }
