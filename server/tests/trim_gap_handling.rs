@@ -93,6 +93,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
             None,
             ReplicationProperty::new_unchecked(1),
             Some(ProviderConfiguration::Replicated(replicated_loglet_config)),
+            EnumSet::empty(),
         )
         .await
         .into_test_result()?;

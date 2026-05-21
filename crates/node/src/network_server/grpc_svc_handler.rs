@@ -31,6 +31,7 @@ use restate_core::protobuf::node_ctl_svc::{
     ClusterHealthResponse, DatabaseCompactionResult, EmbeddedMetadataClusterHealth,
     GetMetadataRequest, GetMetadataResponse, IdentResponse, ProvisionClusterRequest,
     ProvisionClusterResponse, TriggerCompactionRequest, TriggerCompactionResponse,
+    cluster_features_from_proto,
 };
 use restate_core::{Identification, MetadataWriter};
 use restate_core::{Metadata, MetadataKind};
@@ -170,6 +171,8 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         let config = Configuration::pinned();
 
         let dry_run = request.dry_run;
+        let features = cluster_features_from_proto(&request.features)
+            .map_err(|err| Status::invalid_argument(err.to_string()))?;
         let cluster_configuration = Self::resolve_cluster_configuration(&config, request)
             .map_err(|err| Status::invalid_argument(err.to_string()))?;
 
@@ -183,6 +186,7 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
             &self.metadata_writer,
             &config.common,
             &cluster_configuration,
+            features,
         )
         .await
         .map_err(|err| Status::internal(err.to_string()))?;
