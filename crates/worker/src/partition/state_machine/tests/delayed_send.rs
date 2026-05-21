@@ -200,6 +200,7 @@ async fn send_with_delay_to_locked_virtual_object() {
     )
     .unwrap();
     tx.commit().await.unwrap();
+    drop(tx);
 
     // Now fire the timer
     let actions = test_env

@@ -40,6 +40,7 @@ async fn get_inbox() {
     )
     .unwrap();
     tx.commit().await.unwrap();
+    drop(tx);
 
     let records = engine
         .execute("SELECT * FROM sys_inbox ORDER BY sequence_number")

@@ -68,6 +68,7 @@ mod tests {
         txn.put_user_state(&service_id, &Bytes::from_static(b"my-key-2"), b"my-val-2")
             .unwrap();
         txn.commit().await.unwrap();
+        drop(txn);
 
         let invocation_id =
             fixtures::mock_start_invocation_with_service_id(&mut test_env, service_id.clone())
