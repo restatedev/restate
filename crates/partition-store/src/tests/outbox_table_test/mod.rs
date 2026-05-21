@@ -66,16 +66,19 @@ pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     verify_outbox_head_seq_number(&mut txn, None).await;
     populate_data(&mut txn, vec![0, 1, 2, 3]).await;
     txn.commit().await.expect("should not fail");
+    drop(txn);
 
     let mut txn = rocksdb.transaction();
     verify_outbox_head_seq_number(&mut txn, Some(0)).await;
     consume_messages_and_truncate_range(&mut txn, vec![0, 1, 2]).await;
     txn.commit().await.expect("should not fail");
+    drop(txn);
 
     let mut txn = rocksdb.transaction();
     verify_outbox_head_seq_number(&mut txn, Some(3)).await;
     consume_messages_and_truncate_range(&mut txn, vec![3]).await;
     txn.commit().await.expect("should not fail");
+    drop(txn);
 
     let mut txn = rocksdb.transaction();
     verify_outbox_is_empty_after_truncation(&mut txn).await;
