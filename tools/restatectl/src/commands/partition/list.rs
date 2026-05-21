@@ -110,7 +110,17 @@ pub async fn list_partitions(
     // Show information organized by partition and node
     let mut partitions_table = Table::new_styled();
     partitions_table.set_styled_header(vec![
-        "ID", "NODE", "MODE", "STATUS", "EPOCH", "APPLIED", "DURABLE", "ARCHIVED", "LSN-LAG",
+        "ID",
+        "NODE",
+        "MODE",
+        "STATUS",
+        "EPOCH",
+        "APPLIED",
+        "DURABLE",
+        "ARCHIVED",
+        "LSN-LAG",
+        "SCHEMA",
+        "RULE-BOOK",
         "UPDATED",
     ]);
 
@@ -211,6 +221,20 @@ pub async fn list_partitions(
                             // (tail - 1) - applied_lsn = tail - (applied_lsn + 1)
                             tail.value.saturating_sub(applied.value + 1).to_string()
                         })
+                        .unwrap_or_else(|| "-".to_owned()),
+                ),
+                Cell::new(
+                    processor
+                        .status
+                        .last_applied_schema_version
+                        .map(|v| Version::from(v).to_string())
+                        .unwrap_or_else(|| "-".to_owned()),
+                ),
+                Cell::new(
+                    processor
+                        .status
+                        .last_applied_rule_book_version
+                        .map(|v| Version::from(v).to_string())
                         .unwrap_or_else(|| "-".to_owned()),
                 ),
                 render_as_duration(processor.status.updated_at, Tense::Past),

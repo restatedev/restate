@@ -72,6 +72,8 @@ message PartitionProcessorStatus {
   optional restate.common.Lsn last_archived_log_lsn = 12;
   // Set if replay_status is CATCHING_UP
   optional restate.common.Lsn target_tail_lsn = 11;
+  optional restate.common.Version last_applied_rule_book_version = 13;
+  optional restate.common.Version last_applied_schema_version = 14;
 }
 
 message ReplicationProperty { string replication_property = 1; }

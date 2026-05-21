@@ -56,5 +56,11 @@ define_table!(
 
         /// Target tail LSN
         target_tail_lsn: DataType::UInt64,
+
+        /// Version of the rule book currently applied by the partition processor
+        applied_rule_book_version: DataType::UInt32,
+
+        /// Version of the schema currently applied by the partition processor
+        applied_schema_version: DataType::UInt32,
     )
 );

@@ -79,7 +79,7 @@ use restate_types::retries::{RetryPolicy, with_jitter};
 use restate_types::schema::Schema;
 use restate_types::storage::StorageDecodeError;
 use restate_types::time::{MillisSinceEpoch, NanosSinceEpoch};
-use restate_types::{GenerationalNodeId, SemanticRestateVersion, Version};
+use restate_types::{GenerationalNodeId, SemanticRestateVersion, Version, Versioned};
 use restate_util_string::{ReString, ToReString};
 use restate_util_time::DurationExt;
 use restate_vqueues::{VQueuesMeta, VQueuesMetaCache};
@@ -631,6 +631,11 @@ where
                             durable_lsn,
                         );
                     }
+                    let rule_book_version = self.state_machine.rule_book.version();
+                    self.status.last_applied_rule_book_version =
+                        (rule_book_version >= Version::MIN).then_some(rule_book_version);
+                    self.status.last_applied_schema_version =
+                        self.state_machine.schema.as_ref().map(Versioned::version);
                     self.status_watch_tx.send_modify(|old| {
                         old.clone_from(&self.status);
                         old.updated_at = MillisSinceEpoch::now();
