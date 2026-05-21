@@ -242,27 +242,43 @@ impl<S: VQueueStore> DRRScheduler<S> {
     #[tracing::instrument(skip_all)]
     #[track_caller]
     pub fn on_inbox_event(&mut self, metas: VQueuesMeta<'_>, event: VQueueEvent) {
-        let slot = metas
-            .get(event.queue)
-            .expect("vqueue meta must be in cache");
-
-        for update in event.updates {
+        for update in &event.updates {
             match update {
-                EventDetails::LockReleased => {
-                    self.release_lock(slot.meta().scope(), slot.meta().lock_name().unwrap());
+                EventDetails::LockReleased { scope, lock_name } => {
+                    self.release_lock(scope, lock_name);
                 }
                 EventDetails::QueuePaused => {
-                    let qstate = self.q.get_mut(event.queue).unwrap();
+                    let Some(qstate) = self.q.get_mut(event.queue) else {
+                        continue;
+                    };
+
+                    let Some(slot) = metas.get(event.queue) else {
+                        panic!("vqueue meta must be in cache: {event:?}");
+                    };
+
                     if qstate.is_dormant(slot.meta()) {
                         self.mark_vqueue_as_dormant(slot.vqueue_id(), event.queue);
                     }
                 }
                 EventDetails::QueueResumed => {
-                    let qstate = self.q.get_mut(event.queue).unwrap();
+                    // We might have received a resume for an inactive vqueue
+                    let Some(slot) = metas.get(event.queue) else {
+                        continue;
+                    };
+
+                    let qstate = self.q.entry(event.queue).unwrap().or_insert_with(|| {
+                        trace!("VQueue {} is added to the scheduler", slot.vqueue_id());
+                        VQueueState::new(slot.vqueue_id(), &self.storage, slot.meta().num_running())
+                    });
+
                     self.eligible
                         .refresh_membership(event.queue, slot.meta(), qstate);
                 }
-                EventDetails::EnqueuedToInbox { ref key, ref value } => {
+                EventDetails::EnqueuedToInbox { key, value } => {
+                    let Some(slot) = metas.get(event.queue) else {
+                        continue;
+                    };
+
                     let qstate = self.q.entry(event.queue).unwrap().or_insert_with(|| {
                         trace!("VQueue {} is added to the scheduler", slot.vqueue_id());
                         VQueueState::new_empty()
@@ -288,9 +304,13 @@ impl<S: VQueueStore> DRRScheduler<S> {
                             .revert_permit_builder(&mut self.eligible, permit_builder);
                     }
                 }
-                EventDetails::RemovedFromInbox(ref key) => {
+                EventDetails::RemovedFromInbox(key) => {
                     let Some(qstate) = self.q.get_mut(event.queue) else {
                         continue;
+                    };
+
+                    let Some(slot) = metas.get(event.queue) else {
+                        panic!("vqueue meta must be in cache: {event:?}");
                     };
 
                     // Three cases:

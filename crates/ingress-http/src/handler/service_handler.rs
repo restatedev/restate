@@ -30,11 +30,13 @@ use restate_types::invocation::{
     SpanRelation, WorkflowHandlerType,
 };
 use restate_types::limit_key::LimitKey;
+use restate_types::nodes_config::ClusterFeature;
 use restate_types::schema::invocation_target::{
     DeploymentStatus, InvocationTargetMetadata, InvocationTargetResolver,
 };
 use restate_types::time::MillisSinceEpoch;
 use restate_util_string::{ReString, RestateString};
+use ulid::Ulid;
 
 use super::HandlerError;
 use super::path_parsing::{InvokeType, ServiceRequestType, TargetType};
@@ -118,12 +120,28 @@ where
         }
 
         // Check if Idempotency-Key is available
-        let idempotency_key = parse_idempotency(req.headers())?;
+        let mut idempotency_key = parse_idempotency(req.headers())?;
         if idempotency_key.is_some()
             && invocation_target_meta.target_ty
                 == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
         {
             return Err(HandlerError::UnsupportedIdempotencyKey);
+        }
+
+        if self
+            .cluster_features
+            .contains(ClusterFeature::ControlledIdempotentSharding)
+            && matches!(
+                invocation_target_meta.target_ty,
+                InvocationTargetType::Service
+            )
+            && scope.is_none()
+            && idempotency_key.is_none()
+        {
+            // Inject a new random idempotency key for unscoped
+            // service calls that has no idempotency keys only
+            // if the `controlled-idempotent-sharding` is enabled.
+            idempotency_key = Some(Ulid::new().to_string().into());
         }
 
         // Compute retention values
