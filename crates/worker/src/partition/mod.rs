@@ -105,7 +105,7 @@ use crate::rule_book_cache::RuleBookCacheHandle;
 // Soft cap for the in-memory vqueue cache; once reached, inactive
 // entries are evicted at insert time. The cache will still grow past
 // this if compaction frees nothing.
-const VQUEUE_CACHE_CAPACITY: usize = 10_000;
+const VQUEUE_CACHE_CAPACITY: usize = 10;
 
 /// Information needed to run as leader, including the epoch and partition configurations.
 #[derive(Clone, Debug)]
