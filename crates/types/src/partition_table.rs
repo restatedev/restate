@@ -260,8 +260,9 @@ impl AsRef<str> for CfName {
 pub struct Partition {
     pub partition_id: PartitionId,
     pub key_range: crate::sharding::KeyRange,
+    #[serde(default)]
     log_id: Option<LogId>,
-    db_name: Option<DbName>,
+    #[serde(default)]
     cf_name: Option<CfName>,
 }
 
@@ -271,7 +272,6 @@ impl Partition {
             partition_id,
             key_range,
             log_id: None,
-            db_name: None,
             cf_name: None,
         }
     }
@@ -285,15 +285,13 @@ impl Partition {
             .unwrap_or_else(|| LogId::default_for_partition(self.partition_id))
     }
 
-    pub fn db_name(&self) -> DbName {
+    pub fn db_name(&self, use_multi_db_layout: bool) -> DbName {
         let base = DatabaseKind::PartitionStore.db_name();
-        #[cfg(feature = "multi-db")]
-        return self
-            .db_name
-            .clone()
-            .unwrap_or_else(|| DbName::from(format!("{base}-{}", self.partition_id)));
-        #[cfg(not(feature = "multi-db"))]
-        return self.db_name.clone().unwrap_or_else(|| DbName::from(base));
+        if use_multi_db_layout {
+            DbName::from(format!("{base}-{}", self.partition_id))
+        } else {
+            DbName::from(base)
+        }
     }
 
     pub fn cf_name(&self) -> CfName {
@@ -444,10 +442,12 @@ impl From<PartitionTable> for PartitionTableBuilder {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct PartitionShadow {
+    #[serde(default)]
     pub log_id: Option<LogId>,
     pub key_range: crate::sharding::KeyRange,
     #[serde(default)]
     pub db_name: Option<DbName>,
+    #[serde(default)]
     pub cf_name: Option<CfName>,
 }
 
@@ -483,7 +483,7 @@ impl From<PartitionTable> for PartitionTableShadow {
                             log_id: partition.log_id,
                             key_range: partition.key_range,
                             cf_name: partition.cf_name,
-                            db_name: partition.db_name,
+                            db_name: None,
                         };
 
                         (partition_id, partition_shadow)
@@ -514,7 +514,6 @@ impl TryFrom<PartitionTableShadow> for PartitionTable {
                         partition_id,
                         log_id: partition_shadow.log_id,
                         key_range: partition_shadow.key_range,
-                        db_name: partition_shadow.db_name,
                         cf_name: partition_shadow.cf_name,
                     };
 

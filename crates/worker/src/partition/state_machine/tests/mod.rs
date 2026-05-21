@@ -134,7 +134,7 @@ impl TestEnv {
             "Using RocksDB temp directory {}",
             storage_options.data_dir("db").display()
         );
-        let manager = PartitionStoreManager::create().await.unwrap();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
         let rocksdb_storage = manager
             .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
             .await

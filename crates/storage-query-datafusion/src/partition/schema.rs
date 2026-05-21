@@ -30,9 +30,6 @@ define_table!(
         /// The column family name
         cf_name: DataType::Utf8,
 
-        /// The database name
-        db_name: DataType::Utf8,
-
         /// The partition leader generational node id acquired from gossip
         leader_gen_node_id: DataType::Utf8,
 
