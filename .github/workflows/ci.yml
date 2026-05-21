@@ -323,6 +323,7 @@ jobs:
           # todo remove once we use v1.6 as the LAST_COMPATIBLE_RESTATE_SERVER_VERSION in the e2e tests
           envVars: |
             RESTATE_WORKER__INVOKER__experimental_features_allow_protocol_v6=true
+            RESTATE_disable_unscoped_idempotent_service_bucketing=true
 
   e2e-enable-journal-table-v2:
     name: Run E2E tests with Journal Table V2 feature
