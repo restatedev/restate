@@ -25,12 +25,15 @@ use std::convert::Infallible;
 use std::task::{Context, Poll};
 
 use bytestring::ByteString;
+use enumset::EnumSet;
 use error::HandlerError;
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use http_body_util::Full;
 use hyper::http::HeaderValue;
 use hyper::{Request, Response};
+use restate_core::Metadata;
+use restate_types::nodes_config::ClusterFeature;
 use serde::Deserialize;
 
 use restate_types::Scope;
@@ -72,13 +75,17 @@ enum RequestType {
 pub(crate) struct Handler<Schemas, Dispatcher> {
     schemas: Live<Schemas>,
     dispatcher: Dispatcher,
+    cluster_features: EnumSet<ClusterFeature>,
 }
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
     pub(crate) fn new(schemas: Live<Schemas>, dispatcher: Dispatcher) -> Self {
+        let cluster_features = Metadata::with_current(|m| m.nodes_config_ref().features());
+
         Self {
             schemas,
             dispatcher,
+            cluster_features,
         }
     }
 }
