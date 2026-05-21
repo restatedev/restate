@@ -12,6 +12,9 @@ mod retry_after;
 mod service_protocol_runner;
 mod service_protocol_runner_v4;
 
+#[cfg(test)]
+mod service_protocol_runner_v4_tests;
+
 use std::collections::HashSet;
 use std::num::NonZeroUsize;
 use std::pin::Pin;

@@ -31,7 +31,7 @@ use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::ServiceId;
 use restate_types::identifiers::{EntryIndex, InvocationId};
-use restate_types::invocation::ServiceInvocationSpanContext;
+use restate_types::invocation::{Header, ServiceInvocationSpanContext};
 use restate_types::journal::raw::RawEntryCodec;
 use restate_types::journal::{Completion, CompletionResult, EntryType};
 use restate_types::journal_v2;
@@ -156,6 +156,56 @@ where
         // We send this with every journal entry to correctly link new spans generated from journal entries.
         let service_invocation_span_context = journal_metadata.span_context;
 
+        // Read the invocation input headers if available
+        let invocation_headers = if journal_metadata.length > 0 {
+            match txn.read_journal(
+                &self.invocation_task.invocation_id,
+                1,
+                journal_metadata.journal_kind,
+            ) {
+                Ok(mut stream) => {
+                    if let Some(Ok(entry)) = stream.next().await {
+                        match entry {
+                            JournalEntry::JournalV2(raw_entry) => {
+                                use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
+                                use restate_types::journal_v2::command::InputCommand;
+                                if raw_entry.ty()
+                                    == restate_types::journal_v2::EntryType::Command(
+                                        restate_types::journal_v2::CommandType::Input,
+                                    )
+                                {
+                                    if let Ok(input_cmd) =
+                                        raw_entry.decode::<ServiceProtocolV4Codec, InputCommand>()
+                                    {
+                                        Some(input_cmd.headers)
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            }
+                            JournalEntry::JournalV1(old_entry) => {
+                                if let Ok(restate_types::journal::Entry::Input(input_entry)) =
+                                    old_entry.deserialize_entry::<ProtobufRawEntryCodec>()
+                                {
+                                    Some(input_entry.headers)
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    }
+                }
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+
         // Prepare the request
         let (mut http_stream_tx, request) = Self::prepare_request(
             path,
@@ -163,6 +213,7 @@ where
             self.service_protocol_version,
             &self.invocation_task.invocation_id,
             &service_invocation_span_context,
+            invocation_headers.unwrap_or_default(),
         );
 
         // Initialize the response stream state
@@ -267,6 +318,7 @@ where
         service_protocol_version: ServiceProtocolVersion,
         invocation_id: &InvocationId,
         parent_span_context: &ServiceInvocationSpanContext,
+        invocation_headers: Vec<Header>,
     ) -> (InvokerBodySender, Request<InvokerBodyType>) {
         // Use an unbounded channel: backpressure is provided by the memory budget
         // (each frame's Bytes embeds a LocalMemoryLease via from_owner) rather than
@@ -311,6 +363,42 @@ where
                     HeaderValue::from_str(span_context.trace_state().header().as_ref())
                 {
                     headers.insert("tracestate", tracestate);
+                }
+            }
+        }
+
+        // Add invocation headers from the Input entry
+        // Convert restate_types::invocation::Header to http::HeaderValue
+        for header in invocation_headers {
+            match (
+                http::HeaderName::try_from(&*header.name),
+                http::HeaderValue::try_from(&*header.value),
+            ) {
+                (Ok(name), Ok(value)) => {
+                    // Skip headers that might conflict with protocol headers
+                    if name != http::header::CONTENT_TYPE
+                        && name != http::header::ACCEPT
+                        && name != INVOCATION_ID_HEADER_NAME
+                        && name != "traceparent"
+                        && name != "tracestate"
+                    {
+                        headers.insert(name, value);
+                    }
+                }
+                (Err(e), _) => {
+                    warn!(
+                        header.name = %header.name,
+                        error = %e,
+                        "Invalid header name in invocation request, dropping header"
+                    );
+                }
+                (_, Err(e)) => {
+                    warn!(
+                        header.name = %header.name,
+                        header.value = ?header.value,
+                        error = %e,
+                        "Invalid header value in invocation request, dropping header"
+                    );
                 }
             }
         }
