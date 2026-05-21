@@ -149,8 +149,14 @@ the idtoken Builder. If not, this requirement is deferred and
 documented.
 
 ### T12: External account / WIF support (REQ-TOK-02)
-The crate supports external accounts; verify that ID token minting
-also works through the WIF path. Add a regression test if practical.
+Resolved: the `google-cloud-auth` crate's `idtoken::Builder` rejects
+`external_account` (Workload Identity Federation) and `authorized_user`
+(gcloud user creds) ADC sources at runtime. Both work only when paired
+with `--impersonate-service-account`, which routes minting through the
+IAM Credentials `generateIdToken` API on the target SA. An ambient WIF
+path (mint ID tokens directly from a federated external account
+without impersonation) is deferred; it could be added later via a
+custom mint path if a customer needs it.
 
 ### T13: Log redaction
 REQ-TOK-07 forbids logging token contents at any level and forbids

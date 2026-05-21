@@ -36,10 +36,17 @@ restate dp register https://api.acme.com/svc \
 ```
 
 Credentials are discovered through Google's Application Default
-Credentials (ADC) chain: `GOOGLE_APPLICATION_CREDENTIALS` env var,
-`gcloud auth application-default login` user credentials at
-`~/.config/gcloud/application_default_credentials.json`, the GCE/GKE
-metadata server, and workload identity federation sources.
+Credentials (ADC) chain, but not every ADC source can mint an OIDC ID
+token on its own. The ambient `--id-token` path (no
+`--impersonate-service-account`) requires an ADC source whose
+underlying credentials can mint ID tokens directly: service-account
+JSON keys, and the GCE / GKE / Cloud Run metadata server, are the
+supported ambient sources. External-account (Workload Identity
+Federation) and authorized-user (gcloud user creds) sources cannot
+mint ID tokens for arbitrary audiences on their own; pair them with
+`--impersonate-service-account` so Restate calls the IAM Credentials
+`generateIdToken` API on a target service account that the ambient
+identity is authorized to impersonate.
 
 To reconfigure `auth` on an existing deployment (rotate the
 impersonation target, change the audience, or remove auth entirely),
