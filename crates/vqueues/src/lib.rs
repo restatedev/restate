@@ -39,7 +39,6 @@ use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::PartitionKey;
 use restate_types::invocation::InvocationTarget;
 use restate_types::vqueues::{EntryId, Seq, VQueueId};
-#[cfg(test)]
 use restate_types::{LockName, Scope};
 use restate_util_string::ReString;
 use restate_worker_api::invoker::YieldReason;
@@ -59,7 +58,10 @@ pub enum EventDetails {
         key: EntryKey,
         value: EntryValue,
     },
-    LockReleased,
+    LockReleased {
+        scope: Option<Scope>,
+        lock_name: LockName,
+    },
 }
 
 #[derive(Debug)]
@@ -841,8 +843,13 @@ where
         if let Some(collector) = self.action_collector.as_deref_mut() {
             let mut event = VQueueEvent::new(self.handle);
             // Release the lock if this entry has been holding a lock already
-            if header.has_lock() && meta.meta().lock_name().is_some() {
-                event.push(EventDetails::LockReleased);
+            if header.has_lock()
+                && let Some(lock) = meta.meta().lock_name()
+            {
+                event.push(EventDetails::LockReleased {
+                    scope: meta.meta().scope().clone(),
+                    lock_name: lock.clone(),
+                });
             }
 
             if matches!(header.stage(), Stage::Inbox) {
@@ -1050,7 +1057,7 @@ where
             self.storage.mark_vqueue_as_active(meta.vqueue_id());
         }
 
-        if let Some(collector) = self.action_collector.as_deref_mut() {
+        if is_active_now && let Some(collector) = self.action_collector.as_deref_mut() {
             let mut event = VQueueEvent::new(self.handle);
             event.push(EventDetails::QueueResumed);
             collector.push(A::from(event));

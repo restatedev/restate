@@ -43,8 +43,6 @@ pub type ResponseBody = http_body_util::Either<http::ResponseBody, Full<Bytes>>;
 
 #[derive(Clone)]
 pub struct ServiceClient {
-    // TODO a single client uses the pooling provided by hyper, but this is not enough.
-    //  See https://github.com/restatedev/restate/issues/76 for more background on the topic.
     http: HttpClient,
     lambda: LambdaClient,
     // this can be changed to re-read periodically if necessary
@@ -118,6 +116,7 @@ impl ServiceClient {
         let signer = if let Some(request_identity_key) = request_identity_key.as_deref() {
             Some(request_identity::v1::Signer::new(
                 parts.path.path(),
+                parts.request_identity_sub_field.as_deref(),
                 request_identity_key,
             ))
         } else {
@@ -249,6 +248,9 @@ pub struct Parts {
 
     /// The request's headers - in lambda case, mapped to apigatewayevent.headers
     headers: HeaderMap<HeaderValue>,
+
+    /// Additional 'sub' field for the request identity
+    request_identity_sub_field: Option<ByteString>,
 }
 
 impl Parts {
@@ -263,6 +265,7 @@ impl Parts {
             address,
             path,
             headers,
+            request_identity_sub_field: None,
         }
     }
 
@@ -288,6 +291,11 @@ impl Parts {
         headers.extend(deployment.additional_headers);
 
         Self::new(method, address, path, headers)
+    }
+
+    pub fn with_request_identity_sub_field(mut self, sub_field: ByteString) -> Self {
+        self.request_identity_sub_field = Some(sub_field);
+        self
     }
 }
 

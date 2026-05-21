@@ -105,7 +105,7 @@ use crate::rule_book_cache::RuleBookCacheHandle;
 // Soft cap for the in-memory vqueue cache; once reached, inactive
 // entries are evicted at insert time. The cache will still grow past
 // this if compaction frees nothing.
-const VQUEUE_CACHE_CAPACITY: usize = 10_000;
+const VQUEUE_CACHE_CAPACITY: usize = 10;
 
 /// Information needed to run as leader, including the epoch and partition configurations.
 #[derive(Clone, Debug)]
@@ -269,6 +269,7 @@ impl PartitionProcessorBuilder {
         let outbox_seq_number = partition_store.get_outbox_seq_number().await?;
         let outbox_head_seq_number = partition_store.get_outbox_head_seq_number().await?;
         let min_restate_version = partition_store.get_min_restate_version().await?;
+        let enabled_features = partition_store.get_state_machine_features().await?;
         let schema = partition_store.get_schema().await?;
         let rule_book = Arc::new(partition_store.get_rule_book().await?.unwrap_or_default());
 
@@ -296,6 +297,7 @@ impl PartitionProcessorBuilder {
             outbox_head_seq_number,
             partition_store.partition_key_range(),
             min_restate_version,
+            enabled_features,
             schema,
             rule_book,
             rule_book_cache,

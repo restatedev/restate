@@ -12,6 +12,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use bytes::Bytes;
+use bytestring::ByteString;
 use futures::{Stream, StreamExt};
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
@@ -163,6 +164,7 @@ where
             self.service_protocol_version,
             &self.invocation_task.invocation_id,
             &service_invocation_span_context,
+            self.invocation_task.invocation_target.key(),
         );
 
         // Initialize the response stream state
@@ -267,12 +269,13 @@ where
         service_protocol_version: ServiceProtocolVersion,
         invocation_id: &InvocationId,
         parent_span_context: &ServiceInvocationSpanContext,
+        service_key: Option<&ByteString>,
     ) -> (InvokerBodySender, Request<InvokerBodyType>) {
         // Use an unbounded channel: backpressure is provided by the memory budget
         // (each frame's Bytes embeds a LocalMemoryLease via from_owner) rather than
         // channel capacity.
         let (http_stream_tx, http_stream_rx) = mpsc::unbounded_channel();
-        let req_body = new_invoker_body(http_stream_rx);
+        let request_body = new_invoker_body(http_stream_rx);
 
         let service_protocol_header_value =
             service_protocol_version_to_header_value(service_protocol_version);
@@ -315,13 +318,12 @@ where
             }
         }
 
-        (
-            http_stream_tx,
-            Request::new(
-                Parts::from_deployment(deployment, Method::Post, path, headers),
-                req_body,
-            ),
-        )
+        let mut request_parts = Parts::from_deployment(deployment, Method::Post, path, headers);
+        if let Some(service_key) = service_key {
+            request_parts = request_parts.with_request_identity_sub_field(service_key.clone());
+        }
+
+        (http_stream_tx, Request::new(request_parts, request_body))
     }
 
     // --- Loops

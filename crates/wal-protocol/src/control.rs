@@ -165,13 +165,32 @@ fn new_replica_set_state(version: Version, node_set: &NodeSet) -> ReplicaSetStat
 /// Readers before v1.4.0 will crash when reading this command. For v1.4.0+, the barrier defines the
 /// minimum version of restate server that can progress after this command. It also updates the FSM
 /// in case command has been trimmed.
+///
+/// Starting with v1.7.0, the barrier may also carry a list of feature changes (see
+/// [`restate_types::partitions::features::PartitionFeatureChange`]). Each entry is a raw `u16` ID
+/// that the receiving binary maps back to a typed change; unknown IDs cause the partition to fail
+/// with a forward-compatibility error rather than silently dropping the change.
 #[derive(Debug, Clone, bilrost::Message, serde::Serialize, serde::Deserialize)]
 pub struct VersionBarrierCommand {
     /// The minimum version required (inclusive) to progress after this barrier.
+    /// Proposers must set this to at least
+    /// `max(current_min_version, max(change.min_required_version() for change in feature_changes))`.
+    #[bilrost(tag(1))]
     pub version: SemanticRestateVersion,
     /// A human-readable reason for why this barrier exists.
+    #[bilrost(tag(2))]
     pub human_reason: Option<String>,
+    #[bilrost(tag(3))]
     pub partition_key_range: Keys,
+    /// Ordered list of feature change IDs (see
+    /// [`restate_types::partitions::features::PartitionFeatureChange`]). Unknown IDs cause
+    /// `Error::UnknownFeatureFlags` on apply. Within a single barrier, later entries override
+    /// earlier ones for the same target feature.
+    ///
+    /// *Since v1.7.0*
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[bilrost(tag(4))]
+    pub feature_changes: Vec<u16>,
 }
 
 bilrost_storage_encode_decode!(VersionBarrierCommand);

@@ -18,6 +18,7 @@ use restate_types::SemanticRestateVersion;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
+use restate_types::partitions::features::PersistedStateMachineFeatures;
 use restate_types::schema::Schema;
 
 use crate::TableKind::PartitionStateMachine;
@@ -74,6 +75,11 @@ pub(crate) mod fsm_variable {
     /// rule set without an extra metadata-store round trip.
     /// *Since v1.7.0*
     pub(crate) const RULE_BOOK: u64 = 9;
+
+    /// Set of state-machine features enabled for this partition. Updated by
+    /// `VersionBarrierCommand` entries carrying feature changes.
+    /// *Since v1.7.0*
+    pub(crate) const STATE_MACHINE_FEATURES: u64 = 10;
 }
 
 fn get<T: PartitionStoreProtobufValue, S: StorageAccess>(
@@ -209,6 +215,12 @@ impl ReadFsmTable for PartitionStore {
         let key = create_key(self.partition_id(), fsm_variable::RULE_BOOK);
         self.get_value_storage_codec(key)
     }
+
+    async fn get_state_machine_features(&mut self) -> Result<PersistedStateMachineFeatures> {
+        let key = create_key(self.partition_id(), fsm_variable::STATE_MACHINE_FEATURES);
+        self.get_value_storage_codec(key)
+            .map(|opt| opt.unwrap_or_default())
+    }
 }
 
 impl WriteFsmTable for PartitionStoreTransaction<'_> {
@@ -270,5 +282,13 @@ impl WriteFsmTable for PartitionStoreTransaction<'_> {
     fn put_rule_book(&mut self, rule_book: &RuleBook) -> Result<()> {
         let key = create_key(self.partition_id(), fsm_variable::RULE_BOOK);
         self.put_kv_storage_codec(key, rule_book)
+    }
+
+    fn put_state_machine_features(
+        &mut self,
+        features: &PersistedStateMachineFeatures,
+    ) -> Result<()> {
+        let key = create_key(self.partition_id(), fsm_variable::STATE_MACHINE_FEATURES);
+        self.put_kv_storage_codec(key, features)
     }
 }

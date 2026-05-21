@@ -546,6 +546,7 @@ where
                                 self.partition.key_range.into(),
                             ),
                             human_reason: Some("Force min Restate version".to_owned()),
+                            feature_changes: Vec::new(),
                         }),
                     )
                     .await?;
@@ -566,6 +567,7 @@ where
                                 self.partition.key_range.into(),
                             ),
                             human_reason: Some("Enable journal v2 by default".to_owned()),
+                            feature_changes: Vec::new(),
                         }),
                     )
                     .await?;
