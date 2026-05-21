@@ -106,6 +106,7 @@ pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     deletes(&mut txn);
 
     txn.commit().await.expect("should not fail");
+    drop(txn);
 
     let mut txn = rocksdb.transaction();
     verify_delete(&mut txn).await;
@@ -120,12 +121,14 @@ async fn delete_all() {
 
     populate_data(&mut txn);
     txn.commit().await.expect("should not fail");
+    drop(txn);
 
     // Do delete all
     let mut txn = rocksdb.transaction();
     txn.delete_all_user_state(&ServiceId::with_partition_key(1337, "svc-1", "key-1"))
         .unwrap();
     txn.commit().await.expect("should not fail");
+    drop(txn);
 
     // No more state for key-1
     let mut txn = rocksdb.transaction();

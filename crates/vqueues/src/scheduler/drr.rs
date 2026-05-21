@@ -663,6 +663,7 @@ mod tests {
         let mut txn = rocksdb.transaction();
         enqueue_entry(&mut txn, &mut cache, &qid, 1, 0, None).await;
         txn.commit().await.expect("commit should succeed");
+        drop(txn);
 
         let db = rocksdb.partition_db();
         let mut scheduler = create_scheduler(db, &cache).await;
@@ -705,6 +706,7 @@ mod tests {
         )
         .await;
         txn.commit().await.expect("commit should succeed");
+        drop(txn);
 
         let db = rocksdb.partition_db();
         let mut scheduler = create_scheduler(db, &cache).await;
@@ -742,6 +744,7 @@ mod tests {
             }
         }
         txn.commit().await.expect("commit should succeed");
+        drop(txn);
 
         let db = rocksdb.partition_db();
         let mut scheduler = DRRScheduler::new(
@@ -786,6 +789,7 @@ mod tests {
         enqueue_entry(&mut txn, &mut cache, &qid1, 1, 0, None).await;
         enqueue_entry(&mut txn, &mut cache, &qid2, 2, 0, None).await;
         txn.commit().await.expect("commit should succeed");
+        drop(txn);
 
         let db = rocksdb.partition_db();
         let mut scheduler = create_scheduler_with_concurrency(db, &cache, 1).await;
@@ -867,6 +871,7 @@ mod tests {
         enqueue_entry(&mut txn, &mut cache, &qid1, 1, 0, None).await;
         enqueue_entry(&mut txn, &mut cache, &qid2, 2, 0, None).await;
         txn.commit().await.expect("commit should succeed");
+        drop(txn);
 
         let throttling_bucket = GlobalTokenBucket::new(
             gardal::Limit::per_second_and_burst(
@@ -947,6 +952,7 @@ mod tests {
             .await;
         }
         txn.commit().await.expect("commit should succeed");
+        drop(txn);
 
         let throttling_bucket = GlobalTokenBucket::new(
             gardal::Limit::per_second_and_burst(
@@ -1007,6 +1013,7 @@ mod tests {
             enqueue_entry(&mut txn, &mut cache, &qid, i as u8, 0, None).await;
         }
         txn.commit().await.expect("commit should succeed");
+        drop(txn);
 
         let db = rocksdb.partition_db();
         let mut scheduler = DRRScheduler::new(
@@ -1035,6 +1042,7 @@ mod tests {
             enqueue_entry(&mut txn, &mut cache, &qid, i, 10_000, None).await;
         }
         txn.commit().await.expect("commit should succeed");
+        drop(txn);
 
         let db = rocksdb.partition_db();
         let mut scheduler = DRRScheduler::new(
@@ -1058,6 +1066,7 @@ mod tests {
         events.clear();
         enqueue_entry(&mut txn, &mut cache, &qid, 125, 0, Some(&mut events)).await;
         txn.commit().await.expect("commit should succeed");
+        drop(txn);
         for event in events.drain(..) {
             scheduler.on_inbox_event(cache.view(), event);
         }
@@ -1078,6 +1087,7 @@ mod tests {
             move_to_running(&mut txn, &mut cache, &qid, &key, Some(&mut events)).await;
         }
         txn.commit().await.expect("commit should succeed");
+        drop(txn);
         for event in events.drain(..) {
             scheduler.on_inbox_event(cache.view(), event);
         }
@@ -1107,6 +1117,7 @@ mod tests {
         enqueue_entry(&mut txn, &mut cache, &qid1, 3, 0, None).await;
         enqueue_entry(&mut txn, &mut cache, &qid2, 10, 0, None).await;
         txn.commit().await.expect("commit should succeed");
+        drop(txn);
 
         let db = rocksdb.partition_db();
         let mut scheduler = DRRScheduler::new(

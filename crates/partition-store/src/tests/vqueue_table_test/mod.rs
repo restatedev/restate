@@ -603,6 +603,7 @@ pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     waiting_cursor_partition_prefix_boundary_is_respected(&mut txn).await;
 
     txn.commit().await.expect("commit should succeed");
+    drop(txn);
 
     // Verify using the PartitionDb (not transaction) to test the VQueueStore impl
     let db = rocksdb.partition_db();

@@ -133,6 +133,7 @@ async fn complete_already_completed_invocation() {
     )
     .unwrap();
     txn.commit().await.unwrap();
+    drop(txn);
 
     // Send a request, should be completed immediately with result
     let request_id = PartitionProcessorRpcRequestId::default();
@@ -638,6 +639,7 @@ async fn purge_completed_idempotent_invocation() {
     )
     .unwrap();
     txn.commit().await.unwrap();
+    drop(txn);
 
     // Send purge command
     let _ = test_env

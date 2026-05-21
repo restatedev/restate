@@ -99,6 +99,7 @@ pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     delete_entry(&mut txn);
 
     txn.commit().await.expect("should not fail");
+    drop(txn);
 
     let mut txn = rocksdb.transaction();
     peek_after_delete(&mut txn).await;
