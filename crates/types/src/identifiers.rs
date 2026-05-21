@@ -145,12 +145,22 @@ pub type EntryIndex = u32;
 
 /// Returns the partition key computed from either the service_key, or idempotency_key, if possible
 fn deterministic_partition_key(
+    service_name: &str,
     service_key: Option<&str>,
     idempotency_key: Option<&str>,
 ) -> Option<PartitionKey> {
     service_key
         .map(partitioner::HashPartitioner::compute_partition_key)
-        .or_else(|| idempotency_key.map(partitioner::HashPartitioner::compute_partition_key))
+        .or_else(|| {
+            idempotency_key.map(|idempotency_key| {
+                // todo: replace this with a flag.
+                if true {
+                    partitioner::HashPartitioner::compute_partition_key(idempotency_key)
+                } else {
+                    unscoped_idempotent_service_partition_key(service_name, idempotency_key)
+                }
+            })
+        })
 }
 
 /// Number of partition keys each unscoped service can spread over.
@@ -159,6 +169,11 @@ fn deterministic_partition_key(
 /// pick one key out of a bounded, service-specific set.
 ///
 /// This can be configurable in the future and it wouldn't affect correctness if users want to change it.
+///
+/// NOTE: This same constant is also used by unscoped idempotent services, where its value is
+/// effectively immutable: changing it would re-shard idempotent invocations onto different
+/// partitions and break deduplication. If you ever need to tune the scatter width for
+/// non-idempotent services only, split this into two separate constants first.
 const UNSCOPED_SERVICE_PARTITION_KEY_FANOUT: u8 = 255;
 
 /// Computes one of the deterministic partition keys assigned to an unscoped service.
@@ -187,6 +202,18 @@ fn random_unscoped_service_partition_key(service_name: &str) -> PartitionKey {
     let bucket = rand::rng().random_range(0..UNSCOPED_SERVICE_PARTITION_KEY_FANOUT);
     unscoped_service_partition_key(service_name, bucket)
 }
+
+fn unscoped_idempotent_service_partition_key(
+    service_name: &str,
+    idempotency_key: &str,
+) -> PartitionKey {
+    let intermittent_key = partitioner::HashPartitioner::compute_partition_key(idempotency_key);
+    let bucket = intermittent_key % UNSCOPED_SERVICE_PARTITION_KEY_FANOUT as u64;
+
+    debug_assert!(bucket < UNSCOPED_SERVICE_PARTITION_KEY_FANOUT as u64);
+    unscoped_service_partition_key(service_name, bucket as u8)
+}
+
 /// A family of resource identifiers that tracks the timestamp of its creation.
 pub trait TimestampAwareId {
     /// The timestamp when this ID was created.
@@ -535,6 +562,7 @@ impl InvocationId {
             // --- Partition key generation
             // Either try to generate the deterministic partition key, if possible
             deterministic_partition_key(
+                invocation_target.service_name(),
                 invocation_target.key().map(|bs| bs.as_ref()),
                 idempotency_key,
             )
@@ -736,6 +764,7 @@ impl IdempotencyId {
             .map(|s| s.partition_key())
             .or_else(|| {
                 deterministic_partition_key(
+                    &service_name,
                     service_key.as_ref().map(|bs| bs.as_ref()),
                     Some(&idempotency_key),
                 )
