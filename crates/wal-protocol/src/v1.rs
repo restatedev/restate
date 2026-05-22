@@ -11,7 +11,7 @@
 use bytes::Bytes;
 
 use restate_storage_api::deduplication_table::DedupInformation;
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
+use restate_types::identifiers::{LeaderEpoch, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{
     AttachInvocationRequest, GetInvocationOutputResponse, InvocationResponse,
     InvocationTermination, NotifySignalRequest, PurgeInvocationRequest,
@@ -55,13 +55,6 @@ pub struct Header {
 pub enum Source {
     /// Message is sent from another partition processor
     Processor {
-        /// if possible, this is used to reroute responses in case of splits/merges
-        /// v1.4 requires this to be set.
-        /// v1.5 Marked as `Option`.
-        /// v1.6 always set to `None`.
-        /// Will be removed in v1.7.
-        #[serde(default)]
-        partition_id: Option<PartitionId>,
         #[serde(default)]
         partition_key: Option<PartitionKey>,
         /// The current epoch of the partition leader. Readers should observe this to decide which
@@ -83,6 +76,14 @@ pub enum Source {
         // v1.6 field is removed. -- Kept here for reference only.
         // #[serde(default)]
         // generational_node_id: Option<GenerationalNodeId>,
+
+        // if possible, this is used to reroute responses in case of splits/merges
+        // v1.4 requires this to be set.
+        // v1.5 Marked as `Option`.
+        // v1.6 always set to `None`.
+        // Will be removed in v1.7.
+        // Removed in v1.7.0.
+        // partition_id: Option<PartitionId>, --- kept here for reference only.
     },
     /// Message is sent from an ingress node
     Ingress {
