@@ -67,6 +67,7 @@ async fn migrate_to_scoped_state_table_moves_unscoped_state_to_scoped_table() {
             .expect("state write should succeed");
     }
     txn.commit().await.expect("commit should succeed");
+    drop(txn);
 
     let config = Configuration::default();
     let mut ctx = MigrationContext::new(

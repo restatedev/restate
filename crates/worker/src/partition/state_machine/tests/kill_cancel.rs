@@ -268,6 +268,7 @@ async fn kill_call_tree() -> anyhow::Result<()> {
     invocation_status.get_journal_metadata_mut().unwrap().length = 4;
     tx.put_invocation_status(&invocation_id, &invocation_status)?;
     tx.commit().await?;
+    drop(tx);
 
     // Now let's send the termination command
     let actions = test_env
@@ -424,6 +425,7 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
         &Timer::CompleteJournalEntry(invocation_id, (sleep_entry_idx + 1) as u32),
     )?;
     tx.commit().await?;
+    drop(tx);
 
     let actions = test_env
         .apply(commands::TerminateInvocationCommand::test_envelope(
@@ -563,6 +565,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
         &Timer::CompleteJournalEntry(invocation_id, (sleep_entry_idx + 1) as u32),
     )?;
     tx.commit().await?;
+    drop(tx);
 
     let request_id = PartitionProcessorRpcRequestId::new();
     let actions = test_env
@@ -662,6 +665,7 @@ async fn cancel_invocation_entry_referring_to_previous_entry() {
     tx.put_invocation_status(&invocation_id, &invocation_status)
         .unwrap();
     tx.commit().await.unwrap();
+    drop(tx);
 
     // Now create cancel invocation entry
     let actions = test_env
