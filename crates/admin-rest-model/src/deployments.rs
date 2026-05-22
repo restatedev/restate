@@ -10,7 +10,6 @@
 
 use http::{Uri, Version};
 use restate_serde_util::SerdeableHeaderHashMap;
-use restate_types::deployment::HttpAuth;
 use restate_types::identifiers::ServiceRevision;
 use restate_types::identifiers::{DeploymentId, LambdaARN};
 use restate_types::schema::deployment::{EndpointLambdaCompression, ProtocolType};
@@ -19,6 +18,73 @@ use restate_types::schema::service::ServiceMetadata;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::collections::HashMap;
+
+/// Wire-side per-deployment HTTP authentication block.
+///
+/// Deliberately independent from `restate_types::deployment::HttpAuth`:
+/// the persisted shape evolves under storage-format compatibility
+/// rules, the wire shape evolves under REST API versioning rules, and
+/// sharing a single struct couples those evolutions. The two types are
+/// converted at the REST handler boundary via the `From` impls below.
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum HttpAuth {
+    GoogleIdToken(GoogleIdTokenAuth),
+}
+
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct GoogleIdTokenAuth {
+    /// Service account email to impersonate via
+    /// `iamcredentials:generateIdToken`. None means use the ambient ADC
+    /// identity directly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<String>))]
+    pub impersonate_service_account: Option<bytestring::ByteString>,
+    /// Explicit OIDC `aud` claim. None means derive from the deployment
+    /// URL origin per the audience-derivation algorithm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<String>))]
+    pub audience: Option<bytestring::ByteString>,
+}
+
+impl From<HttpAuth> for restate_types::deployment::HttpAuth {
+    fn from(value: HttpAuth) -> Self {
+        match value {
+            HttpAuth::GoogleIdToken(g) => {
+                restate_types::deployment::HttpAuth::GoogleIdToken(g.into())
+            }
+        }
+    }
+}
+
+impl From<restate_types::deployment::HttpAuth> for HttpAuth {
+    fn from(value: restate_types::deployment::HttpAuth) -> Self {
+        match value {
+            restate_types::deployment::HttpAuth::GoogleIdToken(g) => {
+                HttpAuth::GoogleIdToken(g.into())
+            }
+        }
+    }
+}
+
+impl From<GoogleIdTokenAuth> for restate_types::deployment::GoogleIdTokenAuth {
+    fn from(value: GoogleIdTokenAuth) -> Self {
+        restate_types::deployment::GoogleIdTokenAuth {
+            impersonate_service_account: value.impersonate_service_account,
+            audience: value.audience,
+        }
+    }
+}
+
+impl From<restate_types::deployment::GoogleIdTokenAuth> for GoogleIdTokenAuth {
+    fn from(value: restate_types::deployment::GoogleIdTokenAuth) -> Self {
+        GoogleIdTokenAuth {
+            impersonate_service_account: value.impersonate_service_account,
+            audience: value.audience,
+        }
+    }
+}
 
 // This enum could be a struct with a nested enum to avoid repeating some fields, but serde(flatten) unfortunately breaks the openapi code generation
 #[serde_as]
@@ -91,10 +157,12 @@ pub enum RegisterDeploymentRequest {
         ///
         /// Optional per-deployment authentication configuration. When
         /// set to `GoogleIdToken`, Restate mints a Google-signed OIDC
-        /// ID token for each request and attaches it to the
-        /// `Authorization` header (or `X-Serverless-Authorization` if
-        /// the deployment's `additional_headers` already carries
-        /// `Authorization`).
+        /// ID token for each request and attaches it as
+        /// `X-Serverless-Authorization: Bearer <token>`. Cloud Run
+        /// validates this header in precedence over `Authorization`
+        /// and strips it before forwarding to the container, so any
+        /// `Authorization` placed in `additional_headers` passes
+        /// through to the workload unchanged.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         auth: Option<HttpAuth>,
     },

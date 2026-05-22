@@ -125,7 +125,10 @@ pub fn add_deployment_to_kv_table(deployment: &Deployment, table: &mut Table) {
             table.add_kv_row("Transport:", render_transport_protocol(deployment));
             table.add_kv_row("Protocol Style:", format!("{protocol_type}"));
             table.add_kv_row("Endpoint:", uri);
-            if let Some(restate_types::deployment::HttpAuth::GoogleIdToken(token_auth)) = auth {
+            if let Some(restate_admin_rest_model::deployments::HttpAuth::GoogleIdToken(
+                token_auth,
+            )) = auth
+            {
                 let impersonation = token_auth
                     .impersonate_service_account
                     .as_ref()

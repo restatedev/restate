@@ -56,28 +56,28 @@ pub struct Register {
     assume_role_arn: Option<String>,
 
     /// Enable Google OIDC ID-token authentication for this HTTP deployment.
-    /// Restate will mint a Google-signed ID token for each request and attach
-    /// it as the Authorization Bearer header (or X-Serverless-Authorization
-    /// if the deployment's additional headers already carry Authorization).
-    /// Implied by --impersonate-service-account and --audience.
+    /// Restate will mint a Google-signed ID token for each request and
+    /// attach it as the X-Serverless-Authorization Bearer header. Implied by
+    /// --gcp-impersonate-service-account and --gcp-audience.
     /// Note: Workload Identity Federation (external_account) and gcloud
     /// user credentials (authorized_user) cannot mint ID tokens directly
-    /// and must be paired with --impersonate-service-account.
+    /// and must be paired with --gcp-impersonate-service-account.
     #[clap(long)]
-    id_token: bool,
+    gcp_id_token: bool,
 
     /// Service account email to impersonate when minting the Google ID token,
     /// via the IAM Credentials generateIdToken API. Requires the caller to
     /// hold roles/iam.serviceAccountOpenIdTokenCreator on the target SA.
-    /// Implies --id-token.
+    /// Implies --gcp-id-token.
     #[clap(long)]
-    impersonate_service_account: Option<String>,
+    gcp_impersonate_service_account: Option<String>,
 
     /// Explicit OIDC `aud` claim for minted Google ID tokens. Defaults to the
     /// deployment URL origin (scheme://host[:port]). Set this for Cloud Run
-    /// services behind a custom domain or load balancer. Implies --id-token.
+    /// services behind a custom domain or load balancer. Implies
+    /// --gcp-id-token.
     #[clap(long)]
-    audience: Option<String>,
+    gcp_audience: Option<String>,
 
     /// Additional header that will be sent to the endpoint during the discovery request.
     ///
@@ -227,11 +227,11 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     }
 
     // Build the auth field from the GCP flags. Any of the three positive
-    // flags implies --id-token. The CLI rejects --id-token applied to a
-    // Lambda ARN before issuing the REST call (REQ-CLI-05).
-    let wants_id_token = discover_opts.id_token
-        || discover_opts.impersonate_service_account.is_some()
-        || discover_opts.audience.is_some();
+    // flags implies --gcp-id-token. The CLI rejects --gcp-id-token applied
+    // to a Lambda ARN before issuing the REST call (REQ-CLI-05).
+    let wants_id_token = discover_opts.gcp_id_token
+        || discover_opts.gcp_impersonate_service_account.is_some()
+        || discover_opts.gcp_audience.is_some();
     // Gate the GCP auth flags by the negotiated admin API version. The
     // server-side `auth` field was introduced alongside admin API V4; on
     // older servers the field is silently dropped by serde and the user
@@ -239,29 +239,31 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     // proceed if the flags are set but the server cannot honour them.
     if wants_id_token && client.admin_api_version < AdminApiVersion::V4 {
         bail!(
-            "--id-token, --impersonate-service-account, and --audience require Restate \
-             admin API V4 or later (detected: {:?}). Upgrade the Restate server, or omit \
-             the GCP auth flags.",
+            "--gcp-id-token, --gcp-impersonate-service-account, and --gcp-audience require \
+             Restate admin API V4 or later (detected: {:?}). Upgrade the Restate server, \
+             or omit the GCP auth flags.",
             client.admin_api_version
         );
     }
     let auth = if wants_id_token {
-        Some(restate_types::deployment::HttpAuth::GoogleIdToken(
-            restate_types::deployment::GoogleIdTokenAuth {
-                impersonate_service_account: discover_opts
-                    .impersonate_service_account
-                    .clone()
-                    .map(Into::into),
-                audience: discover_opts.audience.clone().map(Into::into),
-            },
-        ))
+        Some(
+            restate_admin_rest_model::deployments::HttpAuth::GoogleIdToken(
+                restate_admin_rest_model::deployments::GoogleIdTokenAuth {
+                    impersonate_service_account: discover_opts
+                        .gcp_impersonate_service_account
+                        .clone()
+                        .map(Into::into),
+                    audience: discover_opts.gcp_audience.clone().map(Into::into),
+                },
+            ),
+        )
     } else {
         None
     };
     if auth.is_some() && matches!(discover_opts.deployment, DeploymentEndpoint::Lambda(_)) {
         bail!(
-            "--id-token, --impersonate-service-account, and --audience are HTTP-only flags. \
-             Lambda deployments use --assume-role-arn instead."
+            "--gcp-id-token, --gcp-impersonate-service-account, and --gcp-audience are \
+             HTTP-only flags. Lambda deployments use --assume-role-arn instead."
         );
     }
 

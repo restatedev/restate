@@ -26,6 +26,7 @@ restate-util-time = { workspace = true, features = ["serde_with"] }
 restate-util-string = { workspace = true }
 
 bytes = { workspace = true }
+bytestring = { workspace = true }
 derive_more = { workspace = true, features = ["try_from"] }
 http = { workspace = true }
 http-serde = { workspace = true }

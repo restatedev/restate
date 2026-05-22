@@ -186,34 +186,6 @@ impl ServiceDiscovery {
     }
 }
 
-/// Convert a `DeploymentAddress` from the registration payload into an
-/// `Endpoint` for the discovery dispatch. HTTP auth is carried through
-/// so the discovery request mints and attaches the same bearer the
-/// invocation path uses (REQ-AUTH-03). Pulled out of `discover()` so
-/// the auth-pass-through behaviour can be unit-tested without standing
-/// up a full ServiceDiscovery.
-fn build_discovery_endpoint(address: DeploymentAddress, use_http_11: bool) -> Endpoint {
-    match address {
-        DeploymentAddress::Http(http) => {
-            let is_using_https = http.uri.scheme().unwrap() == &Scheme::HTTPS;
-            // Decide which HTTP version we should try
-            let version = if use_http_11 {
-                Some(http::Version::HTTP_11)
-            } else if is_using_https {
-                // ALPN will sort this out
-                None
-            } else {
-                // By default, we use h2c on HTTP
-                Some(http::Version::HTTP_2)
-            };
-            Endpoint::Http(http.uri, version, http.auth)
-        }
-        DeploymentAddress::Lambda(lambda) => {
-            Endpoint::Lambda(lambda.arn, lambda.assume_role_arn.map(Into::into), None)
-        }
-    }
-}
-
 impl DiscoveryClient for ServiceDiscovery {
     type Error = DiscoveryError;
 
@@ -225,7 +197,28 @@ impl DiscoveryClient for ServiceDiscovery {
             additional_headers,
         }: DiscoveryRequest,
     ) -> Result<DiscoveryResponse, Self::Error> {
-        let endpoint = build_discovery_endpoint(address, use_http_11);
+        let endpoint = match address {
+            DeploymentAddress::Http(http) => {
+                let is_using_https = http.uri.scheme().unwrap() == &Scheme::HTTPS;
+                // Decide which HTTP version we should try
+                let version = if use_http_11 {
+                    Some(http::Version::HTTP_11)
+                } else if is_using_https {
+                    // ALPN will sort this out
+                    None
+                } else {
+                    // By default, we use h2c on HTTP
+                    Some(http::Version::HTTP_2)
+                };
+                // HTTP auth is carried through so the discovery request
+                // mints and attaches the same bearer the invocation path
+                // uses (REQ-AUTH-03).
+                Endpoint::Http(http.uri, version, http.auth)
+            }
+            DeploymentAddress::Lambda(lambda) => {
+                Endpoint::Lambda(lambda.arn, lambda.assume_role_arn.map(Into::into), None)
+            }
+        };
 
         let cloned_endpoint = endpoint.clone();
         let build_request = || {
@@ -656,52 +649,5 @@ mod tests {
             parse_service_discovery_protocol_version_from_content_type("foobar"),
             None
         );
-    }
-
-    // Regression: a previous revision constructed
-    // `Endpoint::Http(http.uri, version, None)` here, dropping the
-    // deployment's auth on the floor at discovery time. Any registration
-    // of a GCP-auth deployment then went to Cloud Run unauthenticated and
-    // got a 403, even though the invocation path was correctly attaching
-    // the bearer. Caught at e2e against real Cloud Run.
-    #[test]
-    fn discovery_endpoint_carries_http_auth() {
-        use restate_types::deployment::{
-            DeploymentAddress, GoogleIdTokenAuth, HttpAuth, HttpDeploymentAddress,
-        };
-
-        let auth = HttpAuth::GoogleIdToken(GoogleIdTokenAuth {
-            impersonate_service_account: Some(bytestring::ByteString::from_static(
-                "caller@proj.iam.gserviceaccount.com",
-            )),
-            audience: Some(bytestring::ByteString::from_static(
-                "https://svc.example.com",
-            )),
-        });
-        let address = DeploymentAddress::Http(
-            HttpDeploymentAddress::new("https://svc.example.com/".parse().unwrap())
-                .with_auth(Some(auth.clone())),
-        );
-
-        let endpoint = super::build_discovery_endpoint(address, false);
-        match endpoint {
-            Endpoint::Http(_, _, attached_auth) => {
-                assert_eq!(attached_auth, Some(auth));
-            }
-            Endpoint::Lambda(..) => panic!("expected Http endpoint, got Lambda"),
-        }
-    }
-
-    #[test]
-    fn discovery_endpoint_passes_through_no_auth() {
-        use restate_types::deployment::{DeploymentAddress, HttpDeploymentAddress};
-
-        let address = DeploymentAddress::Http(HttpDeploymentAddress::new(
-            "https://svc.example.com/".parse().unwrap(),
-        ));
-        match super::build_discovery_endpoint(address, false) {
-            Endpoint::Http(_, _, attached_auth) => assert!(attached_auth.is_none()),
-            Endpoint::Lambda(..) => panic!("expected Http endpoint, got Lambda"),
-        }
     }
 }

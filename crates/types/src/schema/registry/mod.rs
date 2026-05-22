@@ -117,6 +117,126 @@ enum SchemaRegistryErrorInner {
     Internal(String),
 }
 
+/// Validation failures for the per-deployment HTTP auth block.
+///
+/// Carries the offending field name so callers (the REST handler) can
+/// surface it as a structured `400 Bad Request` instead of a generic
+/// schema error. Validation gates registration; if it fails, the call
+/// never reaches the deployment-merge logic in the updater.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[error("invalid HTTP auth configuration: field={field}: {message}")]
+pub struct HttpAuthValidationError {
+    pub field: &'static str,
+    pub message: String,
+}
+
+impl HttpAuthValidationError {
+    fn invalid_field(field: &'static str, message: String) -> Self {
+        Self { field, message }
+    }
+}
+
+/// Validate the per-deployment HTTP `auth` invariants against the
+/// effective (uri, additional_headers) tuple. REQ-VAL-01 enforces the
+/// https-or-loopback scheme constraint; REQ-VAL-02 rejects a customer
+/// `X-Serverless-Authorization` because the dispatch path always uses
+/// that header for the minted ID token.
+///
+/// Caller is responsible for only invoking this when `auth` is set on
+/// the persisted or wire shape; the helper does not look at the auth
+/// contents (Google IdToken has no shape-level invariants today).
+pub fn validate_http_auth(
+    uri: &Uri,
+    additional_headers: Option<&Headers>,
+) -> Result<(), HttpAuthValidationError> {
+    let scheme_ok = uri
+        .scheme()
+        .map(|s| s.as_str().eq_ignore_ascii_case("https"))
+        .unwrap_or(false);
+    if !scheme_ok && !is_loopback_or_private_host(uri) {
+        return Err(HttpAuthValidationError::invalid_field(
+            "auth",
+            format!(
+                "GCP authentication requires an https URI for non-loopback/private hosts; got {uri}"
+            ),
+        ));
+    }
+
+    if let Some(headers) = additional_headers {
+        let has_xserv = headers.keys().any(|k| {
+            k.as_str()
+                .eq_ignore_ascii_case("x-serverless-authorization")
+        });
+        if has_xserv {
+            return Err(HttpAuthValidationError::invalid_field(
+                "additional_headers",
+                "X-Serverless-Authorization in additional_headers is not allowed when \
+                 GCP auth is enabled; the minted ID token uses this header. Place any \
+                 static bearer on Authorization instead; Cloud Run forwards it to the \
+                 workload unchanged."
+                    .to_owned(),
+            ));
+        }
+    }
+
+    if is_loopback_or_private_host(uri) {
+        tracing::warn!(
+            uri = %uri,
+            "GCP auth configured for a loopback/private deployment URI; \
+             tokens will still be minted and attached"
+        );
+    }
+
+    Ok(())
+}
+
+/// Compute the post-merge (uri, additional_headers) tuple a PATCH would
+/// produce so it can be fed back into `validate_http_auth`. Mirrors the
+/// merge in `update_deployment`: a missing field on the PATCH inherits
+/// from the persisted record.
+pub fn effective_http_patch_inputs<'a>(
+    patch_uri: Option<&'a Uri>,
+    patch_headers: Option<&'a Headers>,
+    existing_uri: &'a Uri,
+    existing_headers: &'a Headers,
+) -> (&'a Uri, std::borrow::Cow<'a, Headers>) {
+    let effective_uri = patch_uri.unwrap_or(existing_uri);
+    let effective_headers = match patch_headers {
+        Some(h) => std::borrow::Cow::Borrowed(h),
+        None => std::borrow::Cow::Borrowed(existing_headers),
+    };
+    (effective_uri, effective_headers)
+}
+
+fn is_loopback_or_private_host(uri: &Uri) -> bool {
+    let Some(authority) = uri.authority() else {
+        return false;
+    };
+    let host = authority.host();
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    // Strip IPv6 brackets if present.
+    let host_clean = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    if let Ok(ipv4) = host_clean.parse::<std::net::Ipv4Addr>() {
+        return ipv4.is_loopback() || ipv4.is_private();
+    }
+    if let Ok(ipv6) = host_clean.parse::<std::net::Ipv6Addr>() {
+        // Loopback, ULA (fc00::/7), or link-local (fe80::/10).
+        if ipv6.is_loopback() {
+            return true;
+        }
+        let segs = ipv6.segments();
+        let ula = (segs[0] & 0xfe00) == 0xfc00;
+        let ll = (segs[0] & 0xffc0) == 0xfe80;
+        return ula || ll;
+    }
+    false
+}
+
 /// Whether to apply the changes or not
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub enum ApplyMode {

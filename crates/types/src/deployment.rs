@@ -8,6 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+pub mod http_auth;
+
+pub use http_auth::{GoogleIdTokenAuth, HttpAuth, derive_audience};
+
 use crate::identifiers::{DeploymentId, LambdaARN};
 use crate::service_protocol::ServiceProtocolVersion;
 use http::{HeaderName, HeaderValue, Uri};
@@ -59,64 +63,6 @@ impl fmt::Display for LambdaDeploymentAddress {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Display::fmt(&self.arn, f)
     }
-}
-
-/// Per-deployment authentication configuration for HTTP deployments.
-///
-/// Externally-tagged enum so future providers (e.g. non-Google OIDC
-/// sources) can be added without altering the encoding of the existing
-/// `GoogleIdToken` variant.
-#[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub enum HttpAuth {
-    GoogleIdToken(GoogleIdTokenAuth),
-}
-
-#[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct GoogleIdTokenAuth {
-    /// Service account email to impersonate via
-    /// `iamcredentials:generateIdToken`. None means use the ambient ADC
-    /// identity directly.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "utoipa-schema", schema(value_type = Option<String>))]
-    pub impersonate_service_account: Option<bytestring::ByteString>,
-    /// Explicit OIDC `aud` claim. None means derive from the deployment
-    /// URL origin per the audience-derivation algorithm.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "utoipa-schema", schema(value_type = Option<String>))]
-    pub audience: Option<bytestring::ByteString>,
-}
-
-/// Derive the OIDC audience from a deployment URI per the audience
-/// derivation algorithm (REQ-DEP-07):
-///
-/// - lowercase scheme
-/// - host reproduced verbatim (IPv6 literals keep their brackets)
-/// - explicit port only when present in the URI (default ports omitted)
-/// - userinfo, path, query, fragment discarded
-///
-/// Returns `None` if the URI is missing a scheme or a host. Single
-/// source of truth for both the service-client (which uses the value
-/// when minting tokens) and the CLI (which displays it in `dp
-/// describe`).
-pub fn derive_audience(uri: &Uri) -> Option<String> {
-    let scheme = uri.scheme()?;
-    let authority = uri.authority()?;
-    let host = authority.host();
-    let port = authority.port_u16();
-
-    let mut out = String::with_capacity(scheme.as_str().len() + host.len() + 16);
-    for c in scheme.as_str().chars() {
-        out.extend(c.to_lowercase());
-    }
-    out.push_str("://");
-    out.push_str(host);
-    if let Some(p) = port {
-        out.push(':');
-        out.push_str(&p.to_string());
-    }
-    Some(out)
 }
 
 /// This is the representation of a deployment address

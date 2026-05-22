@@ -11,9 +11,12 @@
 //! Integration test for the GCP OIDC ID-token bearer-attach path.
 //!
 //! Covers REQ-TEST-01 (local HTTP test server equivalent to Cloud Run
-//! emulator), REQ-TEST-02 (Authorization: Bearer present with correct
-//! audience in JWT), REQ-TEST-03 (X-Serverless-Authorization fallback
-//! when conflict).
+//! emulator) and REQ-TEST-02 (X-Serverless-Authorization: Bearer
+//! present with correct audience in JWT). The minted token always lands
+//! in `X-Serverless-Authorization`; Cloud Run validates that header in
+//! precedence over `Authorization` and strips it before forwarding to
+//! the container, leaving any customer-supplied `Authorization` in
+//! `additional_headers` to pass through to the workload.
 //!
 //! The token is pre-seeded into `GcpTokenClient`'s cache so the test
 //! does not depend on ADC discovery or external network. The
@@ -184,22 +187,26 @@ async fn bearer_attached_with_derived_audience() {
 
     let captured = recorded.lock().unwrap();
     let bearer = captured
-        .get("authorization")
+        .get("x-serverless-authorization")
         .cloned()
-        .expect("Authorization header present");
+        .expect("X-Serverless-Authorization header present");
     assert!(
         bearer.starts_with("Bearer "),
-        "Authorization header should start with 'Bearer ', got {bearer}"
+        "X-Serverless-Authorization header should start with 'Bearer ', got {bearer}"
     );
     assert_eq!(extract_audience(&bearer), expected_audience);
     assert!(
-        !captured.contains_key("x-serverless-authorization"),
-        "x-serverless-authorization should not appear when no conflict"
+        !captured.contains_key("authorization"),
+        "Authorization must not appear when the deployment does not supply one"
     );
 }
 
 #[tokio::test]
-async fn bearer_uses_x_serverless_authorization_on_conflict() {
+async fn customer_authorization_passes_through_alongside_minted_xsa() {
+    // Cloud Run strips X-Serverless-Authorization before forwarding to
+    // the container; placing the minted token there leaves Authorization
+    // free for the customer's own app-level auth, which the workload
+    // receives unchanged.
     let (upstream_addr, recorded) = upstream_recorder().await;
     let upstream_uri: hyper::Uri = format!("http://{upstream_addr}/").parse().unwrap();
     let expected_audience = format!("http://{upstream_addr}");
@@ -241,7 +248,7 @@ async fn bearer_uses_x_serverless_authorization_on_conflict() {
     let x_bearer = captured
         .get("x-serverless-authorization")
         .cloned()
-        .expect("X-Serverless-Authorization header present on conflict");
+        .expect("X-Serverless-Authorization header present");
     assert!(x_bearer.starts_with("Bearer "));
     assert_eq!(extract_audience(&x_bearer), expected_audience);
 }
@@ -271,7 +278,7 @@ async fn bearer_uses_explicit_audience_when_provided() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let captured = recorded.lock().unwrap();
-    let bearer = captured.get("authorization").cloned().unwrap();
+    let bearer = captured.get("x-serverless-authorization").cloned().unwrap();
     assert_eq!(extract_audience(&bearer), explicit_audience);
 }
 

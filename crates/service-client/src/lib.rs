@@ -26,6 +26,14 @@ pub use crate::http::HttpError;
 pub use crate::lambda::AssumeRoleCacheMode;
 use crate::request_identity::SignRequest;
 use ::http::{HeaderName, HeaderValue, Version};
+
+/// Header slot we always use for the Restate-minted Google ID token on
+/// HTTP deployments with GCP auth enabled. Cloud Run validates this
+/// header in precedence over `Authorization` and strips it before
+/// forwarding to the container, so customer-supplied `Authorization` in
+/// `additional_headers` passes through to the workload unchanged.
+const X_SERVERLESS_AUTHORIZATION: HeaderName =
+    HeaderName::from_static("x-serverless-authorization");
 use arc_swap::ArcSwapOption;
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -196,15 +204,7 @@ impl ServiceClient {
                                     },
                                 )
                             })?;
-                        let conflict = headers.contains_key(::http::header::AUTHORIZATION);
-                        if conflict {
-                            headers.insert(
-                                ::http::HeaderName::from_static("x-serverless-authorization"),
-                                bearer,
-                            );
-                        } else {
-                            headers.insert(::http::header::AUTHORIZATION, bearer);
-                        }
+                        headers.insert(X_SERVERLESS_AUTHORIZATION, bearer);
                     }
                     let resp = http
                         .request(uri.clone(), version, method, body, path, headers)

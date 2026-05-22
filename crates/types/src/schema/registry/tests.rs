@@ -162,3 +162,147 @@ pub async fn register_deployment_lambda() {
         .get()
         .assert_service_revision(GREETER_SERVICE_NAME, 3);
 }
+
+#[cfg(test)]
+mod http_auth_validation_tests {
+    use super::super::{HttpAuthValidationError, effective_http_patch_inputs, validate_http_auth};
+    use crate::deployment::Headers;
+    use http::{HeaderName, HeaderValue, Uri};
+
+    fn assert_invalid_field(result: Result<(), HttpAuthValidationError>, expected_field: &str) {
+        match result {
+            Err(err) => assert_eq!(err.field, expected_field),
+            Ok(()) => panic!("expected InvalidField({expected_field}), got Ok"),
+        }
+    }
+
+    // REQ-VAL-01: non-https rejected for public hosts; allowed for loopback/private.
+    #[test]
+    fn req_val_01_rejects_non_https_public_host() {
+        let uri: Uri = "http://example.com/".parse().unwrap();
+        assert_invalid_field(validate_http_auth(&uri, None), "auth");
+    }
+
+    #[test]
+    fn req_val_01_accepts_https_public_host() {
+        let uri: Uri = "https://svc.example.com/".parse().unwrap();
+        validate_http_auth(&uri, None).expect("https public host accepted");
+    }
+
+    #[test]
+    fn req_val_01_accepts_non_https_loopback() {
+        for host in ["localhost", "127.0.0.1", "[::1]", "10.0.0.1", "[fc00::1]"] {
+            let uri: Uri = format!("http://{host}/").parse().unwrap();
+            validate_http_auth(&uri, None)
+                .unwrap_or_else(|e| panic!("expected accept for {host}, got {e:?}"));
+        }
+    }
+
+    // REQ-VAL-02: reject any user-supplied X-Serverless-Authorization
+    // header. The dispatch path always puts the minted ID token in this
+    // slot; a static value there would collide with the mint.
+    #[test]
+    fn req_val_02_rejects_x_serverless_authorization_header() {
+        let uri: Uri = "https://svc.example.com/".parse().unwrap();
+        let mut headers: Headers = Headers::new();
+        headers.insert(
+            HeaderName::from_static("x-serverless-authorization"),
+            HeaderValue::from_static("Bearer y"),
+        );
+
+        assert_invalid_field(
+            validate_http_auth(&uri, Some(&headers)),
+            "additional_headers",
+        );
+    }
+
+    // Same rejection applies when both headers are supplied: the
+    // X-Serverless-Authorization slot is reserved for the minted token.
+    #[test]
+    fn req_val_02_rejects_x_serverless_authorization_alongside_authorization() {
+        let uri: Uri = "https://svc.example.com/".parse().unwrap();
+        let mut headers: Headers = Headers::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_static("Bearer x"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-serverless-authorization"),
+            HeaderValue::from_static("Bearer y"),
+        );
+
+        assert_invalid_field(
+            validate_http_auth(&uri, Some(&headers)),
+            "additional_headers",
+        );
+    }
+
+    #[test]
+    fn req_val_02_accepts_single_authorization_header() {
+        let uri: Uri = "https://svc.example.com/".parse().unwrap();
+        let mut headers: Headers = Headers::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_static("Bearer x"),
+        );
+
+        validate_http_auth(&uri, Some(&headers)).expect("single Authorization header is allowed");
+    }
+
+    // PATCH-side regression: the helper `effective_http_patch_inputs`
+    // must reproduce the merge the schema registry does, so that a PATCH
+    // which would change the URI to http:// against an https-registered
+    // deployment with auth still fails REQ-VAL-01.
+    #[test]
+    fn patch_validation_rejects_http_uri_change_when_auth_persisted() {
+        let existing_uri: Uri = "https://svc.example.com/".parse().unwrap();
+        let existing_headers = Headers::new();
+        let new_uri: Uri = "http://attacker.example.com/".parse().unwrap();
+
+        let (effective_uri, effective_headers) =
+            effective_http_patch_inputs(Some(&new_uri), None, &existing_uri, &existing_headers);
+
+        assert_invalid_field(
+            validate_http_auth(effective_uri, Some(effective_headers.as_ref())),
+            "auth",
+        );
+    }
+
+    // PATCH-side regression: a PATCH that adds an
+    // X-Serverless-Authorization header to an auth-enabled deployment
+    // must fail REQ-VAL-02 (the minted token would be shadowed).
+    #[test]
+    fn patch_validation_rejects_added_x_serverless_authorization_header() {
+        let existing_uri: Uri = "https://svc.example.com/".parse().unwrap();
+        let existing_headers = Headers::new();
+
+        let mut patched = Headers::new();
+        patched.insert(
+            HeaderName::from_static("x-serverless-authorization"),
+            HeaderValue::from_static("Bearer attacker"),
+        );
+
+        let (effective_uri, effective_headers) =
+            effective_http_patch_inputs(None, Some(&patched), &existing_uri, &existing_headers);
+
+        assert_invalid_field(
+            validate_http_auth(effective_uri, Some(effective_headers.as_ref())),
+            "additional_headers",
+        );
+    }
+
+    // A no-op PATCH (no uri, no headers) must still pass validation: the
+    // effective tuple is just the persisted record's tuple, which was
+    // accepted at registration time.
+    #[test]
+    fn patch_validation_accepts_noop_against_persisted_safe_record() {
+        let existing_uri: Uri = "https://svc.example.com/".parse().unwrap();
+        let existing_headers = Headers::new();
+
+        let (effective_uri, effective_headers) =
+            effective_http_patch_inputs(None, None, &existing_uri, &existing_headers);
+
+        validate_http_auth(effective_uri, Some(effective_headers.as_ref()))
+            .expect("no-op PATCH against safe persisted record is accepted");
+    }
+}

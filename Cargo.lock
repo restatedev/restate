@@ -7223,6 +7223,7 @@ name = "restate-admin-rest-model"
 version = "1.7.0-dev"
 dependencies = [
  "bytes",
+ "bytestring",
  "derive_more",
  "http 1.4.0",
  "http-serde",
