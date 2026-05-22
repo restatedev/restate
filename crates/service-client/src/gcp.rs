@@ -36,10 +36,13 @@ use parking_lot::Mutex;
 const CACHE_EVICTION_SKEW: Duration = Duration::from_secs(60);
 
 /// Per-attempt hard timeout on a single mint call. Retry policy is
-/// signaled to the caller via `ServiceClientError::is_retryable`, which
-/// inspects the inner `GcpAuthError` variant: transient/network-shaped
-/// errors (`Adc`, `Timeout`) are retryable, config-shaped ones (`Build`,
-/// `Mint`) are not.
+/// signaled to the caller via `ServiceClientError::is_retryable`,
+/// which inspects the inner `GcpAuthError` variant: `Adc`, `Timeout`,
+/// and `Mint` are retryable; only `Build` (constructing the
+/// credentials builder, e.g. malformed audience) stays non-retryable.
+/// `Mint` is blanket-retryable because the underlying SDK error type
+/// mixes transient HTTP failures with permanent ones without a clean
+/// status to split on; the dispatch retry loop bounds the cost.
 const MINT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Cache mode for minted ID tokens. Matches the Lambda

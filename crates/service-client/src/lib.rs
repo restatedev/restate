@@ -256,13 +256,31 @@ impl ServiceClientError {
         match self {
             ServiceClientError::Http(_, http_error) => http_error.is_retryable(),
             ServiceClientError::Lambda(_, lambda_error) => lambda_error.is_retryable(),
-            // GCP token-mint errors split by shape: transient/network
-            // failures (ADC load blips, metadata-server slowness) are
-            // retryable; config-shaped failures (bad audience, missing
-            // permissions surfaced through Build/Mint) are not.
+            // GCP token-mint errors:
+            //   - `Adc` (Application Default Credentials load failure)
+            //     is treated as transient (e.g. metadata-server blip).
+            //   - `Timeout` from the per-attempt deadline is transient
+            //     by definition.
+            //   - `Build` (constructing the credentials builder) is
+            //     genuinely config-shaped (e.g. malformed audience) and
+            //     stays non-retryable.
+            //   - `Mint` (the actual `id_token().await` call) is
+            //     blanket-retryable: the underlying SDK error mixes
+            //     transient HTTP errors (429, 5xx, network failures
+            //     from the metadata server or IAM Credentials API) with
+            //     permanent failures (bad impersonation perms, audience
+            //     refused by the upstream), and the surfaced error type
+            //     does not expose the HTTP status cleanly enough to
+            //     split. The trade-off is that permanent mint failures
+            //     retry-and-fail-consistently rather than fail-fast;
+            //     this is acceptable because the discovery / invoker
+            //     retry loops already bound the attempt count so the
+            //     worst-case overhead is bounded.
             ServiceClientError::GcpAuth(_, gcp_error) => match gcp_error {
-                gcp::GcpAuthError::Adc { .. } | gcp::GcpAuthError::Timeout { .. } => true,
-                gcp::GcpAuthError::Build { .. } | gcp::GcpAuthError::Mint { .. } => false,
+                gcp::GcpAuthError::Adc { .. }
+                | gcp::GcpAuthError::Timeout { .. }
+                | gcp::GcpAuthError::Mint { .. } => true,
+                gcp::GcpAuthError::Build { .. } => false,
             },
             ServiceClientError::IdentityV1(_) => false, // this really should never happen
         }
@@ -423,7 +441,13 @@ mod tests {
                     impersonate: "sa@p.iam.gserviceaccount.com".into(),
                     message: "permission denied".into(),
                 },
-                false,
+                // Mint is blanket-retryable: the SDK error type mixes
+                // transient (429/5xx/network) with permanent
+                // (permissions, audience) failures without a clean
+                // status to split on. Permanent failures will retry
+                // and fail consistently; the dispatch retry loop
+                // bounds the cost.
+                true,
             ),
         ];
         for (err, expected) in cases {
