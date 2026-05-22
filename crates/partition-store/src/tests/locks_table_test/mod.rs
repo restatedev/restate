@@ -84,6 +84,7 @@ async fn scan_all_locked_observes_active_locks_across_partition_keys(rocksdb: &m
     txn.acquire_lock(&no_scope, &released_lock, &lock_state(4_000));
     txn.release_lock(&no_scope, &released_lock);
     txn.commit().await.expect("commit should succeed");
+    drop(txn);
 
     let db = rocksdb.partition_db();
 

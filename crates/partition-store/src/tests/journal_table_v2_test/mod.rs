@@ -244,6 +244,7 @@ async fn sleep_journal() {
     delete_journal(&mut txn, 10);
 
     txn.commit().await.expect("should not fail");
+    drop(txn);
 
     let mut txn = rocksdb.transaction();
     verify_journal_deleted(&mut txn, 10).await;

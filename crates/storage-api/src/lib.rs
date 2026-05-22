@@ -134,5 +134,5 @@ pub trait Transaction:
     + lock_table::WriteLockTable
     + Send
 {
-    fn commit(self) -> impl Future<Output = Result<()>> + Send;
+    fn commit(&mut self) -> impl Future<Output = Result<()>> + Send;
 }

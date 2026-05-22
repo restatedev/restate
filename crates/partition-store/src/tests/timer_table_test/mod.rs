@@ -169,6 +169,7 @@ pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     delete_the_first_timer(&mut txn).await;
 
     txn.commit().await.expect("should not fail");
+    drop(txn);
 
     let mut txn = rocksdb.transaction();
     verify_next_timer_after_deletion(&mut txn).await;

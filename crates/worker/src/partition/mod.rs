@@ -615,6 +615,9 @@ where
             info!("Partition {partition_id} started");
         }
 
+        let mut partition_store_cloned = partition_store.clone();
+        let mut transaction = partition_store_cloned.transaction();
+
         loop {
             let config = live_config.live_load();
             tokio::select! {
@@ -663,7 +666,7 @@ where
                     // check that reading has succeeded
                     operation?;
 
-                    let mut transaction = partition_store.transaction();
+                    transaction.clear();
 
                     // clear buffers used when applying the next record
                     action_collector.clear();
@@ -765,7 +768,7 @@ where
                                 self.status.effective_mode = RunMode::Follower;
                             }
 
-                            transaction = partition_store.transaction();
+                            transaction.clear();
                         }
                     }
 

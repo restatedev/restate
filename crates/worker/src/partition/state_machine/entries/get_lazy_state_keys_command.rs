@@ -88,6 +88,7 @@ mod tests {
         txn.put_user_state(&service_id, &Bytes::from_static(b"key2"), b"value2")
             .unwrap();
         txn.commit().await.unwrap();
+        drop(txn);
 
         let completion_id = 1;
         let actions = test_env

@@ -324,6 +324,7 @@ async fn purge_completed_workflow() {
     )
     .unwrap();
     txn.commit().await.unwrap();
+    drop(txn);
 
     let request_id = PartitionProcessorRpcRequestId::new();
     let actions = test_env
