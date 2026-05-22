@@ -261,7 +261,7 @@ where
         });
 
         let random_seed = if copy_prefix_up_to_index_included > 0 {
-            // We're restarting from prefix, we must retain the same random seed
+            // We're restarting from prefix, we must retain the same random seed to ensure that decisions in the prefix that depend on the random seed are replayable (does not cause non-determinism problems).
             completed_invocation.random_seed
         } else {
             if ctx.enabled_features.unique_random_seeds {
