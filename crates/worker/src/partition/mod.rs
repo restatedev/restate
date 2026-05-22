@@ -657,6 +657,7 @@ where
                         (rule_book_version >= Version::MIN).then_some(rule_book_version);
                     self.status.last_applied_schema_version =
                         self.state_machine.schema.as_ref().map(Versioned::version);
+                    self.status.enabled_features = self.state_machine.enabled_features;
                     self.status_watch_tx.send_modify(|old| {
                         old.clone_from(&self.status);
                         old.updated_at = MillisSinceEpoch::now();

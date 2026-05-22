@@ -74,6 +74,10 @@ message PartitionProcessorStatus {
   optional restate.common.Lsn target_tail_lsn = 11;
   optional restate.common.Version last_applied_rule_book_version = 13;
   optional restate.common.Version last_applied_schema_version = 14;
+  // Names of state-machine features currently enabled on this partition
+  // processor. Carried as strings so that older clients can render feature
+  // names they don't recognise.
+  repeated string enabled_features = 15;
 }
 
 message ReplicationProperty { string replication_property = 1; }

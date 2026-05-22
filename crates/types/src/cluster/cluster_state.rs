@@ -18,6 +18,7 @@ use restate_encoding::NetSerde;
 
 use crate::identifiers::{LeaderEpoch, PartitionId};
 use crate::logs::Lsn;
+use crate::partitions::features::PersistedStateMachineFeatures;
 use crate::time::MillisSinceEpoch;
 use crate::{GenerationalNodeId, PlainNodeId, Version};
 
@@ -215,6 +216,16 @@ pub struct PartitionProcessorStatus {
     /// `None` until the first schema is observed.
     #[bilrost(14)]
     pub last_applied_schema_version: Option<Version>,
+    /// State-machine features currently enabled on this partition processor.
+    /// Translated to a list of names at the protobuf boundary so older clients
+    /// can render unknown feature names without code changes.
+    #[into_prost(map = "enabled_features_to_proto", map_by_ref)]
+    #[bilrost(15)]
+    pub enabled_features: PersistedStateMachineFeatures,
+}
+
+fn enabled_features_to_proto(f: &PersistedStateMachineFeatures) -> Vec<String> {
+    f.enabled_names().map(String::from).collect()
 }
 
 impl Default for PartitionProcessorStatus {
@@ -234,6 +245,7 @@ impl Default for PartitionProcessorStatus {
             target_tail_lsn: None,
             last_applied_rule_book_version: None,
             last_applied_schema_version: None,
+            enabled_features: PersistedStateMachineFeatures::default(),
         }
     }
 }
