@@ -78,6 +78,8 @@ message PartitionProcessorStatus {
   // processor. Carried as strings so that older clients can render feature
   // names they don't recognise.
   repeated string enabled_features = 15;
+  // Partition-store on-disk storage version (StorageVersion discriminant).
+  optional uint32 storage_version = 16;
 }
 
 message ReplicationProperty { string replication_property = 1; }

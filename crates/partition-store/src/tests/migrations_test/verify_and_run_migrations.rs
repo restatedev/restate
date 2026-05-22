@@ -30,7 +30,7 @@ use restate_types::sharding::KeyRange;
 use crate::PartitionStoreManager;
 use crate::fsm_table::put_storage_version;
 use crate::keys::DecodeTableKey;
-use crate::migrations::SchemaVersion;
+use crate::migrations::StorageVersion;
 use crate::promise_table::{PromiseKey, ScopedPromiseKey};
 use crate::scan::{PhysicalScan, TableScan};
 use crate::state_table::{ScopedStateKey, StateKey};
@@ -173,7 +173,7 @@ async fn flag_off_keeps_partition_at_v1_5() {
     // Stamp the FSM as V1_5 so verify_and_run_migrations takes the migration path
     // rather than the empty-partition fast path.
     let partition_id = store.partition_id();
-    put_storage_version(&mut store, partition_id, SchemaVersion::V1_5 as u16)
+    put_storage_version(&mut store, partition_id, StorageVersion::V1_5 as u16)
         .await
         .expect("seed V1_5");
 
@@ -187,7 +187,7 @@ async fn flag_off_keeps_partition_at_v1_5() {
         .await
         .expect("verify with flag off");
 
-    assert_eq!(store.schema_version(), SchemaVersion::V1_5);
+    assert_eq!(store.storage_version(), StorageVersion::V1_5);
     assert_eq!(count_legacy_state(&store), legacy_state_before);
     assert_eq!(count_legacy_promise(&store), legacy_promise_before);
     assert_eq!(count_scoped_state(&store), 0);
@@ -215,7 +215,7 @@ async fn flag_on_migrates_and_bumps_version() {
     with_migrate_scoped_tables(false);
     let (state_entries, service_ids) = seed_unscoped_data(&mut store).await;
     let partition_id = store.partition_id();
-    put_storage_version(&mut store, partition_id, SchemaVersion::V1_5 as u16)
+    put_storage_version(&mut store, partition_id, StorageVersion::V1_5 as u16)
         .await
         .expect("seed V1_5");
     // Sanity: data really landed in the legacy tables.
@@ -229,7 +229,10 @@ async fn flag_on_migrates_and_bumps_version() {
         .await
         .expect("verify with flag on");
 
-    assert_eq!(store.schema_version(), SchemaVersion::ScopedStateAndPromise);
+    assert_eq!(
+        store.storage_version(),
+        StorageVersion::ScopedStateAndPromise
+    );
     assert_eq!(count_legacy_state(&store), 0);
     assert_eq!(count_legacy_promise(&store), 0);
     assert_eq!(count_scoped_state(&store), state_entries.len());
@@ -256,7 +259,10 @@ async fn flag_on_migrates_and_bumps_version() {
         .verify_and_run_migrations()
         .await
         .expect("second verify");
-    assert_eq!(store.schema_version(), SchemaVersion::ScopedStateAndPromise);
+    assert_eq!(
+        store.storage_version(),
+        StorageVersion::ScopedStateAndPromise
+    );
     assert_eq!(count_legacy_state(&store), 0);
     assert_eq!(count_scoped_state(&store), state_entries.len());
 
@@ -283,7 +289,10 @@ async fn flag_on_writes_post_migration_land_in_scoped() {
         .verify_and_run_migrations()
         .await
         .expect("verify fresh");
-    assert_eq!(store.schema_version(), SchemaVersion::ScopedStateAndPromise);
+    assert_eq!(
+        store.storage_version(),
+        StorageVersion::ScopedStateAndPromise
+    );
 
     let service_id = ServiceId::new(None, "svc", "k");
     {

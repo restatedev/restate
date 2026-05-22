@@ -66,5 +66,9 @@ define_table!(
         /// State-machine features currently enabled on the partition processor.
         /// Query membership with `array_has(enabled_features, 'vqueues')`.
         enabled_features: Utf8List,
+
+        /// Partition-store on-disk storage version (StorageVersion discriminant).
+        /// Set once on partition open.
+        storage_version: DataType::UInt32,
     )
 );

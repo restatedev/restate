@@ -119,6 +119,7 @@ pub async fn list_partitions(
         "DURABLE",
         "ARCHIVED",
         "LSN-LAG",
+        "STORAGE",
         "SCHEMA",
         "RULE-BOOK",
         "FEATURES",
@@ -222,6 +223,13 @@ pub async fn list_partitions(
                             // (tail - 1) - applied_lsn = tail - (applied_lsn + 1)
                             tail.value.saturating_sub(applied.value + 1).to_string()
                         })
+                        .unwrap_or_else(|| "-".to_owned()),
+                ),
+                Cell::new(
+                    processor
+                        .status
+                        .storage_version
+                        .map(|v| v.to_string())
                         .unwrap_or_else(|| "-".to_owned()),
                 ),
                 Cell::new(

@@ -47,7 +47,7 @@ use crate::fsm_table::{
     is_jc_orphan_cleanup_done, put_jc_orphan_cleanup_done, put_storage_version,
 };
 use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
-use crate::migrations::SchemaVersion;
+use crate::migrations::StorageVersion;
 use crate::partition_db::PartitionDb;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
@@ -197,7 +197,7 @@ impl TableKind {
 
 pub struct PartitionStore {
     db: PartitionDb,
-    schema_version: SchemaVersion,
+    storage_version: StorageVersion,
     key_buffer: BytesMut,
     value_buffer: BytesMut,
 }
@@ -217,7 +217,7 @@ impl Clone for PartitionStore {
     fn clone(&self) -> Self {
         PartitionStore {
             db: self.db.clone(),
-            schema_version: self.schema_version,
+            storage_version: self.storage_version,
             key_buffer: BytesMut::default(),
             value_buffer: BytesMut::default(),
         }
@@ -232,20 +232,20 @@ impl From<PartitionDb> for PartitionStore {
 
 impl PartitionStore {
     pub(crate) fn new(db: PartitionDb) -> Self {
-        let schema_version =
+        let storage_version =
             get_storage_version_from_partition_db(&db).expect("storage version must exist");
 
         Self {
             db,
-            schema_version,
+            storage_version,
             key_buffer: BytesMut::new(),
             value_buffer: BytesMut::new(),
         }
     }
 
     #[inline]
-    pub(crate) fn schema_version(&self) -> SchemaVersion {
-        self.schema_version
+    pub fn storage_version(&self) -> StorageVersion {
+        self.storage_version
     }
 
     pub fn partition_db(&self) -> &PartitionDb {
@@ -579,7 +579,7 @@ impl PartitionStore {
             key_buffer: &mut self.key_buffer,
             value_buffer: &mut self.value_buffer,
             meta: self.db.partition(),
-            schema_version: self.schema_version,
+            storage_version: self.storage_version,
             snapshot,
         }
     }
@@ -670,9 +670,9 @@ impl PartitionStore {
             .experimental
             .is_migrate_scoped_tables_enabled()
         {
-            SchemaVersion::ScopedStateAndPromise
+            StorageVersion::ScopedStateAndPromise
         } else {
-            SchemaVersion::V1_5
+            StorageVersion::V1_5
         };
 
         // We assume the partition store to be empty if it does not contain any applied lsn. The
@@ -684,21 +684,21 @@ impl PartitionStore {
             // A fresh partition store cannot have orphaned jc index entries, so mark the
             // cleanup as already done to avoid a needless scan on first startup.
             put_jc_orphan_cleanup_done(self, self.partition_id())?;
-            self.schema_version = target;
+            self.storage_version = target;
             return Ok(());
         }
 
-        let mut schema_version =
-            SchemaVersion::try_from(get_storage_version(self, self.partition_id()).await?)?;
-        if schema_version < target {
+        let mut storage_version =
+            StorageVersion::try_from(get_storage_version(self, self.partition_id()).await?)?;
+        if storage_version < target {
             // We need to run some migrations!
             debug!(
                 "Running storage migration from {:?} to {:?}",
-                schema_version, target
+                storage_version, target
             );
-            schema_version = schema_version.run_migrations_up_to(target, self).await?;
+            storage_version = storage_version.run_migrations_up_to(target, self).await?;
         }
-        self.schema_version = schema_version;
+        self.storage_version = storage_version;
 
         Ok(())
     }
@@ -815,7 +815,7 @@ pub struct PartitionStoreTransaction<'a> {
     data_cf_handle: &'a Arc<BoundColumnFamily<'a>>,
     key_buffer: &'a mut BytesMut,
     value_buffer: &'a mut BytesMut,
-    schema_version: SchemaVersion,
+    storage_version: StorageVersion,
     snapshot: Option<SnapshotWithThreadMode<'a, rocksdb::DB>>,
 }
 
@@ -939,8 +939,8 @@ impl PartitionStoreTransaction<'_> {
     }
 
     #[inline]
-    pub(crate) fn schema_version(&self) -> SchemaVersion {
-        self.schema_version
+    pub(crate) fn storage_version(&self) -> StorageVersion {
+        self.storage_version
     }
 
     #[inline]

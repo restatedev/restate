@@ -222,6 +222,10 @@ pub struct PartitionProcessorStatus {
     #[into_prost(map = "enabled_features_to_proto", map_by_ref)]
     #[bilrost(15)]
     pub enabled_features: PersistedStateMachineFeatures,
+    /// Partition-store on-disk storage version (StorageVersion discriminant).
+    /// Set once on partition open by `verify_and_run_migrations`.
+    #[bilrost(16)]
+    pub storage_version: Option<u16>,
 }
 
 fn enabled_features_to_proto(f: &PersistedStateMachineFeatures) -> Vec<String> {
@@ -246,6 +250,7 @@ impl Default for PartitionProcessorStatus {
             last_applied_rule_book_version: None,
             last_applied_schema_version: None,
             enabled_features: PersistedStateMachineFeatures::default(),
+            storage_version: None,
         }
     }
 }

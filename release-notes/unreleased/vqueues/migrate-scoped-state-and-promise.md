@@ -13,7 +13,7 @@ open that:
   the scoped state table (`KeyKind::ScopedState`) with `scope = None`.
 - Copies every row of the legacy unscoped promise table (`KeyKind::Promise`)
   into the scoped promise table (`KeyKind::ScopedPromise`) with `scope = None`.
-- Range-deletes the legacy unscoped ranges and bumps the on-disk schema version
+- Range-deletes the legacy unscoped ranges and bumps the on-disk storage version
   to `ScopedStateAndPromise` in a single atomic write batch.
 
 After the migration runs, all state and promise reads and writes on the
@@ -30,5 +30,13 @@ partition use the scoped tables exclusively, including for services with
 - **Opting in** (`experimental.migrate_scoped_tables = true`) triggers the
   migration on the next partition open. Once a partition has reached
   `ScopedStateAndPromise`, it cannot be downgraded to a server version that
-  does not recognize the new schema version — the older binary will refuse to
+  does not recognize the new storage version — the older binary will refuse to
   open the partition.
+
+### Observing the Storage Version
+
+The current storage version of each local partition is now surfaced as the
+`storage_version` column in the `partition_state` SQL table and as the
+`STORAGE` column in `restatectl partition ls`. Operators can check at a glance
+whether a partition has reached `ScopedStateAndPromise` (value `2`) or still
+sits on `V1_5` (value `1`).

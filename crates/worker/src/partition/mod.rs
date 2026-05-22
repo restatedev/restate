@@ -184,7 +184,7 @@ impl PartitionProcessorBuilder {
             target_leader_state_rx,
             network_svc_rx: rpc_rx,
             status_watch_tx,
-            status,
+            mut status,
             invoker_capacity,
             leader_handles_registry,
             rule_book_cache,
@@ -242,6 +242,8 @@ impl PartitionProcessorBuilder {
         );
 
         let last_applied_log_lsn_watch = watch::Sender::new(Lsn::INVALID);
+        // The storage version does not change after having opened the partition store
+        status.storage_version = Some(partition_store.storage_version() as u16);
 
         Ok(PartitionProcessor {
             key_filter: KeyFilter::Within(partition_store.partition_key_range().into()),

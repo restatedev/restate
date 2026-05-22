@@ -27,7 +27,7 @@ use restate_types::config::Configuration;
 use restate_types::sharding::KeyRange;
 use restate_types::sharding::subsharding::ShardPlan;
 
-use crate::fsm_table::append_schema_version_to_wb;
+use crate::fsm_table::append_storage_version_to_wb;
 use crate::{PartitionDb, PartitionStore, Result};
 
 use self::migrate_to_scoped_promise_table::{
@@ -40,7 +40,7 @@ use self::migrate_to_scoped_state_table::{
 // NOTE: The representation numbers here must be strictly monotonically increasing.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, strum::FromRepr)]
 #[repr(u16)]
-pub(crate) enum SchemaVersion {
+pub enum StorageVersion {
     /// Before 1.5
     None = 0,
     /// Migrations:
@@ -55,32 +55,32 @@ pub(crate) enum SchemaVersion {
     ScopedStateAndPromise = 2,
 }
 
-impl TryFrom<u16> for SchemaVersion {
+impl TryFrom<u16> for StorageVersion {
     type Error = StorageError;
 
     fn try_from(value: u16) -> Result<Self, StorageError> {
-        SchemaVersion::from_repr(value).ok_or_else(|| {
+        StorageVersion::from_repr(value).ok_or_else(|| {
             StorageError::Generic(anyhow::anyhow!(
-                "unknown partition-store schema version {value}; this binary is older \
+                "unknown partition-store storage version {value}; this binary is older \
                  than the data it would open. Roll forward to a server version that \
-                 recognizes this schema."
+                 recognizes this storage version."
             ))
         })
     }
 }
 
-impl SchemaVersion {
+impl StorageVersion {
     /// Returns `true` once the partition store has migrated the unscoped state
     /// and promise tables into their scoped variants. After this point all
     /// state/promise reads and writes use the scoped tables (with
     /// `scope = None` for entries that were unscoped pre-migration).
     pub(crate) fn is_scope_migrated(self) -> bool {
-        self >= SchemaVersion::ScopedStateAndPromise
+        self >= StorageVersion::ScopedStateAndPromise
     }
 
     pub(crate) async fn run_migrations_up_to(
         mut self,
-        target: SchemaVersion,
+        target: StorageVersion,
         storage: &mut PartitionStore,
     ) -> Result<Self> {
         while self < target {
@@ -98,9 +98,9 @@ impl SchemaVersion {
     // commits the schema-version put together with the legacy `delete_range_cf`s.
     // RocksDB's FIFO memtable flush order guarantees that the final batch can
     // only become durable on SST after the copy writes are already on SST.
-    async fn do_migration(&self, storage: &mut PartitionStore) -> Result<SchemaVersion> {
-        let new_schema_version = match self {
-            SchemaVersion::None => {
+    async fn do_migration(&self, storage: &mut PartitionStore) -> Result<StorageVersion> {
+        let new_storage_version = match self {
+            StorageVersion::None => {
                 // Version 1.6+ does not support upgrading from pre-1.5
                 // The InvocationStatusV1 migration was removed in 1.6
                 return Err(StorageError::Generic(anyhow::anyhow!(
@@ -109,13 +109,13 @@ impl SchemaVersion {
                      and then upgrade to 1.6+"
                 )));
             }
-            SchemaVersion::V1_5 => {
+            StorageVersion::V1_5 => {
                 let config = Configuration::pinned();
                 let key_range = storage.partition_key_range();
                 let partition_id = storage.partition_id();
                 let partition_db = storage.partition_db().clone();
                 let mut ctx = MigrationContext::new(&config, &partition_db, key_range);
-                let new_schema_version = SchemaVersion::ScopedStateAndPromise;
+                let new_storage_version = StorageVersion::ScopedStateAndPromise;
 
                 migrate_to_scoped_state_table(&mut ctx)?;
                 migrate_to_scoped_promise_table(&mut ctx)?;
@@ -128,7 +128,12 @@ impl SchemaVersion {
                 let mut wb = WriteBatch::default();
                 append_delete_state_data(&ctx, &mut wb);
                 append_delete_promise_data(&ctx, &mut wb);
-                append_schema_version_to_wb(&cf_handle, &mut wb, partition_id, new_schema_version)?;
+                append_storage_version_to_wb(
+                    &cf_handle,
+                    &mut wb,
+                    partition_id,
+                    new_storage_version,
+                )?;
 
                 let mut opts = rocksdb::WriteOptions::default();
                 opts.disable_wal(true);
@@ -148,15 +153,15 @@ impl SchemaVersion {
                     %partition_id,
                     "Finalized scoped state/promise migration"
                 );
-                new_schema_version
+                new_storage_version
             }
-            SchemaVersion::ScopedStateAndPromise => {
+            StorageVersion::ScopedStateAndPromise => {
                 // Latest version, nothing further to do.
-                SchemaVersion::ScopedStateAndPromise
+                StorageVersion::ScopedStateAndPromise
             }
         };
 
-        Ok(new_schema_version)
+        Ok(new_storage_version)
     }
 }
 
@@ -314,7 +319,7 @@ mod tests {
             .expect("DB storage creation succeeds");
 
         // Seed the FSM with an applied LSN so the empty-partition fast path is skipped,
-        // and a SchemaVersion discriminant that this binary doesn't know.
+        // and a StorageVersion discriminant that this binary doesn't know.
         {
             use restate_storage_api::Transaction;
             use restate_storage_api::fsm_table::WriteFsmTable;
@@ -331,10 +336,10 @@ mod tests {
         let err = store
             .verify_and_run_migrations()
             .await
-            .expect_err("unknown schema version should fail verify_and_run_migrations");
+            .expect_err("unknown storage version should fail verify_and_run_migrations");
         let msg = err.to_string();
         assert!(
-            msg.contains("9999") && msg.contains("schema version"),
+            msg.contains("9999") && msg.contains("storage version"),
             "unexpected error message: {msg}"
         );
 

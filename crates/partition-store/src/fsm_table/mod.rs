@@ -10,7 +10,7 @@
 
 use crate::TableKind::PartitionStateMachine;
 use crate::keys::{EncodeTableKeyPrefix, KeyKind, define_table_key};
-use crate::migrations::SchemaVersion;
+use crate::migrations::StorageVersion;
 use crate::{
     PaddedPartitionId, PartitionDb, PartitionStore, PartitionStoreTransaction, StorageAccess,
 };
@@ -138,7 +138,7 @@ pub(crate) async fn get_storage_version<S: StorageAccess>(
         .map(|opt| opt.map(|s| s.0 as u16).unwrap_or_default())
 }
 
-pub(crate) fn get_storage_version_from_partition_db(db: &PartitionDb) -> Result<SchemaVersion> {
+pub(crate) fn get_storage_version_from_partition_db(db: &PartitionDb) -> Result<StorageVersion> {
     let cf = db.cf_handle();
     let key = create_key(db.partition().partition_id, fsm_variable::STORAGE_VERSION);
     let sequence_number: Option<SequenceNumber> = db
@@ -165,7 +165,7 @@ pub(crate) fn get_storage_version_from_partition_db(db: &PartitionDb) -> Result<
             .map_err(|_| StorageError::DataIntegrityError)?
             .try_into()?
     } else {
-        SchemaVersion::None
+        StorageVersion::None
     })
 }
 
@@ -183,11 +183,11 @@ pub(crate) async fn put_storage_version<S: StorageAccess>(
 }
 
 /// Append a `STORAGE_VERSION = version` put to `wb`.
-pub(crate) fn append_schema_version_to_wb(
+pub(crate) fn append_storage_version_to_wb(
     cf_handle: &std::sync::Arc<rocksdb::BoundColumnFamily<'_>>,
     wb: &mut rocksdb::WriteBatch,
     partition_id: PartitionId,
-    version: SchemaVersion,
+    version: StorageVersion,
 ) -> Result<()> {
     use bytes::BytesMut;
     use restate_types::storage::StorageCodec;
