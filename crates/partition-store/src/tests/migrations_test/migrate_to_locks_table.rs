@@ -35,7 +35,7 @@ use crate::{PartitionStore, PartitionStoreManager};
 
 async fn storage_test_environment() -> PartitionStore {
     RocksDbManager::init();
-    let manager = PartitionStoreManager::create()
+    let manager = PartitionStoreManager::create(true)
         .await
         .expect("DB storage creation succeeds");
     manager

@@ -14,8 +14,9 @@ use std::path::Path;
 
 use tracing::debug;
 
-use restate_types::SemanticRestateVersion;
-use restate_types::config::node_filepath;
+use crate::SemanticRestateVersion;
+use crate::config::node_filepath;
+use crate::nodes_config::ClusterFingerprint;
 
 const CLUSTER_MARKER_FILE_NAME: &str = ".cluster-marker";
 const TMP_CLUSTER_MARKER_FILE_NAME: &str = ".tmp-cluster-marker";
@@ -30,8 +31,8 @@ const TMP_CLUSTER_MARKER_FILE_NAME: &str = ".tmp-cluster-marker";
 /// This information needs to be updated whenever we release a version that changes the
 /// compatible versions boundaries.
 const COMPATIBILITY_INFORMATION: CompatibilityInformation = CompatibilityInformation::new(
-    SemanticRestateVersion::new(1, 5, 0),
-    SemanticRestateVersion::new(1, 5, 0),
+    SemanticRestateVersion::new(1, 6, 0),
+    SemanticRestateVersion::new(1, 6, 0),
 );
 
 /// Compatibility information defining the minimum Restate version that can read data written by
@@ -97,6 +98,9 @@ pub enum ClusterValidationError {
 #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct ClusterMarker {
     cluster_name: String,
+    /// Since v1.7.0. Nodes before this version won't read or write this field.
+    /// V1.7.0 will write this field on provisioning.
+    cluster_fingerprint: Option<ClusterFingerprint>,
     /// The highest version that has operated on the data directory.
     max_version: SemanticRestateVersion,
     /// The most recent version to operate on the data directory.
@@ -105,7 +109,14 @@ pub struct ClusterMarker {
     /// This field should only be updated when updating the `max_version` field.
     min_forward_compatible_version: Option<SemanticRestateVersion>,
     /// True if the cluster is known to be provisioned. Versions < 1.2 don't have this field stored.
-    is_provisioned: Option<bool>,
+    is_provisioned: bool,
+    /// True if the node is using the multi-db layout (db-*).
+    ///
+    /// Nodes older than v1.7.0 cannot detect the layout and will always assume a single-db layout.
+    ///
+    /// *Since v1.7.0*
+    #[serde(default)]
+    use_multi_db_layout: bool,
 }
 
 impl ClusterMarker {
@@ -114,40 +125,68 @@ impl ClusterMarker {
         current_version: SemanticRestateVersion,
         min_forward_compatible_version: SemanticRestateVersion,
         is_provisioned: bool,
+        use_multi_db_layout: bool,
     ) -> Self {
         Self {
             cluster_name,
             max_version: current_version.clone(),
             current_version,
             min_forward_compatible_version: Some(min_forward_compatible_version),
-            is_provisioned: Some(is_provisioned),
+            is_provisioned,
+            use_multi_db_layout,
+            cluster_fingerprint: None,
         }
     }
 }
 
-/// Validates and updates the cluster marker wrt to the currently used Restate version. Returns
-/// whether the cluster was provisioned before.
-pub fn validate_and_update_cluster_marker(
-    cluster_name: &str,
-) -> Result<bool, ClusterValidationError> {
-    let this_version = SemanticRestateVersion::current();
+impl ClusterMarker {
+    /// Validates and updates the cluster marker wrt to the currently used Restate version. Returns
+    /// whether the cluster was provisioned before.
+    pub fn validate_or_create(
+        cluster_name: &str,
+        use_multi_db_layout: bool,
+    ) -> Result<Self, ClusterValidationError> {
+        let this_version = SemanticRestateVersion::current();
 
-    let cluster_marker_filepath = node_filepath(CLUSTER_MARKER_FILE_NAME);
+        let cluster_marker_filepath = node_filepath(CLUSTER_MARKER_FILE_NAME);
 
-    validate_and_update_cluster_marker_inner(
-        cluster_name,
-        this_version,
-        cluster_marker_filepath.as_path(),
-        &COMPATIBILITY_INFORMATION,
-    )
+        validate_and_update_cluster_marker_inner(
+            cluster_name,
+            this_version,
+            cluster_marker_filepath.as_path(),
+            use_multi_db_layout,
+            &COMPATIBILITY_INFORMATION,
+        )
+    }
+
+    /// Marks the cluster as provisioned in the cluster marker
+    pub fn mark_cluster_as_provisioned(
+        fingerprint: ClusterFingerprint,
+    ) -> Result<(), ClusterValidationError> {
+        let cluster_marker_filepath = node_filepath(CLUSTER_MARKER_FILE_NAME);
+        mark_cluster_as_provisioned_inner(cluster_marker_filepath.as_path(), fingerprint)
+    }
+
+    pub fn provisioned(&self) -> bool {
+        self.is_provisioned
+    }
+
+    pub fn cluster_fingerprint(&self) -> Option<ClusterFingerprint> {
+        self.cluster_fingerprint
+    }
+
+    pub fn uses_multi_db_layout(&self) -> bool {
+        self.use_multi_db_layout
+    }
 }
 
 fn validate_and_update_cluster_marker_inner(
     cluster_name: &str,
     this_version: &SemanticRestateVersion,
     cluster_marker_filepath: &Path,
+    use_multi_db_layout: bool,
     compatibility_information: &CompatibilityInformation,
-) -> Result<bool, ClusterValidationError> {
+) -> Result<ClusterMarker, ClusterValidationError> {
     let mut cluster_marker = if cluster_marker_filepath.exists() {
         read_cluster_marker(cluster_marker_filepath)?
     } else {
@@ -162,6 +201,7 @@ fn validate_and_update_cluster_marker_inner(
                 .min_forward_compatible_version
                 .clone(),
             false,
+            use_multi_db_layout,
         )
     };
 
@@ -215,7 +255,7 @@ fn validate_and_update_cluster_marker_inner(
 
     write_new_cluster_marker(cluster_marker_filepath, &cluster_marker)?;
 
-    Ok(cluster_marker.is_provisioned.unwrap_or_default())
+    Ok(cluster_marker)
 }
 
 fn write_new_cluster_marker(
@@ -278,28 +318,25 @@ fn read_cluster_marker(
         .map_err(ClusterValidationError::Decode)
 }
 
-/// Marks the cluster as provisioned in the cluster marker
-pub fn mark_cluster_as_provisioned() -> Result<(), ClusterValidationError> {
-    let cluster_marker_filepath = node_filepath(CLUSTER_MARKER_FILE_NAME);
-    mark_cluster_as_provisioned_inner(cluster_marker_filepath.as_path())
-}
-
 fn mark_cluster_as_provisioned_inner(
     cluster_marker_filepath: &Path,
+    fingerprint: ClusterFingerprint,
 ) -> Result<(), ClusterValidationError> {
     let mut cluster_marker = read_cluster_marker(cluster_marker_filepath)?;
-    cluster_marker.is_provisioned = Some(true);
+    cluster_marker.is_provisioned = true;
+    cluster_marker.cluster_fingerprint = Some(fingerprint);
     write_new_cluster_marker(cluster_marker_filepath, &cluster_marker)
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::SemanticRestateVersion;
     use crate::cluster_marker::{
         CLUSTER_MARKER_FILE_NAME, COMPATIBILITY_INFORMATION, ClusterMarker, ClusterValidationError,
         CompatibilityInformation, mark_cluster_as_provisioned_inner,
         validate_and_update_cluster_marker_inner,
     };
-    use restate_types::SemanticRestateVersion;
+    use crate::nodes_config::ClusterFingerprint;
     use std::fs;
     use std::fs::OpenOptions;
     use std::path::Path;
@@ -341,6 +378,7 @@ mod tests {
             CLUSTER_NAME,
             &current_version,
             file.as_path(),
+            false,
             &TESTING_COMPATIBILITY_INFORMATION,
         )
         .unwrap();
@@ -356,7 +394,9 @@ mod tests {
                 min_forward_compatible_version: Some(
                     TESTING_COMPATIBILITY_INFORMATION.min_forward_compatible_version
                 ),
-                is_provisioned: Some(false),
+                is_provisioned: false,
+                use_multi_db_layout: false,
+                cluster_fingerprint: None,
             }
         )
     }
@@ -374,6 +414,7 @@ mod tests {
                 previous_version,
                 TESTING_COMPATIBILITY_INFORMATION.min_forward_compatible_version,
                 true,
+                false,
             ),
             &file,
         )?;
@@ -382,6 +423,7 @@ mod tests {
             CLUSTER_NAME,
             &current_version,
             &file,
+            false,
             &TESTING_COMPATIBILITY_INFORMATION,
         )?;
 
@@ -396,7 +438,9 @@ mod tests {
                 min_forward_compatible_version: Some(
                     TESTING_COMPATIBILITY_INFORMATION.min_forward_compatible_version
                 ),
-                is_provisioned: Some(true),
+                is_provisioned: true,
+                use_multi_db_layout: false,
+                cluster_fingerprint: None,
             }
         );
         Ok(())
@@ -415,6 +459,7 @@ mod tests {
                 max_version.clone(),
                 TESTING_COMPATIBILITY_INFORMATION.min_forward_compatible_version,
                 false,
+                false,
             ),
             &file,
         )?;
@@ -423,6 +468,7 @@ mod tests {
             CLUSTER_NAME,
             &current_version,
             &file,
+            false,
             &TESTING_COMPATIBILITY_INFORMATION,
         )?;
 
@@ -437,7 +483,9 @@ mod tests {
                 min_forward_compatible_version: Some(
                     TESTING_COMPATIBILITY_INFORMATION.min_forward_compatible_version
                 ),
-                is_provisioned: Some(false),
+                is_provisioned: false,
+                use_multi_db_layout: false,
+                cluster_fingerprint: None,
             }
         );
         Ok(())
@@ -456,6 +504,7 @@ mod tests {
                 max_version,
                 TESTING_COMPATIBILITY_INFORMATION.min_forward_compatible_version,
                 true,
+                false,
             ),
             &file,
         )?;
@@ -464,6 +513,7 @@ mod tests {
             CLUSTER_NAME,
             &current_version,
             &file,
+            false,
             &TESTING_COMPATIBILITY_INFORMATION,
         );
         assert!(matches!(
@@ -486,6 +536,7 @@ mod tests {
                 max_version,
                 SemanticRestateVersion::new(2, 0, 0),
                 true,
+                false,
             ),
             &file,
         )?;
@@ -494,6 +545,7 @@ mod tests {
             CLUSTER_NAME,
             &this_version,
             &file,
+            false,
             &COMPATIBILITY_INFORMATION,
         );
         assert!(matches!(
@@ -515,6 +567,7 @@ mod tests {
                 max_version,
                 SemanticRestateVersion::new(1, 4, 0),
                 true,
+                false,
             ),
             &file,
         )?;
@@ -523,6 +576,7 @@ mod tests {
             CLUSTER_NAME,
             &this_version,
             &file,
+            false,
             &COMPATIBILITY_INFORMATION,
         );
         assert!(matches!(
@@ -545,6 +599,7 @@ mod tests {
                 max_version,
                 TESTING_COMPATIBILITY_INFORMATION.min_forward_compatible_version,
                 false,
+                false,
             ),
             &file,
         )?;
@@ -553,6 +608,7 @@ mod tests {
             CLUSTER_NAME,
             &this_version,
             &file,
+            false,
             &TESTING_COMPATIBILITY_INFORMATION,
         );
         assert!(result.is_ok());
@@ -572,11 +628,13 @@ mod tests {
                 version.clone(),
                 TESTING_COMPATIBILITY_INFORMATION.min_forward_compatible_version,
                 false,
+                false,
             ),
             &file,
         )?;
 
-        mark_cluster_as_provisioned_inner(&file)?;
+        let fingerprint = ClusterFingerprint::generate();
+        mark_cluster_as_provisioned_inner(&file, fingerprint)?;
 
         let cluster_marker = read_cluster_marker(file)?;
 
@@ -589,7 +647,9 @@ mod tests {
                 min_forward_compatible_version: Some(
                     TESTING_COMPATIBILITY_INFORMATION.min_forward_compatible_version
                 ),
-                is_provisioned: Some(true),
+                is_provisioned: true,
+                use_multi_db_layout: false,
+                cluster_fingerprint: Some(fingerprint),
             }
         );
 
