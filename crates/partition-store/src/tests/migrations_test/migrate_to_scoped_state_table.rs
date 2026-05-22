@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 
 use bytes::{Bytes, BytesMut};
+use rocksdb::WriteBatch;
 
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
@@ -77,8 +78,16 @@ async fn migrate_to_scoped_state_table_moves_unscoped_state_to_scoped_table() {
     );
     migrate_to_scoped_state_table::migrate_to_scoped_state_table(&mut ctx)
         .expect("migration should succeed");
-    migrate_to_scoped_state_table::delete_state_data(&mut ctx)
-        .expect("state cleanup should succeed");
+    let mut wb = WriteBatch::default();
+    migrate_to_scoped_state_table::append_delete_state_data(&ctx, &mut wb);
+    let mut opts = rocksdb::WriteOptions::default();
+    opts.disable_wal(true);
+    rocksdb
+        .partition_db()
+        .rocksdb()
+        .inner()
+        .write_batch(&wb, &opts)
+        .expect("delete-range write batch should commit");
 
     // The legacy `b"st"` range must be empty after cleanup.
     let mut arena = BytesMut::new();

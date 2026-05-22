@@ -22,11 +22,13 @@ use crate::state_table::StateKey;
 
 use super::MigrationContext;
 
+/// Length of a `KeyKind | partition_key` prefix.
+const KEY_PREFIX_LEN: usize = KeyKind::SERIALIZED_LENGTH + std::mem::size_of::<PartitionKey>();
+
 /// Scan the unscoped state table and copy every entry into the scoped state
 /// table with `scope = None`. The value bytes are copied through unchanged.
 ///
 /// We use direct rocksdb access because no async operations are needed.
-#[allow(dead_code)]
 pub fn migrate_to_scoped_state_table(ctx: &mut MigrationContext<'_>) -> Result<(), StorageError> {
     let rocks = ctx.partition_db.rocksdb();
     let key_range = ctx.key_range;
@@ -99,21 +101,19 @@ pub fn migrate_to_scoped_state_table(ctx: &mut MigrationContext<'_>) -> Result<(
     Ok(())
 }
 
-/// Deletes the legacy unscoped state range.
-#[allow(dead_code)]
-pub fn delete_state_data(ctx: &mut MigrationContext<'_>) -> Result<(), StorageError> {
-    let mut wb = WriteBatch::default();
-    let mut opts = rocksdb::WriteOptions::default();
-    // We disable WAL since bifrost is our durable distributed log.
-    opts.disable_wal(true);
-
-    let mut start_key_buf = [0u8; KeyKind::SERIALIZED_LENGTH + std::mem::size_of::<PartitionKey>()];
+/// Appends a `delete_range_cf` for the legacy unscoped state range to `wb`.
+///
+/// The caller is responsible for committing `wb`. Bundling the range delete
+/// with the schema-version bump in a single [`WriteBatch`] keeps the two
+/// changes atomic with respect to RocksDB's memtable / SST flush.
+pub fn append_delete_state_data(ctx: &MigrationContext<'_>, wb: &mut WriteBatch) {
+    let mut start_key_buf = [0u8; KEY_PREFIX_LEN];
     EncodeTableKeyPrefix::serialize_to(
         &StateKey::builder().partition_key(ctx.key_range.start()),
         &mut start_key_buf.as_mut(),
     );
 
-    let mut end_key_buf = [0u8; KeyKind::SERIALIZED_LENGTH + std::mem::size_of::<PartitionKey>()];
+    let mut end_key_buf = [0u8; KEY_PREFIX_LEN];
     EncodeTableKeyPrefix::serialize_to(
         &StateKey::builder().partition_key(ctx.key_range.end()),
         &mut end_key_buf.as_mut(),
@@ -123,14 +123,6 @@ pub fn delete_state_data(ctx: &mut MigrationContext<'_>) -> Result<(), StorageEr
     let success = crate::convert_to_upper_bound(&mut end_key_buf);
     assert!(success, "end key overflowed");
     wb.delete_range_cf(ctx.partition_db.cf_handle(), start_key_buf, end_key_buf);
-
-    ctx.partition_db
-        .rocksdb()
-        .inner()
-        .write_batch(&wb, &opts)
-        .context("failed to write batch")?;
-
-    Ok(())
 }
 
 #[cfg(test)]

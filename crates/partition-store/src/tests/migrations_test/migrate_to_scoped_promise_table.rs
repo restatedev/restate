@@ -12,6 +12,7 @@ use std::collections::HashMap;
 
 use bytes::BytesMut;
 use bytestring::ByteString;
+use rocksdb::WriteBatch;
 
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
@@ -89,8 +90,16 @@ async fn migrate_to_scoped_promise_table_moves_unscoped_promises_to_scoped_table
     );
     migrate_to_scoped_promise_table::migrate_to_scoped_promise_table(&mut ctx)
         .expect("migration should succeed");
-    migrate_to_scoped_promise_table::delete_promise_data(&mut ctx)
-        .expect("promise cleanup should succeed");
+    let mut wb = WriteBatch::default();
+    migrate_to_scoped_promise_table::append_delete_promise_data(&ctx, &mut wb);
+    let mut opts = rocksdb::WriteOptions::default();
+    opts.disable_wal(true);
+    rocksdb
+        .partition_db()
+        .rocksdb()
+        .inner()
+        .write_batch(&wb, &opts)
+        .expect("delete-range write batch should commit");
 
     // The legacy `b"pr"` range must be empty after cleanup.
     let mut arena = BytesMut::new();

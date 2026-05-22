@@ -605,6 +605,19 @@ experimental! {
     ///
     /// Since v1.7.0
     unique_random_seeds,
+
+    /// # Migrate the unscoped state and promise tables into their scoped variants
+    ///
+    /// When enabled, partition stores migrate every entry of the legacy unscoped
+    /// state and promise tables into their scoped variants (with `scope = None`)
+    /// on open, and route all subsequent state/promise reads and writes through
+    /// the scoped tables.
+    ///
+    /// Once enabled, you **cannot** roll back to a Restate-server version that
+    /// did not yet recognize the resulting on-disk schema version.
+    ///
+    /// Since v1.7.0
+    migrate_scoped_tables,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
