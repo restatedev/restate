@@ -133,7 +133,6 @@ where
 
     let header = restate_wal_protocol::Header {
         source: restate_wal_protocol::Source::Processor {
-            partition_id: None,
             partition_key: Some(partition_key),
             leader_epoch,
         },
