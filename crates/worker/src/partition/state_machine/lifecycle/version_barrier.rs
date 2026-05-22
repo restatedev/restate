@@ -56,6 +56,10 @@ where
             Ok(false)
         }
         PartitionFeatureChange::EnableJournalV2 => Ok(false),
+        // Flipping unique-random-seeds on only affects invocations created after the apply
+        // point. Pre-existing invocations without a stored random seed keep working via the
+        // `to_random_seed()` fallback in `invoker_storage_reader.rs`.
+        PartitionFeatureChange::EnableUniqueRandomSeeds => Ok(false),
     }
 }
 
@@ -465,6 +469,7 @@ mod tests {
             PersistedStateMachineFeatures {
                 journal_v2: false,
                 vqueues: true,
+                unique_random_seeds: false,
             },
             Default::default(),
             std::sync::Arc::new(RuleBook::default()),

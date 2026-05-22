@@ -574,6 +574,14 @@ where
                 feature_changes.push(PartitionFeatureChange::EnableVqueues);
             }
 
+            // Persist a unique random seed on new invocations. Needs to be opted-in because
+            // it was only introduced with v1.7.0
+            if config.common.experimental.is_unique_random_seeds_enabled()
+                && !state_machine_features.is_unique_random_seeds_enabled()
+            {
+                feature_changes.push(PartitionFeatureChange::EnableUniqueRandomSeeds);
+            }
+
             if !feature_changes.is_empty() {
                 // Smallest version that supports every listed feature, but never below
                 // the partition's current min_restate_version.
@@ -599,7 +607,6 @@ where
                     )
                     .await?;
             }
-
             let last_reported_durable_lsn = partition_store
                 .get_partition_durability()
                 .await?
@@ -941,6 +948,10 @@ mod tests {
         }
 
         fn is_vqueues_enabled(&self) -> bool {
+            false
+        }
+
+        fn is_unique_random_seeds_enabled(&self) -> bool {
             false
         }
     }

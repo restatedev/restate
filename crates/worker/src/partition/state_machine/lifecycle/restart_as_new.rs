@@ -260,6 +260,22 @@ where
                 ))
         });
 
+        let random_seed = if copy_prefix_up_to_index_included > 0 {
+            // We're restarting from prefix, we must retain the same random seed to ensure that decisions in the prefix that depend on the random seed are replayable (does not cause non-determinism problems).
+            completed_invocation.random_seed
+        } else {
+            if ctx.enabled_features.unique_random_seeds {
+                // Generate a new random seed for an invocation restarting from beginning
+                Some(
+                    new_invocation_id
+                        .to_random_seed_with_wal_record_time(ctx.record_created_at.as_u64()),
+                )
+            } else {
+                // We need to preserve old behavior of copying the random seed anyway
+                completed_invocation.random_seed
+            }
+        };
+
         let pre_flight_invocation_metadata = PreFlightInvocationMetadata {
             timestamps: StatusTimestamps::init(ctx.record_created_at),
             invocation_target: completed_invocation.invocation_target,
@@ -280,7 +296,7 @@ where
             limit_key: completed_invocation.limit_key,
             completion_retention_duration: completed_invocation.completion_retention_duration,
             journal_retention_duration: completed_invocation.journal_retention_duration,
-            random_seed: completed_invocation.random_seed,
+            random_seed,
 
             // We don't set those
             idempotency_key: None,
