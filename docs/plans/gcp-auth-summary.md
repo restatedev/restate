@@ -8,17 +8,23 @@ Issue: restatedev/restate#4755.
 ### User-visible
 
 - `restate dp register <https-uri>` accepts three new flags:
-  `--id-token`, `--impersonate-service-account <SA>`,
-  `--audience <AUDIENCE>`. Any positive flag implies `--id-token`.
-  Lambda ARN endpoints are rejected up front.
+  `--gcp-id-token`, `--gcp-impersonate-service-account <SA>`,
+  `--gcp-audience <AUDIENCE>`. Any positive flag implies
+  `--gcp-id-token`. Lambda ARN endpoints are rejected up front.
+  Negotiated admin API below V5 is rejected up front so an old
+  server cannot silently drop the field.
 - `restate dp describe <id>` renders Authentication / Impersonation /
   Audience rows when an HTTP deployment carries auth.
-- REST `POST /deployments` accepts an `auth` field on HTTP variants;
-  response shapes echo it back.
+- REST `POST /deployments` accepts an `auth` field on HTTP variants
+  starting at admin API V5; older versions reject the field.
+  Response shapes echo it back.
 - Restate mints Google-signed OIDC ID tokens via the official
-  `google-cloud-auth` crate, attaches them as `Authorization: Bearer`
-  by default and `X-Serverless-Authorization: Bearer` when the
-  deployment already carries an `Authorization` header.
+  `google-cloud-auth` crate and always attaches them as
+  `X-Serverless-Authorization: Bearer`. Cloud Run validates that
+  header in precedence over `Authorization` and strips it before
+  forwarding to the container, so any customer-supplied
+  `Authorization` in `additional_headers` passes through to the
+  workload unchanged.
 - The bearer flows on both discovery and invocation requests.
 - Token-mint failures fail the request (no unauthenticated fallback).
 - Tokens cached per `(impersonate_sa, audience)` on the invoker;
@@ -34,7 +40,7 @@ Issue: restatedev/restate#4755.
 | `crates/types/src/schema/registry/mod.rs` | HTTP update merge preserves persisted `auth` across uri/header/use_http_11 updates (H1 fix). |
 | `crates/types/src/schema/metadata/updater/mod.rs` | Plumbs `auth` from `HttpDeploymentAddress` into `DeploymentType::Http`. |
 | `crates/service-client/src/gcp.rs` | New `GcpTokenClient` with `IdTokenCacheMode`, ADC + impersonation paths, 10s timeout. |
-| `crates/service-client/src/lib.rs` | `Endpoint::Http` carries `Option<HttpAuth>`; `ServiceClient::call` mints + attaches bearer; conflict → `X-Serverless-Authorization`. |
+| `crates/service-client/src/lib.rs` | `Endpoint::Http` carries `Option<HttpAuth>`; `ServiceClient::call` mints and attaches the token as `X-Serverless-Authorization: Bearer` unconditionally. |
 | `crates/admin-rest-model/src/deployments.rs` | `auth` on `RegisterDeploymentRequest::Http`, `DeploymentResponse::Http`, `DetailedDeploymentResponse::Http`. |
 | `crates/admin/src/rest_api/deployments.rs` | Handler extracts `auth`, runs `validate_http_auth` (REQ-VAL-01/02). |
 | `cli/src/commands/deployments/register.rs` | New flags, Lambda preflight rejection. |
@@ -45,7 +51,7 @@ Issue: restatedev/restate#4755.
 
 15 new tests across three locations:
 
-- **Integration** (`crates/service-client/tests/gcp_id_token_attach.rs`): 5 tests covering bearer-attach with derived audience, X-Serverless-Authorization conflict fallback, explicit audience override, no-op when auth absent, and mint-failure-no-fallback (REQ-AUTH-04).
+- **Integration** (`crates/service-client/tests/gcp_id_token_attach.rs`): 5 tests covering bearer-attach with derived audience, customer-`Authorization` passthrough alongside the minted X-Serverless-Authorization, explicit audience override, no-op when auth absent, and mint-failure-no-fallback (REQ-AUTH-04).
 - **Validation unit tests** (`crates/admin/src/rest_api/deployments.rs`): 5 tests for REQ-VAL-01 (https-or-loopback) and REQ-VAL-02 (dual-Authorization rejection).
 - **Storage backfill** (`crates/types/src/schema/deployment.rs`): 2 new tests — pre-auth records deserialise with `auth: None`; auth round-trips intact.
 - **Audience derivation** unit tests in `crates/service-client/src/gcp.rs` (pre-existing, 6 tests).
@@ -111,7 +117,7 @@ From the main..HEAD reviewer (one CRITICAL=none, three HIGH=fixed, six MEDIUM, s
 1. Rebase against main; the workspace has moved since branching.
 2. `cargo hakari generate` and commit any workspace-hack delta.
 3. Confirm cargo deny config doesn't need a new license exception for any of google-cloud-auth's transitive deps (current run was clean).
-4. Manual smoke test against a real Cloud Run service: register a deployment, observe successful invocation, inspect the `Authorization` header reaching the upstream. Especially useful given the absence of an end-to-end test against a real metadata server.
+4. Manual smoke test against a real Cloud Run service: register a deployment, observe successful invocation, inspect the `X-Serverless-Authorization` header on the wire (and confirm Cloud Run is stripping it before the container so any customer `Authorization` reaches the workload). Especially useful given the absence of an end-to-end test against a real metadata server.
 5. The H1 fix changes the persistence semantics for HTTP updates — if any in-flight ops automation relies on the previous (broken) behavior of HTTP updates clearing auth, surface that in the PR description.
 
 ## Spec → code traceability
@@ -123,8 +129,8 @@ From the main..HEAD reviewer (one CRITICAL=none, three HIGH=fixed, six MEDIUM, s
 | REQ-DEP-01..03 (HttpAuth shape) | `crates/types/src/deployment.rs` | `auth_field_round_trips` |
 | REQ-DEP-04..06 (mint paths, audience verbatim) | `crates/service-client/src/gcp.rs::mint_via_sdk` | `bearer_uses_explicit_audience_when_provided` |
 | REQ-DEP-07 (audience derivation) | `restate_types::deployment::derive_audience` | gcp.rs unit tests (6) |
-| REQ-AUTH-01 (bearer Authorization) | `crates/service-client/src/lib.rs` ServiceClient::call | `bearer_attached_with_derived_audience` |
-| REQ-AUTH-02 (X-Serverless-Authorization fallback) | same | `bearer_uses_x_serverless_authorization_on_conflict` |
+| REQ-AUTH-01 (X-Serverless-Authorization bearer) | `crates/service-client/src/lib.rs` ServiceClient::call | `bearer_attached_with_derived_audience` |
+| REQ-AUTH-02 (customer Authorization passes through alongside the minted XSA) | same | `customer_authorization_passes_through_alongside_minted_xsa` |
 | REQ-AUTH-03 (discovery + invocation) | dispatch path in ServiceClient::call | integration test path is shared |
 | REQ-AUTH-04 (no fallback on failure) | `ServiceClientError::GcpAuth` early-returns from call | `mint_failure_does_not_send_unauthenticated_request` |
 | REQ-REST-01..03 (REST shapes) | `crates/admin-rest-model/src/deployments.rs` | covered by handler-level smoke |
