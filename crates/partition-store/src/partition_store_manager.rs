@@ -127,10 +127,11 @@ pub struct PartitionStoreManager {
     snapshots: Snapshots,
     db_cache: AsyncMutex<HashMap<restate_rocksdb::DbName, Weak<RocksDb>>>,
     memory_controller: MemoryController,
+    use_multi_db_layout: bool,
 }
 
 impl PartitionStoreManager {
-    pub async fn create() -> Result<Arc<Self>, BuildError> {
+    pub async fn create(use_multi_db_layout: bool) -> Result<Arc<Self>, BuildError> {
         crate::metric_definitions::describe_metrics();
 
         // Start the memory controller, how do we know when db is dropped?
@@ -144,6 +145,7 @@ impl PartitionStoreManager {
                 .map_err(BuildError::Snapshots)?,
             db_cache: Default::default(),
             memory_controller,
+            use_multi_db_layout,
         });
 
         Ok(psm)
@@ -151,7 +153,7 @@ impl PartitionStoreManager {
 
     async fn open_rocksdb(&self, partition: &Partition) -> Result<Arc<RocksDb>, RocksError> {
         let mut db_cache_guard = self.db_cache.lock().await;
-        let db_name = restate_rocksdb::DbName::from(partition.db_name());
+        let db_name = restate_rocksdb::DbName::from(partition.db_name(self.use_multi_db_layout));
 
         if let Some(db) = db_cache_guard.get(&db_name).and_then(|db| db.upgrade()) {
             return Ok(db);

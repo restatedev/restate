@@ -96,7 +96,7 @@ pub async fn run(
     // -----------------------------------------------------------------------
     RocksDbManager::init();
 
-    let manager = PartitionStoreManager::create().await?;
+    let manager = PartitionStoreManager::create(true).await?;
     let mut partition_store = manager
         .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
         .await?;
