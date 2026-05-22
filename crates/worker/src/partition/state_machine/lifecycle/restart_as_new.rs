@@ -266,7 +266,10 @@ where
         } else {
             if ctx.enabled_features.unique_random_seeds {
                 // Generate a new random seed for an invocation restarting from beginning
-                Some(new_invocation_id.to_random_seed_with_wal_record_time(ctx.record_created_at))
+                Some(
+                    new_invocation_id
+                        .to_random_seed_with_wal_record_time(ctx.record_created_at.as_u64()),
+                )
             } else {
                 // We need to preserve old behavior of copying the random seed anyway
                 completed_invocation.random_seed
