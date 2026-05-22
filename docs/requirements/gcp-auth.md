@@ -84,14 +84,10 @@ discarded. A URI without a host SHALL be rejected by REQ-VAL-01.
 
 REQ-AUTH-01. WHEN sending an HTTP request to a deployment whose `auth`
 resolves to `GoogleIdToken`, the Restate node SHALL attach the minted
-ID token as `Authorization: Bearer <token>` by default.
-
-REQ-AUTH-02. WHEN the deployment's `additional_headers` already
-contains a header named `Authorization` (case-insensitive) AND does
-NOT contain a header named `X-Serverless-Authorization`
-(case-insensitive), the Restate node SHALL forward the deployment-
-provided `Authorization` value unchanged AND SHALL attach the minted
-token as `X-Serverless-Authorization: Bearer <token>`.
+ID token as `X-Serverless-Authorization: Bearer <token>`. Cloud Run
+validates this header in precedence over `Authorization` and strips it
+before forwarding to the container, so any customer-supplied
+`Authorization` in `additional_headers` reaches the workload unchanged.
 
 REQ-AUTH-03. WHEN attaching the token, the Restate node SHALL apply
 the bearer to both the service-protocol discovery request and to every
@@ -120,12 +116,13 @@ REQ-REST-03. The deployment-response schema SHALL echo the persisted
 ## 4. CLI
 
 REQ-CLI-01. The `restate dp register` command SHALL accept the flags
-`--id-token` (boolean), `--impersonate-service-account <SA>`, and
-`--audience <AUDIENCE>`. Any of the three SHALL imply `--id-token`.
-WHEN supplied AND the endpoint is an HTTP URI, the command SHALL set
-the deployment's `auth` field accordingly. WHEN the endpoint is a
-Lambda ARN, the CLI SHALL reject the invocation with a non-zero exit
-before issuing the REST call.
+`--gcp-id-token` (boolean),
+`--gcp-impersonate-service-account <SA>`, and
+`--gcp-audience <AUDIENCE>`. Any of the three SHALL imply
+`--gcp-id-token`. WHEN supplied AND the endpoint is an HTTP URI, the
+command SHALL set the deployment's `auth` field accordingly. WHEN the
+endpoint is a Lambda ARN, the CLI SHALL reject the invocation with a
+non-zero exit before issuing the REST call.
 
 ## 5. Validation at registration
 
@@ -136,9 +133,11 @@ is not `https` AND the effective host is NOT the literal hostname
 the admin REST handler SHALL reject the request with a hard error.
 
 REQ-VAL-02. IF a registration sets `auth` AND `additional_headers`
-contains BOTH `Authorization` AND `X-Serverless-Authorization`
+contains a header named `X-Serverless-Authorization`
 (case-insensitive), THEN the admin REST handler SHALL reject the
-request with a hard error.
+request with a hard error. Customer-supplied `Authorization` is
+allowed and passes through to the workload (Cloud Run strips
+`X-Serverless-Authorization` before forwarding to the container).
 
 ## 6. Schema persistence
 
