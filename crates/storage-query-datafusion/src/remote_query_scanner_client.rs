@@ -20,7 +20,9 @@ use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use tracing::debug;
 
-use restate_core::network::{Connection, NetworkSender, Networking, Swimlane, TransportConnect};
+use restate_core::network::{
+    Connection, NetworkSender, Networking, ReplyRx, Swimlane, TransportConnect,
+};
 use restate_core::{TaskCenter, TaskCenterFutureExt, TaskKind, task_center};
 use restate_types::NodeId;
 use restate_types::identifiers::PartitionId;
@@ -33,24 +35,57 @@ use restate_types::sharding::KeyRange;
 
 use crate::{decode_record_batch, encode_expr, encode_schema};
 
-#[derive(Debug, Clone)]
+#[derive(derive_more::Debug)]
 pub struct RemoteScanner {
     scanner_id: ScannerId,
     connection: Option<Connection>,
+    /// First `Next` reply pipelined alongside `Open`. Consumed on the first
+    /// `next_batch` call; `None` once consumed (or if `open` didn't pipeline).
+    #[debug(skip)]
+    pending_first_reply: Option<ReplyRx<RemoteQueryScannerNextResult>>,
 }
 
 impl RemoteScanner {
+    /// Constructs a scanner that owns `connection` for the purpose of sending
+    /// `Close` on drop. Use this to install a drop-guard *before* sending
+    /// `Open`: if the caller's future is cancelled (or the proxy returns
+    /// `Err`) after `Open` reaches the wire, the existing `Drop` impl emits
+    /// `Close` so the server doesn't keep an orphan scanner until TTL.
     pub fn new(scanner_id: ScannerId, connection: Connection) -> Self {
         Self {
             scanner_id,
             connection: Some(connection),
+            pending_first_reply: None,
         }
     }
 
+    /// Attaches a `Next` reply that was pipelined on the same connection as
+    /// `Open`. Consumed by the first `next_batch` call.
+    fn set_pending_first_reply(&mut self, reply: ReplyRx<RemoteQueryScannerNextResult>) {
+        debug_assert!(
+            self.pending_first_reply.is_none(),
+            "pending first reply set twice on scanner {}",
+            self.scanner_id
+        );
+        self.pending_first_reply = Some(reply);
+    }
+
     async fn next_batch(
-        &self,
+        &mut self,
         next_predicate: Option<RemoteQueryScannerPredicate>,
     ) -> Result<RemoteQueryScannerNextResult, DataFusionError> {
+        // First call after a pipelined open: the request is already on the wire,
+        // so we just await its reply. The caller-supplied `next_predicate` is
+        // dropped here (it is `None` on the first iteration in practice because
+        // the dynamic-filter generation has not advanced yet; later iterations
+        // pick up any updates via the normal path below).
+        if let Some(pending) = self.pending_first_reply.take() {
+            let _ = next_predicate;
+            return pending
+                .await
+                .map_err(|e| DataFusionError::External(e.into()));
+        }
+
         let Some(ref connection) = self.connection else {
             return Err(DataFusionError::Internal(
                 "connection used after forget()".to_string(),
@@ -116,10 +151,18 @@ impl Drop for RemoteScanner {
 
 #[async_trait]
 pub trait RemoteScannerService: Send + Sync + Debug + 'static {
+    /// Opens a remote scanner and pipelines the first `Next` request on the same
+    /// connection. The returned `RemoteScanner` already has the first batch's reply
+    /// in flight, so the first `next_batch` call resolves without an extra round-trip.
+    ///
+    /// `initial_next_predicate` is the dynamic-filter snapshot to attach to the
+    /// pipelined `Next` (typically `None`; the initial filter is already carried in
+    /// `req.predicate`).
     async fn open(
         &self,
         peer: NodeId,
         req: RemoteQueryScannerOpen,
+        initial_next_predicate: Option<RemoteQueryScannerPredicate>,
     ) -> Result<RemoteScanner, DataFusionError>;
 }
 
@@ -138,10 +181,16 @@ pub fn create_remote_scanner_service<T: TransportConnect>(
 /// Given an implementation of a remote ScannerService, this function
 /// creates a DataFusion [[SendableRecordBatchStream]] that transports
 /// record batches via the RemoteScannerService API.
+///
+/// `scanner_id` is allocated by the caller (typically via
+/// [`RemoteScannerManager::allocate_scanner_id`]) so the server can adopt the
+/// caller's id instead of minting its own. This makes it possible to pipeline
+/// follow-up RPCs without first waiting for the `Open` reply.
 #[allow(clippy::too_many_arguments)]
 pub fn remote_scan_as_datafusion_stream(
     service: Arc<dyn RemoteScannerService>,
     target_node_id: NodeId,
+    scanner_id: ScannerId,
     partition_id: PartitionId,
     range: KeyRange,
     table_name: String,
@@ -165,10 +214,8 @@ pub fn remote_scan_as_datafusion_stream(
             None => None,
         };
 
-        //
-        // get a scanner id
-        //
         let open_request = RemoteQueryScannerOpen {
+            scanner_id,
             partition_id,
             range,
             table: table_name,
@@ -179,8 +226,10 @@ pub fn remote_scan_as_datafusion_stream(
         };
 
         // RemoteScanner will auto close on drop. Please call forget() if you don't need this
-        // behaviour.
-        let remote_scanner = service.open(target_node_id, open_request).await?;
+        // behaviour. `open` pipelines the first `Next` on the same connection so the
+        // initial batch resolves without a second round-trip; we pass `None` because
+        // the initial predicate is already carried in `open_request.predicate`.
+        let mut remote_scanner = service.open(target_node_id, open_request, None).await?;
         // loop while we have record_batch coming in
         //
         loop {
@@ -281,6 +330,7 @@ impl<T: TransportConnect> RemoteScannerService for RemoteScannerServiceProxy<T> 
         &self,
         peer: NodeId,
         req: RemoteQueryScannerOpen,
+        initial_next_predicate: Option<RemoteQueryScannerPredicate>,
     ) -> Result<RemoteScanner, DataFusionError> {
         let connection = self
             .networking
@@ -293,24 +343,57 @@ impl<T: TransportConnect> RemoteScannerService for RemoteScannerServiceProxy<T> 
             .await
             .map_err(|e| DataFusionError::External(e.into()))?;
 
-        let permit = connection.reserve().await.ok_or_else(|| {
+        let scanner_id = req.scanner_id;
+
+        // Reserve and send Open. `send_rpc` is synchronous after the permit
+        // is in hand — by the time it returns the message is queued on the
+        // egress and the server is committed to seeing it.
+        let open_permit = connection.reserve().await.ok_or_else(|| {
             DataFusionError::External(
                 anyhow::anyhow!("cannot open remote scanner; connection lost to {peer}").into(),
             )
         })?;
-
-        let reply = permit
+        let open_reply = open_permit
             .send_rpc(req, None)
-            // codec error is an internal error
             .map_err(|e| DataFusionError::Internal(e.to_string()))?;
 
-        match reply.await {
-            Ok(RemoteQueryScannerOpened::Success { scanner_id }) => {
-                Ok(RemoteScanner::new(scanner_id, connection))
+        // From here on we must guarantee a `Close` reaches the server if we
+        // don't hand a `RemoteScanner` back to the caller — otherwise the
+        // scanner the server is about to create sits orphaned until TTL.
+        // Pre-constructing the scanner installs its own `Drop` as the guard;
+        // it fires `Close` on cancellation or any `Err` return below. On
+        // `Success` we attach the pipelined `Next` reply; on `Failure` we
+        // disarm via `.forget()` so we don't accidentally close a scanner
+        // that another caller holds under the same id.
+        let mut remote_scanner = RemoteScanner::new(scanner_id, connection.clone());
+
+        let next_permit = connection.reserve().await.ok_or_else(|| {
+            DataFusionError::External(
+                anyhow::anyhow!("cannot pipeline first scan request; connection lost to {peer}")
+                    .into(),
+            )
+        })?;
+        let next_reply = next_permit
+            .send_rpc(
+                RemoteQueryScannerNext {
+                    scanner_id,
+                    next_predicate: initial_next_predicate,
+                },
+                None,
+            )
+            .map_err(|e| DataFusionError::Internal(e.to_string()))?;
+
+        match open_reply.await {
+            Ok(RemoteQueryScannerOpened::Success { .. }) => {
+                remote_scanner.set_pending_first_reply(next_reply);
+                Ok(remote_scanner)
             }
-            Ok(RemoteQueryScannerOpened::Failure) => Err(DataFusionError::Internal(
-                "Unable to open a remote scanner".to_string(),
-            )),
+            Ok(RemoteQueryScannerOpened::Failure) => {
+                remote_scanner.forget();
+                Err(DataFusionError::Internal(
+                    "Unable to open a remote scanner".to_string(),
+                ))
+            }
             Err(e) => Err(DataFusionError::External(e.into())),
         }
     }

@@ -16,10 +16,10 @@ use tokio::sync::mpsc;
 use tokio_stream::StreamExt as TokioStreamExt;
 use tracing::warn;
 
+use restate_core::cancellation_watcher;
 use restate_core::network::{
     BackPressureMode, Incoming, MessageRouterBuilder, Rpc, ServiceMessage, ServiceReceiver, Verdict,
 };
-use restate_core::{cancellation_watcher, my_node_id};
 use restate_types::net::RpcRequest;
 use restate_types::net::remote_query_scanner::{
     RemoteDataFusionService, RemoteQueryScannerClose, RemoteQueryScannerClosed,
@@ -62,7 +62,6 @@ impl RemoteQueryScannerServer {
         } = self;
 
         let mut shutdown = pin::pin!(cancellation_watcher());
-        let mut next_scanner_id = 1u64;
         let scanners: Arc<ScannerMap> = Default::default();
         let mut network_rx = network_rx.start();
 
@@ -77,9 +76,7 @@ impl RemoteQueryScannerServer {
                     match msg {
                         ServiceMessage::Rpc(msg) if msg.msg_type() == RemoteQueryScannerOpen::TYPE => {
                             let scan_req = msg.into_typed::<RemoteQueryScannerOpen>();
-                            next_scanner_id += 1;
-                            let scanner_id = ScannerId(my_node_id(), next_scanner_id);
-                            Self::on_open(scanner_id, &query_context, scan_req, &scanners, &remote_scanner_manager);
+                            Self::on_open(&query_context, scan_req, &scanners, &remote_scanner_manager);
                         }
                         ServiceMessage::Rpc(msg) if msg.msg_type() == RemoteQueryScannerNext::TYPE => {
                             Self::on_next(
@@ -104,7 +101,6 @@ impl RemoteQueryScannerServer {
     }
 
     fn on_open(
-        scanner_id: ScannerId,
         query_context: &QueryContext,
         scan_req: Incoming<Rpc<RemoteQueryScannerOpen>>,
         scanners: &Arc<ScannerMap>,
@@ -113,6 +109,19 @@ impl RemoteQueryScannerServer {
         let peer = scan_req.peer();
         let (reciprocal, body) = scan_req.split();
         let partition_id = body.partition_id;
+        let scanner_id = body.scanner_id;
+
+        // Reject duplicate scanner ids. With client-side allocation each (peer, seq)
+        // pair must already be unique; if the same id resurfaces it's a client bug
+        // (e.g. counter wraparound or replay) and we surface it as a failure rather
+        // than clobber an in-flight scanner.
+        if scanners.contains_key(&scanner_id) {
+            warn!(
+                "Refusing to open scanner {scanner_id} in partition {partition_id}: id already in use",
+            );
+            reciprocal.send(RemoteQueryScannerOpened::Failure);
+            return;
+        }
 
         if let Err(e) = ScannerTask::spawn(
             scanner_id,
@@ -123,13 +132,11 @@ impl RemoteQueryScannerServer {
             body,
         ) {
             warn!("Unable to create a scanner in partition {partition_id}:  {e}");
-            let response = RemoteQueryScannerOpened::Failure;
-            reciprocal.send(response);
+            reciprocal.send(RemoteQueryScannerOpened::Failure);
             return;
         }
 
-        let response = RemoteQueryScannerOpened::Success { scanner_id };
-        reciprocal.send(response);
+        reciprocal.send(RemoteQueryScannerOpened::Success { scanner_id });
     }
 
     fn on_next(scanners: &ScannerMap, req: Incoming<Rpc<RemoteQueryScannerNext>>) {

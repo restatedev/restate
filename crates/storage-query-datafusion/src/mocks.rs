@@ -31,7 +31,9 @@ use restate_types::errors::GenericError;
 use restate_types::identifiers::{DeploymentId, PartitionId, ServiceRevision};
 use restate_types::live::Live;
 use restate_types::net::address::{AdvertisedAddress, HttpIngressPort};
-use restate_types::net::remote_query_scanner::RemoteQueryScannerOpen;
+use restate_types::net::remote_query_scanner::{
+    RemoteQueryScannerOpen, RemoteQueryScannerPredicate,
+};
 use restate_types::partition_table::Partition;
 use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry;
 use restate_types::schema::deployment::{Deployment, DeploymentResolver};
@@ -173,6 +175,7 @@ impl RemoteScannerService for NoopSvc {
         &self,
         _peer: NodeId,
         _req: RemoteQueryScannerOpen,
+        _initial_next_predicate: Option<RemoteQueryScannerPredicate>,
     ) -> Result<RemoteScanner, DataFusionError> {
         panic!("remote service should not be used")
     }
@@ -226,6 +229,10 @@ impl MockQueryEngine {
                 RemoteScannerManager::new(
                     Arc::new(NoopSvc),
                     Arc::new(AlwaysLocalPartitionLocator) as Arc<dyn PartitionLocator>,
+                    // The mock locator always returns `Local`, so the manager
+                    // never invokes `allocate_scanner_id` and never reads
+                    // `my_node_id`. A blank Metadata is sufficient here.
+                    restate_core::MetadataBuilder::default().to_metadata(),
                 ),
                 MetadataStoreClient::new_in_memory(),
                 None,
