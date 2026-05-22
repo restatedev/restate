@@ -1013,9 +1013,9 @@ impl<S> StateMachineApplyContext<'_, S> {
             "limit_key set without scope — this should have been rejected at the ingress"
         );
 
-        let random_seed = self
-            .is_unique_random_seeds_enabled()
-            .then(|| invocation_id.to_random_seed_with_entropy(self.record_created_at.as_u64()));
+        let random_seed = self.is_unique_random_seeds_enabled().then(|| {
+            invocation_id.to_random_seed_with_wal_record_time(self.record_created_at.as_u64())
+        });
 
         // Prepare PreFlightInvocationMetadata structure
         let submit_notification_sink = service_invocation.submit_notification_sink.take();

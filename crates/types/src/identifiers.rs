@@ -630,14 +630,19 @@ impl InvocationId {
         hasher.finish()
     }
 
-    /// Generate random seed combining the invocation id with additional entropy.
-    pub fn to_random_seed_with_entropy(self, entropy: u64) -> u64 {
-        use std::hash::{DefaultHasher, Hash, Hasher};
+    /// Generate random seed combining the invocation id with wal record time.
+    pub fn to_random_seed_with_wal_record_time(self, wal_record_time: u64) -> u64 {
+        let uuid: u128 = self.inner.into();
+        let uuid_lo = uuid as u64;
+        let uuid_hi = (uuid >> 64) as u64;
 
-        let mut hasher = DefaultHasher::new();
-        self.to_bytes().hash(&mut hasher);
-        entropy.hash(&mut hasher);
-        hasher.finish()
+        // Uses xoshiro from Vigna https://docs.rs/xoshiro/latest/src/xoshiro/splitmix64.rs.html#17-19
+
+        // To avoid collapsing entropy, we rotate wal record time and uuid parts (which might contain timestamp, which might be close to wal record time)
+        let mut mixed = uuid_hi ^ uuid_lo.rotate_left(21) ^ wal_record_time.rotate_left(43);
+        mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d049bb133111eb);
+        mixed ^ (mixed >> 31)
     }
 }
 
