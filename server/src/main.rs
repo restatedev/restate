@@ -238,6 +238,7 @@ fn main() {
             } else {
                 "[default]".to_owned()
             };
+
             info!(
                 node_name = Configuration::pinned().node_name(),
                 config_source = %config_source,
