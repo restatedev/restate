@@ -8,10 +8,49 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub use crate::http::HttpClient;
-use crate::lambda::LambdaClient;
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt::Formatter;
+use std::sync::Arc;
+
+use ::http::{HeaderName, HeaderValue, Version};
+use arc_swap::ArcSwapOption;
+use bytes::Bytes;
+use bytestring::ByteString;
+use core::fmt;
+use futures::{FutureExt, future};
+use http_body_util::Full;
+use hyper::body::Body;
+use hyper::http::uri::PathAndQuery;
+use hyper::{HeaderMap, Response, Uri};
+
+use restate_types::config::ServiceClientOptions;
+use restate_types::deployment::HttpAuth;
+use restate_types::identifiers::LambdaARN;
+use restate_types::schema::deployment::{Deployment, DeploymentType, EndpointLambdaCompression};
 
 pub use crate::gcp::{GcpAuthError, GcpTokenClient, IdTokenCacheMode, derive_audience};
+pub use crate::http::HttpClient;
+pub use crate::http::HttpError;
+pub use crate::lambda::AssumeRoleCacheMode;
+use crate::lambda::LambdaClient;
+use crate::request_identity::SignRequest;
+
+mod gcp;
+mod http;
+mod lambda;
+pub mod pool;
+mod proxy;
+mod request_identity;
+mod utils;
+
+/// Header slot we always use for the Restate-minted Google ID token on
+/// HTTP deployments with GCP auth enabled. Cloud Run validates this
+/// header in precedence over `Authorization` and strips it before
+/// forwarding to the container, so customer-supplied `Authorization` in
+/// `additional_headers` passes through to the workload unchanged.
+const X_SERVERLESS_AUTHORIZATION: HeaderName =
+    HeaderName::from_static("x-serverless-authorization");
 
 #[cfg(any(test, feature = "test_util"))]
 impl ServiceClient {
@@ -22,43 +61,6 @@ impl ServiceClient {
         &self.gcp
     }
 }
-pub use crate::http::HttpError;
-pub use crate::lambda::AssumeRoleCacheMode;
-use crate::request_identity::SignRequest;
-use ::http::{HeaderName, HeaderValue, Version};
-
-/// Header slot we always use for the Restate-minted Google ID token on
-/// HTTP deployments with GCP auth enabled. Cloud Run validates this
-/// header in precedence over `Authorization` and strips it before
-/// forwarding to the container, so customer-supplied `Authorization` in
-/// `additional_headers` passes through to the workload unchanged.
-const X_SERVERLESS_AUTHORIZATION: HeaderName =
-    HeaderName::from_static("x-serverless-authorization");
-use arc_swap::ArcSwapOption;
-use bytes::Bytes;
-use bytestring::ByteString;
-use core::fmt;
-use futures::{FutureExt, future};
-use http_body_util::Full;
-use hyper::body::Body;
-use hyper::http::uri::PathAndQuery;
-use hyper::{HeaderMap, Response, Uri};
-use restate_types::config::ServiceClientOptions;
-use restate_types::deployment::HttpAuth;
-use restate_types::identifiers::LambdaARN;
-use restate_types::schema::deployment::{Deployment, DeploymentType, EndpointLambdaCompression};
-use std::collections::HashMap;
-use std::error::Error;
-use std::fmt::Formatter;
-use std::sync::Arc;
-
-mod gcp;
-mod http;
-mod lambda;
-pub mod pool;
-mod proxy;
-mod request_identity;
-mod utils;
 
 pub type ResponseBody = http_body_util::Either<http::ResponseBody, Full<Bytes>>;
 

@@ -23,25 +23,21 @@ use http::Uri;
 /// Externally-tagged enum so future providers (e.g. non-Google OIDC
 /// sources) can be added without altering the encoding of the existing
 /// `GoogleIdToken` variant.
-#[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum HttpAuth {
     GoogleIdToken(GoogleIdTokenAuth),
 }
 
-#[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct GoogleIdTokenAuth {
     /// Service account email to impersonate via
     /// `iamcredentials:generateIdToken`. None means use the ambient ADC
     /// identity directly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "utoipa-schema", schema(value_type = Option<String>))]
     pub impersonate_service_account: Option<bytestring::ByteString>,
     /// Explicit OIDC `aud` claim. None means derive from the deployment
     /// URL origin per the audience-derivation algorithm.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "utoipa-schema", schema(value_type = Option<String>))]
     pub audience: Option<bytestring::ByteString>,
 }
 

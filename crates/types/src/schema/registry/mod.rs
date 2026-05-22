@@ -126,13 +126,24 @@ enum SchemaRegistryErrorInner {
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[error("invalid HTTP auth configuration: field={field}: {message}")]
 pub struct HttpAuthValidationError {
-    pub field: &'static str,
-    pub message: String,
+    field: &'static str,
+    message: String,
 }
 
 impl HttpAuthValidationError {
     fn invalid_field(field: &'static str, message: String) -> Self {
         Self { field, message }
+    }
+
+    /// Name of the offending request field. Used by the REST layer to
+    /// surface a structured `InvalidField` response.
+    pub fn field(&self) -> &'static str {
+        self.field
+    }
+
+    /// Human-readable explanation of why the field was rejected.
+    pub fn message(&self) -> &str {
+        &self.message
     }
 }
 

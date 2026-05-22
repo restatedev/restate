@@ -25,21 +25,14 @@ use restate_types::identifiers::{DeploymentId, InvalidLambdaARN, ServiceRevision
 use restate_types::schema;
 use restate_types::schema::deployment::{Deployment, DeploymentType};
 use restate_types::schema::registry::{
-    AddDeploymentResult, AllowBreakingChanges, ApplyMode, DiscoveryClient, HttpAuthValidationError,
-    MetadataService, Overwrite, TelemetryClient, effective_http_patch_inputs, validate_http_auth,
+    AddDeploymentResult, AllowBreakingChanges, ApplyMode, DiscoveryClient, MetadataService,
+    Overwrite, TelemetryClient, effective_http_patch_inputs, validate_http_auth,
 };
 use restate_types::schema::service::ServiceMetadata;
 
 use super::error::*;
 use crate::rest_api::ErrorDescriptionResponse;
 use crate::state::AdminServiceState;
-
-/// Map the registry-side validation error onto the REST surface shape.
-/// The registry layer owns the invariant; the REST layer just relays
-/// the field name and message in the standard `InvalidField` response.
-fn map_http_auth_validation_error(err: HttpAuthValidationError) -> MetaApiError {
-    MetaApiError::InvalidField(err.field, err.message)
-}
 
 /// Register deployment
 ///
@@ -129,8 +122,7 @@ where
                 let headers_for_validation: Option<
                     std::collections::HashMap<http::HeaderName, http::HeaderValue>,
                 > = additional_headers.clone().map(Into::into);
-                validate_http_auth(&uri, headers_for_validation.as_ref())
-                    .map_err(map_http_auth_validation_error)?;
+                validate_http_auth(&uri, headers_for_validation.as_ref())?;
             }
 
             // Cross the wire/persisted boundary at the handler.
@@ -413,8 +405,7 @@ where
                     existing_uri,
                     &existing_deployment.additional_headers,
                 );
-                validate_http_auth(effective_uri, Some(effective_headers.as_ref()))
-                    .map_err(map_http_auth_validation_error)?;
+                validate_http_auth(effective_uri, Some(effective_headers.as_ref()))?;
             }
 
             (
