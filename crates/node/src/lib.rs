@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod cluster_marker;
 mod failure_detector;
 mod init;
 mod introspection;
@@ -49,6 +48,7 @@ use restate_metadata_server::{
 use restate_metadata_store::{ReadWriteError, WriteError, retry_on_retryable_error};
 use restate_partition_store::PartitionStoreManager;
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
+use restate_types::cluster_marker::{ClusterMarker, ClusterValidationError};
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::errors::IntoMaybeRetryable;
 use restate_types::health::NodeStatus;
@@ -69,7 +69,6 @@ use restate_types::protobuf::common::{
 use restate_types::{GenerationalNodeId, RestateVersion, Version, Versioned};
 
 use self::failure_detector::FailureDetector;
-use crate::cluster_marker::ClusterValidationError;
 use crate::init::NodeInit;
 use crate::network_server::NetworkServer;
 use crate::roles::{AdminRole, IngressRole, WorkerRole};
@@ -175,8 +174,12 @@ impl Node {
         let tc = TaskCenter::current();
         debug_assert!(is_set, "Global metadata was already set");
 
-        let is_provisioned =
-            cluster_marker::validate_and_update_cluster_marker(config.common.cluster_name())?;
+        let marker = ClusterMarker::validate_or_create(
+            config.common.cluster_name(),
+            config.worker.use_multi_db_layout,
+        )?;
+
+        let is_provisioned = marker.provisioned();
 
         // If MetadataServerKind::Local and Role::MetadataServer are configured,
         // we use an in-memory client, ignoring the rest of the client config.
@@ -259,7 +262,8 @@ impl Node {
 
         let bifrost = bifrost_svc.handle();
 
-        let partition_store_manager = PartitionStoreManager::create().await?;
+        let partition_store_manager =
+            PartitionStoreManager::create(marker.uses_multi_db_layout()).await?;
 
         let log_server = if config.has_role(Role::LogServer) {
             Some(

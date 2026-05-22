@@ -953,7 +953,7 @@ mod tests {
         let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
         let replica_set_states = PartitionReplicaSetStates::default();
 
-        let partition_store_manager = PartitionStoreManager::create().await?;
+        let partition_store_manager = PartitionStoreManager::create(true).await?;
 
         let ingress = IngestionClient::new(
             env.networking.clone(),

@@ -124,6 +124,19 @@ pub struct WorkerOptions {
     /// partition leader has yet observed the change. Default: 30 s.
     /// *Since v1.7.0*
     pub rule_book_poll_interval: NonZeroFriendlyDuration,
+
+    /// Create a database per partition
+    ///
+    /// This asks the node to create a database per partition. Enabling this is only
+    /// effective for fresh empty nodes. If this was enabled on a node that already has
+    /// the single db layout, the node will continue to use the single db layout.
+    ///
+    /// It's possible in future versions (>=v1.8.0+) to include automatic migration
+    /// facility when enabling this option on a legacy node.
+    /// *Since v1.7.0*
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub use_multi_db_layout: bool,
 }
 
 impl WorkerOptions {
@@ -185,6 +198,7 @@ impl Default for WorkerOptions {
                 NonZeroUsize::new(256 * 1024 * 1024).unwrap(),
             ),
             rule_book_poll_interval: NonZeroFriendlyDuration::from_secs_unchecked(30),
+            use_multi_db_layout: false,
         }
     }
 }
