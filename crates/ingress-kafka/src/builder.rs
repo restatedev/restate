@@ -20,18 +20,13 @@ use rdkafka::Message;
 use rdkafka::message::BorrowedMessage;
 use tracing::{info_span, trace};
 
-use rdkafka::message::Headers;
-
 use restate_storage_api::deduplication_table::DedupInformation;
-use restate_types::Scope;
 use restate_types::identifiers::{InvocationId, WithPartitionKey, partitioner};
 use restate_types::invocation::{Header, InvocationTarget, ServiceInvocation, SpanRelation};
-use restate_types::limit_key::LimitKey;
 use restate_types::live::Live;
 use restate_types::schema::Schema;
 use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
 use restate_types::schema::subscriptions::{EventInvocationTargetTemplate, Sink, Subscription};
-use restate_util_string::{ReString, RestateString, RestrictedValueError};
 use restate_wal_protocol::{Command, Destination, Envelope, Source};
 
 use crate::Error;
@@ -90,13 +85,6 @@ impl EnvelopeBuilder {
         };
 
         let headers = Self::generate_events_attributes(&msg, &self.subscription_id);
-        let (scope, limit_key) = extract_scope_limit_key(&msg).map_err(|err| Error::Event {
-            subscription: self.subscription_id.clone(),
-            topic: msg.topic().to_string(),
-            partition: msg.partition(),
-            offset: msg.offset(),
-            cause: anyhow::anyhow!("invalid scope value in x-restate-scope header: {err}"),
-        })?;
 
         let dedup = DedupInformation::producer(producer_id, msg.offset() as u64);
 
@@ -107,8 +95,6 @@ impl EnvelopeBuilder {
             key,
             payload,
             headers,
-            scope,
-            limit_key,
             consumer_group_id,
             msg.topic(),
             msg.partition(),
@@ -162,43 +148,6 @@ impl EnvelopeBuilder {
     }
 }
 
-pub(crate) fn extract_scope_limit_key(
-    msg: &impl rdkafka::Message,
-) -> Result<(Option<Scope>, LimitKey<ReString>), RestrictedValueError> {
-    let Some(kafka_headers) = msg.headers() else {
-        return Ok((None, LimitKey::None));
-    };
-
-    let mut scope = None;
-    let mut limit_key = LimitKey::None;
-
-    for idx in 0..kafka_headers.count() {
-        let header = kafka_headers.get(idx);
-        let Some(value) = header.value else {
-            continue;
-        };
-        match header.key {
-            "x-restate-scope" => {
-                if let Ok(s) = std::str::from_utf8(value)
-                    && !s.is_empty()
-                {
-                    scope = Some(Scope::try_new(s)?);
-                }
-            }
-            "x-restate-limit-key" => {
-                if let Ok(s) = std::str::from_utf8(value)
-                    && let Ok(lk) = s.parse()
-                {
-                    limit_key = lk;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    Ok((scope, limit_key))
-}
-
 #[derive(Debug)]
 pub struct InvocationBuilder;
 
@@ -211,8 +160,6 @@ impl InvocationBuilder {
         key: Bytes,
         payload: Bytes,
         headers: Vec<restate_types::invocation::Header>,
-        scope: Option<Scope>,
-        limit_key: LimitKey<ReString>,
         consumer_group_id: &str,
         topic: &str,
         partition: i32,
@@ -250,23 +197,7 @@ impl InvocationBuilder {
                 handler.clone(),
                 *handler_ty,
             ),
-        }
-        .with_scope(scope);
-
-        // Validate: scoped invocations require vqueues to be enabled
-        if invocation_target.scope().is_some()
-            && !restate_types::config::Configuration::pinned()
-                .common
-                .experimental
-                .is_vqueues_enabled()
-        {
-            bail!("Scoped invocations require experimental vqueues to be enabled");
-        }
-
-        // Validate: limit_key requires scope
-        if !limit_key.is_empty() && invocation_target.scope().is_none() {
-            bail!("limit-key requires a scope to be set");
-        }
+        };
 
         // Compute the retention values
         let target = schema
@@ -314,7 +245,6 @@ impl InvocationBuilder {
         service_invocation.with_related_span(SpanRelation::parent(ingress_span_context));
         service_invocation.argument = payload;
         service_invocation.headers = headers;
-        service_invocation.limit_key = limit_key;
         service_invocation.with_retention(invocation_retention);
 
         Ok(service_invocation)
