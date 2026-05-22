@@ -7,10 +7,12 @@
 HTTP deployments registered with Restate may now opt into native Google
 OIDC ID-token authentication. When configured, Restate mints a
 Google-signed ID token for every discovery and invocation request to
-the deployment and attaches it as `Authorization: Bearer <token>`. If
-the deployment's `additional_headers` already include `Authorization`,
-the minted token is placed on `X-Serverless-Authorization` instead,
-following Cloud Run's documented dual-header convention.
+the deployment and attaches it as
+`X-Serverless-Authorization: Bearer <token>`. Cloud Run validates this
+header in precedence over `Authorization` and strips it before
+forwarding the request to the container, so any `Authorization` value
+the operator placed in the deployment's `additional_headers` passes
+through to the workload unchanged.
 
 Two configuration knobs are added to each HTTP deployment:
 
@@ -24,29 +26,29 @@ The CLI gains three new flags on `restate dp register`:
 
 ```bash
 # Cloud Run service callable by the ambient identity:
-restate dp register https://svc-abc-uc.a.run.app --id-token
+restate dp register https://svc-abc-uc.a.run.app --gcp-id-token
 
 # Impersonate a target service account:
 restate dp register https://svc-abc-uc.a.run.app \
-  --impersonate-service-account caller@my-proj.iam.gserviceaccount.com
+  --gcp-impersonate-service-account caller@my-proj.iam.gserviceaccount.com
 
 # Custom domain in front of Cloud Run; override the audience:
 restate dp register https://api.acme.com/svc \
-  --audience https://svc-abc-uc.a.run.app
+  --gcp-audience https://svc-abc-uc.a.run.app
 ```
 
 Credentials are discovered through Google's Application Default
 Credentials (ADC) chain, but not every ADC source can mint an OIDC ID
-token on its own. The ambient `--id-token` path (no
-`--impersonate-service-account`) requires an ADC source whose
+token on its own. The ambient `--gcp-id-token` path (no
+`--gcp-impersonate-service-account`) requires an ADC source whose
 underlying credentials can mint ID tokens directly: service-account
 JSON keys, and the GCE / GKE / Cloud Run metadata server, are the
 supported ambient sources. External-account (Workload Identity
 Federation) and authorized-user (gcloud user creds) sources cannot
 mint ID tokens for arbitrary audiences on their own; pair them with
-`--impersonate-service-account` so Restate calls the IAM Credentials
-`generateIdToken` API on a target service account that the ambient
-identity is authorized to impersonate.
+`--gcp-impersonate-service-account` so Restate calls the IAM
+Credentials `generateIdToken` API on a target service account that
+the ambient identity is authorized to impersonate.
 
 To reconfigure `auth` on an existing deployment (rotate the
 impersonation target, change the audience, or remove auth entirely),
@@ -56,7 +58,7 @@ re-register with `--force`. This matches how the existing Lambda
 ```bash
 # Change the impersonation target:
 restate dp register https://svc-abc-uc.a.run.app --force \
-  --impersonate-service-account new-caller@p.iam.gserviceaccount.com
+  --gcp-impersonate-service-account new-caller@p.iam.gserviceaccount.com
 
 # Remove auth:
 restate dp register https://svc-abc-uc.a.run.app --force
@@ -112,10 +114,10 @@ to populate ADC. This is distinct from `gcloud auth login`, which
 only populates user credentials for `gcloud` itself and does NOT
 populate ADC. Note that authorized-user ADC credentials cannot mint
 ID tokens with arbitrary audiences without impersonation; set
-`--impersonate-service-account` for the dev flow.
+`--gcp-impersonate-service-account` for the dev flow.
 
 Cloud Run services exposed via custom domains, custom ports, or
-traffic tags should set `--audience` explicitly to the canonical
+traffic tags should set `--gcp-audience` explicitly to the canonical
 service URL. The default-derived audience is the deployment URL
 origin, which does not match the canonical Cloud Run identity in
 those cases.

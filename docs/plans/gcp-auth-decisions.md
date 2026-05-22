@@ -50,9 +50,20 @@ Not needed in v0. The `compression` precedent in `serde_hacks`
 skip_serializing_if = "Option::is_none")]` directly on the field — no
 separate parse-and-convert module. Mirror that pattern.
 
-### D5: Provider-typed enum on REST vs schema
-Both REST model and persisted schema use the same `HttpAuth` enum
-externally-tagged (REQ-DEP-02). Avoid having two parallel types.
+### D5: Provider-typed enum on REST vs schema (SUPERSEDED)
+Original decision: both REST model and persisted schema use the same
+`HttpAuth` enum externally-tagged (REQ-DEP-02), avoiding parallel
+types.
+
+Superseded by review feedback. The REST surface and the persisted
+schema evolve under different compatibility rules (wire under REST
+versioning, persisted under storage-format evolution) and sharing a
+single struct couples that evolution. The project has already paid for
+the conflation in similar shapes elsewhere. Current decision: the
+admin-rest-model crate defines an independent wire-side copy of
+`HttpAuth` and `GoogleIdTokenAuth`; `restate-types` keeps the persisted
+copy in `crates/types/src/deployment/http_auth.rs`. The REST handler
+converts between them at the boundary via `From` impls.
 
 ### D6: Full Lambda parity, no `dp update` CLI, no REST tri-state
 Reverses two earlier intermediate decisions. The user-facing and
