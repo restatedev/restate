@@ -20,14 +20,13 @@ use restate_types::sharding::KeyRange;
 use restate_types::sharding::subsharding::ShardPlan;
 use strum::EnumCount;
 
+use crate::{PartitionDb, PartitionStore, Result};
 use restate_clock::{AtomicStorage, HlcClock, WallClock};
 use restate_storage_api::StorageError;
 use restate_types::config::Configuration;
 
-use crate::{PartitionDb, PartitionStore, Result};
-
 // NOTE: The representation numbers here must be strictly monotonically increasing.
-#[derive(Debug, Eq, PartialEq, strum::FromRepr, strum::EnumCount)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, strum::FromRepr, strum::EnumCount)]
 #[repr(u16)]
 pub(crate) enum SchemaVersion {
     /// Before 1.5
@@ -40,27 +39,34 @@ pub(crate) enum SchemaVersion {
 pub(crate) const LATEST_VERSION: SchemaVersion =
     SchemaVersion::from_repr((SchemaVersion::COUNT as u16) - 1).unwrap();
 
-impl From<u16> for SchemaVersion {
-    fn from(value: u16) -> Self {
-        SchemaVersion::from_repr(value).unwrap_or(SchemaVersion::V1_5)
+impl TryFrom<u16> for SchemaVersion {
+    type Error = StorageError;
+
+    fn try_from(value: u16) -> Result<Self, StorageError> {
+        SchemaVersion::from_repr(value).ok_or_else(|| {
+            StorageError::Generic(anyhow::anyhow!(
+                "unknown partition-store schema version {value}; this binary is older \
+                 than the data it would open. Roll forward to a server version that \
+                 recognizes this schema."
+            ))
+        })
     }
 }
 
 impl SchemaVersion {
-    fn next(self) -> Self {
-        ((self as u16) + 1).into()
+    fn next(&self) -> Option<Self> {
+        SchemaVersion::from_repr((*self as u16) + 1)
     }
 
     pub(crate) async fn run_all_migrations(mut self, storage: &mut PartitionStore) -> Result<Self> {
-        while self != LATEST_VERSION {
-            self.do_migration(storage).await?;
-            self = self.next();
+        while self.next().is_some() {
+            self = self.do_migration(storage).await?;
         }
         Ok(self)
     }
 
-    // Add migrations here!
-    async fn do_migration(&self, _storage: &mut PartitionStore) -> Result<()> {
+    // Runs the migration for the given schema version and returns the new schema version
+    async fn do_migration(&self, _storage: &mut PartitionStore) -> Result<SchemaVersion> {
         match self {
             SchemaVersion::None => {
                 // Version 1.6+ does not support upgrading from pre-1.5
@@ -79,7 +85,8 @@ impl SchemaVersion {
                 //  * and more
             }
         }
-        Ok(())
+
+        Ok(SchemaVersion::V1_5)
     }
 }
 
@@ -217,6 +224,50 @@ mod tests {
         assert_eq!(single_key_ranges, vec![KeyRange::new(42, 42)]);
 
         drop((ctx, left_ctx, right_ctx, single_key_ctx));
+        RocksDbManager::get().shutdown().await;
+    }
+
+    #[restate_core::test]
+    async fn verify_and_run_migrations_rejects_unknown_persisted_version() {
+        use crate::fsm_table::put_storage_version;
+
+        RocksDbManager::init();
+        let manager = PartitionStoreManager::create()
+            .await
+            .expect("DB storage creation succeeds");
+        let mut store = manager
+            .open(
+                &Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1)),
+                None,
+            )
+            .await
+            .expect("DB storage creation succeeds");
+
+        // Seed the FSM with an applied LSN so the empty-partition fast path is skipped,
+        // and a SchemaVersion discriminant that this binary doesn't know.
+        {
+            use restate_storage_api::Transaction;
+            use restate_storage_api::fsm_table::WriteFsmTable;
+            let mut txn = store.transaction();
+            txn.put_applied_lsn(restate_types::logs::Lsn::new(1))
+                .expect("applied lsn write should succeed");
+            txn.commit().await.expect("commit should succeed");
+        }
+        let partition_id = store.partition_id();
+        put_storage_version(&mut store, partition_id, 9999_u16)
+            .await
+            .expect("seeding unknown storage version should succeed");
+
+        let err = store
+            .verify_and_run_migrations()
+            .await
+            .expect_err("unknown schema version should fail verify_and_run_migrations");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("9999") && msg.contains("schema version"),
+            "unexpected error message: {msg}"
+        );
+
         RocksDbManager::get().shutdown().await;
     }
 }

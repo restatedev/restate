@@ -660,8 +660,8 @@ impl PartitionStore {
             return Ok(());
         }
 
-        let mut schema_version: SchemaVersion =
-            get_storage_version(self, self.partition_id()).await?.into();
+        let mut schema_version =
+            SchemaVersion::try_from(get_storage_version(self, self.partition_id()).await?)?;
         if schema_version != LATEST_VERSION {
             // We need to run some migrations!
             debug!(
