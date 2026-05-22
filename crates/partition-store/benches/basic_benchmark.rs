@@ -51,7 +51,7 @@ fn basic_writing_reading_benchmark(c: &mut Criterion) {
         //
         // setup
         //
-        let manager = PartitionStoreManager::create()
+        let manager = PartitionStoreManager::create(true)
             .await
             .expect("DB creation succeeds");
         manager

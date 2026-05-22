@@ -165,7 +165,7 @@ mod tests {
     async fn split_returns_independent_sub_contexts() {
         let _clock_guard = ClockUpkeep::start().expect("clock upkeep should start");
         RocksDbManager::init();
-        let manager = PartitionStoreManager::create()
+        let manager = PartitionStoreManager::create(true)
             .await
             .expect("DB storage creation succeeds");
         let store = manager
