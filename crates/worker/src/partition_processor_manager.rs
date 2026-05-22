@@ -1595,7 +1595,7 @@ mod tests {
 
         let replica_set_states = PartitionReplicaSetStates::default();
 
-        let partition_store_manager = PartitionStoreManager::create().await?;
+        let partition_store_manager = PartitionStoreManager::create(true).await?;
 
         let ingestion_client = IngestionClient::new(
             env_builder.networking.clone(),

@@ -44,7 +44,7 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
 
     let rocksdb = RocksDbManager::init();
 
-    let partition_store_manager = PartitionStoreManager::create().await?;
+    let partition_store_manager = PartitionStoreManager::create(true).await?;
 
     let mut partition_store = partition_store_manager.open(&PARTITION, None).await?;
 
@@ -113,7 +113,7 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
 async fn partition_durability_fsm() -> googletest::Result<()> {
     let rocksdb = RocksDbManager::init();
 
-    let partition_store_manager = PartitionStoreManager::create().await?;
+    let partition_store_manager = PartitionStoreManager::create(true).await?;
 
     let mut partition_store = partition_store_manager.open(&PARTITION, None).await?;
 
