@@ -190,6 +190,8 @@ pub struct NodesConfiguration {
     // A unique fingerprint for this cluster. Introduced in v1.3 for forward compatibility. As of
     // v1.6, we expect this cluster fingerprint to be present. Will be used to uniquely identify
     // this cluster instance. The value is None if the nodes configuration is invalid.
+    //
+    // NOTE: This is optional due to the issue described in https://github.com/restatedev/restate/issues/4293
     cluster_fingerprint: Option<ClusterFingerprint>,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]

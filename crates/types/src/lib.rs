@@ -26,6 +26,7 @@ pub mod cluster;
 pub mod cluster_state;
 pub mod health;
 
+pub mod cluster_marker;
 pub mod config;
 pub mod config_loader;
 pub mod deployment;

@@ -467,7 +467,7 @@ mod tests {
             rocksdb_manager.shutdown().await;
         }));
 
-        let manager = PartitionStoreManager::create()
+        let manager = PartitionStoreManager::create(true)
             .await
             .expect("DB storage creation succeeds");
         manager
