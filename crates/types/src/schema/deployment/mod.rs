@@ -8,6 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+pub mod http_auth;
+
+pub use http_auth::{GoogleIdTokenAuth, HttpAuth, derive_audience};
+
 use std::collections::HashMap;
 use std::fmt;
 use std::fmt::{Display, Formatter};
@@ -15,7 +19,7 @@ use std::ops::RangeInclusive;
 
 use crate::config::Configuration;
 use crate::deployment::{
-    self, DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
+    DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
 };
 use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision};
 use crate::schema::info::SchemaInfo;
@@ -151,7 +155,7 @@ pub enum DeploymentType {
         #[serde(with = "serde_with::As::<restate_serde_util::VersionSerde>")]
         http_version: http::Version,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        auth: Option<deployment::HttpAuth>,
+        auth: Option<HttpAuth>,
     },
     Lambda {
         arn: LambdaARN,
@@ -231,8 +235,6 @@ pub trait DeploymentResolver {
 }
 
 mod serde_hacks {
-    use crate::deployment;
-
     use super::*;
 
     #[derive(serde::Deserialize)]
@@ -249,7 +251,7 @@ mod serde_hacks {
             http_version: Option<http::Version>,
             // older records don't have this field, treat missing as None
             #[serde(default)]
-            auth: Option<deployment::HttpAuth>,
+            auth: Option<HttpAuth>,
         },
         Lambda {
             arn: LambdaARN,
@@ -361,7 +363,7 @@ mod serde_tests {
 
     #[test]
     fn auth_field_round_trips() {
-        use crate::deployment::{GoogleIdTokenAuth, HttpAuth};
+        use crate::schema::deployment::{GoogleIdTokenAuth, HttpAuth};
 
         let original = DeploymentType::Http {
             address: Uri::from_static("https://svc.example.com"),

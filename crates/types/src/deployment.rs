@@ -8,9 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod http_auth;
-
-pub use http_auth::{GoogleIdTokenAuth, HttpAuth, derive_audience};
+// Per-deployment HTTP authentication lives under the schema module, alongside the persisted
+// deployment record types that embed it. Re-exported here so downstream consumers may continue
+// to refer to `restate_types::deployment::HttpAuth` via the deployment-address surface.
+pub use crate::schema::deployment::{GoogleIdTokenAuth, HttpAuth, derive_audience};
 
 use crate::identifiers::{DeploymentId, LambdaARN};
 use crate::service_protocol::ServiceProtocolVersion;
