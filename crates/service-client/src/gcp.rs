@@ -286,8 +286,9 @@ impl GcpTokenClient {
 }
 
 /// Derive the OIDC audience from a deployment URI. Delegates to
-/// `restate_types::deployment::derive_audience` so the service-client and the CLI display path
-/// share one source of truth. Wraps the `None`-on-malformed-URI return into `GcpAuthError::Build`.
+/// `restate_types::deployment::derive_audience` so the schema-registry materialisation path and
+/// the dispatch-time fallback share one source of truth. Wraps the `None`-on-malformed-URI return
+/// into `GcpAuthError::Build`.
 pub fn derive_audience(uri: &Uri) -> Result<String, GcpAuthError> {
     restate_types::deployment::derive_audience(uri).ok_or_else(|| GcpAuthError::Build {
         audience: uri.to_string(),

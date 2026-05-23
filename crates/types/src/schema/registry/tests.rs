@@ -290,3 +290,84 @@ mod http_auth_validation_tests {
             .expect("no-op PATCH against safe persisted record is accepted");
     }
 }
+
+#[test(tokio::test)]
+pub async fn register_http_with_gcp_auth_persists_derived_audience() {
+    use crate::deployment::{GoogleIdTokenAuth, HttpAuth, HttpDeploymentAddress};
+    use bytestring::ByteString;
+    use http::Uri;
+
+    let schema_metadata = mock_arc_schema();
+    let schema_registry = SchemaRegistry::new(
+        schema_metadata.clone(),
+        DiscoveryResponse::mock(vec![greeter_service()]),
+        (),
+    );
+
+    // Register with audience left unset; the registry must derive and persist it.
+    let uri: Uri = "https://svc-abc-uc.a.run.app/".parse().unwrap();
+    let (_, deployment_unset, _) = schema_registry
+        .register_deployment(RegisterDeploymentRequest {
+            deployment_address: HttpDeploymentAddress::new(uri.clone())
+                .with_auth(Some(HttpAuth::GoogleIdToken(GoogleIdTokenAuth {
+                    impersonate_service_account: None,
+                    audience: None,
+                })))
+                .into(),
+            additional_headers: Default::default(),
+            metadata: Default::default(),
+            use_http_11: false,
+            allow_breaking: AllowBreakingChanges::No,
+            overwrite: Overwrite::No,
+            apply_mode: ApplyMode::Apply,
+        })
+        .await
+        .unwrap();
+
+    let DeploymentType::Http {
+        auth: Some(HttpAuth::GoogleIdToken(persisted)),
+        ..
+    } = deployment_unset.ty
+    else {
+        panic!("expected persisted GoogleIdToken auth");
+    };
+    assert_eq!(
+        persisted.audience.as_deref(),
+        Some("https://svc-abc-uc.a.run.app"),
+        "audience must be derived and persisted from the deployment URI",
+    );
+
+    // An explicit audience is persisted verbatim with no rewriting.
+    let explicit_uri: Uri = "https://api.acme.com/svc".parse().unwrap();
+    let explicit_audience = ByteString::from_static("https://svc-abc-uc.a.run.app");
+    let (_, deployment_explicit, _) = schema_registry
+        .register_deployment(RegisterDeploymentRequest {
+            deployment_address: HttpDeploymentAddress::new(explicit_uri)
+                .with_auth(Some(HttpAuth::GoogleIdToken(GoogleIdTokenAuth {
+                    impersonate_service_account: None,
+                    audience: Some(explicit_audience.clone()),
+                })))
+                .into(),
+            additional_headers: Default::default(),
+            metadata: Default::default(),
+            use_http_11: false,
+            allow_breaking: AllowBreakingChanges::No,
+            overwrite: Overwrite::No,
+            apply_mode: ApplyMode::Apply,
+        })
+        .await
+        .unwrap();
+
+    let DeploymentType::Http {
+        auth: Some(HttpAuth::GoogleIdToken(persisted_explicit)),
+        ..
+    } = deployment_explicit.ty
+    else {
+        panic!("expected persisted GoogleIdToken auth");
+    };
+    assert_eq!(
+        persisted_explicit.audience.as_ref(),
+        Some(&explicit_audience),
+        "explicit audience must be preserved verbatim",
+    );
+}

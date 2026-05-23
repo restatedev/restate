@@ -180,8 +180,20 @@ impl ServiceClient {
                     if let Some(HttpAuth::GoogleIdToken(auth)) = &auth {
                         let audience = match &auth.audience {
                             Some(a) => a.to_string(),
-                            None => gcp::derive_audience(&uri)
-                                .map_err(|e| ServiceClientError::GcpAuth(uri.clone(), e))?,
+                            None => {
+                                // Defensive: registration since the persist-derived-audience change
+                                // always fills this in. Hitting this branch implies a record
+                                // persisted before that change; surface it so the operator
+                                // re-registers with --force to refresh the persisted record.
+                                tracing::warn!(
+                                    uri = %uri,
+                                    "GCP auth record has no persisted audience; deriving from URI \
+                                     at mint time. Re-register the deployment with --force to \
+                                     persist the derived audience."
+                                );
+                                gcp::derive_audience(&uri)
+                                    .map_err(|e| ServiceClientError::GcpAuth(uri.clone(), e))?
+                            }
                         };
                         let token = gcp
                             .mint(auth.impersonate_service_account.as_deref(), &audience)

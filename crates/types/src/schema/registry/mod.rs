@@ -187,6 +187,26 @@ pub fn validate_http_auth(
     Ok(())
 }
 
+/// Resolve any auto-derived fields inside the persisted `HttpAuth` value against the deployment
+/// URI, so the persisted record carries fully-materialised values. Today this means filling in the
+/// `audience` for `GoogleIdToken` when the operator left it unset; the audience is the URL origin
+/// (scheme + host + optional port).
+///
+/// Running this at register/patch time means the dispatch path and the CLI describe path observe
+/// the same value, and any later URI change requires re-registering with `--force` to refresh the
+/// derived audience along with the rest of the record.
+pub fn materialize_http_auth(uri: &Uri, auth: &mut deployment::HttpAuth) {
+    match auth {
+        deployment::HttpAuth::GoogleIdToken(token_auth) => {
+            if token_auth.audience.is_none()
+                && let Some(derived) = deployment::derive_audience(uri)
+            {
+                token_auth.audience = Some(derived.into());
+            }
+        }
+    }
+}
+
 pub fn effective_http_patch_inputs<'a>(
     patch_uri: Option<&'a Uri>,
     patch_headers: Option<&'a Headers>,
@@ -301,7 +321,7 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry: Telemetry
     pub async fn register_deployment(
         &self,
         RegisterDeploymentRequest {
-            deployment_address,
+            mut deployment_address,
             additional_headers,
             metadata,
             use_http_11,
@@ -310,6 +330,18 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry: Telemetry
             apply_mode,
         }: RegisterDeploymentRequest,
     ) -> Result<(AddDeploymentResult, Deployment, Vec<ServiceMetadata>), SchemaRegistryError> {
+        // Materialise any auto-derived auth fields against the deployment URI so the persisted
+        // record carries fully-resolved values. Done before the duplicate check so a re-register
+        // of the same effective record short-circuits to Unchanged.
+        if let DeploymentAddress::Http(HttpDeploymentAddress {
+            uri,
+            auth: Some(auth),
+            ..
+        }) = &mut deployment_address
+        {
+            materialize_http_auth(uri, auth);
+        }
+
         // Verify first if we have the service. If we do, no need to do anything here.
         if overwrite == Overwrite::No {
             // Verify if we have a service for this endpoint already or not
@@ -419,7 +451,7 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
         };
 
         // Merge with update changes requested
-        let (deployment_address, use_http_11) =
+        let (mut deployment_address, use_http_11) =
             match (update_deployment_address, existing_deployment.ty) {
                 (
                     Some(UpdateDeploymentAddress::Http {
@@ -518,6 +550,21 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                     false,
                 ),
             };
+
+        // PATCH preserves the persisted `auth` field verbatim (including any audience derived at
+        // register time). To rotate audience or impersonation, the operator must re-register with
+        // `--force`, which re-runs derivation against the new URI. Defensively re-run
+        // materialisation here as well so any legacy record that still carries `audience: None`
+        // gets filled in on first PATCH; this is a no-op for records persisted after this change.
+        if let DeploymentAddress::Http(HttpDeploymentAddress {
+            uri,
+            auth: Some(auth),
+            ..
+        }) = &mut deployment_address
+        {
+            materialize_http_auth(uri, auth);
+        }
+
         let additional_headers =
             additional_headers.unwrap_or(existing_deployment.additional_headers);
 
