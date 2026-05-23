@@ -31,11 +31,6 @@ pub enum AdminApiVersion {
     /// Added with v1.7.0. Added scope column to sys_state and sys_promise tables. More changes to
     /// follow with the vqueues changes. Removed sys_idempotency table.
     V4 = 4,
-    /// Introduced the optional `auth` field on HTTP deployment register and response payloads,
-    /// carrying the GCP Cloud Run OIDC mint configuration. Earlier versions silently drop the
-    /// field, so the CLI gates `--gcp-*` flags and the server gates `auth`-carrying register and
-    /// patch requests on V5 to fail-fast instead of producing an unauthenticated deployment.
-    V5 = 5,
 }
 
 impl AdminApiVersion {

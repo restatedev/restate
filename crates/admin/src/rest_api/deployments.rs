@@ -104,21 +104,6 @@ where
         } => {
             validate_uri(&uri)?;
             if auth.is_some() {
-                // The `auth` field was introduced with admin API V5.
-                // Reject requests negotiated below V5 that carry the
-                // field so an older CLI cannot silently produce an
-                // unauthenticated deployment on a new server, or a
-                // future client cannot bypass version gating by
-                // pinning an older API version.
-                if version != AdminApiVersion::Unknown && version < AdminApiVersion::V5 {
-                    return Err(MetaApiError::InvalidField(
-                        "auth",
-                        format!(
-                            "the per-deployment `auth` field requires admin API V5 or later; \
-                             this request negotiated {version:?}"
-                        ),
-                    ));
-                }
                 let headers_for_validation: Option<
                     std::collections::HashMap<http::HeaderName, http::HeaderValue>,
                 > = additional_headers.clone().map(Into::into);

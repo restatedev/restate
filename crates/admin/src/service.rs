@@ -202,11 +202,7 @@ where
             )
             .nest(
                 "/v4",
-                with_api_version_middleware(router.clone(), AdminApiVersion::V4),
-            )
-            .nest(
-                "/v5",
-                with_api_version_middleware(router, AdminApiVersion::V5),
+                with_api_version_middleware(router, AdminApiVersion::V4),
             )
             .layer(CompressionLayer::new())
             .layer(

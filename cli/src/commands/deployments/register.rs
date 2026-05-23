@@ -232,21 +232,6 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     let wants_id_token = discover_opts.gcp_id_token
         || discover_opts.gcp_impersonate_service_account.is_some()
         || discover_opts.gcp_audience.is_some();
-    // Gate the GCP auth flags by the negotiated admin API version. The
-    // server-side `auth` field was introduced as part of admin API V5;
-    // V4 already exists for unrelated changes, so a new CLI talking to
-    // a pre-auth V4 server would otherwise silently drop the field on
-    // serde and leave the user with an unauthenticated deployment.
-    // Refuse to proceed if the flags are set but the server cannot
-    // honour them.
-    if wants_id_token && client.admin_api_version < AdminApiVersion::V5 {
-        bail!(
-            "--gcp-id-token, --gcp-impersonate-service-account, and --gcp-audience require \
-             Restate admin API V5 or later (detected: {:?}). Upgrade the Restate server, \
-             or omit the GCP auth flags.",
-            client.admin_api_version
-        );
-    }
     let auth = if wants_id_token {
         Some(
             restate_admin_rest_model::deployments::HttpAuth::GoogleIdToken(

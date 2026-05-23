@@ -102,10 +102,7 @@ unauthenticated request.
 
 REQ-REST-01. The deployment-registration request schema for HTTP
 deployments SHALL accept an optional `auth` field of the same shape as
-the persisted schema variant. The field is gated on admin API V5: a
-request that negotiated a lower version and carries `auth` SHALL be
-rejected with a hard error so an older CLI cannot silently produce an
-unauthenticated deployment.
+the persisted schema variant.
 
 REQ-REST-02. The deployment-update REST endpoint SHALL preserve the
 existing persisted `auth` field across updates that touch other HTTP
@@ -125,10 +122,7 @@ REQ-CLI-01. The `restate dp register` command SHALL accept the flags
 `--gcp-id-token`. WHEN supplied AND the endpoint is an HTTP URI, the
 command SHALL set the deployment's `auth` field accordingly. WHEN the
 endpoint is a Lambda ARN, the CLI SHALL reject the invocation with a
-non-zero exit before issuing the REST call. WHEN the negotiated admin
-API version is below V5, the CLI SHALL reject the invocation with a
-non-zero exit before issuing the REST call so an old server cannot
-silently drop the field and produce an unauthenticated deployment.
+non-zero exit before issuing the REST call.
 
 ## 5. Validation at registration
 
