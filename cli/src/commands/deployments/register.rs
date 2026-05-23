@@ -58,7 +58,7 @@ pub struct Register {
 
     /// Enable Google OIDC ID-token authentication for this HTTP deployment.
     /// Restate will mint a Google-signed ID token for each request and
-    /// attach it as the X-Serverless-Authorization Bearer header. Implied by
+    /// attach it as `X-Serverless-Authorization: Bearer <token>`. Implied by
     /// --gcp-impersonate-service-account and --gcp-audience.
     /// Note: Workload Identity Federation (external_account) and gcloud
     /// user credentials (authorized_user) cannot mint ID tokens directly

@@ -171,7 +171,7 @@ impl ServiceClient {
                 async move {
                     if let Some(HttpAuth::GoogleIdToken(auth)) = &auth {
                         // The persisted record carries a concrete audience; the wire-to-persisted
-                        // conversion at register/patch time derives one from the URI when the
+                        // conversion at register/re-register time derives one from the URI when the
                         // operator left it unset. No fallback is needed here.
                         let audience = auth.audience().to_string();
                         let impersonate = auth
