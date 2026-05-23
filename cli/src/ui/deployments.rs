@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use crate::clients::Deployment;
 use crate::ui::datetime::DateTimeExt;
-use restate_admin_rest_model::deployments::ServiceNameRevPair;
+use restate_admin_rest_model::deployments::{HttpAuth, ServiceNameRevPair};
 use restate_cli_util::ui::console::StyledTable;
 use restate_types::deployment;
 use restate_types::identifiers::DeploymentId;
@@ -125,10 +125,7 @@ pub fn add_deployment_to_kv_table(deployment: &Deployment, table: &mut Table) {
             table.add_kv_row("Transport:", render_transport_protocol(deployment));
             table.add_kv_row("Protocol Style:", format!("{protocol_type}"));
             table.add_kv_row("Endpoint:", uri);
-            if let Some(restate_admin_rest_model::deployments::HttpAuth::GoogleIdToken(
-                token_auth,
-            )) = auth
-            {
+            if let Some(HttpAuth::GoogleIdToken(token_auth)) = auth {
                 let impersonation = token_auth
                     .impersonate_service_account
                     .as_ref()

@@ -45,11 +45,9 @@ use tokio::net::TcpListener;
 
 type RecordedHeaders = Arc<Mutex<HashMap<String, String>>>;
 
-/// Synthesize a JWT-shaped string (header.payload.signature) with a
-/// payload containing the given `aud` claim. The token is not
-/// cryptographically signed because the bearer-attach path does not
-/// verify it; Cloud Run would verify against Google's JWKS at the
-/// receiving end.
+/// Synthesize a JWT-shaped string (header.payload.signature) with a payload containing the given
+/// `aud` claim. The token is not cryptographically signed because the bearer-attach path does not
+/// verify it; Cloud Run would verify against Google's JWKS at the receiving end.
 fn fake_jwt_with_audience(audience: &str) -> String {
     let header =
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"alg":"none","typ":"JWT"}"#);
@@ -77,9 +75,8 @@ fn extract_audience(bearer: &str) -> String {
     v["aud"].as_str().expect("aud claim").to_owned()
 }
 
-/// Stand up a tiny HTTP server bound to 127.0.0.1:0 that records the
-/// headers of any incoming request and returns 200 OK with an empty
-/// body. Returns the bound address and the headers handle.
+/// Stand up a tiny HTTP server bound to 127.0.0.1:0 that records the headers of any incoming
+/// request and returns 200 OK with an empty body. Returns the bound address and the headers handle.
 async fn upstream_recorder() -> (SocketAddr, RecordedHeaders) {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -203,10 +200,8 @@ async fn bearer_attached_with_derived_audience() {
 
 #[tokio::test]
 async fn customer_authorization_passes_through_alongside_minted_xsa() {
-    // Cloud Run strips X-Serverless-Authorization before forwarding to
-    // the container; placing the minted token there leaves Authorization
-    // free for the customer's own app-level auth, which the workload
-    // receives unchanged.
+    // Cloud Run strips X-Serverless-Authorization before forwarding to the container; placing the
+    // minted token there leaves Authorization free for the customer's own app-level auth.
     let (upstream_addr, recorded) = upstream_recorder().await;
     let upstream_uri: hyper::Uri = format!("http://{upstream_addr}/").parse().unwrap();
     let expected_audience = format!("http://{upstream_addr}");
@@ -284,9 +279,8 @@ async fn bearer_uses_explicit_audience_when_provided() {
 
 #[tokio::test]
 async fn mint_failure_does_not_send_unauthenticated_request() {
-    // A token-mint failure must NOT trigger a fallback unauthenticated
-    // request. The upstream server must never receive a request when
-    // mint fails.
+    // A token-mint failure must NOT trigger a fallback unauthenticated request. The upstream server
+    // must never receive a request when mint fails.
     let (upstream_addr, recorded) = upstream_recorder().await;
     let upstream_uri: hyper::Uri = format!("http://{upstream_addr}/").parse().unwrap();
 

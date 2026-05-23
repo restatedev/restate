@@ -16,10 +16,10 @@
 //! and `Unbounded` mode on the worker/invoker path (per-key caching for
 //! amortized mint cost).
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use ahash::HashMap;
 use arc_swap::ArcSwap;
 use http::Uri;
 use thiserror::Error;
@@ -28,33 +28,19 @@ use tokio::time::Instant;
 #[cfg(any(test, feature = "test_util"))]
 use parking_lot::Mutex;
 
-/// Skew applied to token expiry timestamps before treating a cached
-/// token as stale. 60 seconds gives plenty of room for in-flight
-/// requests to complete using a token close to expiry. Not exposed as
-/// configuration in v1; tune here if monitoring later shows cache
-/// effectiveness depends on it.
+/// Skew applied to token expiry timestamps before treating a cached token as stale. 60 seconds
+/// gives plenty of room for in-flight requests to complete using a token close to expiry.
 const CACHE_EVICTION_SKEW: Duration = Duration::from_secs(60);
 
-/// Per-attempt hard timeout on a single mint call. Retry policy is
-/// signaled to the caller via `ServiceClientError::is_retryable`,
-/// which inspects the inner `GcpAuthError` variant: `Adc`, `Timeout`,
-/// and `Mint` are retryable; only `Build` (constructing the
-/// credentials builder, e.g. malformed audience) stays non-retryable.
-/// `Mint` is blanket-retryable because the underlying SDK error type
-/// mixes transient HTTP failures with permanent ones without a clean
-/// status to split on; the dispatch retry loop bounds the cost.
-const MINT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Per-attempt timeout for an individual token mint call.
+const MINT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Cache mode for minted ID tokens. Matches the Lambda
-/// `AssumeRoleCacheMode` semantics.
+/// Cache mode for minted ID tokens, similar to Lambda `AssumeRoleCacheMode`.
 #[derive(Debug, Clone, Copy)]
 pub enum IdTokenCacheMode {
-    /// No caching. Used on admin/discovery dispatch to avoid retaining
-    /// per-deployment tokens after registration completes.
     None,
-    /// Cache per (impersonation target, audience) tuple, unbounded.
-    /// Used on worker/invoker dispatch where deployments are already
-    /// admitted and high invocation rates make caching beneficial.
+    /// Cache per (impersonation target, audience) tuple, unbounded. Used on worker/invoker dispatch
+    /// where deployments are already admitted and high invocation rates make caching beneficial.
     Unbounded,
 }
 
@@ -105,19 +91,16 @@ impl CachedToken {
     }
 }
 
-/// Token-mint client. Wraps the google-cloud-auth crate with per-call
-/// caching keyed by `(impersonate_service_account, audience)`.
+/// Token-mint client. Wraps the google-cloud-auth crate with per-call caching keyed by
+/// `(impersonate_service_account, audience)`.
 #[derive(Clone)]
 pub struct GcpTokenClient {
     inner: Arc<Inner>,
 }
 
 struct Inner {
-    cache_mode: IdTokenCacheMode,
-    /// Populated only in `Unbounded` mode.
     cache: Option<ArcSwap<HashMap<CacheKey, Arc<CachedToken>>>>,
-    /// Test-only injection point: when set, every `mint` call returns
-    /// an error with this message. See `force_mint_failure_for_test`.
+
     #[cfg(any(test, feature = "test_util"))]
     test_force_failure: Mutex<Option<String>>,
 }
@@ -125,12 +108,11 @@ struct Inner {
 impl GcpTokenClient {
     pub fn new(cache_mode: IdTokenCacheMode) -> Self {
         let cache = match cache_mode {
-            IdTokenCacheMode::Unbounded => Some(ArcSwap::from_pointee(HashMap::new())),
+            IdTokenCacheMode::Unbounded => Some(ArcSwap::from_pointee(HashMap::default())),
             IdTokenCacheMode::None => None,
         };
         Self {
             inner: Arc::new(Inner {
-                cache_mode,
                 cache,
                 #[cfg(any(test, feature = "test_util"))]
                 test_force_failure: Mutex::new(None),
@@ -138,10 +120,9 @@ impl GcpTokenClient {
         }
     }
 
-    /// Mint an OIDC ID token for the given audience. If
-    /// `impersonate_service_account` is set, the token is minted via
-    /// the IAM Credentials `generateIdToken` API for that service
-    /// account; otherwise it is minted from ambient ADC identity.
+    /// Mint an OIDC ID token for the given audience. If `impersonate_service_account` is set, the
+    /// token is minted via the IAM Credentials `generateIdToken` API for that service account;
+    /// otherwise it is minted from ambient ADC identity.
     pub async fn mint(
         &self,
         impersonate_service_account: Option<&str>,
@@ -162,7 +143,6 @@ impl GcpTokenClient {
             });
         }
 
-        // Cache lookup (Unbounded mode only).
         let key = CacheKey {
             impersonate: impersonate_service_account.map(str::to_owned),
             audience: audience.to_owned(),
@@ -177,7 +157,6 @@ impl GcpTokenClient {
             }
         }
 
-        // Build credentials and mint. Wrapped in a per-attempt timeout.
         let mint_fut = self.mint_via_sdk(impersonate_service_account, audience);
         let token = tokio::time::timeout(MINT_ATTEMPT_TIMEOUT, mint_fut)
             .await
@@ -189,11 +168,9 @@ impl GcpTokenClient {
                 duration: MINT_ATTEMPT_TIMEOUT,
             })??;
 
-        // Cache insert (Unbounded mode only).
         if let Some(cache) = &self.inner.cache {
-            // The google-cloud-auth API exposes only the token string,
-            // not its expiry. JWT parsing of the `exp` claim is the
-            // reliable source.
+            // The google-cloud-auth API exposes only the token string, not its expiry. JWT parsing
+            // of the `exp` claim is the reliable source.
             let expires_at = parse_jwt_exp(&token)
                 .map(|exp| Instant::now() + exp)
                 .unwrap_or_else(|| Instant::now() + Duration::from_secs(3600));
@@ -270,22 +247,15 @@ impl GcpTokenClient {
         }
     }
 
-    /// True when this client retains tokens between calls.
-    pub fn caches(&self) -> bool {
-        matches!(self.inner.cache_mode, IdTokenCacheMode::Unbounded)
-    }
-
-    /// Test-only: force every subsequent `mint` call to fail with the
-    /// given message. Used to verify the no-unauthenticated-fallback
-    /// behaviour.
+    /// Test-only: force every subsequent `mint` call to fail with the given message. Used to verify
+    /// the no-unauthenticated-fallback behaviour.
     #[cfg(any(test, feature = "test_util"))]
     pub fn force_mint_failure_for_test(&self, message: &str) {
         *self.inner.test_force_failure.lock() = Some(message.to_owned());
     }
 
-    /// Test-only: seed a token into the cache so subsequent `mint`
-    /// calls with the same key return it without contacting Google.
-    /// Panics if the client is in `None` mode.
+    /// Test-only: seed a token into the cache so subsequent `mint` calls with the same key return
+    /// it without contacting Google.
     #[cfg(any(test, feature = "test_util"))]
     pub fn seed_for_test(
         &self,
@@ -316,9 +286,8 @@ impl GcpTokenClient {
 }
 
 /// Derive the OIDC audience from a deployment URI. Delegates to
-/// `restate_types::deployment::derive_audience` so the service-client
-/// and the CLI display path share one source of truth.
-/// Wraps the `None`-on-malformed-URI return into `GcpAuthError::Build`.
+/// `restate_types::deployment::derive_audience` so the service-client and the CLI display path
+/// share one source of truth. Wraps the `None`-on-malformed-URI return into `GcpAuthError::Build`.
 pub fn derive_audience(uri: &Uri) -> Result<String, GcpAuthError> {
     restate_types::deployment::derive_audience(uri).ok_or_else(|| GcpAuthError::Build {
         audience: uri.to_string(),
@@ -326,8 +295,8 @@ pub fn derive_audience(uri: &Uri) -> Result<String, GcpAuthError> {
     })
 }
 
-/// Best-effort parse of a JWT's `exp` claim into a Duration-from-now.
-/// Returns None if the token is malformed or already expired.
+/// Best-effort parse of a JWT's `exp` claim into a Duration-from-now. Returns None if the token is
+/// malformed or already expired.
 fn parse_jwt_exp(token: &str) -> Option<Duration> {
     use base64::Engine;
 
@@ -435,11 +404,5 @@ mod tests {
             .encode(format!(r#"{{"exp":{past}}}"#).as_bytes());
         let token = format!("{header}.{payload}.");
         assert!(parse_jwt_exp(&token).is_none());
-    }
-
-    #[test]
-    fn cache_mode_caches_predicate() {
-        assert!(GcpTokenClient::new(IdTokenCacheMode::Unbounded).caches());
-        assert!(!GcpTokenClient::new(IdTokenCacheMode::None).caches());
     }
 }

@@ -8337,6 +8337,7 @@ dependencies = [
 name = "restate-service-client"
 version = "1.7.0-dev"
 dependencies = [
+ "ahash",
  "arc-swap",
  "aws-config",
  "aws-credential-types",

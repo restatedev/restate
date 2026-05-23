@@ -210,9 +210,7 @@ impl DiscoveryClient for ServiceDiscovery {
                     // By default, we use h2c on HTTP
                     Some(http::Version::HTTP_2)
                 };
-                // HTTP auth is carried through so the discovery request
-                // mints and attaches the same bearer the invocation path
-                // uses.
+                // Use the same auth for discovery as the regular invocation path uses
                 Endpoint::Http(http.uri, version, http.auth)
             }
             DeploymentAddress::Lambda(lambda) => {

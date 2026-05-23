@@ -398,9 +398,6 @@ impl From<ShutdownError> for MetaApiError {
 
 impl From<HttpAuthValidationError> for MetaApiError {
     fn from(value: HttpAuthValidationError) -> Self {
-        // The registry layer owns the invariant; the REST layer just
-        // relays the field name and message in the standard
-        // `InvalidField` response.
         MetaApiError::InvalidField(value.field(), value.message().to_owned())
     }
 }

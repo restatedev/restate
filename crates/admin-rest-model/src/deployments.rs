@@ -19,13 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::collections::HashMap;
 
-/// Wire-side per-deployment HTTP authentication block.
-///
-/// Deliberately independent from `restate_types::deployment::HttpAuth`:
-/// the persisted shape evolves under storage-format compatibility
-/// rules, the wire shape evolves under REST API versioning rules, and
-/// sharing a single struct couples those evolutions. The two types are
-/// converted at the REST handler boundary via the `From` impls below.
+/// HTTP authentication details.
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum HttpAuth {
@@ -35,14 +29,12 @@ pub enum HttpAuth {
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GoogleIdTokenAuth {
-    /// Service account email to impersonate via
-    /// `iamcredentials:generateIdToken`. None means use the ambient ADC
-    /// identity directly.
+    /// Service account email to impersonate via `iamcredentials:generateIdToken`. Leave unset to
+    /// use the ambient ADC identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "schema", schema(value_type = Option<String>))]
     pub impersonate_service_account: Option<bytestring::ByteString>,
-    /// Explicit OIDC `aud` claim. None means derive from the deployment
-    /// URL origin per the audience-derivation algorithm.
+    /// Explicit OIDC `aud` claim. Leave unset to automatically derive from the deployment URL.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "schema", schema(value_type = Option<String>))]
     pub audience: Option<bytestring::ByteString>,

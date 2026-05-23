@@ -15,7 +15,7 @@ use std::ops::RangeInclusive;
 
 use crate::config::Configuration;
 use crate::deployment::{
-    DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
+    self, DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
 };
 use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision};
 use crate::schema::info::SchemaInfo;
@@ -150,10 +150,8 @@ pub enum DeploymentType {
         protocol_type: ProtocolType,
         #[serde(with = "serde_with::As::<restate_serde_util::VersionSerde>")]
         http_version: http::Version,
-        /// Optional GCP / Google-OIDC authentication configuration.
-        /// Absent on records persisted before this field existed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        auth: Option<crate::deployment::HttpAuth>,
+        auth: Option<deployment::HttpAuth>,
     },
     Lambda {
         arn: LambdaARN,
@@ -233,6 +231,8 @@ pub trait DeploymentResolver {
 }
 
 mod serde_hacks {
+    use crate::deployment;
+
     use super::*;
 
     #[derive(serde::Deserialize)]
@@ -247,10 +247,9 @@ mod serde_hacks {
             )]
             // this field did not used to be stored, so we must consider it optional when deserialising
             http_version: Option<http::Version>,
-            // Added later for GCP / Google-OIDC auth (issue #4755). Older
-            // records lack the field; treat as None.
+            // older records don't have this field, treat missing as None
             #[serde(default)]
-            auth: Option<crate::deployment::HttpAuth>,
+            auth: Option<deployment::HttpAuth>,
         },
         Lambda {
             arn: LambdaARN,

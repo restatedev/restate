@@ -176,7 +176,6 @@ mod http_auth_validation_tests {
         }
     }
 
-    // Non-https rejected for public hosts; allowed for loopback/private.
     #[test]
     fn rejects_non_https_public_host() {
         let uri: Uri = "http://example.com/".parse().unwrap();
@@ -198,9 +197,6 @@ mod http_auth_validation_tests {
         }
     }
 
-    // Reject any user-supplied X-Serverless-Authorization header. The
-    // dispatch path always puts the minted ID token in this slot; a
-    // static value there would collide with the mint.
     #[test]
     fn rejects_x_serverless_authorization_header() {
         let uri: Uri = "https://svc.example.com/".parse().unwrap();
@@ -216,8 +212,6 @@ mod http_auth_validation_tests {
         );
     }
 
-    // Same rejection applies when both headers are supplied: the
-    // X-Serverless-Authorization slot is reserved for the minted token.
     #[test]
     fn rejects_x_serverless_authorization_alongside_authorization() {
         let uri: Uri = "https://svc.example.com/".parse().unwrap();
@@ -249,10 +243,6 @@ mod http_auth_validation_tests {
         validate_http_auth(&uri, Some(&headers)).expect("single Authorization header is allowed");
     }
 
-    // PATCH-side regression: the helper `effective_http_patch_inputs`
-    // must reproduce the merge the schema registry does, so that a PATCH
-    // which would change the URI to http:// against an https-registered
-    // deployment with auth still rejects the change.
     #[test]
     fn patch_validation_rejects_http_uri_change_when_auth_persisted() {
         let existing_uri: Uri = "https://svc.example.com/".parse().unwrap();
@@ -268,9 +258,6 @@ mod http_auth_validation_tests {
         );
     }
 
-    // PATCH-side regression: a PATCH that adds an
-    // X-Serverless-Authorization header to an auth-enabled deployment
-    // must fail (the minted token would be shadowed).
     #[test]
     fn patch_validation_rejects_added_x_serverless_authorization_header() {
         let existing_uri: Uri = "https://svc.example.com/".parse().unwrap();
@@ -291,9 +278,6 @@ mod http_auth_validation_tests {
         );
     }
 
-    // A no-op PATCH (no uri, no headers) must still pass validation: the
-    // effective tuple is just the persisted record's tuple, which was
-    // accepted at registration time.
     #[test]
     fn patch_validation_accepts_noop_against_persisted_safe_record() {
         let existing_uri: Uri = "https://svc.example.com/".parse().unwrap();

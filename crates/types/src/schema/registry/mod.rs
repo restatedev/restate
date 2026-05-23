@@ -117,12 +117,6 @@ enum SchemaRegistryErrorInner {
     Internal(String),
 }
 
-/// Validation failures for the per-deployment HTTP auth block.
-///
-/// Carries the offending field name so callers (the REST handler) can
-/// surface it as a structured `400 Bad Request` instead of a generic
-/// schema error. Validation gates registration; if it fails, the call
-/// never reaches the deployment-merge logic in the updater.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[error("invalid HTTP auth configuration: field={field}: {message}")]
 pub struct HttpAuthValidationError {
@@ -135,27 +129,19 @@ impl HttpAuthValidationError {
         Self { field, message }
     }
 
-    /// Name of the offending request field. Used by the REST layer to
-    /// surface a structured `InvalidField` response.
     pub fn field(&self) -> &'static str {
         self.field
     }
 
-    /// Human-readable explanation of why the field was rejected.
     pub fn message(&self) -> &str {
         &self.message
     }
 }
 
-/// Validate the per-deployment HTTP `auth` invariants against the
-/// effective (uri, additional_headers) tuple. The URI must be https or
-/// point to a loopback/private host; a customer-supplied
-/// `X-Serverless-Authorization` header is rejected because the dispatch
-/// path always uses that header for the minted ID token.
-///
-/// Caller is responsible for only invoking this when `auth` is set on
-/// the persisted or wire shape; the helper does not look at the auth
-/// contents (Google IdToken has no shape-level invariants today).
+/// Validate the per-deployment HTTP `auth` invariants against the effective (uri,
+/// additional_headers) tuple. The URI must be https or point to a loopback/private host to avoid
+/// leaking bearer tokens in cleartext. A customer-supplied `X-Serverless-Authorization` header is
+/// rejected because the dispatch path always uses that header for the minted ID token.
 pub fn validate_http_auth(
     uri: &Uri,
     additional_headers: Option<&Headers>,
@@ -201,10 +187,6 @@ pub fn validate_http_auth(
     Ok(())
 }
 
-/// Compute the post-merge (uri, additional_headers) tuple a PATCH would
-/// produce so it can be fed back into `validate_http_auth`. Mirrors the
-/// merge in `update_deployment`: a missing field on the PATCH inherits
-/// from the persisted record.
 pub fn effective_http_patch_inputs<'a>(
     patch_uri: Option<&'a Uri>,
     patch_headers: Option<&'a Headers>,
@@ -431,9 +413,6 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
             return Err(SchemaError::NotFound(deployment_id.to_string()).into());
         };
 
-        // Capture the persisted HTTP auth before consuming existing_deployment.ty;
-        // every HTTP merge arm reapplies it so an update that touches uri,
-        // use_http_11, or additional_headers preserves auth instead of wiping it.
         let existing_http_auth = match &existing_deployment.ty {
             DeploymentType::Http { auth, .. } => auth.clone(),
             DeploymentType::Lambda { .. } => None,

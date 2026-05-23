@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashMap;
 use std::time::SystemTime;
 
 use axum::extract::{Path, Query, State};
@@ -104,13 +105,11 @@ where
         } => {
             validate_uri(&uri)?;
             if auth.is_some() {
-                let headers_for_validation: Option<
-                    std::collections::HashMap<http::HeaderName, http::HeaderValue>,
-                > = additional_headers.clone().map(Into::into);
+                let headers_for_validation: Option<HashMap<http::HeaderName, http::HeaderValue>> =
+                    additional_headers.clone().map(Into::into);
                 validate_http_auth(&uri, headers_for_validation.as_ref())?;
             }
 
-            // Cross the wire/persisted boundary at the handler.
             let persisted_auth = auth.map(Into::into);
 
             schema::registry::RegisterDeploymentRequest {
@@ -362,12 +361,10 @@ where
                 validate_uri(uri)?;
             }
 
-            // Re-validate the auth invariants against the post-merge
-            // (uri, additional_headers) tuple. PATCH preserves the
-            // persisted auth (see schema::registry::update_deployment);
-            // a PATCH that changes the URI to http:// or adds an
-            // X-Serverless-Authorization header must be rejected just
-            // like the equivalent register call would be.
+            // Validate the auth invariants against the post-merge (uri, additional_headers). PATCH
+            // preserves the persisted auth (see schema::registry::update_deployment); a PATCH that
+            // changes the URI to http:// or adds an X-Serverless-Authorization header must be
+            // rejected just like the equivalent register call would be.
             let existing_deployment = state
                 .schema_registry
                 .get_deployment(deployment_id)
@@ -378,12 +375,8 @@ where
                 ..
             } = &existing_deployment.ty
             {
-                // The PATCH payload's headers are wire-shaped
-                // (`SerdeableHeaderHashMap`); coerce to the registry
-                // helper's `Headers` shape so the merge call lines up.
-                let patch_headers: Option<
-                    std::collections::HashMap<http::HeaderName, http::HeaderValue>,
-                > = additional_headers.clone().map(Into::into);
+                let patch_headers: Option<HashMap<http::HeaderName, http::HeaderValue>> =
+                    additional_headers.clone().map(Into::into);
                 let (effective_uri, effective_headers) = effective_http_patch_inputs(
                     uri.as_ref(),
                     patch_headers.as_ref(),

@@ -20,7 +20,8 @@ use indicatif::ProgressBar;
 use indoc::indoc;
 
 use restate_admin_rest_model::deployments::{
-    DetailedDeploymentResponse, RegisterDeploymentRequest, RegisterDeploymentResponse,
+    DetailedDeploymentResponse, GoogleIdTokenAuth, HttpAuth, RegisterDeploymentRequest,
+    RegisterDeploymentResponse,
 };
 use restate_admin_rest_model::version::AdminApiVersion;
 use restate_cli_util::ui::console::{Styled, StyledTable, confirm_or_exit};
@@ -226,33 +227,25 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
         infer_deployment_metadata_from_environment(&mut metadata);
     }
 
-    // Build the auth field from the GCP flags. Any of the three positive
-    // flags implies --gcp-id-token. The CLI rejects --gcp-id-token applied
-    // to a Lambda ARN before issuing the REST call.
-    let wants_id_token = discover_opts.gcp_id_token
+    let id_token_auth = discover_opts.gcp_id_token
         || discover_opts.gcp_impersonate_service_account.is_some()
         || discover_opts.gcp_audience.is_some();
-    let auth = if wants_id_token {
-        Some(
-            restate_admin_rest_model::deployments::HttpAuth::GoogleIdToken(
-                restate_admin_rest_model::deployments::GoogleIdTokenAuth {
-                    impersonate_service_account: discover_opts
-                        .gcp_impersonate_service_account
-                        .clone()
-                        .map(Into::into),
-                    audience: discover_opts.gcp_audience.clone().map(Into::into),
-                },
-            ),
-        )
-    } else {
-        None
-    };
-    if auth.is_some() && matches!(discover_opts.deployment, DeploymentEndpoint::Lambda(_)) {
+    if id_token_auth && matches!(discover_opts.deployment, DeploymentEndpoint::Lambda(_)) {
         bail!(
             "--gcp-id-token, --gcp-impersonate-service-account, and --gcp-audience are \
              HTTP-only flags. Lambda deployments use --assume-role-arn instead."
         );
     }
+
+    let id_token_auth = id_token_auth.then(|| {
+        HttpAuth::GoogleIdToken(GoogleIdTokenAuth {
+            impersonate_service_account: discover_opts
+                .gcp_impersonate_service_account
+                .clone()
+                .map(Into::into),
+            audience: discover_opts.gcp_audience.clone().map(Into::into),
+        })
+    });
 
     let deployment = match &discover_opts.deployment {
         #[cfg(feature = "cloud")]
@@ -361,7 +354,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
             breaking,
             force: Some(force),
             dry_run,
-            auth: auth.clone(),
+            auth: id_token_auth.clone(),
         },
         DeploymentEndpoint::Lambda(arn) => RegisterDeploymentRequest::Lambda {
             arn: arn.to_string(),

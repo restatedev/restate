@@ -22,7 +22,6 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq)]
 pub struct HttpDeploymentAddress {
     pub uri: Uri,
-    /// Optional per-deployment GCP / Google-OIDC authentication.
     pub auth: Option<HttpAuth>,
 }
 

@@ -30,13 +30,11 @@ pub enum HttpAuth {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct GoogleIdTokenAuth {
-    /// Service account email to impersonate via
-    /// `iamcredentials:generateIdToken`. None means use the ambient ADC
-    /// identity directly.
+    /// Service account email to impersonate via `iamcredentials:generateIdToken`. None means use
+    /// the ambient ADC identity directly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub impersonate_service_account: Option<bytestring::ByteString>,
-    /// Explicit OIDC `aud` claim. None means derive from the deployment
-    /// URL origin per the audience-derivation algorithm.
+    /// Explicit OIDC `aud` claim. None means derive from the deployment URL origin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audience: Option<bytestring::ByteString>,
 }
@@ -48,10 +46,8 @@ pub struct GoogleIdTokenAuth {
 /// - explicit port only when present in the URI (default ports omitted)
 /// - userinfo, path, query, fragment discarded
 ///
-/// Returns `None` if the URI is missing a scheme or a host. Single
-/// source of truth for both the service-client (which uses the value
-/// when minting tokens) and the CLI (which displays it in `dp
-/// describe`).
+/// Returns `None` if the URI is missing a scheme or a host. Single source of truth for both the
+/// service-client (which uses the value when minting tokens) and the CLI.
 pub fn derive_audience(uri: &Uri) -> Option<String> {
     let scheme = uri.scheme()?;
     let authority = uri.authority()?;
