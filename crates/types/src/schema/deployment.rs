@@ -315,9 +315,8 @@ mod serde_tests {
     crate::flexbuffers_storage_encode_decode!(OldDeploymentType);
     crate::flexbuffers_storage_encode_decode!(DeploymentType);
 
-    // REQ-PERSIST-01 + REQ-TEST-05: records persisted with an
-    // intermediate shape (post-http_version, pre-auth) must
-    // deserialise with auth defaulted to None.
+    // Records persisted with an intermediate shape (post-http_version,
+    // pre-auth) must deserialise with auth defaulted to None.
     #[derive(serde::Serialize, serde::Deserialize)]
     enum PreAuthDeploymentType {
         Http {

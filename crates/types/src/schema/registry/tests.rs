@@ -176,21 +176,21 @@ mod http_auth_validation_tests {
         }
     }
 
-    // REQ-VAL-01: non-https rejected for public hosts; allowed for loopback/private.
+    // Non-https rejected for public hosts; allowed for loopback/private.
     #[test]
-    fn req_val_01_rejects_non_https_public_host() {
+    fn rejects_non_https_public_host() {
         let uri: Uri = "http://example.com/".parse().unwrap();
         assert_invalid_field(validate_http_auth(&uri, None), "auth");
     }
 
     #[test]
-    fn req_val_01_accepts_https_public_host() {
+    fn accepts_https_public_host() {
         let uri: Uri = "https://svc.example.com/".parse().unwrap();
         validate_http_auth(&uri, None).expect("https public host accepted");
     }
 
     #[test]
-    fn req_val_01_accepts_non_https_loopback() {
+    fn accepts_non_https_loopback() {
         for host in ["localhost", "127.0.0.1", "[::1]", "10.0.0.1", "[fc00::1]"] {
             let uri: Uri = format!("http://{host}/").parse().unwrap();
             validate_http_auth(&uri, None)
@@ -198,11 +198,11 @@ mod http_auth_validation_tests {
         }
     }
 
-    // REQ-VAL-02: reject any user-supplied X-Serverless-Authorization
-    // header. The dispatch path always puts the minted ID token in this
-    // slot; a static value there would collide with the mint.
+    // Reject any user-supplied X-Serverless-Authorization header. The
+    // dispatch path always puts the minted ID token in this slot; a
+    // static value there would collide with the mint.
     #[test]
-    fn req_val_02_rejects_x_serverless_authorization_header() {
+    fn rejects_x_serverless_authorization_header() {
         let uri: Uri = "https://svc.example.com/".parse().unwrap();
         let mut headers: Headers = Headers::new();
         headers.insert(
@@ -219,7 +219,7 @@ mod http_auth_validation_tests {
     // Same rejection applies when both headers are supplied: the
     // X-Serverless-Authorization slot is reserved for the minted token.
     #[test]
-    fn req_val_02_rejects_x_serverless_authorization_alongside_authorization() {
+    fn rejects_x_serverless_authorization_alongside_authorization() {
         let uri: Uri = "https://svc.example.com/".parse().unwrap();
         let mut headers: Headers = Headers::new();
         headers.insert(
@@ -238,7 +238,7 @@ mod http_auth_validation_tests {
     }
 
     #[test]
-    fn req_val_02_accepts_single_authorization_header() {
+    fn accepts_single_authorization_header() {
         let uri: Uri = "https://svc.example.com/".parse().unwrap();
         let mut headers: Headers = Headers::new();
         headers.insert(
@@ -252,7 +252,7 @@ mod http_auth_validation_tests {
     // PATCH-side regression: the helper `effective_http_patch_inputs`
     // must reproduce the merge the schema registry does, so that a PATCH
     // which would change the URI to http:// against an https-registered
-    // deployment with auth still fails REQ-VAL-01.
+    // deployment with auth still rejects the change.
     #[test]
     fn patch_validation_rejects_http_uri_change_when_auth_persisted() {
         let existing_uri: Uri = "https://svc.example.com/".parse().unwrap();
@@ -270,7 +270,7 @@ mod http_auth_validation_tests {
 
     // PATCH-side regression: a PATCH that adds an
     // X-Serverless-Authorization header to an auth-enabled deployment
-    // must fail REQ-VAL-02 (the minted token would be shadowed).
+    // must fail (the minted token would be shadowed).
     #[test]
     fn patch_validation_rejects_added_x_serverless_authorization_header() {
         let existing_uri: Uri = "https://svc.example.com/".parse().unwrap();

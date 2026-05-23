@@ -212,7 +212,7 @@ impl DiscoveryClient for ServiceDiscovery {
                 };
                 // HTTP auth is carried through so the discovery request
                 // mints and attaches the same bearer the invocation path
-                // uses (REQ-AUTH-03).
+                // uses.
                 Endpoint::Http(http.uri, version, http.auth)
             }
             DeploymentAddress::Lambda(lambda) => {

@@ -228,7 +228,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
 
     // Build the auth field from the GCP flags. Any of the three positive
     // flags implies --gcp-id-token. The CLI rejects --gcp-id-token applied
-    // to a Lambda ARN before issuing the REST call (REQ-CLI-05).
+    // to a Lambda ARN before issuing the REST call.
     let wants_id_token = discover_opts.gcp_id_token
         || discover_opts.gcp_impersonate_service_account.is_some()
         || discover_opts.gcp_audience.is_some();

@@ -10,13 +10,13 @@
 
 //! Integration test for the GCP OIDC ID-token bearer-attach path.
 //!
-//! Covers REQ-TEST-01 (local HTTP test server equivalent to Cloud Run
-//! emulator) and REQ-TEST-02 (X-Serverless-Authorization: Bearer
-//! present with correct audience in JWT). The minted token always lands
-//! in `X-Serverless-Authorization`; Cloud Run validates that header in
-//! precedence over `Authorization` and strips it before forwarding to
-//! the container, leaving any customer-supplied `Authorization` in
-//! `additional_headers` to pass through to the workload.
+//! Spins up a local HTTP test server that captures the headers a
+//! ServiceClient dispatch sends to it. Verifies that the minted token
+//! always lands in `X-Serverless-Authorization` with the correct
+//! audience claim; Cloud Run validates that header in precedence over
+//! `Authorization` and strips it before forwarding to the container,
+//! leaving any customer-supplied `Authorization` in `additional_headers`
+//! to pass through to the workload.
 //!
 //! The token is pre-seeded into `GcpTokenClient`'s cache so the test
 //! does not depend on ADC discovery or external network. The
@@ -284,9 +284,9 @@ async fn bearer_uses_explicit_audience_when_provided() {
 
 #[tokio::test]
 async fn mint_failure_does_not_send_unauthenticated_request() {
-    // REQ-AUTH-04: a token-mint failure SHALL NOT trigger a fallback
-    // unauthenticated request. The upstream server must never receive
-    // a request when mint fails.
+    // A token-mint failure must NOT trigger a fallback unauthenticated
+    // request. The upstream server must never receive a request when
+    // mint fails.
     let (upstream_addr, recorded) = upstream_recorder().await;
     let upstream_uri: hyper::Uri = format!("http://{upstream_addr}/").parse().unwrap();
 

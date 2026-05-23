@@ -41,8 +41,7 @@ pub struct GoogleIdTokenAuth {
     pub audience: Option<bytestring::ByteString>,
 }
 
-/// Derive the OIDC audience from a deployment URI per the audience
-/// derivation algorithm (REQ-DEP-07):
+/// Derive the OIDC audience from a deployment URI:
 ///
 /// - lowercase scheme
 /// - host reproduced verbatim (IPv6 literals keep their brackets)

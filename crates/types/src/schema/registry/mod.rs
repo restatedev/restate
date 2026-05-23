@@ -148,10 +148,10 @@ impl HttpAuthValidationError {
 }
 
 /// Validate the per-deployment HTTP `auth` invariants against the
-/// effective (uri, additional_headers) tuple. REQ-VAL-01 enforces the
-/// https-or-loopback scheme constraint; REQ-VAL-02 rejects a customer
-/// `X-Serverless-Authorization` because the dispatch path always uses
-/// that header for the minted ID token.
+/// effective (uri, additional_headers) tuple. The URI must be https or
+/// point to a loopback/private host; a customer-supplied
+/// `X-Serverless-Authorization` header is rejected because the dispatch
+/// path always uses that header for the minted ID token.
 ///
 /// Caller is responsible for only invoking this when `auth` is set on
 /// the persisted or wire shape; the helper does not look at the auth

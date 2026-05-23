@@ -149,7 +149,8 @@ impl GcpTokenClient {
     ) -> Result<String, GcpAuthError> {
         // Test-only short-circuit: when `force_mint_failure_for_test`
         // has been called, every mint returns an error. Used to verify
-        // REQ-AUTH-04 (no unauthenticated fallback on mint failure).
+        // that a mint failure does NOT trigger an unauthenticated
+        // fallback request.
         #[cfg(any(test, feature = "test_util"))]
         if let Some(message) = self.inner.test_force_failure.lock().clone() {
             return Err(GcpAuthError::Mint {
@@ -276,7 +277,7 @@ impl GcpTokenClient {
 
     /// Test-only: force every subsequent `mint` call to fail with the
     /// given message. Used to verify the no-unauthenticated-fallback
-    /// behaviour (REQ-AUTH-04).
+    /// behaviour.
     #[cfg(any(test, feature = "test_util"))]
     pub fn force_mint_failure_for_test(&self, message: &str) {
         *self.inner.test_force_failure.lock() = Some(message.to_owned());
@@ -314,9 +315,9 @@ impl GcpTokenClient {
     }
 }
 
-/// Derive the OIDC audience from a deployment URI per REQ-DEP-07.
-/// Delegates to `restate_types::deployment::derive_audience` so the
-/// service-client and the CLI display path share one source of truth.
+/// Derive the OIDC audience from a deployment URI. Delegates to
+/// `restate_types::deployment::derive_audience` so the service-client
+/// and the CLI display path share one source of truth.
 /// Wraps the `None`-on-malformed-URI return into `GcpAuthError::Build`.
 pub fn derive_audience(uri: &Uri) -> Result<String, GcpAuthError> {
     restate_types::deployment::derive_audience(uri).ok_or_else(|| GcpAuthError::Build {
