@@ -10,7 +10,6 @@
 
 //! This module implements the Meta API endpoint.
 
-mod cluster_health;
 mod deployments;
 mod error;
 mod handlers;
@@ -90,7 +89,6 @@ where
         OpenApiRouter::with_openapi(AdminApiDoc::openapi())
             .routes(routes!(health::health))
             .routes(routes!(version::version))
-            .routes(routes!(cluster_health::cluster_health))
             // Deployment endpoints
             .routes(routes!(deployments::list_deployments))
             .routes(routes!(deployments::create_deployment))
