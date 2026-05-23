@@ -369,12 +369,12 @@ mod serde_tests {
             address: Uri::from_static("https://svc.example.com"),
             protocol_type: ProtocolType::BidiStream,
             http_version: http::Version::HTTP_2,
-            auth: Some(HttpAuth::GoogleIdToken(GoogleIdTokenAuth {
-                impersonate_service_account: Some(ByteString::from_static(
+            auth: Some(HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
+                ByteString::from_static("https://svc.example.com"),
+                Some(ByteString::from_static(
                     "caller@proj.iam.gserviceaccount.com",
                 )),
-                audience: Some(ByteString::from_static("https://svc.example.com")),
-            })),
+            ))),
         };
         let mut buf = bytes::BytesMut::default();
         StorageCodec::encode(&original, &mut buf).unwrap();

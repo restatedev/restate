@@ -7237,6 +7237,7 @@ dependencies = [
  "serde",
  "serde_with",
  "strum",
+ "thiserror 2.0.18",
  "utoipa",
 ]
 

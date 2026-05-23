@@ -21,7 +21,6 @@ use std::time::Duration;
 
 use ahash::HashMap;
 use arc_swap::ArcSwap;
-use http::Uri;
 use thiserror::Error;
 use tokio::time::Instant;
 
@@ -285,17 +284,6 @@ impl GcpTokenClient {
     }
 }
 
-/// Derive the OIDC audience from a deployment URI. Delegates to
-/// `restate_types::deployment::derive_audience` so the schema-registry materialisation path and
-/// the dispatch-time fallback share one source of truth. Wraps the `None`-on-malformed-URI return
-/// into `GcpAuthError::Build`.
-pub fn derive_audience(uri: &Uri) -> Result<String, GcpAuthError> {
-    restate_types::deployment::derive_audience(uri).ok_or_else(|| GcpAuthError::Build {
-        audience: uri.to_string(),
-        message: "URI missing scheme or host (cannot derive audience)".to_owned(),
-    })
-}
-
 /// Best-effort parse of a JWT's `exp` claim into a Duration-from-now. Returns None if the token is
 /// malformed or already expired.
 fn parse_jwt_exp(token: &str) -> Option<Duration> {
@@ -324,59 +312,6 @@ fn parse_jwt_exp(token: &str) -> Option<Duration> {
 mod tests {
     use super::*;
     use base64::Engine as _;
-
-    fn parse(uri: &str) -> Uri {
-        uri.parse().unwrap()
-    }
-
-    #[test]
-    fn audience_origin_no_port() {
-        assert_eq!(
-            derive_audience(&parse("https://svc-abc-uc.a.run.app/discover")).unwrap(),
-            "https://svc-abc-uc.a.run.app"
-        );
-    }
-
-    #[test]
-    fn audience_omits_default_port_when_implicit() {
-        // No explicit port in URL = no port in audience.
-        assert_eq!(
-            derive_audience(&parse("https://svc.example.com/")).unwrap(),
-            "https://svc.example.com"
-        );
-    }
-
-    #[test]
-    fn audience_preserves_explicit_non_default_port() {
-        assert_eq!(
-            derive_audience(&parse("https://svc.example.com:8443/path")).unwrap(),
-            "https://svc.example.com:8443"
-        );
-    }
-
-    #[test]
-    fn audience_lowercases_scheme() {
-        assert_eq!(
-            derive_audience(&parse("HTTPS://Example.COM/")).unwrap(),
-            "https://Example.COM"
-        );
-    }
-
-    #[test]
-    fn audience_ipv6_literal_keeps_brackets() {
-        assert_eq!(
-            derive_audience(&parse("https://[2001:db8::1]:8443/foo")).unwrap(),
-            "https://[2001:db8::1]:8443"
-        );
-    }
-
-    #[test]
-    fn audience_discards_path_query_fragment() {
-        assert_eq!(
-            derive_audience(&parse("https://svc.example.com/discover?token=abc#frag")).unwrap(),
-            "https://svc.example.com"
-        );
-    }
 
     #[test]
     fn parse_jwt_exp_returns_some_for_valid_token() {

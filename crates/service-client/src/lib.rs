@@ -29,7 +29,7 @@ use restate_types::deployment::HttpAuth;
 use restate_types::identifiers::LambdaARN;
 use restate_types::schema::deployment::{Deployment, DeploymentType, EndpointLambdaCompression};
 
-pub use crate::gcp::{GcpAuthError, GcpTokenClient, IdTokenCacheMode, derive_audience};
+pub use crate::gcp::{GcpAuthError, GcpTokenClient, IdTokenCacheMode};
 pub use crate::http::HttpClient;
 pub use crate::http::HttpError;
 pub use crate::lambda::AssumeRoleCacheMode;
@@ -42,6 +42,8 @@ mod lambda;
 pub mod pool;
 mod proxy;
 mod request_identity;
+#[cfg(any(test, feature = "test_util"))]
+mod test_util;
 mod utils;
 
 /// Header slot we always use for the Restate-minted Google ID token on HTTP deployments with GCP
@@ -51,16 +53,6 @@ mod utils;
 const X_SERVERLESS_AUTHORIZATION: HeaderName =
     HeaderName::from_static("x-serverless-authorization");
 
-#[cfg(any(test, feature = "test_util"))]
-impl ServiceClient {
-    /// Test-only accessor for the underlying GCP token client. Lets
-    /// integration tests seed the cache so token mint does not need
-    /// to contact a real metadata server.
-    pub fn gcp_for_test(&self) -> &GcpTokenClient {
-        &self.gcp
-    }
-}
-
 pub type ResponseBody = http_body_util::Either<http::ResponseBody, Full<Bytes>>;
 
 #[derive(Clone)]
@@ -69,7 +61,7 @@ pub struct ServiceClient {
     //  See https://github.com/restatedev/restate/issues/76 for more background on the topic.
     http: HttpClient,
     lambda: LambdaClient,
-    gcp: GcpTokenClient,
+    pub(crate) gcp: GcpTokenClient,
     // this can be changed to re-read periodically if necessary
     request_identity_key: Arc<ArcSwapOption<request_identity::v1::SigningKey>>,
     additional_request_headers: HashMap<HeaderName, HeaderValue>,
@@ -178,25 +170,15 @@ impl ServiceClient {
                 let mut headers = parts.headers;
                 async move {
                     if let Some(HttpAuth::GoogleIdToken(auth)) = &auth {
-                        let audience = match &auth.audience {
-                            Some(a) => a.to_string(),
-                            None => {
-                                // Defensive: registration since the persist-derived-audience change
-                                // always fills this in. Hitting this branch implies a record
-                                // persisted before that change; surface it so the operator
-                                // re-registers with --force to refresh the persisted record.
-                                tracing::warn!(
-                                    uri = %uri,
-                                    "GCP auth record has no persisted audience; deriving from URI \
-                                     at mint time. Re-register the deployment with --force to \
-                                     persist the derived audience."
-                                );
-                                gcp::derive_audience(&uri)
-                                    .map_err(|e| ServiceClientError::GcpAuth(uri.clone(), e))?
-                            }
-                        };
+                        // The persisted record carries a concrete audience; the wire-to-persisted
+                        // conversion at register/patch time derives one from the URI when the
+                        // operator left it unset. No fallback is needed here.
+                        let audience = auth.audience().to_string();
+                        let impersonate = auth
+                            .impersonate_service_account()
+                            .map(|b| b.as_ref());
                         let token = gcp
-                            .mint(auth.impersonate_service_account.as_deref(), &audience)
+                            .mint(impersonate, &audience)
                             .await
                             .map_err(|e| ServiceClientError::GcpAuth(uri.clone(), e))?;
 
@@ -206,9 +188,7 @@ impl ServiceClient {
                                     uri.clone(),
                                     gcp::GcpAuthError::Mint {
                                         audience: audience.clone(),
-                                        impersonate: auth
-                                            .impersonate_service_account
-                                            .as_deref()
+                                        impersonate: impersonate
                                             .unwrap_or("(ambient)")
                                             .to_owned(),
                                         message: format!(

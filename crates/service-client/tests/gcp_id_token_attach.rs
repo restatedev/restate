@@ -155,7 +155,9 @@ async fn dispatch(
 }
 
 #[tokio::test]
-async fn bearer_attached_with_derived_audience() {
+async fn bearer_attached_with_persisted_audience() {
+    // The persisted record always carries a concrete audience (the REST boundary derives it from
+    // the deployment URI before persisting). The dispatch path reads that value verbatim.
     let (upstream_addr, recorded) = upstream_recorder().await;
     let upstream_uri: hyper::Uri = format!("http://{upstream_addr}/").parse().unwrap();
     let expected_audience = format!("http://{upstream_addr}");
@@ -169,10 +171,10 @@ async fn bearer_attached_with_derived_audience() {
         Duration::from_secs(3600),
     );
 
-    let auth = HttpAuth::GoogleIdToken(GoogleIdTokenAuth {
-        impersonate_service_account: None,
-        audience: None,
-    });
+    let auth = HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
+        ByteString::from(expected_audience.clone()),
+        None,
+    ));
     let response = dispatch(
         &client,
         Endpoint::Http(upstream_uri, None, Some(auth)),
@@ -221,10 +223,10 @@ async fn customer_authorization_passes_through_alongside_minted_xsa() {
         hyper::http::HeaderValue::from_static("Bearer user-supplied-token"),
     );
 
-    let auth = HttpAuth::GoogleIdToken(GoogleIdTokenAuth {
-        impersonate_service_account: None,
-        audience: None,
-    });
+    let auth = HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
+        ByteString::from(expected_audience.clone()),
+        None,
+    ));
     let response = dispatch(
         &client,
         Endpoint::Http(upstream_uri, None, Some(auth)),
@@ -260,10 +262,10 @@ async fn bearer_uses_explicit_audience_when_provided() {
         .gcp_for_test()
         .seed_for_test(None, explicit_audience, token, Duration::from_secs(3600));
 
-    let auth = HttpAuth::GoogleIdToken(GoogleIdTokenAuth {
-        impersonate_service_account: None,
-        audience: Some(ByteString::from_static(explicit_audience)),
-    });
+    let auth = HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
+        ByteString::from_static(explicit_audience),
+        None,
+    ));
     let response = dispatch(
         &client,
         Endpoint::Http(upstream_uri, None, Some(auth)),
@@ -289,10 +291,10 @@ async fn mint_failure_does_not_send_unauthenticated_request() {
         .gcp_for_test()
         .force_mint_failure_for_test("simulated ADC failure");
 
-    let auth = HttpAuth::GoogleIdToken(GoogleIdTokenAuth {
-        impersonate_service_account: None,
-        audience: None,
-    });
+    let auth = HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
+        ByteString::from_static("https://example.test"),
+        None,
+    ));
 
     let parts = Parts::new(
         ClientMethod::Post,

@@ -104,13 +104,18 @@ where
             ..
         } => {
             validate_uri(&uri)?;
-            if auth.is_some() {
+            let persisted_auth = if let Some(wire_auth) = auth {
                 let headers_for_validation: Option<HashMap<http::HeaderName, http::HeaderValue>> =
                     additional_headers.clone().map(Into::into);
                 validate_http_auth(&uri, headers_for_validation.as_ref())?;
-            }
-
-            let persisted_auth = auth.map(Into::into);
+                Some(
+                    wire_auth
+                        .into_persisted(&uri)
+                        .map_err(|e| MetaApiError::InvalidField("auth.audience", e.to_string()))?,
+                )
+            } else {
+                None
+            };
 
             schema::registry::RegisterDeploymentRequest {
                 deployment_address: HttpDeploymentAddress::new(uri)

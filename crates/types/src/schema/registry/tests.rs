@@ -292,7 +292,10 @@ mod http_auth_validation_tests {
 }
 
 #[test(tokio::test)]
-pub async fn register_http_with_gcp_auth_persists_derived_audience() {
+pub async fn register_http_with_gcp_auth_persists_audience_verbatim() {
+    // The registry no longer rewrites `auth`; the wire-to-persisted conversion at the REST
+    // boundary is the only place that materialises the audience. This test confirms the
+    // registry round-trips the persisted record without mutation.
     use crate::deployment::{GoogleIdTokenAuth, HttpAuth, HttpDeploymentAddress};
     use bytestring::ByteString;
     use http::Uri;
@@ -304,15 +307,15 @@ pub async fn register_http_with_gcp_auth_persists_derived_audience() {
         (),
     );
 
-    // Register with audience left unset; the registry must derive and persist it.
-    let uri: Uri = "https://svc-abc-uc.a.run.app/".parse().unwrap();
-    let (_, deployment_unset, _) = schema_registry
+    let uri: Uri = "https://api.acme.com/svc".parse().unwrap();
+    let explicit_audience = ByteString::from_static("https://svc-abc-uc.a.run.app");
+    let (_, deployment, _) = schema_registry
         .register_deployment(RegisterDeploymentRequest {
-            deployment_address: HttpDeploymentAddress::new(uri.clone())
-                .with_auth(Some(HttpAuth::GoogleIdToken(GoogleIdTokenAuth {
-                    impersonate_service_account: None,
-                    audience: None,
-                })))
+            deployment_address: HttpDeploymentAddress::new(uri)
+                .with_auth(Some(HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
+                    explicit_audience.clone(),
+                    None,
+                ))))
                 .into(),
             additional_headers: Default::default(),
             metadata: Default::default(),
@@ -327,47 +330,13 @@ pub async fn register_http_with_gcp_auth_persists_derived_audience() {
     let DeploymentType::Http {
         auth: Some(HttpAuth::GoogleIdToken(persisted)),
         ..
-    } = deployment_unset.ty
+    } = deployment.ty
     else {
         panic!("expected persisted GoogleIdToken auth");
     };
     assert_eq!(
-        persisted.audience.as_deref(),
-        Some("https://svc-abc-uc.a.run.app"),
-        "audience must be derived and persisted from the deployment URI",
-    );
-
-    // An explicit audience is persisted verbatim with no rewriting.
-    let explicit_uri: Uri = "https://api.acme.com/svc".parse().unwrap();
-    let explicit_audience = ByteString::from_static("https://svc-abc-uc.a.run.app");
-    let (_, deployment_explicit, _) = schema_registry
-        .register_deployment(RegisterDeploymentRequest {
-            deployment_address: HttpDeploymentAddress::new(explicit_uri)
-                .with_auth(Some(HttpAuth::GoogleIdToken(GoogleIdTokenAuth {
-                    impersonate_service_account: None,
-                    audience: Some(explicit_audience.clone()),
-                })))
-                .into(),
-            additional_headers: Default::default(),
-            metadata: Default::default(),
-            use_http_11: false,
-            allow_breaking: AllowBreakingChanges::No,
-            overwrite: Overwrite::No,
-            apply_mode: ApplyMode::Apply,
-        })
-        .await
-        .unwrap();
-
-    let DeploymentType::Http {
-        auth: Some(HttpAuth::GoogleIdToken(persisted_explicit)),
-        ..
-    } = deployment_explicit.ty
-    else {
-        panic!("expected persisted GoogleIdToken auth");
-    };
-    assert_eq!(
-        persisted_explicit.audience.as_ref(),
-        Some(&explicit_audience),
-        "explicit audience must be preserved verbatim",
+        persisted.audience(),
+        &explicit_audience,
+        "audience must be preserved verbatim by the registry",
     );
 }

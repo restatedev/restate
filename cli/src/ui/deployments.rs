@@ -131,10 +131,6 @@ pub fn add_deployment_to_kv_table(deployment: &Deployment, table: &mut Table) {
                     .as_ref()
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| "(ambient ADC)".to_owned());
-                // The server materialises the persisted audience at registration; show whatever
-                // it returned and never derive on the client. A legacy record persisted before
-                // that change may carry None - surface it as such so the operator can re-register
-                // to refresh.
                 let audience = match &token_auth.audience {
                     Some(a) => a.to_string(),
                     None => "(not set - re-register with --force to refresh)".to_owned(),
