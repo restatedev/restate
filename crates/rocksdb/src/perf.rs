@@ -11,14 +11,72 @@
 use std::time::Instant;
 
 use metrics::{counter, histogram};
-use restate_types::config::{Configuration, PerfStatsLevel};
 use rocksdb::{PerfContext, PerfMetric};
+
+use restate_types::config::{Configuration, PerfStatsLevel};
+use restate_util_random as rand;
 
 use crate::{
     BLOCK_DECOMPRESS_DURATION, BLOCK_READ_BYTES, BLOCK_READ_DURATION, GET_FROM_MEMTABLE_DURATION,
     NEXT_ON_MEMTABLE, OP_NAME, SEEK_ON_MEMTABLE, TOTAL_DURATION, WRITE_ARTIFICIAL_DELAY_DURATION,
     WRITE_MEMTABLE_DURATION, WRITE_PRE_AND_POST_DURATION, WRITE_WAL_DURATION,
 };
+
+// Sample 10% of rocksdb operations.
+const SAMPLE_RATE: u64 = const { u64::MAX / 10 };
+
+/// This guard is !Send. It must be created and dropped on the same thread since
+/// it's backed by a thread-local in rocksdb.
+pub struct RocksDbPerfGuard(Inner);
+
+static_assertions::assert_not_impl_any!(RocksDbPerfGuard: Send);
+
+impl RocksDbPerfGuard {
+    /// IMPORTANT NOTE: you MUST bind this value with a named variable (f) to ensure
+    /// that the guard is not insta-dropped. Binding to something like `_x = ...` works, just don't
+    /// use the special `_` variable and you'll be fine. Unfortunately, rust/clippy doesn't have a
+    /// mechanism to enforce this at the moment.
+    ///
+    /// This guard should not be used across await points. Stats are thread local.
+    #[must_use]
+    pub fn new(name: &'static str) -> Self {
+        if should_sample() {
+            Self(Inner::Real(RealRocksGuard::new(name)))
+        } else {
+            Self(Inner::Noop)
+        }
+    }
+
+    /// Drops the guard without reporting any metrics.
+    pub fn forget(mut self) {
+        if let Inner::Real(guard) = &mut self.0 {
+            guard.should_report = false;
+        }
+    }
+
+    fn report(&self) {
+        if let Inner::Real(guard) = &self.0 {
+            guard.report();
+        }
+    }
+}
+
+impl Drop for RocksDbPerfGuard {
+    fn drop(&mut self) {
+        if let Inner::Real(guard) = &mut self.0 {
+            rocksdb::perf::set_perf_stats(rocksdb::perf::PerfStatsLevel::Disable);
+            if guard.should_report {
+                // report collected metrics
+                self.report();
+            }
+        }
+    }
+}
+
+#[inline]
+fn should_sample() -> bool {
+    rand::pseudo_random() < SAMPLE_RATE
+}
 
 fn convert_perf_level(input: PerfStatsLevel) -> rocksdb::perf::PerfStatsLevel {
     use rocksdb::perf::PerfStatsLevel as RocksLevel;
@@ -33,42 +91,26 @@ fn convert_perf_level(input: PerfStatsLevel) -> rocksdb::perf::PerfStatsLevel {
     }
 }
 
-/// This guard is !Send. It must be created and dropped on the same thread since
-/// it's backed by a thread-local in rocksdb.
-pub struct RocksDbPerfGuard {
+struct RealRocksGuard {
     start: Instant,
     name: &'static str,
     context: PerfContext,
     should_report: bool,
 }
 
-static_assertions::assert_not_impl_any!(RocksDbPerfGuard: Send);
-
-impl RocksDbPerfGuard {
-    /// IMPORTANT NOTE: you MUST bind this value with a named variable (f) to ensure
-    /// that the guard is not insta-dropped. Binding to something like `_x = ...` works, just don't
-    /// use the special `_` variable and you'll be fine. Unfortunately, rust/clippy doesn't have a
-    /// mechanism to enforce this at the moment.
-    ///
-    /// This guard should not be used across await points. Stats are thread local.
-    #[must_use]
-    pub fn new(name: &'static str) -> Self {
+impl RealRocksGuard {
+    fn new(name: &'static str) -> Self {
         let rocks_level = convert_perf_level(Configuration::pinned().common.rocksdb_perf_level);
         rocksdb::perf::set_perf_stats(rocks_level);
         // Behind the scenes, this "gets" the thread-local perf context and doesn't clear it up.
         let mut context = PerfContext::default();
         context.reset();
-        RocksDbPerfGuard {
+        Self {
             name,
             start: Instant::now(),
             context,
             should_report: true,
         }
-    }
-
-    /// Drops the guard without reporting any metrics.
-    pub fn forget(mut self) {
-        self.should_report = false;
     }
 
     fn report(&self) {
@@ -135,14 +177,9 @@ impl RocksDbPerfGuard {
     }
 }
 
-impl Drop for RocksDbPerfGuard {
-    fn drop(&mut self) {
-        rocksdb::perf::set_perf_stats(rocksdb::perf::PerfStatsLevel::Disable);
-        if self.should_report {
-            // report collected metrics
-            self.report();
-        }
-    }
+enum Inner {
+    Noop,
+    Real(RealRocksGuard),
 }
 
 #[inline]

@@ -42,6 +42,11 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.7.0*
     EnableVqueues = 2,
+    /// Persist a unique random seed (invocation_id + record_created_at entropy) on new
+    /// invocations so SDK RNG output is deterministic per invocation.
+    ///
+    /// *Since v1.7.0*
+    EnableUniqueRandomSeeds = 3,
 }
 
 impl PartitionFeatureChange {
@@ -57,6 +62,7 @@ impl PartitionFeatureChange {
         match self {
             Self::EnableJournalV2 => &RESTATE_VERSION_1_6_0,
             Self::EnableVqueues => &RESTATE_VERSION_1_7_0,
+            Self::EnableUniqueRandomSeeds => &RESTATE_VERSION_1_7_0,
         }
     }
 
@@ -66,6 +72,9 @@ impl PartitionFeatureChange {
         match self {
             Self::EnableJournalV2 => !std::mem::replace(&mut features.journal_v2, true),
             Self::EnableVqueues => !std::mem::replace(&mut features.vqueues, true),
+            Self::EnableUniqueRandomSeeds => {
+                !std::mem::replace(&mut features.unique_random_seeds, true)
+            }
         }
     }
 }
@@ -92,6 +101,11 @@ pub struct PersistedStateMachineFeatures {
     /// *Since v1.7.0*
     #[bilrost(tag(2))]
     pub vqueues: bool,
+    /// Persist a unique random seed on new invocations.
+    ///
+    /// *Since v1.7.0*
+    #[bilrost(tag(3))]
+    pub unique_random_seeds: bool,
 }
 
 impl StorageEncode for PersistedStateMachineFeatures {
@@ -146,8 +160,11 @@ mod tests {
     fn apply_to_sets_field() {
         let mut features = PersistedStateMachineFeatures::default();
         assert!(!features.vqueues);
+        assert!(!features.unique_random_seeds);
         PartitionFeatureChange::EnableVqueues.apply_to(&mut features);
+        PartitionFeatureChange::EnableUniqueRandomSeeds.apply_to(&mut features);
         assert!(features.vqueues);
+        assert!(features.unique_random_seeds);
     }
 
     #[test]
