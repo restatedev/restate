@@ -1,0 +1,14 @@
+[package]
+name = "restate-util-random"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+restate-workspace-hack = { workspace = true }
+
+[lints]
+workspace = true
