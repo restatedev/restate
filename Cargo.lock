@@ -8135,6 +8135,7 @@ dependencies = [
  "restate-test-util",
  "restate-types",
  "restate-util-bytecount",
+ "restate-util-random",
  "restate-util-string",
  "restate-util-time",
  "restate-workspace-hack",
@@ -8593,6 +8594,13 @@ dependencies = [
  "serde_core",
  "serde_json",
  "serde_with",
+]
+
+[[package]]
+name = "restate-util-random"
+version = "1.7.0-dev"
+dependencies = [
+ "restate-workspace-hack",
 ]
 
 [[package]]
