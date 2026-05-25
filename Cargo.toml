@@ -327,6 +327,7 @@ debug = true
 
 [profile.dev]
 panic = "unwind"
+split-debuginfo = "unpacked"
 
 [profile.release-lite.package."*"]
 debug = "line-tables-only"
