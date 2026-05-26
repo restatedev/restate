@@ -229,7 +229,7 @@ pub async fn list_partitions(
                     processor
                         .status
                         .storage_version
-                        .map(|v| v.to_string())
+                        .map(|v| (v as u16).to_string())
                         .unwrap_or_else(|| "-".to_owned()),
                 ),
                 Cell::new(

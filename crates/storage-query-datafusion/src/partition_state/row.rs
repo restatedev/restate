@@ -70,6 +70,6 @@ pub(crate) fn append_partition_row(
     row.enabled_features(state.enabled_features.enabled_names().map(Some));
 
     if let Some(version) = state.storage_version {
-        row.storage_version(u32::from(version));
+        row.storage_version(version as u32);
     }
 }

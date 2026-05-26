@@ -24,6 +24,7 @@ use restate_clock::{AtomicStorage, HlcClock, WallClock};
 use restate_rocksdb::{IoMode, Priority};
 use restate_storage_api::StorageError;
 use restate_types::config::Configuration;
+use restate_types::partitions::StorageVersion;
 use restate_types::sharding::KeyRange;
 use restate_types::sharding::subsharding::ShardPlan;
 
@@ -37,132 +38,92 @@ use self::migrate_to_scoped_state_table::{
     append_delete_state_data, migrate_to_scoped_state_table,
 };
 
-// NOTE: The representation numbers here must be strictly monotonically increasing.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, strum::FromRepr)]
-#[repr(u16)]
-pub enum StorageVersion {
-    /// Before 1.5
-    None = 0,
-    /// Migrations:
-    /// * Invocation status V1 -> V2
-    V1_5 = 1,
-    /// Migrations:
-    /// * unscoped `state_table` -> scoped `state_table` (with `scope = None`)
-    /// * unscoped `promise_table` -> scoped `promise_table` (with `scope = None`)
-    ///
-    /// Gated by `experimental_enable_migrate_scoped_tables`.
-    /// Since v1.7.0
-    ScopedStateAndPromise = 2,
+/// Runs the migrations needed to transition the [`StorageVersion`] from current to the target
+/// storage version. A failure can leave the storage version at any valid version between current
+/// and target.
+pub async fn run_migrations_up_to(
+    mut current: StorageVersion,
+    target: StorageVersion,
+    storage: &mut PartitionStore,
+) -> Result<StorageVersion> {
+    while current < target {
+        current = do_migration(current, storage).await?;
+    }
+    Ok(current)
 }
 
-impl TryFrom<u16> for StorageVersion {
-    type Error = StorageError;
-
-    fn try_from(value: u16) -> Result<Self, StorageError> {
-        StorageVersion::from_repr(value).ok_or_else(|| {
-            StorageError::Generic(anyhow::anyhow!(
-                "unknown partition-store storage version {value}; this binary is older \
-                 than the data it would open. Roll forward to a server version that \
-                 recognizes this storage version."
-            ))
-        })
-    }
-}
-
-impl StorageVersion {
-    /// Returns `true` once the partition store has migrated the unscoped state
-    /// and promise tables into their scoped variants. After this point all
-    /// state/promise reads and writes use the scoped tables (with
-    /// `scope = None` for entries that were unscoped pre-migration).
-    pub(crate) fn is_scope_migrated(self) -> bool {
-        self >= StorageVersion::ScopedStateAndPromise
-    }
-
-    pub(crate) async fn run_migrations_up_to(
-        mut self,
-        target: StorageVersion,
-        storage: &mut PartitionStore,
-    ) -> Result<Self> {
-        while self < target {
-            self = self.do_migration(storage).await?;
+/// Runs the migration for the given storage version and returns the new
+/// storage version.
+///
+/// Each migration arm is responsible for atomically (with respect to crashes)
+/// persisting the storage-version bump together with any destructive cleanup
+/// (range deletes, etc.). See the `V1_5` arm for an example: copy passes run
+/// with WAL disabled, then a single final `WriteBatch` (also WAL off)
+/// commits the storage-version put together with the legacy `delete_range_cf`s.
+/// RocksDB's FIFO memtable flush order guarantees that the final batch can
+/// only become durable on SST after the copy writes are already on SST.
+async fn do_migration(
+    current: StorageVersion,
+    storage: &mut PartitionStore,
+) -> Result<StorageVersion> {
+    let new_storage_version = match current {
+        StorageVersion::None => {
+            // Version 1.6+ does not support upgrading from pre-1.5
+            // The InvocationStatusV1 migration was removed in 1.6
+            return Err(StorageError::Generic(anyhow::anyhow!(
+                "Cannot upgrade from version <1.5 directly to 1.6 or later. \
+                 Please upgrade to version 1.5 first, which will migrate your data, \
+                 and then upgrade to 1.6+"
+            )));
         }
-        Ok(self)
-    }
+        StorageVersion::V1_5 => {
+            let config = Configuration::pinned();
+            let key_range = storage.partition_key_range();
+            let partition_id = storage.partition_id();
+            let partition_db = storage.partition_db().clone();
+            let mut ctx = MigrationContext::new(&config, &partition_db, key_range);
+            let new_storage_version = StorageVersion::ScopedStateAndPromise;
 
-    // Runs the migration for the given schema version and returns the new schema version
-    //
-    // Each migration arm is responsible for atomically (with respect to crashes)
-    // persisting the schema-version bump together with any destructive cleanup
-    // (range deletes, etc.). See the `V1_5` arm for an example: copy passes run
-    // with WAL disabled, then a single final `WriteBatch` (also WAL off)
-    // commits the schema-version put together with the legacy `delete_range_cf`s.
-    // RocksDB's FIFO memtable flush order guarantees that the final batch can
-    // only become durable on SST after the copy writes are already on SST.
-    async fn do_migration(&self, storage: &mut PartitionStore) -> Result<StorageVersion> {
-        let new_storage_version = match self {
-            StorageVersion::None => {
-                // Version 1.6+ does not support upgrading from pre-1.5
-                // The InvocationStatusV1 migration was removed in 1.6
-                return Err(StorageError::Generic(anyhow::anyhow!(
-                    "Cannot upgrade from version <1.5 directly to 1.6 or later. \
-                     Please upgrade to version 1.5 first, which will migrate your data, \
-                     and then upgrade to 1.6+"
-                )));
-            }
-            StorageVersion::V1_5 => {
-                let config = Configuration::pinned();
-                let key_range = storage.partition_key_range();
-                let partition_id = storage.partition_id();
-                let partition_db = storage.partition_db().clone();
-                let mut ctx = MigrationContext::new(&config, &partition_db, key_range);
-                let new_storage_version = StorageVersion::ScopedStateAndPromise;
+            migrate_to_scoped_state_table(&mut ctx)?;
+            migrate_to_scoped_promise_table(&mut ctx)?;
 
-                migrate_to_scoped_state_table(&mut ctx)?;
-                migrate_to_scoped_promise_table(&mut ctx)?;
+            // Atomic final step: delete legacy ranges + bump storage version
+            // in a single `WriteBatch`. WAL off so the FIFO memtable order
+            // pins the version bump behind the copy writes — see the
+            // doc-comment on `do_migration` for the durability argument.
+            let cf_handle = partition_db.cf_handle().clone();
+            let mut wb = WriteBatch::default();
+            append_delete_state_data(&ctx, &mut wb);
+            append_delete_promise_data(&ctx, &mut wb);
+            append_storage_version_to_wb(&cf_handle, &mut wb, partition_id, new_storage_version)?;
 
-                // Atomic final step: delete legacy ranges + bump schema version
-                // in a single `WriteBatch`. WAL off so the FIFO memtable order
-                // pins the schema bump behind the copy writes — see the
-                // doc-comment on `do_migration` for the durability argument.
-                let cf_handle = partition_db.cf_handle().clone();
-                let mut wb = WriteBatch::default();
-                append_delete_state_data(&ctx, &mut wb);
-                append_delete_promise_data(&ctx, &mut wb);
-                append_storage_version_to_wb(
-                    &cf_handle,
-                    &mut wb,
-                    partition_id,
-                    new_storage_version,
-                )?;
+            let mut opts = rocksdb::WriteOptions::default();
+            opts.disable_wal(true);
+            partition_db
+                .rocksdb()
+                .write_batch(
+                    "scoped-state-promise-table-migration",
+                    Priority::High,
+                    IoMode::Default,
+                    opts,
+                    wb,
+                )
+                .await
+                .context("failed to commit scoped-state-and-promise final write batch")
+                .map_err(StorageError::Generic)?;
+            debug!(
+                %partition_id,
+                "Finalized scoped state/promise migration"
+            );
+            new_storage_version
+        }
+        StorageVersion::ScopedStateAndPromise => {
+            // Latest version, nothing further to do.
+            StorageVersion::ScopedStateAndPromise
+        }
+    };
 
-                let mut opts = rocksdb::WriteOptions::default();
-                opts.disable_wal(true);
-                partition_db
-                    .rocksdb()
-                    .write_batch(
-                        "scoped-state-promise-table-migration",
-                        Priority::High,
-                        IoMode::Default,
-                        opts,
-                        wb,
-                    )
-                    .await
-                    .context("failed to commit scoped-state-and-promise final write batch")
-                    .map_err(StorageError::Generic)?;
-                debug!(
-                    %partition_id,
-                    "Finalized scoped state/promise migration"
-                );
-                new_storage_version
-            }
-            StorageVersion::ScopedStateAndPromise => {
-                // Latest version, nothing further to do.
-                StorageVersion::ScopedStateAndPromise
-            }
-        };
-
-        Ok(new_storage_version)
-    }
+    Ok(new_storage_version)
 }
 
 #[allow(dead_code)]

@@ -13,7 +13,6 @@ use bytestring::ByteString;
 use std::sync::Arc;
 
 use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
-use crate::migrations::StorageVersion;
 use crate::scan::TableScan;
 use crate::{
     PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind,
@@ -26,6 +25,7 @@ use restate_storage_api::promise_table::{
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
+use restate_types::partitions::StorageVersion;
 use restate_types::sharding::KeyRange;
 use restate_types::{Scope, ServiceName};
 use restate_util_string::ReString;

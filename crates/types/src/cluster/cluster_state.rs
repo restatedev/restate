@@ -18,6 +18,7 @@ use restate_encoding::NetSerde;
 
 use crate::identifiers::{LeaderEpoch, PartitionId};
 use crate::logs::Lsn;
+use crate::partitions::StorageVersion;
 use crate::partitions::features::PersistedStateMachineFeatures;
 use crate::time::MillisSinceEpoch;
 use crate::{GenerationalNodeId, PlainNodeId, Version};
@@ -225,7 +226,12 @@ pub struct PartitionProcessorStatus {
     /// Partition-store on-disk storage version (StorageVersion discriminant).
     /// Set once on partition open by `verify_and_run_migrations`.
     #[bilrost(16)]
-    pub storage_version: Option<u16>,
+    #[into_prost(map = "storage_version_to_u32")]
+    pub storage_version: Option<StorageVersion>,
+}
+
+fn storage_version_to_u32(v: StorageVersion) -> u32 {
+    v as u32
 }
 
 fn enabled_features_to_proto(f: &PersistedStateMachineFeatures) -> Vec<String> {

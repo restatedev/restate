@@ -10,7 +10,6 @@
 
 use crate::TableKind::PartitionStateMachine;
 use crate::keys::{EncodeTableKeyPrefix, KeyKind, define_table_key};
-use crate::migrations::StorageVersion;
 use crate::{
     PaddedPartitionId, PartitionDb, PartitionStore, PartitionStoreTransaction, StorageAccess,
 };
@@ -24,6 +23,7 @@ use restate_types::SemanticRestateVersion;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
+use restate_types::partitions::StorageVersion;
 use restate_types::partitions::features::PersistedStateMachineFeatures;
 use restate_types::schema::Schema;
 use restate_types::storage::StorageCodec;
@@ -133,9 +133,18 @@ pub async fn get_locally_durable_lsn(partition_store: &mut PartitionStore) -> Re
 pub(crate) async fn get_storage_version<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
-) -> Result<u16> {
-    get::<SequenceNumber, _>(storage, partition_id, fsm_variable::STORAGE_VERSION)
-        .map(|opt| opt.map(|s| s.0 as u16).unwrap_or_default())
+) -> Result<StorageVersion> {
+    get::<SequenceNumber, _>(storage, partition_id, fsm_variable::STORAGE_VERSION).and_then(|opt| {
+        let storage_version = if let Some(seq_number) = opt {
+            StorageVersion::try_from(
+                u16::try_from(seq_number.0).map_err(|_| StorageError::DataIntegrityError)?,
+            )?
+        } else {
+            StorageVersion::None
+        };
+
+        Ok(storage_version)
+    })
 }
 
 pub(crate) fn get_storage_version_from_partition_db(db: &PartitionDb) -> Result<StorageVersion> {
@@ -161,9 +170,8 @@ pub(crate) fn get_storage_version_from_partition_db(db: &PartitionDb) -> Result<
         .map_err(|err| StorageError::Generic(err.into()))?;
 
     Ok(if let Some(sequence_number) = sequence_number {
-        u16::try_from(sequence_number.0)
-            .map_err(|_| StorageError::DataIntegrityError)?
-            .try_into()?
+        let raw = u16::try_from(sequence_number.0).map_err(|_| StorageError::DataIntegrityError)?;
+        StorageVersion::try_from(raw)?
     } else {
         StorageVersion::None
     })

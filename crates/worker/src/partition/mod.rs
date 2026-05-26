@@ -243,7 +243,7 @@ impl PartitionProcessorBuilder {
 
         let last_applied_log_lsn_watch = watch::Sender::new(Lsn::INVALID);
         // The storage version does not change after having opened the partition store
-        status.storage_version = Some(partition_store.storage_version() as u16);
+        status.storage_version = Some(partition_store.storage_version());
 
         Ok(PartitionProcessor {
             key_filter: KeyFilter::Within(partition_store.partition_key_range().into()),

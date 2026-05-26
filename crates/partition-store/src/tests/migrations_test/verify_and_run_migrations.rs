@@ -30,10 +30,10 @@ use restate_types::sharding::KeyRange;
 use crate::PartitionStoreManager;
 use crate::fsm_table::put_storage_version;
 use crate::keys::DecodeTableKey;
-use crate::migrations::StorageVersion;
 use crate::promise_table::{PromiseKey, ScopedPromiseKey};
 use crate::scan::{PhysicalScan, TableScan};
 use crate::state_table::{ScopedStateKey, StateKey};
+use restate_types::partitions::StorageVersion;
 
 fn with_migrate_scoped_tables(enabled: bool) {
     let mut config = Configuration::default();

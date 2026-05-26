@@ -31,11 +31,11 @@ use restate_util_string::ReString;
 
 use crate::TableKind::State;
 use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
-use crate::migrations::StorageVersion;
 use crate::{
     PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
     TableScanIterationDecision, break_on_err,
 };
+use restate_types::partitions::StorageVersion;
 
 define_table_key!(
     State,

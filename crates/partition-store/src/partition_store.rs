@@ -42,12 +42,14 @@ use restate_types::storage::StorageCodec;
 use restate_types::storage::StorageDecode;
 use restate_types::storage::StorageEncode;
 
+use restate_types::partitions::StorageVersion;
+
 use crate::fsm_table::{
     get_locally_durable_lsn, get_storage_version, get_storage_version_from_partition_db,
     is_jc_orphan_cleanup_done, put_jc_orphan_cleanup_done, put_storage_version,
 };
 use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
-use crate::migrations::StorageVersion;
+use crate::migrations::run_migrations_up_to;
 use crate::partition_db::PartitionDb;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
@@ -688,15 +690,14 @@ impl PartitionStore {
             return Ok(());
         }
 
-        let mut storage_version =
-            StorageVersion::try_from(get_storage_version(self, self.partition_id()).await?)?;
+        let mut storage_version = get_storage_version(self, self.partition_id()).await?;
         if storage_version < target {
             // We need to run some migrations!
             debug!(
                 "Running storage migration from {:?} to {:?}",
                 storage_version, target
             );
-            storage_version = storage_version.run_migrations_up_to(target, self).await?;
+            storage_version = run_migrations_up_to(storage_version, target, self).await?;
         }
         self.storage_version = storage_version;
 
