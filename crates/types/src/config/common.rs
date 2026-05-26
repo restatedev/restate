@@ -626,6 +626,15 @@ experimental! {
     ///
     /// Since v1.7.0
     scoped_virtual_objects,
+
+    /// # Enables Kafka header support for scoped invocations
+    ///
+    /// When enabled, Kafka subscriptions read `x-restate-scope` and
+    /// `x-restate-limit-key` record headers to drive vqueue scope and
+    /// hierarchical limit-key routing. Requires `vqueues` to also be enabled.
+    ///
+    /// Since v1.7.0
+    kafka_scope,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
