@@ -262,7 +262,10 @@ where
         // Spawn a tokio task to serve the connection
         TaskCenter::spawn(TaskKind::Ingress, "ingress", async move {
             let shutdown = cancellation_watcher();
-            let auto_connection = auto::Builder::new(TaskCenterExecutor);
+            let mut auto_connection = auto::Builder::new(TaskCenterExecutor);
+            auto_connection
+                .http2()
+                .max_concurrent_streams(Some(u32::MAX));
             let serve_connection_fut = auto_connection.serve_connection(io, handler);
 
             tokio::select! {
