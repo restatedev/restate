@@ -469,6 +469,7 @@ impl SchemaUpdater {
                 address: a.uri,
                 protocol_type,
                 http_version,
+                auth: a.auth,
             },
             (
                 DeploymentAddress::Lambda(a),

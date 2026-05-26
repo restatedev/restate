@@ -458,6 +458,7 @@ pub enum Deployment {
         max_protocol_version: i32,
         metadata: HashMap<String, String>,
         sdk_version: Option<String>,
+        auth: Option<restate_admin_rest_model::deployments::HttpAuth>,
     },
     Lambda {
         arn: LambdaARN,
@@ -495,6 +496,7 @@ impl Deployment {
                 services,
                 metadata,
                 sdk_version,
+                auth,
                 ..
             } => (
                 id,
@@ -508,6 +510,7 @@ impl Deployment {
                     max_protocol_version,
                     metadata,
                     sdk_version,
+                    auth,
                 },
                 services,
             ),
@@ -556,6 +559,7 @@ impl Deployment {
                 services,
                 metadata,
                 sdk_version,
+                auth,
                 ..
             } => (
                 id,
@@ -569,6 +573,7 @@ impl Deployment {
                     max_protocol_version,
                     metadata,
                     sdk_version,
+                    auth,
                 },
                 services,
             ),

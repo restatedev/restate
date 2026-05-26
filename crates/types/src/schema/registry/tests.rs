@@ -162,3 +162,181 @@ pub async fn register_deployment_lambda() {
         .get()
         .assert_service_revision(GREETER_SERVICE_NAME, 3);
 }
+
+#[cfg(test)]
+mod http_auth_validation_tests {
+    use super::super::{HttpAuthValidationError, effective_http_patch_inputs, validate_http_auth};
+    use crate::deployment::Headers;
+    use http::{HeaderName, HeaderValue, Uri};
+
+    fn assert_invalid_field(result: Result<(), HttpAuthValidationError>, expected_field: &str) {
+        match result {
+            Err(err) => assert_eq!(err.field, expected_field),
+            Ok(()) => panic!("expected InvalidField({expected_field}), got Ok"),
+        }
+    }
+
+    #[test]
+    fn rejects_non_https_public_host() {
+        let uri: Uri = "http://example.com/".parse().unwrap();
+        assert_invalid_field(validate_http_auth(&uri, None), "auth");
+    }
+
+    #[test]
+    fn accepts_https_public_host() {
+        let uri: Uri = "https://svc.example.com/".parse().unwrap();
+        validate_http_auth(&uri, None).expect("https public host accepted");
+    }
+
+    #[test]
+    fn accepts_non_https_loopback() {
+        for host in ["localhost", "127.0.0.1", "[::1]", "10.0.0.1", "[fc00::1]"] {
+            let uri: Uri = format!("http://{host}/").parse().unwrap();
+            validate_http_auth(&uri, None)
+                .unwrap_or_else(|e| panic!("expected accept for {host}, got {e:?}"));
+        }
+    }
+
+    #[test]
+    fn rejects_x_serverless_authorization_header() {
+        let uri: Uri = "https://svc.example.com/".parse().unwrap();
+        let mut headers: Headers = Headers::new();
+        headers.insert(
+            HeaderName::from_static("x-serverless-authorization"),
+            HeaderValue::from_static("Bearer y"),
+        );
+
+        assert_invalid_field(
+            validate_http_auth(&uri, Some(&headers)),
+            "additional_headers",
+        );
+    }
+
+    #[test]
+    fn rejects_x_serverless_authorization_alongside_authorization() {
+        let uri: Uri = "https://svc.example.com/".parse().unwrap();
+        let mut headers: Headers = Headers::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_static("Bearer x"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-serverless-authorization"),
+            HeaderValue::from_static("Bearer y"),
+        );
+
+        assert_invalid_field(
+            validate_http_auth(&uri, Some(&headers)),
+            "additional_headers",
+        );
+    }
+
+    #[test]
+    fn accepts_single_authorization_header() {
+        let uri: Uri = "https://svc.example.com/".parse().unwrap();
+        let mut headers: Headers = Headers::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_static("Bearer x"),
+        );
+
+        validate_http_auth(&uri, Some(&headers)).expect("single Authorization header is allowed");
+    }
+
+    #[test]
+    fn patch_validation_rejects_http_uri_change_when_auth_persisted() {
+        let existing_uri: Uri = "https://svc.example.com/".parse().unwrap();
+        let existing_headers = Headers::new();
+        let new_uri: Uri = "http://attacker.example.com/".parse().unwrap();
+
+        let (effective_uri, effective_headers) =
+            effective_http_patch_inputs(Some(&new_uri), None, &existing_uri, &existing_headers);
+
+        assert_invalid_field(
+            validate_http_auth(effective_uri, Some(effective_headers.as_ref())),
+            "auth",
+        );
+    }
+
+    #[test]
+    fn patch_validation_rejects_added_x_serverless_authorization_header() {
+        let existing_uri: Uri = "https://svc.example.com/".parse().unwrap();
+        let existing_headers = Headers::new();
+
+        let mut patched = Headers::new();
+        patched.insert(
+            HeaderName::from_static("x-serverless-authorization"),
+            HeaderValue::from_static("Bearer attacker"),
+        );
+
+        let (effective_uri, effective_headers) =
+            effective_http_patch_inputs(None, Some(&patched), &existing_uri, &existing_headers);
+
+        assert_invalid_field(
+            validate_http_auth(effective_uri, Some(effective_headers.as_ref())),
+            "additional_headers",
+        );
+    }
+
+    #[test]
+    fn patch_validation_accepts_noop_against_persisted_safe_record() {
+        let existing_uri: Uri = "https://svc.example.com/".parse().unwrap();
+        let existing_headers = Headers::new();
+
+        let (effective_uri, effective_headers) =
+            effective_http_patch_inputs(None, None, &existing_uri, &existing_headers);
+
+        validate_http_auth(effective_uri, Some(effective_headers.as_ref()))
+            .expect("no-op PATCH against safe persisted record is accepted");
+    }
+}
+
+#[test(tokio::test)]
+pub async fn register_http_with_gcp_auth_persists_audience_verbatim() {
+    // The registry no longer rewrites `auth`; the wire-to-persisted conversion at the REST
+    // boundary is the only place that materialises the audience. This test confirms the
+    // registry round-trips the persisted record without mutation.
+    use crate::deployment::{GoogleIdTokenAuth, HttpAuth, HttpDeploymentAddress};
+    use bytestring::ByteString;
+    use http::Uri;
+
+    let schema_metadata = mock_arc_schema();
+    let schema_registry = SchemaRegistry::new(
+        schema_metadata.clone(),
+        DiscoveryResponse::mock(vec![greeter_service()]),
+        (),
+    );
+
+    let uri: Uri = "https://api.acme.com/svc".parse().unwrap();
+    let explicit_audience = ByteString::from_static("https://svc-abc-uc.a.run.app");
+    let (_, deployment, _) = schema_registry
+        .register_deployment(RegisterDeploymentRequest {
+            deployment_address: HttpDeploymentAddress::new(uri)
+                .with_auth(Some(HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
+                    explicit_audience.clone(),
+                    None,
+                ))))
+                .into(),
+            additional_headers: Default::default(),
+            metadata: Default::default(),
+            use_http_11: false,
+            allow_breaking: AllowBreakingChanges::No,
+            overwrite: Overwrite::No,
+            apply_mode: ApplyMode::Apply,
+        })
+        .await
+        .unwrap();
+
+    let DeploymentType::Http {
+        auth: Some(HttpAuth::GoogleIdToken(persisted)),
+        ..
+    } = deployment.ty
+    else {
+        panic!("expected persisted GoogleIdToken auth");
+    };
+    assert_eq!(
+        persisted.audience(),
+        &explicit_audience,
+        "audience must be preserved verbatim by the registry",
+    );
+}
