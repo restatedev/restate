@@ -212,10 +212,16 @@ pub(crate) struct InvocationMemoryExhausted {
 
 impl fmt::Display for InvocationMemoryExhausted {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let hint = match self.kind {
+            OutOfMemoryKind::PoolExhausted => "consider increasing 'worker.invoker.memory-limit'",
+            OutOfMemoryKind::UpperBoundExceeded => {
+                "consider increasing 'worker.invoker.per-invocation-memory-limit'"
+            }
+        };
         write!(
             f,
-            "memory budget exhausted ({}) while {}: needed {}",
-            self.kind, self.context, self.needed,
+            "memory budget exhausted ({}) while {}: needed {}; {}",
+            self.kind, self.context, self.needed, hint,
         )
     }
 }
