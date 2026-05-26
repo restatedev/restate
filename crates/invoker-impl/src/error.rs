@@ -394,6 +394,8 @@ pub(crate) enum CommandPreconditionError {
     InvalidLimitKey,
     #[error("limit_key was provided without a scope")]
     LimitKeyWithoutScope,
+    #[error("scope is not supported for Virtual Object targets")]
+    ScopedVirtualObjectNotSupported,
     #[error("invalid scope: {0}")]
     InvalidScope(RestrictedValueError),
     #[error("invalid invocation id {0}: {1}")]

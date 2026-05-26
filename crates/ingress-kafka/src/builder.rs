@@ -263,6 +263,17 @@ impl InvocationBuilder {
             bail!("Scoped invocations require experimental vqueues to be enabled");
         }
 
+        // Validate: scoped Virtual Objects are gated behind an experimental flag
+        if invocation_target.scope().is_some()
+            && matches!(invocation_target, InvocationTarget::VirtualObject { .. })
+            && !restate_types::config::Configuration::pinned()
+                .common
+                .experimental
+                .is_scoped_virtual_objects_enabled()
+        {
+            bail!("scope is not supported for Virtual Object targets");
+        }
+
         // Validate: limit_key requires scope
         if !limit_key.is_empty() && invocation_target.scope().is_none() {
             bail!("limit-key requires a scope to be set");

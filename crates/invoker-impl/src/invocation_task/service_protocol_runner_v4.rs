@@ -1576,6 +1576,16 @@ fn resolve_call_request(
         return Err(CommandPreconditionError::LimitKeyWithoutScope);
     }
 
+    if invocation_target.scope().is_some()
+        && matches!(meta.target_ty, InvocationTargetType::VirtualObject(_))
+        && !restate_types::config::Configuration::pinned()
+            .common
+            .experimental
+            .is_scoped_virtual_objects_enabled()
+    {
+        return Err(CommandPreconditionError::ScopedVirtualObjectNotSupported);
+    }
+
     let invocation_retention = meta.compute_retention(idempotency_key.is_some());
     let invocation_id = InvocationId::generate(&invocation_target, idempotency_key);
 

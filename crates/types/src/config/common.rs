@@ -618,6 +618,14 @@ experimental! {
     ///
     /// Since v1.7.0
     migrate_scoped_tables,
+
+    /// # Allow scope on Virtual Object targets
+    ///
+    /// Scoped Virtual Objects are not officially supported in v1.7. Requires
+    /// `vqueues` to be enabled as well.
+    ///
+    /// Since v1.7.0
+    scoped_virtual_objects,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");

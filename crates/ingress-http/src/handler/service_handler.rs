@@ -164,6 +164,20 @@ where
             return Err(HandlerError::ScopeRequiresVQueues);
         }
 
+        // Scoped Virtual Objects are gated behind an experimental flag
+        if scope.is_some()
+            && matches!(
+                invocation_target_meta.target_ty,
+                InvocationTargetType::VirtualObject(_)
+            )
+            && !Configuration::pinned()
+                .common
+                .experimental
+                .is_scoped_virtual_objects_enabled()
+        {
+            return Err(HandlerError::ScopedVirtualObjectNotSupported);
+        }
+
         // Craft Invocation Target and Id
         let invocation_target = if let TargetType::Keyed { key } = target {
             match invocation_target_meta.target_ty {
