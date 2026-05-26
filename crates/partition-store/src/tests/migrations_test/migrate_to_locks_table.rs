@@ -35,7 +35,7 @@ use crate::{PartitionStore, PartitionStoreManager};
 
 async fn storage_test_environment() -> PartitionStore {
     RocksDbManager::init();
-    let manager = PartitionStoreManager::create()
+    let manager = PartitionStoreManager::create(true)
         .await
         .expect("DB storage creation succeeds");
     manager
@@ -105,6 +105,7 @@ async fn migrate_to_locks_table_moves_service_status_locks_to_lock_table() {
             .expect("service status write should succeed");
     }
     txn.commit().await.expect("commit should succeed");
+    drop(txn);
 
     let config = Configuration::default();
     let mut ctx = MigrationContext::new(
@@ -143,6 +144,7 @@ async fn migrate_to_locks_table_moves_service_status_locks_to_lock_table() {
     let mut txn = rocksdb.transaction();
     txn.release_lock(&None, &lock_names[0]);
     txn.commit().await.expect("commit should succeed");
+    drop(txn);
 
     let mut still_locked = HashSet::new();
     rocksdb
@@ -192,6 +194,7 @@ async fn migrate_to_locks_table_runs_split_ranges_concurrently_with_shared_conte
             .expect("service status write should succeed");
     }
     txn.commit().await.expect("commit should succeed");
+    drop(txn);
 
     let config = Configuration::default();
     let ctx = MigrationContext::new(&config, rocksdb.partition_db(), key_range);

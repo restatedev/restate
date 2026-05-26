@@ -562,7 +562,7 @@ impl PartitionStore {
         };
 
         PartitionStoreTransaction {
-            write_batch_with_index: rocksdb::WriteBatchWithIndex::new(0, true),
+            write_batch_with_index: Some(rocksdb::WriteBatchWithIndex::new(0, true)),
             data_cf_handle,
             rocksdb: self.db.rocksdb(),
             key_buffer: &mut self.key_buffer,
@@ -782,7 +782,7 @@ pub enum ScanMode {
 
 pub struct PartitionStoreTransaction<'a> {
     meta: &'a Arc<Partition>,
-    write_batch_with_index: rocksdb::WriteBatchWithIndex,
+    write_batch_with_index: Option<rocksdb::WriteBatchWithIndex>,
     rocksdb: &'a Arc<RocksDb>,
     data_cf_handle: &'a Arc<BoundColumnFamily<'a>>,
     key_buffer: &'a mut BytesMut,
@@ -791,6 +791,15 @@ pub struct PartitionStoreTransaction<'a> {
 }
 
 impl PartitionStoreTransaction<'_> {
+    /// Clears up all buffered operations in the transaction buffer.
+    pub fn clear(&mut self) {
+        self.write_batch_with_index
+            .get_or_insert_with(|| rocksdb::WriteBatchWithIndex::new(0, true))
+            .clear();
+        self.key_buffer.clear();
+        self.value_buffer.clear();
+    }
+
     fn read_options(&self) -> ReadOptions {
         let mut opts = ReadOptions::default();
 
@@ -809,6 +818,8 @@ impl PartitionStoreTransaction<'_> {
         value: impl AsRef<[u8]>,
     ) {
         self.write_batch_with_index
+            .as_mut()
+            .expect("transaction valid")
             .put_cf(self.data_cf_handle, key, value);
     }
 
@@ -820,12 +831,16 @@ impl PartitionStoreTransaction<'_> {
         value: impl AsRef<[u8]>,
     ) {
         self.write_batch_with_index
+            .as_mut()
+            .expect("transaction valid")
             .merge_cf(self.data_cf_handle, key, value);
     }
 
     #[inline]
     pub fn raw_delete_cf(&mut self, _key_kind: KeyKind, key: impl AsRef<[u8]>) {
         self.write_batch_with_index
+            .as_mut()
+            .expect("transaction valid")
             .delete_cf(self.data_cf_handle, key);
     }
 
@@ -846,7 +861,11 @@ impl PartitionStoreTransaction<'_> {
             .inner()
             .as_raw_db()
             .raw_iterator_cf_opt(table, opts);
-        let mut it = self.write_batch_with_index.iterator_with_base_cf(it, table);
+        let mut it = self
+            .write_batch_with_index
+            .as_ref()
+            .expect("transaction valid")
+            .iterator_with_base_cf(it, table);
         it.seek(prefix);
         Ok(it)
     }
@@ -871,7 +890,11 @@ impl PartitionStoreTransaction<'_> {
             .inner()
             .as_raw_db()
             .raw_iterator_cf_opt(table, opts);
-        let mut it = self.write_batch_with_index.iterator_with_base_cf(it, table);
+        let mut it = self
+            .write_batch_with_index
+            .as_ref()
+            .expect("transaction valid")
+            .iterator_with_base_cf(it, table);
         it.seek(from);
         Ok(it)
     }
@@ -906,13 +929,14 @@ fn assert_partition_key_or_err(
 }
 
 impl Transaction for PartitionStoreTransaction<'_> {
-    async fn commit(self) -> Result<()> {
-        // We cannot directly commit the txn because it might fail because of unrelated concurrent
-        // writes to RocksDB. However, it is safe to write the WriteBatch for a given partition,
-        // because there can only be a single writer (the leading PartitionProcessor).
-        if self.write_batch_with_index.is_empty() {
+    async fn commit(&mut self) -> Result<()> {
+        let Some(write_batch) = self
+            .write_batch_with_index
+            .take_if(|batch| !batch.is_empty())
+        else {
             return Ok(());
-        }
+        };
+
         let io_mode = if Configuration::pinned()
             .worker
             .storage
@@ -925,17 +949,20 @@ impl Transaction for PartitionStoreTransaction<'_> {
         let mut opts = rocksdb::WriteOptions::default();
         // We disable WAL since bifrost is our durable distributed log.
         opts.disable_wal(true);
-        self.rocksdb
-            .write_batch_with_index(
-                "partition-store-txn-commit",
-                Priority::High,
-                io_mode,
-                opts,
-                self.write_batch_with_index,
-            )
-            .await
-            .map(|_| ())
-            .map_err(|error| StorageError::Generic(error.into()))
+        self.write_batch_with_index = Some(
+            self.rocksdb
+                .write_batch_with_index(
+                    "partition-store-txn-commit",
+                    Priority::High,
+                    io_mode,
+                    opts,
+                    write_batch,
+                )
+                .await
+                .map_err(|error| StorageError::Generic(error.into()))?,
+        );
+        self.write_batch_with_index.as_mut().unwrap().clear();
+        Ok(())
     }
 }
 
@@ -1000,6 +1027,8 @@ impl StorageAccess for PartitionStoreTransaction<'_> {
     fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice<'_>>> {
         let table = self.table_handle(table);
         self.write_batch_with_index
+            .as_ref()
+            .expect("transaction valid")
             .get_pinned_from_batch_and_db_cf(
                 self.rocksdb.inner().as_raw_db(),
                 table,
@@ -1025,6 +1054,8 @@ impl StorageAccess for PartitionStoreTransaction<'_> {
         value: impl AsRef<[u8]>,
     ) -> Result<()> {
         self.write_batch_with_index
+            .as_mut()
+            .expect("transaction valid")
             .put_cf(self.data_cf_handle, key, value);
         Ok(())
     }
@@ -1032,6 +1063,8 @@ impl StorageAccess for PartitionStoreTransaction<'_> {
     #[inline]
     fn delete_cf(&mut self, _table: TableKind, key: impl AsRef<[u8]>) -> Result<()> {
         self.write_batch_with_index
+            .as_mut()
+            .expect("transaction valid")
             .delete_cf(self.data_cf_handle, key);
         Ok(())
     }
@@ -1298,7 +1331,7 @@ mod tests {
     #[restate_core::test]
     async fn concurrent_writes_and_reads() -> googletest::Result<()> {
         let rocksdb = RocksDbManager::init();
-        let partition_store_manager = PartitionStoreManager::create().await?;
+        let partition_store_manager = PartitionStoreManager::create(true).await?;
         let mut partition_store = partition_store_manager
             .open(
                 &Partition::new(

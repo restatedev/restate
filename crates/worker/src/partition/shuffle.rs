@@ -75,7 +75,6 @@ fn create_header(
 ) -> Header {
     Header {
         source: Source::Processor {
-            partition_id: None,
             partition_key: None,
             leader_epoch: shuffle_metadata.leader_epoch,
         },

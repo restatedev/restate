@@ -206,6 +206,15 @@ pub struct PartitionProcessorStatus {
     // Set if replay_status is CatchingUp
     #[bilrost(12)]
     pub target_tail_lsn: Option<Lsn>,
+    /// Version of the rule book currently applied by the partition processor.
+    /// `None` until the first rule book is observed (i.e. while the state
+    /// machine still holds `RuleBook::default()` at `Version::INVALID`).
+    #[bilrost(13)]
+    pub last_applied_rule_book_version: Option<Version>,
+    /// Version of the schema currently applied by the partition processor.
+    /// `None` until the first schema is observed.
+    #[bilrost(14)]
+    pub last_applied_schema_version: Option<Version>,
 }
 
 impl Default for PartitionProcessorStatus {
@@ -223,6 +232,8 @@ impl Default for PartitionProcessorStatus {
             durable_lsn: None,
             last_archived_log_lsn: None,
             target_tail_lsn: None,
+            last_applied_rule_book_version: None,
+            last_applied_schema_version: None,
         }
     }
 }

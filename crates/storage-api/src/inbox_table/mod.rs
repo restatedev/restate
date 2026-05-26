@@ -93,6 +93,13 @@ pub trait ReadInboxTable {
         &mut self,
         service_id: &ServiceId,
     ) -> Result<impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send>;
+
+    /// Returns `true` as soon as any inbox entry is found in `range`.
+    /// Implemented as a single RocksDB seek; no value decoding is performed.
+    fn any_inbox_entry_in_range(
+        &mut self,
+        range: KeyRange,
+    ) -> impl Future<Output = Result<bool>> + Send;
 }
 
 pub trait ScanInboxTable {

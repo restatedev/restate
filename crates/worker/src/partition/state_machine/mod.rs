@@ -37,7 +37,7 @@ use crate::rule_book_cache::RuleBookCacheHandle;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::WriteFsmTable;
-use restate_storage_api::inbox_table::{InboxEntry, WriteInboxTable};
+use restate_storage_api::inbox_table::{InboxEntry, ReadInboxTable, WriteInboxTable};
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, JournalMetadata,
     JournalRetentionPolicy, PreFlightInvocationArgument, PreFlightInvocationInput,
@@ -66,7 +66,6 @@ use restate_storage_api::{Result as StorageResult, journal_table};
 use restate_storage_api::{StorageError, journal_table_v2};
 use restate_tracing_instrumentation as instrumentation;
 use restate_types::clock::UniqueTimestamp;
-use restate_types::config::Configuration;
 use restate_types::errors::{
     ALREADY_COMPLETED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, GenericError, InvocationError,
     KILLED_INVOCATION_ERROR, NOT_FOUND_INVOCATION_ERROR, NOT_READY_INVOCATION_ERROR,
@@ -97,6 +96,7 @@ use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader,
 };
 use restate_types::journal::raw::{EntryHeader, RawEntryCodec, RawEntryCodecError};
+use restate_types::journal_v2;
 use restate_types::journal_v2::command::{OutputCommand, OutputResult};
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::journal_v2::{
@@ -105,7 +105,7 @@ use restate_types::journal_v2::{
 };
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
-use restate_types::partitions::features::PersistedStateMachineFeatures;
+use restate_types::partitions::features::{PartitionFeatureChange, PersistedStateMachineFeatures};
 use restate_types::schema::Schema;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::sharding::KeyRange;
@@ -114,7 +114,6 @@ use restate_types::state_mut::StateMutationVersion;
 use restate_types::storage::{StorageDecodeError, StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::{self, EntryId, VQueueId};
-use restate_types::{RESTATE_VERSION_1_6_0, journal_v2};
 use restate_types::{RestateVersion, SemanticRestateVersion};
 use restate_types::{Versioned, journal::*};
 use restate_util_string::ReString;
@@ -133,17 +132,70 @@ use crate::metric_definitions::{
 use crate::partition::state_machine::lifecycle::OnCancelCommand;
 use crate::partition::types::{InvokerEffectKind, OutboxMessageExt};
 
-trait StateMachineFeatures {
+/// Read-only view of the state-machine features currently enabled for a partition.
+///
+/// Each feature is gated either on the partition's persisted minimum Restate-server version
+/// (`min_restate_version`) or on its persisted opt-in feature set
+/// ([`PersistedStateMachineFeatures`]), depending on what the feature requires. See each method's
+/// doc-comment for the specific gate.
+pub(crate) trait StateMachineFeatures {
     /// Write to journal v2 instead of journal v1 by default. This is a preparational step for
     /// removing the journal v1 after enabling this feature and migrating all unpinned invocations
     /// from journal v1 to journal v2.
     fn use_journal_v2_as_default(&self) -> bool;
+
+    /// Whether vqueue-related code paths are active on this partition.
+    ///
+    /// *Since v1.7.0*
+    fn is_vqueues_enabled(&self) -> bool;
+
+    /// Whether new invocations should persist a unique random seed
+    /// (invocation_id + record_created_at entropy). When off, SDKs derive the
+    /// seed from `InvocationId::to_random_seed()` at invoke time.
+    ///
+    /// *Since v1.7.0*
+    fn is_unique_random_seeds_enabled(&self) -> bool;
 }
 
-impl StateMachineFeatures for SemanticRestateVersion {
+impl<T: StateMachineFeatures> StateMachineFeatures for &T {
     fn use_journal_v2_as_default(&self) -> bool {
-        // use journal v2 as default if the min Restate version is >= v1.6.0
-        self.is_equal_or_newer_than(&RESTATE_VERSION_1_6_0)
+        (*self).use_journal_v2_as_default()
+    }
+
+    fn is_vqueues_enabled(&self) -> bool {
+        (*self).is_vqueues_enabled()
+    }
+
+    fn is_unique_random_seeds_enabled(&self) -> bool {
+        (*self).is_unique_random_seeds_enabled()
+    }
+}
+
+impl StateMachineFeatures for StateMachine {
+    fn use_journal_v2_as_default(&self) -> bool {
+        self.enabled_features.journal_v2
+    }
+
+    fn is_vqueues_enabled(&self) -> bool {
+        self.enabled_features.vqueues
+    }
+
+    fn is_unique_random_seeds_enabled(&self) -> bool {
+        self.enabled_features.unique_random_seeds
+    }
+}
+
+impl<S> StateMachineFeatures for StateMachineApplyContext<'_, S> {
+    fn use_journal_v2_as_default(&self) -> bool {
+        self.enabled_features.journal_v2
+    }
+
+    fn is_vqueues_enabled(&self) -> bool {
+        self.enabled_features.vqueues
+    }
+
+    fn is_unique_random_seeds_enabled(&self) -> bool {
+        self.enabled_features.unique_random_seeds
     }
 }
 
@@ -192,11 +244,12 @@ impl Debug for StateMachine {
 pub enum Error {
     #[error(
         "partition is blocked; requires an upgrade to restate-server version \
-        {required_min_version} or higher; reason='{barrier_reason}'"
+        {required_min_version} or higher; reason='{barrier_reason}'; feature changes={feature_changes:?}"
     )]
     VersionBarrier {
         required_min_version: SemanticRestateVersion,
         barrier_reason: String,
+        feature_changes: Vec<u16>,
     },
     /// *Since v1.7.0*
     #[error(
@@ -206,6 +259,15 @@ pub enum Error {
         unknown_ids: Vec<u16>,
         required_min_version: SemanticRestateVersion,
         barrier_reason: String,
+    },
+    /// *Since v1.7.0*
+    #[error(
+        "partition is blocked; pre-existing in-flight data must be migrated before applying \
+         feature changes {features:?}; consult the Restate documentation for the server version \
+         that supports this migration"
+    )]
+    MigrationRequired {
+        features: Vec<PartitionFeatureChange>,
     },
     #[error("failed to deserialize entry: {0}")]
     Codec(#[from] RawEntryCodecError),
@@ -497,6 +559,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteTimerTable
             + ReadVirtualObjectStatusTable
             + WriteVirtualObjectStatusTable
+            + ReadInboxTable
             + WriteInboxTable
             + ReadStateTable
             + WriteStateTable
@@ -591,6 +654,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     Err(Error::VersionBarrier {
                         required_min_version: barrier.version,
                         barrier_reason: barrier.human_reason.unwrap_or_default(),
+                        feature_changes: barrier.feature_changes,
                     })
                 }
             }
@@ -949,12 +1013,14 @@ impl<S> StateMachineApplyContext<'_, S> {
             "limit_key set without scope — this should have been rejected at the ingress"
         );
 
+        let random_seed = self.is_unique_random_seeds_enabled().then(|| {
+            invocation_id.to_random_seed_with_wal_record_time(self.record_created_at.as_u64())
+        });
+
         // Prepare PreFlightInvocationMetadata structure
         let submit_notification_sink = service_invocation.submit_notification_sink.take();
 
-        let qid = Configuration::pinned()
-            .common
-            .experimental
+        let qid = self
             .is_vqueues_enabled()
             .then_some(VQueue::infer_vqueue_id_from_invocation(
                 service_invocation.partition_key(),
@@ -966,6 +1032,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             self.record_created_at,
             service_invocation,
             qid,
+            random_seed,
         );
 
         self.on_pre_flight_invocation(
@@ -1002,7 +1069,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         // have a journal v2 created. To handle already existing invocations for which we didn't
         // create the journal yet, there is a separate path in init_journal to create the journal
         // v2. This change has been introduced with v1.6
-        if self.min_restate_version.use_journal_v2_as_default()
+        if self.use_journal_v2_as_default()
             && let PreFlightInvocationArgument::Input(PreFlightInvocationInput {
                 argument,
                 headers,
@@ -1525,7 +1592,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         // the journal v2 by default (setting the min Restate version to v1.6.0). For invocations
         // that are created afterwards, Restate will create the journal in
         // [`StateMachineApplyContext::on_pre_flight_invocation`].
-        if self.min_restate_version.use_journal_v2_as_default() {
+        if self.use_journal_v2_as_default() {
             // Prepare the new entry
             let new_entry: journal_v2::Entry = InputCommand {
                 headers: invocation_input.headers,
@@ -1664,11 +1731,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteLockTable
             + ReadVQueueTable,
     {
-        if Configuration::pinned()
-            .common
-            .experimental
-            .is_vqueues_enabled()
-        {
+        if self.is_vqueues_enabled() {
             self.vqueue_enqueue_state_mutation(mutation).await?;
         } else {
             let service_status = self

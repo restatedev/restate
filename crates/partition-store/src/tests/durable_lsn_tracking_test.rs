@@ -44,7 +44,7 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
 
     let rocksdb = RocksDbManager::init();
 
-    let partition_store_manager = PartitionStoreManager::create().await?;
+    let partition_store_manager = PartitionStoreManager::create(true).await?;
 
     let mut partition_store = partition_store_manager.open(&PARTITION, None).await?;
 
@@ -53,6 +53,7 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
     let mut txn = partition_store.transaction();
     txn.put_applied_lsn(Lsn::new(100)).unwrap();
     txn.commit().await.expect("commit succeeds");
+    drop(txn);
 
     assert_eq!(None, *partition_store.get_durable_lsn().await?.borrow());
     assert_eq!(None, *watch_durable_lsn.borrow());
@@ -91,6 +92,7 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
         txn.put_applied_lsn(Lsn::new(lsn)).unwrap();
         txn.put_inbox_seq_number(rng.next_u64()).unwrap();
         txn.commit().await.expect("commit succeeds");
+        drop(txn);
 
         assert_eq!(
             Some(Lsn::new(100)),
@@ -111,7 +113,7 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
 async fn partition_durability_fsm() -> googletest::Result<()> {
     let rocksdb = RocksDbManager::init();
 
-    let partition_store_manager = PartitionStoreManager::create().await?;
+    let partition_store_manager = PartitionStoreManager::create(true).await?;
 
     let mut partition_store = partition_store_manager.open(&PARTITION, None).await?;
 
@@ -128,6 +130,7 @@ async fn partition_durability_fsm() -> googletest::Result<()> {
 
     // commit.
     txn.commit().await?;
+    drop(txn);
 
     // did it persist?
     let current_dur = partition_store.get_partition_durability().await?;

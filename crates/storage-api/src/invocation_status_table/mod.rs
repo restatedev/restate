@@ -494,8 +494,6 @@ pub struct PreFlightInvocationMetadata {
 
     pub idempotency_key: Option<ByteString>,
 
-    // TODO from Restate 1.6 we should always write this random seed,
-    //  such that we can avoid computing it all the times in the invoker.
     /// The random seed is sent to the SDK to feed the RNG exposed in ctx.rand
     ///
     /// When None, infer the seed from the invocation id.
@@ -525,6 +523,7 @@ impl PreFlightInvocationMetadata {
         created_at: MillisSinceEpoch,
         service_invocation: ServiceInvocation,
         vqueue_id: Option<VQueueId>,
+        random_seed: Option<u64>,
     ) -> Self {
         Self {
             vqueue_id,
@@ -538,7 +537,7 @@ impl PreFlightInvocationMetadata {
             journal_retention_duration: service_invocation.journal_retention_duration,
             idempotency_key: service_invocation.idempotency_key,
             created_using_restate_version: service_invocation.restate_version,
-            random_seed: None,
+            random_seed,
             input: PreFlightInvocationArgument::Input(PreFlightInvocationInput {
                 argument: service_invocation.argument,
                 headers: service_invocation.headers,
@@ -618,8 +617,6 @@ pub struct InFlightInvocationMetadata {
     // TODO remove this when we remove protocol <= v3
     pub hotfix_apply_cancellation_after_deployment_is_pinned: bool,
 
-    // TODO from Restate 1.6 we should always write this random seed,
-    //  such that we can avoid computing it all the times in the invoker.
     /// The random seed is sent to the SDK to feed the RNG exposed in ctx.rand
     ///
     /// When None, infer the seed from the invocation id.
@@ -737,8 +734,6 @@ pub struct CompletedInvocation {
     pub journal_metadata: JournalMetadata,
     pub pinned_deployment: Option<PinnedDeployment>,
 
-    // TODO from Restate 1.6 we should always write this random seed,
-    //  such that we can avoid computing it all the times in the invoker.
     /// The random seed is sent to the SDK to feed the RNG exposed in ctx.rand
     ///
     /// In case of a restart from prefix, the random_seed should be copied over.
@@ -807,6 +802,15 @@ pub trait ReadInvocationStatusTable {
         &mut self,
         invocation_id: &InvocationId,
     ) -> impl Future<Output = Result<InvocationStatus>> + Send;
+
+    /// Returns `true` as soon as an [`InvocationStatus`] that is not
+    /// [`InvocationStatus::Completed`] is found in `range`. The iterator walks
+    /// entries decoding only the variant discriminator and early-exits on the
+    /// first non-`Completed` hit.
+    fn any_non_completed_invocation_in_range(
+        &mut self,
+        range: KeyRange,
+    ) -> impl Future<Output = Result<bool>> + Send;
 }
 
 #[derive(Debug, Clone)]

@@ -14,7 +14,7 @@ use crate::storage::{
     StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError, decode,
     encode,
 };
-use crate::{RESTATE_VERSION_1_7_0, SemanticRestateVersion};
+use crate::{RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, SemanticRestateVersion};
 
 /// A change to the set of state-machine features enabled on a partition.
 ///
@@ -28,13 +28,25 @@ use crate::{RESTATE_VERSION_1_7_0, SemanticRestateVersion};
 /// the change.
 ///
 /// *Since v1.7.0*
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::FromRepr)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, strum::FromRepr, strum::EnumString, strum::Display,
+)]
+#[strum(ascii_case_insensitive)]
 #[repr(u16)]
 pub enum PartitionFeatureChange {
+    /// Enable journal v2 by default.
+    ///
+    /// *Since v1.7.0*
+    EnableJournalV2 = 1,
     /// Enable vqueues for the partition.
     ///
     /// *Since v1.7.0*
-    EnableVqueues = 1,
+    EnableVqueues = 2,
+    /// Persist a unique random seed (invocation_id + record_created_at entropy) on new
+    /// invocations so SDK RNG output is deterministic per invocation.
+    ///
+    /// *Since v1.7.0*
+    EnableUniqueRandomSeeds = 3,
 }
 
 impl PartitionFeatureChange {
@@ -48,7 +60,9 @@ impl PartitionFeatureChange {
     /// across all changes carried by the barrier.
     pub fn min_required_version(self) -> &'static SemanticRestateVersion {
         match self {
+            Self::EnableJournalV2 => &RESTATE_VERSION_1_6_0,
             Self::EnableVqueues => &RESTATE_VERSION_1_7_0,
+            Self::EnableUniqueRandomSeeds => &RESTATE_VERSION_1_7_0,
         }
     }
 
@@ -56,12 +70,10 @@ impl PartitionFeatureChange {
     /// change had an effect on the state machine features.
     pub fn apply_to(self, features: &mut PersistedStateMachineFeatures) -> bool {
         match self {
-            Self::EnableVqueues => {
-                let before = features.vqueues;
-                features.vqueues = true;
-
-                // we enable the feature if it was disabled before
-                !before
+            Self::EnableJournalV2 => !std::mem::replace(&mut features.journal_v2, true),
+            Self::EnableVqueues => !std::mem::replace(&mut features.vqueues, true),
+            Self::EnableUniqueRandomSeeds => {
+                !std::mem::replace(&mut features.unique_random_seeds, true)
             }
         }
     }
@@ -79,11 +91,21 @@ impl PartitionFeatureChange {
     Debug, Clone, Default, PartialEq, Eq, bilrost::Message, serde::Serialize, serde::Deserialize,
 )]
 pub struct PersistedStateMachineFeatures {
-    /// Virtual queues are enabled on this partition.
+    /// Journal v2 should be used by this partition.
     ///
     /// *Since v1.7.0*
     #[bilrost(tag(1))]
+    pub journal_v2: bool,
+    /// Virtual queues are enabled on this partition.
+    ///
+    /// *Since v1.7.0*
+    #[bilrost(tag(2))]
     pub vqueues: bool,
+    /// Persist a unique random seed on new invocations.
+    ///
+    /// *Since v1.7.0*
+    #[bilrost(tag(3))]
+    pub unique_random_seeds: bool,
 }
 
 impl StorageEncode for PersistedStateMachineFeatures {
@@ -109,6 +131,16 @@ impl StorageDecode for PersistedStateMachineFeatures {
     }
 }
 
+impl FromIterator<PartitionFeatureChange> for PersistedStateMachineFeatures {
+    fn from_iter<I: IntoIterator<Item = PartitionFeatureChange>>(iter: I) -> Self {
+        let mut features = Self::default();
+        for change in iter {
+            change.apply_to(&mut features);
+        }
+        features
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,7 +160,25 @@ mod tests {
     fn apply_to_sets_field() {
         let mut features = PersistedStateMachineFeatures::default();
         assert!(!features.vqueues);
+        assert!(!features.unique_random_seeds);
         PartitionFeatureChange::EnableVqueues.apply_to(&mut features);
+        PartitionFeatureChange::EnableUniqueRandomSeeds.apply_to(&mut features);
         assert!(features.vqueues);
+        assert!(features.unique_random_seeds);
+    }
+
+    #[test]
+    fn from_str_round_trip_and_case_insensitive() {
+        use std::str::FromStr;
+
+        assert_eq!(
+            PartitionFeatureChange::from_str("EnableVqueues").unwrap(),
+            PartitionFeatureChange::EnableVqueues,
+        );
+        assert_eq!(
+            PartitionFeatureChange::from_str("enablejournalv2").unwrap(),
+            PartitionFeatureChange::EnableJournalV2,
+        );
+        assert!(PartitionFeatureChange::from_str("not-a-feature").is_err());
     }
 }

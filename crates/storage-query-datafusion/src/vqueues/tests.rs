@@ -72,6 +72,7 @@ async fn get_vqueue_entry_value_fields() {
     // This row should only be returned when stage filtering selects it.
     tx.put_vqueue_inbox(&qid, Stage::Running, &key, &value);
     tx.commit().await.unwrap();
+    drop(tx);
 
     let records = engine
         .execute(
@@ -147,6 +148,7 @@ async fn vqueue_stage_filter_and_unfiltered_scan() {
         tx.put_vqueue_inbox(&qid, stage, &key, &value);
     }
     tx.commit().await.unwrap();
+    drop(tx);
 
     let all_stages = engine
         .execute("SELECT stage FROM sys_vqueues ORDER BY stage")

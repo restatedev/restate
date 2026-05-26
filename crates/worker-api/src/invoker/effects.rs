@@ -21,8 +21,7 @@ use restate_types::journal_events::raw::RawEvent;
 use restate_types::journal_v2::CommandIndex;
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::journal_v2::{self, UnresolvedFuture};
-use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
-use restate_types::time::MillisSinceEpoch;
+use restate_types::storage::StoredRawEntry;
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -91,8 +90,7 @@ pub enum EffectKind {
     /// This is sent when the invoker exhausted all its attempts to make progress on the specific invocation.
     Failed(InvocationError),
     // New journal entry v2 which only carries the raw entry.
-    // Introduced in v1.6.0
-    // Start writing in v1.7.0
+    // Introduced in v1.6.0, started being written in v1.7.0.
     JournalEntryV2RawEntry {
         /// This is used by the invoker to establish when it's safe to retry
         command_index_to_ack: Option<CommandIndex>,
@@ -105,17 +103,9 @@ impl EffectKind {
         raw_entry: impl Into<RawEntry>,
         command_index_to_ack: Option<CommandIndex>,
     ) -> Self {
-        Self::JournalEntryV2 {
-            entry: StoredRawEntry::new(
-                StoredRawEntryHeader::new(MillisSinceEpoch::now()),
-                raw_entry.into(),
-            ),
+        Self::JournalEntryV2RawEntry {
             command_index_to_ack,
+            raw_entry: raw_entry.into(),
         }
-        // todo enable in v1.7.0
-        // JournalEntryV2RawEntry {
-        //     command_index_to_ack,
-        //     raw_entry: raw_entry.into(),
-        // }
     }
 }

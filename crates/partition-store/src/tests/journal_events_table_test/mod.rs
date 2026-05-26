@@ -52,12 +52,14 @@ async fn event() {
     drop(journal_events);
 
     txn.commit().await.expect("should not fail");
+    drop(txn);
 
     // Verify we can remove events
 
     let mut txn = rocksdb.transaction();
     txn.delete_journal_events(&MOCK_INVOCATION_ID_1).unwrap();
     txn.commit().await.expect("should not fail");
+    drop(txn);
 
     // Should be empty
     let mut journal_events = rocksdb.get_journal_events(&MOCK_INVOCATION_ID_1).unwrap();

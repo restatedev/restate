@@ -93,7 +93,6 @@ impl SelfProposer {
                     dedup: Some(DedupInformation::self_proposal(esn)),
                 },
                 source: Source::Processor {
-                    partition_id: None,
                     partition_key: Some(partition_key),
                     leader_epoch,
                 },
@@ -151,7 +150,6 @@ impl SelfProposer {
                 dedup: None,
             },
             source: Source::Processor {
-                partition_id: None,
                 partition_key: Some(partition_key),
                 leader_epoch: self.epoch_sequence_number.leader_epoch,
             },
@@ -223,7 +221,6 @@ impl SelfProposer {
                 dedup: Some(DedupInformation::self_proposal(esn)),
             },
             source: Source::Processor {
-                partition_id: None,
                 partition_key: Some(partition_key),
                 leader_epoch: self.epoch_sequence_number.leader_epoch,
             },

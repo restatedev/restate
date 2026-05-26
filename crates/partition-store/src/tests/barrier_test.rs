@@ -34,7 +34,7 @@ async fn barrier_fsm() -> googletest::Result<()> {
 
     let rocksdb = RocksDbManager::init();
 
-    let partition_store_manager = PartitionStoreManager::create().await?;
+    let partition_store_manager = PartitionStoreManager::create(true).await?;
 
     let partition = Partition::new(
         PartitionId::MIN,
@@ -58,6 +58,7 @@ async fn barrier_fsm() -> googletest::Result<()> {
 
     // commit.
     txn.commit().await?;
+    drop(txn);
 
     // did it persist?
     let current_min = partition_store.get_min_restate_version().await?;

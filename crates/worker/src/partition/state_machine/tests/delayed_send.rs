@@ -12,22 +12,26 @@ use super::*;
 
 use restate_storage_api::inbox_table::ReadInboxTable;
 use restate_types::invocation::SubmitNotificationSink;
+use restate_types::partitions::PartitionFeatureChange;
 use restate_types::time::MillisSinceEpoch;
 use std::time::{Duration, SystemTime};
 use test_log::test;
 
 #[restate_core::test]
 async fn send_with_delay() {
-    run_send_with_delay(SemanticRestateVersion::unknown()).await
+    run_send_with_delay(PersistedStateMachineFeatures::default()).await
 }
 
 #[restate_core::test]
 async fn send_with_delay_journal_v2_enabled() {
-    run_send_with_delay(RESTATE_VERSION_1_6_0.clone()).await
+    run_send_with_delay(PersistedStateMachineFeatures::from_iter([
+        PartitionFeatureChange::EnableJournalV2,
+    ]))
+    .await
 }
 
-async fn run_send_with_delay(min_restate_version: SemanticRestateVersion) {
-    let mut test_env = TestEnv::create_with_min_restate_version(min_restate_version).await;
+async fn run_send_with_delay(features: PersistedStateMachineFeatures) {
+    let mut test_env = TestEnv::create_with_features(features).await;
 
     let invocation_target = InvocationTarget::mock_service();
     let invocation_id = InvocationId::mock_random();
@@ -122,7 +126,9 @@ async fn send_with_delay_where_experimental_feature_journal_table_v2_is_enabled_
     );
 
     // Now let's update the features
-    test_env.set_min_restate_version(RESTATE_VERSION_1_6_0.clone());
+    test_env.set_enabled_features(PersistedStateMachineFeatures::from_iter([
+        PartitionFeatureChange::EnableJournalV2,
+    ]));
 
     // Now fire the timer
     let actions = test_env
@@ -200,6 +206,7 @@ async fn send_with_delay_to_locked_virtual_object() {
     )
     .unwrap();
     tx.commit().await.unwrap();
+    drop(tx);
 
     // Now fire the timer
     let actions = test_env

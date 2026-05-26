@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{anyhow, bail};
 use datafusion::arrow::datatypes::SchemaRef;
@@ -23,6 +24,7 @@ use restate_core::Metadata;
 use restate_core::partitions::PartitionRouting;
 use restate_types::NodeId;
 use restate_types::identifiers::PartitionId;
+use restate_types::net::remote_query_scanner::ScannerId;
 use restate_types::sharding::KeyRange;
 
 use crate::remote_query_scanner_client::{RemoteScannerService, remote_scan_as_datafusion_stream};
@@ -54,6 +56,8 @@ pub struct RemoteScannerManager {
     remote_scanner: Arc<dyn RemoteScannerService>,
     partition_locator: Arc<dyn PartitionLocator>,
     local_store_scanners: LocalPartitionScannerRegistry,
+    metadata: Metadata,
+    next_scanner_seq: Arc<AtomicU64>,
 }
 
 impl Debug for RemoteScannerManager {
@@ -112,12 +116,25 @@ impl RemoteScannerManager {
     pub fn new(
         remote_scanner: Arc<dyn RemoteScannerService>,
         partition_locator: Arc<dyn PartitionLocator>,
+        metadata: Metadata,
     ) -> Self {
         Self {
             remote_scanner,
             partition_locator,
             local_store_scanners: LocalPartitionScannerRegistry::default(),
+            metadata,
+            next_scanner_seq: Arc::new(AtomicU64::new(1)),
         }
+    }
+
+    /// Allocates a fresh `ScannerId` for a remote scan initiated from this node.
+    ///
+    /// Combining this node's generational id with a process-local monotonic counter
+    /// guarantees uniqueness across the cluster: the generation distinguishes restarts,
+    /// and the counter distinguishes concurrent scans within one process lifetime.
+    pub fn allocate_scanner_id(&self) -> ScannerId {
+        let seq = self.next_scanner_seq.fetch_add(1, Ordering::Relaxed);
+        ScannerId(self.metadata.my_node_id(), seq)
     }
 
     /// Combines the local partition scanner for the given table, with an RPC based partition scanner
@@ -232,17 +249,21 @@ impl ScanPartition for RemotePartitionsScanner {
                     elapsed_compute,
                 )?)
             }
-            PartitionLocation::Remote { node_id } => Ok(remote_scan_as_datafusion_stream(
-                self.manager.remote_scanner.clone(),
-                node_id,
-                partition_id,
-                range,
-                self.table_name.clone(),
-                projection,
-                predicate,
-                batch_size,
-                limit,
-            )),
+            PartitionLocation::Remote { node_id } => {
+                let scanner_id = self.manager.allocate_scanner_id();
+                Ok(remote_scan_as_datafusion_stream(
+                    self.manager.remote_scanner.clone(),
+                    node_id,
+                    scanner_id,
+                    partition_id,
+                    range,
+                    self.table_name.clone(),
+                    projection,
+                    predicate,
+                    batch_size,
+                    limit,
+                ))
+            }
         }
     }
 }

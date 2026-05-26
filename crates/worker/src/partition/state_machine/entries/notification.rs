@@ -98,8 +98,8 @@ mod tests {
         BuiltInSignal, CommandType, Entry, EntryType, Failure, FailureMetadata, NotificationId,
         Signal, SignalId, SignalResult, SleepCommand, SleepCompletion,
     };
+    use restate_types::partitions::{PartitionFeatureChange, PersistedStateMachineFeatures};
     use restate_types::time::MillisSinceEpoch;
-    use restate_types::{RESTATE_VERSION_1_6_0, SemanticRestateVersion};
     use restate_wal_protocol::timer::TimerKeyValue;
     use restate_wal_protocol::v2::{Command, commands};
     use rstest::rstest;
@@ -148,19 +148,24 @@ mod tests {
 
     #[restate_core::test]
     async fn notify_signal_received_before_pinned_deployment() {
-        run_notify_signal_received_before_pinned_deployment(SemanticRestateVersion::unknown())
-            .await;
+        run_notify_signal_received_before_pinned_deployment(
+            PersistedStateMachineFeatures::default(),
+        )
+        .await;
     }
 
     #[restate_core::test]
     async fn notify_signal_received_before_pinned_deployment_journal_v2_enabled() {
-        run_notify_signal_received_before_pinned_deployment(RESTATE_VERSION_1_6_0.clone()).await;
+        run_notify_signal_received_before_pinned_deployment(
+            PersistedStateMachineFeatures::from_iter([PartitionFeatureChange::EnableJournalV2]),
+        )
+        .await;
     }
 
     async fn run_notify_signal_received_before_pinned_deployment(
-        min_restate_version: SemanticRestateVersion,
+        features: PersistedStateMachineFeatures,
     ) {
-        let mut test_env = TestEnv::create_with_min_restate_version(min_restate_version).await;
+        let mut test_env = TestEnv::create_with_features(features).await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
 
         // Send signal notification before pinned deployment

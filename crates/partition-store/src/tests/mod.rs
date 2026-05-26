@@ -53,7 +53,7 @@ async fn storage_test_environment_with_manager() -> (Arc<PartitionStoreManager>,
     // create a rocksdb storage from options
     //
     RocksDbManager::init();
-    let manager = PartitionStoreManager::create()
+    let manager = PartitionStoreManager::create(true)
         .await
         .expect("DB storage creation succeeds");
     // A single partition store that spans all keys.

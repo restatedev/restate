@@ -116,6 +116,7 @@ pub trait Transaction:
     + invocation_status_table::WriteInvocationStatusTable
     + service_status_table::ReadVirtualObjectStatusTable
     + service_status_table::WriteVirtualObjectStatusTable
+    + inbox_table::ReadInboxTable
     + inbox_table::WriteInboxTable
     + outbox_table::WriteOutboxTable
     + deduplication_table::WriteDeduplicationTable
@@ -133,5 +134,5 @@ pub trait Transaction:
     + lock_table::WriteLockTable
     + Send
 {
-    fn commit(self) -> impl Future<Output = Result<()>> + Send;
+    fn commit(&mut self) -> impl Future<Output = Result<()>> + Send;
 }

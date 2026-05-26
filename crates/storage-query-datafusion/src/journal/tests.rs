@@ -79,6 +79,7 @@ async fn get_entries() {
     )
     .unwrap();
     tx.commit().await.unwrap();
+    drop(tx);
 
     let records = engine
         .execute(
@@ -175,6 +176,7 @@ async fn select_count_star() {
     )
     .unwrap();
     tx.commit().await.unwrap();
+    drop(tx);
 
     let records = engine
         .execute("SELECT COUNT(*) AS count FROM sys_journal")

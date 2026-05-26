@@ -22,6 +22,7 @@ use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
+use restate_types::sharding::KeyRange;
 use restate_util_string::format_restring;
 
 use crate::TableScan::FullScanPartitionKeyRange;
@@ -90,6 +91,31 @@ fn delete_invocation_status<S: StorageAccess>(
     storage.delete_key(&create_invocation_status_key(invocation_id))
 }
 
+fn any_non_completed_invocation_in_range<S: StorageAccess>(
+    storage: &S,
+    range: KeyRange,
+) -> Result<bool> {
+    let mut iterator = storage.iterator_from(TableScan::FullScanPartitionKeyRange::<
+        InvocationStatusKey,
+    >(range))?;
+
+    while let Some((_, mut value)) = iterator.item() {
+        let lite = InvocationLite::decode(&mut value)?;
+        if !matches!(lite.status, InvocationStatusDiscriminants::Completed)
+            && !matches!(lite.status, InvocationStatusDiscriminants::Killed)
+        {
+            return Ok(true);
+        }
+        iterator.next();
+    }
+
+    if let Some(err) = iterator.status().err() {
+        return Err(StorageError::Generic(err.into()));
+    }
+
+    Ok(false)
+}
+
 // NOTE: This will only consider invoked invocations that have not been migrated to vqueues
 fn read_invoked_full_invocation_id(
     mut kv: (&[u8], &[u8]),
@@ -115,6 +141,10 @@ impl ReadInvocationStatusTable for PartitionStore {
     ) -> Result<InvocationStatus> {
         self.assert_partition_key(invocation_id)?;
         get_invocation_status(self, invocation_id)
+    }
+
+    async fn any_non_completed_invocation_in_range(&mut self, range: KeyRange) -> Result<bool> {
+        any_non_completed_invocation_in_range(self, range)
     }
 }
 
@@ -272,6 +302,10 @@ impl ReadInvocationStatusTable for PartitionStoreTransaction<'_> {
     ) -> Result<InvocationStatus> {
         self.assert_partition_key(invocation_id)?;
         get_invocation_status(self, invocation_id)
+    }
+
+    async fn any_non_completed_invocation_in_range(&mut self, range: KeyRange) -> Result<bool> {
+        any_non_completed_invocation_in_range(self, range)
     }
 }
 

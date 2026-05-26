@@ -34,7 +34,7 @@ use crate::scan::{PhysicalScan, TableScan};
 #[restate_core::test]
 async fn migrate_to_scoped_promise_table_moves_unscoped_promises_to_scoped_table() {
     RocksDbManager::init();
-    let manager = PartitionStoreManager::create()
+    let manager = PartitionStoreManager::create(true)
         .await
         .expect("DB storage creation succeeds");
     let mut rocksdb = manager
@@ -79,6 +79,7 @@ async fn migrate_to_scoped_promise_table_moves_unscoped_promises_to_scoped_table
             .expect("promise write should succeed");
     }
     txn.commit().await.expect("commit should succeed");
+    drop(txn);
 
     let config = Configuration::default();
     let mut ctx = MigrationContext::new(

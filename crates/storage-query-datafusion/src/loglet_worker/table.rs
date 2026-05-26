@@ -15,7 +15,7 @@ use restate_types::nodes_config::Role;
 
 use crate::context::QueryContext;
 use crate::node_fan_out::{NodeFanOutTableProvider, RoleBasedNodeLocator};
-use crate::remote_query_scanner_client::RemoteScannerService;
+use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::Scan;
 
 use super::schema::LogletWorkersBuilder;
@@ -26,7 +26,7 @@ pub(crate) const TABLE_NAME: &str = "loglet_workers";
 pub(crate) fn register_self(
     ctx: &QueryContext,
     metadata: Metadata,
-    remote_scanner: Arc<dyn RemoteScannerService>,
+    remote_scanner_manager: RemoteScannerManager,
     local_scanner: Option<Arc<dyn Scan>>,
 ) -> datafusion::common::Result<()> {
     let schema = LogletWorkersBuilder::schema();
@@ -34,7 +34,7 @@ pub(crate) fn register_self(
     let table = NodeFanOutTableProvider::new(
         schema,
         Arc::new(RoleBasedNodeLocator::new(Role::LogServer, metadata)),
-        remote_scanner,
+        remote_scanner_manager,
         local_scanner,
         TABLE_NAME,
     );

@@ -214,6 +214,7 @@ async fn query_sys_invocation() {
     )
     .unwrap();
     tx.commit().await.unwrap();
+    drop(tx);
 
     let assert_rows = |records: RecordBatch| {
         assert_that!(
@@ -348,6 +349,7 @@ async fn query_sys_invocation_with_protocol_v4() {
     )
     .unwrap();
     tx.commit().await.unwrap();
+    drop(tx);
 
     let records = engine
         .execute(
@@ -430,6 +432,7 @@ async fn query_sys_invocation_status_completed() {
     )
     .unwrap();
     tx.commit().await.unwrap();
+    drop(tx);
 
     let records = engine
         .execute(
@@ -497,6 +500,7 @@ async fn query_sys_invocation_suspended_waiting() {
     )
     .unwrap();
     tx.commit().await.unwrap();
+    drop(tx);
 
     let records = engine
         .execute(
@@ -605,6 +609,7 @@ async fn query_sys_invocation_status_scope() {
     )
     .unwrap();
     tx.commit().await.unwrap();
+    drop(tx);
 
     let records = engine
         .execute("SELECT id, scope FROM sys_invocation_status ORDER BY id ASC")
@@ -653,6 +658,7 @@ async fn query_scoped_state_with_service_key_filter() {
     tx.put_user_state(&scoped_i1, &state_key, value).unwrap();
     tx.put_user_state(&scoped_i2, &state_key, value).unwrap();
     tx.commit().await.unwrap();
+    drop(tx);
 
     let scope_only = engine
         .execute(
@@ -714,6 +720,7 @@ async fn query_state_with_service_key_filter() {
     tx.put_user_state(&scoped_i1, &state_key, value).unwrap();
     tx.put_user_state(&unscoped_i1, &state_key, value).unwrap();
     tx.commit().await.unwrap();
+    drop(tx);
 
     let scope_only = engine
         .execute(
