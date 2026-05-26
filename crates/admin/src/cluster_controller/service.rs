@@ -120,6 +120,7 @@ where
                 ),
                 Metadata::current(),
             ),
+            Metadata::current(),
         );
         let cluster_tables = ClusterTables::new(
             replica_set_states.clone(),
