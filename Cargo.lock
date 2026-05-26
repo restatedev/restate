@@ -6501,6 +6501,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
+name = "placement-sim"
+version = "1.8.0-rc.1"
+dependencies = [
+ "restate-workspace-hack",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "plotters"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
