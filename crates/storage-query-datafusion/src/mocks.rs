@@ -226,6 +226,10 @@ impl MockQueryEngine {
                 RemoteScannerManager::new(
                     Arc::new(NoopSvc),
                     Arc::new(AlwaysLocalPartitionLocator) as Arc<dyn PartitionLocator>,
+                    // The mock locator always returns `Local`, so the manager
+                    // never invokes `allocate_scanner_id` and never reads
+                    // `my_node_id`. A blank Metadata is sufficient here.
+                    restate_core::MetadataBuilder::default().to_metadata(),
                 ),
                 MetadataStoreClient::new_in_memory(),
                 None,

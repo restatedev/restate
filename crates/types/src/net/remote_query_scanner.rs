@@ -53,6 +53,15 @@ pub struct RemoteQueryScannerOpen {
     #[bilrost(tag(7))]
     #[serde(default)]
     pub predicate: Option<RemoteQueryScannerPredicate>,
+    /// Scanner id allocated by the caller; the server adopts this id rather than
+    /// minting its own, which lets clients pipeline the first `Next` immediately
+    /// after `Open` without waiting for the open reply.
+    ///
+    /// **Since v1.7**
+    ///
+    /// todo: make required in v1.8
+    #[bilrost(tag(8))]
+    pub scanner_id: Option<ScannerId>,
 }
 
 fn default_batch_size() -> u64 {
@@ -82,6 +91,8 @@ pub enum RemoteQueryScannerOpened {
     Failure,
     #[bilrost(1)]
     Success {
+        // Client must use this scanner_id for all scanner operations.
+        // It can be different from the client minted scanner-id in v1.7
         scanner_id: ScannerId,
     },
 }

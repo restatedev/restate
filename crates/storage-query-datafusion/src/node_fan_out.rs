@@ -49,7 +49,8 @@ use restate_types::nodes_config::Role;
 use restate_types::sharding::KeyRange;
 use restate_types::{NodeId, PlainNodeId};
 
-use crate::remote_query_scanner_client::{RemoteScannerService, remote_scan_as_datafusion_stream};
+use crate::remote_query_scanner_client::remote_scan_as_datafusion_stream;
+use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::{MeteredStream, ProjectedColumns, Scan};
 
 /// A warning collected from a node that failed during query execution.
@@ -197,7 +198,7 @@ fn literal_to_plain_node_id(val: &datafusion::common::ScalarValue) -> Option<Pla
 pub(crate) struct NodeFanOutTableProvider {
     schema: SchemaRef,
     node_locator: Arc<dyn NodeLocator>,
-    remote_scanner: Arc<dyn RemoteScannerService>,
+    remote_scanner_manager: RemoteScannerManager,
     local_scanner: Option<Arc<dyn Scan>>,
     table_name: String,
     statistics: Statistics,
@@ -207,7 +208,7 @@ impl NodeFanOutTableProvider {
     pub fn new(
         schema: SchemaRef,
         node_locator: Arc<dyn NodeLocator>,
-        remote_scanner: Arc<dyn RemoteScannerService>,
+        remote_scanner_manager: RemoteScannerManager,
         local_scanner: Option<Arc<dyn Scan>>,
         table_name: impl Into<String>,
     ) -> Self {
@@ -215,7 +216,7 @@ impl NodeFanOutTableProvider {
         Self {
             schema,
             node_locator,
-            remote_scanner,
+            remote_scanner_manager,
             local_scanner,
             table_name: table_name.into(),
             statistics,
@@ -265,7 +266,7 @@ impl datafusion::catalog::TableProvider for NodeFanOutTableProvider {
         Ok(Arc::new(NodeFanOutExecutionPlan::new(
             projected_schema,
             filtered_nodes,
-            self.remote_scanner.clone(),
+            self.remote_scanner_manager.clone(),
             self.local_scanner.clone(),
             self.table_name.clone(),
             filters.to_vec(),
@@ -295,7 +296,7 @@ impl datafusion::catalog::TableProvider for NodeFanOutTableProvider {
 pub(crate) struct NodeFanOutExecutionPlan {
     projected_schema: SchemaRef,
     target_nodes: Vec<TargetNode>,
-    remote_scanner: Arc<dyn RemoteScannerService>,
+    remote_scanner_manager: RemoteScannerManager,
     local_scanner: Option<Arc<dyn Scan>>,
     table_name: String,
     filters: Vec<Expr>,
@@ -311,7 +312,7 @@ impl NodeFanOutExecutionPlan {
     fn new(
         projected_schema: SchemaRef,
         target_nodes: Vec<TargetNode>,
-        remote_scanner: Arc<dyn RemoteScannerService>,
+        remote_scanner_manager: RemoteScannerManager,
         local_scanner: Option<Arc<dyn Scan>>,
         table_name: String,
         filters: Vec<Expr>,
@@ -331,7 +332,7 @@ impl NodeFanOutExecutionPlan {
         Self {
             projected_schema,
             target_nodes,
-            remote_scanner,
+            remote_scanner_manager,
             local_scanner,
             table_name,
             filters,
@@ -421,9 +422,11 @@ impl ExecutionPlan for NodeFanOutExecutionPlan {
             )
         } else {
             // Remote scan: use a sentinel partition_id since this is a node-level table
+            let scanner_id = self.remote_scanner_manager.allocate_scanner_id();
             let inner = remote_scan_as_datafusion_stream(
-                self.remote_scanner.clone(),
+                self.remote_scanner_manager.remote_scanner_service(),
                 target.node_id,
+                scanner_id,
                 PartitionId::MIN,
                 KeyRange::FULL,
                 self.table_name.clone(),

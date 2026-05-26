@@ -15,7 +15,7 @@ use restate_types::nodes_config::Role;
 
 use crate::context::QueryContext;
 use crate::node_fan_out::{NodeFanOutTableProvider, RoleBasedNodeLocator};
-use crate::remote_query_scanner_client::RemoteScannerService;
+use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::Scan;
 
 use super::schema::BifrostReadStreamsBuilder;
@@ -30,7 +30,7 @@ pub(crate) const TABLE_NAME: &str = "bifrost_read_streams";
 pub(crate) fn register_self(
     ctx: &QueryContext,
     metadata: Metadata,
-    remote_scanner: Arc<dyn RemoteScannerService>,
+    remote_scanner_manager: RemoteScannerManager,
     local_scanner: Option<Arc<dyn Scan>>,
 ) -> datafusion::common::Result<()> {
     let schema = BifrostReadStreamsBuilder::schema();
@@ -40,7 +40,7 @@ pub(crate) fn register_self(
     let table = NodeFanOutTableProvider::new(
         schema,
         Arc::new(RoleBasedNodeLocator::new(Role::Worker, metadata)),
-        remote_scanner,
+        remote_scanner_manager,
         local_scanner,
         TABLE_NAME,
     );
