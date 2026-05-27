@@ -35,7 +35,7 @@ pub struct InvocationOptions {
     /// # Maximum journal retention duration
     ///
     /// Maximum journal retention duration that can be configured.
-    /// When discovering a service deployment, or when modifying the journal retention using the Admin API, the given value will be clamped.
+    /// Applied when ingesting the invocation: values higher than this limit are clamped down to it.
     ///
     /// Unset means no limit.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -55,7 +55,7 @@ pub struct InvocationOptions {
     /// # Maximum idempotency retention duration
     ///
     /// Maximum idempotency retention duration that can be configured.
-    /// When discovering a service deployment, or when modifying the idempotency retention using the Admin API, the given value will be clamped.
+    /// Applied when ingesting the invocation: values higher than this limit are clamped down to it.
     ///
     /// Unset means no limit.
     ///
@@ -77,7 +77,7 @@ pub struct InvocationOptions {
     /// # Maximum workflow completion retention duration
     ///
     /// Maximum workflow completion retention duration that can be configured.
-    /// When discovering a service deployment, or when modifying the workflow completion retention using the Admin API, the given value will be clamped.
+    /// Applied when ingesting the invocation: values higher than this limit are clamped down to it.
     ///
     /// Unset means no limit.
     ///
