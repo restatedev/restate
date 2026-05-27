@@ -106,7 +106,7 @@ impl<C> AuthorityPool<C> {
 impl<C> AuthorityPool<C>
 where
     C: Service<Uri> + Clone,
-    C::Response: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
+    C::Response: AsyncRead + AsyncWrite + std::fmt::Debug + Unpin + Send + Sync + 'static,
     C::Future: Send + 'static,
     C::Error: Into<Error>,
 {
@@ -114,6 +114,9 @@ where
         let connection_config = ConnectionConfigBuilder::default()
             .initial_max_send_streams(config.initial_max_send_streams.get())
             .streams_per_connection_limit(config.streams_per_connection_limit.get())
+            .initial_stream_window_size(config.initial_stream_window_size)
+            .initial_connection_window_size(config.initial_connection_window_size)
+            .max_frame_size(config.max_frame_size)
             .keep_alive_interval(config.keep_alive_interval)
             .keep_alive_timeout(config.keep_alive_timeout)
             .build()
