@@ -395,7 +395,7 @@ impl ServiceRevision {
                     .to_non_zero_std()
             }));
         if got_idempotency_retention_clamped {
-            info.push(SchemaInfo::new_with_code(
+            info.push(Info::new_with_code(
                 &restate_errors::RT0022,
                 "The configured idempotency_retention is clamped to the maximum server limit."
                     .to_string(),
@@ -418,7 +418,7 @@ impl ServiceRevision {
             let (clamped, got_clamped) =
                 configuration.clamp_workflow_completion_retention(requested);
             if got_clamped {
-                info.push(SchemaInfo::new_with_code(
+                info.push(Info::new_with_code(
                     &restate_errors::RT0022,
                     "The configured workflow_completion_retention is clamped to the maximum server limit."
                         .to_string(),
@@ -586,7 +586,7 @@ impl Handler {
         let (idempotency_retention, got_idempotency_retention_clamped) =
             configuration.clamp_idempotency_retention(self.idempotency_retention);
         if got_idempotency_retention_clamped {
-            info.push(SchemaInfo::new_with_code(
+            info.push(Info::new_with_code(
                 &restate_errors::RT0022,
                 "The configured idempotency_retention is clamped to the maximum server limit."
                     .to_string(),
