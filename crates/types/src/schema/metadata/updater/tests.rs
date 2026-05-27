@@ -15,7 +15,9 @@ use crate::Versioned;
 use crate::schema::deployment::DeploymentResolver;
 use crate::schema::deployment::ProtocolType;
 use crate::schema::info::SchemaInfo;
-use crate::schema::invocation_target::InvocationTargetResolver;
+use crate::schema::invocation_target::{
+    DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION, InvocationTargetResolver,
+};
 use crate::schema::service::ServiceMetadataResolver;
 use crate::service_protocol::{
     MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION, MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION,

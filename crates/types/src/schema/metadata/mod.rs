@@ -42,9 +42,8 @@ use crate::retries::{RetryIter, RetryPolicy};
 use crate::schema::deployment::{DeploymentResolver, DeploymentType, ProtocolType};
 use crate::schema::info::SchemaInfo;
 use crate::schema::invocation_target::{
-    DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION, DeploymentStatus,
-    InputRules, InvocationAttemptOptions, InvocationTargetMetadata, InvocationTargetResolver,
-    OnMaxAttempts, OutputRules,
+    DeploymentStatus, InputRules, InvocationAttemptOptions, InvocationTargetMetadata,
+    InvocationTargetResolver, OnMaxAttempts, OutputRules,
 };
 use crate::schema::kafka::{
     DUPLICATED_KAFKA_CLUSTER_INFO_MESSAGE, KafkaCluster, KafkaClusterResolver,
@@ -413,6 +412,48 @@ impl ServiceRevision {
             ))
         }
 
+        let (idempotency_retention, got_idempotency_retention_clamped) = configuration
+            .clamp_idempotency_retention(self.idempotency_retention.or_else(|| {
+                configuration
+                    .invocation
+                    .default_idempotency_retention
+                    .to_non_zero_std()
+            }));
+        if got_idempotency_retention_clamped {
+            info.push(SchemaInfo::new_with_code(
+                &restate_errors::RT0022,
+                "The configured idempotency_retention is clamped to the maximum server limit."
+                    .to_string(),
+            ))
+        }
+
+        let workflow_completion_retention = if self.ty == ServiceType::Workflow {
+            let requested = self
+                .handlers
+                .iter()
+                .find(|(_, h)| h.workflow_completion_retention.is_some())
+                .and_then(|(_, h)| h.workflow_completion_retention)
+                .or(self.workflow_completion_retention)
+                .or_else(|| {
+                    configuration
+                        .invocation
+                        .default_workflow_completion_retention
+                        .to_non_zero_std()
+                });
+            let (clamped, got_clamped) =
+                configuration.clamp_workflow_completion_retention(requested);
+            if got_clamped {
+                info.push(SchemaInfo::new_with_code(
+                    &restate_errors::RT0022,
+                    "The configured workflow_completion_retention is clamped to the maximum server limit."
+                        .to_string(),
+                ))
+            }
+            Some(clamped.unwrap_or(Duration::ZERO))
+        } else {
+            None
+        };
+
         service::ServiceMetadata {
             name: self.name.clone(),
             handlers: self
@@ -435,21 +476,8 @@ impl ServiceRevision {
             deployment_id,
             revision: self.revision,
             public: self.public,
-            idempotency_retention: self
-                .idempotency_retention
-                .unwrap_or(DEFAULT_IDEMPOTENCY_RETENTION),
-            workflow_completion_retention: if self.ty == ServiceType::Workflow {
-                Some(
-                    self.handlers
-                        .iter()
-                        .find(|(_, h)| h.workflow_completion_retention.is_some())
-                        .and_then(|(_, h)| h.workflow_completion_retention)
-                        .or(self.workflow_completion_retention)
-                        .unwrap_or(DEFAULT_WORKFLOW_COMPLETION_RETENTION),
-                )
-            } else {
-                None
-            },
+            idempotency_retention: idempotency_retention.unwrap_or(Duration::ZERO),
+            workflow_completion_retention,
             journal_retention,
             inactivity_timeout: if served_using_protocol_type == Some(ProtocolType::RequestResponse)
             {
@@ -580,6 +608,16 @@ impl Handler {
             ))
         }
 
+        let (idempotency_retention, got_idempotency_retention_clamped) =
+            configuration.clamp_idempotency_retention(self.idempotency_retention);
+        if got_idempotency_retention_clamped {
+            info.push(SchemaInfo::new_with_code(
+                &restate_errors::RT0022,
+                "The configured idempotency_retention is clamped to the maximum server limit."
+                    .to_string(),
+            ))
+        }
+
         service::HandlerMetadata {
             name: self.name.clone(),
             ty: self.target_ty.into(),
@@ -590,7 +628,7 @@ impl Handler {
             output_description: self.output_rules.to_string(),
             input_json_schema: self.input_rules.json_schema(),
             output_json_schema: self.output_rules.json_schema(),
-            idempotency_retention: self.idempotency_retention,
+            idempotency_retention,
             journal_retention,
             inactivity_timeout: if served_using_protocol_type == Some(ProtocolType::RequestResponse)
             {
@@ -708,15 +746,35 @@ impl InvocationTargetResolver for Schema {
 
         let completion_retention =
             if handler.target_ty == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow) {
-                handler
-                    .workflow_completion_retention
-                    .or(service_revision.workflow_completion_retention)
-                    .unwrap_or(DEFAULT_WORKFLOW_COMPLETION_RETENTION)
+                configuration
+                    .clamp_workflow_completion_retention(
+                        handler
+                            .workflow_completion_retention
+                            .or(service_revision.workflow_completion_retention)
+                            .or_else(|| {
+                                configuration
+                                    .invocation
+                                    .default_workflow_completion_retention
+                                    .to_non_zero_std()
+                            }),
+                    )
+                    .0
+                    .unwrap_or(Duration::ZERO)
             } else {
-                handler
-                    .idempotency_retention
-                    .or(service_revision.idempotency_retention)
-                    .unwrap_or(DEFAULT_IDEMPOTENCY_RETENTION)
+                configuration
+                    .clamp_idempotency_retention(
+                        handler
+                            .idempotency_retention
+                            .or(service_revision.idempotency_retention)
+                            .or_else(|| {
+                                configuration
+                                    .invocation
+                                    .default_idempotency_retention
+                                    .to_non_zero_std()
+                            }),
+                    )
+                    .0
+                    .unwrap_or(Duration::ZERO)
             };
         let journal_retention = configuration
             .clamp_journal_retention(
@@ -1095,6 +1153,30 @@ impl Configuration {
         clamp_max(
             requested,
             self.invocation.max_journal_retention.map(Duration::from),
+        )
+    }
+
+    fn clamp_idempotency_retention(
+        &self,
+        requested: Option<Duration>,
+    ) -> (Option<Duration>, /* got clamped */ bool) {
+        clamp_max(
+            requested,
+            self.invocation
+                .max_idempotency_retention
+                .map(Duration::from),
+        )
+    }
+
+    fn clamp_workflow_completion_retention(
+        &self,
+        requested: Option<Duration>,
+    ) -> (Option<Duration>, /* got clamped */ bool) {
+        clamp_max(
+            requested,
+            self.invocation
+                .max_workflow_completion_retention
+                .map(Duration::from),
         )
     }
 
