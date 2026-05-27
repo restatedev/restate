@@ -8371,7 +8371,6 @@ dependencies = [
  "pem",
  "pin-project",
  "pprof",
- "rand 0.9.4",
  "restate-service-client",
  "restate-types",
  "restate-workspace-hack",
