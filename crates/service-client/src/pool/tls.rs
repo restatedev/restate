@@ -255,6 +255,7 @@ where
 /// Provides a unified interface for both encrypted (HTTPS) and plain (HTTP)
 /// connections. Implements [`AsyncRead`] and [`AsyncWrite`] by delegating
 /// to the inner stream.
+#[derive(Debug)]
 pub enum MaybeTlsStream<S> {
     /// A TLS-encrypted stream (HTTPS).
     Tls(Box<TlsStream<S>>),
