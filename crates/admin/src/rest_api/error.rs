@@ -18,7 +18,7 @@ use codederror::{Code, CodedError};
 use restate_core::ShutdownError;
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use restate_types::invocation::ServiceType;
-use restate_types::schema::registry::SchemaRegistryError;
+use restate_types::schema::registry::{HttpAuthValidationError, SchemaRegistryError};
 use restate_util_string::RestrictedValueError;
 
 use crate::rest_api::ErrorDescriptionResponse;
@@ -393,6 +393,12 @@ pub mod meta_api_error {
 impl From<ShutdownError> for MetaApiError {
     fn from(value: ShutdownError) -> Self {
         MetaApiError::Internal(value.to_string())
+    }
+}
+
+impl From<HttpAuthValidationError> for MetaApiError {
+    fn from(value: HttpAuthValidationError) -> Self {
+        MetaApiError::InvalidField(value.field(), value.message().to_owned())
     }
 }
 

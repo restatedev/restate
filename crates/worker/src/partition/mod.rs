@@ -184,7 +184,7 @@ impl PartitionProcessorBuilder {
             target_leader_state_rx,
             network_svc_rx: rpc_rx,
             status_watch_tx,
-            status,
+            mut status,
             invoker_capacity,
             leader_handles_registry,
             rule_book_cache,
@@ -242,6 +242,8 @@ impl PartitionProcessorBuilder {
         );
 
         let last_applied_log_lsn_watch = watch::Sender::new(Lsn::INVALID);
+        // The storage version does not change after having opened the partition store
+        status.storage_version = Some(partition_store.storage_version());
 
         Ok(PartitionProcessor {
             key_filter: KeyFilter::Within(partition_store.partition_key_range().into()),
@@ -657,6 +659,7 @@ where
                         (rule_book_version >= Version::MIN).then_some(rule_book_version);
                     self.status.last_applied_schema_version =
                         self.state_machine.schema.as_ref().map(Versioned::version);
+                    self.status.enabled_features = self.state_machine.enabled_features;
                     self.status_watch_tx.send_modify(|old| {
                         old.clone_from(&self.status);
                         old.updated_at = MillisSinceEpoch::now();

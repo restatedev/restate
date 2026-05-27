@@ -454,8 +454,9 @@ where
             DeploymentType::Http {
                 address,
                 http_version,
+                auth,
                 ..
-            } => Endpoint::Http(address, Some(http_version)),
+            } => Endpoint::Http(address, Some(http_version), auth),
         };
 
         headers.extend(deployment_metadata.additional_headers);
@@ -1573,6 +1574,16 @@ fn resolve_call_request(
     // Validate invariant: limit_key requires scope
     if !limit_key.is_empty() && invocation_target.scope().is_none() {
         return Err(CommandPreconditionError::LimitKeyWithoutScope);
+    }
+
+    if invocation_target.scope().is_some()
+        && matches!(meta.target_ty, InvocationTargetType::VirtualObject(_))
+        && !restate_types::config::Configuration::pinned()
+            .common
+            .experimental
+            .is_scoped_virtual_objects_enabled()
+    {
+        return Err(CommandPreconditionError::ScopedVirtualObjectNotSupported);
     }
 
     let invocation_retention = meta.compute_retention(idempotency_key.is_some());

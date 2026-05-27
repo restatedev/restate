@@ -605,6 +605,36 @@ experimental! {
     ///
     /// Since v1.7.0
     unique_random_seeds,
+
+    /// # Migrate the unscoped state and promise tables into their scoped variants
+    ///
+    /// When enabled, partition stores migrate every entry of the legacy unscoped
+    /// state and promise tables into their scoped variants (with `scope = None`)
+    /// on open, and route all subsequent state/promise reads and writes through
+    /// the scoped tables.
+    ///
+    /// Once enabled, you **cannot** roll back to a Restate-server version that
+    /// did not yet recognize the resulting on-disk schema version.
+    ///
+    /// Since v1.7.0
+    migrate_scoped_tables,
+
+    /// # Allow scope on Virtual Object targets
+    ///
+    /// Scoped Virtual Objects are not officially supported in v1.7. Requires
+    /// `vqueues` to be enabled as well.
+    ///
+    /// Since v1.7.0
+    scoped_virtual_objects,
+
+    /// # Enables Kafka header support for scoped invocations
+    ///
+    /// When enabled, Kafka subscriptions read `x-restate-scope` and
+    /// `x-restate-limit-key` record headers to drive vqueue scope and
+    /// hierarchical limit-key routing. Requires `vqueues` to also be enabled.
+    ///
+    /// Since v1.7.0
+    kafka_scope,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");

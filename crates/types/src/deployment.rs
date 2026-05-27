@@ -8,6 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+// Per-deployment HTTP authentication lives under the schema module, alongside the persisted
+// deployment record types that embed it. Re-exported here so downstream consumers may continue
+// to refer to `restate_types::deployment::HttpAuth` via the deployment-address surface.
+pub use crate::schema::deployment::{GoogleIdTokenAuth, HttpAuth, derive_audience};
+
 use crate::identifiers::{DeploymentId, LambdaARN};
 use crate::service_protocol::ServiceProtocolVersion;
 use http::{HeaderName, HeaderValue, Uri};
@@ -18,11 +23,17 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq)]
 pub struct HttpDeploymentAddress {
     pub uri: Uri,
+    pub auth: Option<HttpAuth>,
 }
 
 impl HttpDeploymentAddress {
     pub fn new(uri: Uri) -> Self {
-        Self { uri }
+        Self { uri, auth: None }
+    }
+
+    pub fn with_auth(mut self, auth: Option<HttpAuth>) -> Self {
+        self.auth = auth;
+        self
     }
 }
 

@@ -8,6 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+pub mod http_auth;
+
+pub use http_auth::{GoogleIdTokenAuth, HttpAuth, derive_audience};
+
 use std::collections::HashMap;
 use std::fmt;
 use std::fmt::{Display, Formatter};
@@ -82,7 +86,11 @@ impl Deployment {
                     address: this_address,
                     ..
                 },
-                DeploymentAddress::Http(HttpDeploymentAddress { uri: other_address }),
+                DeploymentAddress::Http(HttpDeploymentAddress {
+                    uri: other_address,
+                    auth: _,
+                    ..
+                }),
             ) => Self::semantic_eq_http(
                 this_address,
                 other_address,
@@ -146,6 +154,8 @@ pub enum DeploymentType {
         protocol_type: ProtocolType,
         #[serde(with = "serde_with::As::<restate_serde_util::VersionSerde>")]
         http_version: http::Version,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auth: Option<HttpAuth>,
     },
     Lambda {
         arn: LambdaARN,
@@ -173,8 +183,10 @@ impl DeploymentType {
 
     pub fn as_address(&self) -> DeploymentAddress {
         match self {
-            DeploymentType::Http { address, .. } => {
-                HttpDeploymentAddress::new(address.clone()).into()
+            DeploymentType::Http { address, auth, .. } => {
+                HttpDeploymentAddress::new(address.clone())
+                    .with_auth(auth.clone())
+                    .into()
             }
             DeploymentType::Lambda {
                 arn,
@@ -237,6 +249,9 @@ mod serde_hacks {
             )]
             // this field did not used to be stored, so we must consider it optional when deserialising
             http_version: Option<http::Version>,
+            // older records don't have this field, treat missing as None
+            #[serde(default)]
+            auth: Option<HttpAuth>,
         },
         Lambda {
             arn: LambdaARN,
@@ -253,6 +268,7 @@ mod serde_hacks {
                     address,
                     protocol_type,
                     http_version,
+                    auth,
                 } => Self::Http {
                     address,
                     protocol_type,
@@ -260,6 +276,7 @@ mod serde_hacks {
                         Some(v) => v,
                         None => Self::backfill_http_version(protocol_type),
                     },
+                    auth,
                 },
                 DeploymentType::Lambda {
                     arn,
@@ -281,7 +298,7 @@ mod serde_tests {
     use bytestring::ByteString;
     use http::Uri;
 
-    use super::{DeploymentType, ProtocolType};
+    use super::{DeploymentType, EndpointLambdaCompression, ProtocolType};
 
     #[derive(serde::Serialize, serde::Deserialize)]
     enum OldDeploymentType {
@@ -298,6 +315,72 @@ mod serde_tests {
 
     crate::flexbuffers_storage_encode_decode!(OldDeploymentType);
     crate::flexbuffers_storage_encode_decode!(DeploymentType);
+
+    // Records persisted with an intermediate shape (post-http_version,
+    // pre-auth) must deserialise with auth defaulted to None.
+    #[derive(serde::Serialize, serde::Deserialize)]
+    enum PreAuthDeploymentType {
+        Http {
+            #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+            address: Uri,
+            protocol_type: ProtocolType,
+            #[serde(with = "serde_with::As::<restate_serde_util::VersionSerde>")]
+            http_version: http::Version,
+        },
+        Lambda {
+            arn: LambdaARN,
+            assume_role_arn: Option<ByteString>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            compression: Option<EndpointLambdaCompression>,
+        },
+    }
+
+    crate::flexbuffers_storage_encode_decode!(PreAuthDeploymentType);
+
+    #[test]
+    fn can_deserialise_without_auth_field() {
+        let mut buf = bytes::BytesMut::default();
+        StorageCodec::encode(
+            &PreAuthDeploymentType::Http {
+                address: Uri::from_static("https://svc.example.com"),
+                protocol_type: ProtocolType::BidiStream,
+                http_version: http::Version::HTTP_2,
+            },
+            &mut buf,
+        )
+        .unwrap();
+        let dt: DeploymentType = StorageCodec::decode(&mut buf).unwrap();
+        assert_eq!(
+            DeploymentType::Http {
+                address: Uri::from_static("https://svc.example.com"),
+                protocol_type: ProtocolType::BidiStream,
+                http_version: http::Version::HTTP_2,
+                auth: None,
+            },
+            dt
+        );
+    }
+
+    #[test]
+    fn auth_field_round_trips() {
+        use crate::schema::deployment::{GoogleIdTokenAuth, HttpAuth};
+
+        let original = DeploymentType::Http {
+            address: Uri::from_static("https://svc.example.com"),
+            protocol_type: ProtocolType::BidiStream,
+            http_version: http::Version::HTTP_2,
+            auth: Some(HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
+                ByteString::from_static("https://svc.example.com"),
+                Some(ByteString::from_static(
+                    "caller@proj.iam.gserviceaccount.com",
+                )),
+            ))),
+        };
+        let mut buf = bytes::BytesMut::default();
+        StorageCodec::encode(&original, &mut buf).unwrap();
+        let decoded: DeploymentType = StorageCodec::decode(&mut buf).unwrap();
+        assert_eq!(original, decoded);
+    }
 
     #[test]
     fn can_deserialise_without_http_version() {
@@ -316,6 +399,7 @@ mod serde_tests {
                 address: Uri::from_static("google.com"),
                 protocol_type: ProtocolType::BidiStream,
                 http_version: http::Version::HTTP_2,
+                auth: None,
             },
             dt
         );
@@ -335,6 +419,7 @@ mod serde_tests {
                 address: Uri::from_static("google.com"),
                 protocol_type: ProtocolType::RequestResponse,
                 http_version: http::Version::HTTP_11,
+                auth: None,
             },
             dt
         );
@@ -359,6 +444,7 @@ pub mod test_util {
                     address: "http://localhost:9080".parse().unwrap(),
                     protocol_type: ProtocolType::BidiStream,
                     http_version: http::Version::HTTP_2,
+                    auth: None,
                 },
                 supported_protocol_versions: 1..=MAX_SERVICE_PROTOCOL_VERSION_VALUE,
                 sdk_version: None,
@@ -379,6 +465,7 @@ pub mod test_util {
                     address: uri.parse().unwrap(),
                     protocol_type: ProtocolType::BidiStream,
                     http_version: http::Version::HTTP_2,
+                    auth: None,
                 },
                 supported_protocol_versions: 1..=MAX_SERVICE_PROTOCOL_VERSION_VALUE,
                 sdk_version: None,

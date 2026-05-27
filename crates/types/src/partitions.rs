@@ -12,12 +12,14 @@ mod configuration;
 pub mod features;
 pub mod leadership_policy;
 pub mod state;
+mod storage_version;
 
 use crate::PlainNodeId;
 use crate::nodes_config::{NodeConfig, Role, WorkerState};
 pub use configuration::*;
 pub use features::*;
 pub use leadership_policy::*;
+pub use storage_version::{StorageVersion, UnknownStorageVersion};
 // re-exports of partition-related types in preparation for moving them under this module
 pub use super::epoch::*;
 pub use super::partition_table::*;

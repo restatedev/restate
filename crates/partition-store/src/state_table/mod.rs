@@ -35,6 +35,7 @@ use crate::{
     PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
     TableScanIterationDecision, break_on_err,
 };
+use restate_types::partitions::StorageVersion;
 
 define_table_key!(
     State,
@@ -127,14 +128,23 @@ impl<DB: DBAccess> Iterator for StateEntryIter<'_, DB> {
     }
 }
 
+/// Returns `true` if the call should use the scoped state table — either because
+/// the partition store has migrated past
+/// [`StorageVersion::ScopedStateAndPromise`] (so scope = None entries also live
+/// in the scoped table) or because the [`ServiceId`] carries an explicit scope.
+#[inline]
+fn use_scoped_state(storage_version: StorageVersion, service_id: &ServiceId) -> bool {
+    storage_version.is_scope_migrated() || service_id.scope.is_some()
+}
+
 fn put_user_state<S: StorageAccess>(
     storage: &mut S,
+    storage_version: StorageVersion,
     service_id: &ServiceId,
     state_key: &Bytes,
     state_value: impl AsRef<[u8]>,
 ) -> Result<()> {
-    // todo(tillrohrmann) make dependent on migration status once we migrate old state entries to the new scoped table
-    if service_id.scope.is_some() {
+    if use_scoped_state(storage_version, service_id) {
         //todo(tillrohrmann) remove once ServiceId carries the right types
         let service_name = ServiceName::new(service_id.service_name.as_ref());
         let service_key = ReString::new(&service_id.key);
@@ -158,11 +168,11 @@ fn put_user_state<S: StorageAccess>(
 
 fn delete_user_state<S: StorageAccess>(
     storage: &mut S,
+    storage_version: StorageVersion,
     service_id: &ServiceId,
     state_key: &Bytes,
 ) -> Result<()> {
-    // todo(tillrohrmann) make dependent on migration status once we migrate old state entries to the new scoped table
-    if service_id.scope.is_some() {
+    if use_scoped_state(storage_version, service_id) {
         //todo(tillrohrmann) remove once ServiceId carries the right types
         let service_name = ServiceName::new(service_id.service_name.as_ref());
         let service_key = ReString::new(&service_id.key);
@@ -184,9 +194,12 @@ fn delete_user_state<S: StorageAccess>(
     }
 }
 
-fn delete_all_user_state<S: StorageAccess>(storage: &mut S, service_id: &ServiceId) -> Result<()> {
-    // todo(tillrohrmann) make dependent on migration status once we migrate old state entries to the new scoped table
-    if service_id.scope.is_some() {
+fn delete_all_user_state<S: StorageAccess>(
+    storage: &mut S,
+    storage_version: StorageVersion,
+    service_id: &ServiceId,
+) -> Result<()> {
+    if use_scoped_state(storage_version, service_id) {
         //todo(tillrohrmann) remove once ServiceId carries the right types
         let service_name = ServiceName::new(service_id.service_name.as_ref());
         let service_key = ReString::new(&service_id.key);
@@ -231,12 +244,12 @@ fn delete_all_user_state<S: StorageAccess>(storage: &mut S, service_id: &Service
 
 fn get_user_state<S: StorageAccess>(
     storage: &mut S,
+    storage_version: StorageVersion,
     service_id: &ServiceId,
     state_key: &Bytes,
 ) -> Result<Option<Bytes>> {
     let _x = RocksDbPerfGuard::new("get-user-state");
-    // todo(tillrohrmann) make dependent on migration status once we migrate old state entries to the new scoped table
-    if service_id.scope.is_some() {
+    if use_scoped_state(storage_version, service_id) {
         //todo(tillrohrmann) remove once ServiceId carries the right types
         let service_name = ServiceName::new(service_id.service_name.as_ref());
         let service_key = ReString::new(&service_id.key);
@@ -260,12 +273,12 @@ fn get_user_state<S: StorageAccess>(
 
 fn get_all_user_states_for_service<'a, S: StorageAccess>(
     storage: &'a S,
+    storage_version: StorageVersion,
     service_id: &ServiceId,
 ) -> Result<StateEntryIter<'a, S::DBAccess<'a>>> {
     let _x = RocksDbPerfGuard::new("get-all-user-state-iter-setup");
 
-    // todo(tillrohrmann) make dependent on migration status once we migrate old state entries to the new scoped table
-    if service_id.scope.is_some() {
+    if use_scoped_state(storage_version, service_id) {
         //todo(tillrohrmann) remove once ServiceId carries the right types
         let service_name = ServiceName::new(service_id.service_name.as_ref());
         let service_key = ReString::new(&service_id.key);
@@ -303,7 +316,7 @@ impl ReadStateTable for PartitionStore {
         state_key: &Bytes,
     ) -> Result<Option<Bytes>> {
         self.assert_partition_key(service_id)?;
-        get_user_state(self, service_id, state_key)
+        get_user_state(self, self.storage_version(), service_id, state_key)
     }
 
     fn get_all_user_states_for_service<'a>(
@@ -312,7 +325,9 @@ impl ReadStateTable for PartitionStore {
     ) -> Result<impl Stream<Item = Result<(Bytes, Bytes)>> + Send + 'a> {
         self.assert_partition_key(service_id)?;
         Ok(stream::iter(get_all_user_states_for_service(
-            self, service_id,
+            self,
+            self.storage_version(),
+            service_id,
         )?))
     }
 
@@ -327,7 +342,7 @@ impl ReadStateTable for PartitionStore {
         + 'a,
     > {
         self.assert_partition_key(service_id)?;
-        let iter = get_all_user_states_for_service(self, service_id)?;
+        let iter = get_all_user_states_for_service(self, self.storage_version(), service_id)?;
         Ok(budgeted_state_stream(iter, budget))
     }
 }
@@ -345,22 +360,28 @@ impl ScanStateTable for PartitionStore {
         // No contention: scans are awaited sequentially.
         let f = Arc::new(parking_lot::Mutex::new(f));
 
-        // todo(tillrohrmann) remove once we migrated the unscoped state entries to the scoped state entries table
-        let f_unscoped = Arc::clone(&f);
-        let unscoped = self
-            .iterator_for_each(
-                "df-user-state",
-                Priority::Low,
-                TableScan::FullScanPartitionKeyRange::<StateKey>(range),
-                move |(mut key, value)| {
-                    let row_key = break_on_err(StateKey::deserialize_from(&mut key))?;
-                    let (partition_key, service_name, service_key, state_key) = row_key.split();
-                    let service_id =
-                        ServiceId::from_parts(partition_key, service_name, service_key);
-                    f_unscoped.lock()((service_id, state_key, value)).map_break(Ok)
-                },
+        // Only scan the legacy unscoped table while we may still hold data there.
+        // After migration the range was deleted, so the scoped scan covers everything.
+        let unscoped = if self.storage_version().is_scope_migrated() {
+            None
+        } else {
+            let f_unscoped = Arc::clone(&f);
+            Some(
+                self.iterator_for_each(
+                    "df-user-state",
+                    Priority::Low,
+                    TableScan::FullScanPartitionKeyRange::<StateKey>(range),
+                    move |(mut key, value)| {
+                        let row_key = break_on_err(StateKey::deserialize_from(&mut key))?;
+                        let (partition_key, service_name, service_key, state_key) = row_key.split();
+                        let service_id =
+                            ServiceId::from_parts(partition_key, service_name, service_key);
+                        f_unscoped.lock()((service_id, state_key, value)).map_break(Ok)
+                    },
+                )
+                .map_err(|_| StorageError::OperationalError)?,
             )
-            .map_err(|_| StorageError::OperationalError)?;
+        };
 
         let f_scoped = f;
         let scoped = self
@@ -383,7 +404,9 @@ impl ScanStateTable for PartitionStore {
             .map_err(|_| StorageError::OperationalError)?;
 
         Ok(async move {
-            unscoped.await?;
+            if let Some(unscoped) = unscoped {
+                unscoped.await?;
+            }
             scoped.await?;
             Ok(())
         })
@@ -397,7 +420,7 @@ impl ReadStateTable for PartitionStoreTransaction<'_> {
         state_key: &Bytes,
     ) -> Result<Option<Bytes>> {
         self.assert_partition_key(service_id)?;
-        get_user_state(self, service_id, state_key)
+        get_user_state(self, self.storage_version(), service_id, state_key)
     }
 
     fn get_all_user_states_for_service<'a>(
@@ -406,7 +429,9 @@ impl ReadStateTable for PartitionStoreTransaction<'_> {
     ) -> Result<impl Stream<Item = Result<(Bytes, Bytes)>> + Send + 'a> {
         self.assert_partition_key(service_id)?;
         Ok(stream::iter(get_all_user_states_for_service(
-            self, service_id,
+            self,
+            self.storage_version(),
+            service_id,
         )?))
     }
 
@@ -421,7 +446,7 @@ impl ReadStateTable for PartitionStoreTransaction<'_> {
         + 'a,
     > {
         self.assert_partition_key(service_id)?;
-        let iter = get_all_user_states_for_service(self, service_id)?;
+        let iter = get_all_user_states_for_service(self, self.storage_version(), service_id)?;
         Ok(budgeted_state_stream(iter, budget))
     }
 }
@@ -434,17 +459,23 @@ impl WriteStateTable for PartitionStoreTransaction<'_> {
         state_value: impl AsRef<[u8]>,
     ) -> Result<()> {
         self.assert_partition_key(service_id)?;
-        put_user_state(self, service_id, state_key, state_value)
+        put_user_state(
+            self,
+            self.storage_version(),
+            service_id,
+            state_key,
+            state_value,
+        )
     }
 
     fn delete_user_state(&mut self, service_id: &ServiceId, state_key: &Bytes) -> Result<()> {
         self.assert_partition_key(service_id)?;
-        delete_user_state(self, service_id, state_key)
+        delete_user_state(self, self.storage_version(), service_id, state_key)
     }
 
     fn delete_all_user_state(&mut self, service_id: &ServiceId) -> Result<()> {
         self.assert_partition_key(service_id)?;
-        delete_all_user_state(self, service_id)
+        delete_all_user_state(self, self.storage_version(), service_id)
     }
 }
 

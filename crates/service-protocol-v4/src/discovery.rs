@@ -210,8 +210,8 @@ impl DiscoveryClient for ServiceDiscovery {
                     // By default, we use h2c on HTTP
                     Some(http::Version::HTTP_2)
                 };
-
-                Endpoint::Http(http.uri, version)
+                // Use the same auth for discovery as the regular invocation path uses
+                Endpoint::Http(http.uri, version, http.auth)
             }
             DeploymentAddress::Lambda(lambda) => {
                 Endpoint::Lambda(lambda.arn, lambda.assume_role_arn.map(Into::into), None)
@@ -343,11 +343,10 @@ impl ServiceDiscovery {
             // all endpoints support request response
             (ProtocolType::RequestResponse, _, _) => {}
             // http2 upwards supports bidi
-            (ProtocolType::BidiStream, Endpoint::Http(_, _), Version::HTTP_2 | Version::HTTP_3) => {
-            }
+            (ProtocolType::BidiStream, Endpoint::Http(..), Version::HTTP_2 | Version::HTTP_3) => {}
             // http1.1 *can* support bidi depending on server implementation (and load balancers)
             // trust the user if this is what they advertise
-            (ProtocolType::BidiStream, Endpoint::Http(_, _), Version::HTTP_11) => {}
+            (ProtocolType::BidiStream, Endpoint::Http(..), Version::HTTP_11) => {}
             // lambda client and HTTP < 1.1 do not support bidi
             (ProtocolType::BidiStream, _, _) => {
                 return Err(DiscoveryError::BidirectionalNotSupported);
@@ -526,7 +525,7 @@ mod tests {
 
         assert!(matches!(
             ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
-                Endpoint::Http(Uri::default(), None),
+                Endpoint::Http(Uri::default(), None, None),
                 Version::HTTP_2,
                 response,
                 None
@@ -574,7 +573,7 @@ mod tests {
 
         assert!(matches!(
             ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
-                Endpoint::Http(Uri::default(), None),
+                Endpoint::Http(Uri::default(), None, None),
                 Version::HTTP_2,
                 response,
                 None
@@ -595,7 +594,7 @@ mod tests {
 
         assert!(matches!(
             ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
-                Endpoint::Http(Uri::default(), None),
+                Endpoint::Http(Uri::default(), None, None),
                 Version::HTTP_2,
                 response,
                 None
@@ -617,7 +616,7 @@ mod tests {
 
         assert_that!(
             ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
-                Endpoint::Http(Uri::default(), None),
+                Endpoint::Http(Uri::default(), None, None),
                 Version::HTTP_2,
                 response,
                 None

@@ -411,7 +411,11 @@ fn bench_concurrent_requests(c: &mut Criterion) {
 fn bench_body_throughput(c: &mut Criterion) {
     let rt = Builder::new_multi_thread().enable_all().build().unwrap();
 
-    for (label, size) in [("1KB", 1024), ("64KB", 64 * 1024)] {
+    for (label, size) in [
+        ("1KB", 1024),
+        ("64KB", 64 * 1024),
+        ("10MB", 10 * 1024 * 1024),
+    ] {
         let payload = Bytes::from(vec![0xABu8; size]);
         let mut group = c.benchmark_group(format!("body-{label}"));
         group
