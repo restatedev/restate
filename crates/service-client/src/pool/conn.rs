@@ -29,7 +29,7 @@ use parking_lot::Mutex;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::sync::{CancellationToken, DropGuard};
 use tower::Service;
-use tracing::debug;
+use tracing::{debug, trace};
 
 use restate_types::errors::GenericError;
 use restate_types::time::MillisSinceEpoch;
@@ -139,6 +139,9 @@ pub struct ConnectionConfig {
     initial_max_send_streams: u32,
     // upper bound applied to the peer's advertised max-concurrent-streams
     streams_per_connection_limit: usize,
+    initial_stream_window_size: u32,
+    initial_connection_window_size: u32,
+    max_frame_size: u32,
     keep_alive_timeout: Duration,
     keep_alive_interval: Option<Duration>,
 }
@@ -148,6 +151,9 @@ impl Default for ConnectionConfig {
         Self {
             initial_max_send_streams: 50,
             streams_per_connection_limit: 128,
+            initial_stream_window_size: 2 * 1024 * 1024,
+            initial_connection_window_size: 5 * 1024 * 1024,
+            max_frame_size: 16 * 1024,
             keep_alive_timeout: Duration::from_secs(20),
             keep_alive_interval: None,
         }
@@ -226,7 +232,7 @@ impl<C> Connection<C> {
 impl<C> Connection<C>
 where
     C: Service<Uri>,
-    C::Response: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
+    C::Response: AsyncRead + AsyncWrite + std::fmt::Debug + Unpin + Send + Sync + 'static,
     C::Future: Send + 'static,
     C::Error: Into<Error>,
 {
@@ -416,8 +422,20 @@ where
                 counter!(CONNECTION_POOL_CONNECTION_OPEN_FAILED).increment(1);
             })?;
 
+            let stream_dbg = format!("{stream:?}");
+            trace!(
+                initial_max_send_streams = shared.config.initial_max_send_streams,
+                initial_connection_window_size = shared.config.initial_connection_window_size,
+                initial_stream_window_size = shared.config.initial_stream_window_size,
+                max_frame_size = shared.config.max_frame_size,
+                "Building h2 connection"
+            );
+
             let (send_request, mut connection) = h2::client::Builder::new()
                 .initial_max_send_streams(shared.config.initial_max_send_streams as usize)
+                .initial_connection_window_size(shared.config.initial_connection_window_size)
+                .initial_window_size(shared.config.initial_stream_window_size)
+                .max_frame_size(shared.config.max_frame_size)
                 .handshake::<_, Bytes>(stream)
                 .await
                 .inspect_err(|_| {
@@ -445,11 +463,11 @@ where
                                 debug!("h2 connection shutdown");
                             },
                             Err(err) => {
-                                debug!("h2 connection shutdown with error: {err}");
+                                debug!("h2 connection ({stream_dbg}) shutdown with error: {err}");
                             }
                         },
                         Err(err) = &mut keep_alive => {
-                            debug!("h2 connection keep-alive error: {err}");
+                            debug!("h2 connection ({stream_dbg}) keep-alive error: {err}");
                         }
                         _ = cancel.cancelled() => {
                             debug!("h2 connection cancelled");
@@ -806,12 +824,15 @@ where
         if frame.is_data() {
             let mut data = frame.into_data().unwrap();
 
+            trace!("Requesting capacity to send {} bytes", data.len());
+            self.send_stream.reserve_capacity(data.len());
+
             while !data.is_empty() {
-                self.send_stream.reserve_capacity(data.len());
                 let size = poll_fn(|cx| self.send_stream.poll_capacity(cx))
                     .await
                     .ok_or(Reason::INTERNAL_ERROR)??;
 
+                trace!("Ready capacity to send {}", size);
                 let chunk = data.split_to(size.min(data.len()));
                 self.send_stream
                     .send_data(chunk, end_of_stream && data.is_empty())?;

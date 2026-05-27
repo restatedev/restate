@@ -106,7 +106,7 @@ impl<C> AuthorityPool<C> {
 impl<C> AuthorityPool<C>
 where
     C: Service<Uri> + Clone,
-    C::Response: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
+    C::Response: AsyncRead + AsyncWrite + std::fmt::Debug + Unpin + Send + Sync + 'static,
     C::Future: Send + 'static,
     C::Error: Into<Error>,
 {
@@ -114,6 +114,9 @@ where
         let connection_config = ConnectionConfigBuilder::default()
             .initial_max_send_streams(config.initial_max_send_streams.get())
             .streams_per_connection_limit(config.streams_per_connection_limit.get())
+            .initial_stream_window_size(config.initial_stream_window_size)
+            .initial_connection_window_size(config.initial_connection_window_size)
+            .max_frame_size(config.max_frame_size)
             .keep_alive_interval(config.keep_alive_interval)
             .keep_alive_timeout(config.keep_alive_timeout)
             .build()
@@ -270,6 +273,8 @@ where
 
                     let mut total_available_streams = 0usize;
                     let mut total_max_concurrent_streams = 0usize;
+                    // only for logging number of valid connections
+                    let mut total_connections = 0usize;
 
                     for candidate in &inner.connections {
                         if candidate.is_closed() {
@@ -286,6 +291,7 @@ where
                             );
                         }
 
+                        total_connections += 1;
                         total_available_streams =
                             total_available_streams.saturating_add(available_streams);
                         total_max_concurrent_streams =
@@ -320,7 +326,7 @@ where
                     if scaleup {
                         debug!(
                             "Try scaling up pool (connections: {}, available streams: {}, total streams:{})",
-                            inner.connections.len(),
+                            total_connections,
                             total_available_streams,
                             total_max_concurrent_streams
                         );
