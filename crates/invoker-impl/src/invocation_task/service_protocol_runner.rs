@@ -13,6 +13,7 @@ use std::convert::Infallible;
 use std::time::Duration;
 
 use bytes::Bytes;
+use bytestring::ByteString;
 use futures::{Stream, StreamExt, TryStreamExt, stream};
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
@@ -157,6 +158,7 @@ where
             self.service_protocol_version,
             &self.invocation_task.invocation_id,
             &service_invocation_span_context,
+            self.invocation_task.invocation_target.key(),
         );
 
         // Initialize the response stream state
@@ -260,6 +262,7 @@ where
         service_protocol_version: ServiceProtocolVersion,
         invocation_id: &InvocationId,
         parent_span_context: &ServiceInvocationSpanContext,
+        service_key: Option<&ByteString>,
     ) -> (InvokerRequestStreamSender, Request<InvokerBodyStream>) {
         // Make this channel a rendezvous channel to avoid unnecessary buffering between the service
         // protocol runner and the underlying hyper HTTP client. This helps with keeping the overall
@@ -323,10 +326,12 @@ where
 
         headers.extend(deployment.additional_headers);
 
-        (
-            http_stream_tx,
-            Request::new(Parts::new(Method::POST, address, path, headers), req_body),
-        )
+        let mut request_parts = Parts::new(Method::POST, address, path, headers);
+        if let Some(service_key) = service_key {
+            request_parts = request_parts.with_request_identity_sub_field(service_key.clone());
+        }
+
+        (http_stream_tx, Request::new(request_parts, req_body))
     }
 
     // --- Loops

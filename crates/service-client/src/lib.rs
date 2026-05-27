@@ -124,6 +124,7 @@ impl ServiceClient {
         let signer = if let Some(request_identity_key) = request_identity_key.as_deref() {
             Some(request_identity::v1::Signer::new(
                 parts.path.path(),
+                parts.request_identity_sub_field.as_deref(),
                 request_identity_key,
             ))
         } else {
@@ -258,6 +259,9 @@ pub struct Parts {
 
     /// The request's headers - in lambda case, mapped to apigatewayevent.headers
     headers: HeaderMap<HeaderValue>,
+
+    /// Additional 'sub' field for the request identity
+    request_identity_sub_field: Option<ByteString>,
 }
 
 impl Parts {
@@ -272,7 +276,13 @@ impl Parts {
             address,
             path,
             headers,
+            request_identity_sub_field: None,
         }
+    }
+
+    pub fn with_request_identity_sub_field(mut self, sub_field: ByteString) -> Self {
+        self.request_identity_sub_field = Some(sub_field);
+        self
     }
 }
 
