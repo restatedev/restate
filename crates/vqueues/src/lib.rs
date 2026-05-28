@@ -124,36 +124,6 @@ where
         self.cache.get(self.handle).unwrap().meta()
     }
 
-    /// The entry has completed execution and it needs to be removed from the vqueue.
-    ///
-    /// Does nothing if the entry was not found in the previous stage.
-    ///
-    /// Returns true if the entry was found and was ended correctly, false otherwise.
-    pub async fn end_by_id(
-        storage: &'a mut S,
-        cache: &'a mut VQueuesMetaCache,
-        action_collector: Option<&'a mut Vec<A>>,
-        at: UniqueTimestamp,
-        partition_key: PartitionKey,
-        id: &EntryId,
-        status: Status,
-    ) -> Result<bool, StorageError> {
-        // find the entry
-        let header = storage.get_vqueue_entry_status(partition_key, id).await?;
-
-        let Some(entry_state) = header else {
-            return Ok(false);
-        };
-
-        let inbox = Self::get(entry_state.vqueue_id(), storage, cache, action_collector).await?;
-        let Some(mut inbox) = inbox else {
-            return Ok(false);
-        };
-
-        inbox.end(at, &entry_state, status);
-        Ok(true)
-    }
-
     /// Get access to the vqueue if it exists, otherwise this returns None.
     pub async fn get(
         qid: &VQueueId,
@@ -1062,6 +1032,27 @@ where
             event.push(EventDetails::QueueResumed);
             collector.push(A::from(event));
         }
+    }
+
+    pub fn update_entry_metadata(
+        &mut self,
+        header: &impl EntryStatusHeader,
+        metadata: &EntryMetadata,
+    ) {
+        debug!(
+            "update_entry_metadata: {} {metadata:?}, stage: {}",
+            header.display_entry_id(),
+            header.stage(),
+        );
+
+        self.storage.put_vqueue_entry_status(
+            header.vqueue_id(),
+            header.stage(),
+            header.entry_key(),
+            metadata,
+            header.stats().clone(),
+            header.status(),
+        );
     }
 
     #[inline]
