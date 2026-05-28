@@ -273,6 +273,8 @@ where
 
                     let mut total_available_streams = 0usize;
                     let mut total_max_concurrent_streams = 0usize;
+                    // only for logging number of valid connections
+                    let mut total_connections = 0usize;
 
                     for candidate in &inner.connections {
                         if candidate.is_closed() {
@@ -289,6 +291,7 @@ where
                             );
                         }
 
+                        total_connections += 1;
                         total_available_streams =
                             total_available_streams.saturating_add(available_streams);
                         total_max_concurrent_streams =
@@ -323,7 +326,7 @@ where
                     if scaleup {
                         debug!(
                             "Try scaling up pool (connections: {}, available streams: {}, total streams:{})",
-                            inner.connections.len(),
+                            total_connections,
                             total_available_streams,
                             total_max_concurrent_streams
                         );

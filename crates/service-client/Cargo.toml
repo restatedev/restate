@@ -44,7 +44,6 @@ parking_lot = { workspace = true }
 pem = { version = "3.0.6" }
 pin-project = { workspace = true }
 metrics = { workspace = true }
-rand = { workspace = true }
 ring = { version = "0.17.14" }
 rustls = { workspace = true }
 serde = { workspace = true }
@@ -62,6 +61,7 @@ zstd = { workspace = true }
 restate-service-client = { path = ".", features = ["test_util"] }
 criterion = { workspace = true, features = ["async_tokio"] }
 googletest = { workspace = true }
+hyper = { workspace = true, features = ["server"] }
 pprof = { version = "0.15", features = ["criterion", "flamegraph"] }
 tempfile = { workspace = true }
 tokio-stream = {workspace = true}
