@@ -53,8 +53,8 @@ where
         else {
             // It could be that the invocation was killed and purged before the invoker yielded it.
             info!(
-                "Not yielding {} because it has no vqueue state",
-                self.invocation_id,
+                "Not yielding {} because it has no vqueue state, yield_reason: {}",
+                self.invocation_id, self.yield_reason
             );
             return Ok(());
         };
