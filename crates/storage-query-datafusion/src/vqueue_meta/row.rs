@@ -44,7 +44,7 @@ pub(crate) fn append_vqueues_meta_row(
         row.queue_is_paused(meta.queue_is_paused);
     }
 
-    if row.is_limit_key_defined() {
+    if row.is_limit_key_defined() && !meta.limit_key.is_none() {
         row.fmt_limit_key(&meta.limit_key);
     }
 
