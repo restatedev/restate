@@ -15,7 +15,9 @@ use crate::Versioned;
 use crate::schema::deployment::DeploymentResolver;
 use crate::schema::deployment::ProtocolType;
 use crate::schema::info::SchemaInfo;
-use crate::schema::invocation_target::InvocationTargetResolver;
+use crate::schema::invocation_target::{
+    DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION, InvocationTargetResolver,
+};
 use crate::schema::service::ServiceMetadataResolver;
 use crate::service_protocol::{
     MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION, MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION,
@@ -2004,6 +2006,88 @@ mod endpoint_manifest_options_propagation {
             eq(InvocationRetention {
                 completion_retention: Duration::from_secs(0), // Clamped to 0
                 journal_retention: Duration::from_secs(0),    // Clamped to 0
+            })
+        );
+    }
+
+    #[test]
+    fn idempotency_retention_default_and_max() {
+        // Custom default kicks in when neither service nor handler sets it; max clamps an SDK-set value.
+        let mut config = Configuration::default();
+        config.invocation.default_idempotency_retention = FriendlyDuration::from_secs(120);
+        config.invocation.max_idempotency_retention = Some(FriendlyDuration::from_secs(60));
+        crate::config::set_current_config(config);
+
+        // No idempotency_retention in the manifest -> config default applies, then clamps to max (60s).
+        let target = init_discover_and_resolve_target(
+            greeter_service(),
+            GREETER_SERVICE_NAME,
+            GREET_HANDLER_NAME,
+        );
+        assert_that!(
+            target.compute_retention(true), // has_idempotency_key = true to exercise completion_retention
+            eq(InvocationRetention {
+                completion_retention: Duration::from_secs(60),
+                journal_retention: Duration::from_secs(60),
+            })
+        );
+
+        // SDK requests 5 minutes -> still clamped to max (60s).
+        let target = init_discover_and_resolve_target(
+            endpoint_manifest::Service {
+                idempotency_retention: Some(5 * 60 * 1000),
+                ..greeter_service()
+            },
+            GREETER_SERVICE_NAME,
+            GREET_HANDLER_NAME,
+        );
+        assert_that!(
+            target.compute_retention(true),
+            eq(InvocationRetention {
+                completion_retention: Duration::from_secs(60),
+                journal_retention: Duration::from_secs(60),
+            })
+        );
+    }
+
+    #[test]
+    fn workflow_completion_retention_default_and_max() {
+        let mut config = Configuration::default();
+        config.invocation.default_workflow_completion_retention = FriendlyDuration::from_secs(120);
+        config.invocation.max_workflow_completion_retention = Some(FriendlyDuration::from_secs(60));
+        crate::config::set_current_config(config);
+
+        // No workflow_completion_retention in the manifest -> config default applies, then clamps to max (60s).
+        let target = init_discover_and_resolve_target(
+            greeter_workflow(),
+            GREETER_SERVICE_NAME,
+            GREET_HANDLER_NAME,
+        );
+        assert_that!(
+            target.compute_retention(false),
+            eq(InvocationRetention {
+                completion_retention: Duration::from_secs(60),
+                journal_retention: Duration::from_secs(60),
+            })
+        );
+
+        // SDK requests 5 minutes -> still clamped to max (60s).
+        let target = init_discover_and_resolve_target(
+            endpoint_manifest::Service {
+                handlers: vec![endpoint_manifest::Handler {
+                    workflow_completion_retention: Some(5 * 60 * 1000),
+                    ..greeter_workflow_greet_handler()
+                }],
+                ..greeter_workflow()
+            },
+            GREETER_SERVICE_NAME,
+            GREET_HANDLER_NAME,
+        );
+        assert_that!(
+            target.compute_retention(false),
+            eq(InvocationRetention {
+                completion_retention: Duration::from_secs(60),
+                journal_retention: Duration::from_secs(60),
             })
         );
     }
