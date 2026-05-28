@@ -21,7 +21,7 @@ use std::fmt::{Debug, Formatter};
 use std::ops::{RangeBounds, RangeInclusive};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use assert2::let_assert;
 use bytes::Bytes;
@@ -2095,7 +2095,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 )
                 .await?
                 .expect("terminate expects vqueue to exist")
-                .end(record_unique_ts, &entry_status, new_status);
+                .end(record_unique_ts, &entry_status, new_status, Duration::ZERO);
             }
         } else {
             // Delete inbox entry and invocation status.
@@ -2205,7 +2205,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 )
                 .await?
                 .expect("terminate expects vqueue to exist")
-                .end(record_unique_ts, &entry_status, new_status);
+                .end(record_unique_ts, &entry_status, new_status, Duration::ZERO);
             }
         } else {
             // Delete timer
@@ -3105,7 +3105,12 @@ impl<S> StateMachineApplyContext<'_, S> {
             )
             .await?
             .expect("terminate expects vqueue to exist")
-            .end(record_unique_ts, &entry_status, end_status);
+            .end(
+                record_unique_ts,
+                &entry_status,
+                end_status,
+                completion_retention,
+            );
         } else {
             // Consume inbox and move on
             self.consume_inbox(&invocation_target).await?;
@@ -4832,7 +4837,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         );
 
         self.storage
-            .put_invocation_status(invocation_id, &InvocationStatus::Free)
+            .delete_invocation_status(invocation_id)
             .map_err(Error::Storage)
     }
 
