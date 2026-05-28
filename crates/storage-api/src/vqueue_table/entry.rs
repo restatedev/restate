@@ -13,6 +13,7 @@ use std::num::NonZeroU16;
 use restate_clock::RoughTimestamp;
 use restate_memory::NonZeroByteCount;
 use restate_types::vqueues::{EntryId, EntryKind, Seq};
+use restate_util_string::ReString;
 
 use super::Status;
 use super::stats::EntryStatistics;
@@ -187,8 +188,6 @@ impl EntryValue {
 
 #[derive(Debug, Clone, Eq, Default, PartialEq, bilrost::Message)]
 pub struct EntryMetadataRef<'a> {
-    // todo: maybe add "deployment_id?" or other metadata needed to identify the deployment
-    // or maybe service revision.
     #[bilrost(tag(1))]
     deployment: Option<&'a str>,
     // If set, this is the amount of memory the invocation seems to require to
@@ -213,12 +212,10 @@ impl<'a> From<&'a EntryMetadata> for EntryMetadataRef<'a> {
     }
 }
 
-#[derive(Debug, Clone, Eq, Default, PartialEq, bilrost::Message)]
+#[derive(Debug, Clone, Default, bilrost::Message)]
 pub struct EntryMetadata {
-    // todo: This is temporary placeholder, type and name _will_ change.
     #[bilrost(tag(1))]
-    pub deployment: Option<String>,
-
+    pub deployment: Option<ReString>,
     // If set, this is the amount of memory the invocation seems to require to
     // run on the invoker side.
     #[bilrost(tag(2), encoding(fixed))]

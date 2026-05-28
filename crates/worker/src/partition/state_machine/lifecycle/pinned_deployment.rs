@@ -8,10 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::VerifyOrMigrateJournalTableToV2Command;
+use tracing::trace;
 
-use crate::debug_if_leader;
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::invocation_status_table::{
@@ -24,12 +22,19 @@ use restate_storage_api::promise_table::{ReadPromiseTable, WritePromiseTable};
 use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
 use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_storage_api::timer_table::WriteTimerTable;
-use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
+use restate_storage_api::vqueue_table::{EntryStatusHeader, ReadVQueueTable, WriteVQueueTable};
 use restate_storage_api::{journal_table as journal_table_v1, journal_table_v2};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::InvocationId;
 use restate_types::service_protocol::ServiceProtocolVersion;
-use tracing::trace;
+use restate_types::sharding::WithPartitionKey;
+use restate_types::vqueues::EntryId;
+use restate_util_string::ToReString;
+use restate_vqueues::VQueue;
+
+use super::VerifyOrMigrateJournalTableToV2Command;
+use crate::debug_if_leader;
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub struct OnPinnedDeploymentCommand {
     pub invocation_id: InvocationId,
@@ -86,12 +91,35 @@ where
             restate.deployment.service_protocol_version = %self.pinned_deployment.service_protocol_version.as_repr(),
             "Store chosen deployment to storage"
         );
+
+        if let Some(ref vqueue_id) = in_flight_invocation_metadata.vqueue_id {
+            let entry_id = EntryId::from(&self.invocation_id);
+            let Some(header) = ctx
+                .storage
+                .get_vqueue_entry_status(self.invocation_id.partition_key(), &entry_id)
+                .await?
+            else {
+                panic!(
+                    "Trying to update an invocation {}, in vqueue {vqueue_id} which does not have a vqueue entry!",
+                    self.invocation_id
+                );
+            };
+            let mut metadata = header.metadata().clone();
+            metadata.deployment = Some(self.pinned_deployment.deployment_id.to_restring());
+
+            VQueue::get(
+                vqueue_id,
+                ctx.storage,
+                ctx.vqueues_cache,
+                ctx.is_leader.then_some(ctx.action_collector),
+            )
+            .await?
+            .expect("pinning in a non-existent vqueue")
+            .update_entry_metadata(&header, &metadata);
+        }
+
         in_flight_invocation_metadata
             .set_pinned_deployment(self.pinned_deployment, ctx.record_created_at);
-
-        // todo: set the pinned deployment in the vqueue entry metadata so that the scheduler can know
-        // about it.
-
         // We recreate the InvocationStatus in Invoked state as the invoker can notify the
         // chosen deployment_id only when the invocation is in-flight.
         ctx.storage
