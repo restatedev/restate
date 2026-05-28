@@ -536,7 +536,7 @@ impl Default for InvokerOptions {
             invocation_throttling: None,
             action_throttling: None,
             memory_limit: NonZeroByteCount::new(
-                NonZeroUsize::new(256 * 1024 * 1024).unwrap(), // 256 MiB
+                NonZeroUsize::new(1536 * 1024 * 1024).unwrap(), // 1.5 GiB
             ),
             per_invocation_memory_limit: None,
             per_invocation_initial_memory: DEFAULT_PER_INVOCATION_INITIAL_MEMORY,

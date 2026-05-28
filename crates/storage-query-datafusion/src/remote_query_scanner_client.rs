@@ -33,13 +33,18 @@ use restate_types::sharding::KeyRange;
 
 use crate::{decode_record_batch, encode_expr, encode_schema};
 
-#[derive(Debug, Clone)]
+#[derive(derive_more::Debug)]
 pub struct RemoteScanner {
     scanner_id: ScannerId,
     connection: Option<Connection>,
 }
 
 impl RemoteScanner {
+    /// Constructs a scanner that owns `connection` for the purpose of sending
+    /// `Close` on drop. Use this to install a drop-guard *before* sending
+    /// `Open`: if the caller's future is cancelled (or the proxy returns
+    /// `Err`) after `Open` reaches the wire, the existing `Drop` impl emits
+    /// `Close` so the server doesn't keep an orphan scanner until TTL.
     pub fn new(scanner_id: ScannerId, connection: Connection) -> Self {
         Self {
             scanner_id,
@@ -48,7 +53,7 @@ impl RemoteScanner {
     }
 
     async fn next_batch(
-        &self,
+        &mut self,
         next_predicate: Option<RemoteQueryScannerPredicate>,
     ) -> Result<RemoteQueryScannerNextResult, DataFusionError> {
         let Some(ref connection) = self.connection else {
@@ -138,10 +143,15 @@ pub fn create_remote_scanner_service<T: TransportConnect>(
 /// Given an implementation of a remote ScannerService, this function
 /// creates a DataFusion [[SendableRecordBatchStream]] that transports
 /// record batches via the RemoteScannerService API.
+///
+/// `scanner_id` is allocated by the caller (typically via
+/// [`RemoteScannerManager::allocate_scanner_id`]) so the server can adopt the
+/// caller's id instead of minting its own.
 #[allow(clippy::too_many_arguments)]
 pub fn remote_scan_as_datafusion_stream(
     service: Arc<dyn RemoteScannerService>,
     target_node_id: NodeId,
+    scanner_id: ScannerId,
     partition_id: PartitionId,
     range: KeyRange,
     table_name: String,
@@ -165,10 +175,8 @@ pub fn remote_scan_as_datafusion_stream(
             None => None,
         };
 
-        //
-        // get a scanner id
-        //
         let open_request = RemoteQueryScannerOpen {
+            scanner_id: Some(scanner_id),
             partition_id,
             range,
             table: table_name,
@@ -180,7 +188,7 @@ pub fn remote_scan_as_datafusion_stream(
 
         // RemoteScanner will auto close on drop. Please call forget() if you don't need this
         // behaviour.
-        let remote_scanner = service.open(target_node_id, open_request).await?;
+        let mut remote_scanner = service.open(target_node_id, open_request).await?;
         // loop while we have record_batch coming in
         //
         loop {
@@ -293,24 +301,46 @@ impl<T: TransportConnect> RemoteScannerService for RemoteScannerServiceProxy<T> 
             .await
             .map_err(|e| DataFusionError::External(e.into()))?;
 
-        let permit = connection.reserve().await.ok_or_else(|| {
+        // We always set the client minted scanner-id
+        let scanner_id = req.scanner_id.unwrap();
+
+        // Reserve and send Open. `send_rpc` is synchronous after the permit
+        // is in hand — by the time it returns the message is queued on the
+        // egress and the server is committed to seeing it.
+        let open_permit = connection.reserve().await.ok_or_else(|| {
             DataFusionError::External(
                 anyhow::anyhow!("cannot open remote scanner; connection lost to {peer}").into(),
             )
         })?;
-
-        let reply = permit
+        let open_reply = open_permit
             .send_rpc(req, None)
-            // codec error is an internal error
             .map_err(|e| DataFusionError::Internal(e.to_string()))?;
 
-        match reply.await {
+        // From here on we must guarantee a `Close` reaches the server if we
+        // don't hand a `RemoteScanner` back to the caller — otherwise the
+        // scanner the server is about to create sits orphaned until TTL.
+        // Pre-constructing the scanner installs its own `Drop` as the guard;
+        // it fires `Close` on cancellation or any `Err` return below.
+        // On `Failure` we disarm via `.forget()` so we don't accidentally close a scanner
+        // that another caller holds under the same id.
+        let mut remote_scanner = RemoteScanner::new(scanner_id, connection.clone());
+
+        match open_reply.await {
             Ok(RemoteQueryScannerOpened::Success { scanner_id }) => {
-                Ok(RemoteScanner::new(scanner_id, connection))
+                // Server is running Restate <v1.7 so we need to respect
+                // the returned scanner_id
+                if remote_scanner.scanner_id != scanner_id {
+                    remote_scanner.forget();
+                    remote_scanner = RemoteScanner::new(scanner_id, connection.clone())
+                }
+                Ok(remote_scanner)
             }
-            Ok(RemoteQueryScannerOpened::Failure) => Err(DataFusionError::Internal(
-                "Unable to open a remote scanner".to_string(),
-            )),
+            Ok(RemoteQueryScannerOpened::Failure) => {
+                remote_scanner.forget();
+                Err(DataFusionError::Internal(
+                    "Unable to open a remote scanner".to_string(),
+                ))
+            }
             Err(e) => Err(DataFusionError::External(e.into())),
         }
     }

@@ -93,7 +93,7 @@ where
         // Determine which known changes actually flip a feature off->on. Only those
         // need to run the migration probe; re-applying an already-enabled barrier
         // stays cheap and idempotent.
-        let mut updated = ctx.enabled_features.clone();
+        let mut updated = *ctx.enabled_features;
         let flip_on_changes: Vec<PartitionFeatureChange> = known_changes
             .iter()
             .copied()

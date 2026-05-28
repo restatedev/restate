@@ -10,6 +10,8 @@
 
 use bytes::BytesMut;
 
+use restate_encoding::NetSerde;
+
 use crate::storage::{
     StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError, decode,
     encode,
@@ -86,9 +88,22 @@ impl PartitionFeatureChange {
 /// behavior makes existing FSM data forward-compatible (new fields default to
 /// `false`).
 ///
+/// # Important
+/// When adding new fields to this struct, update [`PersistedStateMachineFeatures::enabled_names`]
+/// accordingly.
+///
 /// *Since v1.7.0*
 #[derive(
-    Debug, Clone, Default, PartialEq, Eq, bilrost::Message, serde::Serialize, serde::Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    bilrost::Message,
+    NetSerde,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 pub struct PersistedStateMachineFeatures {
     /// Journal v2 should be used by this partition.
@@ -106,6 +121,21 @@ pub struct PersistedStateMachineFeatures {
     /// *Since v1.7.0*
     #[bilrost(tag(3))]
     pub unique_random_seeds: bool,
+}
+
+impl PersistedStateMachineFeatures {
+    /// Names of features currently enabled, in declaration order.
+    ///
+    /// Adding a new feature requires adding one entry here.
+    pub fn enabled_names(&self) -> impl Iterator<Item = &'static str> + '_ {
+        [
+            self.journal_v2.then_some("journal_v2"),
+            self.vqueues.then_some("vqueues"),
+            self.unique_random_seeds.then_some("unique_random_seeds"),
+        ]
+        .into_iter()
+        .flatten()
+    }
 }
 
 impl StorageEncode for PersistedStateMachineFeatures {
@@ -165,6 +195,27 @@ mod tests {
         PartitionFeatureChange::EnableUniqueRandomSeeds.apply_to(&mut features);
         assert!(features.vqueues);
         assert!(features.unique_random_seeds);
+    }
+
+    #[test]
+    fn enabled_names_reflects_set_flags() {
+        let mut features = PersistedStateMachineFeatures::default();
+        assert_eq!(
+            features.enabled_names().collect::<Vec<_>>(),
+            Vec::<&str>::new()
+        );
+
+        features.vqueues = true;
+        assert_eq!(
+            features.enabled_names().collect::<Vec<_>>(),
+            vec!["vqueues"]
+        );
+
+        features.journal_v2 = true;
+        assert_eq!(
+            features.enabled_names().collect::<Vec<_>>(),
+            vec!["journal_v2", "vqueues"],
+        );
     }
 
     #[test]

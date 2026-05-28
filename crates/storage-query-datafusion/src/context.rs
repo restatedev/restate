@@ -356,17 +356,16 @@ impl RegisterTable for ClusterTables {
         crate::partition_state::register_self(ctx, self.cluster_state_watch.clone())?;
 
         // Node-fan-out tables
-        let remote_scanner = self.remote_scanner_manager.remote_scanner_service();
         crate::loglet_worker::register_self(
             ctx,
             metadata.clone(),
-            remote_scanner.clone(),
+            self.remote_scanner_manager.clone(),
             None, // local scanner is registered separately if this node is also a log-server
         )?;
         crate::bifrost_read_stream::register_self(
             ctx,
             metadata,
-            remote_scanner,
+            self.remote_scanner_manager.clone(),
             None, // local scanner is registered separately by the node
         )?;
 

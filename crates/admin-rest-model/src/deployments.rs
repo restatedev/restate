@@ -19,6 +19,94 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::collections::HashMap;
 
+/// HTTP authentication details.
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum HttpAuth {
+    GoogleIdToken(GoogleIdTokenAuth),
+}
+
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct GoogleIdTokenAuth {
+    /// Service account email to impersonate via `iamcredentials:generateIdToken`. Leave unset to
+    /// use the ambient ADC identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<String>))]
+    pub impersonate_service_account: Option<bytestring::ByteString>,
+    /// Explicit OIDC `aud` claim. Leave unset to automatically derive from the deployment URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<String>))]
+    pub audience: Option<bytestring::ByteString>,
+}
+
+/// Failure that the URI-aware wire-to-persisted conversion may surface when the operator left
+/// `audience` unset on the wire and the deployment URI has no derivable origin. The REST handler
+/// translates this into an `InvalidField("auth.audience", ...)` 400 response.
+#[derive(Debug, thiserror::Error)]
+pub enum AudienceDerivationError {
+    #[error(
+        "cannot derive OIDC audience from deployment URI '{uri}': missing scheme or host. \
+         Specify auth.audience explicitly."
+    )]
+    UnderivableFromUri { uri: String },
+}
+
+impl HttpAuth {
+    /// Convert this wire-side auth block into its persisted form, deriving any missing
+    /// audience from the deployment URI. Persisted records always carry a concrete audience;
+    /// callers from outside the REST surface should not construct persisted values directly.
+    pub fn into_persisted(
+        self,
+        uri: &Uri,
+    ) -> Result<restate_types::deployment::HttpAuth, AudienceDerivationError> {
+        match self {
+            HttpAuth::GoogleIdToken(g) => Ok(restate_types::deployment::HttpAuth::GoogleIdToken(
+                g.into_persisted(uri)?,
+            )),
+        }
+    }
+}
+
+impl GoogleIdTokenAuth {
+    pub fn into_persisted(
+        self,
+        uri: &Uri,
+    ) -> Result<restate_types::deployment::GoogleIdTokenAuth, AudienceDerivationError> {
+        let audience = match self.audience {
+            Some(a) => a,
+            None => restate_types::deployment::derive_audience(uri)
+                .map(bytestring::ByteString::from)
+                .ok_or_else(|| AudienceDerivationError::UnderivableFromUri {
+                    uri: uri.to_string(),
+                })?,
+        };
+        Ok(restate_types::deployment::GoogleIdTokenAuth::new(
+            audience,
+            self.impersonate_service_account,
+        ))
+    }
+}
+
+impl From<restate_types::deployment::HttpAuth> for HttpAuth {
+    fn from(value: restate_types::deployment::HttpAuth) -> Self {
+        match value {
+            restate_types::deployment::HttpAuth::GoogleIdToken(g) => {
+                HttpAuth::GoogleIdToken(g.into())
+            }
+        }
+    }
+}
+
+impl From<restate_types::deployment::GoogleIdTokenAuth> for GoogleIdTokenAuth {
+    fn from(value: restate_types::deployment::GoogleIdTokenAuth) -> Self {
+        GoogleIdTokenAuth {
+            impersonate_service_account: value.impersonate_service_account().cloned(),
+            audience: Some(value.audience().clone()),
+        }
+    }
+}
+
 // This enum could be a struct with a nested enum to avoid repeating some fields, but serde(flatten) unfortunately breaks the openapi code generation
 #[serde_as]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
@@ -85,6 +173,16 @@ pub enum RegisterDeploymentRequest {
         /// `force` and `breaking` will be respected.
         #[serde(default = "restate_serde_util::default::bool::<false>")]
         dry_run: bool,
+
+        /// # Authentication
+        ///
+        /// Optional per-deployment authentication configuration. When set to `GoogleIdToken`,
+        /// Restate mints a Google-signed OIDC ID token for each request and attaches it as
+        /// `X-Serverless-Authorization: Bearer <token>`. Cloud Run validates this header in
+        /// precedence over `Authorization` and strips it before forwarding to the container, so any
+        /// `Authorization` placed in `additional_headers` passes through to the workload unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auth: Option<HttpAuth>,
     },
     /// Register Lambda deployment request
     #[cfg_attr(feature = "schema", schema(title = "RegisterLambdaDeploymentRequest"))]
@@ -259,6 +357,12 @@ pub enum DeploymentResponse {
         /// List of configuration/deprecation information related to this deployment.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         info: Vec<SchemaInfo>,
+
+        /// # Authentication
+        ///
+        /// Per-deployment authentication, if configured.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auth: Option<HttpAuth>,
     },
     /// Deployment response for Lambda deployments
     #[cfg_attr(feature = "schema", schema(title = "LambdaDeploymentResponse"))]
@@ -409,6 +513,12 @@ pub enum DetailedDeploymentResponse {
         /// List of configuration/deprecation information related to this deployment.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         info: Vec<SchemaInfo>,
+
+        /// # Authentication
+        ///
+        /// Per-deployment authentication, if configured.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auth: Option<HttpAuth>,
     },
     /// Detailed deployment response for Lambda deployments
     #[cfg_attr(feature = "schema", schema(title = "LambdaDetailedDeploymentResponse"))]
@@ -568,4 +678,48 @@ pub enum UpdateDeploymentRequest {
         #[serde(default = "restate_serde_util::default::bool::<false>")]
         dry_run: bool,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytestring::ByteString;
+
+    fn wire_auth(audience: Option<ByteString>) -> GoogleIdTokenAuth {
+        GoogleIdTokenAuth {
+            impersonate_service_account: None,
+            audience,
+        }
+    }
+
+    #[test]
+    fn into_persisted_derives_audience_from_uri_when_unset() {
+        let uri: Uri = "https://svc.example.com/discover".parse().unwrap();
+        let persisted = wire_auth(None).into_persisted(&uri).expect("derivable");
+        assert_eq!(persisted.audience(), "https://svc.example.com");
+    }
+
+    #[test]
+    fn into_persisted_preserves_explicit_audience() {
+        let explicit = ByteString::from_static("https://canonical.example.com");
+        let uri: Uri = "https://different.example.com/svc".parse().unwrap();
+        let persisted = wire_auth(Some(explicit.clone()))
+            .into_persisted(&uri)
+            .expect("explicit accepted");
+        assert_eq!(persisted.audience(), &explicit);
+    }
+
+    #[test]
+    fn into_persisted_fails_when_audience_unset_and_uri_has_no_host() {
+        // Path-only URI has no scheme or authority; derivation cannot succeed.
+        let uri: Uri = "/discover".parse().unwrap();
+        let err = wire_auth(None)
+            .into_persisted(&uri)
+            .expect_err("must surface error");
+        match err {
+            AudienceDerivationError::UnderivableFromUri { uri: got } => {
+                assert_eq!(got, "/discover");
+            }
+        }
+    }
 }

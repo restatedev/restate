@@ -66,4 +66,10 @@ pub(crate) fn append_partition_row(
     if let Some(version) = state.last_applied_schema_version {
         row.applied_schema_version(u32::from(version));
     }
+
+    row.enabled_features(state.enabled_features.enabled_names().map(Some));
+
+    if let Some(version) = state.storage_version {
+        row.storage_version(version as u32);
+    }
 }

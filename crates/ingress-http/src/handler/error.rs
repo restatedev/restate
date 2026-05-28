@@ -66,6 +66,8 @@ pub(crate) enum HandlerError {
     InvalidLimitKey(String),
     #[error("scoped invocations require vqueues to be enabled")]
     ScopeRequiresVQueues,
+    #[error("scope is not supported for Virtual Object targets")]
+    ScopedVirtualObjectNotSupported,
     #[error("not implemented")]
     NotImplemented,
     #[error("bad header {0}: {1:?}")]
@@ -157,7 +159,8 @@ impl HandlerError {
             | HandlerError::InvalidLimitKey(_)
             | HandlerError::BadScopeValue(_)
             | HandlerError::BadPath(_)
-            | HandlerError::ScopeRequiresVQueues => StatusCode::BAD_REQUEST,
+            | HandlerError::ScopeRequiresVQueues
+            | HandlerError::ScopedVirtualObjectNotSupported => StatusCode::BAD_REQUEST,
             HandlerError::DispatcherError(_) => {
                 // TODO add more distinctions between different dispatcher errors (unavailable, etc)
                 StatusCode::INTERNAL_SERVER_ERROR

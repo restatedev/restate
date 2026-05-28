@@ -94,7 +94,7 @@ impl<C: Clone + Send + Sync + 'static> Pool<C> {
 impl<C> Pool<C>
 where
     C: Service<Uri> + Send + Sync + Clone + 'static,
-    C::Response: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
+    C::Response: AsyncRead + AsyncWrite + std::fmt::Debug + Unpin + Send + Sync + 'static,
     C::Future: Send + 'static,
     C::Error: Into<Error>,
 {

@@ -35,11 +35,55 @@ pub struct InvocationOptions {
     /// # Maximum journal retention duration
     ///
     /// Maximum journal retention duration that can be configured.
-    /// When discovering a service deployment, or when modifying the journal retention using the Admin API, the given value will be clamped.
+    /// Applied when ingesting the invocation: values higher than this limit are clamped down to it.
     ///
     /// Unset means no limit.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub max_journal_retention: Option<FriendlyDuration>,
+
+    /// # Default idempotency retention
+    ///
+    /// Default idempotency retention for all invocations carrying an idempotency key.
+    ///
+    /// This default is used when neither the service nor the handler configures an idempotency retention,
+    /// and can be overridden per service/handler using the respective SDK APIs.
+    ///
+    /// Since v1.7.0
+    #[serde(skip_serializing_if = "FriendlyDuration::is_zero", default)]
+    pub default_idempotency_retention: FriendlyDuration,
+
+    /// # Maximum idempotency retention duration
+    ///
+    /// Maximum idempotency retention duration that can be configured.
+    /// Applied when ingesting the invocation: values higher than this limit are clamped down to it.
+    ///
+    /// Unset means no limit.
+    ///
+    /// Since v1.7.0
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_idempotency_retention: Option<FriendlyDuration>,
+
+    /// # Default workflow completion retention
+    ///
+    /// Default workflow completion retention for all workflow invocations.
+    ///
+    /// This default is used when neither the workflow service nor the handler configures a workflow completion retention,
+    /// and can be overridden per service/handler using the respective SDK APIs.
+    ///
+    /// Since v1.7.0
+    #[serde(skip_serializing_if = "FriendlyDuration::is_zero", default)]
+    pub default_workflow_completion_retention: FriendlyDuration,
+
+    /// # Maximum workflow completion retention duration
+    ///
+    /// Maximum workflow completion retention duration that can be configured.
+    /// Applied when ingesting the invocation: values higher than this limit are clamped down to it.
+    ///
+    /// Unset means no limit.
+    ///
+    /// Since v1.7.0
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_workflow_completion_retention: Option<FriendlyDuration>,
 
     /// # Default retry policy
     ///
@@ -85,6 +129,10 @@ impl Default for InvocationOptions {
         Self {
             default_journal_retention: FriendlyDuration::from_secs(60 * 60 * 24),
             max_journal_retention: None,
+            default_idempotency_retention: FriendlyDuration::from_secs(60 * 60 * 24),
+            max_idempotency_retention: None,
+            default_workflow_completion_retention: FriendlyDuration::from_secs(60 * 60 * 24),
+            max_workflow_completion_retention: None,
             default_retry_policy: InvocationRetryPolicyOptions::default(),
             max_retry_policy_max_attempts: None,
             invocation_yield_threshold: None,

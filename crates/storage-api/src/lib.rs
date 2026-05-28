@@ -11,6 +11,7 @@
 use std::future::Future;
 
 use restate_memory::{NonZeroByteCount, OutOfMemory, OutOfMemoryKind};
+use restate_types::partitions::UnknownStorageVersion;
 
 /// Storage error
 #[derive(Debug, thiserror::Error)]
@@ -29,6 +30,8 @@ pub enum StorageError {
     SnapshotExport(anyhow::Error),
     #[error("precondition failed: {0}")]
     PreconditionFailed(anyhow::Error),
+    #[error(transparent)]
+    UnknownStorageVersion(#[from] UnknownStorageVersion),
 }
 
 pub type Result<T, E = StorageError> = std::result::Result<T, E>;

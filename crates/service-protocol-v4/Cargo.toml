@@ -43,6 +43,7 @@ tracing = { workspace = true, optional = true }
 [dev-dependencies]
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
+bytestring = { workspace = true }
 googletest = { workspace = true }
 
 [build-dependencies]

@@ -117,6 +117,119 @@ enum SchemaRegistryErrorInner {
     Internal(String),
 }
 
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[error("invalid HTTP auth configuration: field={field}: {message}")]
+pub struct HttpAuthValidationError {
+    field: &'static str,
+    message: String,
+}
+
+impl HttpAuthValidationError {
+    fn invalid_field(field: &'static str, message: String) -> Self {
+        Self { field, message }
+    }
+
+    pub fn field(&self) -> &'static str {
+        self.field
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+/// Validate the per-deployment HTTP `auth` invariants against the effective (uri,
+/// additional_headers) tuple. The URI must be https or point to a loopback/private host to avoid
+/// leaking bearer tokens in cleartext. A customer-supplied `X-Serverless-Authorization` header is
+/// rejected because the dispatch path always uses that header for the minted ID token.
+pub fn validate_http_auth(
+    uri: &Uri,
+    additional_headers: Option<&Headers>,
+) -> Result<(), HttpAuthValidationError> {
+    let scheme_ok = uri
+        .scheme()
+        .map(|s| s.as_str().eq_ignore_ascii_case("https"))
+        .unwrap_or(false);
+    if !scheme_ok && !is_loopback_or_private_host(uri) {
+        return Err(HttpAuthValidationError::invalid_field(
+            "auth",
+            format!(
+                "GCP authentication requires an https URI for non-loopback/private hosts; got {uri}"
+            ),
+        ));
+    }
+
+    if let Some(headers) = additional_headers {
+        let has_xserv = headers.keys().any(|k| {
+            k.as_str()
+                .eq_ignore_ascii_case("x-serverless-authorization")
+        });
+        if has_xserv {
+            return Err(HttpAuthValidationError::invalid_field(
+                "additional_headers",
+                "X-Serverless-Authorization in additional_headers is not allowed when \
+                 GCP auth is enabled; the minted ID token uses this header. Place any \
+                 static bearer on Authorization instead; Cloud Run forwards it to the \
+                 workload unchanged."
+                    .to_owned(),
+            ));
+        }
+    }
+
+    if is_loopback_or_private_host(uri) {
+        tracing::warn!(
+            uri = %uri,
+            "GCP auth configured for a loopback/private deployment URI; \
+             tokens will still be minted and attached"
+        );
+    }
+
+    Ok(())
+}
+
+pub fn effective_http_patch_inputs<'a>(
+    patch_uri: Option<&'a Uri>,
+    patch_headers: Option<&'a Headers>,
+    existing_uri: &'a Uri,
+    existing_headers: &'a Headers,
+) -> (&'a Uri, std::borrow::Cow<'a, Headers>) {
+    let effective_uri = patch_uri.unwrap_or(existing_uri);
+    let effective_headers = match patch_headers {
+        Some(h) => std::borrow::Cow::Borrowed(h),
+        None => std::borrow::Cow::Borrowed(existing_headers),
+    };
+    (effective_uri, effective_headers)
+}
+
+fn is_loopback_or_private_host(uri: &Uri) -> bool {
+    let Some(authority) = uri.authority() else {
+        return false;
+    };
+    let host = authority.host();
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    // Strip IPv6 brackets if present.
+    let host_clean = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    if let Ok(ipv4) = host_clean.parse::<std::net::Ipv4Addr>() {
+        return ipv4.is_loopback() || ipv4.is_private();
+    }
+    if let Ok(ipv6) = host_clean.parse::<std::net::Ipv6Addr>() {
+        // Loopback, ULA (fc00::/7), or link-local (fe80::/10).
+        if ipv6.is_loopback() {
+            return true;
+        }
+        let segs = ipv6.segments();
+        let ula = (segs[0] & 0xfe00) == 0xfc00;
+        let ll = (segs[0] & 0xffc0) == 0xfe80;
+        return ula || ll;
+    }
+    false
+}
+
 /// Whether to apply the changes or not
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub enum ApplyMode {
@@ -197,6 +310,10 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry: Telemetry
             apply_mode,
         }: RegisterDeploymentRequest,
     ) -> Result<(AddDeploymentResult, Deployment, Vec<ServiceMetadata>), SchemaRegistryError> {
+        // The wire-to-persisted conversion at the REST boundary has already materialised any
+        // derived `auth` fields (today: the OIDC `audience` for `GoogleIdToken`). The persisted
+        // type enforces that invariant at compile time, so no rewriting is needed here.
+
         // Verify first if we have the service. If we do, no need to do anything here.
         if overwrite == Overwrite::No {
             // Verify if we have a service for this endpoint already or not
@@ -300,6 +417,11 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
             return Err(SchemaError::NotFound(deployment_id.to_string()).into());
         };
 
+        let existing_http_auth = match &existing_deployment.ty {
+            DeploymentType::Http { auth, .. } => auth.clone(),
+            DeploymentType::Lambda { .. } => None,
+        };
+
         // Merge with update changes requested
         let (deployment_address, use_http_11) =
             match (update_deployment_address, existing_deployment.ty) {
@@ -310,7 +432,9 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                     }),
                     _,
                 ) => (
-                    DeploymentAddress::Http(HttpDeploymentAddress::new(uri)),
+                    DeploymentAddress::Http(
+                        HttpDeploymentAddress::new(uri).with_auth(existing_http_auth.clone()),
+                    ),
                     use_http_11.unwrap_or(false),
                 ),
                 (
@@ -334,7 +458,9 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                         ..
                     },
                 ) => (
-                    DeploymentAddress::Http(HttpDeploymentAddress::new(address)),
+                    DeploymentAddress::Http(
+                        HttpDeploymentAddress::new(address).with_auth(existing_http_auth.clone()),
+                    ),
                     use_http_11.unwrap_or(http_version == http::Version::HTTP_11),
                 ),
                 (
@@ -376,7 +502,9 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                         ..
                     },
                 ) => (
-                    DeploymentAddress::Http(HttpDeploymentAddress::new(address)),
+                    DeploymentAddress::Http(
+                        HttpDeploymentAddress::new(address).with_auth(existing_http_auth.clone()),
+                    ),
                     http_version == http::Version::HTTP_11,
                 ),
                 (
@@ -394,6 +522,11 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                     false,
                 ),
             };
+
+        // PATCH preserves the persisted `auth` field verbatim. To rotate audience or
+        // impersonation, the operator must re-register with `--force`, which re-runs derivation
+        // against the new URI at the REST boundary.
+
         let additional_headers =
             additional_headers.unwrap_or(existing_deployment.additional_headers);
 

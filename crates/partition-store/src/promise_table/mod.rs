@@ -25,6 +25,7 @@ use restate_storage_api::promise_table::{
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
+use restate_types::partitions::StorageVersion;
 use restate_types::sharding::KeyRange;
 use restate_types::{Scope, ServiceName};
 use restate_util_string::ReString;
@@ -62,14 +63,23 @@ fn create_key(service_id: &ServiceId, key: &ByteString) -> PromiseKey {
     }
 }
 
+/// Returns `true` if the call should use the scoped promise table — either
+/// because the partition store has migrated past
+/// [`StorageVersion::ScopedStateAndPromise`] (so scope = None entries also live
+/// in the scoped table) or because the [`ServiceId`] carries an explicit scope.
+#[inline]
+fn use_scoped_promise(storage_version: StorageVersion, service_id: &ServiceId) -> bool {
+    storage_version.is_scope_migrated() || service_id.scope.is_some()
+}
+
 fn get_promise<S: StorageAccess>(
     storage: &mut S,
+    storage_version: StorageVersion,
     service_id: &ServiceId,
     key: &ByteString,
 ) -> Result<Option<Promise>> {
     let _x = RocksDbPerfGuard::new("get-promise");
-    // todo(tillrohrmann) make dependent on migration status once we migrate old promises to the new scoped table
-    if service_id.scope.is_some() {
+    if use_scoped_promise(storage_version, service_id) {
         // todo(tillrohrmann) remove once ServiceId uses ServiceName and ReString internally
         let service_name = ServiceName::new(&service_id.service_name);
         let service_key = ReString::new(&service_id.key);
@@ -92,12 +102,12 @@ fn get_promise<S: StorageAccess>(
 
 fn put_promise<S: StorageAccess>(
     storage: &mut S,
+    storage_version: StorageVersion,
     service_id: &ServiceId,
     key: &ByteString,
     metadata: &Promise,
 ) -> Result<()> {
-    // todo(tillrohrmann) make dependent on migration status once we migrate old promises to the new scoped table
-    if service_id.scope.is_some() {
+    if use_scoped_promise(storage_version, service_id) {
         // todo(tillrohrmann) remove once ServiceId uses ServiceName and ReString internally
         let service_name = ServiceName::new(&service_id.service_name);
         let service_key = ReString::new(&service_id.key);
@@ -119,9 +129,12 @@ fn put_promise<S: StorageAccess>(
     }
 }
 
-fn delete_all_promises<S: StorageAccess>(storage: &mut S, service_id: &ServiceId) -> Result<()> {
-    // todo(tillrohrmann) make dependent on migration status once we migrate old promises to the new scoped table
-    if service_id.scope.is_some() {
+fn delete_all_promises<S: StorageAccess>(
+    storage: &mut S,
+    storage_version: StorageVersion,
+    service_id: &ServiceId,
+) -> Result<()> {
+    if use_scoped_promise(storage_version, service_id) {
         // todo(tillrohrmann) remove once ServiceId uses ServiceName and ReString internally
         let service_name = ServiceName::new(&service_id.service_name);
         let service_key = ReString::new(&service_id.key);
@@ -171,7 +184,7 @@ impl ReadPromiseTable for PartitionStore {
         key: &ByteString,
     ) -> Result<Option<Promise>> {
         self.assert_partition_key(service_id)?;
-        get_promise(self, service_id, key)
+        get_promise(self, self.storage_version(), service_id, key)
     }
 }
 
@@ -188,33 +201,41 @@ impl ScanPromiseTable for PartitionStore {
         // No contention: scans are awaited sequentially.
         let f = Arc::new(parking_lot::Mutex::new(f));
 
-        // todo(tillrohrmann) remove once we migrated the unscoped promises to the scoped promises table
-        let f_unscoped = Arc::clone(&f);
-        let unscoped = self
-            .iterator_for_each(
-                "df-promise",
-                Priority::Low,
-                TableScan::FullScanPartitionKeyRange::<PromiseKey>(range),
-                move |(mut k, mut v)| {
-                    let key = break_on_err(PromiseKey::deserialize_from(&mut k))?;
-                    let metadata = break_on_err(Promise::decode(&mut v))?;
-                    let (partition_key, service_name, service_key, promise_key) = key.split();
-                    let service_id = ServiceId::with_partition_key(
-                        partition_key,
-                        service_name,
-                        break_on_err(ByteString::try_from(service_key).map_err(|e| {
-                            StorageError::Generic(anyhow::anyhow!("Cannot convert to string {e}"))
-                        }))?,
-                    );
-                    f_unscoped.lock()(OwnedPromiseRow {
-                        service_id,
-                        key: promise_key,
-                        metadata,
-                    })
-                    .map_break(Ok)
-                },
+        // Only scan the legacy unscoped table while we may still hold data there.
+        // After migration the range was deleted, so the scoped scan covers everything.
+        let unscoped = if self.storage_version().is_scope_migrated() {
+            None
+        } else {
+            let f_unscoped = Arc::clone(&f);
+            Some(
+                self.iterator_for_each(
+                    "df-promise",
+                    Priority::Low,
+                    TableScan::FullScanPartitionKeyRange::<PromiseKey>(range),
+                    move |(mut k, mut v)| {
+                        let key = break_on_err(PromiseKey::deserialize_from(&mut k))?;
+                        let metadata = break_on_err(Promise::decode(&mut v))?;
+                        let (partition_key, service_name, service_key, promise_key) = key.split();
+                        let service_id = ServiceId::with_partition_key(
+                            partition_key,
+                            service_name,
+                            break_on_err(ByteString::try_from(service_key).map_err(|e| {
+                                StorageError::Generic(anyhow::anyhow!(
+                                    "Cannot convert to string {e}"
+                                ))
+                            }))?,
+                        );
+                        f_unscoped.lock()(OwnedPromiseRow {
+                            service_id,
+                            key: promise_key,
+                            metadata,
+                        })
+                        .map_break(Ok)
+                    },
+                )
+                .map_err(|_| StorageError::OperationalError)?,
             )
-            .map_err(|_| StorageError::OperationalError)?;
+        };
 
         let f_scoped = f;
         let scoped = self
@@ -243,7 +264,9 @@ impl ScanPromiseTable for PartitionStore {
             .map_err(|_| StorageError::OperationalError)?;
 
         Ok(async move {
-            unscoped.await?;
+            if let Some(unscoped) = unscoped {
+                unscoped.await?;
+            }
             scoped.await?;
             Ok(())
         })
@@ -257,7 +280,7 @@ impl ReadPromiseTable for PartitionStoreTransaction<'_> {
         key: &ByteString,
     ) -> Result<Option<Promise>> {
         self.assert_partition_key(service_id)?;
-        get_promise(self, service_id, key)
+        get_promise(self, self.storage_version(), service_id, key)
     }
 }
 
@@ -269,11 +292,11 @@ impl WritePromiseTable for PartitionStoreTransaction<'_> {
         promise: &Promise,
     ) -> Result<()> {
         self.assert_partition_key(service_id)?;
-        put_promise(self, service_id, key, promise)
+        put_promise(self, self.storage_version(), service_id, key, promise)
     }
 
     fn delete_all_promises(&mut self, service_id: &ServiceId) -> Result<()> {
         self.assert_partition_key(service_id)?;
-        delete_all_promises(self, service_id)
+        delete_all_promises(self, self.storage_version(), service_id)
     }
 }

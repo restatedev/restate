@@ -307,6 +307,7 @@ impl Node {
                 PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
                 metadata.clone(),
             ),
+            metadata.clone(),
         );
 
         let worker_role = if config.has_role(Role::Worker) {

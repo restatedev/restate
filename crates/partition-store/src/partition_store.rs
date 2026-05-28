@@ -42,12 +42,14 @@ use restate_types::storage::StorageCodec;
 use restate_types::storage::StorageDecode;
 use restate_types::storage::StorageEncode;
 
+use restate_types::partitions::StorageVersion;
+
 use crate::fsm_table::{
-    get_locally_durable_lsn, get_storage_version, is_jc_orphan_cleanup_done,
-    put_jc_orphan_cleanup_done, put_storage_version,
+    get_locally_durable_lsn, get_storage_version, get_storage_version_from_partition_db,
+    is_jc_orphan_cleanup_done, put_jc_orphan_cleanup_done, put_storage_version,
 };
 use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
-use crate::migrations::{LATEST_VERSION, SchemaVersion};
+use crate::migrations::run_migrations_up_to;
 use crate::partition_db::PartitionDb;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
@@ -197,6 +199,7 @@ impl TableKind {
 
 pub struct PartitionStore {
     db: PartitionDb,
+    storage_version: StorageVersion,
     key_buffer: BytesMut,
     value_buffer: BytesMut,
 }
@@ -216,6 +219,7 @@ impl Clone for PartitionStore {
     fn clone(&self) -> Self {
         PartitionStore {
             db: self.db.clone(),
+            storage_version: self.storage_version,
             key_buffer: BytesMut::default(),
             value_buffer: BytesMut::default(),
         }
@@ -230,11 +234,20 @@ impl From<PartitionDb> for PartitionStore {
 
 impl PartitionStore {
     pub(crate) fn new(db: PartitionDb) -> Self {
+        let storage_version =
+            get_storage_version_from_partition_db(&db).expect("storage version must exist");
+
         Self {
             db,
+            storage_version,
             key_buffer: BytesMut::new(),
             value_buffer: BytesMut::new(),
         }
+    }
+
+    #[inline]
+    pub fn storage_version(&self) -> StorageVersion {
+        self.storage_version
     }
 
     pub fn partition_db(&self) -> &PartitionDb {
@@ -568,6 +581,7 @@ impl PartitionStore {
             key_buffer: &mut self.key_buffer,
             value_buffer: &mut self.value_buffer,
             meta: self.db.partition(),
+            storage_version: self.storage_version,
             snapshot,
         }
     }
@@ -648,29 +662,44 @@ impl PartitionStore {
     }
 
     pub async fn verify_and_run_migrations(&mut self) -> Result<()> {
+        // The target schema version is gated by the operator opt-in. Without
+        // the flag we leave the partition at `V1_5` so a downgrade to a
+        // pre-`ScopedStateAndPromise` binary stays possible. With the flag
+        // enabled we migrate the unscoped state and promise tables into their
+        // scoped variants and bump to `ScopedStateAndPromise`.
+        let target = if Configuration::pinned()
+            .common
+            .experimental
+            .is_migrate_scoped_tables_enabled()
+        {
+            StorageVersion::ScopedStateAndPromise
+        } else {
+            StorageVersion::V1_5
+        };
+
         // We assume the partition store to be empty if it does not contain any applied lsn. The
         // reason is that we always commit changes to the partition store via a transaction which
         // also updates the applied lsn field.
         let is_empty = self.get_applied_lsn().await?.is_none();
         if is_empty {
-            put_storage_version(self, self.partition_id(), LATEST_VERSION as u16).await?;
+            put_storage_version(self, self.partition_id(), target as u16).await?;
             // A fresh partition store cannot have orphaned jc index entries, so mark the
             // cleanup as already done to avoid a needless scan on first startup.
             put_jc_orphan_cleanup_done(self, self.partition_id())?;
+            self.storage_version = target;
             return Ok(());
         }
 
-        let mut schema_version: SchemaVersion =
-            get_storage_version(self, self.partition_id()).await?.into();
-        if schema_version != LATEST_VERSION {
+        let mut storage_version = get_storage_version(self, self.partition_id()).await?;
+        if storage_version < target {
             // We need to run some migrations!
             debug!(
                 "Running storage migration from {:?} to {:?}",
-                schema_version, LATEST_VERSION
+                storage_version, target
             );
-            schema_version = schema_version.run_all_migrations(self).await?;
-            put_storage_version(self, self.partition_id(), schema_version as u16).await?;
+            storage_version = run_migrations_up_to(storage_version, target, self).await?;
         }
+        self.storage_version = storage_version;
 
         Ok(())
     }
@@ -787,6 +816,7 @@ pub struct PartitionStoreTransaction<'a> {
     data_cf_handle: &'a Arc<BoundColumnFamily<'a>>,
     key_buffer: &'a mut BytesMut,
     value_buffer: &'a mut BytesMut,
+    storage_version: StorageVersion,
     snapshot: Option<SnapshotWithThreadMode<'a, rocksdb::DB>>,
 }
 
@@ -907,6 +937,11 @@ impl PartitionStoreTransaction<'_> {
     #[inline]
     pub(crate) fn partition_id(&self) -> PartitionId {
         self.meta.partition_id
+    }
+
+    #[inline]
+    pub(crate) fn storage_version(&self) -> StorageVersion {
+        self.storage_version
     }
 
     #[inline]

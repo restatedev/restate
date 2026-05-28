@@ -13,6 +13,7 @@ use std::num::{NonZeroU32, NonZeroUsize};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
+use restate_memory::NonZeroByteCount;
 use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
 
 /// # HTTP client options
@@ -86,6 +87,36 @@ pub struct HttpOptions {
     ///
     /// Default: 5 minutes
     pub idle_connection_timeout: FriendlyDuration,
+
+    /// # HTTP/2 initial stream window size
+    ///
+    /// Initial flow-control window (in bytes) for received data on each HTTP/2
+    /// stream in the connection pool. Valid range: 65535 B .. 2 GiB.
+    ///
+    /// Since: v1.7.0
+    ///
+    /// Default: 2 MiB
+    http2_initial_stream_window_size: NonZeroByteCount,
+
+    /// # HTTP/2 initial connection window size
+    ///
+    /// Initial connection-level flow-control window (in bytes) for received
+    /// data. Should be >= the per-stream window. Valid range: 65535 B .. 2 GiB.
+    ///
+    /// Since: v1.7.0
+    ///
+    /// Default: 5 MiB
+    http2_initial_connection_window_size: NonZeroByteCount,
+
+    /// # HTTP/2 max frame size
+    ///
+    /// Largest HTTP/2 DATA frame payload (in bytes) this client will accept.
+    /// Must be within 16 KiB .. 16 MiB (h2 protocol limits).
+    ///
+    /// Since: v1.7.0
+    ///
+    /// Default: 16 KiB
+    http2_max_frame_size: NonZeroByteCount,
 }
 
 impl Default for HttpOptions {
@@ -98,10 +129,36 @@ impl Default for HttpOptions {
             initial_max_send_streams: None,
             streams_per_connection_limit: NonZeroUsize::new(128).unwrap(),
             idle_connection_timeout: FriendlyDuration::from_secs(300),
+            http2_initial_stream_window_size: NonZeroByteCount::new(
+                NonZeroUsize::new(2 * 1024 * 1024).unwrap(),
+            ),
+            http2_initial_connection_window_size: NonZeroByteCount::new(
+                NonZeroUsize::new(5 * 1024 * 1024).unwrap(),
+            ),
+            http2_max_frame_size: NonZeroByteCount::new(NonZeroUsize::new(16 * 1024).unwrap()),
         }
     }
 }
 
+impl HttpOptions {
+    pub fn initial_stream_window_size(&self) -> u32 {
+        u32::try_from(self.http2_initial_stream_window_size.as_usize())
+            .unwrap_or(u32::MAX)
+            .clamp(65_535, 2_147_483_647)
+    }
+
+    pub fn initial_connection_window_size(&self) -> u32 {
+        u32::try_from(self.http2_initial_connection_window_size.as_usize())
+            .unwrap_or(u32::MAX)
+            .clamp(65_535, 2_147_483_647)
+    }
+
+    pub fn max_frame_size(&self) -> u32 {
+        u32::try_from(self.http2_max_frame_size.as_usize())
+            .unwrap_or(u32::MAX)
+            .clamp(16_384, 16_777_215)
+    }
+}
 /// NO_PROXY can be provided as either a comma-separated string `example.com,::1,localhost`, or a list of strings `["example.com", "::1", "localhost"]`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]

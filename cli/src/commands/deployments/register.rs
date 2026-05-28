@@ -20,7 +20,8 @@ use indicatif::ProgressBar;
 use indoc::indoc;
 
 use restate_admin_rest_model::deployments::{
-    DetailedDeploymentResponse, RegisterDeploymentRequest, RegisterDeploymentResponse,
+    DetailedDeploymentResponse, GoogleIdTokenAuth, HttpAuth, RegisterDeploymentRequest,
+    RegisterDeploymentResponse,
 };
 use restate_admin_rest_model::version::AdminApiVersion;
 use restate_cli_util::ui::console::{Styled, StyledTable, confirm_or_exit};
@@ -54,6 +55,30 @@ pub struct Register {
     /// The role ARN that Restate server will assume when invoking any service on the Lambda being
     /// discovered.
     assume_role_arn: Option<String>,
+
+    /// Enable Google OIDC ID-token authentication for this HTTP deployment.
+    /// Restate will mint a Google-signed ID token for each request and
+    /// attach it as `X-Serverless-Authorization: Bearer <token>`. Implied by
+    /// --gcp-impersonate-service-account and --gcp-audience.
+    /// Note: Workload Identity Federation (external_account) and gcloud
+    /// user credentials (authorized_user) cannot mint ID tokens directly
+    /// and must be paired with --gcp-impersonate-service-account.
+    #[clap(long)]
+    gcp_id_token: bool,
+
+    /// Service account email to impersonate when minting the Google ID token,
+    /// via the IAM Credentials generateIdToken API. Requires the caller to
+    /// hold roles/iam.serviceAccountOpenIdTokenCreator on the target SA.
+    /// Implies --gcp-id-token.
+    #[clap(long)]
+    gcp_impersonate_service_account: Option<String>,
+
+    /// Explicit OIDC `aud` claim for minted Google ID tokens. Defaults to the
+    /// deployment URL origin (scheme://host[:port]). Set this for Cloud Run
+    /// services behind a custom domain or load balancer. Implies
+    /// --gcp-id-token.
+    #[clap(long)]
+    gcp_audience: Option<String>,
 
     /// Additional header that will be sent to the endpoint during the discovery request.
     ///
@@ -202,6 +227,26 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
         infer_deployment_metadata_from_environment(&mut metadata);
     }
 
+    let id_token_auth = discover_opts.gcp_id_token
+        || discover_opts.gcp_impersonate_service_account.is_some()
+        || discover_opts.gcp_audience.is_some();
+    if id_token_auth && matches!(discover_opts.deployment, DeploymentEndpoint::Lambda(_)) {
+        bail!(
+            "--gcp-id-token, --gcp-impersonate-service-account, and --gcp-audience are \
+             HTTP-only flags. Lambda deployments use --assume-role-arn instead."
+        );
+    }
+
+    let id_token_auth = id_token_auth.then(|| {
+        HttpAuth::GoogleIdToken(GoogleIdTokenAuth {
+            impersonate_service_account: discover_opts
+                .gcp_impersonate_service_account
+                .clone()
+                .map(Into::into),
+            audience: discover_opts.gcp_audience.clone().map(Into::into),
+        })
+    });
+
     let deployment = match &discover_opts.deployment {
         #[cfg(feature = "cloud")]
         DeploymentEndpoint::Uri(uri) if discover_opts.tunnel_name.is_some() => {
@@ -309,6 +354,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
             breaking,
             force: Some(force),
             dry_run,
+            auth: id_token_auth.clone(),
         },
         DeploymentEndpoint::Lambda(arn) => RegisterDeploymentRequest::Lambda {
             arn: arn.to_string(),

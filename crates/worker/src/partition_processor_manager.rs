@@ -1675,6 +1675,7 @@ mod tests {
             version = version.next();
         }
 
+        TaskCenter::shutdown_node("test completed", 0).await;
         RocksDbManager::get().shutdown().await;
         Ok(())
     }

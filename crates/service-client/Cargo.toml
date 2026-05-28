@@ -17,6 +17,7 @@ restate-workspace-hack = { workspace = true }
 
 restate-types = { workspace = true }
 
+ahash = { workspace = true }
 arc-swap = { workspace = true }
 aws-config = { workspace = true }
 aws-credential-types = { workspace = true }
@@ -29,6 +30,7 @@ bytestring = { workspace = true }
 dashmap = { workspace = true }
 derive_builder = { workspace = true }
 futures = { workspace = true }
+google-cloud-auth = { workspace = true }
 h2 = "0.4.12"
 http = { workspace = true }
 http-body = { workspace = true }
@@ -42,7 +44,6 @@ parking_lot = { workspace = true }
 pem = { version = "3.0.6" }
 pin-project = { workspace = true }
 metrics = { workspace = true }
-rand = { workspace = true }
 ring = { version = "0.17.14" }
 rustls = { workspace = true }
 serde = { workspace = true }
@@ -60,6 +61,7 @@ zstd = { workspace = true }
 restate-service-client = { path = ".", features = ["test_util"] }
 criterion = { workspace = true, features = ["async_tokio"] }
 googletest = { workspace = true }
+hyper = { workspace = true, features = ["server"] }
 pprof = { version = "0.15", features = ["criterion", "flamegraph"] }
 tempfile = { workspace = true }
 tokio-stream = {workspace = true}

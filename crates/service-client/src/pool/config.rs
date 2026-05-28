@@ -53,6 +53,21 @@ pub struct PoolConfig {
     #[builder(default = NonZeroUsize::new(128).unwrap())]
     pub(crate) streams_per_connection_limit: NonZeroUsize,
 
+    /// Initial flow-control window (in bytes) for received data on each H2
+    /// stream. Default: 2 MiB.
+    #[builder(default = 2 * 1024 * 1024)]
+    pub(crate) initial_stream_window_size: u32,
+
+    /// Initial connection-level flow-control window (in bytes) for received
+    /// data. Default: 5 MiB.
+    #[builder(default = 5 * 1024 * 1024)]
+    pub(crate) initial_connection_window_size: u32,
+
+    /// Largest H2 DATA frame payload (in bytes) this client will accept.
+    /// Default: 16 KiB.
+    #[builder(default = 16 * 1024)]
+    pub(crate) max_frame_size: u32,
+
     /// Maximum time to wait for an HTTP/2 PING response before declaring the
     /// connection dead and returning [`ConnectionError::KeepAliveTimeout`].
     /// Only meaningful when `keep_alive_interval` is `Some`. Defaults to 20 s.
@@ -71,6 +86,9 @@ impl Default for PoolConfig {
             connection_saturation_threshold: Some(0.7f64),
             initial_max_send_streams: NonZeroU32::new(50).unwrap(),
             streams_per_connection_limit: NonZeroUsize::new(128).unwrap(),
+            initial_stream_window_size: 2 * 1024 * 1024,
+            initial_connection_window_size: 5 * 1024 * 1024,
+            max_frame_size: 16 * 1024,
             keep_alive_interval: None,
             keep_alive_timeout: Duration::from_secs(20),
             idle_connection_timeout: Some(Duration::from_secs(300)),

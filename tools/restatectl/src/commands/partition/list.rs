@@ -91,11 +91,11 @@ pub async fn list_partitions(
                         .as_ref()
                         .expect("alive partition has a node id");
                     let host_node = GenerationalNodeId::from(*host);
+                    let leadership_epoch =
+                        status.last_observed_leader_epoch.unwrap_or_default().value;
                     let details = PartitionListEntry { host_node, status };
                     partitions.push((partition_id, details));
 
-                    let leadership_epoch =
-                        status.last_observed_leader_epoch.unwrap_or_default().value;
                     max_epoch_per_partition
                         .entry(partition_id)
                         .and_modify(|existing| {
@@ -119,8 +119,10 @@ pub async fn list_partitions(
         "DURABLE",
         "ARCHIVED",
         "LSN-LAG",
+        "STORAGE",
         "SCHEMA",
         "RULE-BOOK",
+        "FEATURES",
         "UPDATED",
     ]);
 
@@ -226,6 +228,13 @@ pub async fn list_partitions(
                 Cell::new(
                     processor
                         .status
+                        .storage_version
+                        .map(|v| (v as u16).to_string())
+                        .unwrap_or_else(|| "-".to_owned()),
+                ),
+                Cell::new(
+                    processor
+                        .status
                         .last_applied_schema_version
                         .map(|v| Version::from(v).to_string())
                         .unwrap_or_else(|| "-".to_owned()),
@@ -237,6 +246,11 @@ pub async fn list_partitions(
                         .map(|v| Version::from(v).to_string())
                         .unwrap_or_else(|| "-".to_owned()),
                 ),
+                Cell::new(if processor.status.enabled_features.is_empty() {
+                    "-".to_owned()
+                } else {
+                    processor.status.enabled_features.join(",")
+                }),
                 render_as_duration(processor.status.updated_at, Tense::Past),
             ]);
         });

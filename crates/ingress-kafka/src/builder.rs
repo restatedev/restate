@@ -90,13 +90,21 @@ impl EnvelopeBuilder {
         };
 
         let headers = Self::generate_events_attributes(&msg, &self.subscription_id);
-        let (scope, limit_key) = extract_scope_limit_key(&msg).map_err(|err| Error::Event {
-            subscription: self.subscription_id.clone(),
-            topic: msg.topic().to_string(),
-            partition: msg.partition(),
-            offset: msg.offset(),
-            cause: anyhow::anyhow!("invalid scope value in x-restate-scope header: {err}"),
-        })?;
+        let (scope, limit_key) = if restate_types::config::Configuration::pinned()
+            .common
+            .experimental
+            .is_kafka_scope_enabled()
+        {
+            extract_scope_limit_key(&msg).map_err(|err| Error::Event {
+                subscription: self.subscription_id.clone(),
+                topic: msg.topic().to_string(),
+                partition: msg.partition(),
+                offset: msg.offset(),
+                cause: anyhow::anyhow!("invalid scope value in x-restate-scope header: {err}"),
+            })?
+        } else {
+            (None, LimitKey::None)
+        };
 
         let dedup = DedupInformation::producer(producer_id, msg.offset() as u64);
 
@@ -261,6 +269,17 @@ impl InvocationBuilder {
                 .is_vqueues_enabled()
         {
             bail!("Scoped invocations require experimental vqueues to be enabled");
+        }
+
+        // Validate: scoped Virtual Objects are gated behind an experimental flag
+        if invocation_target.scope().is_some()
+            && matches!(invocation_target, InvocationTarget::VirtualObject { .. })
+            && !restate_types::config::Configuration::pinned()
+                .common
+                .experimental
+                .is_scoped_virtual_objects_enabled()
+        {
+            bail!("scope is not supported for Virtual Object targets");
         }
 
         // Validate: limit_key requires scope

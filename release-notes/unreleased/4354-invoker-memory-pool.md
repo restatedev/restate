@@ -12,7 +12,7 @@ payloads.
 
 Key aspects of the new memory model:
 
-- **Global memory pool**: A shared budget (`worker.invoker.memory-limit`, default **256 MiB**)
+- **Global memory pool**: A shared budget (`worker.invoker.memory-limit`, default **1.5 GiB**)
   limits the total invoker memory across all partitions on a node.
 
 - **Per-invocation budgets**: Each invocation receives a budget capped at
@@ -60,8 +60,8 @@ Three new configuration options control the memory pool:
 # Global memory budget shared across all invocations on this node.
 # Controls how much memory can be used for in-flight journal entries, state,
 # and protocol messages sent from the invoker to service deployments.
-# Default: "256MB"
-memory-limit = "256MB"
+# Default: "1.5GB"
+memory-limit = "1.5GB"
 
 # Maximum memory a single invocation may use for its outbound data.
 # Defaults to message-size-limit if unset. Clamped at message-size-limit.
@@ -90,7 +90,7 @@ per-invocation-initial-memory = "32KB"
 ### Impact on Users
 
 - **Most users will see no change**: The defaults are generous enough for typical workloads.
-  The global pool (256 MiB) can support thousands of concurrent invocations with normal-sized
+  The global pool (1.5 GiB) can support thousands of concurrent invocations with normal-sized
   payloads.
 
 - **Users processing very large payloads or state**: Invocations that send data exceeding the
@@ -128,7 +128,7 @@ The global memory pool may be the bottleneck. Either:
 1. Increase the global pool:
    ```toml
    [worker.invoker]
-   memory-limit = "512MB"
+   memory-limit = "2GB"
    ```
 2. Decrease the initial per-invocation reservation to allow more concurrent invocations:
    ```toml

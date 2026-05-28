@@ -24,8 +24,8 @@ use crate::invocation::{
 use crate::schema::Redaction;
 use crate::schema::deployment::DeploymentType;
 use crate::schema::invocation_target::{
-    BadInputContentType, DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION,
-    InputRules, InputValidationRule, OnMaxAttempts, OutputContentTypeRule, OutputRules,
+    BadInputContentType, InputRules, InputValidationRule, OnMaxAttempts, OutputContentTypeRule,
+    OutputRules,
 };
 use crate::schema::kafka::{KafkaClusterName, KafkaClusterResolver};
 use crate::schema::registry::{DeploymentConnectionParameters, DiscoveryResponse};
@@ -469,6 +469,7 @@ impl SchemaUpdater {
                 address: a.uri,
                 protocol_type,
                 http_version,
+                auth: a.auth,
             },
             (
                 DeploymentAddress::Lambda(a),
@@ -554,8 +555,7 @@ impl SchemaUpdater {
             if service_level_settings_behavior.preserve() {
                 previous_service_revision.and_then(|old_svc| old_svc.idempotency_retention)
             } else {
-                // TODO(slinydeveloper) Remove this in Restate 1.6, no need for this defaulting anymore!
-                Some(DEFAULT_IDEMPOTENCY_RETENTION)
+                None
             }
         });
         let journal_retention = resolve_optional_config_option!(
@@ -568,9 +568,6 @@ impl SchemaUpdater {
             && previous_service_revision.map(|old_svc| old_svc.ty == ServiceType::Workflow).unwrap_or(false)
         {
             previous_service_revision.and_then(|old_svc| old_svc.workflow_completion_retention)
-        } else if service_type == ServiceType::Workflow {
-            // TODO(slinydeveloper) Remove this in Restate 1.6, no need for this defaulting anymore!
-            Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION)
         } else {
             None
         };

@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashMap;
 use std::time::SystemTime;
 
 use axum::extract::{Path, Query, State};
@@ -26,7 +27,7 @@ use restate_types::schema;
 use restate_types::schema::deployment::{Deployment, DeploymentType};
 use restate_types::schema::registry::{
     AddDeploymentResult, AllowBreakingChanges, ApplyMode, DiscoveryClient, MetadataService,
-    Overwrite, TelemetryClient,
+    Overwrite, TelemetryClient, effective_http_patch_inputs, validate_http_auth,
 };
 use restate_types::schema::service::ServiceMetadata;
 
@@ -99,12 +100,27 @@ where
             additional_headers,
             metadata,
             use_http_11,
+            auth,
             ..
         } => {
             validate_uri(&uri)?;
+            let persisted_auth = if let Some(wire_auth) = auth {
+                let headers_for_validation: Option<HashMap<http::HeaderName, http::HeaderValue>> =
+                    additional_headers.clone().map(Into::into);
+                validate_http_auth(&uri, headers_for_validation.as_ref())?;
+                Some(
+                    wire_auth
+                        .into_persisted(&uri)
+                        .map_err(|e| MetaApiError::InvalidField("auth.audience", e.to_string()))?,
+                )
+            } else {
+                None
+            };
 
             schema::registry::RegisterDeploymentRequest {
-                deployment_address: HttpDeploymentAddress::new(uri).into(),
+                deployment_address: HttpDeploymentAddress::new(uri)
+                    .with_auth(persisted_auth)
+                    .into(),
                 additional_headers: additional_headers.unwrap_or_default().into(),
                 metadata,
                 use_http_11,
@@ -350,6 +366,31 @@ where
                 validate_uri(uri)?;
             }
 
+            // Validate the auth invariants against the post-merge (uri, additional_headers). PATCH
+            // preserves the persisted auth (see schema::registry::update_deployment); a PATCH that
+            // changes the URI to http:// or adds an X-Serverless-Authorization header must be
+            // rejected just like the equivalent register call would be.
+            let existing_deployment = state
+                .schema_registry
+                .get_deployment(deployment_id)
+                .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
+            if let DeploymentType::Http {
+                address: existing_uri,
+                auth: Some(_existing_auth),
+                ..
+            } = &existing_deployment.ty
+            {
+                let patch_headers: Option<HashMap<http::HeaderName, http::HeaderValue>> =
+                    additional_headers.clone().map(Into::into);
+                let (effective_uri, effective_headers) = effective_http_patch_inputs(
+                    uri.as_ref(),
+                    patch_headers.as_ref(),
+                    existing_uri,
+                    &existing_deployment.additional_headers,
+                );
+                validate_http_auth(effective_uri, Some(effective_headers.as_ref()))?;
+            }
+
             (
                 if uri.is_none() && use_http_11.is_none() {
                     None
@@ -451,6 +492,7 @@ fn to_deployment_response(
             http_version,
             protocol_type,
             address,
+            auth,
         } => DeploymentResponse::Http {
             id,
             uri: address,
@@ -467,6 +509,7 @@ fn to_deployment_response(
                 .map(|(name, revision)| ServiceNameRevPair { name, revision })
                 .collect(),
             info,
+            auth: auth.map(Into::into),
         },
         DeploymentType::Lambda {
             arn,
@@ -511,6 +554,7 @@ fn to_detailed_deployment_response(
             http_version,
             protocol_type,
             address,
+            auth,
         } => DetailedDeploymentResponse::Http {
             id,
             uri: address,
@@ -524,6 +568,7 @@ fn to_detailed_deployment_response(
             sdk_version,
             services,
             info,
+            auth: auth.map(Into::into),
         },
         DeploymentType::Lambda {
             arn,
