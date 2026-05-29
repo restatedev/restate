@@ -102,12 +102,8 @@ async fn provision_cluster(
         .or_else(|| provision_opts.replication.clone())
         .map(Into::into);
 
-    let enabled_features: Vec<ClusterFeature> = ClusterFeature::default_features()
-        .iter()
-        .filter(|f| !provision_opts.disable_features.contains(f))
-        .collect();
-
-    let features: Vec<i32> = enabled_features
+    let disabled_features: Vec<i32> = provision_opts
+        .disable_features
         .iter()
         .copied()
         .map(|f| ProtoClusterFeature::from(f) as i32)
@@ -122,7 +118,7 @@ async fn provision_cluster(
             .map(|provider| provider.to_string()),
         log_replication,
         target_nodeset_size: provision_opts.log_default_nodeset_size.map(Into::into),
-        features: features.clone(),
+        disabled_features: disabled_features.clone(),
     };
 
     let response = match client.provision_cluster(request).await {
@@ -137,6 +133,7 @@ async fn provision_cluster(
     };
 
     debug_assert!(response.dry_run, "Provision with dry run");
+    let enabled_features = response.enabled_features.clone();
     let cluster_configuration_to_provision = response
         .cluster_configuration
         .expect("Provision response should carry a cluster configuration");
@@ -148,8 +145,16 @@ async fn provision_cluster(
 
     if !enabled_features.is_empty() {
         c_println!("Features to enable:");
-        for f in &enabled_features {
-            c_println!("  - {f}");
+        for raw in &enabled_features {
+            match ProtoClusterFeature::try_from(*raw) {
+                Ok(ProtoClusterFeature::Unknown) | Err(_) => {
+                    c_println!("  - Unknown feature ({raw})")
+                }
+                Ok(proto_feature) => {
+                    let feature = ClusterFeature::from(proto_feature);
+                    c_println!("  - {feature}");
+                }
+            }
         }
     }
 
@@ -201,7 +206,7 @@ async fn provision_cluster(
         log_provider,
         log_replication,
         target_nodeset_size,
-        features,
+        disabled_features,
     };
 
     match client.provision_cluster(request).await {
