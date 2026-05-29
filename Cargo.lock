@@ -8722,9 +8722,6 @@ dependencies = [
 [[package]]
 name = "restate-util-random"
 version = "1.7.0-rc.1"
-dependencies = [
- "restate-workspace-hack",
-]
 
 [[package]]
 name = "restate-util-string"
@@ -8749,6 +8746,7 @@ name = "restate-util-time"
 version = "1.7.0-rc.1"
 dependencies = [
  "jiff",
+ "restate-util-random",
  "restate-workspace-hack",
  "schemars 1.2.1",
  "serde",
