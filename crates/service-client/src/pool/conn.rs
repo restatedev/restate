@@ -507,7 +507,10 @@ where
             Some(interval) => interval,
         };
 
-        let mut interval = tokio::time::interval(interval);
+        let mut interval = tokio::time::interval_at(
+            tokio::time::Instant::now() + interval,
+            interval,
+        );
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
