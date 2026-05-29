@@ -13,6 +13,8 @@ mod metric_definitions;
 pub mod scheduler;
 mod util;
 
+use std::time::Duration;
+
 // Re-exports
 pub use cache::{VQueueHandle, VQueuesMeta, VQueuesMetaCache};
 pub use metric_definitions::describe_metrics;
@@ -122,36 +124,6 @@ where
 
     pub fn meta(&self) -> &VQueueMeta {
         self.cache.get(self.handle).unwrap().meta()
-    }
-
-    /// The entry has completed execution and it needs to be removed from the vqueue.
-    ///
-    /// Does nothing if the entry was not found in the previous stage.
-    ///
-    /// Returns true if the entry was found and was ended correctly, false otherwise.
-    pub async fn end_by_id(
-        storage: &'a mut S,
-        cache: &'a mut VQueuesMetaCache,
-        action_collector: Option<&'a mut Vec<A>>,
-        at: UniqueTimestamp,
-        partition_key: PartitionKey,
-        id: &EntryId,
-        status: Status,
-    ) -> Result<bool, StorageError> {
-        // find the entry
-        let header = storage.get_vqueue_entry_status(partition_key, id).await?;
-
-        let Some(entry_state) = header else {
-            return Ok(false);
-        };
-
-        let inbox = Self::get(entry_state.vqueue_id(), storage, cache, action_collector).await?;
-        let Some(mut inbox) = inbox else {
-            return Ok(false);
-        };
-
-        inbox.end(at, &entry_state, status);
-        Ok(true)
     }
 
     /// Get access to the vqueue if it exists, otherwise this returns None.
@@ -771,7 +743,7 @@ where
         at: UniqueTimestamp,
         header: &impl EntryStatusHeader,
         new_status: Status,
-        // todo: add a paramter to specify the "scrub time" for this item.
+        delete_after: Duration,
     ) {
         let vqueue_id = header.vqueue_id();
         let meta = self.cache.get_mut(self.handle).unwrap();
@@ -808,9 +780,8 @@ where
             *header.entry_key()
         };
 
-        // Move the entry to Finished stage
-        // for future: Use this to set the deletion time.
-        let modified_key = modified_key.set_run_at(Some(RoughTimestamp::MAX));
+        let delete_at = at.to_unix_millis() + delete_after;
+        let modified_key = modified_key.set_run_at(Some(RoughTimestamp::from(delete_at)));
 
         let stats = Self::mark_transition(at, header.stats());
 
@@ -820,6 +791,7 @@ where
             status: new_status,
         };
 
+        // Move the entry to Finished stage
         self.storage
             .put_vqueue_inbox(vqueue_id, Stage::Finished, &modified_key, &value);
 
@@ -860,14 +832,33 @@ where
             }
         }
 
-        // -- DELETION --
+        if delete_after.is_zero() {
+            // Delete immediately!
+            self.delete(at, vqueue_id, header.entry_id(), &modified_key);
+        }
+    }
 
-        // We currently fake the transition from finished -> deleted by emitting another transition
-        // immediately after moving to Stage::Finish. In future changes, this will be separated
-        // into separate step.
-        //
-        // The end result would be that a finished vqueue item would expire after some time
-        // and be deleted from the vqueue (or moved to archival key-prefix).
+    /// The entry has completed execution and it needs to be removed from the vqueue.
+    ///
+    /// It's the caller's responsibility to ensure that the entry is in the `Finished` stage
+    /// before calling this method.
+    pub fn delete(
+        &mut self,
+        at: UniqueTimestamp,
+        vqueue_id: &VQueueId,
+        entry_id: &EntryId,
+        entry_key: &EntryKey,
+    ) {
+        let meta = self.cache.get_mut(self.handle).unwrap();
+        assert_eq!(vqueue_id, meta.vqueue_id());
+
+        debug!(
+            entry = %entry_id.display(vqueue_id.partition_key()),
+            qid = %vqueue_id,
+            "{}->X",
+            Stage::Finished,
+        );
+
         let update = metadata::Update::new(
             at,
             metadata::Action::RemoveEntry {
@@ -876,13 +867,13 @@ where
         );
 
         self.storage
-            .delete_vqueue_entry_status(vqueue_id.partition_key(), header.entry_id());
+            .delete_vqueue_entry_status(vqueue_id.partition_key(), entry_id);
         // delete the entry's input
         self.storage
-            .delete_vqueue_input_payload(vqueue_id, header.seq(), header.entry_id());
+            .delete_vqueue_input_payload(vqueue_id, entry_key.seq(), entry_id);
         // delete the inbox entry
         self.storage
-            .delete_vqueue_inbox(vqueue_id, Stage::Finished, &modified_key);
+            .delete_vqueue_inbox(vqueue_id, Stage::Finished, entry_key);
         // update cache
         let _ = meta.apply_update(&update);
         self.storage.update_vqueue(vqueue_id, &update);
@@ -1062,6 +1053,27 @@ where
             event.push(EventDetails::QueueResumed);
             collector.push(A::from(event));
         }
+    }
+
+    pub fn update_entry_metadata(
+        &mut self,
+        header: &impl EntryStatusHeader,
+        metadata: &EntryMetadata,
+    ) {
+        debug!(
+            "update_entry_metadata: {} {metadata:?}, stage: {}",
+            header.display_entry_id(),
+            header.stage(),
+        );
+
+        self.storage.put_vqueue_entry_status(
+            header.vqueue_id(),
+            header.stage(),
+            header.entry_key(),
+            metadata,
+            header.stats().clone(),
+            header.status(),
+        );
     }
 
     #[inline]

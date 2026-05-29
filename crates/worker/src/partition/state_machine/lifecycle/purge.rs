@@ -8,21 +8,31 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
+use tracing::trace;
+
+use restate_clock::UniqueTimestamp;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table;
 use restate_storage_api::journal_table_v2::WriteJournalTable;
+use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::promise_table::WritePromiseTable;
 use restate_storage_api::state_table::WriteStateTable;
+use restate_storage_api::vqueue_table::{
+    EntryStatusHeader, ReadVQueueTable, Stage, WriteVQueueTable,
+};
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::client::PurgeInvocationResponse;
 use restate_types::invocation::{
     InvocationMutationResponseSink, InvocationTargetType, WorkflowHandlerType,
 };
-use tracing::trace;
+use restate_types::sharding::WithPartitionKey;
+use restate_types::vqueues::EntryId;
+use restate_vqueues::VQueue;
+
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub struct OnPurgeCommand<'a> {
     pub invocation_id: &'a InvocationId,
@@ -34,6 +44,9 @@ impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>
 where
     S: WriteJournalTable
         + ReadInvocationStatusTable
+        + ReadVQueueTable
+        + WriteVQueueTable
+        + WriteLockTable
         + WriteInvocationStatusTable
         + WriteStateTable
         + journal_table::WriteJournalTable
@@ -47,11 +60,40 @@ where
         } = self;
         match ctx.get_invocation_status(invocation_id).await? {
             InvocationStatus::Completed(CompletedInvocation {
+                ref vqueue_id,
                 invocation_target,
                 journal_metadata,
                 pinned_deployment,
                 ..
             }) => {
+                // delete the vqueue entry information.
+                if let Some(vqueue_id) = vqueue_id {
+                    let entry_id = EntryId::from(invocation_id);
+                    let Some(header) = ctx
+                        .storage
+                        .get_vqueue_entry_status(invocation_id.partition_key(), &entry_id)
+                        .await?
+                    else {
+                        // This is equivalent to InvocationStatus::Free.
+                        panic!(
+                            "Trying to purge invocation {invocation_id} in {vqueue_id} which does not have a vqueue entry. Cannot proceed!"
+                        );
+                    };
+
+                    assert!(matches!(header.stage(), Stage::Finished));
+
+                    let at = UniqueTimestamp::from_unix_millis_unchecked(ctx.record_created_at);
+                    VQueue::get(
+                        vqueue_id,
+                        ctx.storage,
+                        ctx.vqueues_cache,
+                        ctx.is_leader.then_some(ctx.action_collector),
+                    )
+                    .await?
+                    .expect("purging in a non-existent vqueue")
+                    .delete(at, vqueue_id, &entry_id, header.entry_key());
+                }
+
                 let pinned_service_protocol_version = pinned_deployment
                     .as_ref()
                     .map(|pd| pd.service_protocol_version);
