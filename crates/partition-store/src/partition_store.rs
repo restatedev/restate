@@ -175,6 +175,7 @@ impl TableKind {
                 KeyKind::VQueueFinishedStage,
                 KeyKind::VQueueActive,
                 KeyKind::VQueueEntryStatus,
+                KeyKind::VQueueInput,
             ],
             Self::Locks => &[KeyKind::Lock],
         }
@@ -1360,6 +1361,31 @@ mod tests {
             let mut string_bytes = Vec::with_capacity(len);
             bytes.copy_to_slice(&mut string_bytes);
             Ok(String::from_utf8(string_bytes).expect("valid key"))
+        }
+    }
+
+    /// Every active key kind must be claimed by at least one table, otherwise
+    /// `TableKind::has_key_kind` returns false and prefix scans trip the
+    /// `assert!(table.has_key_kind(..))` guard in the iterator paths.
+    #[test]
+    fn every_key_kind_belongs_to_a_table() {
+        use strum::VariantArray;
+
+        // Retired/reserved kinds intentionally map to no table: their byte
+        // encodings are kept reserved but nothing reads or writes them.
+        #[allow(deprecated)]
+        let reserved = [KeyKind::Idempotency, KeyKind::InvocationStatusV1];
+
+        for kind in KeyKind::VARIANTS {
+            if reserved.contains(kind) {
+                continue;
+            }
+            assert!(
+                TableKind::VARIANTS
+                    .iter()
+                    .any(|table| table.key_kinds().contains(kind)),
+                "KeyKind::{kind:?} is not mapped to any TableKind::key_kinds()"
+            );
         }
     }
 

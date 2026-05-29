@@ -8,9 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_util_bytecount::ByteCount;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+
+use restate_util_bytecount::ByteCount;
 
 /// # AWS options
 #[serde_as]
@@ -40,6 +41,30 @@ pub struct AwsLambdaOptions {
     ///
     /// Default: 4MB (The default AWS Lambda Limit is 6MB, 4MB roughly accounts for +33% of Base64 and the json envelope).
     pub request_compression_threshold: Option<ByteCount>,
+}
+
+impl AwsLambdaOptions {
+    pub fn apply_deprecated(&mut self, new_base: &str, other: &Self) {
+        let default = Self::default();
+        macro_rules! apply {
+            ($a:ident, $name:literal) => {
+                super::apply_deprecated_field(
+                    &mut self.$a,
+                    &other.$a,
+                    &default.$a,
+                    new_base,
+                    $name,
+                );
+            };
+        }
+
+        apply!(aws_profile, "aws-profile");
+        apply!(aws_assume_role_external_id, "aws-assume-role-external-id");
+        apply!(
+            request_compression_threshold,
+            "request-compression-threshold"
+        );
+    }
 }
 
 impl Default for AwsLambdaOptions {
