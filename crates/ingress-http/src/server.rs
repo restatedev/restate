@@ -10,6 +10,7 @@
 
 use std::convert::Infallible;
 use std::future::Future;
+use std::num::NonZeroU32;
 use std::time::Duration;
 
 use codederror::CodedError;
@@ -53,6 +54,7 @@ pub struct HyperServerIngress<Schemas, Dispatcher> {
     listeners: Listeners<HttpIngressPort>,
     concurrency_limit: usize,
     request_size_limit: usize,
+    http2_max_concurrent_streams: Option<NonZeroU32>,
 
     // Parameters to build the layers
     schemas: Live<Schemas>,
@@ -78,6 +80,7 @@ where
             listeners,
             ingress_options.concurrent_api_requests_limit(),
             ingress_options.request_size_limit().get(),
+            ingress_options.http2_max_concurrent_streams(),
             schemas,
             dispatcher,
             health,
@@ -94,6 +97,7 @@ where
         listeners: Listeners<HttpIngressPort>,
         concurrency_limit: usize,
         request_size_limit: usize,
+        http2_max_concurrent_streams: Option<NonZeroU32>,
         schemas: Live<Schemas>,
         dispatcher: Dispatcher,
         health: HealthStatus<IngressStatus>,
@@ -104,6 +108,7 @@ where
             listeners,
             concurrency_limit,
             request_size_limit,
+            http2_max_concurrent_streams,
             schemas,
             dispatcher,
             health,
@@ -121,6 +126,7 @@ where
             mut listeners,
             concurrency_limit,
             request_size_limit,
+            http2_max_concurrent_streams,
             schemas,
             dispatcher,
             health,
@@ -210,14 +216,16 @@ where
                             Self::handle_connection(
                                 tcp_stream,
                                 peer_addr,
-                                service.clone()
+                                service.clone(),
+                                http2_max_concurrent_streams,
                             )?;
                         }
                         Either::Right(unix_stream) => {
                             Self::handle_connection(
                                 unix_stream,
                                 peer_addr,
-                                service.clone()
+                                service.clone(),
+                                http2_max_concurrent_streams,
                             )?;
                         }
 
@@ -234,6 +242,7 @@ where
         stream: S,
         remote_peer: SocketAddress,
         handler: T,
+        http2_max_concurrent_streams: Option<NonZeroU32>,
     ) -> anyhow::Result<()>
     where
         S: AsyncWrite + AsyncRead + Unpin + Send + 'static,
@@ -262,7 +271,12 @@ where
         // Spawn a tokio task to serve the connection
         TaskCenter::spawn(TaskKind::Ingress, "ingress", async move {
             let shutdown = cancellation_watcher();
-            let auto_connection = auto::Builder::new(TaskCenterExecutor);
+            let mut auto_connection = auto::Builder::new(TaskCenterExecutor);
+            if let Some(max_concurrent_streams) = http2_max_concurrent_streams {
+                auto_connection
+                    .http2()
+                    .max_concurrent_streams(max_concurrent_streams.get());
+            }
             let serve_connection_fut = auto_connection.serve_connection(io, handler);
 
             tokio::select! {
@@ -417,6 +431,7 @@ mod tests {
             listeners,
             Semaphore::MAX_PERMITS,
             10 * 1024 * 1024, // 10MB
+            None,
             Live::from_value(mock_schemas()),
             Arc::new(mock_request_dispatcher),
             health.ingress_status(),
