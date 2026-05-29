@@ -32,6 +32,7 @@ use tower::Service;
 use tracing::{debug, trace};
 
 use restate_types::errors::GenericError;
+use restate_types::retries::with_jitter;
 use restate_types::time::MillisSinceEpoch;
 
 use super::Error;
@@ -144,6 +145,9 @@ pub struct ConnectionConfig {
     max_frame_size: u32,
     keep_alive_timeout: Duration,
     keep_alive_interval: Option<Duration>,
+    /// Fractional jitter added to `keep_alive_interval`, expressed as a fraction
+    /// of the interval (e.g. 0.1 = up to +10%, 1.0 = up to +100%).
+    keep_alive_interval_jitter: f32,
 }
 
 impl Default for ConnectionConfig {
@@ -156,6 +160,7 @@ impl Default for ConnectionConfig {
             max_frame_size: 16 * 1024,
             keep_alive_timeout: Duration::from_secs(20),
             keep_alive_interval: None,
+            keep_alive_interval_jitter: 0.2f32,
         }
     }
 }
@@ -491,18 +496,20 @@ where
         mut ping_pong: h2::PingPong,
         config: ConnectionConfig,
     ) -> Result<Never, Error> {
-        let keep_alive_interval = match config.keep_alive_interval {
+        let interval = config.keep_alive_interval.map(|interval| {
+            with_jitter(interval, config.keep_alive_interval_jitter.clamp(0.0, 1.0))
+        });
+
+        let interval = match interval {
             None => {
                 return futures::future::pending().await;
             }
             Some(interval) => interval,
         };
 
-        let mut interval = tokio::time::interval(keep_alive_interval);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
+        trace!("Interval is {}s", interval.as_secs());
         loop {
-            interval.tick().await;
+            tokio::time::sleep(interval).await;
 
             match tokio::time::timeout(
                 config.keep_alive_timeout,
