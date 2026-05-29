@@ -20,7 +20,10 @@ restatectl provision --disable-feature controlled-idempotent-sharding,other-feat
 ```
 
 The dry-run preview lists the features that will be enabled, as well as any
-features explicitly disabled via the flag.
+features explicitly disabled via the flag. The enabled-feature list is computed
+on the server and echoed back in the response, so older `restatectl` builds
+will continue to provision new default features added in future server
+releases — the operator only needs to express what they want *off*.
 
 ### Impact on Users
 

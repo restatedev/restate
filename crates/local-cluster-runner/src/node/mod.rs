@@ -855,7 +855,7 @@ impl StartedNode {
         num_partitions: Option<NonZeroU16>,
         partition_replication: ReplicationProperty,
         provider_configuration: Option<ProviderConfiguration>,
-        features: EnumSet<ClusterFeature>,
+        disabled_features: EnumSet<ClusterFeature>,
     ) -> anyhow::Result<bool> {
         let channel = create_tonic_channel(
             self.advertised_address().clone(),
@@ -879,7 +879,7 @@ impl StartedNode {
                     .target_nodeset_size()
                     .map(|nodeset_size| nodeset_size.as_u32())
             }),
-            features: features
+            disabled_features: disabled_features
                 .iter()
                 .map(|f| restate_core::protobuf::node_ctl_svc::ClusterFeature::from(f) as i32)
                 .collect(),

@@ -49,19 +49,34 @@ pub mod node_ctl_svc {
         tonic::include_file_descriptor_set!("node_ctl_svc_descriptor");
 
     impl ProvisionClusterResponse {
-        pub fn dry_run(cluster_configuration: ClusterConfiguration) -> Self {
+        pub fn dry_run(
+            cluster_configuration: ClusterConfiguration,
+            enabled_features: EnumSet<nodes_config::ClusterFeature>,
+        ) -> Self {
             ProvisionClusterResponse {
                 dry_run: true,
                 cluster_configuration: Some(cluster_configuration),
+                enabled_features: features_to_proto(enabled_features),
             }
         }
 
-        pub fn provisioned(cluster_configuration: ClusterConfiguration) -> Self {
+        pub fn provisioned(
+            cluster_configuration: ClusterConfiguration,
+            enabled_features: EnumSet<nodes_config::ClusterFeature>,
+        ) -> Self {
             ProvisionClusterResponse {
                 dry_run: false,
                 cluster_configuration: Some(cluster_configuration),
+                enabled_features: features_to_proto(enabled_features),
             }
         }
+    }
+
+    fn features_to_proto(features: EnumSet<nodes_config::ClusterFeature>) -> Vec<i32> {
+        features
+            .iter()
+            .map(|f| ClusterFeature::from(f) as i32)
+            .collect()
     }
 
     /// Creates a new NodeCtlSvcClient with appropriate configuration
@@ -97,9 +112,10 @@ pub mod node_ctl_svc {
         }
     }
 
-    /// Converts the wire representation of cluster features (a slice of i32) into an
-    /// [`EnumSet`] of [`nodes_config::ClusterFeature`]. Returns an error if any entry is
-    /// out of range or maps to the `Unknown` sentinel.
+    /// Converts the wire representation of a cluster feature list (a slice of i32) into
+    /// an [`EnumSet`] of [`nodes_config::ClusterFeature`]. Semantics-neutral — the caller
+    /// decides whether the list represents enabled or disabled features. Returns an error
+    /// if any entry is out of range or maps to the `Unknown` sentinel.
     pub fn cluster_features_from_proto(
         features: &[i32],
     ) -> anyhow::Result<EnumSet<nodes_config::ClusterFeature>> {
