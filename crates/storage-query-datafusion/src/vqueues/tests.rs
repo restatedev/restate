@@ -25,6 +25,7 @@ use restate_storage_api::vqueue_table::{
 use restate_types::clock::UniqueTimestamp;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::VQueueId;
+use restate_util_string::ToReString;
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_vqueue_entry_value_fields() {
@@ -59,7 +60,7 @@ async fn get_vqueue_entry_value_fields() {
     let value = EntryValue {
         status: Status::BackingOff,
         metadata: EntryMetadata {
-            deployment: Some("dp_123".to_string()),
+            deployment: Some("dp_123".to_restring()),
             ..Default::default()
         },
         stats,
