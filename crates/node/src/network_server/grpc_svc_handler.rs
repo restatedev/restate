@@ -42,7 +42,7 @@ use restate_types::config::{Configuration, NetworkingOptions};
 use restate_types::errors::{ConversionError, MaybeRetryableError};
 use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration};
 use restate_types::metadata::VersionedValue;
-use restate_types::nodes_config::Role;
+use restate_types::nodes_config::{ClusterFeature, Role};
 use restate_types::protobuf::cluster::ClusterConfiguration as ProtoClusterConfiguration;
 use restate_types::protobuf::common::DatabaseKind;
 use restate_types::replication::ReplicationProperty;
@@ -171,14 +171,16 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         let config = Configuration::pinned();
 
         let dry_run = request.dry_run;
-        let features = cluster_features_from_proto(&request.features)
+        let disabled = cluster_features_from_proto(&request.disabled_features)
             .map_err(|err| Status::invalid_argument(err.to_string()))?;
+        let features = ClusterFeature::default_features() - disabled;
         let cluster_configuration = Self::resolve_cluster_configuration(&config, request)
             .map_err(|err| Status::invalid_argument(err.to_string()))?;
 
         if dry_run {
             return Ok(Response::new(ProvisionClusterResponse::dry_run(
                 ProtoClusterConfiguration::from(cluster_configuration),
+                features,
             )));
         }
 
@@ -199,6 +201,7 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
 
         Ok(Response::new(ProvisionClusterResponse::provisioned(
             ProtoClusterConfiguration::from(cluster_configuration),
+            features,
         )))
     }
 
