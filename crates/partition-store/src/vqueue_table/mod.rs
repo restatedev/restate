@@ -553,37 +553,29 @@ where
         Stage::Unknown => Err(StorageError::Generic(anyhow::anyhow!(
             "Unknown stage can't be scanned"
         ))),
-        Stage::Inbox => scan_single_stage::<inbox::InboxKey, _>(
-            partition_store,
-            "df-vqueue-inbox",
-            range,
-            stage,
-            f,
-        ),
+        Stage::Inbox => {
+            scan_single_stage::<inbox::InboxKey, _>(partition_store, "df-vqueues", range, stage, f)
+        }
         Stage::Running => scan_single_stage::<inbox::RunningKey, _>(
             partition_store,
-            "df-vqueue-running",
+            "df-vqueues",
             range,
             stage,
             f,
         ),
         Stage::Suspended => scan_single_stage::<inbox::SuspendedKey, _>(
             partition_store,
-            "df-vqueue-suspended",
+            "df-vqueues",
             range,
             stage,
             f,
         ),
-        Stage::Paused => scan_single_stage::<inbox::PausedKey, _>(
-            partition_store,
-            "df-vqueue-paused",
-            range,
-            stage,
-            f,
-        ),
+        Stage::Paused => {
+            scan_single_stage::<inbox::PausedKey, _>(partition_store, "df-vqueues", range, stage, f)
+        }
         Stage::Finished => scan_single_stage::<inbox::FinishedKey, _>(
             partition_store,
-            "df-vqueue-finished",
+            "df-vqueues",
             range,
             stage,
             f,
