@@ -158,9 +158,62 @@ impl HttpOptions {
             .unwrap_or(u32::MAX)
             .clamp(16_384, 16_777_215)
     }
+
+    pub fn apply_deprecated(&mut self, new_base: &str, other: &Self) {
+        let default = Self::default();
+        macro_rules! apply {
+            ($a:ident . $b:ident, $name:literal) => {
+                super::apply_deprecated_field(
+                    &mut self.$a.$b,
+                    &other.$a.$b,
+                    &default.$a.$b,
+                    new_base,
+                    $name,
+                );
+            };
+            ($a:ident, $name:literal) => {
+                super::apply_deprecated_field(
+                    &mut self.$a,
+                    &other.$a,
+                    &default.$a,
+                    new_base,
+                    $name,
+                );
+            };
+        }
+
+        apply!(
+            http_keep_alive_options.interval,
+            "http-keep-alive-options.interval"
+        );
+        apply!(
+            http_keep_alive_options.timeout,
+            "http-keep-alive-options.timeout"
+        );
+        apply!(
+            http_keep_alive_options.jitter,
+            "http-keep-alive-options.jitter"
+        );
+        apply!(http_proxy, "http-proxy");
+        apply!(no_proxy, "no-proxy");
+        apply!(connect_timeout, "connect-timeout");
+        apply!(initial_max_send_streams, "initial-max-send-streams");
+        apply!(streams_per_connection_limit, "streams-per-connection-limit");
+        apply!(idle_connection_timeout, "idle-connection-timeout");
+        apply!(
+            http2_initial_stream_window_size,
+            "http2-initial-stream-window-size"
+        );
+        apply!(
+            http2_initial_connection_window_size,
+            "http2-initial-connection-window-size"
+        );
+        apply!(http2_max_frame_size, "http2-max-frame-size");
+    }
 }
+
 /// NO_PROXY can be provided as either a comma-separated string `example.com,::1,localhost`, or a list of strings `["example.com", "::1", "localhost"]`
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum NoProxy {
     // no_proxy was an array pre 1.6, so for backwards compatibility we will continue to accept that

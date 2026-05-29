@@ -287,7 +287,9 @@ impl Configuration {
             .common
             .set_derived_values(&config.networking)
             .unwrap();
-        config.worker.set_derived_values(&config.networking);
+        config
+            .worker
+            .set_derived_values(&config.common, &config.networking);
         config.bifrost.set_derived_values(&config.networking);
         config.admin.set_derived_values(&config.common);
         config
@@ -303,7 +305,9 @@ impl Configuration {
             .common
             .set_derived_values(&config.networking)
             .unwrap();
-        config.worker.set_derived_values(&config.networking);
+        config
+            .worker
+            .set_derived_values(&config.common, &config.networking);
         config.bifrost.set_derived_values(&config.networking);
         config.admin.set_derived_values(&config.common);
         config
@@ -449,6 +453,30 @@ pub enum InvalidConfigurationError {
     DeriveBindAddress(String),
     #[error("node-name is required: {0}")]
     RequiredNodeName(String),
+}
+
+/// Migrates a single field from a deprecated config location to its new one.
+///
+/// `deprecated` is the value found at the old (deprecated) location, `default` the field's default.
+/// A deprecation warning is printed whenever the old location holds a non-default value (i.e. the
+/// user set it there). The value is copied into `new` only when `new` is still at its default — a
+/// value explicitly set at the new location always wins.
+fn apply_deprecated_field<T: PartialEq + Clone>(
+    new: &mut T,
+    deprecated: &T,
+    default: &T,
+    new_base: &str,
+    field: &str,
+) {
+    if *deprecated == *default {
+        // old location not set -> nothing to migrate, no warning
+        return;
+    }
+    print_warning_deprecated_config_option(field, Some(&format!("{new_base}.{field}")));
+    if *new == *default {
+        // copy only when the new location is untouched
+        *new = deprecated.clone();
+    }
 }
 
 #[allow(dead_code)]
