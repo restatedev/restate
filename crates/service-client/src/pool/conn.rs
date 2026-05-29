@@ -82,6 +82,7 @@ struct H2Handle {
 #[derive(Debug)]
 struct ConnectionShared {
     id: usize,
+    io_runtime: tokio::runtime::Handle,
     config: ConnectionConfig,
     concurrency: Concurrency,
     state: AtomicU8,
@@ -96,7 +97,7 @@ struct ConnectionShared {
 }
 
 impl ConnectionShared {
-    fn new(config: ConnectionConfig) -> Self {
+    fn new(config: ConnectionConfig, io_runtime: tokio::runtime::Handle) -> Self {
         let concurrency = Concurrency::new(
             config
                 .streams_per_connection_limit
@@ -106,6 +107,7 @@ impl ConnectionShared {
         let now = MillisSinceEpoch::now();
         Self {
             id: next_connection_id(),
+            io_runtime,
             config,
             concurrency,
             state: AtomicU8::new(STATE_NEW),
@@ -236,10 +238,10 @@ where
     C::Future: Send + 'static,
     C::Error: Into<Error>,
 {
-    pub fn new(connector: C, config: ConnectionConfig) -> Self {
+    pub fn new(connector: C, io_runtime: tokio::runtime::Handle, config: ConnectionConfig) -> Self {
         Self {
             connector,
-            shared: Arc::new(ConnectionShared::new(config)),
+            shared: Arc::new(ConnectionShared::new(config, io_runtime)),
             permit: None,
             acquire: None,
         }
@@ -415,6 +417,7 @@ where
 
     /// Create the driving future that performs the H2 handshake.
     fn drive_handshake<B>(&mut self, request: &http::Request<B>) -> ResponseFutureState {
+        let io_runtime = self.shared.io_runtime.clone();
         let shared = Arc::clone(&self.shared);
         let connect = self.connector.call(request.uri().clone());
         ResponseFutureState::drive(async move {
@@ -450,37 +453,41 @@ where
 
             tokio::task::Builder::new()
                 .name("h2:connection")
-                .spawn(async move {
-                    let mut connection = std::pin::pin!(connection);
-                    let mut keep_alive = std::pin::pin!(Self::keep_alive(ping_pong, shared.config));
+                .spawn_on(
+                    async move {
+                        let mut connection = std::pin::pin!(connection);
+                        let mut keep_alive =
+                            std::pin::pin!(Self::keep_alive(ping_pong, shared.config));
 
-                    let shared_weak = Arc::downgrade(&shared);
-                    drop(shared);
+                        let shared_weak = Arc::downgrade(&shared);
+                        drop(shared);
 
-                    tokio::select! {
-                        result = &mut connection => match result {
-                            Ok(_) => {
-                                debug!("h2 connection shutdown");
+                        tokio::select! {
+                            result = &mut connection => match result {
+                                Ok(_) => {
+                                    debug!("h2 connection shutdown");
+                                },
+                                Err(err) => {
+                                    debug!("h2 connection ({stream_dbg}) shutdown with error: {err}");
+                                }
                             },
-                            Err(err) => {
-                                debug!("h2 connection ({stream_dbg}) shutdown with error: {err}");
+                            Err(err) = &mut keep_alive => {
+                                debug!("h2 connection ({stream_dbg}) keep-alive error: {err}");
                             }
-                        },
-                        Err(err) = &mut keep_alive => {
-                            debug!("h2 connection ({stream_dbg}) keep-alive error: {err}");
-                        }
-                        _ = cancel.cancelled() => {
-                            debug!("h2 connection cancelled");
-                        }
-                    };
+                            _ = cancel.cancelled() => {
+                                debug!("h2 connection cancelled");
+                            }
+                        };
 
-                    counter!(CONNECTION_POOL_CONNECTION_CLOSED).increment(1);
+                        counter!(CONNECTION_POOL_CONNECTION_CLOSED).increment(1);
 
-                    // set state to closed
-                    if let Some(shared) = shared_weak.upgrade() {
-                        shared.close();
-                    }
-                })
+                        // set state to closed
+                        if let Some(shared) = shared_weak.upgrade() {
+                            shared.close();
+                        }
+                    },
+                    &io_runtime,
+                )
                 .unwrap();
 
             Ok((send_request, cancellation))
@@ -737,7 +744,10 @@ where
                     if !end_stream {
                         tokio::task::Builder::new()
                             .name("h2:request-pump")
-                            .spawn(RequestPumpTask::new(send_stream, body).run())
+                            .spawn_on(
+                                RequestPumpTask::new(send_stream, body).run(),
+                                &this.shared.io_runtime,
+                            )
                             .unwrap();
                     }
                     this.state = ResponseFutureState::InFlight { fut };
@@ -969,6 +979,7 @@ mod test {
     async fn permits_sync_with_server_max_concurrent_streams() {
         let mut connection = Connection::new(
             TestConnector::new(5),
+            tokio::runtime::Handle::current(),
             ConnectionConfigBuilder::default()
                 .initial_max_send_streams(100)
                 .build()
@@ -1009,6 +1020,7 @@ mod test {
     async fn permits_clamped_to_cap_max_send_streams() {
         let connection = Connection::new(
             TestConnector::new(50),
+            tokio::runtime::Handle::current(),
             ConnectionConfigBuilder::default()
                 .initial_max_send_streams(10)
                 .streams_per_connection_limit(3)
@@ -1044,6 +1056,7 @@ mod test {
     async fn try_ready_fails_at_capacity() {
         let mut connection = Connection::new(
             TestConnector::new(2),
+            tokio::runtime::Handle::current(),
             ConnectionConfigBuilder::default()
                 .initial_max_send_streams(2)
                 .build()
@@ -1077,6 +1090,7 @@ mod test {
     async fn concurrent_requests_on_shared_connection() {
         let connection = Connection::new(
             TestConnector::new(10),
+            tokio::runtime::Handle::current(),
             ConnectionConfigBuilder::default()
                 .initial_max_send_streams(10)
                 .build()
@@ -1117,6 +1131,7 @@ mod test {
     async fn streaming_request_and_response() {
         let mut connection = Connection::new(
             TestConnector::new(10),
+            tokio::runtime::Handle::current(),
             ConnectionConfigBuilder::default()
                 .initial_max_send_streams(10)
                 .build()
@@ -1184,6 +1199,7 @@ mod test {
         let (connector, gate) = ControlledConnector::new(10);
         let connection = Connection::new(
             connector,
+            tokio::runtime::Handle::current(),
             ConnectionConfigBuilder::default()
                 .initial_max_send_streams(10)
                 .build()
@@ -1221,6 +1237,7 @@ mod test {
         let (connector, gate) = ControlledConnector::with_error(10);
         let connection = Connection::new(
             connector,
+            tokio::runtime::Handle::current(),
             ConnectionConfigBuilder::default()
                 .initial_max_send_streams(10)
                 .build()
@@ -1257,6 +1274,7 @@ mod test {
         let (connector, _gate) = ControlledConnector::new(10);
         let connection = Connection::new(
             connector,
+            tokio::runtime::Handle::current(),
             ConnectionConfigBuilder::default()
                 .initial_max_send_streams(10)
                 .build()

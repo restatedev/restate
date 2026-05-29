@@ -35,6 +35,7 @@ use rustls::pki_types::{DnsName, ServerName};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
+    time::Instant,
 };
 use tower::Service;
 use tracing::{debug, trace};
@@ -66,12 +67,13 @@ pub enum Error {
 #[derive(Clone)]
 pub struct Pool<C> {
     connector: C,
+    io_runtime: tokio::runtime::Handle,
     config: PoolConfig,
     authorities: Arc<DashMap<PoolKey, AuthorityPool<C>>>,
 }
 
 impl<C: Clone + Send + Sync + 'static> Pool<C> {
-    fn new(connector: C, config: PoolConfig) -> Self {
+    fn new(connector: C, io_runtime: tokio::runtime::Handle, config: PoolConfig) -> Self {
         metric_definitions::describe_metrics();
 
         let authorities = Arc::new(DashMap::default());
@@ -79,12 +81,16 @@ impl<C: Clone + Send + Sync + 'static> Pool<C> {
         if let Some(idle_timeout) = config.idle_connection_timeout {
             tokio::task::Builder::new()
                 .name("h2:eviction-task")
-                .spawn(eviction_task(Arc::downgrade(&authorities), idle_timeout))
+                .spawn_on(
+                    eviction_task(Arc::downgrade(&authorities), idle_timeout),
+                    &io_runtime,
+                )
                 .unwrap();
         }
 
         Self {
             config,
+            io_runtime,
             connector,
             authorities,
         }
@@ -112,16 +118,19 @@ where
         let mut authority_pool = self
             .authorities
             .entry(key)
-            .or_insert_with(|| AuthorityPool::new(self.connector.clone(), self.config))
+            .or_insert_with(|| {
+                AuthorityPool::new(self.connector.clone(), self.io_runtime.clone(), self.config)
+            })
             .value()
             .clone();
 
         async move {
             let mut request = request;
+            let acquire_histogram = histogram!(CONNECTION_POOL_ACQUIRE_STREAM_DURATION);
             loop {
-                let start_time = MillisSinceEpoch::now();
+                let start_time = Instant::now();
                 poll_fn(|cx| authority_pool.poll_ready(cx)).await?;
-                histogram!(CONNECTION_POOL_ACQUIRE_STREAM_DURATION).record(start_time.elapsed());
+                acquire_histogram.record(start_time.elapsed());
                 match authority_pool.call(request).await {
                     Ok(result) => return Ok(result),
                     Err(conn::ConnectionError::Error(err)) => return Err(err),
@@ -373,7 +382,10 @@ mod test {
     fn make_pool(max_concurrent_streams: u32) -> super::Pool<TestConnector> {
         PoolBuilder::default()
             .initial_max_send_streams(std::num::NonZeroU32::new(max_concurrent_streams).unwrap())
-            .build(TestConnector::new(max_concurrent_streams))
+            .build(
+                TestConnector::new(max_concurrent_streams),
+                tokio::runtime::Handle::current(),
+            )
     }
 
     fn make_pool_with_eviction(
@@ -383,7 +395,10 @@ mod test {
         PoolBuilder::default()
             .initial_max_send_streams(std::num::NonZeroU32::new(max_concurrent_streams).unwrap())
             .idle_connection_timeout(Some(idle_timeout))
-            .build(TestConnector::new(max_concurrent_streams))
+            .build(
+                TestConnector::new(max_concurrent_streams),
+                tokio::runtime::Handle::current(),
+            )
     }
 
     /// Requests to different hosts create separate authority pools.

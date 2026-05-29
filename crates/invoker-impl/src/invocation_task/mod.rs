@@ -27,6 +27,7 @@ use http::{HeaderName, HeaderValue, Response};
 use http_body::{Body, Frame};
 use http_body_util::StreamBody;
 use metrics::{counter, histogram};
+use restate_core::TaskCenter;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::task::AbortOnDropHandle;
@@ -669,7 +670,9 @@ impl ResponseStream {
         // spawned somewhere else (perhaps in the connection pool).
         // See: https://github.com/restatedev/restate/issues/96 and https://github.com/restatedev/restate/issues/76
         Self::WaitingHeaders {
-            join_handle: AbortOnDropHandle::new(tokio::task::spawn(client.call(req))),
+            join_handle: AbortOnDropHandle::new(TaskCenter::with_io_runtime_handle(|handle| {
+                handle.spawn(client.call(req))
+            })),
         }
     }
 }
