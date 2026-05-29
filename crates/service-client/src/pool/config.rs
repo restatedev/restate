@@ -75,6 +75,13 @@ pub struct PoolConfig {
     /// How often to send HTTP/2 PING frames to keep idle connections alive.
     /// `None` disables keep-alive pings entirely. Defaults to `None`.
     pub(crate) keep_alive_interval: Option<Duration>,
+
+    /// Fractional jitter added to `keep_alive_interval`, expressed as a fraction
+    /// of the interval (e.g. 0.1 = up to +10%, 1.0 = up to +100%).
+    ///
+    /// Default 0.2 (20% of interval)
+    pub(crate) keep_alive_interval_jitter: f32,
+
     /// How long a connection can be idle before it is evicted from the
     /// pool. `None` disables eviction entirely. Defaults to 5 minutes.
     pub(crate) idle_connection_timeout: Option<Duration>,
@@ -90,6 +97,7 @@ impl Default for PoolConfig {
             initial_connection_window_size: 5 * 1024 * 1024,
             max_frame_size: 16 * 1024,
             keep_alive_interval: None,
+            keep_alive_interval_jitter: 0.2,
             keep_alive_timeout: Duration::from_secs(20),
             idle_connection_timeout: Some(Duration::from_secs(300)),
         }
