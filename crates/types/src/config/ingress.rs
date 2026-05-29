@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 
 use restate_memory::NonZeroByteCount;
 use serde::{Deserialize, Serialize};
@@ -36,6 +36,18 @@ pub struct IngressOptions {
     /// Local concurrency limit to use to limit the amount of concurrent requests. If exceeded,
     /// the ingress will reply immediately with an appropriate status code. Default is unlimited.
     concurrent_api_requests_limit: Option<NonZeroUsize>,
+
+    /// # HTTP/2 max concurrent streams
+    ///
+    /// Caps the number of concurrent HTTP/2 streams accepted per inbound ingress connection.
+    /// If unset, Restate does not configure this limit and leaves it at hyper's runtime default.
+    /// With the current hyper version, that default is 200 streams.
+    /// Service-mesh clients such as Linkerd honor the advertised value as a hard per-connection
+    /// concurrency limit, so high-concurrency or long-poll deployments may need to raise it.
+    ///
+    /// Since v1.7.0
+    #[serde(skip_serializing_if = "Option::is_none")]
+    http2_max_concurrent_streams: Option<NonZeroU32>,
 
     /// # Kafka clusters
     ///
@@ -113,6 +125,10 @@ impl IngressOptions {
                 .unwrap_or(Semaphore::MAX_PERMITS - 1),
             Semaphore::MAX_PERMITS - 1,
         )
+    }
+
+    pub fn http2_max_concurrent_streams(&self) -> Option<NonZeroU32> {
+        self.http2_max_concurrent_streams
     }
 
     /// set derived values if they are not configured to reduce verbose configurations
