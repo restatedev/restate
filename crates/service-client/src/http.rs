@@ -132,11 +132,12 @@ impl HttpClient {
 
             let builder = pool::PoolBuilder::default()
                 .keep_alive_interval(keep_alive_interval)
+                .keep_alive_timeout(options.http_keep_alive_options.timeout.into())
+                .keep_alive_interval_jitter(options.http_keep_alive_options.jitter)
                 .streams_per_connection_limit(options.streams_per_connection_limit)
                 .initial_stream_window_size(options.initial_stream_window_size())
                 .initial_connection_window_size(options.initial_connection_window_size())
                 .max_frame_size(options.max_frame_size())
-                .keep_alive_timeout(options.http_keep_alive_options.timeout.into())
                 .idle_connection_timeout(if options.idle_connection_timeout.is_zero() {
                     None
                 } else {

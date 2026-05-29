@@ -199,6 +199,14 @@ pub struct Http2KeepAliveOptions {
     ///
     /// Only meaningful when `interval` is not zero. Defaults to 20 s.
     pub timeout: NonZeroFriendlyDuration,
+
+    /// # Jitter
+    ///
+    /// Fractional jitter added to `interval`, expressed as a fraction
+    /// of the interval (e.g. 0.1 = up to +10%, 1.0 = up to +100%).
+    ///
+    /// Default 0.2 (20% of interval)
+    pub jitter: f32,
 }
 
 impl Default for Http2KeepAliveOptions {
@@ -206,6 +214,7 @@ impl Default for Http2KeepAliveOptions {
         Self {
             interval: FriendlyDuration::from_secs(40),
             timeout: NonZeroFriendlyDuration::from_secs_unchecked(20),
+            jitter: 0.2,
         }
     }
 }

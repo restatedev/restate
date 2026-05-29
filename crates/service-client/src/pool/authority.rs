@@ -119,6 +119,7 @@ where
             .max_frame_size(config.max_frame_size)
             .keep_alive_interval(config.keep_alive_interval)
             .keep_alive_timeout(config.keep_alive_timeout)
+            .keep_alive_interval_jitter(config.keep_alive_interval_jitter)
             .build()
             .unwrap();
 
