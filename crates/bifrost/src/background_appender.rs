@@ -12,6 +12,7 @@ use std::num::NonZeroUsize;
 
 use bytes::BytesMut;
 use futures::FutureExt;
+use metrics::histogram;
 use pin_project::pin_project;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{mpsc, oneshot};
@@ -162,13 +163,18 @@ impl<T: StorageEncode> BackgroundAppender<T> {
         buffered_records: &mut Batch,
         notif_buffer: &mut Vec<oneshot::Sender<()>>,
     ) -> Result<()> {
+        // Profiling: time a record spends in the appender queue (enqueue -> flush to sequencer),
+        // i.e. the producer-side "appender queue wait" segment of committed_to_read.
+        let enqueue_to_flush = histogram!("restate.bifrost.appender.enqueue_to_flush.seconds");
         let mut batch = Vec::with_capacity(buffered_records.inner.len());
         for record in buffered_records.inner.drain(..) {
             match record {
                 AppendOperation::Enqueue(record) => {
+                    enqueue_to_flush.record(record.created_at().elapsed());
                     batch.push(record);
                 }
                 AppendOperation::EnqueueWithNotification(record, tx) => {
+                    enqueue_to_flush.record(record.created_at().elapsed());
                     batch.push(record);
                     notif_buffer.push(tx);
                 }
