@@ -95,8 +95,9 @@ use restate_worker_api::{LeaderQueryCommand, LeaderQueryReceiver};
 use self::leadership::trim_queue::TrimQueue;
 use crate::metric_definitions::{
     FLARE_REASON_VERSION_BARRIER, LEADER_LABEL, LEADER_LABEL_FOLLOWER, LEADER_LABEL_LEADER,
-    PARTITION_BLOCKED_FLARE, PARTITION_INGESTION_REQUEST_LEN, PARTITION_INGESTION_REQUEST_SIZE,
-    PARTITION_LABEL, PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, REASON_LABEL,
+    PARTITION_APPLY_BATCH_COMMIT_SECONDS, PARTITION_BLOCKED_FLARE, PARTITION_INGESTION_REQUEST_LEN,
+    PARTITION_INGESTION_REQUEST_SIZE, PARTITION_LABEL,
+    PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, REASON_LABEL,
 };
 use crate::partition::leadership::LeadershipState;
 use crate::partition::state_machine::{ActionCollector, StateMachine};
@@ -578,6 +579,7 @@ where
         // Telemetry setup
         let leader_record_write_to_read_latency = histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, LEADER_LABEL => LEADER_LABEL_LEADER);
         let follower_record_write_to_read_latency = histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, LEADER_LABEL => LEADER_LABEL_FOLLOWER);
+        let apply_batch_commit_latency = histogram!(PARTITION_APPLY_BATCH_COMMIT_SECONDS);
         // Start reading after the last applied lsn
 
         let mut record_stream = self.bifrost.create_reader(
@@ -776,7 +778,9 @@ where
                     }
 
                     // Commit our changes and notify actuators about actions if we are the leader
+                    let commit_started_at = std::time::Instant::now();
                     transaction.commit().await?;
+                    apply_batch_commit_latency.record(commit_started_at.elapsed());
                     // Notify all lsn watchers that the lsn has been committed
                     if let Some(lsn) = &self.status.last_applied_log_lsn {
                         self.last_applied_log_lsn_watch.send_replace(*lsn);

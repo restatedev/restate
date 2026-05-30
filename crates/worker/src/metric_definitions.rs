@@ -58,6 +58,9 @@ pub const PARTITION_IS_EFFECTIVE_LEADER: &str = "restate.partition.is_effective_
 pub const PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS: &str =
     "restate.partition.record_committed_to_read_latency.seconds";
 
+pub const PARTITION_APPLY_BATCH_COMMIT_SECONDS: &str =
+    "restate.partition.apply_batch_commit_duration.seconds";
+
 pub const PARTITION_INGESTION_REQUEST_LEN: &str = "restate.partition.ingest.request.len";
 pub const PARTITION_INGESTION_REQUEST_SIZE: &str = "restate.partition.ingest.request.size.bytes";
 pub const PARTITION_SHUFFLE_MESSAGE_COUNT: &str = "restate.partition.shuffle.message.count";
@@ -108,6 +111,12 @@ pub(crate) fn describe_metrics() {
         PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
         Unit::Seconds,
         "Duration between the record commit time to read time"
+    );
+
+    describe_histogram!(
+        PARTITION_APPLY_BATCH_COMMIT_SECONDS,
+        Unit::Seconds,
+        "Time spent awaiting the per-batch partition-store transaction commit in the apply loop"
     );
 
     describe_gauge!(
