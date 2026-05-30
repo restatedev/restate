@@ -132,7 +132,11 @@ pub enum TaskKind {
     BifrostBackgroundLowPriority,
     /// A background appender. The task will log on errors but the system will wait for its
     /// graceful cancellation on shutdown.
-    #[strum(props(OnCancel = "wait", OnError = "log"))]
+    ///
+    /// Runs on the default runtime so the self-proposer does not time-share the partition
+    /// processor's single-thread runtime with the apply loop and the log read-stream (which
+    /// serializes producing+tailing+applying onto one core per partition).
+    #[strum(props(OnCancel = "wait", OnError = "log", runtime = "default"))]
     BifrostAppender,
     #[strum(props(OnCancel = "abort", OnError = "log"))]
     Disposable,
@@ -152,6 +156,9 @@ pub enum TaskKind {
     /// in remote sequencer to handle responses of rpc messages.
     #[strum(props(OnCancel = "abort", runtime = "default"))]
     NetworkMessageHandler,
+    /// Runs on the default runtime so tailing the log happens in parallel with the partition
+    /// processor's apply+commit loop instead of time-sharing its single-thread runtime.
+    #[strum(props(runtime = "default"))]
     ReplicatedLogletReadStream,
     // -- Log-server tasks
     LogletWorker,
