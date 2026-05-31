@@ -32,6 +32,7 @@ mod barrier_test;
 mod durable_lsn_tracking_test;
 mod inbox_table_test;
 mod invocation_status_table_test;
+mod jc_orphan_cleanup_test;
 mod journal_events_table_test;
 mod journal_table_test;
 mod journal_table_v2_test;

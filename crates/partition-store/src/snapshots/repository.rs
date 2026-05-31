@@ -850,12 +850,15 @@ impl SnapshotRepository {
             "Downloaded partition snapshot",
         );
         Ok(Some(LocalPartitionSnapshot {
-            base_dir: snapshot_dir.keep(),
+            base_dir: snapshot_dir.path().to_path_buf(),
             log_id: snapshot_metadata.log_id,
             min_applied_lsn: snapshot_metadata.min_applied_lsn,
             db_comparator_name: snapshot_metadata.db_comparator_name,
             files: snapshot_metadata.files,
             key_range: snapshot_metadata.key_range,
+            // Hold on to the TempDir so the staging directory is removed on drop unless a
+            // successful import has already consumed it. See issue #4838.
+            staging_guard: Some(snapshot_dir),
         }))
     }
 
@@ -1278,11 +1281,12 @@ mod tests {
         let latest = repository.get_latest(PartitionId::MIN).await?.unwrap();
         assert_eq!(latest.min_applied_lsn, snapshot2.min_applied_lsn);
         let local_path = latest.base_dir.as_path().to_string_lossy().to_string();
+        // The staging directory exists while the downloaded snapshot is held...
+        assert!(tokio::fs::try_exists(&local_path).await?);
         drop(latest);
-
-        let local_dir_exists = tokio::fs::try_exists(&local_path).await?;
-        assert!(local_dir_exists);
-        tokio::fs::remove_dir_all(&local_path).await?;
+        // ...and is removed when it is dropped without being imported, so a failing restore
+        // cannot leak a copy of the snapshot per retry. See issue #4838.
+        assert!(!tokio::fs::try_exists(&local_path).await?);
 
         Ok(())
     }

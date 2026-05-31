@@ -390,9 +390,11 @@ impl PartitionCell {
             .import_cf(self.meta.cf_name().into(), import_metadata)
             .await?;
 
+        // Eagerly remove the staging directory on the success path. Downloaded snapshots also
+        // carry a TempDir guard that would clean it up on drop, but locally-produced snapshots
+        // (staging_guard == None) rely on this removal. Best-effort: since the SST files were
+        // moved into RocksDB on import, at worst the metadata file remains.
         if let Err(err) = tokio::fs::remove_dir_all(&snapshot.base_dir).await {
-            // This is not critical; since we move the SST files into RocksDB on import,
-            // at worst only the snapshot metadata file will remain in the staging dir
             warn!(
                 %err,
                 "Failed to remove local snapshot directory, continuing with startup",

@@ -644,6 +644,9 @@ impl PartitionStore {
             log_id: self.db.partition().log_id(),
             min_applied_lsn: applied_lsn,
             key_range: self.db.partition().key_range,
+            // Exported (not downloaded) snapshots write into a caller-managed directory that the
+            // upload path cleans up; no staging guard to own here.
+            staging_guard: None,
         })
     }
 
@@ -660,6 +663,34 @@ impl PartitionStore {
     /// Marks the one-time `jc` orphan cleanup as complete so it won't run again.
     pub fn mark_jc_orphan_cleanup_done(&mut self) -> Result<()> {
         put_jc_orphan_cleanup_done(self, self.partition_id())
+    }
+
+    /// Deletes a key, tolerating a column family that has been dropped concurrently.
+    ///
+    /// With `ignore_missing_column_families`, a write whose CF no longer exists becomes a
+    /// no-op instead of a fatal RocksDB background error that would take the entire (shared)
+    /// database read-only and fail all other partitions. This is only safe for best-effort
+    /// maintenance writes; the one-time orphan cleanup uses it because it runs on a clone of
+    /// the store whose CF a concurrent snapshot restore may drop.
+    /// See https://github.com/restatedev/restate/issues/4838.
+    pub(crate) fn delete_key_tolerating_missing_cf<K: EncodeTableKey>(
+        &mut self,
+        key: &K,
+    ) -> Result<()> {
+        let buffer = self.cleared_key_buffer_mut(key.serialized_length());
+        key.serialize_to(buffer);
+        let buffer = buffer.split();
+
+        let mut write_opts = rocksdb::WriteOptions::default();
+        write_opts.set_ignore_missing_column_families(true);
+
+        let table = self.table_handle(K::TABLE);
+        self.db
+            .rocksdb()
+            .inner()
+            .as_raw_db()
+            .delete_cf_opt(table, buffer, &write_opts)
+            .map_err(|error| StorageError::Generic(error.into()))
     }
 
     pub async fn verify_and_run_migrations(&mut self) -> Result<()> {

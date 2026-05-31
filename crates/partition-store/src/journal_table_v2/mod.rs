@@ -339,8 +339,8 @@ fn delete_journal<S: StorageAccess>(
 /// Only the keys for a single invocation are held in memory at any time to avoid unbounded
 /// memory usage on large stores.
 ///
-/// The `is_cancelled` predicate is checked when moving to a new invocation. If it returns
-/// `true`, the scan stops early and the returned `cancelled` flag is set to `true`.
+/// The `is_cancelled` predicate is checked on every scanned entry. If it returns `true`, the
+/// scan stops early and the returned `cancelled` flag is set to `true`.
 pub fn cleanup_orphaned_completion_id_index_entries(
     storage: &mut PartitionStore,
     is_cancelled: impl Fn() -> bool,
@@ -361,6 +361,15 @@ pub fn cleanup_orphaned_completion_id_index_entries(
     let mut current_invocation: Option<(PartitionKey, InvocationUuid, bool)> = None;
 
     for (mut key_bytes, _) in iter {
+        // Check cancellation on every entry so the task stops promptly when the owning
+        // partition processor shuts down. This bounds the window in which the cleanup may
+        // outlive the processor and write to a column family that a concurrent snapshot
+        // restore has dropped. See https://github.com/restatedev/restate/issues/4838.
+        if is_cancelled() {
+            cancelled = true;
+            break;
+        }
+
         let jc_key = JournalCompletionIdToCommandIndexKey::deserialize_from(&mut key_bytes)?;
 
         let is_orphan = match &current_invocation {
@@ -371,11 +380,6 @@ pub fn cleanup_orphaned_completion_id_index_entries(
                 *orphan
             }
             _ => {
-                // Check cancellation at invocation boundaries.
-                if is_cancelled() {
-                    cancelled = true;
-                    break;
-                }
                 // New invocation -- check if its journal still exists.
                 let orphan =
                     !has_journal_entries(storage, jc_key.partition_key, jc_key.invocation_uuid)?;
@@ -388,7 +392,7 @@ pub fn cleanup_orphaned_completion_id_index_entries(
         };
 
         if is_orphan {
-            storage.delete_key(&jc_key)?;
+            storage.delete_key_tolerating_missing_cf(&jc_key)?;
             deleted_entries += 1;
         }
     }

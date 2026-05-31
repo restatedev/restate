@@ -69,6 +69,7 @@ pub(crate) async fn run_tests(
         db_comparator_name: snapshot_meta.db_comparator_name.clone(),
         files: snapshot_meta.files.clone(),
         key_range,
+        staging_guard: None,
     };
 
     let mut new_partition_store = manager

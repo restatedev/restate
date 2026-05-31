@@ -148,7 +148,70 @@ impl PartitionStoreManager {
             use_multi_db_layout,
         });
 
+        // Remove snapshot staging directories left over from a previous run before any
+        // partition opens. These are download scratch dirs that are normally cleaned up on
+        // import/drop, but a hard crash mid-restore can leave them behind, and historically a
+        // restore crash-loop leaked one per retry until the disk filled. Safe here because no
+        // download can be in flight yet. See https://github.com/restatedev/restate/issues/4838.
+        Self::remove_stale_snapshot_staging().await;
+
         Ok(psm)
+    }
+
+    async fn remove_stale_snapshot_staging() {
+        let staging_dir = Configuration::pinned()
+            .worker
+            .storage
+            .snapshots_staging_dir();
+
+        let mut entries = match tokio::fs::read_dir(&staging_dir).await {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+            Err(err) => {
+                warn!(
+                    %err,
+                    staging_dir = %staging_dir.display(),
+                    "Failed to scan snapshot staging directory for stale entries"
+                );
+                return;
+            }
+        };
+
+        let mut removed = 0usize;
+        loop {
+            match entries.next_entry().await {
+                Ok(Some(entry)) => {
+                    let path = entry.path();
+                    let result = match entry.file_type().await {
+                        Ok(file_type) if file_type.is_dir() => {
+                            tokio::fs::remove_dir_all(&path).await
+                        }
+                        _ => tokio::fs::remove_file(&path).await,
+                    };
+                    match result {
+                        Ok(()) => removed += 1,
+                        Err(err) => warn!(
+                            %err,
+                            path = %path.display(),
+                            "Failed to remove stale snapshot staging entry"
+                        ),
+                    }
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    warn!(%err, "Failed to enumerate snapshot staging directory");
+                    break;
+                }
+            }
+        }
+
+        if removed > 0 {
+            info!(
+                removed,
+                staging_dir = %staging_dir.display(),
+                "Removed stale snapshot staging entries left from a previous run"
+            );
+        }
     }
 
     async fn open_rocksdb(&self, partition: &Partition) -> Result<Arc<RocksDb>, RocksError> {

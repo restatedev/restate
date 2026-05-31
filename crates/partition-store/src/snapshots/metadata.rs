@@ -14,6 +14,7 @@ use rocksdb::LiveFile;
 use serde::{Deserialize, Serialize};
 use serde_with::hex::Hex;
 use serde_with::{DeserializeAs, SerializeAs, serde_as};
+use tempfile::TempDir;
 
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::{LogId, Lsn};
@@ -159,6 +160,15 @@ pub struct LocalPartitionSnapshot {
     pub db_comparator_name: String,
     pub files: Vec<LiveFile>,
     pub key_range: KeyRange,
+    /// Owns the temporary staging directory for downloaded snapshots and removes it on drop.
+    /// This guarantees the staging directory is cleaned up on every error/abort path, not just
+    /// after a successful import -- otherwise a restore that keeps failing (e.g. while the DB is
+    /// already in an error state) leaks a copy of the snapshot per retry and can fill the disk.
+    /// `None` for locally-produced snapshots that are not downloaded into a temp dir.
+    /// See https://github.com/restatedev/restate/issues/4838.
+    // Held only for its `Drop` side effect (removing the staging directory); never read.
+    #[allow(dead_code)]
+    pub(crate) staging_guard: Option<TempDir>,
 }
 /// RocksDB SST file that is part of a snapshot. Serialization wrapper around [LiveFile].
 #[serde_as]
