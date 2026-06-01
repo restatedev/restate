@@ -20,7 +20,9 @@ use restate_types::partitions::Partition;
 use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
 
-use crate::snapshots::{LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion};
+use crate::snapshots::{
+    LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotDir, SnapshotFormatVersion,
+};
 use crate::{PartitionStore, PartitionStoreManager};
 
 pub(crate) async fn run_tests(
@@ -56,14 +58,16 @@ pub(crate) async fn run_tests(
     let metadata_json = serde_json::to_string_pretty(&snapshot_meta).unwrap();
 
     drop(partition_store);
-    drop(snapshot);
+    // Disarm the exported snapshot's directory guard so the on-disk SST files survive past this
+    // drop; we restore from them below. `snapshots_dir` (a TempDir) still owns the parent dir.
+    let _exported_dir = snapshot.base_dir.into_path();
 
     manager.drop_partition(partition_id).await.unwrap();
 
     let snapshot_meta: PartitionSnapshotMetadata = serde_json::from_str(&metadata_json).unwrap();
 
     let snapshot = LocalPartitionSnapshot {
-        base_dir: snapshots_dir.path().into(),
+        base_dir: SnapshotDir::new(snapshots_dir.path().into()),
         log_id: LogId::from(partition_id),
         min_applied_lsn: snapshot_meta.min_applied_lsn,
         db_comparator_name: snapshot_meta.db_comparator_name.clone(),
