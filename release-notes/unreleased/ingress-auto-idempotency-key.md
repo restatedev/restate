@@ -43,7 +43,10 @@ in-flight request are collapsed.
   a server-generated key. They will be routed to one of the 256 controlled
   buckets for the target rather than spread across the full partition-key
   space. Invocation metadata is retained according to the
-  idempotent-invocation retention policy.
+  idempotent-invocation retention policy. As a side effect, the invocation's
+  value (its result) is now retained after completion for the duration of the
+  idempotency retention period, rather than being discarded once the
+  invocation finishes.
 - **Clusters with `controlled-idempotent-sharding` disabled**: no change.
 - **Workflows**: no change.
 - **Callers that already send an `Idempotency-Key` header**: no change.
