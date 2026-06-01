@@ -27,7 +27,6 @@ use restate_core::{
     network::{Networking, TransportConnect},
 };
 use restate_types::replicated_loglet::Spread;
-use restate_types::retries::with_jitter;
 use restate_types::{
     Merge, PlainNodeId,
     config::Configuration,
@@ -195,7 +194,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
                         Instant::now(),
                     );
 
-                    let delay = with_jitter(delay, 0.3);
+                    let delay = delay.add_jitter(0.3);
                     if self.current_wave >= TONE_ESCALATION_THRESHOLD {
                         warn!(
                             wave = %self.current_wave,

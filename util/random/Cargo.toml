@@ -9,3 +9,6 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+restate-workspace-hack.workspace = true

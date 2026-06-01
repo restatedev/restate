@@ -59,10 +59,10 @@ use restate_types::net::partition_processor::{
 };
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::partitions::{Partition, PartitionFeatureChange};
-use restate_types::retries::with_jitter;
 use restate_types::schema::Schema;
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use restate_types::{GenerationalNodeId, SemanticRestateVersion};
+use restate_util_time::DurationExt;
 use restate_vqueues::scheduler::{self};
 use restate_vqueues::{ResourceManager, SchedulerService, VQueuesMeta, VQueuesMetaCache};
 use restate_wal_protocol::control::{
@@ -617,7 +617,7 @@ where
                 last_reported_durable_lsn,
                 replica_set_states,
                 partition_store.partition_db().watch_archived_lsn(),
-                with_jitter(Duration::from_secs(5), 0.5),
+                Duration::from_secs(5).add_jitter(0.5),
             );
 
             self.state = State::Leader(Box::new(LeaderState::new(
