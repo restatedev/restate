@@ -13,6 +13,7 @@ schema = ["dep:schemars", "dep:serde_json"]
 serde = ["dep:serde"]
 
 [dependencies]
+restate-util-random = { workspace = true }
 restate-workspace-hack = { workspace = true }
 
 jiff = { workspace = true }

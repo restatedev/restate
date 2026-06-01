@@ -7,8 +7,8 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
-[dependencies]
-restate-workspace-hack = { workspace = true }
-
 [lints]
 workspace = true
+
+[dependencies]
+restate-workspace-hack.workspace = true
