@@ -8,9 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_util_bytecount::ByteCount;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+
+use restate_util_bytecount::ByteCount;
 
 /// # AWS options
 #[serde_as]
@@ -42,6 +43,35 @@ pub struct AwsLambdaOptions {
     pub request_compression_threshold: Option<ByteCount>,
 }
 
+impl AwsLambdaOptions {
+    pub fn apply_deprecated(&mut self, new_base: &str, deprecated: DeprecatedAwsLambdaOptions) {
+        let DeprecatedAwsLambdaOptions {
+            aws_profile,
+            aws_assume_role_external_id,
+            request_compression_threshold,
+        } = deprecated;
+
+        super::apply_deprecated_field_optional(
+            &mut self.aws_profile,
+            aws_profile,
+            new_base,
+            "aws-profile",
+        );
+        super::apply_deprecated_field_optional(
+            &mut self.aws_assume_role_external_id,
+            aws_assume_role_external_id,
+            new_base,
+            "aws-assume-role-external-id",
+        );
+        super::apply_deprecated_field_optional(
+            &mut self.request_compression_threshold,
+            request_compression_threshold,
+            new_base,
+            "request-compression-threshold",
+        );
+    }
+}
+
 impl Default for AwsLambdaOptions {
     fn default() -> Self {
         Self {
@@ -50,4 +80,15 @@ impl Default for AwsLambdaOptions {
             request_compression_threshold: Some((4usize * 1024 * 1024).into()),
         }
     }
+}
+
+/// Shadow of [`AwsLambdaOptions`] for the deprecated `service-client` root location. Every field
+/// is `Option<T>` so `None` means "user didn't set it" and `Some(_)` means "user set this value".
+// todo: Remove in Restate v1.8
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct DeprecatedAwsLambdaOptions {
+    pub aws_profile: Option<String>,
+    pub aws_assume_role_external_id: Option<String>,
+    pub request_compression_threshold: Option<ByteCount>,
 }

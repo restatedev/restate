@@ -24,12 +24,12 @@ use restate_util_bytecount::NonZeroByteCount;
 use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
 
 use super::{
-    AwsLambdaOptions, CPU_COUNT, DEFAULT_MESSAGE_SIZE_LIMIT, GossipOptions, HttpOptions,
-    InvalidConfigurationError, ObjectStoreOptions, PerfStatsLevel, RocksDbOptions,
+    CPU_COUNT, DEFAULT_MESSAGE_SIZE_LIMIT, GossipOptions, InvalidConfigurationError,
+    ObjectStoreOptions, PerfStatsLevel, RocksDbOptions,
 };
 use crate::PlainNodeId;
-use crate::config::NetworkingOptions;
 use crate::config::dynamodb_store::DynamoDbOptions;
+use crate::config::{DeprecatedServiceClientOptions, NetworkingOptions};
 use crate::locality::NodeLocation;
 use crate::net::address::{AdvertisedAddress, ListenerPort};
 use crate::net::address::{BindAddress, FabricPort, TokioConsolePort};
@@ -45,8 +45,6 @@ const MIN_MEMTABLE_TOTAL_BUDGET: NonZeroByteCount =
     NonZeroByteCount::new(NonZeroUsize::new(32 * 1024 * 1024).unwrap());
 
 const DEFAULT_STORAGE_DIRECTORY: &str = "restate-data";
-const X_RESTATE_CLUSTER_NAME: http::HeaderName =
-    http::HeaderName::from_static("x-restate-cluster-name");
 
 static HOSTNAME: LazyLock<String> = LazyLock::new(|| {
     hostname::get()
@@ -344,8 +342,11 @@ pub struct CommonOptions {
     )]
     tokio_console_listener_options: ListenerOptions<TokioConsolePort>,
 
-    #[serde(flatten)]
-    pub service_client: ServiceClientOptions,
+    // todo: remove in Restate v1.8
+    #[serde(flatten, skip_serializing)]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[deprecated(since = "1.7.0", note = "Moved to `worker.invoker.service-client`")]
+    pub service_client: DeprecatedServiceClientOptions,
 
     /// Disable prometheus metric recording and reporting. Default is `false`.
     pub disable_prometheus: bool,
@@ -789,23 +790,6 @@ impl CommonOptions {
 
         self.metadata_client.merge(network_options);
 
-        if self.service_client.additional_request_headers.is_none() {
-            let cluster_name_visible_ascii = self
-                .cluster_name()
-                .chars()
-                .filter(|c| *c >= ' ' && *c <= '~')
-                .collect::<String>();
-
-            self.service_client.additional_request_headers = Some(
-                std::collections::HashMap::from_iter([(
-                    X_RESTATE_CLUSTER_NAME,
-                    http::HeaderValue::from_str(&cluster_name_visible_ascii)
-                        .expect("a visible ascii string must be a valid header value"),
-                )])
-                .into(),
-            )
-        }
-
         Ok(())
     }
 
@@ -839,6 +823,7 @@ impl Default for CommonOptions {
             default_num_partitions: 24,
             default_replication: ReplicationProperty::new_unchecked(1),
             disable_prometheus: false,
+            #[allow(deprecated)]
             service_client: Default::default(),
             shutdown_timeout: NonZeroFriendlyDuration::from_secs_unchecked(60),
             tracing: TracingOptions::default(),
@@ -875,42 +860,6 @@ impl Default for CommonOptions {
             disable_controlled_idempotent_sharding: false,
         }
     }
-}
-
-/// # Service Client options
-#[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[cfg_attr(
-    feature = "schemars",
-    schemars(rename = "ServiceClientOptions", default)
-)]
-#[builder(default)]
-#[derive(Default)]
-#[serde(rename_all = "kebab-case")]
-pub struct ServiceClientOptions {
-    #[serde(flatten)]
-    pub http: HttpOptions,
-    #[serde(flatten)]
-    pub lambda: AwsLambdaOptions,
-
-    /// # Request identity private key PEM file
-    ///
-    /// A path to a file, such as "/var/secrets/key.pem", which contains exactly one ed25519 private
-    /// key in PEM format. Such a file can be generated with `openssl genpkey -algorithm ed25519`.
-    /// If provided, this key will be used to attach JWTs to requests from this client which
-    /// SDKs may optionally verify, proving that the caller is a particular Restate instance.
-    ///
-    /// This file is currently only read on client creation, but this may change in future.
-    /// Parsed public keys will be logged at INFO level in the same format that SDKs expect.
-    pub request_identity_private_key_pem_file: Option<PathBuf>,
-
-    /// # Additional request headers
-    ///
-    /// Headers that should be applied to all outgoing requests (HTTP and Lambda).
-    /// Defaults to `x-restate-cluster-name: <cluster name>`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub additional_request_headers: Option<SerdeableHeaderHashMap>,
 }
 
 /// # Log format

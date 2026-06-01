@@ -158,7 +158,119 @@ impl HttpOptions {
             .unwrap_or(u32::MAX)
             .clamp(16_384, 16_777_215)
     }
+
+    pub fn apply_deprecated(&mut self, new_base: &str, deprecated: DeprecatedHttpOptions) {
+        let DeprecatedHttpOptions {
+            http_keep_alive_options,
+            http_proxy,
+            no_proxy,
+            connect_timeout,
+            initial_max_send_streams,
+            streams_per_connection_limit,
+            idle_connection_timeout,
+            http2_initial_stream_window_size,
+            http2_initial_connection_window_size,
+            http2_max_frame_size,
+        } = deprecated;
+
+        super::apply_deprecated_field(
+            &mut self.http_keep_alive_options.interval,
+            http_keep_alive_options.interval,
+            new_base,
+            "http-keep-alive-options.interval",
+        );
+        super::apply_deprecated_field(
+            &mut self.http_keep_alive_options.timeout,
+            http_keep_alive_options.timeout,
+            new_base,
+            "http-keep-alive-options.timeout",
+        );
+        super::apply_deprecated_field(
+            &mut self.http_keep_alive_options.jitter,
+            http_keep_alive_options.jitter,
+            new_base,
+            "http-keep-alive-options.jitter",
+        );
+        super::apply_deprecated_field_optional(
+            &mut self.http_proxy,
+            http_proxy,
+            new_base,
+            "http-proxy",
+        );
+        super::apply_deprecated_field_optional(&mut self.no_proxy, no_proxy, new_base, "no-proxy");
+        super::apply_deprecated_field(
+            &mut self.connect_timeout,
+            connect_timeout,
+            new_base,
+            "connect-timeout",
+        );
+        super::apply_deprecated_field_optional(
+            &mut self.initial_max_send_streams,
+            initial_max_send_streams,
+            new_base,
+            "initial-max-send-streams",
+        );
+        super::apply_deprecated_field(
+            &mut self.streams_per_connection_limit,
+            streams_per_connection_limit,
+            new_base,
+            "streams-per-connection-limit",
+        );
+        super::apply_deprecated_field(
+            &mut self.idle_connection_timeout,
+            idle_connection_timeout,
+            new_base,
+            "idle-connection-timeout",
+        );
+        super::apply_deprecated_field(
+            &mut self.http2_initial_stream_window_size,
+            http2_initial_stream_window_size,
+            new_base,
+            "http2-initial-stream-window-size",
+        );
+        super::apply_deprecated_field(
+            &mut self.http2_initial_connection_window_size,
+            http2_initial_connection_window_size,
+            new_base,
+            "http2-initial-connection-window-size",
+        );
+        super::apply_deprecated_field(
+            &mut self.http2_max_frame_size,
+            http2_max_frame_size,
+            new_base,
+            "http2-max-frame-size",
+        );
+    }
 }
+
+/// Shadow of [`HttpOptions`] for the deprecated `service-client` root location. Every leaf field
+/// is `Option<T>` so `None` means "user didn't set it" and `Some(_)` means "user set this value".
+// todo: Remove in Restate v1.8
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct DeprecatedHttpOptions {
+    pub http_keep_alive_options: DeprecatedHttp2KeepAliveOptions,
+    pub http_proxy: Option<String>,
+    pub no_proxy: Option<NoProxy>,
+    pub connect_timeout: Option<NonZeroFriendlyDuration>,
+    pub initial_max_send_streams: Option<NonZeroU32>,
+    pub streams_per_connection_limit: Option<NonZeroUsize>,
+    pub idle_connection_timeout: Option<FriendlyDuration>,
+    pub http2_initial_stream_window_size: Option<NonZeroByteCount>,
+    pub http2_initial_connection_window_size: Option<NonZeroByteCount>,
+    pub http2_max_frame_size: Option<NonZeroByteCount>,
+}
+
+/// Shadow of [`Http2KeepAliveOptions`] for the deprecated `service-client` root location.
+// todo: Remove in Restate v1.8
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct DeprecatedHttp2KeepAliveOptions {
+    pub interval: Option<FriendlyDuration>,
+    pub timeout: Option<NonZeroFriendlyDuration>,
+    pub jitter: Option<f32>,
+}
+
 /// NO_PROXY can be provided as either a comma-separated string `example.com,::1,localhost`, or a list of strings `["example.com", "::1", "localhost"]`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
