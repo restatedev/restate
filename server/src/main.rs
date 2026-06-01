@@ -259,7 +259,7 @@ fn main() {
             config_loader.start();
 
             // Initialize telemetry
-            let telemetry = telemetry::Telemetry::create(&Configuration::pinned().common);
+            let telemetry = telemetry::Telemetry::create(&Configuration::pinned());
             telemetry.start();
 
             let node = Node::create(Configuration::live(), prometheus, address_book).await;
