@@ -170,7 +170,10 @@ impl Service<Uri> for HyperUtilConnector {
 fn make_custom_pool() -> restate_service_client::pool::Pool<TestConnector> {
     PoolBuilder::default()
         .initial_max_send_streams(NonZeroU32::new(MAX_CONCURRENT_STREAMS).unwrap())
-        .build(TestConnector::new(MAX_CONCURRENT_STREAMS))
+        .build(
+            TestConnector::new(MAX_CONCURRENT_STREAMS),
+            tokio::runtime::Handle::current(),
+        )
 }
 
 type BoxBody = http_body_util::combinators::BoxBody<Bytes, GenericError>;

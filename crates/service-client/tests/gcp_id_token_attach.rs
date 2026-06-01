@@ -131,6 +131,7 @@ fn build_service_client() -> ServiceClient {
             ..Default::default()
         },
         restate_service_client::AssumeRoleCacheMode::Unbounded,
+        tokio::runtime::Handle::current(),
     )
     .expect("ServiceClient construction")
 }

@@ -105,8 +105,12 @@ impl Default for PoolConfig {
 }
 
 impl PoolBuilder {
-    pub fn build<C: Clone + Send + Sync + 'static>(self, connector: C) -> super::Pool<C> {
+    pub fn build<C: Clone + Send + Sync + 'static>(
+        self,
+        connector: C,
+        io_runtime: tokio::runtime::Handle,
+    ) -> super::Pool<C> {
         let config = self.build_inner().unwrap();
-        super::Pool::new(connector, config)
+        super::Pool::new(connector, io_runtime, config)
     }
 }

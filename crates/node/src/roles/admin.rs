@@ -101,15 +101,21 @@ impl<T: TransportConnect> AdminRole<T> {
 
         // Total duration roughly 1s
         let retry_policy = RetryPolicy::exponential(Duration::from_millis(100), 2.0, Some(4), None);
-        let service_client =
-            ServiceClient::from_options(&config.common.service_client, AssumeRoleCacheMode::None)?;
+        let service_client = ServiceClient::from_options(
+            &config.common.service_client,
+            AssumeRoleCacheMode::None,
+            TaskCenter::with_io_runtime_handle(|handle| handle.clone()),
+        )?;
         let serdes_client = SerdesClient::new(service_client.clone());
         let service_discovery = ServiceDiscovery::new(retry_policy, service_client);
 
         let telemetry_http_client = if config.common.disable_telemetry {
             None
         } else {
-            Some(HttpClient::from_options(&config.common.service_client.http))
+            Some(HttpClient::from_options(
+                &config.common.service_client.http,
+                TaskCenter::with_io_runtime_handle(|handle| handle.clone()),
+            ))
         };
 
         let query_context = if let Some(query_context) = local_query_context {
