@@ -83,7 +83,9 @@ impl ConfigLoader {
         config
             .ingress
             .set_derived_values(&config.common, &config.networking);
-        config.worker.set_derived_values(&config.networking);
+        config
+            .worker
+            .set_derived_values(&config.common, &config.networking);
 
         if self.metadata_migration_mode {
             // In metadata migration mode we keep only Admin and MetadataServer roles that were
