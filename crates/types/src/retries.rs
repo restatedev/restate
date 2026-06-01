@@ -16,9 +16,7 @@ use std::future::Future;
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
-use restate_util_time::FriendlyDuration;
-
-use rand::Rng;
+use restate_util_time::{DurationExt, FriendlyDuration};
 
 const DEFAULT_JITTER_MULTIPLIER: f32 = 0.3;
 
@@ -527,7 +525,7 @@ impl Iterator for RetryIter<'_> {
                 if max_attempts.is_some_and(|limit| self.attempts > limit.into()) {
                     None
                 } else {
-                    Some(with_jitter(*interval, DEFAULT_JITTER_MULTIPLIER))
+                    Some(interval.add_jitter(DEFAULT_JITTER_MULTIPLIER))
                 }
             }
             RetryPolicy::Exponential {
@@ -544,10 +542,10 @@ impl Iterator for RetryIter<'_> {
                         max_interval.map(Into::into).unwrap_or(Duration::MAX),
                     );
                     self.last_retry = Some(new_retry);
-                    Some(with_jitter(new_retry, DEFAULT_JITTER_MULTIPLIER))
+                    Some(new_retry.add_jitter(DEFAULT_JITTER_MULTIPLIER))
                 } else {
                     self.last_retry = Some(*initial_interval);
-                    Some(with_jitter(*initial_interval, DEFAULT_JITTER_MULTIPLIER))
+                    Some(initial_interval.add_jitter(DEFAULT_JITTER_MULTIPLIER))
                 }
             }
         }
@@ -569,23 +567,6 @@ impl Iterator for RetryIter<'_> {
 /// instead of panicking on overflow, non-finite, or negative results.
 fn saturating_mul_f32(d: Duration, factor: f32) -> Duration {
     Duration::try_from_secs_f32(d.as_secs_f32() * factor).unwrap_or(Duration::MAX)
-}
-
-// Jitter is a random duration added to the desired target, it ranges from 3ms to
-// (max_multiplier * duration) of the original requested delay. The minimum of +3ms
-// is to avoid falling into common zero-ending values (0, 10, 100, etc.) which are
-// common cause of harmonics in systems (avoiding resonance frequencies)
-static MIN_JITTER: Duration = Duration::from_millis(3);
-
-pub fn with_jitter(duration: Duration, max_multiplier: f32) -> Duration {
-    let max_jitter = duration.mul_f32(max_multiplier);
-    if max_jitter <= MIN_JITTER {
-        // We can't get a random value unless max_jitter is higher than MIN_JITTER.
-        duration + MIN_JITTER
-    } else {
-        let jitter = rand::rng().random_range(MIN_JITTER..max_jitter);
-        duration + jitter
-    }
 }
 
 impl ExactSizeIterator for RetryIter<'_> {}
@@ -672,7 +653,8 @@ mod tests {
     }
 
     fn within_jitter(expected: Duration, actual: Duration, max_multiplier: f32) -> bool {
-        let min_inc_jitter = expected + MIN_JITTER;
+        // matches the 3ms floor that `DurationExt::add_jitter` applies
+        let min_inc_jitter = expected + Duration::from_millis(3);
         let max_inc_jitter = expected + expected.mul_f32(max_multiplier);
         actual >= min_inc_jitter && actual <= max_inc_jitter
     }

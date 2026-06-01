@@ -21,6 +21,10 @@ use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::stream::FusedStream;
 use pin_project::pin_project;
+use tokio::time::Sleep;
+use tracing::debug;
+use tracing::trace;
+use tracing::warn;
 
 use restate_core::Metadata;
 use restate_core::MetadataKind;
@@ -40,11 +44,7 @@ use restate_types::logs::metadata::MaybeSegment;
 use restate_types::logs::metadata::SealMetadata;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{LogId, Lsn};
-use restate_types::retries::with_jitter;
-use tokio::time::Sleep;
-use tracing::debug;
-use tracing::trace;
-use tracing::warn;
+use restate_util_time::DurationExt;
 
 use crate::BifrostAdmin;
 use crate::Error;
@@ -141,7 +141,7 @@ impl State {
     fn awaiting_or_seal_chain() -> Self {
         Self::AwaitingOrSealChain {
             // Questionable whether making this value configurable adds value or not.
-            timeout: Box::pin(tokio::time::sleep(with_jitter(Duration::from_secs(5), 0.5))),
+            timeout: Box::pin(tokio::time::sleep(Duration::from_secs(5).add_jitter(0.5))),
         }
     }
 
