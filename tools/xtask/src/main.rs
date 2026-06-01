@@ -226,9 +226,11 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
 
     let socket_dir = tempfile::tempdir()?;
     let socket_path = socket_dir.path().join("admin.sock");
-    let service_client =
-        ServiceClient::from_options(&config.common.service_client, AssumeRoleCacheMode::None)
-            .unwrap();
+    let service_client = ServiceClient::from_options(
+        &config.worker.invoker.service_client,
+        AssumeRoleCacheMode::None,
+    )
+    .unwrap();
     let admin_service = AdminService::new(
         Listeners::new_unix_listener(socket_path.clone())?,
         node_env.metadata_writer.clone(),
