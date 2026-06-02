@@ -45,8 +45,7 @@ in-flight request are collapsed.
   space. Invocation metadata is retained according to the
   idempotent-invocation retention policy. As a side effect, the invocation's
   value (its result) is now retained after completion for the duration of the
-  idempotency retention period, rather than being discarded once the
-  invocation finishes.
+  idempotency retention period.
 - **Clusters with `controlled-idempotent-sharding` disabled**: no change.
 - **Workflows**: no change.
 - **Callers that already send an `Idempotency-Key` header**: no change.
@@ -57,4 +56,33 @@ None required. Callers do not need to change anything. Operators who do not
 want this behavior can opt out at provisioning time with
 `restatectl provision --disable-feature controlled-idempotent-sharding`
 (see [[restatectl-provision-features]]). For now, the feature set is frozen
-in `NodesConfiguration` at provisioning time and cannot be toggled later. 
+in `NodesConfiguration` at provisioning time and cannot be toggled later.
+
+#### Matching the previous cleanup behavior
+
+The retention/cleanup window for these calls changes because the injected key
+makes them count as idempotent invocations. Previously, service and virtual
+object calls without an idempotency key were cleaned up according to the
+**journal retention** alone. With a key now present, the completion (the
+invocation's value) is retained for the **idempotency retention**, and the
+journal retention is capped so it never exceeds the idempotency retention.
+
+So cleanup is now governed by *both* retention values rather than journal
+retention alone. Each value is taken from the per service/handler setting if
+one is configured (via the SDK / Admin API), otherwise from the server
+default:
+
+- **Idempotency retention** — now drives how long the invocation metadata and
+  value are retained for these calls. Server default:
+  `default-idempotency-retention`, with an upper bound of
+  `max-idempotency-retention`.
+- **Journal retention** — still applies, but is capped at the idempotency
+  retention. Server default: `default-journal-retention`, with an upper bound
+  of `max-journal-retention`.
+
+To approximate the previous cleanup window for these calls, set the
+idempotency retention to the journal retention you relied on before — either
+per service/handler (preferred) via the SDK / Admin API, or globally by
+setting `default-idempotency-retention` to match `default-journal-retention`.
+Note that, unlike before, the invocation's value is retained for this window
+rather than discarded at completion. 
