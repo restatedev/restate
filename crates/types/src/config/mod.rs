@@ -287,7 +287,9 @@ impl Configuration {
             .common
             .set_derived_values(&config.networking)
             .unwrap();
-        config.worker.set_derived_values(&config.networking);
+        config
+            .worker
+            .set_derived_values(&config.common, &config.networking);
         config.bifrost.set_derived_values(&config.networking);
         config.admin.set_derived_values(&config.common);
         config
@@ -303,7 +305,9 @@ impl Configuration {
             .common
             .set_derived_values(&config.networking)
             .unwrap();
-        config.worker.set_derived_values(&config.networking);
+        config
+            .worker
+            .set_derived_values(&config.common, &config.networking);
         config.bifrost.set_derived_values(&config.networking);
         config.admin.set_derived_values(&config.common);
         config
@@ -449,6 +453,43 @@ pub enum InvalidConfigurationError {
     DeriveBindAddress(String),
     #[error("node-name is required: {0}")]
     RequiredNodeName(String),
+}
+
+/// Migrates a single field from a deprecated config location to its new one.
+///
+/// `deprecated` is `Some` iff the user set the field at the old location (the all-Option shadow
+/// type the deprecated location deserializes into makes this unambiguous). When set, the value
+/// is moved into `new` and a deprecation warning is printed — even if the new location also has
+/// a value, the deprecated one wins so the user's prior effective behavior is preserved during
+/// the migration window.
+fn apply_deprecated_field<T>(
+    new: &mut T,
+    deprecated: Option<T>,
+    new_base: &str,
+    field: &'static str,
+    new_field: Option<&'static str>,
+) {
+    if let Some(value) = deprecated {
+        let new_field = new_field.unwrap_or(field);
+        print_warning_deprecated_config_option(field, Some(&format!("{new_base}.{new_field}")));
+        *new = value;
+    }
+}
+
+/// Same as [`apply_deprecated_field`], but for canonical fields that are themselves `Option<T>`.
+/// The shadow side carries `Option<T>` (single layer) using `Some` as the "user set this" flag.
+fn apply_deprecated_field_optional<T>(
+    new: &mut Option<T>,
+    deprecated: Option<T>,
+    new_base: &str,
+    field: &str,
+    new_field: Option<&'static str>,
+) {
+    if deprecated.is_some() {
+        let new_field = new_field.unwrap_or(field);
+        print_warning_deprecated_config_option(field, Some(&format!("{new_base}.{new_field}")));
+        *new = deprecated;
+    }
 }
 
 #[allow(dead_code)]

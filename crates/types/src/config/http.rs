@@ -26,6 +26,7 @@ pub struct HttpOptions {
     /// # HTTP/2 Keep-alive
     ///
     /// Configuration for the HTTP/2 keep-alive mechanism, using PING frames.
+    #[serde(flatten)]
     pub http_keep_alive_options: Http2KeepAliveOptions,
     /// # Proxy URI
     ///
@@ -50,7 +51,7 @@ pub struct HttpOptions {
     /// it a failed attempt.
     pub connect_timeout: NonZeroFriendlyDuration,
 
-    /// # Initial Max Send Streams
+    /// # HTTP/2 Initial Max Send Streams
     ///
     /// Sets the initial maximum of locally initiated (send) streams.
     ///
@@ -63,7 +64,7 @@ pub struct HttpOptions {
     ///
     /// **NOTE**: Setting this value to None (default) users the default
     /// recommended value from HTTP2 specs
-    pub initial_max_send_streams: Option<NonZeroU32>,
+    pub http2_initial_max_send_streams: Option<NonZeroU32>,
 
     /// Upper bound on the per-connection max-send-streams.
     ///
@@ -76,9 +77,9 @@ pub struct HttpOptions {
     /// Since v1.7.0
     ///
     /// Default: 128
-    pub streams_per_connection_limit: NonZeroUsize,
+    pub http2_streams_per_connection_limit: NonZeroUsize,
 
-    /// # Idle Connection Timeout
+    /// # HTTP/2 Idle Connection Timeout
     ///
     /// How long a connection can be idle before it is evicted
     /// and closed. Set to `0` to disable eviction.
@@ -86,7 +87,7 @@ pub struct HttpOptions {
     /// Since: v1.7.0
     ///
     /// Default: 5 minutes
-    pub idle_connection_timeout: FriendlyDuration,
+    pub http2_idle_connection_timeout: FriendlyDuration,
 
     /// # HTTP/2 initial stream window size
     ///
@@ -126,9 +127,9 @@ impl Default for HttpOptions {
             http_proxy: None,
             no_proxy: None,
             connect_timeout: NonZeroFriendlyDuration::from_secs_unchecked(10),
-            initial_max_send_streams: None,
-            streams_per_connection_limit: NonZeroUsize::new(128).unwrap(),
-            idle_connection_timeout: FriendlyDuration::from_secs(300),
+            http2_initial_max_send_streams: None,
+            http2_streams_per_connection_limit: NonZeroUsize::new(128).unwrap(),
+            http2_idle_connection_timeout: FriendlyDuration::from_secs(300),
             http2_initial_stream_window_size: NonZeroByteCount::new(
                 NonZeroUsize::new(2 * 1024 * 1024).unwrap(),
             ),
@@ -158,7 +159,96 @@ impl HttpOptions {
             .unwrap_or(u32::MAX)
             .clamp(16_384, 16_777_215)
     }
+
+    pub(crate) fn apply_deprecated(&mut self, new_base: &str, deprecated: DeprecatedHttpOptions) {
+        let DeprecatedHttpOptions {
+            http_keep_alive_options,
+            http_proxy,
+            no_proxy,
+            connect_timeout,
+            initial_max_send_streams,
+        } = deprecated;
+
+        super::apply_deprecated_field(
+            &mut self.http_keep_alive_options.http2_keep_alive_interval,
+            http_keep_alive_options.interval,
+            new_base,
+            "http-keep-alive-options.interval",
+            Some("http2-keep-alive-interval"),
+        );
+
+        super::apply_deprecated_field(
+            &mut self.http_keep_alive_options.http2_keep_alive_timeout,
+            http_keep_alive_options.timeout,
+            new_base,
+            "http-keep-alive-options.timeout",
+            Some("http2-keep-alive-timeout"),
+        );
+
+        super::apply_deprecated_field(
+            &mut self.http_keep_alive_options.http2_keep_alive_jitter,
+            http_keep_alive_options.jitter,
+            new_base,
+            "http-keep-alive-options.jitter",
+            Some("http2-keep-alive-jitter"),
+        );
+
+        super::apply_deprecated_field_optional(
+            &mut self.http_proxy,
+            http_proxy,
+            new_base,
+            "http-proxy",
+            None,
+        );
+
+        super::apply_deprecated_field_optional(
+            &mut self.no_proxy,
+            no_proxy,
+            new_base,
+            "no-proxy",
+            None,
+        );
+
+        super::apply_deprecated_field(
+            &mut self.connect_timeout,
+            connect_timeout,
+            new_base,
+            "connect-timeout",
+            None,
+        );
+        super::apply_deprecated_field_optional(
+            &mut self.http2_initial_max_send_streams,
+            initial_max_send_streams,
+            new_base,
+            "initial-max-send-streams",
+            Some("http2-initial-max-send-streams"),
+        );
+    }
 }
+
+/// Shadow of [`HttpOptions`] for the deprecated `service-client` root location. Every leaf field
+/// is `Option<T>` so `None` means "user didn't set it" and `Some(_)` means "user set this value".
+// todo: Remove in Restate v1.8
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub(crate) struct DeprecatedHttpOptions {
+    pub http_keep_alive_options: DeprecatedHttp2KeepAliveOptions,
+    pub http_proxy: Option<String>,
+    pub no_proxy: Option<NoProxy>,
+    pub connect_timeout: Option<NonZeroFriendlyDuration>,
+    pub initial_max_send_streams: Option<NonZeroU32>,
+}
+
+/// Shadow of [`Http2KeepAliveOptions`] for the deprecated `service-client` root location.
+// todo: Remove in Restate v1.8
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub(crate) struct DeprecatedHttp2KeepAliveOptions {
+    pub interval: Option<FriendlyDuration>,
+    pub timeout: Option<NonZeroFriendlyDuration>,
+    pub jitter: Option<f32>,
+}
+
 /// NO_PROXY can be provided as either a comma-separated string `example.com,::1,localhost`, or a list of strings `["example.com", "::1", "localhost"]`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -188,33 +278,33 @@ pub struct Http2KeepAliveOptions {
     /// `0` disables keep-alive pings entirely. Defaults to `40s`.
     ///
     /// You should set this timeout with a value lower than the `abort_timeout`.
-    pub interval: FriendlyDuration,
+    pub http2_keep_alive_interval: FriendlyDuration,
 
-    /// # Timeout
+    /// # HTTP/2 Keep-Alive Timeout
     ///
     /// Sets a timeout for receiving an acknowledgement of the keep-alive ping.
     ///
     /// If the ping is not acknowledged within the timeout, the connection will
     /// be closed.
     ///
-    /// Only meaningful when `interval` is not zero. Defaults to 20 s.
-    pub timeout: NonZeroFriendlyDuration,
+    /// Only meaningful when `http2-keep-alive-interval` is not zero. Defaults to 20 s.
+    pub http2_keep_alive_timeout: NonZeroFriendlyDuration,
 
-    /// # Jitter
+    /// # HTTP/2 Keep-Alive Jitter
     ///
-    /// Fractional jitter added to `interval`, expressed as a fraction
+    /// Fractional jitter added to `http2-keep-alive-interval`, expressed as a fraction
     /// of the interval (e.g. 0.1 = up to +10%, 1.0 = up to +100%).
     ///
-    /// Default 0.2 (20% of interval)
-    pub jitter: f32,
+    /// Default 0.2 (20% of http2-keep-alive-interval)
+    pub http2_keep_alive_jitter: f32,
 }
 
 impl Default for Http2KeepAliveOptions {
     fn default() -> Self {
         Self {
-            interval: FriendlyDuration::from_secs(40),
-            timeout: NonZeroFriendlyDuration::from_secs_unchecked(20),
-            jitter: 0.2,
+            http2_keep_alive_interval: FriendlyDuration::from_secs(40),
+            http2_keep_alive_timeout: NonZeroFriendlyDuration::from_secs_unchecked(20),
+            http2_keep_alive_jitter: 0.2,
         }
     }
 }
