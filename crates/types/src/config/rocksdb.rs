@@ -132,6 +132,18 @@ pub struct RocksDbOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     rocksdb_disable_wal_compression: Option<bool>,
 
+    /// # RocksDB L0/L1 SST compression
+    ///
+    /// Compression algorithm for L0 and L1 SST files. Higher levels (L2+) always use Zstd.
+    /// Set to `none` to disable compression for L0/L1, which can improve write throughput at
+    /// the cost of higher disk usage since these files are short-lived and frequently compacted.
+    ///
+    /// Since v1.7.0
+    ///
+    /// Default: "zstd"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rocksdb_l0_l1_compression: Option<RocksDbL0L1Compression>,
+
     /// # Disable L0/L1 SST compression
     ///
     /// When false (the default), L0 and L1 SST files are compressed with Zstd.
@@ -139,6 +151,10 @@ pub struct RocksDbOptions {
     /// Set to true to disable compression for L0/L1, which can improve write
     /// throughput at the cost of higher disk usage since these files are
     /// short-lived and frequently compacted.
+    ///
+    /// Since v1.7.0, `rocksdb-l0-l1-compression` can be used to select a specific
+    /// compression algorithm. This option remains supported for backwards compatibility.
+    /// If both options are set in the same config block, this option takes precedence.
     ///
     /// Default: false (L0/L1 compression enabled)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -208,9 +224,11 @@ impl RocksDbOptions {
         if self.rocksdb_disable_wal_compression.is_none() {
             self.rocksdb_disable_wal_compression = Some(common.rocksdb_disable_wal_compression());
         }
-        if self.rocksdb_disable_l0_l1_compression.is_none() {
-            self.rocksdb_disable_l0_l1_compression =
-                Some(common.rocksdb_disable_l0_l1_compression());
+        if self.rocksdb_l0_l1_compression.is_none()
+            && self.rocksdb_disable_l0_l1_compression.is_none()
+        {
+            self.rocksdb_l0_l1_compression = common.rocksdb_l0_l1_compression;
+            self.rocksdb_disable_l0_l1_compression = common.rocksdb_disable_l0_l1_compression;
         }
     }
 
@@ -273,9 +291,33 @@ impl RocksDbOptions {
         self.rocksdb_disable_wal_compression.unwrap_or(false)
     }
 
-    pub fn rocksdb_disable_l0_l1_compression(&self) -> bool {
-        self.rocksdb_disable_l0_l1_compression.unwrap_or(false)
+    pub fn rocksdb_l0_l1_compression(&self) -> RocksDbL0L1Compression {
+        if let Some(disable_l0_l1_compression) = self.rocksdb_disable_l0_l1_compression {
+            if disable_l0_l1_compression {
+                RocksDbL0L1Compression::NoCompression
+            } else {
+                RocksDbL0L1Compression::Zstd
+            }
+        } else {
+            self.rocksdb_l0_l1_compression.unwrap_or_default()
+        }
     }
+
+    pub fn rocksdb_disable_l0_l1_compression(&self) -> bool {
+        self.rocksdb_l0_l1_compression() == RocksDbL0L1Compression::NoCompression
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum RocksDbL0L1Compression {
+    #[serde(rename = "none")]
+    NoCompression,
+    Snappy,
+    Lz4,
+    #[default]
+    Zstd,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -317,4 +359,116 @@ pub enum PerfStatsLevel {
     EnableTimeAndCPUTimeExceptForMutex,
     /// Enables count and time stats
     EnableTime,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RocksDbL0L1Compression, RocksDbOptions};
+
+    #[test]
+    fn l0_l1_compression_config_supports_new_and_legacy_options() {
+        let default = RocksDbOptions::default();
+        assert_eq!(
+            default.rocksdb_l0_l1_compression(),
+            RocksDbL0L1Compression::Zstd
+        );
+        assert!(!default.rocksdb_disable_l0_l1_compression());
+
+        let lz4: RocksDbOptions = toml::from_str(r#"rocksdb-l0-l1-compression = "lz4""#)
+            .expect("valid l0/l1 compression config");
+        assert_eq!(lz4.rocksdb_l0_l1_compression(), RocksDbL0L1Compression::Lz4);
+        assert!(!lz4.rocksdb_disable_l0_l1_compression());
+
+        let snappy: RocksDbOptions = toml::from_str(r#"rocksdb-l0-l1-compression = "snappy""#)
+            .expect("valid l0/l1 compression config");
+        assert_eq!(
+            snappy.rocksdb_l0_l1_compression(),
+            RocksDbL0L1Compression::Snappy
+        );
+
+        let legacy_disabled: RocksDbOptions =
+            toml::from_str("rocksdb-disable-l0-l1-compression = true")
+                .expect("valid legacy l0/l1 compression config");
+        assert_eq!(
+            legacy_disabled.rocksdb_l0_l1_compression(),
+            RocksDbL0L1Compression::NoCompression
+        );
+        assert!(legacy_disabled.rocksdb_disable_l0_l1_compression());
+
+        let legacy_enabled: RocksDbOptions =
+            toml::from_str("rocksdb-disable-l0-l1-compression = false")
+                .expect("valid legacy l0/l1 compression config");
+        assert_eq!(
+            legacy_enabled.rocksdb_l0_l1_compression(),
+            RocksDbL0L1Compression::Zstd
+        );
+
+        let legacy_config_wins: RocksDbOptions = toml::from_str(
+            r#"
+            rocksdb-l0-l1-compression = "lz4"
+            rocksdb-disable-l0-l1-compression = true
+            "#,
+        )
+        .expect("valid mixed l0/l1 compression config");
+        assert_eq!(
+            legacy_config_wins.rocksdb_l0_l1_compression(),
+            RocksDbL0L1Compression::NoCompression
+        );
+
+        let legacy_config_wins: RocksDbOptions = toml::from_str(
+            r#"
+            rocksdb-l0-l1-compression = "none"
+            rocksdb-disable-l0-l1-compression = false
+            "#,
+        )
+        .expect("valid mixed l0/l1 compression config");
+        assert_eq!(
+            legacy_config_wins.rocksdb_l0_l1_compression(),
+            RocksDbL0L1Compression::Zstd
+        );
+    }
+
+    #[test]
+    fn l0_l1_compression_common_values_apply_to_unset_local_values() {
+        let common: RocksDbOptions = toml::from_str(r#"rocksdb-l0-l1-compression = "lz4""#)
+            .expect("valid common l0/l1 compression config");
+        let mut local = RocksDbOptions::default();
+        local.apply_common(&common);
+        assert_eq!(
+            local.rocksdb_l0_l1_compression(),
+            RocksDbL0L1Compression::Lz4
+        );
+
+        let common: RocksDbOptions = toml::from_str("rocksdb-disable-l0-l1-compression = true")
+            .expect("valid common legacy l0/l1 compression config");
+        let mut local = RocksDbOptions::default();
+        local.apply_common(&common);
+        assert_eq!(
+            local.rocksdb_l0_l1_compression(),
+            RocksDbL0L1Compression::NoCompression
+        );
+    }
+
+    #[test]
+    fn l0_l1_compression_common_values_do_not_override_local_values() {
+        let common: RocksDbOptions = toml::from_str(r#"rocksdb-l0-l1-compression = "lz4""#)
+            .expect("valid common l0/l1 compression config");
+        let mut local: RocksDbOptions = toml::from_str("rocksdb-disable-l0-l1-compression = true")
+            .expect("valid local legacy l0/l1 compression config");
+        local.apply_common(&common);
+        assert_eq!(
+            local.rocksdb_l0_l1_compression(),
+            RocksDbL0L1Compression::NoCompression
+        );
+
+        let common: RocksDbOptions = toml::from_str("rocksdb-disable-l0-l1-compression = true")
+            .expect("valid common legacy l0/l1 compression config");
+        let mut local: RocksDbOptions = toml::from_str(r#"rocksdb-l0-l1-compression = "lz4""#)
+            .expect("valid local l0/l1 compression config");
+        local.apply_common(&common);
+        assert_eq!(
+            local.rocksdb_l0_l1_compression(),
+            RocksDbL0L1Compression::Lz4
+        );
+    }
 }

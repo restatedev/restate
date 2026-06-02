@@ -292,14 +292,7 @@ fn cf_data_options(
     opts.set_compaction_style(rocksdb::DBCompactionStyle::Level);
     opts.set_num_levels(7);
 
-    let l0_l1 = if log_server_config
-        .rocksdb
-        .rocksdb_disable_l0_l1_compression()
-    {
-        rocksdb::DBCompressionType::None
-    } else {
-        rocksdb::DBCompressionType::Zstd
-    };
+    let l0_l1 = restate_rocksdb::configuration::l0_l1_compression_type(&log_server_config.rocksdb);
     let levels = restate_rocksdb::configuration::build_compression_per_level(
         7,
         l0_l1,
