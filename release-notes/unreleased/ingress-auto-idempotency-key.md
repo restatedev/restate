@@ -24,7 +24,7 @@ so the caller still observes exactly-once semantics.
 This is made practical by the `controlled-idempotent-sharding` feature, which
 caps the number of distinct vqueues an idempotent invocation can land on for
 a given service. It does so by routing the invocation to one of a bounded,
-deterministic set of 256 partition-key buckets per service (see
+deterministic set of 255 partition-key buckets per service (see
 [[restatectl-provision-features]]); because a vqueue is keyed by partition
 key together with service identity, capping the buckets caps the vqueues.
 Without that bound, blanket key injection would spawn a fresh vqueue per
@@ -40,7 +40,7 @@ in-flight request are collapsed.
 - **Clusters with `controlled-idempotent-sharding` enabled** (the default
   for newly provisioned clusters): service and virtual object calls without
   an `Idempotency-Key` header are now treated as idempotent invocations with
-  a server-generated key. They will be routed to one of the 256 controlled
+  a server-generated key. They will be routed to one of the 255 controlled
   buckets for the target rather than spread across the full partition-key
   space. Invocation metadata is retained according to the
   idempotent-invocation retention policy. As a side effect, the invocation's
