@@ -12,6 +12,7 @@ use std::num::{NonZero, NonZeroU8, NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::time::Duration;
 
+use restate_serde_util::SerdeableHeaderHashMap;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tracing::warn;
@@ -23,7 +24,10 @@ use super::{
     BackgroundWorkBudget, CommonOptions, DEFAULT_MESSAGE_SIZE_LIMIT, NetworkingOptions,
     ObjectStoreOptions, RocksDbOptions, RocksDbOptionsBuilder,
 };
-use crate::config::IngestionOptions;
+use crate::config::{
+    AwsLambdaOptions, DeprecatedAwsLambdaOptions, DeprecatedHttpOptions, HttpOptions,
+    IngestionOptions,
+};
 use crate::identifiers::PartitionId;
 use crate::net::connect_opts::MESSAGE_SIZE_OVERHEAD;
 use crate::rate::Rate;
@@ -32,6 +36,8 @@ use crate::retries::RetryPolicy;
 const MIN_ROCKSDB_MEMORY: NonZeroByteCount =
     NonZeroByteCount::new(NonZeroUsize::new(32 * 1024 * 1024).unwrap());
 
+const X_RESTATE_CLUSTER_NAME: http::HeaderName =
+    http::HeaderName::from_static("x-restate-cluster-name");
 /// # Worker options
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
@@ -141,8 +147,8 @@ pub struct WorkerOptions {
 
 impl WorkerOptions {
     /// set networking-derived values if they are not configured to reduce verbose configurations
-    pub fn set_derived_values(&mut self, opts: &NetworkingOptions) {
-        self.invoker.merge(opts);
+    pub fn set_derived_values(&mut self, common: &CommonOptions, opts: &NetworkingOptions) {
+        self.invoker.merge(common, opts);
     }
 
     pub fn internal_queue_length(&self) -> usize {
@@ -428,6 +434,17 @@ pub struct InvokerOptions {
     ///
     /// Since v1.6.3
     pub per_invocation_initial_memory: NonZeroByteCount,
+
+    /// # Service client options
+    ///
+    /// Configures the HTTP/Lambda client the invoker uses to call service deployments.
+    /// Covers HTTP connection tuning (keep-alive, proxy, timeouts, HTTP/2 windows),
+    /// AWS Lambda settings, the optional request-identity signing key, and any
+    /// additional outbound headers applied to every invocation request.
+    ///
+    /// Since v1.7.0
+    #[serde(flatten)]
+    pub service_client: ServiceClientOptions,
 }
 
 impl InvokerOptions {
@@ -477,7 +494,28 @@ impl InvokerOptions {
             .unwrap_or_else(|| self.message_size_limit().get())
     }
 
-    pub(crate) fn merge(&mut self, opts: &NetworkingOptions) {
+    pub(crate) fn merge(&mut self, common: &CommonOptions, opts: &NetworkingOptions) {
+        #[allow(deprecated)]
+        self.service_client
+            .apply_deprecated("worker.invoker", common.service_client.clone());
+
+        if self.service_client.additional_request_headers.is_none() {
+            let cluster_name_visible_ascii = common
+                .cluster_name()
+                .chars()
+                .filter(|c| *c >= ' ' && *c <= '~')
+                .collect::<String>();
+
+            self.service_client.additional_request_headers = Some(
+                std::collections::HashMap::from_iter([(
+                    X_RESTATE_CLUSTER_NAME,
+                    http::HeaderValue::from_str(&cluster_name_visible_ascii)
+                        .expect("a visible ascii string must be a valid header value"),
+                )])
+                .into(),
+            )
+        }
+
         self.message_size_limit = Some(
             self.message_size_limit
                 .map(|limit| limit.min(opts.message_size_limit))
@@ -540,8 +578,94 @@ impl Default for InvokerOptions {
             ),
             per_invocation_memory_limit: None,
             per_invocation_initial_memory: DEFAULT_PER_INVOCATION_INITIAL_MEMORY,
+            service_client: ServiceClientOptions::default(),
         }
     }
+}
+
+/// # Service Client options
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "schemars",
+    schemars(rename = "ServiceClientOptions", default)
+)]
+#[builder(default)]
+#[derive(Default)]
+#[serde(rename_all = "kebab-case")]
+pub struct ServiceClientOptions {
+    #[serde(flatten)]
+    pub http: HttpOptions,
+    #[serde(flatten)]
+    pub lambda: AwsLambdaOptions,
+
+    /// # Request identity private key PEM file
+    ///
+    /// A path to a file, such as "/var/secrets/key.pem", which contains exactly one ed25519 private
+    /// key in PEM format. Such a file can be generated with `openssl genpkey -algorithm ed25519`.
+    /// If provided, this key will be used to attach JWTs to requests from this client which
+    /// SDKs may optionally verify, proving that the caller is a particular Restate instance.
+    ///
+    /// This file is currently only read on client creation, but this may change in future.
+    /// Parsed public keys will be logged at INFO level in the same format that SDKs expect.
+    pub request_identity_private_key_pem_file: Option<PathBuf>,
+
+    /// # Additional request headers
+    ///
+    /// Headers that should be applied to all outgoing requests (HTTP and Lambda).
+    /// Defaults to `x-restate-cluster-name: <cluster name>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub additional_request_headers: Option<SerdeableHeaderHashMap>,
+}
+
+impl ServiceClientOptions {
+    // todo: Remove in Restate v1.8
+    pub(crate) fn apply_deprecated(
+        &mut self,
+        new_base: &str,
+        deprecated: DeprecatedServiceClientOptions,
+    ) {
+        let DeprecatedServiceClientOptions {
+            http,
+            lambda,
+            request_identity_private_key_pem_file,
+            additional_request_headers,
+        } = deprecated;
+
+        self.http.apply_deprecated(new_base, http);
+        self.lambda.apply_deprecated(new_base, lambda);
+
+        super::apply_deprecated_field_optional(
+            &mut self.request_identity_private_key_pem_file,
+            request_identity_private_key_pem_file,
+            new_base,
+            "request-identity-private-key-pem-file",
+            None,
+        );
+        super::apply_deprecated_field_optional(
+            &mut self.additional_request_headers,
+            additional_request_headers,
+            new_base,
+            "additional-request-headers",
+            None,
+        );
+    }
+}
+
+/// Shadow of [`ServiceClientOptions`] for the deprecated `service-client` root location. Every
+/// leaf field is `Option<T>` so `None` means "user didn't set it" and `Some(_)` means "user set
+/// this value".
+// todo: Remove in Restate v1.8
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub(crate) struct DeprecatedServiceClientOptions {
+    #[serde(flatten)]
+    pub http: DeprecatedHttpOptions,
+    #[serde(flatten)]
+    pub lambda: DeprecatedAwsLambdaOptions,
+    pub request_identity_private_key_pem_file: Option<PathBuf>,
+    pub additional_request_headers: Option<SerdeableHeaderHashMap>,
 }
 
 /// # Storage options
@@ -971,5 +1095,65 @@ mod serde_helpers {
 
     pub fn is_default_compact_on_deletions_min_sst_file_size(v: &ByteCount) -> bool {
         *v == default_compact_on_deletions_min_sst_file_size()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn apply_deprecated_precedence() {
+        let base = "worker.invoker";
+
+        // empty shadow: canonical is untouched.
+        let mut new = ServiceClientOptions::default();
+        new.lambda.aws_profile = Some("kept".to_owned());
+        new.apply_deprecated(base, DeprecatedServiceClientOptions::default());
+        assert_eq!(new.lambda.aws_profile.as_deref(), Some("kept"));
+
+        // deprecated-only: the value migrates from the old location into the new one
+        // (also exercises delegation into the flattened `lambda` child).
+        let mut new = ServiceClientOptions::default();
+        let deprecated = DeprecatedServiceClientOptions {
+            lambda: DeprecatedAwsLambdaOptions {
+                aws_profile: Some("old".to_owned()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        new.apply_deprecated(base, deprecated);
+        assert_eq!(new.lambda.aws_profile.as_deref(), Some("old"));
+
+        // both set: deprecated wins (preserves the user's prior effective behavior during the
+        // migration window; warning fires telling them to remove the deprecated key).
+        let mut new = ServiceClientOptions::default();
+        new.http.connect_timeout = NonZeroFriendlyDuration::from_secs_unchecked(7);
+        let deprecated = DeprecatedServiceClientOptions {
+            http: DeprecatedHttpOptions {
+                connect_timeout: Some(NonZeroFriendlyDuration::from_secs_unchecked(5)),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        new.apply_deprecated(base, deprecated);
+        assert_eq!(
+            new.http.connect_timeout,
+            NonZeroFriendlyDuration::from_secs_unchecked(5)
+        );
+
+        // an own field migrates through the same logic
+        let mut new = ServiceClientOptions::default();
+        let deprecated = DeprecatedServiceClientOptions {
+            request_identity_private_key_pem_file: Some("/key.pem".into()),
+            ..Default::default()
+        };
+        new.apply_deprecated(base, deprecated);
+        assert_eq!(
+            new.request_identity_private_key_pem_file.as_deref(),
+            Some(Path::new("/key.pem"))
+        );
     }
 }
