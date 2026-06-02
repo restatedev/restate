@@ -442,6 +442,7 @@ impl From<Schema> for super::Schema {
                     .collect(),
                 subscriptions,
                 kafka_clusters,
+                legacy_v1: false,
             }
         } else if let (Some(services), Some(deployments)) = (services, deployments) {
             let conversions::V2Schemas { deployments } = conversions::V1Schemas {
@@ -459,6 +460,7 @@ impl From<Schema> for super::Schema {
                     .collect(),
                 subscriptions,
                 kafka_clusters,
+                legacy_v1: true,
             }
         } else {
             panic!(
