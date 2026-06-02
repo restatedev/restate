@@ -353,7 +353,7 @@ pub struct InvokerOptions {
     /// Number of concurrent invocations that can be processed by the invoker.
     concurrent_invocations_limit: Option<NonZeroUsize>,
 
-    /// # Eager state size limit (since v1.6.3)
+    /// # Eager state size limit (since v1.7.0)
     ///
     /// Maximum total size (in bytes) of state entries to send eagerly in the StartMessage.
     /// When the total size of state entries exceeds this limit, only a partial state is sent
@@ -367,7 +367,7 @@ pub struct InvokerOptions {
     eager_state_size_limit: Option<ByteCount>,
 
     // -- Private config options (not exposed in the schema)
-    /// Deprecated since v1.6.3: Use `eager_state_size_limit` with a value of `0` instead.
+    /// Deprecated since v1.7.0: Use `eager_state_size_limit` with a value of `0` instead.
     /// When true, treated as `eager_state_size_limit = 0` (no eager state).
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
@@ -407,7 +407,7 @@ pub struct InvokerOptions {
     ///
     /// To effectively disable memory limiting, set this to a very large value.
     ///
-    /// Since v1.6.3
+    /// Since v1.7.0
     pub memory_limit: NonZeroByteCount,
 
     /// # Per-invocation memory limit
@@ -419,7 +419,7 @@ pub struct InvokerOptions {
     /// If unset, defaults to `message-size-limit`. If set, it will be clamped at
     /// the value of `message-size-limit`.
     ///
-    /// Since v1.6.3
+    /// Since v1.7.0
     #[serde(skip_serializing_if = "Option::is_none")]
     per_invocation_memory_limit: Option<ByteCount>,
 
@@ -432,7 +432,7 @@ pub struct InvokerOptions {
     /// round-trips to the global pool. Larger values reduce contention but limit
     /// maximum concurrency.
     ///
-    /// Since v1.6.3
+    /// Since v1.7.0
     pub per_invocation_initial_memory: NonZeroByteCount,
 
     /// # Service client options
