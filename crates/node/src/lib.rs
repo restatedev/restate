@@ -29,7 +29,7 @@ use restate_core::network::{
     GrpcConnector, MessageRouterBuilder, NetworkServerBuilder, Networking, Swimlane,
 };
 use restate_core::partitions::PartitionRouting;
-use restate_core::{Metadata, MetadataKind, MetadataWriter, TaskKind};
+use restate_core::{Metadata, MetadataKind, MetadataWriter, TaskKind, migrate_metadata};
 use restate_core::{MetadataBuilder, MetadataManager, TaskCenter, spawn_metadata_manager};
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_ingestion_client::{IngestionClient, SessionOptions};
@@ -615,6 +615,8 @@ impl Node {
             &config,
         )
         .await?;
+
+        migrate_metadata(&metadata_writer).await?;
 
         // Start the DataFusion remote scanner server — serves scan RPCs from
         // the admin node for node-level and partition-level tables.
