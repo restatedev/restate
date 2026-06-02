@@ -74,6 +74,10 @@ pub struct Schema {
     active_service_revisions: HashMap<String, ActiveServiceRevision>,
     subscriptions: HashMap<SubscriptionId, Subscription>,
     kafka_clusters: HashMap<String, KafkaCluster>,
+
+    // If legacy is true, it means the schema raw data is
+    // still using v1 schema model. Schema should be migrated.
+    legacy_v1: bool,
 }
 
 impl Default for Schema {
@@ -84,7 +88,22 @@ impl Default for Schema {
             deployments: HashMap::default(),
             subscriptions: HashMap::default(),
             kafka_clusters: HashMap::default(),
+            legacy_v1: false,
         }
+    }
+}
+
+impl Schema {
+    pub fn is_legacy_v1(&self) -> bool {
+        self.legacy_v1
+    }
+
+    /// Force the schema version to the next version
+    ///
+    /// Note: this is currently only used by metadata migration
+    /// to force update of the schema from v1.
+    pub fn touch(&mut self) {
+        self.version = self.version.next();
     }
 }
 
