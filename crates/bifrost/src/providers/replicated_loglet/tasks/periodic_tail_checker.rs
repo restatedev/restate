@@ -11,13 +11,13 @@
 use std::sync::Weak;
 use std::time::Duration;
 
-use restate_types::retries::with_jitter;
 use tokio::time::Instant;
 use tracing::instrument;
 use tracing::{debug, trace};
 
 use restate_core::network::TransportConnect;
 use restate_types::logs::LogletId;
+use restate_util_time::DurationExt;
 
 use crate::loglet::OperationError;
 use crate::providers::replicated_loglet::loglet::{FindTailFlags, ReplicatedLoglet};
@@ -90,7 +90,7 @@ impl PeriodicTailChecker {
                     );
                 }
             }
-            tokio::time::sleep(with_jitter(duration, 0.5)).await;
+            tokio::time::sleep(duration.add_jitter(0.5)).await;
         }
     }
 }

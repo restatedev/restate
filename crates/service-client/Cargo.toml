@@ -16,6 +16,7 @@ options_schema = ["restate-types/schemars"]
 restate-workspace-hack = { workspace = true }
 
 restate-types = { workspace = true }
+restate-util-time = { workspace = true }
 
 ahash = { workspace = true }
 arc-swap = { workspace = true }

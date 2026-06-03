@@ -8374,6 +8374,7 @@ dependencies = [
  "pprof",
  "restate-service-client",
  "restate-types",
+ "restate-util-time",
  "restate-workspace-hack",
  "ring",
  "rustls",
