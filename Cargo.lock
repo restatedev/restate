@@ -8749,6 +8749,7 @@ name = "restate-util-time"
 version = "1.7.0-rc.2"
 dependencies = [
  "jiff",
+ "rand 0.9.4",
  "restate-workspace-hack",
  "schemars 1.2.1",
  "serde",
