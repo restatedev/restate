@@ -185,6 +185,7 @@ where
             self.service_protocol_version,
             &self.invocation_task.invocation_id,
             attempt_span.span_context(),
+            self.invocation_task.invocation_target.key(),
         );
 
         // Initialize the response stream state
@@ -403,6 +404,7 @@ where
         service_protocol_version: ServiceProtocolVersion,
         invocation_id: &InvocationId,
         parent_span_context: &SpanContext,
+        service_key: Option<&ByteString>,
     ) -> (InvokerBodySender, Request<InvokerBodyType>) {
         // Use an unbounded channel: backpressure is provided by the memory budget
         // (each frame's Bytes embeds a LocalMemoryLease via from_owner) rather than
@@ -461,10 +463,12 @@ where
 
         headers.extend(deployment_metadata.additional_headers);
 
-        (
-            http_stream_tx,
-            Request::new(Parts::new(Method::Post, address, path, headers), req_body),
-        )
+        let mut request_parts = Parts::new(Method::Post, address, path, headers);
+        if let Some(service_key) = service_key {
+            request_parts = request_parts.with_request_identity_sub_field(service_key.clone());
+        }
+
+        (http_stream_tx, Request::new(request_parts, req_body))
     }
 
     // --- Loops

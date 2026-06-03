@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -161,14 +162,16 @@ where
                     // Runs on a blocking thread so it doesn't starve the tokio runtime.
                     // The child task is bound to the partition processor's lifecycle and
                     // will be cancelled if the processor shuts down (e.g. due to trim gap).
-                    if partition_store.needs_jc_orphan_cleanup()? {
+                    let cleanup_task = if partition_store.needs_jc_orphan_cleanup()? {
                         let mut cleanup_store = partition_store.clone();
                         let cleanup_partition_id = partition_store.partition_id();
-                        let cancel = cancellation_token();
-                        TaskCenter::spawn_child(
+                        let cleanup_task = TaskCenter::spawn_unmanaged_child(
                             TaskKind::Background,
                             "jc-orphan-cleanup",
                             async move {
+                                // Observe this task's own cancellation token so the
+                                // cancel_task() below reliably stops the blocking scan.
+                                let cancel = cancellation_token();
                                 let result = tokio::task::spawn_blocking(move || {
                                     let start = Instant::now();
                                     let result = restate_partition_store::cleanup_orphaned_completion_id_index_entries(
@@ -223,26 +226,44 @@ where
                                         );
                                     }
                                 }
-                                Ok(())
+                                Ok::<_, Infallible>(())
                             },
                         )?;
+                        Some(cleanup_task)
+                    } else {
+                        None
+                    };
+
+                    let run_result = async move {
+                        let pp = pp_builder
+                            .build(
+                                bifrost,
+                                ingestion_client,
+                                partition_store,
+                                replica_set_states,
+                            )
+                            .await
+                            .map_err(ProcessorError::from)?;
+                        Box::pin(pp.run()).await
+                    }
+                    .await;
+
+                    // Cancel and join the one-time jc-orphan-cleanup task before this
+                    // runtime task returns. The partition store manager only drops or
+                    // re-imports this partition's column family on a *subsequent* open(),
+                    // which cannot run until this runtime task has fully completed (see
+                    // PartitionProcessorManager::await_runtime_task_result). Joining here
+                    // guarantees the cleanup can never write through a stale column-family
+                    // handle and poison the shared RocksDB instance (see #4838).
+                    if let Some(cleanup_task) = cleanup_task {
+                        let _ = cleanup_task.cancel_and_wait().await;
                     }
 
-                    let pp = pp_builder
-                        .build(
-                            bifrost,
-                            ingestion_client,
-                            partition_store,
-                            replica_set_states,
-                        )
-                        .await
-                        .map_err(ProcessorError::from)?;
-                    let result = Box::pin(pp.run()).await;
                     info!(
                         partition_id = %partition.partition_id,
                         "Partition processor stopped"
                     );
-                    result
+                    run_result
                 }
             },
         )?;

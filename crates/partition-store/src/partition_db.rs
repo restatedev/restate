@@ -352,7 +352,7 @@ impl PartitionCell {
     }
 
     // low-level importing a column family from a locally downloaded a snapshot
-    #[instrument(level = "error", skip_all, fields(partition_id = %self.meta.partition_id, cf_name = %self.meta.cf_name(), path = %snapshot.base_dir.display()))]
+    #[instrument(level = "error", skip_all, fields(partition_id = %self.meta.partition_id, cf_name = %self.meta.cf_name(), path = %snapshot.base_dir.path().display()))]
     pub async fn import_cf(
         &self,
         guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
@@ -377,7 +377,7 @@ impl PartitionCell {
 
         info!(
             snapshot_applied_lsn = %snapshot.min_applied_lsn,
-            path = ?snapshot.base_dir,
+            path = ?snapshot.base_dir.path(),
             "Importing partition store snapshot"
         );
 
@@ -390,14 +390,8 @@ impl PartitionCell {
             .import_cf(self.meta.cf_name().into(), import_metadata)
             .await?;
 
-        if let Err(err) = tokio::fs::remove_dir_all(&snapshot.base_dir).await {
-            // This is not critical; since we move the SST files into RocksDB on import,
-            // at worst only the snapshot metadata file will remain in the staging dir
-            warn!(
-                %err,
-                "Failed to remove local snapshot directory, continuing with startup",
-            );
-        };
+        // Remove the remaining snapshot files in a non-blocking way.
+        snapshot.base_dir.remove().await;
 
         let db = PartitionDb::new(
             self.meta.clone(),

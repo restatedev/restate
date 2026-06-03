@@ -434,7 +434,7 @@ where
                 self.partition.key_range,
                 InvokerStorageReader::new(partition_store.clone()),
                 invoker_tx,
-                &config.common.service_client,
+                &config.worker.invoker.service_client,
                 &config.worker.invoker,
                 EntryEnricher::new(schema.clone()),
                 schema,

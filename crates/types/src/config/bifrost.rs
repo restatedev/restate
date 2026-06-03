@@ -325,7 +325,7 @@ pub struct ReplicatedLogletOptions {
     /// Sequencer retry policy
     ///
     /// Backoff introduced when sequencer fail to find a suitable spread of log servers
-    #[deprecated(since = "1.6.3", note = "Use `rpc_timeout` instead")]
+    #[deprecated(since = "1.7.0", note = "Use `rpc_timeout` instead")]
     #[serde(skip_serializing_if = "Option::is_none")]
     sequencer_retry_policy: Option<RetryPolicy>,
 
@@ -346,14 +346,14 @@ pub struct ReplicatedLogletOptions {
     /// Log Server RPC timeout
     ///
     /// Timeout waiting on log server response
-    #[deprecated(since = "1.6.3", note = "Use `rpc_timeout` instead")]
+    #[deprecated(since = "1.7.0", note = "Use `rpc_timeout` instead")]
     #[serde(skip_serializing_if = "Option::is_none")]
     log_server_rpc_timeout: Option<NonZeroFriendlyDuration>,
 
     /// Log Server RPC retry policy
     ///
     /// Retry policy for log server RPCs
-    #[deprecated(since = "1.6.3", note = "Use `rpc_timeout` instead")]
+    #[deprecated(since = "1.7.0", note = "Use `rpc_timeout` instead")]
     #[serde(skip_serializing_if = "Option::is_none")]
     log_server_retry_policy: Option<RetryPolicy>,
 

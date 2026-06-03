@@ -13,7 +13,7 @@ use std::{str::FromStr, time::Duration};
 use http::{HeaderMap, HeaderValue, Uri, uri::PathAndQuery};
 use restate_core::{TaskCenter, TaskKind, cancellation_watcher};
 use restate_service_client::HttpClient;
-use restate_types::config::CommonOptions;
+use restate_types::config::Configuration;
 use tokio::time::Instant;
 use tracing::debug;
 
@@ -35,11 +35,11 @@ pub struct TelemetryEnabled {
 }
 
 impl Telemetry {
-    pub fn create(options: &CommonOptions) -> Self {
-        if options.disable_telemetry {
+    pub fn create(config: &Configuration) -> Self {
+        if config.common.disable_telemetry {
             Self::Disabled
         } else {
-            let client = HttpClient::from_options(&options.service_client.http);
+            let client = HttpClient::from_options(&config.worker.invoker.service_client.http);
             let session_id = ulid::Ulid::new().to_string();
 
             Self::Enabled(Box::new(TelemetryEnabled {

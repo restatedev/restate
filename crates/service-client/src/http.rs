@@ -83,7 +83,10 @@ impl HttpClient {
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::default());
         builder.timer(hyper_util::rt::TokioTimer::default());
 
-        let keep_alive_interval: Duration = options.http_keep_alive_options.interval.into();
+        let keep_alive_interval: Duration = options
+            .http_keep_alive_options
+            .http2_keep_alive_interval
+            .into();
         let keep_alive_interval = if keep_alive_interval == Duration::ZERO {
             None
         } else {
@@ -92,10 +95,17 @@ impl HttpClient {
 
         builder
             .http2_initial_max_send_streams(
-                options.initial_max_send_streams.map(|v| v.get() as usize),
+                options
+                    .http2_initial_max_send_streams
+                    .map(|v| v.get() as usize),
             )
             .http2_adaptive_window(true)
-            .http2_keep_alive_timeout(options.http_keep_alive_options.timeout.into())
+            .http2_keep_alive_timeout(
+                options
+                    .http_keep_alive_options
+                    .http2_keep_alive_timeout
+                    .into(),
+            )
             .http2_keep_alive_interval(keep_alive_interval);
 
         let mut http_connector = HttpConnector::new();
@@ -132,19 +142,24 @@ impl HttpClient {
 
             let builder = pool::PoolBuilder::default()
                 .keep_alive_interval(keep_alive_interval)
-                .keep_alive_timeout(options.http_keep_alive_options.timeout.into())
-                .keep_alive_interval_jitter(options.http_keep_alive_options.jitter)
-                .streams_per_connection_limit(options.streams_per_connection_limit)
+                .keep_alive_timeout(
+                    options
+                        .http_keep_alive_options
+                        .http2_keep_alive_timeout
+                        .into(),
+                )
+                .keep_alive_interval_jitter(options.http_keep_alive_options.http2_keep_alive_jitter)
+                .streams_per_connection_limit(options.http2_streams_per_connection_limit)
                 .initial_stream_window_size(options.initial_stream_window_size())
                 .initial_connection_window_size(options.initial_connection_window_size())
                 .max_frame_size(options.max_frame_size())
-                .idle_connection_timeout(if options.idle_connection_timeout.is_zero() {
+                .idle_connection_timeout(if options.http2_idle_connection_timeout.is_zero() {
                     None
                 } else {
-                    Some(options.idle_connection_timeout.into())
+                    Some(options.http2_idle_connection_timeout.into())
                 });
 
-            let builder = match options.initial_max_send_streams {
+            let builder = match options.http2_initial_max_send_streams {
                 Some(value) => builder.initial_max_send_streams(value),
                 None => builder,
             };

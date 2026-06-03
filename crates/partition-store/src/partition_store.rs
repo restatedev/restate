@@ -53,7 +53,7 @@ use crate::migrations::run_migrations_up_to;
 use crate::partition_db::PartitionDb;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
-use crate::snapshots::LocalPartitionSnapshot;
+use crate::snapshots::{LocalPartitionSnapshot, SnapshotDir};
 
 pub type DB = rocksdb::DB;
 
@@ -638,7 +638,7 @@ impl PartitionStore {
         );
 
         Ok(LocalPartitionSnapshot {
-            base_dir: snapshot_dir,
+            base_dir: SnapshotDir::new(snapshot_dir),
             files: export_files.get_files(),
             db_comparator_name: export_files.get_db_comparator_name(),
             log_id: self.db.partition().log_id(),
