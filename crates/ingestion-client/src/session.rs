@@ -371,6 +371,13 @@ where
         });
 
         let state = loop {
+            // Only pull a new batch when nothing is in flight. Keeping at most one unacked batch
+            // per partition guarantees that records reach the partition log in the order they were
+            // produced: a trailing batch can never be appended before an earlier one that is being
+            // retried (e.g. after a `NotLeader` response during a leadership transition). Out-of-order
+            // appends would otherwise be silently dropped by the producer dedup high-water-mark. See
+            // https://github.com/restatedev/restate/issues/4810.
+            let can_send_next = self.inflight.is_empty();
             let head: OptionFuture<_> = self
                 .inflight
                 .front_mut()
@@ -381,7 +388,7 @@ where
                 _ = connection.closed() => {
                     break SessionState::Connecting;
                 }
-                Some(batch) = chunked.next() => {
+                Some(batch) = chunked.next(), if can_send_next => {
                     let batch = IngestionBatch::new(batch);
                     let records = Arc::clone(&batch.records);
 

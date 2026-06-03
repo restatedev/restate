@@ -468,4 +468,47 @@ mod test {
             )
         );
     }
+
+    // Regression test for record loss caused by out-of-order commits (issue #4810).
+    //
+    // The partition processor checks leadership *per* ingest RPC, so on a single connection a
+    // leadership transition can return `NotLeader` for an earlier batch (which is therefore not
+    // appended) while a later batch is appended and acked. The dedup mechanism uses a monotonic
+    // high-water-mark per producer, so once the later (higher sequence number) records are applied
+    // the earlier ones get permanently dropped as "outdated". This is only possible if the session
+    // keeps more than one batch in flight per partition. This test pins that the session does not
+    // pipeline a second batch before the head batch has been acknowledged.
+    #[test(restate_core::test(start_paused = true))]
+    async fn does_not_pipeline_unacked_batches() {
+        let (mut incoming, mut client) = init_env(1024).await;
+
+        // Ingest the head record; the session sends it as its own batch because it is the only
+        // record available at the time the batch is formed.
+        let _c0 = client.ingest(0, InputRecord::from_str("r0")).await.unwrap();
+        let head = must_next(&mut incoming).await;
+        let (head_rx, head_body) = head.split();
+        assert_that!(head_body.records, len(eq(1)));
+
+        // Ingest a second record to the same partition while the head batch is still unacked.
+        let _c1 = client.ingest(0, InputRecord::from_str("r1")).await.unwrap();
+
+        // Let the session task run to completion. Under `start_paused`, once all tasks are parked
+        // the runtime auto-advances time to fire this sleep, so afterwards the session has done all
+        // the work it could: if it were going to pipeline the second batch, it would have by now.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        // The session must not have put a second batch on the wire before the head was acked.
+        let mut next = std::pin::pin!(must_next(&mut incoming));
+        assert!(
+            (&mut next).now_or_never().is_none(),
+            "session pipelined a second batch before the head batch was acknowledged"
+        );
+
+        // Acking the head unblocks the next batch, which now carries the second record in order.
+        head_rx.send(ResponseStatus::Ack.into());
+        let tail = next.await;
+        let (tail_rx, tail_body) = tail.split();
+        assert_that!(tail_body.records, len(eq(1)));
+        tail_rx.send(ResponseStatus::Ack.into());
+    }
 }
