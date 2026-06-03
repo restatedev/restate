@@ -88,6 +88,7 @@ impl SnapshotPartitionTask {
 
         let status = self
             .snapshot_repository
+            // `put` takes ownership of the snapshot directory and removes it after upload.
             .put(&metadata, snapshot.base_dir)
             .await
             .map_err(|e| SnapshotError {

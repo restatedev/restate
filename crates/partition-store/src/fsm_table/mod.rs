@@ -69,7 +69,7 @@ pub(crate) mod fsm_variable {
     ///
     /// Can be removed in v1.8 once we are confident this cleanup has been executed on all
     /// deployments.
-    /// *Since v1.6.3*
+    /// *Since v1.7.0*
     pub(crate) const JC_ORPHAN_CLEANUP_DONE: u64 = 8;
 
     /// Cluster-global rule book persisted per-partition. Each partition writes

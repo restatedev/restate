@@ -38,7 +38,9 @@ use restate_types::logs::{LogId, Lsn};
 use restate_types::nodes_config::ClusterFingerprint;
 use restate_types::time::MillisSinceEpoch;
 
-use super::{LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion};
+use super::{
+    LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotDir, SnapshotFormatVersion,
+};
 
 /// Provides read and write access to the long-term partition snapshot storage destination.
 ///
@@ -322,6 +324,12 @@ impl SnapshotRepository {
         )
         .await?;
 
+        // Best-effort cleanup of leftover snapshot staging directories from a previous run
+        // (e.g. downloads interrupted by a hard crash mid-import, which the per-download RAII
+        // guard cannot clean up). Safe here because no downloads are in flight at startup.
+        // See https://github.com/restatedev/restate/issues/4838.
+        Self::sweep_staging_dir(&staging_dir).await;
+
         Ok(Some(SnapshotRepository {
             object_store,
             destination,
@@ -333,20 +341,44 @@ impl SnapshotRepository {
         }))
     }
 
+    /// Removes any entries left over in the snapshot staging directory by a previous run.
+    ///
+    /// This is best-effort: failures are logged and ignored. It must only be called at
+    /// startup, before any snapshot download can be in flight.
+    async fn sweep_staging_dir(staging_dir: &Path) {
+        // Remove the whole staging directory; `get_latest_inner` recreates it on demand before
+        // the next download. No download can be in flight at startup, so this is safe.
+        match tokio::fs::remove_dir_all(staging_dir).await {
+            Ok(()) => debug!(
+                path = %staging_dir.display(),
+                "Cleared snapshot staging directory left over from a previous run",
+            ),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => warn!(
+                %err,
+                path = %staging_dir.display(),
+                "Failed to clear snapshot staging directory",
+            ),
+        }
+    }
+
     /// Write a partition snapshot to the snapshot repository
     ///
     /// Returns the latest snapshot status on successful upload. Depending on retention settings,
     /// the archived LSN may be earlier than that of the snapshot which was just uploaded.
+    /// Uploads a local snapshot to the repository. Takes ownership of the local snapshot
+    /// directory via [`SnapshotDir`] and removes it once the upload completes (success or
+    /// failure), so callers cannot leak it.
     #[instrument(
         level = "error",
         err,
         skip_all,
-        fields(local_path = %local_snapshot_path.display())
+        fields(local_path = %local_snapshot.path().display())
     )]
     pub(crate) async fn put(
         &self,
         snapshot: &PartitionSnapshotMetadata,
-        local_snapshot_path: PathBuf,
+        local_snapshot: SnapshotDir,
     ) -> anyhow::Result<PartitionSnapshotStatus> {
         use crate::metric_definitions::{
             SNAPSHOT_UPLOAD_DURATION, SNAPSHOT_UPLOAD_FAILED, SNAPSHOT_UPLOAD_SUCCESS,
@@ -356,15 +388,13 @@ impl SnapshotRepository {
 
         let start = tokio::time::Instant::now();
         let put_result = self
-            .put_snapshot_inner(snapshot, local_snapshot_path.as_path())
+            .put_snapshot_inner(snapshot, local_snapshot.path())
             .await;
 
-        // We only log the error here since (a) it's relatively unlikely for rmdir to fail, and (b)
-        // if we've uploaded the snapshot, we should get the response back to the caller. Logging at
-        // WARN level as repeated failures could compromise the cluster.
-        if let Err(err) = tokio::fs::remove_dir_all(local_snapshot_path.as_path()).await {
-            warn!(%err, "Failed to delete local snapshot files");
-        }
+        // We own the local snapshot directory; remove it asynchronously (it may hold large SST
+        // files) regardless of the upload outcome. Failure is only logged: if the snapshot was
+        // uploaded we still want to return the result to the caller.
+        local_snapshot.remove().await;
 
         metrics::histogram!(SNAPSHOT_UPLOAD_DURATION).record(start.elapsed());
 
@@ -849,8 +879,11 @@ impl SnapshotRepository {
             path = %snapshot_dir.path().display(),
             "Downloaded partition snapshot",
         );
+        // Transfer ownership of the staging directory from the `TempDir` (which auto-cleans on
+        // an early return mid-download) to the snapshot's `SnapshotDir`, which removes it on drop
+        // whether the subsequent import succeeds or fails (see #4838).
         Ok(Some(LocalPartitionSnapshot {
-            base_dir: snapshot_dir.keep(),
+            base_dir: SnapshotDir::new(snapshot_dir.keep()),
             log_id: snapshot_metadata.log_id,
             min_applied_lsn: snapshot_metadata.min_applied_lsn,
             db_comparator_name: snapshot_metadata.db_comparator_name,
@@ -1108,7 +1141,7 @@ mod tests {
     use crate::snapshots::repository::{LatestSnapshotVersion, SnapshotUploadProgress};
 
     use super::{LatestSnapshot, SnapshotReference, SnapshotRepository, UniqueSnapshotKey};
-    use super::{PartitionSnapshotMetadata, SnapshotFormatVersion};
+    use super::{PartitionSnapshotMetadata, SnapshotDir, SnapshotFormatVersion};
 
     #[restate_core::test]
     async fn overwrite_unparsable_latest() -> anyhow::Result<()> {
@@ -1152,7 +1185,12 @@ mod tests {
         latest.write_all(b"not valid json").await?;
         latest.shutdown().await?;
 
-        assert!(repository.put(&snapshot, source_dir).await.is_err());
+        assert!(
+            repository
+                .put(&snapshot, SnapshotDir::new(source_dir))
+                .await
+                .is_err()
+        );
 
         Ok(())
     }
@@ -1222,7 +1260,9 @@ mod tests {
             .await?
             .unwrap();
 
-        repository.put(&snapshot1, source_dir.clone()).await?;
+        repository
+            .put(&snapshot1, SnapshotDir::new(source_dir.clone()))
+            .await?;
 
         let partition_prefix =
             ObjectPath::from(destination_url.path()).join(snapshot1.partition_id.to_string());
@@ -1266,7 +1306,9 @@ mod tests {
         );
         snapshot2.min_applied_lsn = snapshot1.min_applied_lsn.next();
 
-        repository.put(&snapshot2, source_dir).await?;
+        repository
+            .put(&snapshot2, SnapshotDir::new(source_dir))
+            .await?;
 
         let latest = object_store
             .get(&partition_prefix.join("latest.json"))
@@ -1277,12 +1319,15 @@ mod tests {
 
         let latest = repository.get_latest(PartitionId::MIN).await?.unwrap();
         assert_eq!(latest.min_applied_lsn, snapshot2.min_applied_lsn);
-        let local_path = latest.base_dir.as_path().to_string_lossy().to_string();
-        drop(latest);
+        let local_path = latest.base_dir.path().to_string_lossy().to_string();
 
-        let local_dir_exists = tokio::fs::try_exists(&local_path).await?;
-        assert!(local_dir_exists);
-        tokio::fs::remove_dir_all(&local_path).await?;
+        // The staging directory exists while the snapshot is held...
+        assert!(tokio::fs::try_exists(&local_path).await?);
+
+        // ...and is removed by its owning SnapshotDir once the snapshot is dropped, so failed
+        // restores no longer leak downloads (#4838).
+        drop(latest);
+        assert!(!tokio::fs::try_exists(&local_path).await?);
 
         Ok(())
     }
@@ -1379,7 +1424,9 @@ mod tests {
             );
             snapshot.min_applied_lsn = Lsn::new(i * 1000);
 
-            repository.put(&snapshot, source_dir).await?;
+            repository
+                .put(&snapshot, SnapshotDir::new(source_dir))
+                .await?;
         }
 
         let latest_path = ObjectPath::from(Url::parse(&destination)?.path().to_string())
@@ -1489,7 +1536,9 @@ mod tests {
         );
         snapshot_v2.min_applied_lsn = Lsn::new(2000);
 
-        repository.put(&snapshot_v2, source_dir_2).await?;
+        repository
+            .put(&snapshot_v2, SnapshotDir::new(source_dir_2))
+            .await?;
 
         let latest_data = object_store.get(&latest_path).await?;
         let latest: LatestSnapshot = serde_json::from_slice(&latest_data.bytes().await?)?;
@@ -1534,7 +1583,9 @@ mod tests {
             );
             snapshot.min_applied_lsn = Lsn::new(i * 1000);
 
-            repository.put(&snapshot, source_dir).await?;
+            repository
+                .put(&snapshot, SnapshotDir::new(source_dir))
+                .await?;
         }
 
         let status = repository
@@ -1574,7 +1625,9 @@ mod tests {
             let (snapshot, source_dir) =
                 mock_snapshot(format!("data-{}", i).as_bytes(), Lsn::new(100 * i)).await?;
             all_snapshot_paths.push(SnapshotReference::from_metadata(&snapshot).path);
-            repository.put(&snapshot, source_dir).await?;
+            repository
+                .put(&snapshot, SnapshotDir::new(source_dir))
+                .await?;
         }
 
         let latest_path = repository.latest_snapshot_pointer_path(PartitionId::MIN);
@@ -1691,6 +1744,64 @@ mod tests {
             MillisSinceEpoch::UNIX_EPOCH + Duration::from_secs(2),
             "reports the latest retained snapshot's created-at time"
         );
+
+        Ok(())
+    }
+
+    #[restate_core::test]
+    async fn sweep_staging_dir_removes_leftovers() -> anyhow::Result<()> {
+        let staging = TempDir::new()?;
+
+        // A leftover snapshot directory with a file inside, plus a stray file.
+        let leftover_dir = staging.path().join("snap-abc123");
+        tokio::fs::create_dir_all(&leftover_dir).await?;
+        tokio::fs::write(leftover_dir.join("data.sst"), b"x").await?;
+        tokio::fs::write(staging.path().join("stray.tmp"), b"y").await?;
+
+        SnapshotRepository::sweep_staging_dir(staging.path()).await;
+
+        assert!(
+            !staging.path().exists(),
+            "staging directory should be removed by the sweep"
+        );
+
+        // A missing staging directory is a no-op (must not panic).
+        SnapshotRepository::sweep_staging_dir(&staging.path().join("does-not-exist")).await;
+
+        Ok(())
+    }
+
+    fn mock_local_snapshot(base_dir: super::SnapshotDir) -> super::LocalPartitionSnapshot {
+        super::LocalPartitionSnapshot {
+            base_dir,
+            log_id: LogId::MIN,
+            min_applied_lsn: Lsn::new(1),
+            db_comparator_name: "leveldb.BytewiseComparator".to_owned(),
+            files: vec![],
+            key_range: KeyRange::new(0, 100),
+        }
+    }
+
+    #[restate_core::test]
+    async fn snapshot_dir_cleaned_on_drop_unless_disarmed() -> anyhow::Result<()> {
+        let staging = TempDir::new()?;
+
+        // An owned SnapshotDir removes its directory when the snapshot is dropped -- this is
+        // what protects the import failure paths in #4838.
+        let dir = TempDir::with_prefix_in("snap-", staging.path())?.keep();
+        assert!(dir.exists());
+        drop(mock_local_snapshot(SnapshotDir::new(dir.clone())));
+        assert!(
+            !dir.exists(),
+            "an owned snapshot directory must be removed on drop"
+        );
+
+        // into_path() disarms the guard: the directory survives the snapshot.
+        let dir = TempDir::with_prefix_in("snap-", staging.path())?.keep();
+        let snapshot = mock_local_snapshot(SnapshotDir::new(dir.clone()));
+        let kept = snapshot.base_dir.into_path();
+        assert_eq!(kept, dir);
+        assert!(dir.exists(), "into_path() must leave the directory intact");
 
         Ok(())
     }

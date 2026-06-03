@@ -50,7 +50,7 @@ mod fsm_variable {
     pub const SERVICES_SCHEMA_METADATA: u64 = 6;
     /// *Since v1.6*
     pub const PARTITION_CONFIG_STATE: u64 = 7;
-    /// *Since v1.6.3*
+    /// *Since v1.7.0*
     pub const JC_ORPHAN_CLEANUP_DONE: u64 = 8;
     /// *Since v1.7.0*
     pub const RULE_BOOK: u64 = 9;
