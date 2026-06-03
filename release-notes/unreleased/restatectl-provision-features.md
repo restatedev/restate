@@ -44,7 +44,7 @@ The current set of features enabled by default:
   on unscoped services map to partition keys. Without the feature, the
   partition key is derived by hashing the idempotency key directly, spreading
   invocations across the full partition-key space. With the feature enabled,
-  each unscoped service has a bounded, deterministic set of 255 partition-key
+  each unscoped service has a bounded, deterministic set of partition-key
   buckets, and an idempotent invocation is routed to one of those buckets
   based on its idempotency key.
 

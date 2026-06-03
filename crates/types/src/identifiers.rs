@@ -154,10 +154,10 @@ fn deterministic_partition_key(
         .map(partitioner::HashPartitioner::compute_partition_key)
         .or_else(|| {
             idempotency_key.map(|idempotency_key| {
-                if !is_controlled_idempotent_sharding_enabled() {
-                    partitioner::HashPartitioner::compute_partition_key(idempotency_key)
-                } else {
+                if is_controlled_idempotent_sharding_enabled() {
                     unscoped_idempotent_service_partition_key(service_name, idempotency_key)
+                } else {
+                    partitioner::HashPartitioner::compute_partition_key(idempotency_key)
                 }
             })
         })
@@ -168,16 +168,15 @@ fn deterministic_partition_key(
 /// For unscoped, non-idempotent invocations we avoid global randomness (`next_u64`) and instead
 /// pick one key out of a bounded, service-specific set.
 ///
-/// This can be configurable in the future and it wouldn't affect correctness if users want to change it.
-///
 /// NOTE: This same constant is also used by unscoped idempotent services, where its value is
 /// effectively immutable: changing it would re-shard idempotent invocations onto different
 /// partitions and break deduplication. If you ever need to tune the scatter width for
 /// non-idempotent services only, split this into two separate constants first.
-const UNSCOPED_SERVICE_PARTITION_KEY_FANOUT: u8 = 255;
+const UNSCOPED_SERVICE_PARTITION_KEY_FANOUT: u64 = 512;
 
 static CONTROLLED_IDEMPOTENT_SHARDING: AtomicBool = AtomicBool::new(false);
 
+#[inline(always)]
 fn is_controlled_idempotent_sharding_enabled() -> bool {
     CONTROLLED_IDEMPOTENT_SHARDING.load(Ordering::Relaxed)
 }
@@ -200,7 +199,7 @@ pub fn enable_controlled_idempotent_sharding() {
 /// - bucket `1` selects `H((S, "unscoped/service", 1))`
 /// - bucket `7` selects `H((S, "unscoped/service", 7))`
 #[inline]
-fn unscoped_service_partition_key(service_name: &str, bucket: u8) -> PartitionKey {
+fn unscoped_service_partition_key(service_name: &str, bucket: u64) -> PartitionKey {
     debug_assert!(bucket < UNSCOPED_SERVICE_PARTITION_KEY_FANOUT);
 
     partitioner::HashPartitioner::compute_partition_key((service_name, "unscoped/service", bucket))
@@ -218,10 +217,9 @@ fn unscoped_idempotent_service_partition_key(
     idempotency_key: &str,
 ) -> PartitionKey {
     let intermittent_key = partitioner::HashPartitioner::compute_partition_key(idempotency_key);
-    let bucket = intermittent_key % UNSCOPED_SERVICE_PARTITION_KEY_FANOUT as u64;
+    let bucket = intermittent_key % UNSCOPED_SERVICE_PARTITION_KEY_FANOUT;
 
-    debug_assert!(bucket < UNSCOPED_SERVICE_PARTITION_KEY_FANOUT as u64);
-    unscoped_service_partition_key(service_name, bucket as u8)
+    unscoped_service_partition_key(service_name, bucket)
 }
 
 /// A family of resource identifiers that tracks the timestamp of its creation.
