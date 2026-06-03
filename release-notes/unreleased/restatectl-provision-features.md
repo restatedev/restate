@@ -43,10 +43,10 @@ The current set of features enabled by default:
 - `controlled-idempotent-sharding` — changes how idempotent invocations
   on unscoped services map to partition keys. Without the feature, the
   partition key is derived by hashing the idempotency key directly, spreading
-  invocations across the full partition-key space. With the feature enabled,
-  each unscoped service has a bounded, deterministic set of 255 partition-key
-  buckets, and an idempotent invocation is routed to one of those buckets
-  based on its idempotency key.
+  invocations across the full partition key space. With the feature enabled,
+  each unscoped service has a bounded, deterministic set of partition keys,
+  and an idempotent invocation is routed to one of those partition keys based
+  on its idempotency key.
 
   This is a one-way decision: once a cluster has accepted idempotent
   invocations under a given sharding scheme, changing the scheme would
