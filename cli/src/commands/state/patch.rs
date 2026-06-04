@@ -23,6 +23,10 @@ use crate::commands::state::util::{
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "patch")]
 pub struct Patch {
+    /// Don't try to convert the values to a UTF-8 string
+    #[clap(long, alias = "bin")]
+    binary: bool,
+
     /// Force means, ignore the current version
     #[clap(long, short)]
     force: bool,
@@ -45,7 +49,7 @@ pub async fn patch(State(env): State<CliEnv>, opts: &Patch) -> Result<()> {
     let current_state = get_current_state(&env, &opts.service, &opts.key, false).await?;
     let current_version = compute_version(&current_state);
 
-    let mut state = as_json(current_state, false)?;
+    let mut state = as_json(current_state, opts.binary)?;
 
     json_patch::patch(&mut state, &patch).context("Patch failed")?;
 
@@ -54,6 +58,7 @@ pub async fn patch(State(env): State<CliEnv>, opts: &Patch) -> Result<()> {
     table.add_row(vec![Cell::new("Service"), Cell::new(&opts.service)]);
     table.add_row(vec![Cell::new("Key"), Cell::new(&opts.key)]);
     table.add_row(vec![Cell::new("Force?"), Cell::new(opts.force)]);
+    table.add_row(vec![Cell::new("Binary?"), Cell::new(opts.binary)]);
 
     c_title!("ℹ️ ", "Patch State");
     c_println!("{table}");
@@ -72,7 +77,7 @@ pub async fn patch(State(env): State<CliEnv>, opts: &Patch) -> Result<()> {
 
     c_println!();
 
-    let modified_state = from_json(state, false)?;
+    let modified_state = from_json(state, opts.binary)?;
     let version = if opts.force {
         None
     } else {
