@@ -261,11 +261,15 @@ impl ServiceClientError {
             //   retry-and-fail-consistently rather than fail-fast; this is acceptable because the
             //   discovery / invoker retry loops already bound the attempt count so the worst-case
             //   overhead is bounded.
+            // - `AmbientUnsupported` is a misconfiguration (the ambient ADC source cannot mint
+            //   ID tokens directly); retrying cannot help.
             ServiceClientError::GcpAuth(_, gcp_error) => match gcp_error {
                 gcp::GcpAuthError::Adc { .. }
                 | gcp::GcpAuthError::Timeout { .. }
                 | gcp::GcpAuthError::Mint { .. } => true,
-                gcp::GcpAuthError::Build { .. } => false,
+                gcp::GcpAuthError::Build { .. } | gcp::GcpAuthError::AmbientUnsupported { .. } => {
+                    false
+                }
             },
             ServiceClientError::IdentityV1(_) => false, // this really should never happen
         }
@@ -430,6 +434,12 @@ mod tests {
                 false,
             ),
             (
+                gcp::GcpAuthError::AmbientUnsupported {
+                    audience: "https://svc.example.com".into(),
+                },
+                false,
+            ),
+            (
                 gcp::GcpAuthError::Mint {
                     audience: "https://svc.example.com".into(),
                     impersonate: "sa@p.iam.gserviceaccount.com".into(),
@@ -473,6 +483,11 @@ mod tests {
                     audience: audience.clone(),
                     message: message.clone(),
                 },
+                gcp::GcpAuthError::AmbientUnsupported { audience } => {
+                    gcp::GcpAuthError::AmbientUnsupported {
+                        audience: audience.clone(),
+                    }
+                }
                 gcp::GcpAuthError::Mint {
                     audience,
                     impersonate,
