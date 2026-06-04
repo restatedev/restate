@@ -21,12 +21,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::{StreamExt, TryStreamExt};
+use metrics::histogram;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, instrument, warn};
 
 use restate_bifrost::Bifrost;
-use restate_core::network::{Oneshot, Reciprocal, TransportConnect};
+use restate_core::network::{Incoming, Oneshot, Reciprocal, Rpc, TransportConnect};
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskKind, my_node_id};
 use restate_errors::NotRunningError;
 use restate_ingestion_client::IngestionClient;
@@ -53,7 +54,7 @@ use restate_types::identifiers::{PartitionKey, PartitionProcessorRpcRequestId};
 use restate_types::live::LiveLoadExt;
 use restate_types::logs::Keys;
 use restate_types::message::MessageIndex;
-use restate_types::net::ingest::IngestRecord;
+use restate_types::net::ingest::{ReceivedIngestRequest, ResponseStatus};
 use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
@@ -79,6 +80,9 @@ use restate_worker_api::{
 use self::durability_tracker::DurabilityTracker;
 use self::trim_queue::{LogTrimmer, TrimQueue};
 use crate::invoker_integration::EntryEnricher;
+use crate::metric_definitions::{
+    PARTITION_INGESTION_REQUEST_LEN, PARTITION_INGESTION_REQUEST_SIZE, PARTITION_LABEL,
+};
 use crate::partition::LeadershipInfo;
 use crate::partition::cleaner::{self, Cleaner};
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
@@ -842,20 +846,95 @@ impl<T> LeadershipState<T> {
     }
 
     /// Forward externally-created records to this partition.
-    pub async fn forward_many_with_callback<F>(
-        &mut self,
-        records: impl ExactSizeIterator<Item = IngestRecord>,
-        callback: F,
-    ) where
-        F: FnOnce(Result<(), PartitionProcessorRpcError>) + Send + Sync + 'static,
-    {
+    pub async fn handle_ingest_request(&mut self, msg: Incoming<Rpc<ReceivedIngestRequest>>) {
+        let (reciprocal, request) = msg.split();
+        histogram!(
+            PARTITION_INGESTION_REQUEST_LEN, PARTITION_LABEL => self.partition.partition_id.to_string()
+        )
+        .record(request.records.len() as f64);
+
+        histogram!(
+            PARTITION_INGESTION_REQUEST_SIZE, PARTITION_LABEL => self.partition.partition_id.to_string()
+        )
+        .record(request.records.iter().fold(0, |s, r| s + r.estimate_size()) as f64);
+
         match &mut self.state {
-            State::Follower | State::Candidate { .. } => callback(Err(
-                PartitionProcessorRpcError::NotLeader(self.partition.partition_id),
-            )),
+            State::Follower | State::Candidate { .. } => {
+                reciprocal.send(
+                    ResponseStatus::NotLeaderWithEpoch {
+                        of: self.partition.partition_id,
+                        last_seen_leader_epoch: self.last_seen_leader_epoch,
+                    }
+                    .into(),
+                );
+            }
             State::Leader(leader_state) => {
+                let leader_epoch = match request.target_leader_epoch {
+                    Some(leader_epoch) => leader_epoch,
+                    None => {
+                        // Old clients are not sending leader epochs.
+                        // We need to to reject those writes
+
+                        let _ = TaskCenter::spawn_child(
+                            TaskKind::Disposable,
+                            "reject-ingestion",
+                            async move {
+                                // clients will try immediately
+                                // so we need to put some back pressure here
+                                // by delaying the response so they don't
+                                // retry immediately
+
+                                tokio::time::sleep(Duration::from_secs(1)).await;
+
+                                reciprocal.send(
+                                    ResponseStatus::Internal {
+                                        msg: "Rejecting ingestion requests from old ingestion \
+                                            clients to prevent data loss"
+                                            .into(),
+                                    }
+                                    .into(),
+                                );
+                                Ok(())
+                            },
+                        );
+
+                        return;
+                    }
+                };
+
+                if leader_epoch != leader_state.leader_epoch {
+                    // client is using the wrong epoch. Ask it to update
+                    reciprocal.send(
+                        ResponseStatus::NotLeaderWithEpoch {
+                            of: self.partition.partition_id,
+                            last_seen_leader_epoch: Some(leader_state.leader_epoch),
+                        }
+                        .into(),
+                    );
+                    return;
+                }
+
                 leader_state
-                    .forward_many_with_callback(records, callback)
+                    .forward_many_with_callback(
+                        request.records.into_iter(),
+                        |result| match result {
+                            Ok(_) => reciprocal.send(ResponseStatus::Ack.into()),
+                            Err(err) => match err {
+                                PartitionProcessorRpcError::NotLeader(id)
+                                | PartitionProcessorRpcError::LostLeadership(id) => reciprocal
+                                    .send(
+                                        ResponseStatus::NotLeaderWithEpoch {
+                                            of: id,
+                                            last_seen_leader_epoch: None,
+                                        }
+                                        .into(),
+                                    ),
+                                PartitionProcessorRpcError::Internal(msg) => {
+                                    reciprocal.send(ResponseStatus::Internal { msg }.into())
+                                }
+                            },
+                        },
+                    )
                     .await;
             }
         }
