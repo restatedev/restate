@@ -14,7 +14,7 @@ use bytes::Bytes;
 
 use restate_encoding::{ArcedSlice, RestateEncoding};
 
-use crate::identifiers::PartitionId;
+use crate::identifiers::{LeaderEpoch, PartitionId};
 use crate::logs::{HasRecordKeys, Keys};
 use crate::message::MessageIndex;
 use crate::net::partition_processor::PartitionLeaderService;
@@ -48,6 +48,8 @@ impl HasRecordKeys for IngestRecord {
 pub struct IngestRequest {
     #[bilrost(tag(1), encoding(ArcedSlice<packed>))]
     pub records: Arc<[IngestRecord]>,
+    #[bilrost(tag(2))]
+    pub target_leader_epoch: Option<LeaderEpoch>,
 }
 
 impl IngestRequest {
@@ -58,12 +60,6 @@ impl IngestRequest {
     }
 }
 
-impl From<Arc<[IngestRecord]>> for IngestRequest {
-    fn from(records: Arc<[IngestRecord]>) -> Self {
-        Self { records }
-    }
-}
-
 bilrost_wire_codec!(IngestRequest);
 
 #[derive(Debug, Clone, bilrost::Oneof, bilrost::Message)]
@@ -71,6 +67,8 @@ pub enum ResponseStatus {
     Unknown,
     #[bilrost(tag = 1, message)]
     Ack,
+    // Retained for wire-compat with <=V3 (pre-v1.7) peers. New code sends/handles
+    // `NotLeaderWithEpoch` instead.
     #[bilrost(tag = 2, message)]
     NotLeader {
         of: PartitionId,
@@ -78,6 +76,11 @@ pub enum ResponseStatus {
     #[bilrost(tag = 3, message)]
     Internal {
         msg: String,
+    },
+    #[bilrost(tag = 4, message)]
+    NotLeaderWithEpoch {
+        of: PartitionId,
+        last_seen_leader_epoch: Option<LeaderEpoch>,
     },
 }
 
@@ -101,10 +104,17 @@ define_rpc! {
     @service=PartitionLeaderService,
 }
 
+/// [`ReceivedIngestRequest`] must be kept
+/// in lockstep with [`IngestRequest`]
+/// It uses the same TYPE as [`IngestRequest`]
+/// to be able to decode directly to owned Vec
+/// on server side.
 #[derive(Debug, bilrost::Message)]
 pub struct ReceivedIngestRequest {
     #[bilrost(tag(1), encoding(packed))]
     pub records: Vec<IngestRecord>,
+    #[bilrost(tag(2))]
+    pub target_leader_epoch: Option<LeaderEpoch>,
 }
 
 bilrost_wire_codec!(ReceivedIngestRequest);
