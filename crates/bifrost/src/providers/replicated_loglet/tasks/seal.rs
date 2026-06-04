@@ -21,6 +21,7 @@ use restate_types::logs::{LogletOffset, SequenceNumber, TailOffsetWatch};
 use restate_types::net::log_server::{LogServerRequestHeader, Seal, Sealed, Status};
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 use restate_types::replication::{DecoratedNodeSet, NodeSetChecker};
+use restate_util_time::DurationExt;
 
 use crate::providers::replicated_loglet::error::{NodeSealStatus, ReplicatedLogletError};
 use crate::providers::replicated_loglet::tasks::util::{Attempts, RunOnSingleNode};
@@ -136,9 +137,8 @@ impl SealTask {
                     replication = %my_params.replication,
                     %max_local_tail,
                     global_tail = %known_global_tail.latest_offset(),
-                    "Seal task completed on f-majority of nodes in {:?}. Nodeset status {}",
-                    start.elapsed(),
-                    nodeset_status,
+                    "Seal task completed on f-majority of nodes in {}. Nodeset status {nodeset_status}",
+                    start.elapsed().friendly(),
                 );
                 // note that we drop the rest of the seal requests after return
                 return Ok(max_local_tail);
@@ -157,8 +157,8 @@ fn on_seal_response(peer: PlainNodeId, msg: Sealed) -> Disposition<Sealed> {
         return Disposition::Return(msg);
     }
     trace!(
-        "Seal request failed on node {}, status is {:?}",
-        peer, msg.header.status
+        "Seal request failed on node {peer}, status is {}",
+        msg.header.status
     );
     Disposition::Abort
 }
