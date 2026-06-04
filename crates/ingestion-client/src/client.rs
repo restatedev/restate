@@ -280,7 +280,7 @@ mod test {
     };
 
     use restate_types::{
-        Version,
+        GenerationalNodeId, Version,
         identifiers::{LeaderEpoch, PartitionId},
         net::{
             self, RpcRequest,
@@ -300,6 +300,20 @@ mod test {
     ) -> (
         ServiceStream<PartitionLeaderService>,
         IngestionClient<FailingConnector, String>,
+    ) {
+        let (incoming, client, _states, _my_node_id) = init_env_with_states(batch_size).await;
+        (incoming, client)
+    }
+
+    /// Like [`init_env`] but also returns the partition replica-set states (so tests can simulate
+    /// leadership changes via `note_observed_leader`) and the node id acting as leader.
+    async fn init_env_with_states(
+        batch_size: usize,
+    ) -> (
+        ServiceStream<PartitionLeaderService>,
+        IngestionClient<FailingConnector, String>,
+        PartitionReplicaSetStates,
+        GenerationalNodeId,
     ) {
         let mut builder = TestCoreEnvBuilder::with_incoming_only_connector()
             .add_mock_nodes_config()
@@ -327,11 +341,12 @@ mod test {
 
         let incoming = svc.start();
 
+        let my_node_id = builder.my_node_id;
         let env = builder.build().await;
         let client = IngestionClient::new(
             env.networking,
             env.metadata.updateable_partition_table(),
-            PartitionRouting::new(partition_replica_set_states, TaskCenter::current()),
+            PartitionRouting::new(partition_replica_set_states.clone(), TaskCenter::current()),
             NonZeroUsize::new(10 * 1024 * 1024).unwrap(), // 10MB
             SessionOptions {
                 batch_size,
@@ -340,7 +355,7 @@ mod test {
             .into(),
         );
 
-        (incoming, client)
+        (incoming, client, partition_replica_set_states, my_node_id)
     }
 
     async fn must_next(
@@ -469,101 +484,146 @@ mod test {
         );
     }
 
-    // Regression test for record loss caused by out-of-order commits (issue #4810).
-    //
-    // The partition processor checks leadership *per* ingest RPC, so on a single connection a
-    // leadership transition can return `NotLeader` for an earlier batch (which is therefore not
-    // appended) while a later batch is appended and acked. The dedup mechanism uses a monotonic
-    // high-water-mark per producer, so once the later (higher sequence number) records are applied
-    // the earlier ones get permanently dropped as "outdated". This is only possible if the session
-    // keeps more than one batch in flight per partition. This test pins that the session does not
-    // pipeline a second batch before the head batch has been acknowledged.
+    // Pipelining is restored (#4879): on a V4 connection the session keeps multiple batches in
+    // flight at once. Ordering no longer relies on an at-most-one-in-flight cap — see the invariant
+    // documented in `connected_pipelining`. This pins that a second batch reaches the wire before
+    // the head batch is acknowledged, and that every batch carries the leader epoch.
     #[test(restate_core::test(start_paused = true))]
-    async fn does_not_pipeline_unacked_batches() {
+    async fn pipelines_multiple_unacked_batches() {
+        let mut buf = BytesMut::new();
         let (mut incoming, mut client) = init_env(1024).await;
 
-        // Ingest the head record; the session sends it as its own batch because it is the only
-        // record available at the time the batch is formed.
-        let _c0 = client.ingest(0, InputRecord::from_str("r0")).await.unwrap();
+        // Ingest the head record; it is sent as its own batch (the only record available when the
+        // batch is formed).
+        let c0 = client.ingest(0, InputRecord::from_str("r0")).await.unwrap();
         let head = must_next(&mut incoming).await;
         let (head_rx, head_body) = head.split();
-        assert_that!(head_body.records, len(eq(1)));
-
-        // Ingest a second record to the same partition while the head batch is still unacked.
-        let _c1 = client.ingest(0, InputRecord::from_str("r1")).await.unwrap();
-
-        // Let the session task run to completion. Under `start_paused`, once all tasks are parked
-        // the runtime auto-advances time to fire this sleep, so afterwards the session has done all
-        // the work it could: if it were going to pipeline the second batch, it would have by now.
-        tokio::time::sleep(Duration::from_secs(1)).await;
-
-        // The session must not have put a second batch on the wire before the head was acked.
-        let mut next = std::pin::pin!(must_next(&mut incoming));
-        assert!(
-            (&mut next).now_or_never().is_none(),
-            "session pipelined a second batch before the head batch was acknowledged"
+        assert_that!(
+            head_body.records,
+            all!(
+                len(eq(1)),
+                contains(eq(InputRecord::from_str("r0").into_record(&mut buf)))
+            )
         );
+        assert_eq!(head_body.target_leader_epoch, Some(LeaderEpoch::INITIAL));
 
-        // Acking the head unblocks the next batch, which now carries the second record in order.
-        head_rx.send(ResponseStatus::Ack.into());
-        let tail = next.await;
+        // Ingest a second record while the head is still unacked. With pipelining the session puts
+        // it on the wire without waiting for the head's acknowledgement.
+        let c1 = client.ingest(0, InputRecord::from_str("r1")).await.unwrap();
+        let tail = must_next(&mut incoming).await;
         let (tail_rx, tail_body) = tail.split();
-        assert_that!(tail_body.records, len(eq(1)));
+        assert_that!(
+            tail_body.records,
+            all!(
+                len(eq(1)),
+                contains(eq(InputRecord::from_str("r1").into_record(&mut buf)))
+            )
+        );
+        assert_eq!(tail_body.target_leader_epoch, Some(LeaderEpoch::INITIAL));
+
+        // Acknowledge both in order; both records commit.
+        head_rx.send(ResponseStatus::Ack.into());
         tail_rx.send(ResponseStatus::Ack.into());
+        c0.await.expect("r0 commits");
+        c1.await.expect("r1 commits");
     }
 
-    // Regression test for the cross-reconnect variant of #4810 (found reviewing PR #4880).
-    //
-    // `ChunksSize` must read one record past a full batch to detect the cap boundary, so it buffers
-    // that record internally. On a reconnect the buffered record must not become a *second* in-flight
-    // batch (which `replay()` would pipeline, recreating the out-of-order append and record loss).
-    // It is carried over into the next batch and sent only after the head is acknowledged, and it is
-    // never failed/cancelled (the Kafka ingress and shuffle have no cheap retry).
+    // Regression test for #4810 under restored pipelining (#4879): a leadership transition must not
+    // reorder records. With two batches in flight, a `NotLeaderWithEpoch` on the head causes the
+    // session to carry over *all* in-flight batches and replay them — in produced order — against
+    // the new epoch. Nothing is failed/cancelled (the Kafka ingress and shuffle have no cheap
+    // retry), so out-of-order appends that the dedup high-water-mark would silently drop cannot
+    // happen.
     #[test(restate_core::test(start_paused = true))]
-    async fn reconnect_carries_over_buffered_records() {
-        // Cap fits exactly one record, so the second record overflows and is buffered by the chunker.
+    async fn leadership_change_replays_inflight_in_order() {
+        // Cap fits exactly one record, so r0 and r1 form two separate batches.
         let mut buf = BytesMut::new();
         let one_record = InputRecord::from_str("r0")
             .into_record(&mut buf)
             .estimate_size();
-        let (mut incoming, mut client) = init_env(one_record).await;
+        let (mut incoming, mut client, states, my_node_id) = init_env_with_states(one_record).await;
 
-        // Queue both records before the session forms a batch: `ingest().await` does not yield to the
-        // session task, so both are in the channel when the chunker first runs (during the sleep).
+        // Queue both records before the session forms a batch: `ingest().await` does not yield to
+        // the session task, so both are in the channel when the chunker first runs.
         let c0 = client.ingest(0, InputRecord::from_str("r0")).await.unwrap();
         let c1 = client.ingest(0, InputRecord::from_str("r1")).await.unwrap();
         tokio::time::sleep(Duration::from_secs(1)).await;
 
-        // The chunker emits B1=[r0] and buffers r1.
-        let head = must_next(&mut incoming).await;
-        let (head_rx, head_body) = head.split();
-        assert_that!(head_body.records, len(eq(1)));
+        // Both batches are pipelined: B1=[r0] then B2=[r1], each at the initial epoch.
+        let b1 = must_next(&mut incoming).await;
+        let (b1_rx, b1_body) = b1.split();
+        assert_that!(
+            b1_body.records,
+            all!(
+                len(eq(1)),
+                contains(eq(InputRecord::from_str("r0").into_record(&mut buf)))
+            )
+        );
+        assert_eq!(b1_body.target_leader_epoch, Some(LeaderEpoch::INITIAL));
 
-        // A NotLeader on the head triggers reconnect + replay. The buffered r1 must be carried over,
-        // not turned into a second in-flight batch.
-        head_rx.send(ResponseStatus::NotLeader { of: 0.into() }.into());
-        tokio::time::sleep(Duration::from_secs(1)).await;
-
-        // Replay re-sends only the head (r0); r1 is buffered, not in flight.
-        let head = must_next(&mut incoming).await;
-        let (head_rx, head_body) = head.split();
-        assert_that!(head_body.records, len(eq(1)));
-
-        let mut next = std::pin::pin!(must_next(&mut incoming));
-        assert!(
-            (&mut next).now_or_never().is_none(),
-            "session put a second batch in flight after reconnect"
+        let b2 = must_next(&mut incoming).await;
+        let (_b2_rx, b2_body) = b2.split();
+        assert_that!(
+            b2_body.records,
+            all!(
+                len(eq(1)),
+                contains(eq(InputRecord::from_str("r1").into_record(&mut buf)))
+            )
         );
 
-        // Acking the head releases the carried-over r1 as the next batch.
-        head_rx.send(ResponseStatus::Ack.into());
-        let tail = next.await;
-        let (tail_rx, tail_body) = tail.split();
-        assert_that!(tail_body.records, len(eq(1)));
-        tail_rx.send(ResponseStatus::Ack.into());
+        // A new leader wins the election. Make routing observe the new epoch so the session can
+        // reconnect, then reject the head with the new epoch.
+        let new_epoch = LeaderEpoch::INITIAL.next();
+        states.note_observed_leader(
+            PartitionId::from(0),
+            LeadershipState {
+                current_leader: my_node_id,
+                current_leader_epoch: new_epoch,
+            },
+        );
+        b1_rx.send(
+            ResponseStatus::NotLeaderWithEpoch {
+                of: 0.into(),
+                last_seen_leader_epoch: Some(new_epoch),
+            }
+            .into(),
+        );
+        // Dropping `_b2_rx` here would not matter: replies are consumed head-first, so the session
+        // never observes B2's outcome before reconnecting.
+        tokio::time::sleep(Duration::from_secs(1)).await;
 
-        // Nothing was failed/cancelled: both records eventually commit.
+        // Replay re-sends B1 then B2 in produced order, now targeting the new epoch.
+        let b1 = must_next(&mut incoming).await;
+        let (b1_rx, b1_body) = b1.split();
+        assert_that!(
+            b1_body.records,
+            all!(
+                len(eq(1)),
+                contains(eq(InputRecord::from_str("r0").into_record(&mut buf)))
+            )
+        );
+        assert_eq!(b1_body.target_leader_epoch, Some(new_epoch));
+
+        let b2 = must_next(&mut incoming).await;
+        let (b2_rx, b2_body) = b2.split();
+        assert_that!(
+            b2_body.records,
+            all!(
+                len(eq(1)),
+                contains(eq(InputRecord::from_str("r1").into_record(&mut buf)))
+            )
+        );
+        assert_eq!(b2_body.target_leader_epoch, Some(new_epoch));
+
+        b1_rx.send(ResponseStatus::Ack.into());
+        b2_rx.send(ResponseStatus::Ack.into());
+
+        // Nothing was failed/cancelled: both records eventually commit, in order.
         c0.await.expect("r0 commits");
         c1.await.expect("r1 commits");
     }
+
+    // Note: the ≤V3 sequential fallback (`connected_sequential_mode`) cannot be exercised here
+    // because the in-process test connection always negotiates `CURRENT_PROTOCOL_VERSION` (V4). Its
+    // carry-over/remainder handling mirrors the pipelining path covered above.
 }
