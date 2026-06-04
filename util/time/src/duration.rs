@@ -428,6 +428,7 @@ impl TimeSpan<Seconds> {
             .round(
                 SpanRound::new()
                     .largest(jiff::Unit::Second)
+                    .largest(jiff::Unit::Microsecond)
                     .days_are_24_hours(),
             )
             .unwrap();
@@ -441,6 +442,7 @@ impl TimeSpan<Days> {
             .round(
                 SpanRound::new()
                     .largest(jiff::Unit::Day)
+                    .smallest(jiff::Unit::Millisecond)
                     .days_are_24_hours(),
             )
             .unwrap();
@@ -454,6 +456,7 @@ impl TimeSpan<Hms> {
             .round(
                 SpanRound::new()
                     .largest(jiff::Unit::Hour)
+                    .smallest(jiff::Unit::Second)
                     .days_are_24_hours(),
             )
             .unwrap();

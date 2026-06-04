@@ -18,6 +18,8 @@ use pin_project_lite::pin_project;
 use tokio::time::{Instant, Sleep};
 use tracing::{Level, debug, error, info, trace, warn};
 
+use restate_util_time::DurationExt;
+
 const MAX_REPEAT_DURATION: Duration = const { Duration::from_secs(30) };
 
 /// Adds the ability to override task-center for a future and all its children
@@ -199,21 +201,21 @@ where
 
 fn log_message<M: Display>(message: &M, level: Level, elapsed: Duration, label: &str) {
     match level {
-        Level::ERROR => error!(?elapsed, "[{label}] {message}"),
-        Level::WARN => warn!(?elapsed, "[{label}] {message}"),
-        Level::INFO => info!(?elapsed, "[{label}] {message}"),
-        Level::DEBUG => debug!(?elapsed, "[{label}] {message}"),
-        Level::TRACE => trace!(?elapsed, "[{label}] {message}"),
+        Level::ERROR => error!(elapsed = %elapsed.friendly(), "[{label}] {message}"),
+        Level::WARN => warn!(elapsed = %elapsed.friendly(), "[{label}] {message}"),
+        Level::INFO => info!(elapsed = %elapsed.friendly(), "[{label}] {message}"),
+        Level::DEBUG => debug!(elapsed = %elapsed.friendly(), "[{label}] {message}"),
+        Level::TRACE => trace!(elapsed = %elapsed.friendly(), "[{label}] {message}"),
     }
 }
 
 fn log_completion<M: Display>(message: &M, level: Level, elapsed: Duration) {
     match level {
-        Level::ERROR => error!(?elapsed, "[completed] {message}"),
-        Level::WARN => warn!(?elapsed, "[completed] {message}"),
-        Level::INFO => info!(?elapsed, "[completed] {message}"),
-        Level::DEBUG => debug!(?elapsed, "[completed] {message}"),
-        Level::TRACE => trace!(?elapsed, "[completed] {message}"),
+        Level::ERROR => error!(elapsed = %elapsed.friendly(), "[completed] {message}"),
+        Level::WARN => warn!(elapsed = %elapsed.friendly(), "[completed] {message}"),
+        Level::INFO => info!(elapsed = %elapsed.friendly(), "[completed] {message}"),
+        Level::DEBUG => debug!(elapsed = %elapsed.friendly(), "[completed] {message}"),
+        Level::TRACE => trace!(elapsed = %elapsed.friendly(), "[completed] {message}"),
     }
 }
 
@@ -256,7 +258,7 @@ mod tests {
         );
         future.await;
         assert!(logs_contain("[slow] sleep operation elapsed=500ms"));
-        assert!(logs_contain("[slow] sleep operation elapsed=1.5s"));
+        assert!(logs_contain("[slow] sleep operation elapsed=1s 500ms"));
         assert!(logs_contain("[completed] sleep operation elapsed=2s"));
         logs_assert(|lines: &[&str]| {
             match lines
@@ -281,14 +283,14 @@ mod tests {
 
         assert!(logs_contain("[slow] sleep operation elapsed=500ms"));
         // 1s later
-        assert!(logs_contain("[slow] sleep operation elapsed=1.5s"));
+        assert!(logs_contain("[slow] sleep operation elapsed=1s 500ms"));
         // 3.2 (the overdue point) is closer than 1.5+2=3.5, so we should see overdue sooner than 4.5 elapsed time
-        assert!(logs_contain("[overdue] sleep operation elapsed=3.2s"));
+        assert!(logs_contain("[overdue] sleep operation elapsed=3s 200ms"));
         // we use the next (unused) duration from the previous run (2s)
         // we expect that 3.2s+2s = 5.2s is our next notification point
-        assert!(logs_contain("[overdue] sleep operation elapsed=5.2s"));
+        assert!(logs_contain("[overdue] sleep operation elapsed=5s 200ms"));
         // back to normal, next point is 4s after 5.2s = 9.2s
-        assert!(logs_contain("[overdue] sleep operation elapsed=9.2s"));
+        assert!(logs_contain("[overdue] sleep operation elapsed=9s 200ms"));
         // operation finishes before the next tick which is after 8s (9.2+8=17.2s)
         assert!(logs_contain("[completed] sleep operation elapsed=10s"));
         logs_assert(|lines: &[&str]| {
@@ -316,18 +318,18 @@ mod tests {
         future.await;
         assert!(logs_contain("[slow] sleep operation elapsed=500ms"));
         // 1s
-        assert!(logs_contain("[slow] sleep operation elapsed=1.5s"));
+        assert!(logs_contain("[slow] sleep operation elapsed=1s 500ms"));
         // 2s
-        assert!(logs_contain("[slow] sleep operation elapsed=3.5s"));
+        assert!(logs_contain("[slow] sleep operation elapsed=3s 500ms"));
         // 4s
-        assert!(logs_contain("[slow] sleep operation elapsed=7.5s"));
+        assert!(logs_contain("[slow] sleep operation elapsed=7s 500ms"));
         // over due at 10s
         assert!(logs_contain("[overdue] sleep operation elapsed=10s"));
         // 8s
         assert!(logs_contain("[overdue] sleep operation elapsed=18s"));
         // 16s
         assert!(logs_contain("[overdue] sleep operation elapsed=34s"));
-        assert!(logs_contain("[completed] sleep operation elapsed=35.9s"));
+        assert!(logs_contain("[completed] sleep operation elapsed=35s 900ms"));
         logs_assert(|lines: &[&str]| {
             match lines
                 .iter()
