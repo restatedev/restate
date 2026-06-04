@@ -217,10 +217,7 @@ impl GcpTokenClient {
                     .build()
                     .map_err(|e| {
                         // authorized_user (gcloud) and external_account (Workload Identity
-                        // Federation) ADC sources cannot mint ID tokens directly. Map that
-                        // specific case to an actionable error instead of leaking the
-                        // crate-internal hint carried by the underlying message; keep the raw
-                        // error at debug level for operator diagnosis.
+                        // Federation) ADC sources cannot mint ID tokens directly
                         if e.is_not_supported() {
                             tracing::debug!(
                                 audience = %audience,
