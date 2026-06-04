@@ -7629,6 +7629,7 @@ dependencies = [
  "pin-project",
  "pin-project-lite",
  "restate-test-util",
+ "restate-util-time",
  "restate-workspace-hack",
  "test-log",
  "thiserror 2.0.18",

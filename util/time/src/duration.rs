@@ -47,17 +47,20 @@ pub trait DurationExt {
     }
 }
 
-/// Displays a time span with 'days' as the maximum unit.
+/// Displays a time span with 'days' as the maximum unit and milli-seconds as minimum.
 pub struct Days;
-/// Displays a time span with 'seconds' as the maximum unit.
+/// Displays a time span with 'seconds' as the maximum unit and micro-seconds as minimum.
 pub struct Seconds;
 /// Displays a time span in 'HH::MM::SS[.fff]' format.
 pub struct Hms;
 /// Displays a time span in ISO 8601 format.
 pub struct Iso8601;
+/// Displays a time span with full resolution from days to nanos.
+pub struct Full;
 
 mod private {
     pub trait Sealed {}
+    impl Sealed for super::Full {}
     impl Sealed for super::Days {}
     impl Sealed for super::Seconds {}
     impl Sealed for super::Hms {}
@@ -67,6 +70,12 @@ mod private {
 /// A sealed trait for the different displayable time-span styles.
 pub trait Style: private::Sealed {
     fn print_span(span: &Span, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result;
+}
+
+impl Style for Full {
+    fn print_span(span: &Span, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        print_inner(span, f)
+    }
 }
 
 impl Style for Days {
@@ -121,6 +130,8 @@ impl DurationExt for StdDuration {
 /// The default display behaves the same as `to_days_span()`. But you can also use the following
 /// conversions to customize the display behaviour:
 ///
+/// - Use [`FriendlyDuration::to_full_span`] to display a duration as a span with its maximum unit
+///   set to days and minimum to nano-seconds.
 /// - Use [`FriendlyDuration::to_days_span`] to display a duration as a span with its maximum unit
 ///   set to days.
 /// - Use [`FriendlyDuration::to_seconds_span`] to display a duration as a span with its maximum
@@ -287,6 +298,11 @@ impl<const CAN_BE_ZERO: bool> Duration<CAN_BE_ZERO> {
         self.0.is_zero()
     }
 
+    /// Returns a span with full resolution.
+    pub fn to_full_span(self) -> TimeSpan<Full> {
+        TimeSpan::<Full>::new(Span::try_from(self.0).unwrap())
+    }
+
     /// Returns a span with its maximum unit set to days.
     pub fn to_days_span(self) -> TimeSpan<Days> {
         TimeSpan::<Days>::new(Span::try_from(self.0).unwrap())
@@ -422,12 +438,27 @@ impl<T: Style> TimeSpan<T> {
     }
 }
 
+impl TimeSpan<Full> {
+    fn new(span: Span) -> TimeSpan<Full> {
+        let span = span
+            .round(
+                SpanRound::new()
+                    .largest(jiff::Unit::Day)
+                    .smallest(jiff::Unit::Nanosecond)
+                    .days_are_24_hours(),
+            )
+            .unwrap();
+        TimeSpan(span, PhantomData)
+    }
+}
+
 impl TimeSpan<Seconds> {
     fn new(span: Span) -> TimeSpan<Seconds> {
         let span = span
             .round(
                 SpanRound::new()
                     .largest(jiff::Unit::Second)
+                    .smallest(jiff::Unit::Microsecond)
                     .days_are_24_hours(),
             )
             .unwrap();
@@ -441,6 +472,7 @@ impl TimeSpan<Days> {
             .round(
                 SpanRound::new()
                     .largest(jiff::Unit::Day)
+                    .smallest(jiff::Unit::Millisecond)
                     .days_are_24_hours(),
             )
             .unwrap();
@@ -454,6 +486,7 @@ impl TimeSpan<Hms> {
             .round(
                 SpanRound::new()
                     .largest(jiff::Unit::Hour)
+                    .smallest(jiff::Unit::Microsecond)
                     .days_are_24_hours(),
             )
             .unwrap();
@@ -683,7 +716,7 @@ mod tests {
     #[test]
     fn friendly_conversion() {
         let friendly = StdDuration::from_nanos(22).friendly();
-        assert_eq!("22ns", friendly.to_days_span().to_string());
+        assert_eq!("22ns", friendly.to_full_span().to_string());
     }
 
     #[test]
