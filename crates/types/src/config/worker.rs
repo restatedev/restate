@@ -257,7 +257,7 @@ pub enum DurabilityMode {
     /// fetch the snapshot as usual.
     ///
     /// [requires snapshot repository]
-    /// [default] if snapshot repository configured
+    /// [default] if restate-server is in cluster mode.
     /// DurabilityPoint = Min(Max(ReplicaSetDurablePoints), SnapshotDurablePoint)
     Balanced,
 
@@ -268,7 +268,7 @@ pub enum DurabilityMode {
     ///
     /// default in standalone-mode with no snapshot repository configured
     ///
-    /// [default] if snapshot repository is not configured
+    /// [default] if restate-server is in single-node mode.
     /// DurabilityPoint = Min(ReplicaSetDurablePoints)
     // [Requires node-to-on-node sharing of ad-hoc snapshots] if used in cluster mode.
     ReplicaSetOnly,
