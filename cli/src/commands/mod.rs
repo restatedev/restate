@@ -18,6 +18,7 @@ pub mod dev;
 pub mod examples;
 pub mod invocations;
 pub mod kafkaclusters;
+pub mod rules;
 pub mod services;
 pub mod sql;
 pub mod state;
