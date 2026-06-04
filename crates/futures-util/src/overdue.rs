@@ -258,7 +258,7 @@ mod tests {
         );
         future.await;
         assert!(logs_contain("[slow] sleep operation elapsed=500ms"));
-        assert!(logs_contain("[slow] sleep operation elapsed=1.5s"));
+        assert!(logs_contain("[slow] sleep operation elapsed=1s 500ms"));
         assert!(logs_contain("[completed] sleep operation elapsed=2s"));
         logs_assert(|lines: &[&str]| {
             match lines
@@ -283,14 +283,14 @@ mod tests {
 
         assert!(logs_contain("[slow] sleep operation elapsed=500ms"));
         // 1s later
-        assert!(logs_contain("[slow] sleep operation elapsed=1.5s"));
+        assert!(logs_contain("[slow] sleep operation elapsed=1s 500ms"));
         // 3.2 (the overdue point) is closer than 1.5+2=3.5, so we should see overdue sooner than 4.5 elapsed time
-        assert!(logs_contain("[overdue] sleep operation elapsed=3.2s"));
+        assert!(logs_contain("[overdue] sleep operation elapsed=3s 200ms"));
         // we use the next (unused) duration from the previous run (2s)
         // we expect that 3.2s+2s = 5.2s is our next notification point
-        assert!(logs_contain("[overdue] sleep operation elapsed=5.2s"));
+        assert!(logs_contain("[overdue] sleep operation elapsed=5s 200ms"));
         // back to normal, next point is 4s after 5.2s = 9.2s
-        assert!(logs_contain("[overdue] sleep operation elapsed=9.2s"));
+        assert!(logs_contain("[overdue] sleep operation elapsed=9s 200ms"));
         // operation finishes before the next tick which is after 8s (9.2+8=17.2s)
         assert!(logs_contain("[completed] sleep operation elapsed=10s"));
         logs_assert(|lines: &[&str]| {
@@ -318,18 +318,18 @@ mod tests {
         future.await;
         assert!(logs_contain("[slow] sleep operation elapsed=500ms"));
         // 1s
-        assert!(logs_contain("[slow] sleep operation elapsed=1.5s"));
+        assert!(logs_contain("[slow] sleep operation elapsed=1s 500ms"));
         // 2s
-        assert!(logs_contain("[slow] sleep operation elapsed=3.5s"));
+        assert!(logs_contain("[slow] sleep operation elapsed=3s 500ms"));
         // 4s
-        assert!(logs_contain("[slow] sleep operation elapsed=7.5s"));
+        assert!(logs_contain("[slow] sleep operation elapsed=7s 500ms"));
         // over due at 10s
         assert!(logs_contain("[overdue] sleep operation elapsed=10s"));
         // 8s
         assert!(logs_contain("[overdue] sleep operation elapsed=18s"));
         // 16s
         assert!(logs_contain("[overdue] sleep operation elapsed=34s"));
-        assert!(logs_contain("[completed] sleep operation elapsed=35.9s"));
+        assert!(logs_contain("[completed] sleep operation elapsed=35s 900ms"));
         logs_assert(|lines: &[&str]| {
             match lines
                 .iter()
