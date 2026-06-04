@@ -30,7 +30,7 @@ use restate_types::net::partition_processor_manager::{
     ControlProcessor, ControlProcessors, ProcessorCommand,
 };
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, WorkerState};
-use restate_types::partition_table::{PartitionReplication, PartitionTable};
+use restate_types::partition_table::PartitionTable;
 use restate_types::partitions::leadership_policy::{LeaderAffinity, LeadershipPolicy};
 use restate_types::partitions::state::{PartitionReplicaSetStates, ReplicaSetState};
 use restate_types::partitions::{PartitionConfiguration, worker_candidate_filter};
@@ -347,10 +347,7 @@ impl<T: TransportConnect> Scheduler<T> {
             // make sure that we have a valid partition processor configuration
             let mut occupied_entry = match entry {
                 Entry::Occupied(mut entry) if entry.get().current.is_valid() => {
-                    let partition_replication = Self::partition_replication_to_replication_property(
-                        nodes_config,
-                        partition_table,
-                    );
+                    let partition_replication = partition_table.replication_property(nodes_config);
                     if Self::requires_reconfiguration(
                         partition_id,
                         entry.get(),
@@ -397,10 +394,7 @@ impl<T: TransportConnect> Scheduler<T> {
                     entry
                 }
                 entry => {
-                    let partition_replication = Self::partition_replication_to_replication_property(
-                        nodes_config,
-                        partition_table,
-                    );
+                    let partition_replication = partition_table.replication_property(nodes_config);
 
                     // no or no valid current configuration, pick a valid configuration
                     if let Some(current) = Self::choose_partition_configuration(
@@ -504,26 +498,6 @@ impl<T: TransportConnect> Scheduler<T> {
         });
 
         all_current_workers_disabled || any_next_pp_active
-    }
-
-    fn partition_replication_to_replication_property(
-        nodes_config: &NodesConfiguration,
-        partition_table: &PartitionTable,
-    ) -> ReplicationProperty {
-        match partition_table.replication() {
-            PartitionReplication::Everywhere => {
-                // only kept for backwards compatibility; this can be removed once
-                // we no longer need to support the Everywhere variant
-                // for everywhere we pick all current worker candidates but at least 1
-                let candidates = nodes_config
-                    .iter()
-                    .filter(|(node_id, node_config)| worker_candidate_filter(*node_id, node_config))
-                    .count()
-                    .max(1);
-                ReplicationProperty::new_unchecked(candidates.min(usize::from(u8::MAX)) as u8)
-            }
-            PartitionReplication::Limit(partition_replication) => partition_replication.clone(),
-        }
     }
 
     async fn load_partition_configuration(

@@ -367,7 +367,11 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         let response = GetClusterConfigurationResponse {
             cluster_configuration: Some(ClusterConfiguration {
                 num_partitions: u32::from(partition_table.num_partitions()),
-                partition_replication: partition_table.replication().clone().into(),
+                partition_replication: Some(
+                    partition_table
+                        .replication_property(&Metadata::with_current(|m| m.nodes_config_ref()))
+                        .into(),
+                ),
                 bifrost_provider: Some(logs.configuration().default_provider.clone().into()),
             }),
         };
