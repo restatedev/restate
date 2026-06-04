@@ -371,6 +371,12 @@ impl RegisterTable for ClusterTables {
         )?;
         crate::bifrost_read_stream::register_self(
             ctx,
+            metadata.clone(),
+            self.remote_scanner_manager.clone(),
+            None, // local scanner is registered separately by the node
+        )?;
+        crate::configs::register_self(
+            ctx,
             metadata,
             self.remote_scanner_manager.clone(),
             None, // local scanner is registered separately by the node
