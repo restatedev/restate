@@ -18,6 +18,8 @@ use crate::identifiers::{PartitionId, PartitionKey};
 use crate::logs::LogId;
 use crate::metadata::GlobalMetadata;
 use crate::net::metadata::{MetadataContainer, MetadataKind};
+use crate::nodes_config::NodesConfiguration;
+use crate::partitions::worker_candidate_filter;
 use crate::protobuf::common::DatabaseKind;
 use crate::replication::ReplicationProperty;
 use crate::{Version, Versioned, flexbuffers_storage_encode_decode};
@@ -156,8 +158,28 @@ impl PartitionTable {
         self.partitions.contains_key(partition_id)
     }
 
+    // todo: remove me after auto-migrating to replication property
     pub fn replication(&self) -> &PartitionReplication {
         &self.replication
+    }
+
+    // todo: Run migration on startup to remove PartitionReplication from metadata and use
+    // PartitionProperty directly.
+    pub fn replication_property(&self, nodes_config: &NodesConfiguration) -> ReplicationProperty {
+        match &self.replication {
+            PartitionReplication::Everywhere => {
+                // only kept for backwards compatibility; this can be removed once
+                // we no longer need to support the Everywhere variant
+                // for everywhere we pick all current worker candidates but at least 1
+                let candidates = nodes_config
+                    .iter()
+                    .filter(|(node_id, node_config)| worker_candidate_filter(*node_id, node_config))
+                    .count()
+                    .max(1);
+                ReplicationProperty::new_unchecked(candidates.min(usize::from(u8::MAX)) as u8)
+            }
+            PartitionReplication::Limit(partition_replication) => partition_replication.clone(),
+        }
     }
 
     pub fn into_builder(self) -> PartitionTableBuilder {
