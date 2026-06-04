@@ -31,10 +31,19 @@ where
     F: Fn(&S::Item) -> usize,
 {
     pub fn new(stream: S, max_size: usize, size_fn: F) -> Self {
+        Self::with_buffered(stream, max_size, size_fn, Vec::default())
+    }
+
+    /// Creates a chunker, pre-seeding the accumulation buffer with `buffered` items so they lead the
+    /// next emitted chunk. Pass an empty `Vec` to start fresh. Seeding is used to carry a previously
+    /// over-pulled item across a recreated `ChunksSize` (e.g. after a reconnect) without losing it or
+    /// reordering it.
+    pub fn with_buffered(stream: S, max_size: usize, size_fn: F, buffered: Vec<S::Item>) -> Self {
+        let size = buffered.iter().map(&size_fn).sum();
         ChunksSize {
             stream: stream.fuse(),
-            items: Vec::default(),
-            size: 0,
+            items: buffered,
+            size,
             cap: max_size,
             size_fn,
         }
@@ -111,7 +120,10 @@ mod tests {
     #[tokio::test]
     async fn splits_into_size_bound_chunks() {
         let stream = iter([2usize, 2, 3, 1]);
-        let chunks: Vec<Vec<usize>> = ChunksSize::new(stream, 5, |item| *item).collect().await;
+        let chunks: Vec<Vec<usize>> =
+            ChunksSize::with_buffered(stream, 5, |item| *item, Vec::new())
+                .collect()
+                .await;
 
         assert_eq!(chunks, vec![vec![2, 2], vec![3, 1]]);
     }
@@ -119,7 +131,10 @@ mod tests {
     #[tokio::test]
     async fn emits_item_larger_than_cap_as_its_own_chunk() {
         let stream = iter([10usize, 2]);
-        let chunks: Vec<Vec<usize>> = ChunksSize::new(stream, 5, |item| *item).collect().await;
+        let chunks: Vec<Vec<usize>> =
+            ChunksSize::with_buffered(stream, 5, |item| *item, Vec::new())
+                .collect()
+                .await;
 
         assert_eq!(chunks, vec![vec![10], vec![2]]);
     }
@@ -137,7 +152,10 @@ mod tests {
             }
         });
 
-        let chunks: Vec<Vec<usize>> = ChunksSize::new(stream, 10, |item| *item).collect().await;
+        let chunks: Vec<Vec<usize>> =
+            ChunksSize::with_buffered(stream, 10, |item| *item, Vec::new())
+                .collect()
+                .await;
 
         assert_eq!(chunks, vec![vec![1], vec![2]]);
     }

@@ -95,8 +95,8 @@ use restate_worker_api::{LeaderQueryCommand, LeaderQueryReceiver};
 use self::leadership::trim_queue::TrimQueue;
 use crate::metric_definitions::{
     FLARE_REASON_VERSION_BARRIER, LEADER_LABEL, LEADER_LABEL_FOLLOWER, LEADER_LABEL_LEADER,
-    PARTITION_BLOCKED_FLARE, PARTITION_INGESTION_REQUEST_LEN, PARTITION_INGESTION_REQUEST_SIZE,
-    PARTITION_LABEL, PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, REASON_LABEL,
+    PARTITION_BLOCKED_FLARE, PARTITION_LABEL, PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
+    REASON_LABEL,
 };
 use crate::partition::leadership::LeadershipState;
 use crate::partition::state_machine::{ActionCollector, StateMachine};
@@ -960,34 +960,7 @@ where
     }
 
     async fn on_pp_ingest_request(&mut self, msg: Incoming<Rpc<ReceivedIngestRequest>>) {
-        let (reciprocal, request) = msg.split();
-        histogram!(
-            PARTITION_INGESTION_REQUEST_LEN, PARTITION_LABEL => self.partition_id_str.clone()
-        )
-        .record(request.records.len() as f64);
-
-        histogram!(
-            PARTITION_INGESTION_REQUEST_SIZE, PARTITION_LABEL => self.partition_id_str.clone()
-        )
-        .record(request.records.iter().fold(0, |s, r| s + r.estimate_size()) as f64);
-
-        self.leadership_state
-            .forward_many_with_callback(
-                request.records.into_iter(),
-                |result: Result<(), PartitionProcessorRpcError>| match result {
-                    Ok(_) => reciprocal.send(ResponseStatus::Ack.into()),
-                    Err(err) => match err {
-                        PartitionProcessorRpcError::NotLeader(id)
-                        | PartitionProcessorRpcError::LostLeadership(id) => {
-                            reciprocal.send(ResponseStatus::NotLeader { of: id }.into())
-                        }
-                        PartitionProcessorRpcError::Internal(msg) => {
-                            reciprocal.send(ResponseStatus::Internal { msg }.into())
-                        }
-                    },
-                },
-            )
-            .await;
+        self.leadership_state.handle_ingest_request(msg).await
     }
 
     fn maybe_advance<'a>(
