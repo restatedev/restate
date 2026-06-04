@@ -219,6 +219,10 @@ pub struct PartitionSession<T> {
     rx: UnboundedReceiverStream<(RecordCommitResolver, IngestRecord)>,
     tx: mpsc::UnboundedSender<(RecordCommitResolver, IngestRecord)>,
     inflight: VecDeque<IngestionBatch>,
+    // Records pulled from `rx` while detecting a batch boundary but not yet sent. Carried across
+    // reconnects and fed back into the chunker so they lead the next batch, instead of becoming a
+    // second in-flight batch (which would let `replay()` append records out of order). See #4810.
+    carry_over: Vec<(RecordCommitResolver, IngestRecord)>,
 }
 
 impl<T> PartitionSession<T> {
@@ -241,6 +245,7 @@ impl<T> PartitionSession<T> {
             inflight: Default::default(),
             rx,
             tx,
+            carry_over: Vec::new(),
         }
     }
 
@@ -366,11 +371,28 @@ where
             return SessionState::Connecting;
         }
 
-        let mut chunked = ChunksSize::new(&mut self.rx, self.opts.batch_size, |(_, item)| {
-            item.estimate_size()
-        });
+        // Seed the chunker with any records over-pulled but not sent on the previous connection so
+        // they lead the next batch (in produced order) rather than being lost or reordered.
+        let mut chunked = ChunksSize::with_buffered(
+            &mut self.rx,
+            self.opts.batch_size,
+            |(_, item)| item.estimate_size(),
+            std::mem::take(&mut self.carry_over),
+        );
 
         let state = loop {
+            debug_assert!(
+                self.inflight.len() <= 1,
+                "ingestion session must keep at most one batch in flight"
+            );
+
+            // Only pull a new batch when nothing is in flight. Keeping at most one unacked batch
+            // per partition guarantees that records reach the partition log in the order they were
+            // produced: a trailing batch can never be appended before an earlier one that is being
+            // retried (e.g. after a `NotLeader` response during a leadership transition). Out-of-order
+            // appends would otherwise be silently dropped by the producer dedup high-water-mark. See
+            // https://github.com/restatedev/restate/issues/4810.
+            let can_send_next = self.inflight.is_empty();
             let head: OptionFuture<_> = self
                 .inflight
                 .front_mut()
@@ -381,7 +403,7 @@ where
                 _ = connection.closed() => {
                     break SessionState::Connecting;
                 }
-                Some(batch) = chunked.next() => {
+                Some(batch) = chunked.next(), if can_send_next => {
                     let batch = IngestionBatch::new(batch);
                     let records = Arc::clone(&batch.records);
 
@@ -428,11 +450,10 @@ where
         // state == Connecting
         assert!(matches!(state, SessionState::Connecting));
 
-        // don't lose the buffered batch
-        let remainder = chunked.into_remainder();
-        if !remainder.is_empty() {
-            self.inflight.push_back(IngestionBatch::new(remainder));
-        }
+        // Carry the chunker's buffered-but-unsent records over to the next connection instead of
+        // turning them into a second in-flight batch: `replay()` only resends `inflight`, so keeping
+        // these here preserves the at-most-one-batch-in-flight invariant while not losing them.
+        self.carry_over = chunked.into_remainder();
 
         state
     }
