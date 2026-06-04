@@ -14,14 +14,14 @@ use std::task::Poll;
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
-use restate_clock::WallClock;
 use tokio::sync::watch;
 use tokio::time::{Instant, MissedTickBehavior};
 use tokio_stream::wrappers::{IntervalStream, WatchStream};
 use tracing::{debug, warn};
 
+use restate_clock::WallClock;
 use restate_core::Metadata;
-use restate_types::config::{Configuration, DurabilityMode};
+use restate_types::config::{Configuration, DurabilityMode, WorkerOptions};
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::nodes_config::Role;
@@ -74,14 +74,18 @@ impl DurabilityTracker {
         }
     }
 
-    fn sanitize_durability_mode(
-        &self,
-        input_durability_mode: Option<DurabilityMode>,
-    ) -> DurabilityMode {
-        let configuration = Configuration::pinned();
-        let has_snapshot_repository = configuration.worker.snapshots.destination.is_some();
-        let is_cluster =
-            Metadata::with_current(|m| m.nodes_config_ref().iter_role(Role::Worker).count() > 1);
+    fn sanitize_durability_mode(&self, opts: &WorkerOptions) -> DurabilityMode {
+        let has_snapshot_repository = opts.snapshots.destination.is_some();
+        let is_cluster = Metadata::with_current(|m| {
+            let nodes_config = m.nodes_config_ref();
+            let replication_needed = m
+                .partition_table_ref()
+                .replication_property(&nodes_config)
+                .num_copies()
+                > 1;
+
+            replication_needed || nodes_config.iter_role(Role::Worker).count() > 1
+        });
 
         let require_snapshots_notice = |durability_mode| {
             if !has_snapshot_repository && should_emit_snapshot_warning() {
@@ -107,26 +111,15 @@ impl DurabilityTracker {
         };
 
         // ## Special cases:
-        // - A standalone node:
-        //   - no snapshot repository configured. Trim after local durability -> `ReplicaSetOnly`
-        //   - snapshot repository configured. Trim after a snapshot is taken + local durability -> `Balanced` || `SnapshotAndReplicaSet`
         //
-        //   Simply, if snapshot is not configured, our options are:
-        //   - None
-        //   - ReplicaSetOnly
-        //
-        //   If snapshot is configured:
-        //   - None
-        //   - ReplicaSetOnly (not recommended, can't recover if cluster)
-        //   - SnapshotOrReplicaSet (not supported / disabled)
-        //   - SnapshotOnly
-        let durability_mode = input_durability_mode.unwrap_or({
-            // default depends on whether we have snapshot repository configured or not
-            if has_snapshot_repository {
-                DurabilityMode::Balanced
-            } else {
-                DurabilityMode::ReplicaSetOnly
-            }
+        // When in standalone (single-node) node we allow trimming to happen without relying on a
+        // snapshot store by defaulting to `ReplicaSetOnly`. If restate is configured to be used
+        // in a cluster setup, we push the user to user a snapshot store. In that setup we default
+        // to `Balanced`.
+        let durability_mode = opts.durability_mode.unwrap_or(if is_cluster {
+            DurabilityMode::Balanced
+        } else {
+            DurabilityMode::ReplicaSetOnly
         });
 
         match durability_mode {
@@ -173,8 +166,7 @@ impl Stream for DurabilityTracker {
             (Poll::Pending, Poll::Pending) => return Poll::Pending,
         }
 
-        let durability_mode =
-            self.sanitize_durability_mode(Configuration::pinned().worker.durability_mode);
+        let durability_mode = self.sanitize_durability_mode(&Configuration::pinned().worker);
         let suggested = match durability_mode {
             DurabilityMode::None => {
                 // Skip, maybe by next tick the durability mode changes
