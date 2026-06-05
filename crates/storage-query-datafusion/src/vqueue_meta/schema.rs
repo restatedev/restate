@@ -82,9 +82,17 @@ define_table!(sys_vqueue_meta(
     avg_blocked_on_concurrency_rules: DataType::Duration,
 
     /// Exponential moving average (EMA) of time the head item spent blocked on
+    /// node-level invoker concurrency tokens before entering Running.
+    avg_blocked_on_invoker_concurrency: DataType::Duration,
+
+    /// Exponential moving average (EMA) of time the head item spent blocked on
     /// node-level invoker throttling before entering Running. Sampled on every
     /// Inbox → Running transition (every run attempt, including retries).
     avg_blocked_on_invoker_throttling: DataType::Duration,
+
+    /// Exponential moving average (EMA) of time the head item spent blocked on
+    /// a virtual object lock before entering Running.
+    avg_blocked_on_lock: DataType::Duration,
 
     /// The number of entries that are in the inbox. The inbox is the priority
     /// queue that the scheduler uses to choose which entries to run next.
