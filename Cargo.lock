@@ -7656,6 +7656,7 @@ version = "1.7.0-rc.2"
 dependencies = [
  "bytes",
  "dashmap",
+ "derive_builder",
  "futures",
  "googletest",
  "pin-project",

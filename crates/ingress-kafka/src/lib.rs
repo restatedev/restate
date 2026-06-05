@@ -14,10 +14,11 @@ mod metric_definitions;
 mod subscription_controller;
 
 use rdkafka::error::KafkaError;
+use restate_ingestion_client::IngestionError;
 use tokio::sync::mpsc;
 
 use restate_types::schema::kafka::KafkaCluster;
-use restate_types::{partitions::PartitionTableError, schema::subscriptions::Subscription};
+use restate_types::schema::subscriptions::Subscription;
 
 #[derive(Debug)]
 pub enum Command {
@@ -42,10 +43,8 @@ pub enum Error {
         #[source]
         cause: anyhow::Error,
     },
-    #[error("Ingress stream is closed: {0}")]
-    IngestionClosed(Box<dyn std::error::Error + Send + Sync>),
-    #[error(transparent)]
-    PartitionTableError(#[from] PartitionTableError),
+    #[error("Ingress error: {0}")]
+    IngestionError(#[from] IngestionError),
     #[error(
         "Received a message on the main partition queue for topic {0} partition {1} despite partitioned queues"
     )]
