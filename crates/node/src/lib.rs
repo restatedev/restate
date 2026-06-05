@@ -290,11 +290,17 @@ impl Node {
                 .ingestion
                 .inflight_memory_budget
                 .as_non_zero_usize(),
-            Some(SessionOptions {
-                batch_size: config.ingress.ingestion.request_batch_size.as_usize(),
-                connection_retry_policy: config.ingress.ingestion.connection_retry_policy.clone(),
-                swimlane: Swimlane::IngressData,
-            }),
+            SessionOptions::builder()
+                .batch_size(
+                    config
+                        .ingress
+                        .ingestion
+                        .request_batch_size
+                        .as_non_zero_usize(),
+                )
+                .connection_retry_policy(config.ingress.ingestion.connection_retry_policy.clone())
+                .swimlane(Swimlane::IngressData)
+                .build(),
         );
 
         // Create a node-level RemoteScannerManager shared across all roles.

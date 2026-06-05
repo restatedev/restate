@@ -156,11 +156,11 @@ where
                 .shuffle
                 .inflight_memory_budget
                 .as_non_zero_usize(),
-            Some(SessionOptions {
-                batch_size: config.worker.shuffle.request_batch_size.as_usize(),
-                connection_retry_policy: config.worker.shuffle.connection_retry_policy.clone(),
-                swimlane: Swimlane::BifrostData,
-            }),
+            SessionOptions::builder()
+                .batch_size(config.worker.shuffle.request_batch_size.as_non_zero_usize())
+                .connection_retry_policy(config.worker.shuffle.connection_retry_policy.clone())
+                .swimlane(Swimlane::BifrostData)
+                .build(),
         );
 
         let metadata_store_client = metadata_writer.raw_metadata_store_client().clone();

@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use futures::never::Never;
 
-use restate_bifrost::{Bifrost, CommitToken, ErrorRecoveryStrategy, InputRecord};
+use restate_bifrost::{Bifrost, CommitToken, EnqueueError, ErrorRecoveryStrategy, InputRecord};
 use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
 use restate_types::{
     identifiers::PartitionKey, logs::LogId, net::ingest::IngestRecord, time::NanosSinceEpoch,
@@ -169,10 +169,12 @@ impl SelfProposer {
     /// Forward externally-created records to Bifrost, returning a [`CommitToken`].
     ///
     /// The records already carry their own dedup information in their headers; no ESN is attached.
+    /// Internally this uses `enqueue_unchecked` which does not check the record size. Hence
+    /// the only limit here is the networking max message size.
     pub async fn forward_many_with_notification(
         &mut self,
         records: impl ExactSizeIterator<Item = IngestRecord>,
-    ) -> Result<CommitToken, Error> where {
+    ) -> Result<CommitToken, EnqueueError<()>> where {
         let sender = self.bifrost_appender.sender();
 
         // This should ideally be implemented
@@ -200,15 +202,12 @@ impl SelfProposer {
             };
 
             sender
-                .enqueue(input)
+                .enqueue_unchecked(input)
                 .await
-                .map_err(|e| Error::SelfProposer(e.to_string()))?;
+                .map_err(|e| e.into_erased())?;
         }
 
-        sender
-            .notify_committed()
-            .await
-            .map_err(|e| Error::SelfProposer(e.to_string()))
+        sender.notify_committed().await
     }
 
     fn create_self_propose_header(&mut self, partition_key: PartitionKey) -> Header {
