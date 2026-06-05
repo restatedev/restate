@@ -8,14 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::{collections::VecDeque, sync::Arc, time::Duration};
+use std::{collections::VecDeque, num::NonZeroUsize, sync::Arc, time::Duration};
 
 use dashmap::DashMap;
 use futures::{FutureExt, StreamExt, future::OptionFuture, ready};
 use tokio::sync::{OwnedSemaphorePermit, mpsc, oneshot};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, trace};
+use tracing::{debug, instrument, trace, warn};
 
 use restate_core::{
     TaskCenter, TaskKind,
@@ -26,12 +26,17 @@ use restate_core::{
     partitions::PartitionRouting,
 };
 use restate_types::{
-    identifiers::PartitionId,
-    net::ingest::{IngestRecord, IngestRequest, IngestResponse, ResponseStatus},
+    identifiers::{LeaderEpoch, PartitionId},
+    net::{
+        ProtocolVersion,
+        ingest::{IngestRecord, IngestRequest, IngestResponse, ResponseStatus},
+    },
     retries::RetryPolicy,
 };
 
 use crate::chunks_size::ChunksSize;
+
+const DEFAULT_MAX_RECORD_SIZE: usize = 32 * 1024 * 1024; // 32MB
 
 /// Error returned when attempting to use a session that has already been closed.
 #[derive(Clone, Copy, Debug, thiserror::Error)]
@@ -123,8 +128,6 @@ impl RecordCommitResolver {
 struct IngestionBatch {
     records: Arc<[IngestRecord]>,
     resolvers: Vec<RecordCommitResolver>,
-
-    reply_rx: Option<ReplyRx<IngestResponse>>,
 }
 
 impl IngestionBatch {
@@ -132,11 +135,7 @@ impl IngestionBatch {
         let (resolvers, records): (Vec<_>, Vec<_>) = batch.into_iter().unzip();
         let records: Arc<[IngestRecord]> = Arc::from(records);
 
-        Self {
-            records,
-            resolvers,
-            reply_rx: None,
-        }
+        Self { records, resolvers }
     }
 
     /// Marks every tracked record in the batch as committed.
@@ -152,16 +151,34 @@ impl IngestionBatch {
 }
 
 /// Tunable parameters for batching and networking behaviour of partition sessions.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, derive_builder::Builder)]
+#[builder(pattern = "owned", build_fn(name = "_build", private))]
 pub struct SessionOptions {
     /// Maximum batch size in `bytes`
-    pub batch_size: usize,
+    #[builder(default=NonZeroUsize::new(50 * 1024).unwrap())]
+    pub(crate) batch_size: NonZeroUsize,
     /// Connection retry policy
     /// Retry policy must be infinite (retries forever)
     /// If not, the retry will fallback to 2 seconds intervals
-    pub connection_retry_policy: RetryPolicy,
+    #[builder(default=RetryPolicy::exponential(
+        Duration::from_millis(10),
+        2.0,
+        None,
+        Some(Duration::from_secs(1)),
+    ))]
+    pub(crate) connection_retry_policy: RetryPolicy,
+    /// Maximum allowed record size
+    #[builder(default=NonZeroUsize::new(DEFAULT_MAX_RECORD_SIZE).unwrap())]
+    pub(crate) record_size_limit: NonZeroUsize,
     /// Connection swimlane
-    pub swimlane: Swimlane,
+    #[builder(default=Swimlane::IngressData)]
+    pub(crate) swimlane: Swimlane,
+}
+
+impl SessionOptions {
+    pub fn builder() -> SessionOptionsBuilder {
+        SessionOptionsBuilder::default()
+    }
 }
 
 impl Default for SessionOptions {
@@ -169,8 +186,9 @@ impl Default for SessionOptions {
         Self {
             // The default batch size of 50KB is to avoid
             // overwhelming the PP on the hot path.
-            batch_size: 50 * 1024, // 50 KB
+            batch_size: NonZeroUsize::new(50 * 1024).unwrap(), // 50 KB
             swimlane: Swimlane::IngressData,
+            record_size_limit: NonZeroUsize::new(DEFAULT_MAX_RECORD_SIZE).unwrap(),
             connection_retry_policy: RetryPolicy::exponential(
                 Duration::from_millis(10),
                 2.0,
@@ -178,6 +196,12 @@ impl Default for SessionOptions {
                 Some(Duration::from_secs(1)),
             ),
         }
+    }
+}
+
+impl SessionOptionsBuilder {
+    pub fn build(self) -> SessionOptions {
+        self._build().unwrap()
     }
 }
 
@@ -205,7 +229,8 @@ impl SessionHandle {
 
 enum SessionState {
     Connecting,
-    Connected { connection: Connection },
+    ConnectedSequentialMode { connection: Connection },
+    ConnectedPipeliningMode { connection: Connection },
     Shutdown,
 }
 
@@ -218,11 +243,12 @@ pub struct PartitionSession<T> {
     opts: SessionOptions,
     rx: UnboundedReceiverStream<(RecordCommitResolver, IngestRecord)>,
     tx: mpsc::UnboundedSender<(RecordCommitResolver, IngestRecord)>,
-    inflight: VecDeque<IngestionBatch>,
-    // Records pulled from `rx` while detecting a batch boundary but not yet sent. Carried across
-    // reconnects and fed back into the chunker so they lead the next batch, instead of becoming a
-    // second in-flight batch (which would let `replay()` append records out of order). See #4810.
-    carry_over: Vec<(RecordCommitResolver, IngestRecord)>,
+    // Batches that were unacked (or never sent) when the previous connection ended, kept in
+    // produced order. On the next connection they are re-sent ahead of any newly chunked batch so
+    // records reach the partition log in the order they were produced. Includes the record the
+    // chunker over-pulled to detect a batch boundary, wrapped as its own trailing batch.
+    carry_over: VecDeque<IngestionBatch>,
+    target_leader_epoch: LeaderEpoch,
 }
 
 impl<T> PartitionSession<T> {
@@ -242,10 +268,10 @@ impl<T> PartitionSession<T> {
             partition_routing,
             networking,
             opts,
-            inflight: Default::default(),
             rx,
             tx,
-            carry_over: Vec::new(),
+            carry_over: VecDeque::default(),
+            target_leader_epoch: LeaderEpoch::INITIAL,
         }
     }
 
@@ -269,26 +295,25 @@ where
 {
     /// Runs the session state machine until shut down, reacting to cancellation and connection errors.
     pub async fn start(self, cancellation: CancellationToken) {
+        let partition_id = self.partition;
         debug!(
-            partition_id = %self.partition,
+            partition_id = %partition_id,
             "Starting ingestion partition session",
         );
 
         cancellation.run_until_cancelled(self.run_inner()).await;
+        debug!("Ingestion session for partition {partition_id} stopped");
     }
 
     /// Runs the session state machine until shut down, reacting to cancellation and connection errors.
     async fn run_inner(mut self) {
         let mut state = SessionState::Connecting;
-        debug!(
-            partition_id = %self.partition,
-            "Starting ingestion partition session",
-        );
 
         loop {
             state = match state {
                 SessionState::Connecting => {
-                    let mut retry = self.opts.connection_retry_policy.iter();
+                    let retry_policy = self.opts.connection_retry_policy.clone();
+                    let mut retry = retry_policy.iter();
                     loop {
                         match self.connect().await {
                             Some(state) => break state,
@@ -302,7 +327,14 @@ where
                         }
                     }
                 }
-                SessionState::Connected { connection } => self.connected(connection).await,
+                SessionState::ConnectedSequentialMode { connection } => {
+                    self.connected_sequential_mode(connection).await;
+                    SessionState::Connecting
+                }
+                SessionState::ConnectedPipeliningMode { connection } => {
+                    self.connected_pipelining(connection).await;
+                    SessionState::Connecting
+                }
                 SessionState::Shutdown => {
                     self.rx.close();
                     break;
@@ -311,10 +343,15 @@ where
         }
     }
 
-    async fn connect(&self) -> Option<SessionState> {
-        let node_id = self
-            .partition_routing
-            .get_node_by_partition(self.partition)?;
+    async fn connect(&mut self) -> Option<SessionState> {
+        // `PartitionRouting` is the source of truth for the current leader epoch; the leadership state
+        // we last learned (from routing, or reported back by a `NotLeaderWithEpoch`) is used used
+        // to update the the partition replica set state so this should have the most known up to date
+        // leadership state
+
+        let (node_id, leader_epoch) = self.partition_routing.get_leader(self.partition)?;
+
+        self.target_leader_epoch = leader_epoch;
 
         let result = self
             .networking
@@ -323,114 +360,274 @@ where
 
         match result {
             Ok(connection) => {
-                debug!("Connection established to node {node_id}");
-                Some(SessionState::Connected { connection })
+                debug!("Connection established to node {}", node_id);
+                if connection.protocol_version() <= ProtocolVersion::V3 {
+                    Some(SessionState::ConnectedSequentialMode { connection })
+                } else {
+                    Some(SessionState::ConnectedPipeliningMode { connection })
+                }
             }
             Err(ConnectError::Shutdown(_)) => Some(SessionState::Shutdown),
             Err(err) => {
-                debug!("Failed to connect to node {node_id}: {err}");
+                debug!("Failed to connect to node {}: {err}", node_id);
                 None
             }
         }
     }
 
-    /// Re-sends all inflight batches after a connection is restored.
-    async fn replay(&mut self, connection: &Connection) -> Result<(), ConnectionClosed> {
-        // todo(azmy): to avoid all the inflight batches again and waste traffic
-        //  maybe test the connection first by sending an empty batch and wait for response
-        //  before proceeding?
+    #[instrument(
+        level="debug",
+        skip_all,
+        name="connected",
+        fields(
+            mode="sequential", 
+            partition=%self.partition,
+            leader_epoch=%self.target_leader_epoch,
+        )
+    )]
+    async fn connected_sequential_mode(&mut self, connection: Connection) {
+        // replay carry over one by one
+        debug!("Carry-over batches: {}", self.carry_over.len());
 
-        let total = self.inflight.iter().fold(0, |v, i| v + i.len());
-        trace!(
-            partition = %self.partition,
-            batches = self.inflight.len(),
-            records = total,
-            "Replaying inflight records after connection was restored"
-        );
+        while let Some(batch) = self.carry_over.front() {
+            let records = Arc::clone(&batch.records);
 
-        for batch in self.inflight.iter_mut() {
             let Some(permit) = connection.reserve().await else {
-                return Err(ConnectionClosed);
+                return;
             };
 
-            // resend batch
+            trace!("Sending ingest batch, len: {}", records.len());
+            // Nodes running protocol version V3 doesn't support
+            // target_leader_epoch. We mainly sending this to be
+            // able to use sequential mode against nodes with >= V4
+            // if needed
             let reply_rx = permit
                 .send_rpc(
-                    IngestRequest::from(Arc::clone(&batch.records)),
+                    IngestRequest {
+                        records,
+                        target_leader_epoch: Some(self.target_leader_epoch),
+                    },
                     Some(self.partition.into()),
                 )
                 .expect("encoding version to match");
-            batch.reply_rx = Some(reply_rx);
+
+            match reply_rx.await.map(|r| r.status) {
+                Ok(ResponseStatus::Ack) => {
+                    // remove committed batch from carry_over
+                    let batch = self.carry_over.pop_front().unwrap();
+                    batch.committed();
+                }
+                Ok(ResponseStatus::NotLeaderWithEpoch {
+                    last_seen_leadership_state,
+                    ..
+                }) => {
+                    // Note that this error kind is never returned
+                    // by partition processor < v1.7. This is mainly
+                    // defensive coding, but also allows us to switch
+                    // to sequential mode for protocol version >= V4
+                    // if needed.
+                    self.partition_routing
+                        .partition_replica_set_state()
+                        .note_observed_leader(self.partition, last_seen_leadership_state);
+                    return;
+                }
+                Ok(ResponseStatus::Internal { msg }) => {
+                    warn!("Ingestion internal error from {}: {msg}", connection.peer());
+                    return;
+                }
+                Ok(response) => {
+                    // Handle any other response code as a connection loss
+                    // and retry all inflight batches.
+                    trace!(
+                        "Ingestion response from {}: {:?}",
+                        connection.peer(),
+                        response
+                    );
+
+                    return;
+                }
+                Err(err) => {
+                    // we can assume that for any error
+                    // we need to retry all the inflight batches.
+                    // special case for load shedding we could
+                    // throttle the stream a little bit then
+                    // speed up over a period of time.
+                    trace!("Ingestion error from {}: {}", connection.peer(), err);
+                    return;
+                }
+            }
         }
 
-        Ok(())
+        debug_assert!(self.carry_over.is_empty());
+
+        let mut chunked = ChunksSize::new(&mut self.rx, self.opts.batch_size.get(), |(_, item)| {
+            item.estimate_size()
+        });
+
+        while let Some(batch) = chunked.next().await {
+            let batch = IngestionBatch::new(batch);
+            let records = Arc::clone(&batch.records);
+
+            let Some(permit) = connection.reserve().await else {
+                self.carry_over.push_back(batch);
+                break;
+            };
+
+            trace!("Sending ingest batch, len: {}", records.len());
+            let reply_rx = permit
+                .send_rpc(
+                    IngestRequest {
+                        records,
+                        target_leader_epoch: Some(self.target_leader_epoch),
+                    },
+                    Some(self.partition.into()),
+                )
+                .expect("encoding version to match");
+
+            match reply_rx.await.map(|r| r.status) {
+                Ok(ResponseStatus::Ack) => {
+                    batch.committed();
+                }
+                Ok(ResponseStatus::NotLeaderWithEpoch {
+                    last_seen_leadership_state,
+                    ..
+                }) => {
+                    // Note that this error kind is never returned
+                    // by partition processor < v1.7. This is mainly
+                    // defensive coding, but also allows us to switch
+                    // to sequential mode for protocol version >= V4
+                    // if needed.
+                    self.partition_routing
+                        .partition_replica_set_state()
+                        .note_observed_leader(self.partition, last_seen_leadership_state);
+
+                    self.carry_over.push_back(batch);
+                    break;
+                }
+                Ok(ResponseStatus::Internal { msg }) => {
+                    warn!("Ingestion internal error from {}: {msg}", connection.peer());
+                    self.carry_over.push_back(batch);
+                    break;
+                }
+                Ok(response) => {
+                    // Handle any other response code as a connection loss
+                    // and retry all inflight batches.
+                    trace!(
+                        "Ingestion response from {}: {:?}",
+                        connection.peer(),
+                        response
+                    );
+                    self.carry_over.push_back(batch);
+                    break;
+                }
+                Err(err) => {
+                    // we can assume that for any error
+                    // we need to retry all the inflight batches.
+                    // special case for load shedding we could
+                    // throttle the stream a little bit then
+                    // speed up over a period of time.
+                    trace!("Ingestion error from {}: {}", connection.peer(), err);
+                    self.carry_over.push_back(batch);
+                    break;
+                }
+            }
+        }
+
+        // Carry over the record the chunker over-pulled to detect the batch boundary so it leads
+        // the next connection's first batch instead of being dropped (which would surface to the
+        // caller as a spurious cancellation). Mirrors the pipelining path.
+        let remainder = chunked.into_remainder();
+        if !remainder.is_empty() {
+            self.carry_over.push_back(IngestionBatch::new(remainder));
+        }
     }
 
-    async fn connected(&mut self, connection: Connection) -> SessionState {
-        if self.replay(&connection).await.is_err() {
-            return SessionState::Connecting;
-        }
+    #[instrument(
+        level="debug",
+        skip_all,
+        name="connected",
+        fields(
+            mode="pipelining", 
+            partition=%self.partition,
+            leader_epoch=%self.target_leader_epoch,
+        )
+    )]
+    async fn connected_pipelining(&mut self, connection: Connection) {
+        debug!("Carry-over batches: {}", self.carry_over.len(),);
 
-        // Seed the chunker with any records over-pulled but not sent on the previous connection so
-        // they lead the next batch (in produced order) rather than being lost or reordered.
-        let mut chunked = ChunksSize::with_buffered(
-            &mut self.rx,
-            self.opts.batch_size,
-            |(_, item)| item.estimate_size(),
-            std::mem::take(&mut self.carry_over),
-        );
+        let Ok(mut inflight) = self.replay(&connection).await else {
+            return;
+        };
 
-        let state = loop {
-            debug_assert!(
-                self.inflight.len() <= 1,
-                "ingestion session must keep at most one batch in flight"
-            );
+        debug_assert!(self.carry_over.is_empty());
 
-            // Only pull a new batch when nothing is in flight. Keeping at most one unacked batch
-            // per partition guarantees that records reach the partition log in the order they were
-            // produced: a trailing batch can never be appended before an earlier one that is being
-            // retried (e.g. after a `NotLeader` response during a leadership transition). Out-of-order
-            // appends would otherwise be silently dropped by the producer dedup high-water-mark. See
-            // https://github.com/restatedev/restate/issues/4810.
-            let can_send_next = self.inflight.is_empty();
-            let head: OptionFuture<_> = self
-                .inflight
+        // Carry-over batches were already re-sent in order by `replay()`; new batches are chunked
+        // fresh from the stream.
+        let mut chunked = ChunksSize::new(&mut self.rx, self.opts.batch_size.get(), |(_, item)| {
+            item.estimate_size()
+        });
+
+        loop {
+            // Multiple batches may be in flight at once. Ordering is preserved without an
+            // at-most-one-in-flight cap because: the connection is FIFO, the leader appends each
+            // batch sequentially in arrival order, and every in-flight batch carries the same
+            // `target_leader_epoch` so a leadership change rejects the whole pipeline atomically
+            // (rather than rejecting an earlier batch while appending a later one, which the dedup
+            // high-water-mark would then silently drop — see #4810). Replies are consumed strictly
+            // head-first, so on any rejection the head and everything behind it are carried over and
+            // replayed in produced order.
+            let head: OptionFuture<_> = inflight
                 .front_mut()
-                .and_then(|batch| batch.reply_rx.as_mut())
+                .and_then(|(_, reply_rx)| reply_rx.as_mut())
                 .into();
 
             tokio::select! {
-                _ = connection.closed() => {
-                    break SessionState::Connecting;
-                }
-                Some(batch) = chunked.next(), if can_send_next => {
+                Some(batch) = chunked.next() => {
                     let batch = IngestionBatch::new(batch);
                     let records = Arc::clone(&batch.records);
 
-                    self.inflight.push_back(batch);
+                    inflight.push_back((batch, None));
 
                     let Some(permit) = connection.reserve().await else {
-                        break SessionState::Connecting;
+                        break;
                     };
 
                     trace!("Sending ingest batch, len: {}", records.len());
                     let reply_rx = permit
-                        .send_rpc(IngestRequest::from(records), Some(self.partition.into()))
-                        .expect("encoding version to match");
+                        .send_rpc(
+                            IngestRequest{
+                                records,
+                                target_leader_epoch: Some(self.target_leader_epoch)
+                            },
+                            Some(self.partition.into())
+                        ).expect("encoding version to match");
 
-                    self.inflight.back_mut().expect("to exist").reply_rx = Some(reply_rx);
+                    inflight.back_mut().expect("to exist").1 = Some(reply_rx);
                 }
                 Some(result) = head => {
                     match result.map(|r|r.status) {
                         Ok(ResponseStatus::Ack) => {
-                            let batch = self.inflight.pop_front().expect("not empty");
+                            let batch = inflight.pop_front().expect("not empty").0;
                             batch.committed();
+                        }
+                        Ok(ResponseStatus::NotLeaderWithEpoch{
+                            last_seen_leadership_state,
+                            ..
+                        })=> {
+                            self.partition_routing
+                                .partition_replica_set_state()
+                                .note_observed_leader(self.partition, last_seen_leadership_state);
+                            break;
+                        }
+                        Ok(ResponseStatus::Internal{msg}) => {
+                            warn!("Ingestion internal error from {}: {msg}", connection.peer());
+                            break;
                         }
                         Ok(response) => {
                             // Handle any other response code as a connection loss
                             // and retry all inflight batches.
                             debug!("Ingestion response from {}: {:?}", connection.peer(), response);
-                            break SessionState::Connecting;
+                            break;
                         }
                         Err(err) => {
                             // we can assume that for any error
@@ -439,25 +636,72 @@ where
                             // throttle the stream a little bit then
                             // speed up over a period of time.
 
-                            debug!("Ingestion error from {}: {}", connection.peer(),  err);
-                            break SessionState::Connecting;
+                            trace!("Ingestion error from {}: {}", connection.peer(),  err);
+                            break;
                         }
                     }
                 }
             }
-        };
+        }
 
-        // state == Connecting
-        assert!(matches!(state, SessionState::Connecting));
+        for batch in inflight.into_iter().map(|(batch, _)| batch) {
+            self.carry_over.push_back(batch);
+        }
 
-        // Carry the chunker's buffered-but-unsent records over to the next connection instead of
-        // turning them into a second in-flight batch: `replay()` only resends `inflight`, so keeping
-        // these here preserves the at-most-one-batch-in-flight invariant while not losing them.
-        self.carry_over = chunked.into_remainder();
+        let remainder = chunked.into_remainder();
+        if !remainder.is_empty() {
+            self.carry_over.push_back(IngestionBatch::new(remainder));
+        }
+    }
 
-        state
+    /// Re-sends all inflight batches after a connection is restored.
+    async fn replay(&mut self, connection: &Connection) -> Result<InflightQueue, ConnectionClosed> {
+        // todo(azmy): to avoid all the inflight batches again and waste traffic
+        //  maybe test the connection first by sending an empty batch and wait for response
+        //  before proceeding?
+
+        let total = self.carry_over.iter().fold(0, |v, i| v + i.len());
+        trace!(
+            partition = %self.partition,
+            batches = self.carry_over.len(),
+            records = total,
+            "Replaying inflight records after connection was restored"
+        );
+
+        let mut inflight = InflightQueue::new();
+
+        while let Some(batch) = self.carry_over.front() {
+            let Some(permit) = connection.reserve().await else {
+                // restore the carry over back to original state.
+                // maintaining the original order.
+
+                while let Some((batch, _)) = inflight.pop_back() {
+                    self.carry_over.push_front(batch);
+                }
+
+                return Err(ConnectionClosed);
+            };
+
+            // resend batch
+            let reply_rx = permit
+                .send_rpc(
+                    IngestRequest {
+                        records: Arc::clone(&batch.records),
+                        target_leader_epoch: Some(self.target_leader_epoch),
+                    },
+                    Some(self.partition.into()),
+                )
+                .expect("encoding version to match");
+
+            let batch = self.carry_over.pop_front().unwrap();
+            inflight.push_back((batch, Some(reply_rx)));
+        }
+
+        Ok(inflight)
     }
 }
+
+type InflightQueue = VecDeque<(IngestionBatch, Option<ReplyRx<IngestResponse>>)>;
 
 struct SessionManagerInner<T> {
     networking: Networking<T>,
@@ -498,13 +742,14 @@ where
         let handle = session.handle();
 
         let cancellation = self.cancellation.child_token();
-        let _ = TaskCenter::spawn(
-            TaskKind::Background,
-            "ingestion-partition-session",
-            async move {
-                session.start(cancellation).await;
-                Ok(())
-            },
+        // Since sessions are lazily started on demand, A shared ingestion
+        // client can have different sessions spawned from different runtimes
+        // this is why we spawn_unmanaged to make sure tasks are not aborted
+        // when runtime
+        let _ = TaskCenter::spawn_unmanaged(
+            TaskKind::IngestionSession,
+            format!("ingestion-partition-session-p{id}"),
+            session.start(cancellation),
         );
 
         handle
@@ -514,6 +759,7 @@ where
 impl<T> Drop for SessionManagerInner<T> {
     fn drop(&mut self) {
         self.cancellation.cancel();
+        debug!("Session manager cancelled");
     }
 }
 
@@ -528,12 +774,12 @@ impl<T> SessionManager<T> {
     pub fn new(
         networking: Networking<T>,
         partition_routing: PartitionRouting,
-        opts: Option<SessionOptions>,
+        opts: SessionOptions,
     ) -> Self {
         let inner = SessionManagerInner {
             networking,
             partition_routing,
-            opts: opts.unwrap_or_default(),
+            opts,
             handles: Default::default(),
             cancellation: CancellationToken::new(),
         };
@@ -549,6 +795,10 @@ impl<T> SessionManager<T> {
 
     pub fn networking(&self) -> &Networking<T> {
         &self.inner.networking
+    }
+
+    pub fn options(&self) -> &SessionOptions {
+        &self.inner.opts
     }
 }
 
