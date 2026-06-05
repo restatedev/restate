@@ -118,4 +118,8 @@ impl PartitionRouting {
             .expect("partition replica set states are never dropped while in use");
         *state
     }
+
+    pub fn partition_replica_set_state(&self) -> &PartitionReplicaSetStates {
+        &self.partition_replica_set_states
+    }
 }

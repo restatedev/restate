@@ -22,7 +22,7 @@ use restate_admin::service::AdminService;
 use restate_core::partitions::PartitionRouting;
 use restate_core::{TaskCenter, TaskCenterBuilder, TestCoreEnv};
 use restate_core::{TaskCenterFutureExt, TaskKind};
-use restate_ingestion_client::IngestionClient;
+use restate_ingestion_client::{IngestionClient, SessionOptions};
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol_v4::discovery::ServiceDiscovery;
 use restate_service_protocol_v4::serdes::SerdesClient;
@@ -221,7 +221,7 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
         node_env.metadata.updateable_partition_table(),
         PartitionRouting::new(PartitionReplicaSetStates::default(), TaskCenter::current()),
         NonZeroUsize::new(1000).unwrap(),
-        None,
+        SessionOptions::default(),
     );
 
     let socket_dir = tempfile::tempdir()?;
