@@ -13,4 +13,6 @@ mod client;
 mod session;
 
 pub use client::{IngestFuture, IngestionClient, IngestionError};
-pub use session::{CancelledError, RecordCommit, SessionClosed, SessionOptions};
+pub use session::{
+    CancelledError, RecordCommit, SessionClosed, SessionOptions, SessionOptionsBuilder,
+};
