@@ -290,21 +290,19 @@ where
 {
     /// Runs the session state machine until shut down, reacting to cancellation and connection errors.
     pub async fn start(self, cancellation: CancellationToken) {
+        let partition_id = self.partition;
         debug!(
-            partition_id = %self.partition,
+            partition_id = %partition_id,
             "Starting ingestion partition session",
         );
 
         cancellation.run_until_cancelled(self.run_inner()).await;
+        debug!("Ingestion session for partition {partition_id} stopped");
     }
 
     /// Runs the session state machine until shut down, reacting to cancellation and connection errors.
     async fn run_inner(mut self) {
         let mut state = SessionState::Connecting;
-        debug!(
-            partition_id = %self.partition,
-            "Starting ingestion partition session",
-        );
 
         loop {
             state = match state {
@@ -739,13 +737,14 @@ where
         let handle = session.handle();
 
         let cancellation = self.cancellation.child_token();
-        let _ = TaskCenter::spawn(
-            TaskKind::Background,
-            "ingestion-partition-session",
-            async move {
-                session.start(cancellation).await;
-                Ok(())
-            },
+        // Since sessions are lazily started on demand, A shared ingestion
+        // client can have different sessions spawned from different runtimes
+        // this is why we spawn_unmanaged to make sure tasks are not aborted
+        // when runtime
+        let _ = TaskCenter::spawn_unmanaged(
+            TaskKind::IngestionSession,
+            format!("ingestion-partition-session-p{id}"),
+            session.start(cancellation),
         );
 
         handle
@@ -755,6 +754,7 @@ where
 impl<T> Drop for SessionManagerInner<T> {
     fn drop(&mut self) {
         self.cancellation.cancel();
+        debug!("Session manager cancelled");
     }
 }
 
