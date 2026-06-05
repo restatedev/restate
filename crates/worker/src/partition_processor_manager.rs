@@ -1547,7 +1547,7 @@ mod tests {
     use restate_bifrost::providers::memory_loglet;
     use restate_core::partitions::PartitionRouting;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnvBuilder};
-    use restate_ingestion_client::IngestionClient;
+    use restate_ingestion_client::{IngestionClient, SessionOptions};
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
@@ -1602,7 +1602,7 @@ mod tests {
             env_builder.metadata.updateable_partition_table(),
             PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
             NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
-            None,
+            SessionOptions::default(),
         );
 
         let partition_processor_manager = PartitionProcessorManager::new(
