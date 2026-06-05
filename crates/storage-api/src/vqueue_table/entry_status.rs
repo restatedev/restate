@@ -15,7 +15,7 @@ use super::stats::EntryStatistics;
 use super::{EntryKey, EntryMetadata, Stage};
 
 #[derive(Debug, strum::Display, Clone, Copy, Eq, PartialEq, bilrost::Enumeration)]
-#[strum(serialize_all = "snake_case")]
+#[strum(serialize_all = "kebab-case")]
 pub enum Status {
     #[bilrost(0)]
     Unknown,

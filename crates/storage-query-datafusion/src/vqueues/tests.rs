@@ -97,7 +97,7 @@ async fn get_vqueue_entry_value_fields() {
             0,
             {
                 "stage" => StringArray: eq("inbox"),
-                "status" => StringArray: eq("backing_off"),
+                "status" => StringArray: eq("backing-off"),
                 "num_attempts" => UInt32Array: eq(3),
                 "num_pauses" => UInt32Array: eq(2),
                 "num_suspensions" => UInt32Array: eq(4),

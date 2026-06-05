@@ -19,6 +19,7 @@ use restate_storage_api::vqueue_table::Stage;
 use restate_storage_api::vqueue_table::metadata::{
     Action, MoveMetrics, Update, VQueueLink, VQueueMeta,
 };
+use restate_storage_api::vqueue_table::stats::WaitStats;
 use restate_types::vqueues::VQueueId;
 
 const BASE_TS_MS: u64 = 1_744_000_000_000;
@@ -39,8 +40,11 @@ fn move_metrics(
         last_transition_at,
         has_started,
         first_runnable_at,
-        blocked_on_concurrency_rules_ms,
-        blocked_on_invoker_throttling_ms,
+        scheduler_wait_stats: Some(WaitStats {
+            blocked_on_concurrency_rules_ms,
+            blocked_on_invoker_throttling_ms,
+            ..WaitStats::default()
+        }),
     }
 }
 
