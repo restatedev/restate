@@ -382,6 +382,10 @@ fn parse_headers(parts: http::request::Parts) -> Result<Vec<Header>, HandlerErro
             || k == header::HOST
             || k == IDEMPOTENCY_KEY
             || k == IDEMPOTENCY_EXPIRES
+            // Drop any client-supplied `x-restate-*` header. This namespace is
+            // reserved for the ingress (e.g. `x-restate-ingress-path` set above);
+            // forwarding client values would let callers spoof it.
+            || k.as_str().starts_with("x-restate-")
         {
             continue;
         }
