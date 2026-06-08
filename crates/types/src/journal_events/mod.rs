@@ -35,6 +35,7 @@ pub enum EventType {
     TransientError = 1,
     Paused = 2,
     Suspended = 3,
+    Killed = 4,
 }
 
 #[derive(
@@ -45,6 +46,7 @@ pub enum Event {
     TransientError(TransientErrorEvent),
     Paused(PausedEvent),
     Suspended(SuspendedEvent),
+    Killed(KilledEvent),
     /// This is used when it's not possible to parse in this Restate version the event.
     Unknown,
 }
@@ -77,4 +79,12 @@ pub struct PausedEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SuspendedEvent {
     pub awaiting_on: UnresolvedFuture,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KilledEvent {
+    /// The last transient error before being killed, if any.
+    /// Empty when killed via admin API without prior retry failures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure: Option<TransientErrorEvent>,
 }

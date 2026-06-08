@@ -70,3 +70,7 @@ message Future {
   repeated Future nested_futures = 4;
   CombinatorType combinator_type = 5;
 }
+
+message KilledEvent {
+  TransientErrorEvent last_failure = 1;
+}

@@ -14,7 +14,7 @@ use assert2::let_assert;
 use googletest::any;
 use googletest::elements_are;
 use prost::Message;
-use restate_invoker_api::EffectKind as InvokerEffectKind;
+use restate_worker_api::invoker::EffectKind as InvokerEffectKind;
 use restate_storage_api::journal_table;
 use restate_storage_api::journal_table::WriteJournalTable;
 use restate_storage_api::timer_table::{
@@ -815,7 +815,7 @@ async fn kill_invoked_writes_killed_journal_event() -> anyhow::Result<()> {
         .await;
 
     assert_that!(
-        test_env.read_journal_events(invocation_id).await,
+        test_env.read_journal_events(&invocation_id).await,
         elements_are![eq(Event::Killed(KilledEvent { last_failure: None }))]
     );
 
@@ -843,7 +843,7 @@ async fn killed_after_max_attempts_writes_killed_event_with_last_failure() -> an
 
     let _ = test_env
         .apply(Command::InvokerEffect(Box::new(
-            restate_invoker_api::Effect {
+            restate_worker_api::invoker::Effect {
                 invocation_id,
                 kind: InvokerEffectKind::KilledAfterMaxAttempts {
                     killed_event: RawEvent::from(Event::Killed(KilledEvent {
@@ -856,7 +856,7 @@ async fn killed_after_max_attempts_writes_killed_event_with_last_failure() -> an
 
     // Journal event must carry the last_failure
     assert_that!(
-        test_env.read_journal_events(invocation_id).await,
+        test_env.read_journal_events(&invocation_id).await,
         elements_are![eq(Event::Killed(KilledEvent {
             last_failure: Some(last_error)
         }))]
