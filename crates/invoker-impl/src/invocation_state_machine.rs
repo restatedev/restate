@@ -626,12 +626,16 @@ mod tests {
     use restate_test_util::{assert, check, let_assert};
     use restate_types::retries::RetryPolicy;
 
+    fn test_metrics() -> ServiceMetrics {
+        ServiceMetrics::new("test", "test.Service")
+    }
+
     fn create_test_invocation_state_machine() -> InvocationStateMachine<u64> {
         InvocationStateMachine::create(
             None,
             Permit::new_empty(),
             InvocationTarget::mock_virtual_object(),
-            ServiceMetrics::EMPTY,
+            test_metrics(),
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
             OnMaxAttempts::Kill,
             ConcurrencySlot::empty(),

@@ -132,13 +132,6 @@ impl ServiceMetrics {
             status,
         }
     }
-
-    #[cfg(test)]
-    pub const EMPTY: Self = Self {
-        partition_id: "",
-        service_name: "",
-        deployment_id: "unknown",
-    };
 }
 
 /// Task lifecycle metrics: partition + service + status (no deployment_id).

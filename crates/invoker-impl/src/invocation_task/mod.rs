@@ -783,6 +783,10 @@ mod tests {
     use restate_invoker_api::invocation_reader::EagerState;
     use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 
+    fn test_metrics() -> ServiceMetrics {
+        ServiceMetrics::new("test", "test.Service")
+    }
+
     #[derive(Debug, derive_more::Display)]
     struct TestError;
 
@@ -813,7 +817,7 @@ mod tests {
                 stream::Empty<Result<(Bytes, Bytes, LocalMemoryLease), Infallible>>,
                 _,
                 _,
-            >(None, 1024, ServiceMetrics::EMPTY, std::convert::identity)
+            >(None, 1024, test_metrics(), std::convert::identity)
             .await
             .unwrap();
 
@@ -826,14 +830,10 @@ mod tests {
         let items = vec![entry(10, 20), entry(5, 15)];
         let state = EagerState::new_complete(stream::iter(items));
 
-        let (is_partial, entries, _memory_lease) = collect_eager_state(
-            Some(state),
-            1024,
-            ServiceMetrics::EMPTY,
-            std::convert::identity,
-        )
-        .await
-        .unwrap();
+        let (is_partial, entries, _memory_lease) =
+            collect_eager_state(Some(state), 1024, test_metrics(), std::convert::identity)
+                .await
+                .unwrap();
 
         assert!(!is_partial, "all entries fit within limit");
         assert_eq!(entries.len(), 2);
@@ -845,14 +845,10 @@ mod tests {
         let items = vec![entry(10, 10)];
         let state = EagerState::new_partial(stream::iter(items));
 
-        let (is_partial, entries, _memory_lease) = collect_eager_state(
-            Some(state),
-            1024,
-            ServiceMetrics::EMPTY,
-            std::convert::identity,
-        )
-        .await
-        .unwrap();
+        let (is_partial, entries, _memory_lease) =
+            collect_eager_state(Some(state), 1024, test_metrics(), std::convert::identity)
+                .await
+                .unwrap();
 
         assert!(is_partial, "partial flag should be preserved from source");
         assert_eq!(entries.len(), 1);
@@ -864,14 +860,10 @@ mod tests {
         let items = vec![entry(25, 25), entry(25, 25), entry(25, 25)];
         let state = EagerState::new_complete(stream::iter(items));
 
-        let (is_partial, entries, _memory_lease) = collect_eager_state(
-            Some(state),
-            120,
-            ServiceMetrics::EMPTY,
-            std::convert::identity,
-        )
-        .await
-        .unwrap();
+        let (is_partial, entries, _memory_lease) =
+            collect_eager_state(Some(state), 120, test_metrics(), std::convert::identity)
+                .await
+                .unwrap();
 
         assert!(is_partial, "should be partial after truncation");
         assert_eq!(entries.len(), 2, "only 2 entries should fit (100 bytes)");
@@ -883,14 +875,10 @@ mod tests {
         let items = vec![entry(100, 101)];
         let state = EagerState::new_complete(stream::iter(items));
 
-        let (is_partial, entries, _memory_lease) = collect_eager_state(
-            Some(state),
-            200,
-            ServiceMetrics::EMPTY,
-            std::convert::identity,
-        )
-        .await
-        .unwrap();
+        let (is_partial, entries, _memory_lease) =
+            collect_eager_state(Some(state), 200, test_metrics(), std::convert::identity)
+                .await
+                .unwrap();
 
         assert!(is_partial, "first entry exceeded limit so partial state");
         assert!(
@@ -904,13 +892,8 @@ mod tests {
         let items: Vec<StateResult> = vec![Err(TestError)];
         let state = EagerState::new_complete(stream::iter(items));
 
-        let result = collect_eager_state(
-            Some(state),
-            1024,
-            ServiceMetrics::EMPTY,
-            std::convert::identity,
-        )
-        .await;
+        let result =
+            collect_eager_state(Some(state), 1024, test_metrics(), std::convert::identity).await;
         assert!(result.is_err(), "stream error should be propagated");
     }
 
@@ -920,14 +903,10 @@ mod tests {
         let items = vec![entry(25, 25), entry(25, 25)];
         let state = EagerState::new_complete(stream::iter(items));
 
-        let (is_partial, entries, _memory_lease) = collect_eager_state(
-            Some(state),
-            100,
-            ServiceMetrics::EMPTY,
-            std::convert::identity,
-        )
-        .await
-        .unwrap();
+        let (is_partial, entries, _memory_lease) =
+            collect_eager_state(Some(state), 100, test_metrics(), std::convert::identity)
+                .await
+                .unwrap();
 
         assert!(!is_partial, "entries exactly at limit should fit");
         assert_eq!(entries.len(), 2);
@@ -939,14 +918,10 @@ mod tests {
         let items = vec![entry(25, 25), entry(25, 25)];
         let state = EagerState::new_complete(stream::iter(items));
 
-        let (is_partial, entries, _memory_lease) = collect_eager_state(
-            Some(state),
-            99,
-            ServiceMetrics::EMPTY,
-            std::convert::identity,
-        )
-        .await
-        .unwrap();
+        let (is_partial, entries, _memory_lease) =
+            collect_eager_state(Some(state), 99, test_metrics(), std::convert::identity)
+                .await
+                .unwrap();
 
         assert!(is_partial, "should be partial when 1 byte over");
         assert_eq!(entries.len(), 1, "only first entry should fit");

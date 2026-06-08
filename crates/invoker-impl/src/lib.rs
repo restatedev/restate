@@ -1893,7 +1893,12 @@ mod tests {
     use restate_memory::OutOfMemoryKind;
 
     use crate::error::{InvocationMemoryExhausted, InvokerError, SdkInvocationErrorV2};
+    use crate::metric_definitions::ServiceMetrics;
     use crate::quota::{ConcurrencySlot, InvokerConcurrencyQuota};
+
+    fn test_metrics() -> ServiceMetrics {
+        ServiceMetrics::new("test", "test.Service")
+    }
 
     // -- Mocks
 
@@ -2461,7 +2466,7 @@ mod tests {
             )),
             Permit::new_empty(),
             invocation_target.clone(),
-            ServiceMetrics::EMPTY,
+            test_metrics(),
             RetryPolicy::fixed_delay(Duration::from_millis(100), None).into_iter(),
             OnMaxAttempts::Kill,
             ConcurrencySlot::empty(),
