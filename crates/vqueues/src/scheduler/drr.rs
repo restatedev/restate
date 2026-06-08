@@ -561,7 +561,7 @@ mod tests {
         .await
         .expect("vqueue should be created");
 
-        vqueue.run_entry(at, &header, &WaitStats::default())
+        vqueue.run_entry(at, &header, WaitStats::default())
     }
 
     async fn create_resource_manager_with_throttling(

@@ -102,15 +102,27 @@ pub(crate) fn append_vqueues_meta_row(
         row.avg_end_to_end_duration(meta.stats.avg_end_to_end_duration_ms() as i64);
     }
 
+    if row.is_avg_blocked_on_lock_defined() {
+        row.avg_blocked_on_lock(meta.stats.avg_wait_stats().blocked_on_lock_ms as i64);
+    }
+
     if row.is_avg_blocked_on_concurrency_rules_defined() {
         row.avg_blocked_on_concurrency_rules(
-            meta.stats.avg_blocked_on_concurrency_rules_ms() as i64
+            meta.stats.avg_wait_stats().blocked_on_concurrency_rules_ms as i64,
+        );
+    }
+
+    if row.is_avg_blocked_on_invoker_concurrency_defined() {
+        row.avg_blocked_on_invoker_concurrency(
+            meta.stats
+                .avg_wait_stats()
+                .blocked_on_invoker_concurrency_ms as i64,
         );
     }
 
     if row.is_avg_blocked_on_invoker_throttling_defined() {
         row.avg_blocked_on_invoker_throttling(
-            meta.stats.avg_blocked_on_invoker_throttling_ms() as i64
+            meta.stats.avg_wait_stats().blocked_on_invoker_throttling_ms as i64,
         );
     }
 

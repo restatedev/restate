@@ -67,12 +67,19 @@ pub(crate) fn append_vqueues_row<'a>(
     if row.is_num_attempts_defined() {
         row.num_attempts(entry.stats.num_attempts);
     }
+
+    if row.is_num_errors_defined() {
+        row.num_errors(entry.stats.num_errors);
+    }
+
     if row.is_num_pauses_defined() {
         row.num_pauses(entry.stats.num_paused);
     }
+
     if row.is_num_suspensions_defined() {
         row.num_suspensions(entry.stats.num_suspensions);
     }
+
     if row.is_num_yields_defined() {
         row.num_yields(entry.stats.num_yields);
     }

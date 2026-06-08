@@ -253,6 +253,8 @@ pub enum QueueItem<'a> {
     None,
 }
 
+// One `Stage` per `Queue`; boxing the head would add an allocation on the hot path.
+#[allow(clippy::large_enum_variant)]
 #[derive(derive_more::Debug)]
 enum Stage<S: VQueueStore> {
     /// Brand-new queue; running items still need to be drained first.
