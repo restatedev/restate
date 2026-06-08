@@ -289,9 +289,8 @@ mod tests {
         let metrics = MoveMetrics {
             last_transition_at: at,
             has_started: false,
-            blocked_on_concurrency_rules_ms: 0,
-            blocked_on_invoker_throttling_ms: 0,
             first_runnable_at: at.to_unix_millis(),
+            scheduler_wait_stats: None,
         };
         meta.apply_update(&Update::new(
             at,

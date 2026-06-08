@@ -22,7 +22,7 @@ use restate_util_string::ReString;
 /// `Precondition::None` (unconditional upsert).
 #[serde_as]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct UpsertRuleRequest {
     /// The pattern that selects which scope/limit-key combinations the
     /// rule applies to. Examples: `"*"`, `"scope1/*"`, `"scope1/foo/bar"`.
@@ -51,7 +51,7 @@ pub struct UpsertRuleRequest {
 /// One entry in the body of `POST /limits/rules/bulk-delete`.
 #[serde_as]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DeleteRuleRequest {
     #[cfg_attr(feature = "schema", schema(value_type = String))]
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -67,7 +67,7 @@ pub struct DeleteRuleRequest {
 
 #[serde_as]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RuleResponse {
     #[cfg_attr(feature = "schema", schema(value_type = String))]
     #[serde_as(as = "serde_with::DisplayFromStr")]

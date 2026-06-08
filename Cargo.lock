@@ -7377,9 +7377,11 @@ dependencies = [
  "restate-cli-util",
  "restate-cloud-tunnel-client",
  "restate-futures-util",
+ "restate-limiter",
  "restate-lite",
  "restate-serde-util",
  "restate-types",
+ "restate-util-string",
  "restate-util-time",
  "restate-workspace-hack",
  "rustls",
@@ -8831,8 +8833,8 @@ dependencies = [
 
 [[package]]
 name = "restate-web-ui"
-version = "1.0.1"
-source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v1.0.1#25c965da8e9f289e05f75642e0a2764ab225c055"
+version = "1.0.3"
+source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v1.0.3#647a7e2b669926105c0b56c43d0ba26cea505df2"
 dependencies = [
  "anyhow",
  "include_dir",

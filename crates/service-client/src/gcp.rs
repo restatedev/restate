@@ -56,6 +56,14 @@ pub enum GcpAuthError {
     #[error("failed to build ID token credentials for audience '{audience}': {message}")]
     Build { audience: String, message: String },
     #[error(
+        "the ambient Application Default Credentials identity cannot mint an ID token for audience '{audience}'. \
+         User credentials (from `gcloud auth application-default login`) and Workload Identity Federation \
+         (`external_account`) sources cannot mint ID tokens directly; set `--gcp-impersonate-service-account` to \
+         mint the token via impersonation, or run Restate with a service-account key (`GOOGLE_APPLICATION_CREDENTIALS`) \
+         or a GCE/GKE/Cloud Run metadata-server identity"
+    )]
+    AmbientUnsupported { audience: String },
+    #[error(
         "failed to mint ID token (audience '{audience}', impersonating '{impersonate}'): {message}"
     )]
     Mint {
@@ -207,9 +215,24 @@ impl GcpTokenClient {
             None => {
                 let creds = idtoken::Builder::new(audience.to_owned())
                     .build()
-                    .map_err(|e| GcpAuthError::Build {
-                        audience: audience.to_owned(),
-                        message: e.to_string(),
+                    .map_err(|e| {
+                        // authorized_user (gcloud) and external_account (Workload Identity
+                        // Federation) ADC sources cannot mint ID tokens directly
+                        if e.is_not_supported() {
+                            tracing::debug!(
+                                audience = %audience,
+                                error = %e,
+                                "ambient ADC identity cannot mint an ID token; impersonation required"
+                            );
+                            GcpAuthError::AmbientUnsupported {
+                                audience: audience.to_owned(),
+                            }
+                        } else {
+                            GcpAuthError::Build {
+                                audience: audience.to_owned(),
+                                message: e.to_string(),
+                            }
+                        }
                     })?;
                 creds.id_token().await.map_err(|e| GcpAuthError::Mint {
                     audience: audience.to_owned(),
@@ -329,6 +352,20 @@ mod tests {
         let dur = parse_jwt_exp(&token).expect("expected Some");
         assert!(dur > Duration::from_secs(3500));
         assert!(dur <= Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn ambient_unsupported_error_is_actionable_and_leak_free() {
+        let err = GcpAuthError::AmbientUnsupported {
+            audience: "https://svc-abc-uc.a.run.app".into(),
+        };
+        let msg = err.to_string();
+        // Actionable: names the audience and the fix.
+        assert!(msg.contains("https://svc-abc-uc.a.run.app"), "{msg}");
+        assert!(msg.contains("--gcp-impersonate-service-account"), "{msg}");
+        // Leak-free: must not surface the google-cloud-auth internal API hint.
+        assert!(!msg.contains("idtoken::user_account"), "{msg}");
+        assert!(!msg.to_lowercase().contains("builder directly"), "{msg}");
     }
 
     #[test]

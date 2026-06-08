@@ -590,7 +590,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                                 .into());
                             }
                             scheduler::SchedulerAction::Run(run_action) => {
-                                self.attempt_to_run(qid, &run_action.key, &run_action.wait_stats)
+                                self.attempt_to_run(qid, &run_action.key, run_action.wait_stats)
                                     .await?;
                             }
                             scheduler::SchedulerAction::Yield(yield_action) => {
@@ -3168,7 +3168,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         &mut self,
         qid: &VQueueId,
         entry_key: &EntryKey,
-        wait_stats: &vqueue_table::stats::WaitStats,
+        wait_stats: vqueue_table::stats::WaitStats,
     ) -> Result<(), Error>
     where
         S: WriteInboxTable
@@ -3268,7 +3268,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         &mut self,
         qid: &VQueueId,
         entry_key: &EntryKey,
-        wait_stats: &vqueue_table::stats::WaitStats,
+        wait_stats: vqueue_table::stats::WaitStats,
     ) -> Result<(), Error>
     where
         S: WriteInboxTable

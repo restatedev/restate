@@ -1,0 +1,15 @@
+name: Dispatch nightly Jepsen tests
+
+on:
+  schedule:
+      - cron: "0 0 * * *"
+  workflow_dispatch:
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger restatedev/jepsen nightly run
+        env:
+          GH_TOKEN: ${{ secrets.JEPSEN_DISPATCH_TOKEN }}
+        run: gh workflow run jepsen.yml -R restatedev/jepsen --ref main

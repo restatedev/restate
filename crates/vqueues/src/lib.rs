@@ -13,6 +13,7 @@ mod metric_definitions;
 pub mod scheduler;
 mod util;
 
+use std::ops::Add;
 use std::time::Duration;
 
 // Re-exports
@@ -323,7 +324,7 @@ where
         &mut self,
         at: UniqueTimestamp,
         header: &impl EntryStatusHeader,
-        wait_stats: &WaitStats,
+        wait_stats: WaitStats,
     ) -> EntryKey {
         let vqueue_id = header.vqueue_id();
         let partition_key = vqueue_id.partition_key();
@@ -651,15 +652,13 @@ where
         // boosting). If that's the case, we mutate the entry key to reflect that.
         let modified_key = header.entry_key().set_run_at(run_at);
 
-        let stats = Self::mark_yield(at, header.stats());
-
-        let (status, metadata) = match reason {
+        let (status, metadata, is_error) = match reason {
             YieldReason::Unknown
             | YieldReason::InvokerLoadShedding
             | YieldReason::PartitionLeaderChange => {
                 // The reason could be coming from a future version of restate.
                 // It's okay to have an unknown reason, we'll continue to yield as usual.
-                (Status::Yielded, header.metadata().clone())
+                (Status::Yielded, header.metadata().clone(), false)
             }
             YieldReason::ExhaustedMemoryBudget { needed_memory } => {
                 let current_metadata = header.metadata().clone();
@@ -669,6 +668,7 @@ where
                         needed_memory: Some(needed_memory),
                         ..current_metadata
                     },
+                    false,
                 )
             }
             YieldReason::TransientError {
@@ -683,9 +683,12 @@ where
                         retry_count_since_last_stored_command,
                         ..current_metadata
                     },
+                    true,
                 )
             }
         };
+
+        let stats = Self::mark_yield(at, header.stats().clone(), is_error);
 
         debug!(
             entry = %header.display_entry_id(),
@@ -888,7 +891,7 @@ where
         &mut self,
         at: UniqueTimestamp,
         header: &impl EntryStatusHeader,
-        wait_stats: &WaitStats,
+        wait_stats: WaitStats,
         status: Status,
     ) {
         let vqueue_id = header.vqueue_id();
@@ -1079,27 +1082,13 @@ where
     #[inline]
     fn build_move_metrics(
         stats: &EntryStatistics,
-        wait_stats: Option<&WaitStats>,
+        scheduler_wait_stats: Option<WaitStats>,
     ) -> metadata::MoveMetrics {
-        // The two `*_ms` fields below are only meaningful on Inbox → Running
-        // moves (where the scheduler actually observed the head waiting). For
-        // every other transition we pass `None` and leave them zero — the
-        // receiving EMA code only reads them inside the `Stage::Running` arm,
-        // so the zero samples are never consumed.
-        let (concurrency_rules_ms, blocked_on_invoker_throttling_ms) = wait_stats
-            .map(|w| {
-                (
-                    w.blocked_on_concurrency_rules_ms,
-                    w.blocked_on_invoker_throttling_ms,
-                )
-            })
-            .unwrap_or_default();
         metadata::MoveMetrics {
             last_transition_at: stats.transitioned_at,
             has_started: stats.num_attempts > 0,
             first_runnable_at: stats.first_runnable_at,
-            blocked_on_concurrency_rules_ms: concurrency_rules_ms,
-            blocked_on_invoker_throttling_ms,
+            scheduler_wait_stats,
         }
     }
 
@@ -1115,17 +1104,15 @@ where
     fn mark_run_attempt(
         at: UniqueTimestamp,
         stats: &EntryStatistics,
-        // `WaitStats` is consumed at the vqueue level (EMAs in
-        // `VQueueStatistics`) via `build_move_metrics`; it is intentionally not
-        // accumulated per-entry to avoid persisting stale blocking signal that
-        // decays in relevance as the system evolves.
-        _wait_stats: &WaitStats,
+        wait_stats: WaitStats,
     ) -> EntryStatistics {
         EntryStatistics {
             num_attempts: stats.num_attempts.saturating_add(1),
             first_attempt_at: stats.first_attempt_at.or(Some(at)),
             latest_attempt_at: Some(at),
             transitioned_at: at,
+            latest_attempt_wait_stats: wait_stats,
+            total_wait_stats: stats.total_wait_stats.add(wait_stats),
             ..stats.clone()
         }
     }
@@ -1149,11 +1136,17 @@ where
     }
 
     #[inline]
-    fn mark_yield(at: UniqueTimestamp, stats: &EntryStatistics) -> EntryStatistics {
-        EntryStatistics {
-            num_yields: stats.num_yields.saturating_add(1),
-            transitioned_at: at,
-            ..stats.clone()
+    fn mark_yield(
+        at: UniqueTimestamp,
+        mut stats: EntryStatistics,
+        is_error: bool,
+    ) -> EntryStatistics {
+        stats.transitioned_at = at;
+        if is_error {
+            stats.num_errors = stats.num_errors.saturating_add(1);
+        } else {
+            stats.num_yields = stats.num_yields.saturating_add(1);
         }
+        stats
     }
 }

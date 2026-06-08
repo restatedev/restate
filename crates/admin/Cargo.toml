@@ -39,7 +39,7 @@ restate-util-time = { workspace = true }
 restate-types = { workspace = true }
 restate-util-string = { workspace = true }
 restate-wal-protocol = { workspace = true }
-restate-web-ui = { git = "https://github.com/restatedev/restate-web-ui-crate", optional = true, version = "1.0.1", tag = "v1.0.1" }
+restate-web-ui = { git = "https://github.com/restatedev/restate-web-ui-crate", optional = true, version = "1.0.3", tag = "v1.0.3" }
 
 ahash = { workspace = true }
 anyhow = { workspace = true }
