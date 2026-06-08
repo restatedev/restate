@@ -13,6 +13,7 @@ use std::fmt::Write;
 use axum::extract::State;
 use metrics_exporter_prometheus::formatting;
 use rocksdb::statistics::{Histogram, Ticker};
+use tracing::warn;
 
 use restate_core::task_center::TaskCenterMonitoring;
 use restate_rocksdb::{CfName, RocksDbManager};
@@ -178,123 +179,142 @@ const ROCKSDB_CF_PROPERTIES: &[(&str, MetricUnit)] = &[
 // -- Direct HTTP Handlers --
 
 pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String {
-    let default_cf = CfName::new("default");
-    let mut out = String::new();
+    static DEFAULT_CF_NAME: CfName = CfName::from_static("default");
 
-    // Response content type is plain/text and that's expected.
-    if let Some(prometheus_handle) = state.prometheus_handle.handle() {
-        // Default tokio runtime metrics
-        state.task_center.submit_metrics();
-        // jemalloc memory statistics
-        #[cfg(not(target_env = "msvc"))]
-        super::jemalloc::submit_metrics();
-        // Memory Pools
-        state.task_center.memory_controller().submit_metrics();
-        // Internal system metrics
-        let _ = write!(&mut out, "{}", prometheus_handle.render());
-    }
-
-    let manager = RocksDbManager::get();
-    let all_dbs = manager.get_all_dbs();
-
-    let mut labels = state.prometheus_handle.global_labels().clone();
-
-    // Overall write buffer manager stats
-    format_rocksdb_property_for_prometheus(
-        &mut out,
-        &labels,
-        MetricUnit::Bytes,
-        "rocksdb.memory.write_buffer_manager_capacity",
-        manager.get_total_write_buffer_capacity(),
-    );
-
-    format_rocksdb_property_for_prometheus(
-        &mut out,
-        &labels,
-        MetricUnit::Bytes,
-        "rocksdb.memory.write_buffer_manager_usage",
-        manager.get_total_write_buffer_usage(),
-    );
-
-    for db in &all_dbs {
-        labels.insert("db".to_owned(), formatting::sanitize_label_value(db.name()));
-
-        // Tickers (Counters)
-        for ticker in ROCKSDB_TICKERS {
-            format_rocksdb_stat_ticker_for_prometheus(&mut out, db, &labels, *ticker);
-        }
-        // Histograms
-        for (histogram, name, unit) in ROCKSDB_HISTOGRAMS {
-            format_rocksdb_histogram_for_prometheus(
-                &mut out,
-                name,
-                db.get_histogram_data(*histogram),
-                *unit,
-                &labels,
-            );
+    // Getting tickers and properties is blocking, rocksdb needs to collect tickers from all cores
+    // and holds a lock during the aggregation. This is exaggerated by the fact that we perform
+    // this many times per database/cf. A potentially better approach is to expose getTickerMap via
+    // the rust binding.
+    let result = tokio::task::spawn_blocking(move || {
+        let mut out = String::new();
+        // Response content type is plain/text and that's expected.
+        if let Some(prometheus_handle) = state.prometheus_handle.handle() {
+            // Default tokio runtime metrics
+            state.task_center.submit_metrics();
+            // jemalloc memory statistics
+            #[cfg(not(target_env = "msvc"))]
+            super::jemalloc::submit_metrics();
+            // Memory Pools
+            state.task_center.memory_controller().submit_metrics();
+            // Internal system metrics
+            let _ = write!(&mut out, "{}", prometheus_handle.render());
         }
 
-        // Memory Usage Stats (Gauges)
-        let memory_usage = manager
-            .get_memory_usage_stats(&[])
-            .expect("get_memory_usage_stats");
+        let manager = RocksDbManager::get();
+        let all_dbs = manager.get_all_dbs();
 
+        let mut labels = state.prometheus_handle.global_labels().clone();
+
+        // Overall write buffer manager stats
         format_rocksdb_property_for_prometheus(
             &mut out,
             &labels,
             MetricUnit::Bytes,
-            "rocksdb.memory.approx-memtable",
-            memory_usage.approximate_mem_table_total(),
+            "rocksdb.memory.write_buffer_manager_capacity",
+            manager.get_total_write_buffer_capacity(),
         );
 
         format_rocksdb_property_for_prometheus(
             &mut out,
             &labels,
             MetricUnit::Bytes,
-            "rocksdb.memory.approx-memtable-unflushed",
-            memory_usage.approximate_mem_table_unflushed(),
+            "rocksdb.memory.write_buffer_manager_usage",
+            manager.get_total_write_buffer_usage(),
         );
 
-        format_rocksdb_property_for_prometheus(
-            &mut out,
-            &labels,
-            MetricUnit::Bytes,
-            "rocksdb.memory.approx-memtable-readers",
-            memory_usage.approximate_mem_table_readers_total(),
-        );
+        // db-level tickers
+        for db in &all_dbs {
+            labels.insert("db".to_owned(), formatting::sanitize_label_value(db.name()));
 
-        // Other per-database properties
-        for (property, unit) in ROCKSDB_DB_PROPERTIES {
+            // Tickers (Counters)
+            for ticker in ROCKSDB_TICKERS {
+                format_rocksdb_stat_ticker_for_prometheus(&mut out, db, &labels, *ticker);
+            }
+            // Histograms
+            for (histogram, name, unit) in ROCKSDB_HISTOGRAMS {
+                format_rocksdb_histogram_for_prometheus(
+                    &mut out,
+                    name,
+                    db.get_histogram_data(*histogram),
+                    *unit,
+                    &labels,
+                );
+            }
+
+            // Memory Usage Stats (Gauges)
+            let memory_usage = manager
+                .get_memory_usage_stats(&[])
+                .expect("get_memory_usage_stats");
+
             format_rocksdb_property_for_prometheus(
                 &mut out,
                 &labels,
-                *unit,
-                property,
-                db.inner()
-                    .get_property_int_cf(&default_cf, property)
-                    .unwrap_or_default()
-                    .unwrap_or_default(),
+                MetricUnit::Bytes,
+                "rocksdb.memory.approx-memtable",
+                memory_usage.approximate_mem_table_total(),
             );
-        }
 
-        // Properties (Gauges)
-        // For properties, we need to get them for each column family.
-        for cf in &db.cfs() {
-            labels.insert("cf".to_owned(), formatting::sanitize_label_value(cf));
-            for (property, unit) in ROCKSDB_CF_PROPERTIES {
+            format_rocksdb_property_for_prometheus(
+                &mut out,
+                &labels,
+                MetricUnit::Bytes,
+                "rocksdb.memory.approx-memtable-unflushed",
+                memory_usage.approximate_mem_table_unflushed(),
+            );
+
+            format_rocksdb_property_for_prometheus(
+                &mut out,
+                &labels,
+                MetricUnit::Bytes,
+                "rocksdb.memory.approx-memtable-readers",
+                memory_usage.approximate_mem_table_readers_total(),
+            );
+
+            // Other per-database properties
+            for (property, unit) in ROCKSDB_DB_PROPERTIES {
                 format_rocksdb_property_for_prometheus(
                     &mut out,
                     &labels,
                     *unit,
                     property,
                     db.inner()
-                        .get_property_int_cf(cf, property)
+                        .get_property_int_cf(&DEFAULT_CF_NAME, property)
                         .unwrap_or_default()
                         .unwrap_or_default(),
                 );
             }
         }
-    }
 
-    out
+        for db in &all_dbs {
+            let mut labels = state.prometheus_handle.global_labels().clone();
+            labels.insert("db".to_owned(), formatting::sanitize_label_value(db.name()));
+            // Properties (Gauges)
+            // For properties, we need to get them for each column family.
+            for cf in &db.cfs() {
+                labels.insert("cf".to_owned(), formatting::sanitize_label_value(cf));
+                for (property, unit) in ROCKSDB_CF_PROPERTIES {
+                    format_rocksdb_property_for_prometheus(
+                        &mut out,
+                        &labels,
+                        *unit,
+                        property,
+                        db.inner()
+                            .get_property_int_cf(cf, property)
+                            .unwrap_or_default()
+                            .unwrap_or_default(),
+                    );
+                }
+            }
+        }
+        out
+    })
+    .await;
+
+    match result {
+        Ok(result) => result,
+        Err(e) => {
+            warn!("Failed to render metrics: {}", e);
+            String::default()
+        }
+    }
 }

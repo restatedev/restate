@@ -53,6 +53,7 @@ pub fn format_rocksdb_stat_ticker_for_prometheus(
     labels: &IndexMap<String, String>,
     ticker: Ticker,
 ) {
+    static DUMMY_KEY: Key = const { Key::from_static_name("non-existent") };
     let sanitized_name = format!(
         "{}_{}",
         PREFIX,
@@ -63,7 +64,7 @@ pub fn format_rocksdb_stat_ticker_for_prometheus(
         out,
         &sanitized_name,
         Some("total"),
-        &LabelSet::from_key_and_global(&Key::from_static_name("non-existent"), labels),
+        &LabelSet::from_key_and_global(&DUMMY_KEY, labels),
         None,
         db.get_ticker_count(ticker),
         None,
