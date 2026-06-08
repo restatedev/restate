@@ -861,6 +861,7 @@ impl<T> LeadershipState<T> {
         }
     }
 }
+
 #[derive(Debug, derive_more::From)]
 struct TimerReader(PartitionStore);
 
@@ -915,7 +916,7 @@ mod tests {
     use restate_bifrost::Bifrost;
     use restate_core::partitions::PartitionRouting;
     use restate_core::{TaskCenter, TestCoreEnv};
-    use restate_ingestion_client::IngestionClient;
+    use restate_ingestion_client::{IngestionClient, SessionOptions};
     use restate_limiter::RuleBook;
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
@@ -971,7 +972,7 @@ mod tests {
             env.metadata.updateable_partition_table(),
             PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
             NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
-            None,
+            SessionOptions::default(),
         );
 
         let (leader_query_tx, _leader_query_rx) = restate_worker_api::channel();
