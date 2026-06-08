@@ -11,7 +11,7 @@ Featureset:
 
 The cluster runner adds some extra files to the base dir:
 - `$BASE_DIR/$NODE_NAME/config.toml`: The configuration for the node, passed via env var `RESTATE_CONFIG`
-- `$BASE_DIR/$NODE_NAME/node.sock`: The gRPC node service. This is advertised as a absolute unix path.
+- `$BASE_DIR/$NODE_NAME/fabric.sock`: The gRPC node service. This is advertised as a absolute unix path.
 - `$BASE_DIR/$NODE_NAME/restate.log`: The stdout and stderr of the server process
 
 # Debugging
@@ -32,6 +32,5 @@ You can watch node logs with `tail -f restate-data/*/restate.log`
 To interact with the running cluster using `restatectl`, use the following configuration:
 
 ```shell
-export RESTATE_CLUSTER_CONTROLLER_ADDRESS=unix:restate-data/metadata-node/node.sock
-export RESTATE_METADATA_ADDRESS=unix:restate-data/metadata.sock
+export RESTATECTL_ADDRESS=unix:restate-data/node-1/fabric.sock
 ```
