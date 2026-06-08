@@ -61,6 +61,9 @@ define_table!(sys_vqueues(
     /// Number of times this entry has been moved to the run queue.
     num_attempts: DataType::UInt32,
 
+    /// Number of times this entry has yielded execution due to transient errors.
+    num_errors: DataType::UInt32,
+
     /// Number of times this entry has been moved to the paused stage.
     num_pauses: DataType::UInt32,
 
