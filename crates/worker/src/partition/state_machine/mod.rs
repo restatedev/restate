@@ -2287,7 +2287,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         // Write after end_invocation so journal cleanup (do_drop_journal) doesn't delete it
         self.storage.put_journal_event(
-            invocation_id,
+            &invocation_id,
             EventView {
                 append_time: self.record_created_at,
                 after_journal_entry_index,

@@ -807,11 +807,13 @@ async fn kill_invoked_writes_killed_journal_event() -> anyhow::Result<()> {
     fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
 
     let _ = test_env
-        .apply(Command::TerminateInvocation(InvocationTermination {
-            invocation_id,
-            flavor: TerminationFlavor::Kill,
-            response_sink: None,
-        }))
+        .apply(commands::TerminateInvocationCommand::test_envelope(
+            InvocationTermination {
+                invocation_id,
+                flavor: TerminationFlavor::Kill,
+                response_sink: None,
+            },
+        ))
         .await;
 
     assert_that!(
@@ -842,7 +844,7 @@ async fn killed_after_max_attempts_writes_killed_event_with_last_failure() -> an
     };
 
     let _ = test_env
-        .apply(Command::InvokerEffect(Box::new(
+        .apply(commands::InvokerEffectCommand::test_envelope(
             restate_worker_api::invoker::Effect {
                 invocation_id,
                 kind: InvokerEffectKind::KilledAfterMaxAttempts {
@@ -851,7 +853,7 @@ async fn killed_after_max_attempts_writes_killed_event_with_last_failure() -> an
                     })),
                 },
             },
-        )))
+        ))
         .await;
 
     // Journal event must carry the last_failure
