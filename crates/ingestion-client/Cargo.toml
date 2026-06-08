@@ -7,6 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+test-util = []
+
 [dependencies]
 
 restate-core = { workspace = true }
@@ -15,6 +18,7 @@ restate-workspace-hack = { workspace = true }
 
 bytes = { workspace = true }
 dashmap = { workspace = true }
+derive_builder = { workspace = true }
 futures = { workspace = true }
 pin-project = { workspace = true }
 thiserror = { workspace = true }
