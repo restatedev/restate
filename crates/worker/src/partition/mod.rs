@@ -74,8 +74,8 @@ use restate_types::net::partition_processor::{
     PartitionProcessorRpcResponse,
 };
 use restate_types::net::{RpcRequest, ingest};
-use restate_types::partitions::PartitionFeatureChange;
 use restate_types::partitions::state::PartitionReplicaSetStates;
+use restate_types::partitions::{PartitionFeatureChange, state};
 use restate_types::retries::{RetryPolicy, with_jitter};
 use restate_types::schema::Schema;
 use restate_types::storage::StorageDecodeError;
@@ -95,8 +95,8 @@ use restate_worker_api::{LeaderQueryCommand, LeaderQueryReceiver};
 use self::leadership::trim_queue::TrimQueue;
 use crate::metric_definitions::{
     FLARE_REASON_VERSION_BARRIER, LEADER_LABEL, LEADER_LABEL_FOLLOWER, LEADER_LABEL_LEADER,
-    PARTITION_BLOCKED_FLARE, PARTITION_INGESTION_REQUEST_LEN, PARTITION_INGESTION_REQUEST_SIZE,
-    PARTITION_LABEL, PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, REASON_LABEL,
+    PARTITION_BLOCKED_FLARE, PARTITION_LABEL, PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
+    REASON_LABEL,
 };
 use crate::partition::leadership::LeadershipState;
 use crate::partition::state_machine::{ActionCollector, StateMachine};
@@ -961,26 +961,78 @@ where
 
     async fn on_pp_ingest_request(&mut self, msg: Incoming<Rpc<ReceivedIngestRequest>>) {
         let (reciprocal, request) = msg.split();
-        histogram!(
-            PARTITION_INGESTION_REQUEST_LEN, PARTITION_LABEL => self.partition_id_str.clone()
-        )
-        .record(request.records.len() as f64);
 
-        histogram!(
-            PARTITION_INGESTION_REQUEST_SIZE, PARTITION_LABEL => self.partition_id_str.clone()
-        )
-        .record(request.records.iter().fold(0, |s, r| s + r.estimate_size()) as f64);
+        let Some(target_leader_epoch) = request.target_leader_epoch else {
+            // Old clients don't send a target leader epoch, so we
+            // reject these writes to avoid data loss. When such a
+            // client pipelines requests, a leadership change could
+            // cause one request to be rejected while later requests
+            // in the pipeline are accepted, silently dropping data.
+            // See #4879 for details.
+            let _ = TaskCenter::spawn_child(TaskKind::Disposable, "reject-ingestion", async move {
+                // clients will try immediately
+                // so we need to put some back pressure here
+                // by delaying the response so they don't
+                // retry immediately
+                tokio::time::sleep(Duration::from_secs(1)).await;
+
+                // Older clients (if enabled) will print this error message as debug
+                // message so it might be a good idea to print this here also as a warn
+                // to make sure it's visible during a rolling upgrade.
+
+                warn!(
+                    "Rejecting ingestion requests from old ingestion \
+                    clients to prevent data loss. Please upgrade to v1.7 \
+                    or disable the experimental ingestion feature(s) \
+                    `experimental_*_batch_ingestion`"
+                );
+
+                reciprocal.send(
+                    ResponseStatus::Internal {
+                        msg: "Rejecting ingestion requests from old ingestion \
+                                clients to prevent data loss. Please upgrade to v1.7 \
+                                or disable the experimental ingestion feature(s) \
+                                `experimental_*_batch_ingestion`"
+                            .into(),
+                    }
+                    .into(),
+                );
+                Ok(())
+            });
+
+            return;
+        };
+
+        let leadership_state = self
+            .replica_set_states
+            .membership_state(self.partition_store.partition_id())
+            .current_leader();
+
+        if target_leader_epoch != leadership_state.current_leader_epoch {
+            reciprocal.send(
+                ResponseStatus::NotLeaderWithEpoch {
+                    of: self.partition_store.partition_id(),
+                    last_seen_leadership_state: leadership_state,
+                }
+                .into(),
+            );
+            return;
+        }
 
         self.leadership_state
             .forward_many_with_callback(
                 request.records.into_iter(),
-                |result: Result<(), PartitionProcessorRpcError>| match result {
+                move |result: Result<(), PartitionProcessorRpcError>| match result {
                     Ok(_) => reciprocal.send(ResponseStatus::Ack.into()),
                     Err(err) => match err {
                         PartitionProcessorRpcError::NotLeader(id)
-                        | PartitionProcessorRpcError::LostLeadership(id) => {
-                            reciprocal.send(ResponseStatus::NotLeader { of: id }.into())
-                        }
+                        | PartitionProcessorRpcError::LostLeadership(id) => reciprocal.send(
+                            ResponseStatus::NotLeaderWithEpoch {
+                                of: id,
+                                last_seen_leadership_state: leadership_state,
+                            }
+                            .into(),
+                        ),
                         PartitionProcessorRpcError::Internal(msg) => {
                             reciprocal.send(ResponseStatus::Internal { msg }.into())
                         }

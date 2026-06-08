@@ -67,6 +67,18 @@ pub enum EnqueueError<T> {
     },
 }
 
+impl<T> EnqueueError<T> {
+    pub fn drop_payload(self) -> EnqueueError<()> {
+        match self {
+            Self::Closed(_) => EnqueueError::Closed(()),
+            Self::Full(_) => EnqueueError::Full(()),
+            Self::RecordTooLarge { record_size, limit } => {
+                EnqueueError::RecordTooLarge { record_size, limit }
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum AdminError {
     #[error("log {0} is permanently sealed")]
