@@ -2847,8 +2847,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 let metadata = invocation_status
                     .into_invocation_metadata()
                     .expect("Must be present if status is invoked");
-                let after_journal_entry_index =
-                    metadata.journal_metadata.length.saturating_sub(1);
+                let after_journal_entry_index = metadata.journal_metadata.length.saturating_sub(1);
                 self.end_invocation(
                     effect.invocation_id,
                     metadata,

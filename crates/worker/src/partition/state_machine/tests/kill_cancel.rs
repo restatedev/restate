@@ -14,7 +14,6 @@ use assert2::let_assert;
 use googletest::any;
 use googletest::elements_are;
 use prost::Message;
-use restate_worker_api::invoker::EffectKind as InvokerEffectKind;
 use restate_storage_api::journal_table;
 use restate_storage_api::journal_table::WriteJournalTable;
 use restate_storage_api::timer_table::{
@@ -31,6 +30,7 @@ use restate_types::journal_v2::NotificationId;
 use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::partitions::PartitionFeatureChange;
 use restate_types::service_protocol;
+use restate_worker_api::invoker::EffectKind as InvokerEffectKind;
 use rstest::rstest;
 use test_log::test;
 
