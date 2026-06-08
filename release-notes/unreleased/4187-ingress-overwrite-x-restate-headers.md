@@ -1,9 +1,9 @@
-# Release Notes for Issue #4187: Ingress overwrites reserved `x-restate-*` headers
+# Release Notes for Issue #4187: Ingress drops client-supplied `x-restate-*` headers
 
 ## Bug Fix
 
 ### What Changed
-When the HTTP ingress ingests a request, it now drops any client-supplied
+When the HTTP ingress receives a request, it now drops any client-supplied
 `x-restate-*` headers before forwarding the request to the service. The
 `x-restate-*` namespace is reserved for the ingress (for example,
 `x-restate-ingress-path`), so callers can no longer inject or override these
