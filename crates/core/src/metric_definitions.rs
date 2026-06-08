@@ -50,9 +50,6 @@ impl<K: Hash + Eq + fmt::Display + Clone> LazyIntern<K> {
 
     #[inline]
     pub fn get(&self, key: &K) -> &'static str {
-        if let Some(entry) = self.cache.get(key) {
-            return entry.value();
-        }
         match self.cache.entry(key.clone()) {
             Entry::Occupied(entry) => entry.get(),
             Entry::Vacant(entry) => {

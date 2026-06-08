@@ -87,71 +87,42 @@ impl ServiceMetrics {
         Self {
             partition_id,
             service_name,
-            deployment_id: "",
+            deployment_id: "unknown",
         }
     }
 
     pub fn gauge(&self, name: &'static str) -> metrics::Gauge {
-        if self.deployment_id.is_empty() {
-            gauge!(name,
-                "partition_id" => self.partition_id,
-                "service_name" => self.service_name,
-            )
-        } else {
-            gauge!(name,
-                "partition_id" => self.partition_id,
-                "service_name" => self.service_name,
-                "deployment_id" => self.deployment_id,
-            )
-        }
+        gauge!(name,
+            "partition_id" => self.partition_id,
+            "service_name" => self.service_name,
+            "deployment_id" => self.deployment_id,
+        )
     }
 
     pub fn counter(&self, name: &'static str) -> metrics::Counter {
-        if self.deployment_id.is_empty() {
-            counter!(name,
-                "partition_id" => self.partition_id,
-                "service_name" => self.service_name,
-            )
-        } else {
-            counter!(name,
-                "partition_id" => self.partition_id,
-                "service_name" => self.service_name,
-                "deployment_id" => self.deployment_id,
-            )
-        }
+        counter!(name,
+            "partition_id" => self.partition_id,
+            "service_name" => self.service_name,
+            "deployment_id" => self.deployment_id,
+        )
     }
 
     pub fn histogram(&self, name: &'static str) -> metrics::Histogram {
-        if self.deployment_id.is_empty() {
-            histogram!(name,
-                "partition_id" => self.partition_id,
-                "service_name" => self.service_name,
-            )
-        } else {
-            histogram!(name,
-                "partition_id" => self.partition_id,
-                "service_name" => self.service_name,
-                "deployment_id" => self.deployment_id,
-            )
-        }
+        histogram!(name,
+            "partition_id" => self.partition_id,
+            "service_name" => self.service_name,
+            "deployment_id" => self.deployment_id,
+        )
     }
 
     pub fn http_status_counter(&self, status_code: u16) -> metrics::Counter {
         let code = STATUS_CODE_LOOKUP.get(&status_code);
-        if self.deployment_id.is_empty() {
-            counter!(INVOKER_HTTP_RESPONSES,
-                "partition_id" => self.partition_id,
-                "service_name" => self.service_name,
-                "status_code" => code,
-            )
-        } else {
-            counter!(INVOKER_HTTP_RESPONSES,
-                "partition_id" => self.partition_id,
-                "service_name" => self.service_name,
-                "deployment_id" => self.deployment_id,
-                "status_code" => code,
-            )
-        }
+        counter!(INVOKER_HTTP_RESPONSES,
+            "partition_id" => self.partition_id,
+            "service_name" => self.service_name,
+            "deployment_id" => self.deployment_id,
+            "status_code" => code,
+        )
     }
 
     pub fn task(&self, status: &'static str) -> TaskMetrics {
@@ -166,7 +137,7 @@ impl ServiceMetrics {
     pub const EMPTY: Self = Self {
         partition_id: "",
         service_name: "",
-        deployment_id: "",
+        deployment_id: "unknown",
     };
 }
 
@@ -199,7 +170,7 @@ impl TaskMetrics {
 
 pub const INVOKER_INVOCATIONS_QUEUED: &str = "restate.invoker.invocations.queued.total";
 pub const INVOKER_TASKS: &str = "restate.invoker.tasks.total";
-pub const INVOKER_CONCURRENCY_SLOTS_LIMIT: &str = "restate.invoker.concurrency.slots.limit";
+pub const INVOKER_CONCURRENCY_SLOTS_LIMIT: &str = "restate.invoker.concurrency_limit";
 pub const INVOKER_CONCURRENCY_SLOTS_ACQUIRED: &str =
     "restate.invoker.concurrency.slots.acquired.total";
 pub const INVOKER_CONCURRENCY_SLOTS_RELEASED: &str =
