@@ -357,6 +357,26 @@ impl<T: StorageEncode> LogSender<T> {
         Ok(())
     }
 
+    /// Waits for capacity on the channel and returns an error if the appender is
+    /// draining or drained.
+    ///
+    /// Unlike [`enqueue`](Self::enqueue), this does not check the record size and
+    /// accepts a record of any size.
+    ///
+    /// Callers have to ensure that record is not larger than the network message size limit.
+    pub async fn enqueue_unchecked<A>(&mut self, record: A) -> Result<(), EnqueueError<A>>
+    where
+        A: Into<InputRecord<T>>,
+    {
+        let Ok(permit) = self.tx.reserve().await else {
+            return Err(EnqueueError::Closed(record));
+        };
+        let record = record.into().into_record().ensure_encoded(&mut self.arena);
+        permit.send(AppendOperation::Enqueue(record));
+
+        Ok(())
+    }
+
     /// Attempt to enqueue a record to the appender. Returns immediately if the
     /// appender is pushing back or if the appender is draining or drained.
     ///
