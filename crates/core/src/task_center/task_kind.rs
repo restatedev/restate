@@ -158,6 +158,8 @@ pub enum TaskKind {
     LogStoreWriter,
     // - Datafusion
     DfScanner,
+    #[strum(props(runtime = "default"))]
+    IngestionSession,
 }
 
 impl TaskKind {
