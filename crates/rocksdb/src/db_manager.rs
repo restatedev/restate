@@ -19,8 +19,8 @@ use tokio_util::task::TaskTracker;
 use tracing::{debug, error, info, warn};
 
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
-use restate_serde_util::ByteCount;
 use restate_types::config::{CommonOptions, Configuration};
+use restate_util_bytecount::ByteCount;
 
 use crate::background::ReadyStorageTask;
 use crate::{DbName, DbSpec, Priority, RocksAccess, RocksDb, RocksError, metric_definitions};
@@ -278,7 +278,7 @@ impl RocksDbManager {
 
             self.close_db_tasks.spawn_blocking(move || {
                 db.db.shutdown();
-                name.clone()
+                name
             });
         }
         // wait for all tasks to complete

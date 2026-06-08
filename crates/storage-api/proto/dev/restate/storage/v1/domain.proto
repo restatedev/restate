@@ -23,11 +23,15 @@ message InvocationTarget {
   bytes name = 2;
   bytes handler = 3;
   bytes key = 4;
+  // Since v1.7.0 — scope for vqueue partitioning. Empty string means no scope.
+  optional string scope = 5;
 }
 
 message ServiceId {
   bytes service_name = 1;
   bytes service_key = 2;
+  // Since v1.7.0 — scope for vqueue partitioning. Empty string means no scope.
+  optional string scope = 3;
 }
 
 message IdempotencyId {
@@ -35,6 +39,8 @@ message IdempotencyId {
   optional string service_key = 2;
   string handler_name = 3;
   string idempotency_key = 4;
+  // Since v1.7.0 — scope for vqueue partitioning. Empty string means no scope.
+  optional string scope = 5;
 }
 
 message GenerationalNodeId {
@@ -70,6 +76,14 @@ message PartitionDurability {
 }
 
 message JournalEntryIndex { uint32 entry_index = 1; }
+
+// Journal entry index for notifications. Must remain wire-compatible with `JournalEntryIndex`
+// (field 1 with matching type and number) so that previously stored `JournalEntryIndex` messages
+// can be decoded as `NotificationEntryIndex`.
+message NotificationEntryIndex {
+  uint32 entry_index = 1;
+  NotificationResultVariant result_variant = 2;
+}
 
 // Target of a completion sent from another Partition Processor.
 message JournalCompletionTarget {
@@ -128,6 +142,47 @@ message Source {
     Subscription subscription = 12;
     RestartAsNew restart_as_new = 13;
   }
+}
+
+
+// Defines how a set of child futures are combined.
+enum CombinatorType {
+  // Should be treated as FIRST_COMPLETED.
+  COMBINATOR_TYPE_UNKNOWN = 0;
+  // Resolve as soon as any one child future completes with success, or with failure (same as JS Promise.race).
+  FIRST_COMPLETED = 1;
+  // Wait for every child to complete, regardless of success or failure (same as JS Promise.allSettled).
+  ALL_COMPLETED = 2;
+  // Resolve on the first success; fail only if all children fail (same as JS Promise.any).
+  FIRST_SUCCEEDED_OR_ALL_FAILED = 3;
+  // Resolve when all children succeed; short-circuit on the first failure (same as JS Promise.all).
+  ALL_SUCCEEDED_OR_FIRST_FAILED = 4;
+}
+
+// Recursively describes an await point as a tree of future combinators.
+//
+// Leaf data is the set of notification IDs this node is waiting for.
+// For representation purposes, the list of notification ids is flattened in 3 lists to avoid a per-element oneof wrapper.
+// Inner nodes combine their children (leaves + nested) via `combinator_type`.
+//
+// Example: Promise.all([completion_3, Promise.race([signal_1, signal_2])]) becomes:
+//
+//   Future {
+//     combinator_type: ALL_SUCCEEDED_OR_FIRST_FAILED
+//     waiting_completions: [3]
+//     nested: [
+//       Future {
+//         combinator_type: FIRST_COMPLETED
+//         waiting_signals: [1, 2]
+//       }
+//     ]
+//   }
+message Future {
+  repeated uint32 waiting_completions = 1;
+  repeated uint32 waiting_signals = 2;
+  repeated string waiting_named_signals = 3;
+  repeated Future nested_futures = 4;
+  CombinatorType combinator_type = 5;
 }
 
 // Next generation InvocationStatus message, which will replace InvocationStatus
@@ -193,10 +248,21 @@ message InvocationStatusV2 {
   repeated uint32 waiting_for_completions = 17;
   repeated uint32 waiting_for_signal_indexes = 23;
   repeated string waiting_for_signal_names = 24;
+  // If set, ignore the awaiting_for_* notifications above (17, 23, and 24)
+  // the awaiting_for_* are written as a flattened version of awaiting_on
+  // for Restate <= v1.7
+  repeated Future nested_futures = 32;
+  CombinatorType combinator_type = 33;
 
   // Completed
   ResponseResult result = 18;
+
+  // Binary-encoded vqueue id. Empty if this invocation was not migrated to vqueues.
+  optional bytes vqueue_id = 34;
+  // If empty, no limit was set
+  string limit_key = 35;
 }
+
 
 // Slimmer version of InvocationStatusV2
 message InvocationV2Lite {
@@ -206,6 +272,9 @@ message InvocationV2Lite {
   InvocationTarget invocation_target = 2;
   // removed in v1.6
   // uint32 current_invocation_epoch = 27;
+
+  // Binary-encoded vqueue id. Empty if this invocation was not migrated to vqueues.
+  optional bytes vqueue_id = 34;
 }
 
 // A somewhat slimmer version of InvocationStatusV2 with nested messages left
@@ -244,9 +313,15 @@ message InvocationStatusV2Lazy {
   // Suspended
   repeated uint32 waiting_for_completions = 17;
   repeated uint32 waiting_for_signal_indexes = 23;
+  repeated string waiting_for_signal_names = 24;
+  repeated Future nested_futures = 32;
+  CombinatorType combinator_type = 33;
 
   // Completed
   // optional bytes result_lazy = 18;
+
+  // Binary-encoded vqueue id. Empty if this invocation was not migrated to vqueues.
+  optional bytes vqueue_id = 34;
 }
 
 message VirtualObjectStatus {
@@ -324,6 +399,12 @@ message ServiceInvocation {
   SubmitNotificationSink submit_notification_sink = 11;
   Duration journal_retention_duration = 12;
   string restate_version = 13;
+  // Limit key for the invocation. Empty string means no limit key.
+  // A limit key is only valid if scope is set.
+  // TODO(tillrohrmann): Revisit string serialization of limit_key. Currently serialized as
+  // "level1" or "level1/level2" which requires parsing on read. Check whether a dedicated
+  // Protobuf message would be faster to serialize/deserialize.
+  string limit_key = 15;
 }
 
 message StateMutation {
@@ -474,6 +555,15 @@ message JournalEntry {
   }
 }
 
+enum NotificationResultVariant {
+  NOTIFICATION_RESULT_VARIANT_UNKNOWN = 0;
+  VOID = 1;
+  VALUE = 2;
+  FAILURE = 3;
+  INVOCATION_ID = 4;
+  STATE_KEYS = 5;
+}
+
 // -------- Entry V2 --------
 message Entry {
   // Were used for events.
@@ -543,6 +633,8 @@ message Entry {
     uint32 signal_idx = 8;
     string signal_name = 9;
   }
+
+  NotificationResultVariant notification_result_variant = 12;
 }
 
 message ResponseResult {
@@ -682,12 +774,6 @@ message DedupSequenceNumber {
     EpochSequenceNumber epoch_sequence_number = 2;
   }
 }
-
-// ---------------------------------------------------------------------
-// Idempotency
-// ---------------------------------------------------------------------
-
-message IdempotencyMetadata { InvocationId invocation_id = 1; }
 
 message SubmitNotificationSink {
   message Ingress {

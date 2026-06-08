@@ -10,25 +10,14 @@
 
 mod builder;
 mod consumer_task;
-mod legacy;
 mod metric_definitions;
 mod subscription_controller;
 
 use rdkafka::error::KafkaError;
 use tokio::sync::mpsc;
 
-use restate_bifrost::Bifrost;
-use restate_core::network::TransportConnect;
-use restate_ingestion_client::IngestionClient;
 use restate_types::schema::kafka::KafkaCluster;
-use restate_types::{
-    config::Configuration,
-    live::Live,
-    partitions::PartitionTableError,
-    schema::{Schema, subscriptions::Subscription},
-};
-use restate_wal_protocol::Envelope;
-use tracing::debug;
+use restate_types::{partitions::PartitionTableError, schema::subscriptions::Subscription};
 
 #[derive(Debug)]
 pub enum Command {
@@ -71,55 +60,4 @@ pub enum Error {
     },
 }
 
-enum ServiceInner<T> {
-    Legacy(legacy::Service<T>),
-    IngestionClient(subscription_controller::Service<T>),
-}
-
-pub struct Service<T> {
-    inner: ServiceInner<T>,
-}
-
-impl<T> Service<T>
-where
-    T: TransportConnect,
-{
-    pub fn new(
-        bifrost: Bifrost,
-        ingestion: IngestionClient<T, Envelope>,
-        schema: Live<Schema>,
-    ) -> Self {
-        let batch_ingestion = Configuration::pinned()
-            .common
-            .experimental_kafka_batch_ingestion;
-
-        let inner = if batch_ingestion {
-            debug!("Using kafka experimental batch ingestion mechanism");
-            ServiceInner::IngestionClient(subscription_controller::Service::new(ingestion, schema))
-        } else {
-            debug!("Using kafka legacy ingestion mechanism");
-            ServiceInner::Legacy(legacy::Service::new(
-                ingestion.networking().clone(),
-                ingestion.partition_routing().clone(),
-                bifrost,
-                schema,
-            ))
-        };
-
-        Self { inner }
-    }
-
-    pub fn create_command_sender(&self) -> SubscriptionCommandSender {
-        match &self.inner {
-            ServiceInner::Legacy(svc) => svc.create_command_sender(),
-            ServiceInner::IngestionClient(svc) => svc.create_command_sender(),
-        }
-    }
-
-    pub async fn run(self) -> anyhow::Result<()> {
-        match self.inner {
-            ServiceInner::Legacy(svc) => svc.run().await,
-            ServiceInner::IngestionClient(svc) => svc.run().await,
-        }
-    }
-}
+pub use subscription_controller::Service;

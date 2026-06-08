@@ -8,38 +8,47 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::debug_if_leader;
-use crate::partition::state_machine::lifecycle::event::ApplyEventCommand;
-use crate::partition::state_machine::{CommandHandler, Error, ParkCause, StateMachineApplyContext};
+use tracing::debug;
+
+use restate_clock::UniqueTimestamp;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_events::WriteJournalEventsTable;
-use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
-use restate_types::config::Configuration;
-use restate_types::identifiers::InvocationId;
+use restate_storage_api::lock_table::WriteLockTable;
+use restate_storage_api::vqueue_table::{EntryStatusHeader, ReadVQueueTable, WriteVQueueTable};
+use restate_types::identifiers::{InvocationId, WithPartitionKey as _};
 use restate_types::journal_events::raw::RawEvent;
+use restate_types::vqueues::EntryId;
+use restate_vqueues::VQueue;
 
-pub struct OnPausedCommand {
-    pub invocation_id: InvocationId,
+use crate::debug_if_leader;
+use crate::partition::state_machine::lifecycle::event::ApplyEventCommand;
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
+
+pub struct OnPausedCommand<'a> {
+    pub invocation_id: &'a InvocationId,
     pub paused_event: RawEvent,
 }
 
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
-    for OnPausedCommand
+    for OnPausedCommand<'_>
 where
     S: ReadInvocationStatusTable
         + WriteInvocationStatusTable
         + WriteJournalEventsTable
         + WriteVQueueTable
+        + WriteLockTable
         + ReadVQueueTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
+        // todo(asoli): This is overly conservative. With vqueues, it should be possible to pause a
+        // scheduled or suspended invocations.
         let OnPausedCommand {
             invocation_id,
             paused_event,
         } = self;
-        let invoked_meta = match ctx.get_invocation_status(&invocation_id).await? {
+        let invoked_meta = match ctx.get_invocation_status(invocation_id).await? {
             InvocationStatus::Invoked(meta) => meta,
             InvocationStatus::Suspended { .. }
             | InvocationStatus::Paused(_)
@@ -55,20 +64,38 @@ where
         // Invoker paused the invocation, let's record the event, then set the status to paused
         debug_if_leader!(ctx.is_leader, "Paused the invocation");
 
-        if Configuration::pinned().common.experimental_enable_vqueues {
-            ctx.vqueue_park_invocation(
-                &self.invocation_id,
-                &invoked_meta.invocation_target,
-                ParkCause::Pause,
+        if invoked_meta.vqueue_id.is_some() {
+            // todo: use the new status
+            let entry_id = EntryId::from(invocation_id);
+            let Some(header) = ctx
+                .storage
+                .get_vqueue_entry_status(invocation_id.partition_key(), &entry_id)
+                .await?
+            else {
+                // This is equivalent to InvocationStatus::Free.
+                debug!(
+                    "Trying to pause invocation {invocation_id} which does not exist as a vqueue entry, will ignore."
+                );
+                return Ok(());
+            };
+
+            let at = UniqueTimestamp::from_unix_millis_unchecked(ctx.record_created_at);
+            VQueue::get(
+                header.vqueue_id(),
+                ctx.storage,
+                ctx.vqueues_cache,
+                ctx.is_leader.then_some(ctx.action_collector),
             )
-            .await?;
+            .await?
+            .expect("pausing in a non-existent vqueue")
+            .pause_entry(at, &header);
         }
 
         let mut invocation_status = InvocationStatus::Paused(invoked_meta);
 
         ApplyEventCommand {
             invocation_id,
-            invocation_status: &mut invocation_status,
+            invocation_status: &invocation_status,
             event: paused_event,
         }
         .apply(ctx)
@@ -80,7 +107,7 @@ where
         }
 
         ctx.storage
-            .put_invocation_status(&self.invocation_id, &invocation_status)?;
+            .put_invocation_status(self.invocation_id, &invocation_status)?;
 
         Ok(())
     }
@@ -88,13 +115,16 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use googletest::prelude::*;
+
     use restate_storage_api::invocation_status_table::{
         InFlightInvocationMetadata, InvocationStatusDiscriminants, ReadInvocationStatusTable,
     };
     use restate_types::journal_events::{Event, PausedEvent, TransientErrorEvent};
-    use restate_wal_protocol::Command;
+    use restate_wal_protocol::v2::{Command, commands};
+
+    use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
+    use crate::partition::types::InvokerEffectKind;
 
     #[restate_core::test]
     async fn paused_with_pinned_deployment() {
@@ -116,14 +146,14 @@ mod tests {
 
         // Check we just pause
         let _ = test_env
-            .apply(Command::InvokerEffect(Box::new(
-                restate_invoker_api::Effect {
+            .apply(commands::InvokerEffectCommand::test_envelope(
+                restate_worker_api::invoker::Effect {
                     invocation_id,
-                    kind: restate_invoker_api::EffectKind::Paused {
+                    kind: InvokerEffectKind::Paused {
                         paused_event: paused_event.clone().into(),
                     },
                 },
-            )))
+            ))
             .await;
         assert_that!(
             test_env
@@ -140,7 +170,7 @@ mod tests {
             )
         );
         assert_that!(
-            test_env.read_journal_events(invocation_id).await,
+            test_env.read_journal_events(&invocation_id).await,
             elements_are![eq(paused_event)]
         );
 
@@ -167,12 +197,12 @@ mod tests {
 
         // Check we just pause
         let _ = test_env
-            .apply(Command::InvokerEffect(Box::new(
-                restate_invoker_api::Effect {
+            .apply(commands::InvokerEffectCommand::test_envelope(
+                restate_worker_api::invoker::Effect {
                     invocation_id,
-                    kind: restate_invoker_api::EffectKind::Paused { paused_event },
+                    kind: InvokerEffectKind::Paused { paused_event },
                 },
-            )))
+            ))
             .await;
         assert_that!(
             test_env

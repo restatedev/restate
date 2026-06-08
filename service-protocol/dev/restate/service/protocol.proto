@@ -37,6 +37,16 @@ enum ServiceProtocolVersion {
   // * StartMessage.random_seed
   // * Failure.metadata
   V6 = 6;
+  // Added:
+  // * Future & AwaitingOnMessage + Changed the SuspensionMessage
+  // * CallCommandMessage.scope and CallCommandMessage.limit_key
+  // * OneWayCallCommandMessage.scope and OneWayCallCommandMessage.limit_key
+  // * WorkflowTarget.scope
+  // * IdempotentRequestTarget.scope
+  // * StartMessage.scope, StartMessage.limit_key and StartMessage.idempotency_key
+  // * Semantic changes to Run proposal response, introduced ProposeRunCompletionAckMessage
+  // * ErrorMessage.should_pause
+  V7 = 7;
 }
 
 // --- Core frames ---
@@ -82,18 +92,67 @@ message StartMessage {
   // Random seed to use to seed the deterministic RNG exposed in the context API.
   // This will be stable across restarts.
   uint64 random_seed = 9;
+
+  // If this invocation was called within a scope, returns the scope
+  // Since V7
+  optional string scope = 10;
+
+  // If this invocation was called with a limit key, returns the limit key
+  // Since V7
+  optional string limit_key = 11;
+
+  // If this invocation was called with an idempotency key, returns the idempotency key
+  // Since V7
+  optional string idempotency_key = 12;
+}
+
+// Defines how a set of child futures are combined.
+enum CombinatorType {
+  // Should be treated as FIRST_COMPLETED.
+  COMBINATOR_TYPE_UNKNOWN = 0;
+  // Resolve as soon as any one child future completes with success, or with failure (same as JS Promise.race).
+  FIRST_COMPLETED = 1;
+  // Wait for every child to complete, regardless of success or failure (same as JS Promise.allSettled).
+  ALL_COMPLETED = 2;
+  // Resolve on the first success; fail only if all children fail (same as JS Promise.any).
+  FIRST_SUCCEEDED_OR_ALL_FAILED = 3;
+  // Resolve when all children succeed; short-circuit on the first failure (same as JS Promise.all).
+  ALL_SUCCEEDED_OR_FIRST_FAILED = 4;
+}
+
+// Recursively describes an await point as a tree of future combinators.
+//
+// Leaf data is the set of notification IDs this node is waiting for.
+// For representation purposes, the list of notification ids is flattened in 3 lists to avoid a per-element oneof wrapper.
+// Inner nodes combine their children (leaves + nested) via `combinator_type`.
+//
+// Example: Promise.all([completion_3, Promise.race([signal_1, signal_2])]) becomes:
+//
+//   Future {
+//     combinator_type: ALL_SUCCEEDED_OR_FIRST_FAILED
+//     waiting_completions: [3]
+//     nested: [
+//       Future {
+//         combinator_type: FIRST_COMPLETED
+//         waiting_signals: [1, 2]
+//       }
+//     ]
+//   }
+message Future {
+  repeated uint32 waiting_completions = 1;
+  repeated uint32 waiting_signals = 2;
+  repeated string waiting_named_signals = 3;
+  repeated Future nested_futures = 4;
+  CombinatorType combinator_type = 5;
 }
 
 // Type: 0x0000 + 1
 // Implementations MUST send this message when suspending an invocation.
-//
-// These lists represent any of the notification_idx and/or notification_name the invocation is waiting on to progress.
-// The runtime will resume the invocation as soon as either one of the given notification_idx or notification_name is completed.
-// Between the two lists there MUST be at least one element.
 message SuspensionMessage {
-  repeated uint32 waiting_completions = 1;
-  repeated uint32 waiting_signals = 2;
-  repeated string waiting_named_signals = 3;
+  // These used to be the old waiting_ fields. Reserved to simplify parsing.
+  reserved 1, 2, 3;
+  // Describes the await point.
+  Future awaiting_on = 4;
 }
 
 // Type: 0x0000 + 2
@@ -119,6 +178,10 @@ message ErrorMessage {
   // Delay before executing the next retry, specified as duration in milliseconds.
   // If provided, it will override the default retry policy used by Restate's invoker ONLY for the next retry attempt.
   optional uint64 next_retry_delay = 8;
+
+  // If true, Restate will pause instead of retrying.
+  // This field supersedes next_retry_delay.
+  bool should_pause = 9;
 }
 
 // Type: 0x0000 + 3
@@ -131,16 +194,57 @@ message CommandAckMessage {
   uint32 command_index = 1;
 }
 
+// Type: 0x0000 + 5
+//
 // This is a special control message to propose ctx.run completions to the runtime.
 // This won't be written to the journal immediately, but will appear later as a new notification (meaning the result was stored).
 //
-// Type: 0x0000 + 5
+// In response to this message, the SDK expects the runtime to either:
+// * if requested_ack = true -> Send back ProposeRunCompletionAckMessage with the related completion_id
+// * if requested_ack = false -> Send back the whole notification just proposed
 message ProposeRunCompletionMessage {
   uint32 result_completion_id = 1;
   oneof result {
     bytes value = 14;
     Failure failure = 15;
   };
+}
+
+// Type: 0x0000 + 6
+// The SDK MAY send this message to the runtime when inside an await point, to notify what the user code is currently blocked awaiting on.
+// This information SHOULD be considered outdated by the runtime as soon as a notification in the future tree is sent over.
+message AwaitingOnMessage {
+  // Describes the await point.
+  Future awaiting_on = 1;
+  // True if any of the notifications the SDK is awaiting on are side effects the SDK is currently executing.
+  bool executing_side_effects = 2;
+}
+
+// Type: 0x0000 + 7
+//
+// This is a message sent as response to ProposeRunCompletionMessage to acknowledge the proposal was correctly stored and replicated.
+//
+// Its ordering is considered to be "relative" to the ordering of notifications.
+// In other words, the SDK expects that on replay the RunCompletionMessage,
+// to which the ProposeRunCompletionAckMessage relates to,
+// is sent in the same order relative to the other notifications.
+//
+// For example, if when PROCESSING the first time the SDK sees:
+//
+// -> SleepCompletionMessage id = 1
+// -> ProposeRunCompletionAckMessage id = 3
+// -> SleepCompletionMessage id = 2
+//
+// Then on the next replay, the SDK expects to see notifications in the following order:
+//
+// -> SleepCompletionMessage id = 1
+// -> RunCompletionMessage id = 3 (the actual completion here replaces the ack)
+// -> SleepCompletionMessage id = 2
+
+//
+// This message will only ever be sent as response to ProposeRunCompletionMessage, and will be sent only in the PROCESSING phase of the protocol, never during REPLAY.
+message ProposeRunCompletionAckMessage {
+  uint32 completion_id = 1;
 }
 
 // --- Commands and Notifications ---
@@ -420,6 +524,15 @@ message CallCommandMessage {
   // If present, it must be non empty.
   optional string idempotency_key = 6;
 
+  // Scope for the invocation target. Empty string means no scope (unscoped invocation).
+  // Since V7.
+  optional string scope = 7;
+
+  // Limit key for the invocation. Empty string means no limit key.
+  // A limit key is only valid if scope is set.
+  // Since V7.
+  optional string limit_key = 8;
+
   uint32 invocation_id_notification_idx = 10;
   uint32 result_completion_id = 11;
   string name = 12;
@@ -471,6 +584,15 @@ message OneWayCallCommandMessage {
 
   // If present, it must be non empty.
   optional string idempotency_key = 7;
+
+  // Scope for the invocation target. Empty string means no scope (unscoped invocation).
+  // Since V7.
+  optional string scope = 8;
+
+  // Limit key for the invocation. Empty string means no limit key.
+  // A limit key is only valid if scope is set.
+  // Since V7.
+  optional string limit_key = 9;
 
   uint32 invocation_id_notification_idx = 10;
   string name = 12;
@@ -653,6 +775,9 @@ message Header {
 message WorkflowTarget {
   string workflow_name = 1;
   string workflow_key = 2;
+  // Scope for the invocation target. Empty string means no scope (unscoped invocation).
+  // Since V7.
+  optional string scope = 3;
 }
 
 message IdempotentRequestTarget {
@@ -660,13 +785,16 @@ message IdempotentRequestTarget {
   optional string service_key = 2;
   string handler_name = 3;
   string idempotency_key = 4;
+  // Scope for the invocation target. Empty string means no scope (unscoped invocation).
+  // Since V7.
+  optional string scope = 5;
 }
 
 message Void {
 }
 
 enum BuiltInSignal {
-  UNKNOWN = 0;
+  SIGNAL_UNKNOWN = 0;
   CANCEL = 1;
   reserved 2 to 15;
 }

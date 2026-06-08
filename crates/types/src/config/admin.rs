@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tokio::sync::Semaphore;
 
-use restate_time_util::NonZeroFriendlyDuration;
+use restate_util_time::NonZeroFriendlyDuration;
 
 use super::{CommonOptions, ListenerOptions, QueryEngineOptions};
 use crate::net::address::{AdminPort, AdvertisedAddress, BindAddress};

@@ -101,9 +101,9 @@ impl FromStr for ClusterFingerprint {
                 .context("malformed cluster fingerprint")?,
         );
 
-        Ok(Self(NonZero::new(out).ok_or(anyhow::anyhow!(
-            "cluster fingerprint must be a non-zero value"
-        ))?))
+        Ok(Self(NonZero::new(out).ok_or_else(|| {
+            anyhow::anyhow!("cluster fingerprint must be a non-zero value")
+        })?))
     }
 }
 
@@ -145,6 +145,43 @@ pub enum Role {
     MetadataServer,
 }
 
+#[derive(
+    Debug, Hash, EnumSetType, Ord, PartialOrd, strum::Display, serde::Serialize, serde::Deserialize,
+)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[enumset(serialize_repr = "list")]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+#[cfg_attr(feature = "clap", clap(rename_all = "kebab-case"))]
+pub enum ClusterFeature {
+    #[cfg_attr(feature = "clap", clap(skip))]
+    Unknown,
+    /// Confines idempotent invocations on unscoped services to a bounded, per-service
+    /// set of partition-key buckets instead of hashing the idempotency key over the
+    /// full partition-key space.
+    ///
+    /// When disabled, the partition key for an idempotent invocation is derived by
+    /// hashing the idempotency key directly, spreading invocations across all
+    /// partitions. When enabled, each unscoped service is assigned a deterministic
+    /// set of partition-key buckets, and an idempotent invocation is routed to
+    /// one bucket selected by its idempotency key — colocating a service's
+    /// idempotent traffic on a small, predictable subset of partitions.
+    ///
+    /// This is a one-way, cluster-wide decision: once idempotent invocations have
+    /// been accepted under a given sharding scheme, switching schemes would
+    /// re-shard them onto different partitions and break deduplication. For that
+    /// reason this flag is persisted in [`NodesConfiguration`] at provisioning
+    /// time and cannot be toggled afterward.
+    ControlledIdempotentSharding,
+}
+
+impl ClusterFeature {
+    pub fn default_features() -> EnumSet<Self> {
+        enumset::enum_set!(Self::ControlledIdempotentSharding)
+    }
+}
+
 #[serde_as]
 #[derive(derive_more::Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NodesConfiguration {
@@ -153,6 +190,8 @@ pub struct NodesConfiguration {
     // A unique fingerprint for this cluster. Introduced in v1.3 for forward compatibility. As of
     // v1.6, we expect this cluster fingerprint to be present. Will be used to uniquely identify
     // this cluster instance. The value is None if the nodes configuration is invalid.
+    //
+    // NOTE: This is optional due to the issue described in https://github.com/restatedev/restate/issues/4293
     cluster_fingerprint: Option<ClusterFingerprint>,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
@@ -162,6 +201,10 @@ pub struct NodesConfiguration {
     // The last modification time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     modified_at: Option<UniqueTimestamp>,
+    // A set of enabled cluster wide features.
+    // Those features can be only enabled during cluster provisioning
+    #[serde(default)]
+    features: EnumSet<ClusterFeature>,
 }
 
 impl Default for NodesConfiguration {
@@ -173,6 +216,7 @@ impl Default for NodesConfiguration {
             nodes: Default::default(),
             name_lookup: Default::default(),
             modified_at: None,
+            features: EnumSet::empty(),
         }
     }
 }
@@ -270,6 +314,7 @@ impl NodesConfiguration {
             modified_at: Some(UniqueTimestamp::from_unix_millis_unchecked(
                 WallClock::now_ms(),
             )),
+            features: EnumSet::empty(),
         }
     }
 
@@ -284,6 +329,7 @@ impl NodesConfiguration {
             modified_at: Some(UniqueTimestamp::from_unix_millis_unchecked(
                 WallClock::now_ms(),
             )),
+            features: EnumSet::empty(),
         }
     }
 
@@ -308,6 +354,14 @@ impl NodesConfiguration {
 
     pub fn cluster_name(&self) -> &str {
         &self.cluster_name
+    }
+
+    pub fn features(&self) -> EnumSet<ClusterFeature> {
+        self.features
+    }
+
+    pub fn set_features(&mut self, features: EnumSet<ClusterFeature>) {
+        self.features |= features;
     }
 
     pub fn increment_version(&mut self) {
@@ -725,7 +779,7 @@ mod tests {
     }
 
     #[test]
-    fn test_upsert_node() {
+    fn upsert_node() {
         let mut config = NodesConfiguration::new_for_testing();
         let address: AdvertisedAddress<_> = "unix:/tmp/my_socket".parse().unwrap();
         let roles = EnumSet::only(Role::Worker);
@@ -811,7 +865,7 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_node() {
+    fn remove_node() {
         let mut config = NodesConfiguration::new_for_testing();
         let address: AdvertisedAddress<_> = "unix:/tmp/my_socket".parse().unwrap();
         let node1 = NodeConfig {
@@ -830,7 +884,7 @@ mod tests {
             name: "node2".to_owned(),
             current_generation: GenerationalNodeId::new(2, 1),
             location: "region1.zone1".parse().unwrap(),
-            address: address.clone(),
+            address,
             ctrl_address: None,
             roles: Role::Worker.into(),
             log_server_config: LogServerConfig::default(),

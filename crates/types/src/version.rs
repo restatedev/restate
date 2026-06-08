@@ -28,6 +28,8 @@ use restate_encoding::NetSerde;
     restate_encoding::BilrostNewType,
     NetSerde,
 )]
+#[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "utoipa-schema", schema(value_type = u32))]
 #[display("v{}", _0)]
 #[debug("v{}", _0)]
 pub struct Version(u32);

@@ -22,13 +22,13 @@ use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::{CliContext, c_println};
 use restate_core::protobuf::cluster_ctrl_svc::{ClusterStateRequest, new_cluster_ctrl_client};
 use restate_metadata_server_grpc::grpc::new_metadata_server_client;
-use restate_time_util::DurationExt;
 use restate_types::health::MetadataServerStatus;
 use restate_types::logs::metadata::Logs;
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 use restate_types::protobuf::cluster::node_state::State;
 use restate_types::protobuf::cluster::{AliveNode, RunMode};
 use restate_types::{GenerationalNodeId, NodeId};
+use restate_util_time::DurationExt;
 
 use crate::commands::log::list_logs::{ListLogsOpts, list_logs};
 use crate::commands::metadata_server::list_servers::{ListMetadataServers, list_metadata_servers};

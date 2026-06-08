@@ -31,7 +31,6 @@ use bytestring::ByteString;
 use futures::{StreamExt, TryStreamExt};
 use googletest::{all, assert_that, pat};
 use restate_core::TaskCenter;
-use restate_invoker_api::{Effect, EffectKind};
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
@@ -51,8 +50,7 @@ use restate_test_util::matchers::*;
 use restate_types::config::StorageOptions;
 use restate_types::errors::{InvocationError, codes};
 use restate_types::identifiers::{
-    AwakeableIdentifier, InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId,
-    ServiceId,
+    AwakeableIdentifier, InvocationId, PartitionId, PartitionProcessorRpcRequestId, ServiceId,
 };
 use restate_types::invocation::client::InvocationOutputResponse;
 use restate_types::invocation::{
@@ -64,9 +62,11 @@ use restate_types::journal::{CompleteAwakeableEntry, EntryResult, InvokeRequest}
 use restate_types::journal::{Entry, EntryType};
 use restate_types::journal_events::Event;
 use restate_types::journal_v2::raw::TryFromEntry;
-use restate_types::logs::SequenceNumber;
+use restate_types::logs::{Keys, SequenceNumber};
 use restate_types::partitions::Partition;
 use restate_types::state_mut::ExternalStateMutation;
+use restate_wal_protocol::v2::Command;
+use restate_worker_api::invoker::{Effect, EffectKind, YieldReason};
 use std::collections::{HashMap, HashSet};
 use test_log::test;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -85,19 +85,20 @@ impl TestEnv {
     }
 
     pub async fn create() -> Self {
-        Self::create_with_min_restate_version(SemanticRestateVersion::unknown()).await
+        Self::create_with_features(PersistedStateMachineFeatures::default()).await
     }
 
-    pub async fn create_with_min_restate_version(
-        min_restate_version: SemanticRestateVersion,
-    ) -> Self {
+    pub async fn create_with_features(features: PersistedStateMachineFeatures) -> Self {
         Self::create_with_state_machine(StateMachine::new(
             0,    /* inbox_seq_number */
             0,    /* outbox_seq_number */
             None, /* outbox_head_seq_number */
-            PartitionKey::MIN..=PartitionKey::MAX,
-            min_restate_version,
-            None,
+            KeyRange::FULL,
+            SemanticRestateVersion::current().clone(),
+            features, /* enabled_features */
+            None,     /* schema */
+            Arc::new(RuleBook::default()),
+            RuleBookCacheHandle::detached(),
         ))
         .await
     }
@@ -131,15 +132,9 @@ impl TestEnv {
             "Using RocksDB temp directory {}",
             storage_options.data_dir("db").display()
         );
-        let manager = PartitionStoreManager::create().await.unwrap();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
         let rocksdb_storage = manager
-            .open(
-                &Partition::new(
-                    PartitionId::MIN,
-                    RangeInclusive::new(PartitionKey::MIN, PartitionKey::MAX),
-                ),
-                None,
-            )
+            .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
             .await
             .unwrap();
 
@@ -149,13 +144,13 @@ impl TestEnv {
         }
     }
 
-    pub async fn apply(&mut self, command: Command) -> Vec<Action> {
+    pub async fn apply(&mut self, envelope: v2::Envelope<v2::Raw>) -> Vec<Action> {
         let mut transaction = self.storage.transaction();
         let mut action_collector = ActionCollector::default();
-        let mut vqueues = VQueuesMetaMut::default();
+        let mut vqueues = VQueuesMetaCache::new_empty(1024);
         self.state_machine
             .apply(
-                command,
+                envelope,
                 MillisSinceEpoch::now(),
                 Lsn::OLDEST,
                 &mut transaction,
@@ -171,13 +166,16 @@ impl TestEnv {
         action_collector
     }
 
-    pub async fn apply_fallible(&mut self, command: Command) -> Result<Vec<Action>, Error> {
+    pub async fn apply_fallible(
+        &mut self,
+        envelope: v2::Envelope<v2::Raw>,
+    ) -> Result<Vec<Action>, Error> {
         let mut transaction = self.storage.transaction();
         let mut action_collector = ActionCollector::default();
-        let mut vqueues = VQueuesMetaMut::default();
+        let mut vqueues = VQueuesMetaCache::new_empty(1024);
         self.state_machine
             .apply(
-                command,
+                envelope,
                 MillisSinceEpoch::now(),
                 Lsn::OLDEST,
                 &mut transaction,
@@ -194,11 +192,11 @@ impl TestEnv {
 
     pub async fn apply_multiple(
         &mut self,
-        commands: impl IntoIterator<Item = Command>,
+        envelopes: impl IntoIterator<Item = v2::Envelope<v2::Raw>>,
     ) -> Vec<Action> {
         let mut actions = vec![];
-        for command in commands {
-            actions.append(&mut self.apply(command).await)
+        for envelop in envelopes {
+            actions.append(&mut self.apply(envelop).await)
         }
         actions
     }
@@ -247,7 +245,7 @@ impl TestEnv {
     }
 
     /// Returns journal events ordered by timestamps
-    pub async fn read_journal_events(&mut self, invocation_id: InvocationId) -> Vec<Event> {
+    pub async fn read_journal_events(&mut self, invocation_id: &InvocationId) -> Vec<Event> {
         let mut events =
             restate_storage_api::journal_events::ReadJournalEventsTable::get_journal_events(
                 self.storage(),
@@ -258,7 +256,7 @@ impl TestEnv {
             .await
             .expect("to be decodable");
 
-        events.sort_by(|x, y| x.append_time.cmp(&y.append_time));
+        events.sort_by_key(|x| x.append_time);
 
         events
             .into_iter()
@@ -312,8 +310,8 @@ impl TestEnv {
         );
     }
 
-    pub fn set_min_restate_version(&mut self, min_restate_version: SemanticRestateVersion) {
-        self.state_machine.min_restate_version = min_restate_version;
+    pub fn set_enabled_features(&mut self, features: PersistedStateMachineFeatures) {
+        self.state_machine.enabled_features = features;
     }
 }
 
@@ -348,6 +346,7 @@ async fn shared_invocation_skips_inbox() -> TestResult {
         &VirtualObjectStatus::Locked(InvocationId::mock_random()),
     )?;
     tx.commit().await.unwrap();
+    drop(tx);
 
     // Start the invocation
     let invocation_id = fixtures::mock_start_invocation_with_invocation_target(
@@ -380,11 +379,14 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
     let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
 
     // Send completion first
+
     let _ = test_env
-        .apply(Command::InvocationResponse(InvocationResponse {
-            target: JournalCompletionTarget::from_parts(invocation_id, 1),
-            result: ResponseResult::Success(Bytes::default()),
-        }))
+        .apply(commands::InvocationResponseCommand::test_envelope(
+            InvocationResponse {
+                target: JournalCompletionTarget::from_parts(invocation_id, 1),
+                result: ResponseResult::Success(Bytes::default()),
+            },
+        ))
         .await;
 
     // A couple of notes here:
@@ -402,13 +404,13 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
     //   * If the awakeable entry has not been received yet, when receiving it the completion will be sent through.
 
     let actions = test_env
-        .apply(Command::InvokerEffect(Box::new(Effect {
+        .apply(commands::InvokerEffectCommand::test_envelope(Effect {
             invocation_id,
             kind: InvokerEffectKind::JournalEntry {
                 entry_index: 1,
                 entry: ProtobufRawEntryCodec::serialize_enriched(Entry::awakeable(None)),
             },
-        })))
+        }))
         .await;
 
     // At this point we expect the completion to be forwarded to the invoker
@@ -438,10 +440,12 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
     // If we try to send the completion again, it should not be forwarded!
 
     let actions = test_env
-        .apply(Command::InvocationResponse(InvocationResponse {
-            target: JournalCompletionTarget::from_parts(invocation_id, 1),
-            result: ResponseResult::Success(Bytes::default()),
-        }))
+        .apply(commands::InvocationResponseCommand::test_envelope(
+            InvocationResponse {
+                target: JournalCompletionTarget::from_parts(invocation_id, 1),
+                result: ResponseResult::Success(Bytes::default()),
+            },
+        ))
         .await;
     assert_that!(
         actions,
@@ -452,12 +456,12 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
     );
 
     let actions = test_env
-        .apply(Command::InvokerEffect(Box::new(Effect {
+        .apply(commands::InvokerEffectCommand::test_envelope(Effect {
             invocation_id,
             kind: InvokerEffectKind::Suspended {
                 waiting_for_completed_entries: HashSet::from([1]),
             },
-        })))
+        }))
         .await;
 
     assert_that!(
@@ -487,13 +491,13 @@ async fn complete_awakeable_with_success() {
     ));
 
     let actions = test_env
-        .apply(Command::InvokerEffect(Box::new(Effect {
+        .apply(commands::InvokerEffectCommand::test_envelope(Effect {
             invocation_id,
             kind: EffectKind::JournalEntry {
                 entry_index: 1,
                 entry,
             },
-        })))
+        }))
         .await;
 
     assert_that!(
@@ -532,13 +536,13 @@ async fn complete_awakeable_with_failure() {
     ));
 
     let actions = test_env
-        .apply(Command::InvokerEffect(Box::new(Effect {
+        .apply(commands::InvokerEffectCommand::test_envelope(Effect {
             invocation_id,
             kind: EffectKind::JournalEntry {
                 entry_index: 1,
                 entry,
             },
-        })))
+        }))
         .await;
 
     assert_that!(
@@ -571,7 +575,7 @@ async fn invoke_with_headers() -> TestResult {
         fixtures::mock_start_invocation_with_service_id(&mut test_env, service_id.clone()).await;
 
     let actions = test_env
-        .apply(Command::InvokerEffect(Box::new(Effect {
+        .apply(commands::InvokerEffectCommand::test_envelope(Effect {
             invocation_id,
             kind: InvokerEffectKind::JournalEntry {
                 entry_index: 1,
@@ -587,7 +591,7 @@ async fn invoke_with_headers() -> TestResult {
                     None,
                 )),
             },
-        })))
+        }))
         .await;
 
     assert_that!(
@@ -641,27 +645,31 @@ async fn mutate_state() -> anyhow::Result<()> {
     );
 
     test_env
-        .apply(Command::PatchState(ExternalStateMutation {
-            service_id: keyed_service_id.clone(),
-            version: None,
-            state: first_state_mutation,
-        }))
+        .apply(commands::PatchStateCommand::test_envelope(
+            ExternalStateMutation {
+                service_id: keyed_service_id.clone(),
+                version: None,
+                state: first_state_mutation,
+            },
+        ))
         .await;
     test_env
-        .apply(Command::PatchState(ExternalStateMutation {
-            service_id: keyed_service_id.clone(),
-            version: None,
-            state: second_state_mutation.clone(),
-        }))
+        .apply(commands::PatchStateCommand::test_envelope(
+            ExternalStateMutation {
+                service_id: keyed_service_id.clone(),
+                version: None,
+                state: second_state_mutation.clone(),
+            },
+        ))
         .await;
 
     // terminating the ongoing invocation should trigger popping from the inbox until the
     // next invocation is found
     test_env
-        .apply(Command::InvokerEffect(Box::new(Effect {
+        .apply(commands::InvokerEffectCommand::test_envelope(Effect {
             invocation_id,
             kind: InvokerEffectKind::End,
-        })))
+        }))
         .await;
 
     let all_states: HashMap<_, _> = test_env
@@ -680,25 +688,26 @@ async fn mutate_state() -> anyhow::Result<()> {
 #[test(restate_core::test)]
 async fn clear_all_user_states() -> anyhow::Result<()> {
     let mut test_env = TestEnv::create().await;
-    let service_id = ServiceId::new("MySvc", "my-key");
+    let service_id = ServiceId::new(None, "MySvc", "my-key");
 
     // Fill with some state the service K/V store
     let mut txn = test_env.storage.transaction();
-    txn.put_user_state(&service_id, b"my-key-1", b"my-val-1")?;
-    txn.put_user_state(&service_id, b"my-key-2", b"my-val-2")?;
+    txn.put_user_state(&service_id, &Bytes::from_static(b"my-key-1"), b"my-val-1")?;
+    txn.put_user_state(&service_id, &Bytes::from_static(b"my-key-2"), b"my-val-2")?;
     txn.commit().await.unwrap();
+    drop(txn);
 
     let invocation_id =
         fixtures::mock_start_invocation_with_service_id(&mut test_env, service_id.clone()).await;
 
     test_env
-        .apply(Command::InvokerEffect(Box::new(Effect {
+        .apply(commands::InvokerEffectCommand::test_envelope(Effect {
             invocation_id,
             kind: InvokerEffectKind::JournalEntry {
                 entry_index: 1,
                 entry: ProtobufRawEntryCodec::serialize_enriched(Entry::clear_all_state()),
             },
-        })))
+        }))
         .await;
 
     let states: Vec<restate_storage_api::Result<(Bytes, Bytes)>> = test_env
@@ -722,18 +731,19 @@ async fn get_state_keys() -> TestResult {
 
     // Mock some state
     let mut txn = test_env.storage.transaction();
-    txn.put_user_state(&service_id, b"key1", b"value1")?;
-    txn.put_user_state(&service_id, b"key2", b"value2")?;
+    txn.put_user_state(&service_id, &Bytes::from_static(b"key1"), b"value1")?;
+    txn.put_user_state(&service_id, &Bytes::from_static(b"key2"), b"value2")?;
     txn.commit().await.unwrap();
+    drop(txn);
 
     let actions = test_env
-        .apply(Command::InvokerEffect(Box::new(Effect {
+        .apply(commands::InvokerEffectCommand::test_envelope(Effect {
             invocation_id,
             kind: InvokerEffectKind::JournalEntry {
                 entry_index: 1,
                 entry: ProtobufRawEntryCodec::serialize_enriched(Entry::get_state_keys(None)),
             },
-        })))
+        }))
         .await;
 
     // At this point we expect the completion to be forwarded to the invoker
@@ -765,10 +775,11 @@ async fn get_invocation_id_entry() {
     tx.put_invocation_status(&invocation_id, &invocation_status)
         .unwrap();
     tx.commit().await.unwrap();
+    drop(tx);
 
     let actions = test_env
         .apply_multiple(vec![
-            Command::InvokerEffect(Box::new(Effect {
+            commands::InvokerEffectCommand::test_envelope(Effect {
                 invocation_id,
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 3,
@@ -776,8 +787,8 @@ async fn get_invocation_id_entry() {
                         Entry::get_call_invocation_id(1, None),
                     ),
                 },
-            })),
-            Command::InvokerEffect(Box::new(Effect {
+            }),
+            commands::InvokerEffectCommand::test_envelope(Effect {
                 invocation_id,
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 4,
@@ -785,7 +796,7 @@ async fn get_invocation_id_entry() {
                         Entry::get_call_invocation_id(2, None),
                     ),
                 },
-            })),
+            }),
         ])
         .await;
 
@@ -836,7 +847,7 @@ async fn attach_invocation_entry() {
     let callee_invocation_id = InvocationId::mock_random();
 
     let actions = test_env
-        .apply(Command::InvokerEffect(Box::new(Effect {
+        .apply(commands::InvokerEffectCommand::test_envelope(Effect {
             invocation_id,
             kind: EffectKind::JournalEntry {
                 entry_index: 1,
@@ -849,7 +860,7 @@ async fn attach_invocation_entry() {
                     },
                 )),
             },
-        })))
+        }))
         .await;
     assert_that!(
         actions,
@@ -880,7 +891,7 @@ async fn get_invocation_output_entry() {
     let callee_invocation_id = InvocationId::mock_random();
 
     let actions = test_env
-        .apply(Command::InvokerEffect(Box::new(Effect {
+        .apply(commands::InvokerEffectCommand::test_envelope(Effect {
             invocation_id,
             kind: EffectKind::JournalEntry {
                 entry_index: 1,
@@ -893,7 +904,7 @@ async fn get_invocation_output_entry() {
                     },
                 )),
             },
-        })))
+        }))
         .await;
 
     assert_that!(
@@ -916,10 +927,12 @@ async fn get_invocation_output_entry() {
 
     // Let's try to complete it with not ready, this should forward empty
     let actions = test_env
-        .apply(Command::InvocationResponse(InvocationResponse {
-            target: JournalCompletionTarget::from_parts(invocation_id, 1),
-            result: NOT_READY_INVOCATION_ERROR.into(),
-        }))
+        .apply(commands::InvocationResponseCommand::test_envelope(
+            InvocationResponse {
+                target: JournalCompletionTarget::from_parts(invocation_id, 1),
+                result: NOT_READY_INVOCATION_ERROR.into(),
+            },
+        ))
         .await;
     assert_that!(
         actions,
@@ -940,7 +953,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
     let request_id_3 = PartitionProcessorRpcRequestId::default();
 
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
                 request_id: request_id_1,
             }),
@@ -949,7 +962,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
                 invocation_target.clone(),
                 Source::Ingress(request_id_1),
             )
-        })))
+        }))
         .await;
     assert_that!(
         actions,
@@ -973,11 +986,12 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
     );
     txn.put_invocation_status(&invocation_id, &invocation_status)?;
     txn.commit().await.unwrap();
+    drop(txn);
 
     // Now let's send the output entry
     let response_bytes = Bytes::from_static(b"123");
     let actions = test_env
-        .apply(Command::InvokerEffect(Box::new(Effect {
+        .apply(commands::InvokerEffectCommand::test_envelope(Effect {
             invocation_id,
             kind: InvokerEffectKind::JournalEntry {
                 entry_index: 1,
@@ -985,17 +999,17 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
                     EntryResult::Success(response_bytes.clone()),
                 )),
             },
-        })))
+        }))
         .await;
     // No ingress response is expected at this point because the invocation did not end yet
     assert_that!(actions, not(contains(pat!(Action::IngressResponse { .. }))));
 
     // Send the End Effect
     let actions = test_env
-        .apply(Command::InvokerEffect(Box::new(Effect {
+        .apply(commands::InvokerEffectCommand::test_envelope(Effect {
             invocation_id,
             kind: InvokerEffectKind::End,
-        })))
+        }))
         .await;
     // At this point we expect the completion to be forwarded to the invoker
     assert_that!(
@@ -1036,7 +1050,14 @@ async fn truncate_outbox_from_empty() -> Result<(), Error> {
 
     let mut test_env = TestEnv::create().await;
 
-    let _ = test_env.apply(Command::TruncateOutbox(outbox_index)).await;
+    let _ = test_env
+        .apply(commands::TruncateOutboxCommand::test_envelope(
+            commands::TruncateOutboxCommand {
+                index: outbox_index,
+                partition_key_range: Keys::None,
+            },
+        ))
+        .await;
 
     assert_that!(test_env.storage.get_outbox_message(0).await?, none());
 
@@ -1061,14 +1082,22 @@ async fn truncate_outbox_with_gap() -> Result<(), Error> {
         0,
         outbox_tail_index,
         Some(outbox_head_index),
-        PartitionKey::MIN..=PartitionKey::MAX,
+        KeyRange::FULL,
         SemanticRestateVersion::unknown().clone(),
-        None,
+        PersistedStateMachineFeatures::default(), /* enabled_features */
+        None,                                     /* schema */
+        Arc::new(RuleBook::default()),
+        RuleBookCacheHandle::detached(),
     ))
     .await;
 
     test_env
-        .apply(Command::TruncateOutbox(outbox_tail_index))
+        .apply(commands::TruncateOutboxCommand::test_envelope(
+            commands::TruncateOutboxCommand {
+                index: outbox_tail_index,
+                partition_key_range: Keys::None,
+            },
+        ))
         .await;
 
     assert_that!(test_env.storage.get_outbox_message(3).await?, none());
@@ -1095,11 +1124,11 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
 
     // Let's start the first invocation
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id: first_invocation_id,
             invocation_target: invocation_target.clone(),
             ..ServiceInvocation::mock()
-        })))
+        }))
         .await;
     assert_that!(
         actions,
@@ -1115,11 +1144,11 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
 
     // Let's start the second invocation
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id: second_invocation_id,
             invocation_target: invocation_target.clone(),
             ..ServiceInvocation::mock()
-        })))
+        }))
         .await;
 
     // This should have not been invoked, but it should rather be in the inbox
@@ -1151,10 +1180,10 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
 
     // Send the End Effect to terminate the first invocation
     let actions = test_env
-        .apply(Command::InvokerEffect(Box::new(Effect {
+        .apply(commands::InvokerEffectCommand::test_envelope(Effect {
             invocation_id: first_invocation_id,
             kind: InvokerEffectKind::End,
-        })))
+        }))
         .await;
     // At this point we expect the invoke for the second, and also the lock updated
     assert_that!(
@@ -1170,10 +1199,10 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
     );
 
     let _ = test_env
-        .apply(Command::InvokerEffect(Box::new(Effect {
+        .apply(commands::InvokerEffectCommand::test_envelope(Effect {
             invocation_id: second_invocation_id,
             kind: InvokerEffectKind::End,
-        })))
+        }))
         .await;
 
     // After the second was completed too, the inbox is empty and the service is unlocked
@@ -1210,10 +1239,12 @@ async fn deduplicate_requests_with_same_pp_rpc_request_id() -> TestResult {
         si.response_sink = Some(ServiceInvocationResponseSink::Ingress { request_id });
         si.submit_notification_sink = Some(SubmitNotificationSink::Ingress { request_id });
         si.source = Source::Ingress(request_id);
-        Box::new(si)
+        si
     };
     let actions = test_env
-        .apply(Command::Invoke(service_invocation.clone()))
+        .apply(commands::InvokeCommand::test_envelope(
+            service_invocation.clone(),
+        ))
         .await;
     assert_that!(
         actions,
@@ -1230,7 +1261,9 @@ async fn deduplicate_requests_with_same_pp_rpc_request_id() -> TestResult {
 
     // Applying this again won't generate Invoke action,
     // but will return same submit notification.
-    let actions = test_env.apply(Command::Invoke(service_invocation)).await;
+    let actions = test_env
+        .apply(commands::InvokeCommand::test_envelope(service_invocation))
+        .await;
     assert_that!(
         actions,
         all!(
@@ -1256,14 +1289,18 @@ async fn yield_effect_resumes_invocation() {
 
     // Apply a Yield effect — the invocation should be immediately re-invoked
     let actions = test_env
-        .apply(Command::InvokerEffect(Box::new(Effect {
+        .apply(commands::InvokerEffectCommand::test_envelope(Effect {
             invocation_id,
-            kind: EffectKind::Yield(restate_invoker_api::YieldReason::ExhaustedMemoryBudget {
-                needed_memory: restate_memory::NonZeroByteCount::new(
-                    NonZeroUsize::new(32768).unwrap(),
-                ),
-            }),
-        })))
+            kind: EffectKind::Yield {
+                error_event: None,
+                resume_at: None,
+                reason: YieldReason::ExhaustedMemoryBudget {
+                    needed_memory: restate_memory::NonZeroByteCount::new(
+                        NonZeroUsize::new(32768).unwrap(),
+                    ),
+                },
+            },
+        }))
         .await;
 
     // Yield should produce an Action::Invoke to re-schedule the invocation

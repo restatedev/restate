@@ -16,7 +16,6 @@ use std::time::Duration;
 use enumset::EnumSet;
 use serde_with::serde_as;
 
-use restate_time_util::FriendlyDuration;
 use restate_types::config::Configuration;
 use restate_types::health::{
     AdminStatus, LogServerStatus, MetadataServerStatus, NodeStatus, WorkerStatus,
@@ -28,6 +27,7 @@ use restate_types::net::address::{
 use restate_types::net::listener::{AddressBook, Addresses};
 use restate_types::nodes_config::Role;
 use restate_types::{NodeId, Version};
+use restate_util_time::FriendlyDuration;
 
 use crate::task_center::TaskCenterMonitoring;
 use crate::{Metadata, TaskCenter};

@@ -91,11 +91,11 @@ pub async fn list_partitions(
                         .as_ref()
                         .expect("alive partition has a node id");
                     let host_node = GenerationalNodeId::from(*host);
+                    let leadership_epoch =
+                        status.last_observed_leader_epoch.unwrap_or_default().value;
                     let details = PartitionListEntry { host_node, status };
                     partitions.push((partition_id, details));
 
-                    let leadership_epoch =
-                        status.last_observed_leader_epoch.unwrap_or_default().value;
                     max_epoch_per_partition
                         .entry(partition_id)
                         .and_modify(|existing| {
@@ -110,7 +110,19 @@ pub async fn list_partitions(
     // Show information organized by partition and node
     let mut partitions_table = Table::new_styled();
     partitions_table.set_styled_header(vec![
-        "ID", "NODE", "MODE", "STATUS", "EPOCH", "APPLIED", "DURABLE", "ARCHIVED", "LSN-LAG",
+        "ID",
+        "NODE",
+        "MODE",
+        "STATUS",
+        "EPOCH",
+        "APPLIED",
+        "DURABLE",
+        "ARCHIVED",
+        "LSN-LAG",
+        "STORAGE",
+        "SCHEMA",
+        "RULE-BOOK",
+        "FEATURES",
         "UPDATED",
     ]);
 
@@ -178,7 +190,7 @@ pub async fn list_partitions(
                         .status
                         .last_observed_leader_epoch
                         .map(|x| x.to_string())
-                        .unwrap_or("-".to_owned()),
+                        .unwrap_or_else(|| "-".to_owned()),
                 )
                 .fg(observed_leader_color),
                 Cell::new(
@@ -186,21 +198,21 @@ pub async fn list_partitions(
                         .status
                         .last_applied_log_lsn
                         .map(|x| x.to_string())
-                        .unwrap_or("-".to_owned()),
+                        .unwrap_or_else(|| "-".to_owned()),
                 ),
                 Cell::new(
                     processor
                         .status
                         .durable_lsn
                         .map(|x| x.to_string())
-                        .unwrap_or("-".to_owned()),
+                        .unwrap_or_else(|| "-".to_owned()),
                 ),
                 Cell::new(
                     processor
                         .status
                         .last_archived_log_lsn
                         .map(|x| x.to_string())
-                        .unwrap_or("-".to_owned()),
+                        .unwrap_or_else(|| "-".to_owned()),
                 ),
                 Cell::new(
                     processor
@@ -211,8 +223,34 @@ pub async fn list_partitions(
                             // (tail - 1) - applied_lsn = tail - (applied_lsn + 1)
                             tail.value.saturating_sub(applied.value + 1).to_string()
                         })
-                        .unwrap_or("-".to_owned()),
+                        .unwrap_or_else(|| "-".to_owned()),
                 ),
+                Cell::new(
+                    processor
+                        .status
+                        .storage_version
+                        .map(|v| (v as u16).to_string())
+                        .unwrap_or_else(|| "-".to_owned()),
+                ),
+                Cell::new(
+                    processor
+                        .status
+                        .last_applied_schema_version
+                        .map(|v| Version::from(v).to_string())
+                        .unwrap_or_else(|| "-".to_owned()),
+                ),
+                Cell::new(
+                    processor
+                        .status
+                        .last_applied_rule_book_version
+                        .map(|v| Version::from(v).to_string())
+                        .unwrap_or_else(|| "-".to_owned()),
+                ),
+                Cell::new(if processor.status.enabled_features.is_empty() {
+                    "-".to_owned()
+                } else {
+                    processor.status.enabled_features.join(",")
+                }),
                 render_as_duration(processor.status.updated_at, Tense::Past),
             ]);
         });
@@ -269,7 +307,9 @@ fn render_replay_status(effective: RunMode, status: ReplayStatus, target_lsn: Op
         (ReplayStatus::Active, RunMode::Unknown) => Cell::new("Active?").fg(Color::Red),
         (ReplayStatus::CatchingUp, _) => Cell::new(format!(
             "Catching Up ({})",
-            target_lsn.map(|x| x.to_string()).unwrap_or("-".to_owned())
+            target_lsn
+                .map(|x| x.to_string())
+                .unwrap_or_else(|| "-".to_owned())
         ))
         .fg(Color::Magenta),
     }

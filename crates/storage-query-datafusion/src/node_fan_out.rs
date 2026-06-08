@@ -22,11 +22,15 @@
 
 use std::any::Any;
 use std::fmt::{self, Debug, Display, Formatter};
-use std::ops::RangeInclusive;
+use std::pin::Pin;
 use std::sync::Arc;
+
+use parking_lot::Mutex;
+use std::task::{Context, Poll};
 
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::Statistics;
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -37,14 +41,30 @@ use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSe
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
 };
+use futures::{Stream, StreamExt};
 
 use restate_core::Metadata;
-use restate_types::identifiers::{PartitionId, PartitionKey};
+use restate_types::identifiers::PartitionId;
 use restate_types::nodes_config::Role;
+use restate_types::sharding::KeyRange;
 use restate_types::{NodeId, PlainNodeId};
 
-use crate::remote_query_scanner_client::{RemoteScannerService, remote_scan_as_datafusion_stream};
+use crate::remote_query_scanner_client::remote_scan_as_datafusion_stream;
+use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::{MeteredStream, ProjectedColumns, Scan};
+
+/// A warning collected from a node that failed during query execution.
+#[derive(Debug, Clone)]
+pub struct NodeWarning {
+    pub node_id: String,
+    pub message: String,
+}
+
+/// Shared collection of per-node warnings accumulated during fan-out execution.
+///
+/// Each partition (node) stream that encounters an error will push a warning
+/// here instead of propagating the error through DataFusion.
+pub type NodeWarnings = Arc<Mutex<Vec<NodeWarning>>>;
 
 /// Determines the set of target nodes for a fan-out query.
 pub(crate) trait NodeLocator: Send + Sync + Debug + 'static {
@@ -178,7 +198,7 @@ fn literal_to_plain_node_id(val: &datafusion::common::ScalarValue) -> Option<Pla
 pub(crate) struct NodeFanOutTableProvider {
     schema: SchemaRef,
     node_locator: Arc<dyn NodeLocator>,
-    remote_scanner: Arc<dyn RemoteScannerService>,
+    remote_scanner_manager: RemoteScannerManager,
     local_scanner: Option<Arc<dyn Scan>>,
     table_name: String,
     statistics: Statistics,
@@ -188,7 +208,7 @@ impl NodeFanOutTableProvider {
     pub fn new(
         schema: SchemaRef,
         node_locator: Arc<dyn NodeLocator>,
-        remote_scanner: Arc<dyn RemoteScannerService>,
+        remote_scanner_manager: RemoteScannerManager,
         local_scanner: Option<Arc<dyn Scan>>,
         table_name: impl Into<String>,
     ) -> Self {
@@ -196,7 +216,7 @@ impl NodeFanOutTableProvider {
         Self {
             schema,
             node_locator,
-            remote_scanner,
+            remote_scanner_manager,
             local_scanner,
             table_name: table_name.into(),
             statistics,
@@ -246,7 +266,7 @@ impl datafusion::catalog::TableProvider for NodeFanOutTableProvider {
         Ok(Arc::new(NodeFanOutExecutionPlan::new(
             projected_schema,
             filtered_nodes,
-            self.remote_scanner.clone(),
+            self.remote_scanner_manager.clone(),
             self.local_scanner.clone(),
             self.table_name.clone(),
             filters.to_vec(),
@@ -268,12 +288,15 @@ impl datafusion::catalog::TableProvider for NodeFanOutTableProvider {
 
 /// Execution plan that scans multiple nodes in parallel.
 ///
-/// Each logical partition corresponds to one target node.
+/// Each logical partition corresponds to one target node. When a node is
+/// unreachable or returns an error, the error is captured as a [`NodeWarning`]
+/// instead of failing the entire query. Callers can inspect the accumulated
+/// warnings via [`NodeFanOutExecutionPlan::node_warnings()`].
 #[derive(Debug, Clone)]
-struct NodeFanOutExecutionPlan {
+pub(crate) struct NodeFanOutExecutionPlan {
     projected_schema: SchemaRef,
     target_nodes: Vec<TargetNode>,
-    remote_scanner: Arc<dyn RemoteScannerService>,
+    remote_scanner_manager: RemoteScannerManager,
     local_scanner: Option<Arc<dyn Scan>>,
     table_name: String,
     filters: Vec<Expr>,
@@ -281,6 +304,7 @@ struct NodeFanOutExecutionPlan {
     plan_properties: PlanProperties,
     statistics: Statistics,
     metrics: ExecutionPlanMetricsSet,
+    node_warnings: NodeWarnings,
 }
 
 impl NodeFanOutExecutionPlan {
@@ -288,7 +312,7 @@ impl NodeFanOutExecutionPlan {
     fn new(
         projected_schema: SchemaRef,
         target_nodes: Vec<TargetNode>,
-        remote_scanner: Arc<dyn RemoteScannerService>,
+        remote_scanner_manager: RemoteScannerManager,
         local_scanner: Option<Arc<dyn Scan>>,
         table_name: String,
         filters: Vec<Expr>,
@@ -308,7 +332,7 @@ impl NodeFanOutExecutionPlan {
         Self {
             projected_schema,
             target_nodes,
-            remote_scanner,
+            remote_scanner_manager,
             local_scanner,
             table_name,
             filters,
@@ -316,7 +340,14 @@ impl NodeFanOutExecutionPlan {
             plan_properties,
             statistics,
             metrics: ExecutionPlanMetricsSet::new(),
+            node_warnings: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Returns the shared warnings collector. The gRPC layer uses this to
+    /// attach per-node errors to the final [`QueryResponse`].
+    pub fn node_warnings(&self) -> &NodeWarnings {
+        &self.node_warnings
     }
 }
 
@@ -368,8 +399,9 @@ impl ExecutionPlan for NodeFanOutExecutionPlan {
 
         let baseline_metrics = BaselineMetrics::new(&self.metrics, partition);
         let batch_size = context.session_config().batch_size();
+        let node_label = target.plain_node_id.to_string();
 
-        if target.is_local
+        let inner: SendableRecordBatchStream = if target.is_local
             && let Some(local_scanner) = &self.local_scanner
         {
             let inner = local_scanner.scan(
@@ -379,7 +411,7 @@ impl ExecutionPlan for NodeFanOutExecutionPlan {
                 self.limit,
             );
 
-            return Ok(Box::pin(
+            Box::pin(
                 datafusion::physical_plan::stream::RecordBatchStreamAdapter::new(
                     self.projected_schema.clone(),
                     MeteredStream {
@@ -387,31 +419,39 @@ impl ExecutionPlan for NodeFanOutExecutionPlan {
                         baseline_metrics,
                     },
                 ),
-            ));
-        }
-
-        // Remote scan: use a sentinel partition_id since this is a node-level table
-        let inner = remote_scan_as_datafusion_stream(
-            self.remote_scanner.clone(),
-            target.node_id,
-            PartitionId::MIN,
-            RangeInclusive::new(PartitionKey::MIN, PartitionKey::MAX),
-            self.table_name.clone(),
-            self.projected_schema.clone(),
-            None, // predicate is applied locally after combining
-            batch_size,
-            self.limit,
-        );
-
-        Ok(Box::pin(
-            datafusion::physical_plan::stream::RecordBatchStreamAdapter::new(
+            )
+        } else {
+            // Remote scan: use a sentinel partition_id since this is a node-level table
+            let scanner_id = self.remote_scanner_manager.allocate_scanner_id();
+            let inner = remote_scan_as_datafusion_stream(
+                self.remote_scanner_manager.remote_scanner_service(),
+                target.node_id,
+                scanner_id,
+                PartitionId::MIN,
+                KeyRange::FULL,
+                self.table_name.clone(),
                 self.projected_schema.clone(),
-                MeteredStream {
-                    inner,
-                    baseline_metrics,
-                },
-            ),
-        ))
+                None, // predicate is applied locally after combining
+                batch_size,
+                self.limit,
+            );
+
+            Box::pin(
+                datafusion::physical_plan::stream::RecordBatchStreamAdapter::new(
+                    self.projected_schema.clone(),
+                    MeteredStream {
+                        inner,
+                        baseline_metrics,
+                    },
+                ),
+            )
+        };
+
+        Ok(Box::pin(ErrorCatchingStream::new(
+            inner,
+            node_label,
+            self.node_warnings.clone(),
+        )))
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
@@ -469,13 +509,67 @@ impl Display for NodeList<'_> {
             if !first {
                 write!(f, ", ")?;
             }
-            write!(f, "N{}", node.plain_node_id)?;
+            write!(f, "{}", node.plain_node_id)?;
             if node.is_local {
                 write!(f, "(local)")?;
             }
             first = false;
         }
         Ok(())
+    }
+}
+
+/// Stream adapter that catches errors from a per-node [`SendableRecordBatchStream`],
+/// records them as [`NodeWarning`]s, and terminates the individual stream gracefully
+/// instead of propagating the error through DataFusion.
+struct ErrorCatchingStream {
+    inner: SendableRecordBatchStream,
+    node_label: String,
+    warnings: NodeWarnings,
+    done: bool,
+}
+
+impl ErrorCatchingStream {
+    fn new(inner: SendableRecordBatchStream, node_label: String, warnings: NodeWarnings) -> Self {
+        Self {
+            inner,
+            node_label,
+            warnings,
+            done: false,
+        }
+    }
+}
+
+impl Stream for ErrorCatchingStream {
+    type Item = datafusion::common::Result<RecordBatch>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.done {
+            return Poll::Ready(None);
+        }
+
+        match self.inner.poll_next_unpin(cx) {
+            Poll::Ready(Some(Err(err))) => {
+                self.done = true;
+                self.warnings.lock().push(NodeWarning {
+                    node_id: self.node_label.clone(),
+                    message: err.to_string(),
+                });
+                // Terminate this partition's stream gracefully
+                Poll::Ready(None)
+            }
+            Poll::Ready(None) => {
+                self.done = true;
+                Poll::Ready(None)
+            }
+            other => other,
+        }
+    }
+}
+
+impl datafusion::execution::RecordBatchStream for ErrorCatchingStream {
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
     }
 }
 

@@ -291,7 +291,7 @@ mod tests {
     use googletest::prelude::*;
 
     #[test]
-    fn test_replication_property() -> Result<()> {
+    fn replication_property() -> Result<()> {
         let mut r = ReplicationProperty::new(NonZeroU8::new(4).unwrap());
         assert_that!(r.num_copies(), eq(4));
         assert_that!(r.greatest_defined_scope(), eq(LocationScope::Node));
@@ -318,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn test_replication_property_parse() -> Result<()> {
+    fn replication_property_parse() -> Result<()> {
         let r: ReplicationProperty = "2".parse().unwrap();
         assert_that!(r.num_copies(), eq(2));
 

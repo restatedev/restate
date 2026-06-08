@@ -13,11 +13,6 @@ use std::pin::Pin;
 use bytes::Bytes;
 use futures::{Stream, StreamExt, TryStreamExt};
 
-use restate_invoker_api::JournalMetadata;
-use restate_invoker_api::invocation_reader::{
-    EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
-    JournalKind,
-};
 use restate_memory::{
     LocalMemoryLease, LocalMemoryPool, NonZeroByteCount, OutOfMemory, OutOfMemoryKind,
     PinnableMapErr, PinnableMemoryStream,
@@ -28,6 +23,11 @@ use restate_storage_api::{
     BudgetedReadError, IsolationLevel, journal_table as journal_table_v1, journal_table_v2,
 };
 use restate_types::identifiers::{InvocationId, ServiceId};
+use restate_worker_api::invoker::JournalMetadata;
+use restate_worker_api::invoker::invocation_reader::{
+    EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
+    JournalKind,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum InvokerStorageReaderError {

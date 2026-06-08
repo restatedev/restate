@@ -24,8 +24,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_with::serde_as;
 
-use restate_serde_util::{ByteCount, MapAsVecItem};
-use restate_time_util::FriendlyDuration;
+use restate_serde_util::MapAsVecItem;
+use restate_util_bytecount::ByteCount;
+use restate_util_time::FriendlyDuration;
 
 use crate::config::{Configuration, InvocationRetryPolicyOptions};
 use crate::deployment::{
@@ -41,9 +42,8 @@ use crate::retries::{RetryIter, RetryPolicy};
 use crate::schema::deployment::{DeploymentResolver, DeploymentType, ProtocolType};
 use crate::schema::info::SchemaInfo;
 use crate::schema::invocation_target::{
-    DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION, DeploymentStatus,
-    InputRules, InvocationAttemptOptions, InvocationTargetMetadata, InvocationTargetResolver,
-    OnMaxAttempts, OutputRules,
+    DeploymentStatus, InputRules, InvocationAttemptOptions, InvocationTargetMetadata,
+    InvocationTargetResolver, OnMaxAttempts, OutputRules,
 };
 use crate::schema::kafka::{
     DUPLICATED_KAFKA_CLUSTER_INFO_MESSAGE, KafkaCluster, KafkaClusterResolver,
@@ -74,6 +74,10 @@ pub struct Schema {
     active_service_revisions: HashMap<String, ActiveServiceRevision>,
     subscriptions: HashMap<SubscriptionId, Subscription>,
     kafka_clusters: HashMap<String, KafkaCluster>,
+
+    // If legacy is true, it means the schema raw data is
+    // still using v1 schema model. Schema should be migrated.
+    legacy_v1: bool,
 }
 
 impl Default for Schema {
@@ -84,7 +88,22 @@ impl Default for Schema {
             deployments: HashMap::default(),
             subscriptions: HashMap::default(),
             kafka_clusters: HashMap::default(),
+            legacy_v1: false,
         }
+    }
+}
+
+impl Schema {
+    pub fn is_legacy_v1(&self) -> bool {
+        self.legacy_v1
+    }
+
+    /// Force the schema version to the next version
+    ///
+    /// Note: this is currently only used by metadata migration
+    /// to force update of the schema from v1.
+    pub fn touch(&mut self) {
+        self.version = self.version.next();
     }
 }
 
@@ -170,6 +189,15 @@ impl DeliveryOptions {
     }
 }
 
+/// Since v1.7.0
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct DeploymentLimits {
+    /// Maximum number of concurrent invocations per node for this deployment.
+    /// A value of 0 means unlimited.
+    #[serde(default)]
+    pub invocations: u64,
+}
+
 #[serde_as]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Deployment {
@@ -187,6 +215,9 @@ struct Deployment {
 
     #[serde_as(as = "restate_serde_util::MapAsVec")]
     services: HashMap<String, Arc<ServiceRevision>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limits: Option<DeploymentLimits>,
 }
 
 impl MapAsVecItem for Deployment {
@@ -222,7 +253,11 @@ impl Deployment {
                     address: this_address,
                     ..
                 },
-                DeploymentAddress::Http(HttpDeploymentAddress { uri: other_address }),
+                DeploymentAddress::Http(HttpDeploymentAddress {
+                    uri: other_address,
+                    auth: _,
+                    ..
+                }),
             ) => deployment::Deployment::semantic_eq_http(
                 this_address,
                 other_address,
@@ -369,6 +404,7 @@ impl ServiceRevision {
         retry_policy.merge_with_service_revision_overrides(self);
 
         let mut info = vec![];
+
         if let Some(inactivity_timeout) = self.inactivity_timeout
             && served_using_protocol_type == Some(ProtocolType::RequestResponse)
         {
@@ -381,12 +417,12 @@ impl ServiceRevision {
         }
 
         let (journal_retention, got_journal_retention_clamped) = configuration
-            .clamp_journal_retention(
-                self.journal_retention.or(configuration
+            .clamp_journal_retention(self.journal_retention.or_else(|| {
+                configuration
                     .invocation
                     .default_journal_retention
-                    .to_non_zero_std()),
-            );
+                    .to_non_zero_std()
+            }));
         if got_journal_retention_clamped {
             info.push(SchemaInfo::new_with_code(
                 &restate_errors::RT0022,
@@ -394,6 +430,48 @@ impl ServiceRevision {
                     .to_string(),
             ))
         }
+
+        let (idempotency_retention, got_idempotency_retention_clamped) = configuration
+            .clamp_idempotency_retention(self.idempotency_retention.or_else(|| {
+                configuration
+                    .invocation
+                    .default_idempotency_retention
+                    .to_non_zero_std()
+            }));
+        if got_idempotency_retention_clamped {
+            info.push(SchemaInfo::new_with_code(
+                &restate_errors::RT0022,
+                "The configured idempotency_retention is clamped to the maximum server limit."
+                    .to_string(),
+            ))
+        }
+
+        let workflow_completion_retention = if self.ty == ServiceType::Workflow {
+            let requested = self
+                .handlers
+                .iter()
+                .find(|(_, h)| h.workflow_completion_retention.is_some())
+                .and_then(|(_, h)| h.workflow_completion_retention)
+                .or(self.workflow_completion_retention)
+                .or_else(|| {
+                    configuration
+                        .invocation
+                        .default_workflow_completion_retention
+                        .to_non_zero_std()
+                });
+            let (clamped, got_clamped) =
+                configuration.clamp_workflow_completion_retention(requested);
+            if got_clamped {
+                info.push(SchemaInfo::new_with_code(
+                    &restate_errors::RT0022,
+                    "The configured workflow_completion_retention is clamped to the maximum server limit."
+                        .to_string(),
+                ))
+            }
+            Some(clamped.unwrap_or(Duration::ZERO))
+        } else {
+            None
+        };
 
         service::ServiceMetadata {
             name: self.name.clone(),
@@ -417,21 +495,8 @@ impl ServiceRevision {
             deployment_id,
             revision: self.revision,
             public: self.public,
-            idempotency_retention: self
-                .idempotency_retention
-                .unwrap_or(DEFAULT_IDEMPOTENCY_RETENTION),
-            workflow_completion_retention: if self.ty == ServiceType::Workflow {
-                Some(
-                    self.handlers
-                        .iter()
-                        .find(|(_, h)| h.workflow_completion_retention.is_some())
-                        .and_then(|(_, h)| h.workflow_completion_retention)
-                        .or(self.workflow_completion_retention)
-                        .unwrap_or(DEFAULT_WORKFLOW_COMPLETION_RETENTION),
-                )
-            } else {
-                None
-            },
+            idempotency_retention: idempotency_retention.unwrap_or(Duration::ZERO),
+            workflow_completion_retention,
             journal_retention,
             inactivity_timeout: if served_using_protocol_type == Some(ProtocolType::RequestResponse)
             {
@@ -562,6 +627,16 @@ impl Handler {
             ))
         }
 
+        let (idempotency_retention, got_idempotency_retention_clamped) =
+            configuration.clamp_idempotency_retention(self.idempotency_retention);
+        if got_idempotency_retention_clamped {
+            info.push(SchemaInfo::new_with_code(
+                &restate_errors::RT0022,
+                "The configured idempotency_retention is clamped to the maximum server limit."
+                    .to_string(),
+            ))
+        }
+
         service::HandlerMetadata {
             name: self.name.clone(),
             ty: self.target_ty.into(),
@@ -572,7 +647,7 @@ impl Handler {
             output_description: self.output_rules.to_string(),
             input_json_schema: self.input_rules.json_schema(),
             output_json_schema: self.output_rules.json_schema(),
-            idempotency_retention: self.idempotency_retention,
+            idempotency_retention,
             journal_retention,
             inactivity_timeout: if served_using_protocol_type == Some(ProtocolType::RequestResponse)
             {
@@ -690,15 +765,35 @@ impl InvocationTargetResolver for Schema {
 
         let completion_retention =
             if handler.target_ty == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow) {
-                handler
-                    .workflow_completion_retention
-                    .or(service_revision.workflow_completion_retention)
-                    .unwrap_or(DEFAULT_WORKFLOW_COMPLETION_RETENTION)
+                configuration
+                    .clamp_workflow_completion_retention(
+                        handler
+                            .workflow_completion_retention
+                            .or(service_revision.workflow_completion_retention)
+                            .or_else(|| {
+                                configuration
+                                    .invocation
+                                    .default_workflow_completion_retention
+                                    .to_non_zero_std()
+                            }),
+                    )
+                    .0
+                    .unwrap_or(Duration::ZERO)
             } else {
-                handler
-                    .idempotency_retention
-                    .or(service_revision.idempotency_retention)
-                    .unwrap_or(DEFAULT_IDEMPOTENCY_RETENTION)
+                configuration
+                    .clamp_idempotency_retention(
+                        handler
+                            .idempotency_retention
+                            .or(service_revision.idempotency_retention)
+                            .or_else(|| {
+                                configuration
+                                    .invocation
+                                    .default_idempotency_retention
+                                    .to_non_zero_std()
+                            }),
+                    )
+                    .0
+                    .unwrap_or(Duration::ZERO)
             };
         let journal_retention = configuration
             .clamp_journal_retention(
@@ -1077,6 +1172,30 @@ impl Configuration {
         clamp_max(
             requested,
             self.invocation.max_journal_retention.map(Duration::from),
+        )
+    }
+
+    fn clamp_idempotency_retention(
+        &self,
+        requested: Option<Duration>,
+    ) -> (Option<Duration>, /* got clamped */ bool) {
+        clamp_max(
+            requested,
+            self.invocation
+                .max_idempotency_retention
+                .map(Duration::from),
+        )
+    }
+
+    fn clamp_workflow_completion_retention(
+        &self,
+        requested: Option<Duration>,
+    ) -> (Option<Duration>, /* got clamped */ bool) {
+        clamp_max(
+            requested,
+            self.invocation
+                .max_workflow_completion_retention
+                .map(Duration::from),
         )
     }
 

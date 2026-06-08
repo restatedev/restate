@@ -18,11 +18,11 @@ use comfy_table::{Cell, Color, Table};
 
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::{c_println, c_title};
-use restate_serde_util::ByteCount;
+use restate_util_bytecount::ByteCount;
 
 use crate::app::GlobalOpts;
 use crate::util::rocksdb::{
-    DEFAULT_CF, extract_file_number, open_db, resolve_partition_store_path,
+    DEFAULT_CF, extract_file_number, open_partition_store_db, resolve_partition_store_path,
 };
 
 use super::PartitionStoreOpts;
@@ -82,7 +82,8 @@ pub(super) struct FileStats {
 pub async fn run_info(global_opts: &GlobalOpts, cmd: &Info) -> Result<()> {
     let path =
         resolve_partition_store_path(global_opts.data_dir.as_deref(), cmd.opts.path.as_deref())?;
-    let db_info = open_db(&path, cmd.opts.open_mode(), global_opts.limit_open_files)?;
+    let db_info =
+        open_partition_store_db(&path, cmd.opts.open_mode(), global_opts.limit_open_files)?;
 
     // Calculate total database size on disk
     let db_size_on_disk = calculate_directory_size(&path)?;
@@ -438,6 +439,7 @@ fn key_kind_abbrev(kind: restate_partition_store::keys::KeyKind) -> &'static str
     match kind {
         KeyKind::Deduplication => "Dedup",
         KeyKind::Fsm => "FSM",
+        #[allow(deprecated)]
         KeyKind::Idempotency => "Idemp",
         KeyKind::Inbox => "Inbox",
         #[allow(deprecated)]
@@ -451,13 +453,20 @@ fn key_kind_abbrev(kind: restate_partition_store::keys::KeyKind) -> &'static str
         KeyKind::Outbox => "Outbx",
         KeyKind::ServiceStatus => "SvcSt",
         KeyKind::State => "State",
+        KeyKind::ScopedState => "ScState",
         KeyKind::Timers => "Timer",
         KeyKind::Promise => "Proms",
+        KeyKind::ScopedPromise => "ScProms",
         KeyKind::VQueueActive => "VQAct",
-        KeyKind::VQueueInbox => "VQInb",
+        KeyKind::VQueueInboxStage => "VQInb",
+        KeyKind::VQueueRunningStage => "VQRun",
+        KeyKind::VQueueSuspendedStage => "VQSus",
+        KeyKind::VQueuePausedStage => "VQPau",
+        KeyKind::VQueueFinishedStage => "VQFin",
         KeyKind::VQueueMeta => "VQMet",
-        KeyKind::VQueueEntryState => "VQEnt",
-        KeyKind::VQueueItems => "VQItm",
+        KeyKind::VQueueEntryStatus => "Status",
+        KeyKind::VQueueInput => "VQItm",
+        KeyKind::Lock => "Locks",
     }
 }
 
@@ -479,7 +488,7 @@ fn print_size_distribution(stats: &[CfStats], total_size: u64) {
 
     // Sort by size descending for the chart
     let mut sorted: Vec<_> = stats.iter().collect();
-    sorted.sort_by(|a, b| b.total_size.cmp(&a.total_size));
+    sorted.sort_by_key(|b| std::cmp::Reverse(b.total_size));
 
     // Find the largest CF size for scaling the bars
     let max_size = sorted.first().map(|cf| cf.total_size).unwrap_or(1);

@@ -101,6 +101,7 @@ where
             idempotency_key,
             completion_retention_duration,
             journal_retention_duration,
+            limit_key,
         } = self.request;
 
         // Prepare the service invocation to propose
@@ -113,11 +114,12 @@ where
                     notification_idx,
                 )
             }),
-            span_context: span_context.clone(),
+            span_context,
             execution_time: self.execution_time,
             completion_retention_duration,
             journal_retention_duration,
             idempotency_key,
+            limit_key,
             ..ServiceInvocation::initialize(
                 invocation_id,
                 invocation_target,
@@ -163,7 +165,7 @@ mod tests {
         CommandType, Entry, EntryMetadata, EntryType, NotificationId, OneWayCallCommand,
     };
     use restate_types::time::MillisSinceEpoch;
-    use restate_wal_protocol::Command;
+    use restate_wal_protocol::v2::{Command, commands};
     use rstest::rstest;
     use std::time::{Duration, SystemTime};
 
@@ -193,7 +195,7 @@ mod tests {
         let actions = test_env
             .apply_multiple([
                 invoker_entry_effect(invocation_id, call_command.clone()),
-                Command::InvocationResponse(InvocationResponse {
+                commands::InvocationResponseCommand::test_envelope(InvocationResponse {
                     target: JournalCompletionTarget::from_parts(
                         invocation_id,
                         result_completion_id,

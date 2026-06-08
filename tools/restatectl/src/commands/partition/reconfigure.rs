@@ -13,21 +13,14 @@ use anyhow::{anyhow, bail};
 use clap::Parser;
 use cling::{Collect, Run};
 
-use restate_cli_util::{CliContext, c_println};
-use restate_metadata_store::protobuf::metadata_proxy_svc::{
-    GetRequest, PutRequest, client::new_metadata_proxy_client,
-};
-use restate_metadata_store::serialize_value;
+use crate::commands::partition::leader::{signal_sync_epoch_metadata, update_epoch_metadata};
+use crate::connection::ConnectionInfo;
+use restate_cli_util::c_println;
+use restate_types::PlainNodeId;
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::PartitionId;
-use restate_types::metadata::Precondition;
-use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::partitions::PartitionConfiguration;
 use restate_types::replication::ReplicationProperty;
-use restate_types::storage::StorageCodec;
-use restate_types::{PlainNodeId, Versioned};
-
-use crate::connection::ConnectionInfo;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "reconfigure_partition")]
@@ -62,25 +55,6 @@ pub async fn reconfigure_partition(
         })?;
     }
 
-    let get_request = GetRequest {
-        key: partition_processor_epoch_key(opts.id).to_string(),
-    };
-
-    let get_response = connection
-        .try_each(None, |channel| async {
-            new_metadata_proxy_client(channel, &CliContext::get().network)
-                .get(get_request.clone())
-                .await
-        })
-        .await?
-        .into_inner();
-
-    let latest_epoch_metadata = if let Some(mut value) = get_response.value {
-        Some(StorageCodec::decode::<EpochMetadata, _>(&mut value.bytes)?)
-    } else {
-        None
-    };
-
     let next = PartitionConfiguration::new(
         ReplicationProperty::new_unchecked(
             u8::try_from(opts.replicas.len())
@@ -90,31 +64,16 @@ pub async fn reconfigure_partition(
         HashMap::default(),
     );
 
-    let (precondition, new_epoch_metadata) =
-        if let Some(latest_epoch_metadata) = latest_epoch_metadata {
-            (
-                Precondition::MatchesVersion(latest_epoch_metadata.version()),
-                latest_epoch_metadata.reconfigure(next),
-            )
-        } else {
-            (Precondition::DoesNotExist, EpochMetadata::new(next, None))
-        };
-
-    let request = PutRequest {
-        key: partition_processor_epoch_key(opts.id).to_string(),
-        precondition: Some(precondition.into()),
-        value: Some(serialize_value(&new_epoch_metadata)?.into()),
-    };
-
-    connection
-        .try_each(None, |channel| async {
-            new_metadata_proxy_client(channel, &CliContext::get().network)
-                .put(request.clone())
-                .await
-        })
-        .await?;
+    update_epoch_metadata(connection, opts.id, |epoch_metadata| {
+        Ok(epoch_metadata
+            .map(|epoch_metadata| epoch_metadata.reconfigure(next.clone()))
+            .unwrap_or(EpochMetadata::new(next.clone(), None)))
+    })
+    .await?;
 
     c_println!("Successfully reconfigured partition {}.", opts.id);
+
+    signal_sync_epoch_metadata(connection, &[opts.id]).await?;
 
     Ok(())
 }

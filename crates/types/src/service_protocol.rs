@@ -16,7 +16,7 @@ use std::ops::RangeInclusive;
 pub const MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion =
     ServiceProtocolVersion::V1;
 pub const MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion =
-    ServiceProtocolVersion::V6;
+    ServiceProtocolVersion::V7;
 
 pub const MIN_DISCOVERABLE_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion =
     ServiceProtocolVersion::V5;
@@ -49,15 +49,21 @@ impl ServiceProtocolVersion {
     /// Pick the version to use for running an invocation
     pub fn pick(
         deployment_supported_versions: &RangeInclusive<i32>,
+        enable_protocol_v7: bool,
     ) -> Option<ServiceProtocolVersion> {
-        if *deployment_supported_versions.start()
-            <= i32::from(MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION)
+        let max_version = if enable_protocol_v7 {
+            ServiceProtocolVersion::V7
+        } else {
+            ServiceProtocolVersion::V6
+        };
+
+        if *deployment_supported_versions.start() <= i32::from(max_version)
             && *deployment_supported_versions.end()
                 >= i32::from(MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION)
         {
             ServiceProtocolVersion::try_from(std::cmp::min(
                 *deployment_supported_versions.end(),
-                i32::from(MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION),
+                i32::from(max_version),
             ))
             .ok()
         } else {
@@ -468,11 +474,13 @@ mod pb_into {
                 idempotency_key,
             }: IdempotentRequestTarget,
         ) -> Self {
+            // V3 protocol types don't carry scope
             IdempotencyId::new(
                 service_name.into(),
                 service_key.map(Into::into),
                 handler_name.into(),
                 idempotency_key.into(),
+                None,
             )
         }
     }
@@ -484,7 +492,8 @@ mod pb_into {
                 workflow_key,
             }: WorkflowTarget,
         ) -> Self {
-            ServiceId::new(workflow_name, workflow_key)
+            // V3 protocol types don't carry scope
+            ServiceId::new(None, workflow_name, workflow_key)
         }
     }
 }

@@ -36,6 +36,7 @@ restate-core = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-ingestion-client = { workspace = true }
 restate-ingress-http = { workspace = true }
+restate-limiter = { workspace = true, features = ["rule-book"] }
 restate-log-server = { workspace = true }
 restate-memory = { workspace = true }
 restate-metadata-providers = { workspace = true }
@@ -45,12 +46,13 @@ restate-metadata-store = { workspace = true, features = ["grpc-server"] }
 restate-partition-store = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-service-client = { workspace = true }
-restate-service-protocol = { workspace = true, features = ["discovery"] }
+restate-service-protocol-v4 = { workspace = true, features = ["discovery", "serdes"] }
 restate-storage-query-datafusion = { workspace = true }
 restate-tracing-instrumentation = { workspace = true, features = ["prometheus"] }
 restate-types = { workspace = true, features = ["clap"] }
 restate-wal-protocol = { workspace = true }
 restate-worker = { workspace = true }
+restate-worker-api = { workspace = true }
 
 ahash = { workspace = true }
 anyhow = { workspace = true }
@@ -92,3 +94,6 @@ tempfile = { workspace = true }
 test-log = { workspace = true }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

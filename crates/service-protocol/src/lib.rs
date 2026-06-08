@@ -15,7 +15,5 @@ pub const RESTATE_SERVICE_PROTOCOL_VERSION: u16 = 2;
 
 #[cfg(feature = "codec")]
 pub mod codec;
-#[cfg(feature = "discovery")]
-pub mod discovery;
 #[cfg(feature = "message")]
 pub mod message;

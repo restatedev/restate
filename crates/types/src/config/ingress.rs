@@ -8,12 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 
+use restate_memory::NonZeroByteCount;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
-use crate::config::IngestionOptions;
+use crate::config::{DEFAULT_MESSAGE_SIZE_LIMIT, IngestionOptions, NetworkingOptions};
 use crate::net::address::{AdvertisedAddress, BindAddress, HttpIngressPort};
 use crate::net::listener::AddressBook;
 
@@ -36,6 +37,18 @@ pub struct IngressOptions {
     /// the ingress will reply immediately with an appropriate status code. Default is unlimited.
     concurrent_api_requests_limit: Option<NonZeroUsize>,
 
+    /// # HTTP/2 max concurrent streams
+    ///
+    /// Caps the number of concurrent HTTP/2 streams accepted per inbound ingress connection.
+    /// If unset, Restate does not configure this limit and leaves it at hyper's runtime default.
+    /// With the current hyper version, that default is 200 streams.
+    /// Service-mesh clients such as Linkerd honor the advertised value as a hard per-connection
+    /// concurrency limit, so high-concurrency or long-poll deployments may need to raise it.
+    ///
+    /// Since v1.7.0
+    #[serde(skip_serializing_if = "Option::is_none")]
+    http2_max_concurrent_streams: Option<NonZeroU32>,
+
     /// # Kafka clusters
     ///
     /// **Deprecated in 1.7**: Kafka clusters should now be configured through the UI/Admin API
@@ -48,6 +61,19 @@ pub struct IngressOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     advertised_ingress_endpoint: Option<AdvertisedAddress<HttpIngressPort>>,
 
+    /// # Request size limit
+    ///
+    /// Maximum size of request that can be received over ingress. If a request size is
+    /// larger than this limit, the request will fail.
+    ///
+    /// If unset, defaults to `networking.message-size-limit`. If set, it will be clamped at
+    /// the value of `networking.message-size-limit` since larger requests cannot be transmitted
+    /// over the cluster internal network.
+    ///
+    /// Since v1.7.0
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_size_limit: Option<NonZeroByteCount>,
+
     /// # Ingestion Options
     ///
     /// Settings for the ingestion client
@@ -56,6 +82,12 @@ pub struct IngressOptions {
 }
 
 impl IngressOptions {
+    pub fn request_size_limit(&self) -> NonZeroUsize {
+        self.request_size_limit
+            .map(|v| v.as_non_zero_usize())
+            .unwrap_or(DEFAULT_MESSAGE_SIZE_LIMIT)
+    }
+
     pub fn bind_address(&self) -> BindAddress<HttpIngressPort> {
         self.ingress_listener_options.bind_address()
     }
@@ -95,9 +127,23 @@ impl IngressOptions {
         )
     }
 
+    pub fn http2_max_concurrent_streams(&self) -> Option<NonZeroU32> {
+        self.http2_max_concurrent_streams
+    }
+
     /// set derived values if they are not configured to reduce verbose configurations
-    pub fn set_derived_values(&mut self, common: &CommonOptions) {
+    pub fn set_derived_values(&mut self, common: &CommonOptions, networking: &NetworkingOptions) {
         self.ingress_listener_options
             .merge(common.fabric_listener_options());
+
+        self.merge(networking);
+    }
+
+    fn merge(&mut self, opts: &NetworkingOptions) {
+        self.request_size_limit = Some(
+            self.request_size_limit
+                .map(|limit| limit.min(opts.message_size_limit))
+                .unwrap_or(opts.message_size_limit),
+        );
     }
 }

@@ -13,9 +13,12 @@ use std::ops::DerefMut;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::BytesMut;
 use parking_lot::RwLock;
 use rocksdb::table_properties::TablePropertiesExt;
-use rocksdb::{BoundColumnFamily, ExportImportFilesMetaData};
+use rocksdb::{
+    BoundColumnFamily, DBRawIteratorWithThreadMode, ExportImportFilesMetaData, ReadOptions,
+};
 use tokio::sync::{RwLock as AsyncRwLock, watch};
 use tokio::time::Instant;
 use tracing::{debug, info, instrument, warn};
@@ -23,16 +26,18 @@ use tracing::{debug, info, instrument, warn};
 use restate_core::ShutdownError;
 use restate_rocksdb::configuration::{CfConfigurator, DbConfigurator};
 use restate_rocksdb::{DbName, RocksDb, RocksError};
-use restate_serde_util::ByteCount;
+use restate_storage_api::StorageError;
 use restate_types::config::Configuration;
 use restate_types::logs::Lsn;
 use restate_types::partitions::{CfName, Partition};
+use restate_util_bytecount::ByteCount;
 
-use crate::TableKind;
 use crate::durable_lsn_tracking::{AppliedLsnCollectorFactory, DurableLsnEventListener};
 use crate::keys::KeyKind;
 use crate::memory::MemoryBudget;
+use crate::scan::PhysicalScan;
 use crate::snapshots::LocalPartitionSnapshot;
+use crate::{DB_PREFIX_LENGTH, ScanMode, TableKind};
 
 use restate_util_string::ReString;
 
@@ -164,6 +169,83 @@ impl PartitionDb {
             });
         }
     }
+
+    #[track_caller]
+    pub(super) fn scan(
+        &self,
+        scan: PhysicalScan,
+    ) -> Result<DBRawIteratorWithThreadMode<'_, rocksdb::DB>, StorageError> {
+        match scan {
+            PhysicalScan::Prefix(table, _key_kind, prefix) => {
+                debug_assert!(table.has_key_kind(&prefix));
+                let prefix = prefix.freeze();
+                let opts = new_prefix_iterator_opts(prefix.as_ref());
+                let table = self.table_cf_handle(table);
+                let mut it = self
+                    .rocksdb
+                    .inner()
+                    .as_raw_db()
+                    .raw_iterator_cf_opt(table, opts);
+                it.seek(prefix);
+                Ok(it)
+            }
+            PhysicalScan::RangeExclusive(table, _key_kind, scan_mode, start, end) => {
+                debug_assert!(table.has_key_kind(&start));
+                let opts = new_range_iterator_opts(scan_mode, start.as_ref(), end.as_ref());
+                let table = self.table_cf_handle(table);
+                let mut it = self
+                    .rocksdb
+                    .inner()
+                    .as_raw_db()
+                    .raw_iterator_cf_opt(table, opts);
+                it.seek(start);
+                Ok(it)
+            }
+            PhysicalScan::RangeOpen(table, key_kind, start) => {
+                debug_assert!(table.has_key_kind(&start));
+                // We delayed the generate the synthetic iterator upper bound until this point
+                // because we might have different prefix length requirements based on the
+                // table+key_kind combination and we should keep this knowledge as low-level as
+                // possible.
+                //
+                // make the end has the same length as all prefixes to ensure rocksdb key
+                // comparator can leverage bloom filters when applicable
+                // (if auto_prefix_mode is enabled)
+                let mut end = BytesMut::zeroed(DB_PREFIX_LENGTH);
+                // We want to ensure that Range scans fall within the same key kind.
+                // So, we limit the iterator to the upper bound of this prefix
+                let kind_upper_bound = key_kind.exclusive_upper_bound();
+                end[..kind_upper_bound.len()].copy_from_slice(&kind_upper_bound);
+                let opts =
+                    new_range_iterator_opts(ScanMode::TotalOrder, start.as_ref(), end.as_ref());
+                let table = self.table_cf_handle(table);
+                let mut it = self
+                    .rocksdb
+                    .inner()
+                    .as_raw_db()
+                    .raw_iterator_cf_opt(table, opts);
+                it.seek(start);
+                Ok(it)
+            }
+        }
+    }
+}
+
+fn new_prefix_iterator_opts<B: Into<Vec<u8>>>(prefix: B) -> ReadOptions {
+    let mut opts = ReadOptions::default();
+    opts.set_prefix_same_as_start(true);
+    opts.set_iterate_range(rocksdb::PrefixRange(prefix));
+    opts.set_async_io(true);
+    opts.set_total_order_seek(false);
+    opts
+}
+
+fn new_range_iterator_opts<B: Into<Vec<u8>>>(scan_mode: ScanMode, from: B, to: B) -> ReadOptions {
+    let mut opts = ReadOptions::default();
+    opts.set_total_order_seek(scan_mode == ScanMode::TotalOrder);
+    opts.set_iterate_range(from..to);
+    opts.set_async_io(true);
+    opts
 }
 
 #[derive(Clone)]
@@ -270,7 +352,7 @@ impl PartitionCell {
     }
 
     // low-level importing a column family from a locally downloaded a snapshot
-    #[instrument(level = "error", skip_all, fields(partition_id = %self.meta.partition_id, cf_name = %self.meta.cf_name(), path = %snapshot.base_dir.display()))]
+    #[instrument(level = "error", skip_all, fields(partition_id = %self.meta.partition_id, cf_name = %self.meta.cf_name(), path = %snapshot.base_dir.path().display()))]
     pub async fn import_cf(
         &self,
         guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
@@ -295,7 +377,7 @@ impl PartitionCell {
 
         info!(
             snapshot_applied_lsn = %snapshot.min_applied_lsn,
-            path = ?snapshot.base_dir,
+            path = ?snapshot.base_dir.path(),
             "Importing partition store snapshot"
         );
 
@@ -308,14 +390,8 @@ impl PartitionCell {
             .import_cf(self.meta.cf_name().into(), import_metadata)
             .await?;
 
-        if let Err(err) = tokio::fs::remove_dir_all(&snapshot.base_dir).await {
-            // This is not critical; since we move the SST files into RocksDB on import,
-            // at worst only the snapshot metadata file will remain in the staging dir
-            warn!(
-                %err,
-                "Failed to remove local snapshot directory, continuing with startup",
-            );
-        };
+        // Remove the remaining snapshot files in a non-blocking way.
+        snapshot.base_dir.remove().await;
 
         let db = PartitionDb::new(
             self.meta.clone(),
@@ -555,7 +631,7 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
             KeyKind::full_merge,
             KeyKind::partial_merge,
         );
-        cf_options.set_max_successive_merges(100);
+        cf_options.set_max_successive_merges(5000);
 
         cf_options.set_disable_auto_compactions(config.rocksdb.rocksdb_disable_auto_compactions());
         if let Some(compaction_period) = config.rocksdb.rocksdb_periodic_compaction_seconds() {

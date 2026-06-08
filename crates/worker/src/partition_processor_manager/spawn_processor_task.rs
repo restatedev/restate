@@ -8,48 +8,44 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
 use tokio::sync::watch;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::network::{ShardSender, TransportConnect};
-use restate_core::{Metadata, RuntimeTaskHandle, TaskCenter, TaskKind, cancellation_token};
+use restate_core::{RuntimeTaskHandle, TaskCenter, TaskKind, cancellation_token};
 use restate_ingestion_client::IngestionClient;
-use restate_invoker_api::capacity::InvokerCapacity;
-use restate_invoker_impl::Service as InvokerService;
-use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_service_protocol::codec::ProtobufRawEntryCodec;
-use restate_types::SharedString;
+use restate_partition_store::PartitionStoreManager;
+use restate_platform::prelude::ReString;
 use restate_types::cluster::cluster_state::PartitionProcessorStatus;
-use restate_types::config::Configuration;
-use restate_types::live::Live;
-use restate_types::live::LiveLoadExt;
 use restate_types::logs::Lsn;
 use restate_types::partitions::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
-use restate_types::schema::Schema;
 use restate_wal_protocol::Envelope;
+use restate_worker_api::invoker::capacity::InvokerCapacity;
 
 use crate::PartitionProcessorBuilder;
-use crate::invoker_integration::EntryEnricher;
-use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::{ProcessorError, TargetLeaderState};
+use crate::partition_processor_manager::PartitionLeaderHandlesRegistry;
 use crate::partition_processor_manager::processor_state::StartedProcessor;
+use crate::rule_book_cache::RuleBookCacheHandle;
 
 pub struct SpawnPartitionProcessorTask<T> {
-    task_name: SharedString,
+    task_name: ReString,
     partition: Partition,
-    configuration: Live<Configuration>,
     bifrost: Bifrost,
     replica_set_states: PartitionReplicaSetStates,
     partition_store_manager: Arc<PartitionStoreManager>,
     fast_forward_lsn: Option<Lsn>,
     invoker_capacity: InvokerCapacity,
     ingestion_client: IngestionClient<T, Envelope>,
+    leader_handles_registry: PartitionLeaderHandlesRegistry,
+    rule_book_cache: RuleBookCacheHandle,
 }
 
 impl<T> SpawnPartitionProcessorTask<T>
@@ -58,26 +54,28 @@ where
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        task_name: SharedString,
+        task_name: ReString,
         partition: Partition,
-        configuration: Live<Configuration>,
         bifrost: Bifrost,
         replica_set_states: PartitionReplicaSetStates,
         partition_store_manager: Arc<PartitionStoreManager>,
         fast_forward_lsn: Option<Lsn>,
         invoker_capacity: InvokerCapacity,
         ingestion_client: IngestionClient<T, Envelope>,
+        leader_handles_registry: PartitionLeaderHandlesRegistry,
+        rule_book_cache: RuleBookCacheHandle,
     ) -> Self {
         Self {
             task_name,
             partition,
-            configuration,
             bifrost,
             replica_set_states,
             partition_store_manager,
             fast_forward_lsn,
             invoker_capacity,
             ingestion_client,
+            leader_handles_registry,
+            rule_book_cache,
         }
     }
 
@@ -99,33 +97,15 @@ where
         let Self {
             task_name,
             partition,
-            configuration,
             bifrost,
             replica_set_states,
             partition_store_manager,
             fast_forward_lsn,
             invoker_capacity,
             ingestion_client,
+            leader_handles_registry,
+            rule_book_cache,
         } = self;
-
-        let config = configuration.pinned();
-        let schema = Metadata::with_current(|m| m.updateable_schema());
-        let invoker: InvokerService<
-            InvokerStorageReader<PartitionStore>,
-            EntryEnricher<Schema, ProtobufRawEntryCodec>,
-            Schema,
-        > = InvokerService::from_options(
-            partition.partition_id,
-            &config.common.service_client,
-            &config.worker.invoker,
-            EntryEnricher::new(schema.clone()),
-            schema,
-            invoker_capacity.invocation_token_bucket.clone(),
-            invoker_capacity.action_token_bucket.clone(),
-            invoker_capacity.memory_pool.clone(),
-        )?;
-
-        let status_reader = invoker.status_reader();
 
         let (control_tx, control_rx) = watch::channel(TargetLeaderState::Follower);
         let (net_tx, net_rx) = ShardSender::new();
@@ -137,13 +117,12 @@ where
             control_rx,
             net_rx,
             watch_tx,
-            invoker.handle(),
             invoker_capacity,
+            leader_handles_registry,
+            rule_book_cache,
         );
 
-        let invoker_name = Arc::from(format!("invoker-{}", partition.partition_id));
-        let invoker_config = configuration.clone().map(|c| &c.worker.invoker);
-        let key_range = partition.key_range.clone();
+        let key_range = partition.key_range;
 
         let root_task_handle = TaskCenter::current().start_runtime(
             TaskKind::PartitionProcessor,
@@ -183,14 +162,16 @@ where
                     // Runs on a blocking thread so it doesn't starve the tokio runtime.
                     // The child task is bound to the partition processor's lifecycle and
                     // will be cancelled if the processor shuts down (e.g. due to trim gap).
-                    if partition_store.needs_jc_orphan_cleanup()? {
+                    let cleanup_task = if partition_store.needs_jc_orphan_cleanup()? {
                         let mut cleanup_store = partition_store.clone();
                         let cleanup_partition_id = partition_store.partition_id();
-                        let cancel = cancellation_token();
-                        TaskCenter::spawn_child(
+                        let cleanup_task = TaskCenter::spawn_unmanaged_child(
                             TaskKind::Background,
                             "jc-orphan-cleanup",
                             async move {
+                                // Observe this task's own cancellation token so the
+                                // cancel_task() below reliably stops the blocking scan.
+                                let cancel = cancellation_token();
                                 let result = tokio::task::spawn_blocking(move || {
                                     let start = Instant::now();
                                     let result = restate_partition_store::cleanup_orphaned_completion_id_index_entries(
@@ -245,64 +226,44 @@ where
                                         );
                                     }
                                 }
-                                Ok(())
+                                Ok::<_, Infallible>(())
                             },
                         )?;
+                        Some(cleanup_task)
+                    } else {
+                        None
+                    };
+
+                    let run_result = async move {
+                        let pp = pp_builder
+                            .build(
+                                bifrost,
+                                ingestion_client,
+                                partition_store,
+                                replica_set_states,
+                            )
+                            .await
+                            .map_err(ProcessorError::from)?;
+                        Box::pin(pp.run()).await
+                    }
+                    .await;
+
+                    // Cancel and join the one-time jc-orphan-cleanup task before this
+                    // runtime task returns. The partition store manager only drops or
+                    // re-imports this partition's column family on a *subsequent* open(),
+                    // which cannot run until this runtime task has fully completed (see
+                    // PartitionProcessorManager::await_runtime_task_result). Joining here
+                    // guarantees the cleanup can never write through a stale column-family
+                    // handle and poison the shared RocksDB instance (see #4838).
+                    if let Some(cleanup_task) = cleanup_task {
+                        let _ = cleanup_task.cancel_and_wait().await;
                     }
 
-                    let pp = pp_builder
-                        .build(
-                            bifrost,
-                            ingestion_client,
-                            partition_store,
-                            replica_set_states,
-                        )
-                        .await
-                        .map_err(ProcessorError::from)?;
-
-                    // Invoker needs to outlive the partition processor when shutdown signal is
-                    // received. This is why it's not spawned as a "child".
-                    let mut invoker = TaskCenter::spawn_unmanaged_child(
-                        TaskKind::SystemService,
-                        invoker_name,
-                        invoker.run(invoker_config),
-                    )
-                    .map_err(|e| ProcessorError::from(anyhow::anyhow!(e)))?
-                    .into_guard();
-
-                    let mut run_fut = std::pin::pin!(pp.run());
-
-                    tokio::select! {
-                        result = &mut run_fut => {
-                            let _ = invoker.cancel_and_wait().await;
-                            info!(
-                                partition_id = %partition.partition_id,
-                                "Partition processor stopped"
-                            );
-                            result
-                        }
-                        _ = &mut invoker => {
-                            warn!(
-                                partition_id = %partition.partition_id,
-                                "Invoker process stopped unexpectedly"
-                            );
-
-                            // Cancel the current task then run the PP to completion
-                            // for a clean PP shutdown
-                            let task_cancellation_token = cancellation_token();
-                            task_cancellation_token.cancel();
-                            if let Err(err) = run_fut.await {
-                                error!(
-                                    err = %err,
-                                    partition_id = %partition.partition_id,
-                                    "Partition processor exited with an error while handling \
-                                    invoker crash"
-                                );
-                            }
-
-                            Err(ProcessorError::InvokerStoppedUnexpectedly)
-                        }
-                    }
+                    info!(
+                        partition_id = %partition.partition_id,
+                        "Partition processor stopped"
+                    );
+                    run_result
                 }
             },
         )?;
@@ -311,7 +272,6 @@ where
             root_task_handle.cancellation_token().clone(),
             key_range,
             control_tx,
-            status_reader,
             net_tx,
             watch_rx,
         );

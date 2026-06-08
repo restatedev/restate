@@ -87,7 +87,7 @@ pub mod common {
         /// For [`DatabaseKind::PartitionStore`], this returns the base prefix `"db"`.
         /// Individual partition databases may be named `"db-{partition_id}"` in
         /// multi-db mode.
-        pub fn db_name(&self) -> &'static str {
+        pub const fn db_name(&self) -> &'static str {
             match self {
                 DatabaseKind::LogServer => "log-server",
                 DatabaseKind::MetadataServer => "replicated-metadata-server",
@@ -226,9 +226,9 @@ pub mod metadata {
 
         fn try_from(value: Precondition) -> Result<Self, Self::Error> {
             match value.kind() {
-                PreconditionKind::Unknown => {
-                    Err(ConversionError::invalid_data("unknown precondition kind"))
-                }
+                PreconditionKind::Unknown => Err(ConversionError::invalid_data_static(
+                    "unknown precondition kind",
+                )),
                 PreconditionKind::None => Ok(crate::metadata::Precondition::None),
                 PreconditionKind::DoesNotExist => Ok(crate::metadata::Precondition::DoesNotExist),
                 PreconditionKind::MatchesVersion => {

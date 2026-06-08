@@ -13,7 +13,6 @@ use opentelemetry::trace::Span;
 
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::WriteFsmTable;
-use restate_storage_api::idempotency_table::IdempotencyTable;
 use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, JournalMetadata, PreFlightInvocationArgument, PreFlightInvocationJournal,
@@ -21,19 +20,22 @@ use restate_storage_api::invocation_status_table::{
     WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_table_v2::ReadJournalTable;
+use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::service_status_table::{
     ReadVirtualObjectStatusTable, WriteVirtualObjectStatusTable,
 };
 use restate_storage_api::timer_table::WriteTimerTable;
 use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_storage_api::{journal_table as journal_table_v1, journal_table_v2};
-use restate_types::identifiers::{DeploymentId, EntryIndex, InvocationId};
+use restate_types::config::Configuration;
+use restate_types::identifiers::{DeploymentId, EntryIndex, InvocationId, WithPartitionKey};
 use restate_types::invocation::client::RestartAsNewInvocationResponse;
 use restate_types::invocation::{
     InvocationMutationResponseSink, ServiceInvocationSpanContext, Source, SpanRelation,
 };
 use restate_types::journal_v2;
 use restate_types::journal_v2::{CommandMetadata, EntryMetadata, EntryType, NotificationId};
+use restate_vqueues::VQueue;
 
 use crate::debug_if_leader;
 use crate::partition::state_machine::{Action, CommandHandler, Error, StateMachineApplyContext};
@@ -72,7 +74,6 @@ impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>
     for OnRestartAsNewInvocationCommand
 where
     S: ReadJournalTable
-        + IdempotencyTable
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
         + WriteFsmTable
@@ -82,8 +83,10 @@ where
         + WriteInboxTable
         + ReadVQueueTable
         + WriteVQueueTable
+        + WriteLockTable
         + journal_table_v1::WriteJournalTable
-        + journal_table_v2::WriteJournalTable,
+        + journal_table_v2::WriteJournalTable
+        + ReadVQueueTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let OnRestartAsNewInvocationCommand {
@@ -153,7 +156,7 @@ where
                     // Now copy to the new journal
                     journal_table_v2::WriteJournalTable::put_journal_entry(
                         ctx.storage,
-                        new_invocation_id,
+                        &new_invocation_id,
                         new_journal_index,
                         &entry,
                         &related_completion_ids,
@@ -173,7 +176,7 @@ where
                     // Now copy to the new journal
                     journal_table_v2::WriteJournalTable::put_journal_entry(
                         ctx.storage,
-                        new_invocation_id,
+                        &new_invocation_id,
                         new_journal_index,
                         &entry,
                         &[],
@@ -199,7 +202,7 @@ where
                 // Copy over this notification
                 journal_table_v2::WriteJournalTable::put_journal_entry(
                     ctx.storage,
-                    new_invocation_id,
+                    &new_invocation_id,
                     new_journal_index,
                     &entry,
                     &[],
@@ -242,6 +245,37 @@ where
         );
 
         // Let's prep the PreFlightInvocationMetadata
+        //
+        // If the old invocation was already vqueue-enabled, we carry down the same vqueue id.
+        // if not and we are now in vqueue-enabled mode, we assign a vqueue id to it.
+        let qid = completed_invocation.vqueue_id.or_else(|| {
+            Configuration::pinned()
+                .common
+                .experimental
+                .is_vqueues_enabled()
+                .then_some(VQueue::infer_vqueue_id_from_invocation(
+                    new_invocation_id.partition_key(),
+                    &completed_invocation.invocation_target,
+                    &completed_invocation.limit_key,
+                ))
+        });
+
+        let random_seed = if copy_prefix_up_to_index_included > 0 {
+            // We're restarting from prefix, we must retain the same random seed to ensure that decisions in the prefix that depend on the random seed are replayable (does not cause non-determinism problems).
+            completed_invocation.random_seed
+        } else {
+            if ctx.enabled_features.unique_random_seeds {
+                // Generate a new random seed for an invocation restarting from beginning
+                Some(
+                    new_invocation_id
+                        .to_random_seed_with_wal_record_time(ctx.record_created_at.as_u64()),
+                )
+            } else {
+                // We need to preserve old behavior of copying the random seed anyway
+                completed_invocation.random_seed
+            }
+        };
+
         let pre_flight_invocation_metadata = PreFlightInvocationMetadata {
             timestamps: StatusTimestamps::init(ctx.record_created_at),
             invocation_target: completed_invocation.invocation_target,
@@ -258,9 +292,11 @@ where
                 pinned_deployment,
             }),
             source: Source::RestartAsNew(invocation_id),
+            vqueue_id: qid,
+            limit_key: completed_invocation.limit_key,
             completion_retention_duration: completed_invocation.completion_retention_duration,
             journal_retention_duration: completed_invocation.journal_retention_duration,
-            random_seed: completed_invocation.random_seed,
+            random_seed,
 
             // We don't set those
             idempotency_key: None,
@@ -269,7 +305,7 @@ where
         };
 
         // --- Invocation metadata ready, now go through the usual flow
-        ctx.on_pre_flight_invocation(new_invocation_id, pre_flight_invocation_metadata, None)
+        ctx.on_pre_flight_invocation(&new_invocation_id, pre_flight_invocation_metadata, None)
             .await?;
 
         // --- Reply all good
@@ -290,7 +326,6 @@ mod tests {
     use restate_storage_api::invocation_status_table::{
         InFlightInvocationMetadata, InvocationStatusDiscriminants, ReadInvocationStatusTable,
     };
-    use restate_types::RESTATE_VERSION_1_6_0;
     use restate_types::identifiers::{
         DeploymentId, InvocationId, InvocationUuid, PartitionProcessorRpcRequestId,
         WithPartitionKey,
@@ -304,10 +339,11 @@ mod tests {
         CommandType, CompletionType, NotificationType, OutputCommand, OutputResult, Signal,
         SignalId, SignalResult, SleepCommand,
     };
+    use restate_types::partitions::{PartitionFeatureChange, PersistedStateMachineFeatures};
     use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_types::time::MillisSinceEpoch;
-    use restate_wal_protocol::Command;
     use restate_wal_protocol::timer::TimerKeyValue;
+    use restate_wal_protocol::v2::{Command, commands};
     use std::time::Duration;
 
     #[restate_core::test]
@@ -319,13 +355,13 @@ mod tests {
         let original_invocation_id = InvocationId::generate(&invocation_target, None);
         let _ = test_env
             .apply_multiple([
-                Command::Invoke(Box::new(ServiceInvocation {
+                commands::InvokeCommand::test_envelope(ServiceInvocation {
                     invocation_id: original_invocation_id,
                     invocation_target: invocation_target.clone(),
                     completion_retention_duration: Duration::from_secs(120),
                     journal_retention_duration: Duration::ZERO,
                     ..ServiceInvocation::mock()
-                })),
+                }),
                 fixtures::pinned_deployment(original_invocation_id, ServiceProtocolVersion::V6),
                 fixtures::invoker_entry_effect(
                     original_invocation_id,
@@ -356,7 +392,7 @@ mod tests {
         let new_id = InvocationId::mock_generate(&InvocationTarget::mock_virtual_object());
         let request_id = PartitionProcessorRpcRequestId::new();
         let actions = test_env
-            .apply(Command::RestartAsNewInvocation(
+            .apply(commands::RestartAsNewInvocationCommand::test_envelope(
                 RestartAsNewInvocationRequest {
                     invocation_id: original_invocation_id,
                     new_invocation_id: new_id,
@@ -388,21 +424,24 @@ mod tests {
         // This works only when using journal table v2 as default!
         // The corner case with journal table v1 is handled by the rpc handler instead.
         let mut test_env =
-            TestEnv::create_with_min_restate_version(RESTATE_VERSION_1_6_0.clone()).await;
+            TestEnv::create_with_features(PersistedStateMachineFeatures::from_iter([
+                PartitionFeatureChange::EnableJournalV2,
+            ]))
+            .await;
 
         // Start invocation, then kill it
         let invocation_target = InvocationTarget::mock_virtual_object();
         let original_invocation_id = InvocationId::generate(&invocation_target, None);
         let _ = test_env
             .apply_multiple([
-                Command::Invoke(Box::new(ServiceInvocation {
+                commands::InvokeCommand::test_envelope(ServiceInvocation {
                     invocation_id: original_invocation_id,
                     invocation_target: invocation_target.clone(),
                     completion_retention_duration: Duration::from_secs(120),
                     journal_retention_duration: Duration::from_secs(120),
                     ..ServiceInvocation::mock()
-                })),
-                Command::TerminateInvocation(InvocationTermination {
+                }),
+                commands::TerminateInvocationCommand::test_envelope(InvocationTermination {
                     invocation_id: original_invocation_id,
                     flavor: TerminationFlavor::Kill,
                     response_sink: None,
@@ -414,7 +453,7 @@ mod tests {
         let new_id = InvocationId::mock_generate(&invocation_target);
         let request_id = PartitionProcessorRpcRequestId::new();
         let actions = test_env
-            .apply(Command::RestartAsNewInvocation(
+            .apply(commands::RestartAsNewInvocationCommand::test_envelope(
                 RestartAsNewInvocationRequest {
                     invocation_id: original_invocation_id,
                     new_invocation_id: new_id,
@@ -466,13 +505,13 @@ mod tests {
         let original_invocation_id = InvocationId::generate(&invocation_target, None);
         let _ = test_env
             .apply_multiple([
-                Command::Invoke(Box::new(ServiceInvocation {
+                commands::InvokeCommand::test_envelope(ServiceInvocation {
                     invocation_id: original_invocation_id,
                     invocation_target: invocation_target.clone(),
                     completion_retention_duration: Duration::from_secs(120),
                     journal_retention_duration: Duration::from_secs(120),
                     ..ServiceInvocation::mock()
-                })),
+                }),
                 fixtures::pinned_deployment(original_invocation_id, ServiceProtocolVersion::V6),
                 fixtures::invoker_entry_effect(
                     original_invocation_id,
@@ -489,7 +528,7 @@ mod tests {
         let new_id = InvocationId::mock_generate(&invocation_target);
         let request_id = PartitionProcessorRpcRequestId::new();
         let actions = test_env
-            .apply(Command::RestartAsNewInvocation(
+            .apply(commands::RestartAsNewInvocationCommand::test_envelope(
                 RestartAsNewInvocationRequest {
                     invocation_id: original_invocation_id,
                     new_invocation_id: new_id,
@@ -542,13 +581,13 @@ mod tests {
         let original_invocation_id = InvocationId::generate(&invocation_target, None);
         let _ = test_env
             .apply_multiple([
-                Command::Invoke(Box::new(ServiceInvocation {
+                commands::InvokeCommand::test_envelope(ServiceInvocation {
                     invocation_id: original_invocation_id,
                     invocation_target: invocation_target.clone(),
                     completion_retention_duration: Duration::from_secs(120),
                     journal_retention_duration: Duration::from_secs(120),
                     ..ServiceInvocation::mock()
-                })),
+                }),
                 fixtures::pinned_deployment(original_invocation_id, ServiceProtocolVersion::V6),
                 fixtures::invoker_entry_effect(
                     original_invocation_id,
@@ -571,7 +610,7 @@ mod tests {
         // Now restart original into a new invocation while VO is locked by locker_id
         let new_id = InvocationId::mock_generate(&invocation_target);
         let _ = test_env
-            .apply(Command::RestartAsNewInvocation(
+            .apply(commands::RestartAsNewInvocationCommand::test_envelope(
                 RestartAsNewInvocationRequest {
                     invocation_id: original_invocation_id,
                     new_invocation_id: new_id,
@@ -617,13 +656,13 @@ mod tests {
         let completion_id = 1u32;
         let _ = test_env
             .apply_multiple([
-                Command::Invoke(Box::new(ServiceInvocation {
+                commands::InvokeCommand::test_envelope(ServiceInvocation {
                     invocation_id: original_invocation_id,
                     invocation_target: invocation_target.clone(),
                     completion_retention_duration: Duration::from_secs(120),
                     journal_retention_duration: Duration::from_secs(120),
                     ..ServiceInvocation::mock()
-                })),
+                }),
                 fixtures::pinned_deployment(original_invocation_id, ServiceProtocolVersion::V6),
                 fixtures::invoker_entry_effect(
                     original_invocation_id,
@@ -633,7 +672,7 @@ mod tests {
                         completion_id,
                     },
                 ),
-                Command::NotifySignal(NotifySignalRequest {
+                commands::NotifySignalCommand::test_envelope(NotifySignalRequest {
                     invocation_id: original_invocation_id,
                     signal: Signal::new(
                         SignalId::for_index(1),
@@ -648,7 +687,7 @@ mod tests {
                         completion_id: completion_id + 1,
                     },
                 ),
-                Command::Timer(TimerKeyValue::complete_journal_entry(
+                commands::TimerCommand::test_envelope(TimerKeyValue::complete_journal_entry(
                     wake_up_time,
                     original_invocation_id,
                     completion_id,
@@ -680,7 +719,7 @@ mod tests {
         );
         let new_deployment_id = DeploymentId::new();
         let _ = test_env
-            .apply(Command::RestartAsNewInvocation(
+            .apply(commands::RestartAsNewInvocationCommand::test_envelope(
                 RestartAsNewInvocationRequest {
                     invocation_id: original_invocation_id,
                     new_invocation_id,
@@ -734,13 +773,13 @@ mod tests {
         let original_invocation_id = InvocationId::generate(&invocation_target, None);
         let _ = test_env
             .apply_multiple([
-                Command::Invoke(Box::new(ServiceInvocation {
+                commands::InvokeCommand::test_envelope(ServiceInvocation {
                     invocation_id: original_invocation_id,
                     invocation_target: invocation_target.clone(),
                     completion_retention_duration: Duration::from_secs(120),
                     journal_retention_duration: Duration::from_secs(120),
                     ..ServiceInvocation::mock()
-                })),
+                }),
                 fixtures::pinned_deployment(original_invocation_id, ServiceProtocolVersion::V6),
                 // Complete with an output so the journal has at least input+output
                 fixtures::invoker_entry_effect(
@@ -769,7 +808,7 @@ mod tests {
         let new_invocation_id = InvocationId::mock_generate(&invocation_target);
         let request_id = PartitionProcessorRpcRequestId::new();
         let actions = test_env
-            .apply(Command::RestartAsNewInvocation(
+            .apply(commands::RestartAsNewInvocationCommand::test_envelope(
                 RestartAsNewInvocationRequest {
                     invocation_id: original_invocation_id,
                     new_invocation_id,

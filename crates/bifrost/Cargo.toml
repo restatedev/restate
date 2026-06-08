@@ -23,9 +23,9 @@ restate-futures-util = { workspace = true }
 restate-memory = { workspace = true }
 restate-metadata-store = { workspace = true }
 restate-rocksdb = { workspace = true, optional = true }
-restate-serde-util = { workspace = true }
 restate-test-util = { workspace = true, optional = true }
-restate-time-util = { workspace = true }
+restate-util-bytecount = { workspace = true, features = ["serde"] }
+restate-util-time = { workspace = true }
 restate-types = { workspace = true }
 
 ahash = { workspace = true }
@@ -62,12 +62,11 @@ restate-bifrost = {path = ".", default-features = false, features = ["local-logl
 restate-core = { workspace = true, features = ["test-util"] }
 restate-log-server = { workspace = true, features = ["test-util"] }
 restate-rocksdb = { workspace = true }
-restate-serde-util = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
 restate-wal-protocol = { workspace = true }
-restate-invoker-api = { workspace = true }
+restate-worker-api = { workspace = true }
 
 bytestring = { workspace = true }
 criterion = { workspace = true, features = ["async_tokio"] }
@@ -85,3 +84,6 @@ tikv-jemallocator = { workspace = true }
 [[bench]]
 name = "replicated_loglet_serde"
 harness = false
+
+[lints]
+workspace = true

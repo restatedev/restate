@@ -10,22 +10,29 @@
 
 //! Restate uses many identifiers to uniquely identify its services and entities.
 
+mod partitioned;
+
+pub use partitioned::PartitionedResourceId;
+pub use restate_sharding::{PartitionKey, WithPartitionKey};
+
+use std::cell::RefCell;
 use std::fmt::{self, Display, Formatter};
 use std::hash::Hash;
 use std::mem::size_of;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use base64::Engine;
 use bytes::Bytes;
 use bytestring::ByteString;
 use generic_array::ArrayLength;
-use rand::RngCore;
+use rand::Rng;
 use sha2::{Digest, Sha256};
 use ulid::Ulid;
 
-use restate_encoding::{BilrostNewType, NetSerde};
-
+use self::partitioned::partitioned_resource_id;
+use crate::Scope;
 use crate::base62_util::{base62_encode_fixed_width_u128, base62_max_length_for_type};
 use crate::errors::IdDecodeError;
 use crate::id_util::IdResourceType;
@@ -33,6 +40,13 @@ use crate::id_util::{IdDecoder, IdEncoder};
 use crate::invocation::{InvocationTarget, InvocationTargetType, WorkflowHandlerType};
 use crate::journal_v2::SignalId;
 use crate::time::MillisSinceEpoch;
+use restate_encoding::{BilrostNewType, NetSerde};
+
+thread_local! {
+    // a thread-local xxh3 hashing state to reuse its allocation since its internal buffer is quite
+    // large (~500 bytes)
+    static PARTITION_KEY_HASHER: RefCell<xxhash_rust::xxh3::Xxh3> = const { RefCell::new(xxhash_rust::xxh3::Xxh3::new()) };
+}
 
 /// Identifying the leader epoch of a partition processor
 #[derive(
@@ -70,6 +84,45 @@ impl Default for LeaderEpoch {
     }
 }
 
+mod bilrost_encoding {
+    use bilrost::encoding::{DistinguishedProxiable, Proxiable};
+    use bilrost::{Canonicity, DecodeErrorKind};
+
+    use super::LeaderEpoch;
+
+    struct FixedLeaderEpochTag;
+
+    impl Proxiable<FixedLeaderEpochTag> for LeaderEpoch {
+        type Proxy = u64;
+
+        fn encode_proxy(&self) -> Self::Proxy {
+            self.0
+        }
+
+        fn decode_proxy(&mut self, proxy: Self::Proxy) -> Result<(), DecodeErrorKind> {
+            self.0 = proxy;
+            Ok(())
+        }
+    }
+
+    impl DistinguishedProxiable<FixedLeaderEpochTag> for LeaderEpoch {
+        fn decode_proxy_distinguished(
+            &mut self,
+            proxy: Self::Proxy,
+        ) -> Result<Canonicity, DecodeErrorKind> {
+            self.decode_proxy(proxy)?;
+            Ok(Canonicity::Canonical)
+        }
+    }
+
+    bilrost::delegate_proxied_encoding!(
+        use encoding (bilrost::encoding::Fixed)
+        to encode proxied type (LeaderEpoch) using proxy tag (FixedLeaderEpochTag)
+        with encoding (bilrost::encoding::Fixed)
+        including distinguished
+    );
+}
+
 impl From<crate::protobuf::common::LeaderEpoch> for LeaderEpoch {
     fn from(epoch: crate::protobuf::common::LeaderEpoch) -> Self {
         Self::from(epoch.value)
@@ -83,59 +136,7 @@ impl From<LeaderEpoch> for crate::protobuf::common::LeaderEpoch {
     }
 }
 
-/// Identifying the partition
-#[derive(
-    Copy,
-    Clone,
-    PartialEq,
-    Eq,
-    Hash,
-    PartialOrd,
-    Ord,
-    derive_more::Deref,
-    derive_more::From,
-    derive_more::Into,
-    derive_more::Add,
-    derive_more::Display,
-    derive_more::Debug,
-    derive_more::FromStr,
-    serde::Serialize,
-    serde::Deserialize,
-    BilrostNewType,
-    NetSerde,
-)]
-#[repr(transparent)]
-#[serde(transparent)]
-#[debug("{}", _0)]
-pub struct PartitionId(u16);
-
-impl From<PartitionId> for u32 {
-    fn from(value: PartitionId) -> Self {
-        u32::from(value.0)
-    }
-}
-
-impl From<PartitionId> for u64 {
-    fn from(value: PartitionId) -> Self {
-        u64::from(value.0)
-    }
-}
-
-impl PartitionId {
-    /// It's your responsibility to ensure the value is within the valid range.
-    pub const fn new_unchecked(v: u16) -> Self {
-        Self(v)
-    }
-
-    pub const MIN: Self = Self(u16::MIN);
-    // 65535 partitions.
-    pub const MAX: Self = Self(u16::MAX);
-
-    #[inline]
-    pub fn next(self) -> Self {
-        Self(std::cmp::min(*Self::MAX, self.0.saturating_add(1)))
-    }
-}
+pub use crate::sharding::PartitionId;
 
 /// The leader epoch of a given partition
 pub type PartitionLeaderEpoch = (PartitionId, LeaderEpoch);
@@ -143,24 +144,85 @@ pub type PartitionLeaderEpoch = (PartitionId, LeaderEpoch);
 // Just an alias
 pub type EntryIndex = u32;
 
-/// Identifying to which partition a key belongs. This is unlike the [`PartitionId`]
-/// which identifies a consecutive range of partition keys.
-pub type PartitionKey = u64;
-
 /// Returns the partition key computed from either the service_key, or idempotency_key, if possible
 fn deterministic_partition_key(
+    service_name: &str,
     service_key: Option<&str>,
     idempotency_key: Option<&str>,
 ) -> Option<PartitionKey> {
     service_key
         .map(partitioner::HashPartitioner::compute_partition_key)
-        .or_else(|| idempotency_key.map(partitioner::HashPartitioner::compute_partition_key))
+        .or_else(|| {
+            idempotency_key.map(|idempotency_key| {
+                if is_controlled_idempotent_sharding_enabled() {
+                    unscoped_idempotent_service_partition_key(service_name, idempotency_key)
+                } else {
+                    partitioner::HashPartitioner::compute_partition_key(idempotency_key)
+                }
+            })
+        })
 }
 
-/// Trait for data structures that have a partition key
-pub trait WithPartitionKey {
-    /// Returns the partition key
-    fn partition_key(&self) -> PartitionKey;
+/// Number of partition keys each unscoped service can spread over.
+///
+/// For unscoped, non-idempotent invocations we avoid global randomness (`next_u64`) and instead
+/// pick one key out of a bounded, service-specific set.
+///
+/// NOTE: This same constant is also used by unscoped idempotent services, where its value is
+/// effectively immutable: changing it would re-shard idempotent invocations onto different
+/// partitions and break deduplication. If you ever need to tune the scatter width for
+/// non-idempotent services only, split this into two separate constants first.
+///
+/// Note: If this value ever changes, please keep it as a power of two so that the compiler can
+/// optimize it to a single AND instruction instead of a real mul+shift operation.
+const UNSCOPED_SERVICE_PARTITION_KEY_FANOUT: u64 = 512;
+
+static CONTROLLED_IDEMPOTENT_SHARDING: AtomicBool = AtomicBool::new(false);
+
+#[inline(always)]
+fn is_controlled_idempotent_sharding_enabled() -> bool {
+    CONTROLLED_IDEMPOTENT_SHARDING.load(Ordering::Relaxed)
+}
+
+pub fn enable_controlled_idempotent_sharding() {
+    CONTROLLED_IDEMPOTENT_SHARDING.store(true, Ordering::Relaxed)
+}
+
+/// Computes one of the deterministic partition keys assigned to an unscoped service.
+///
+/// The key set for a service name is generated as:
+/// - `key(bucket) = H((service_name, "unscoped_partition_key_fanout", bucket))`
+///
+/// This keeps bucket-to-key mapping deterministic per service while preserving uniform hash
+/// distribution over the full `PartitionKey` space. The random selection happens at bucket level,
+/// not at raw key level.
+///
+/// Examples for a given service `S`:
+/// - bucket `0` selects `H((S, "unscoped/service", 0))`
+/// - bucket `1` selects `H((S, "unscoped/service", 1))`
+/// - bucket `7` selects `H((S, "unscoped/service", 7))`
+#[inline]
+fn unscoped_service_partition_key(service_name: &str, bucket: u64) -> PartitionKey {
+    debug_assert!(bucket < UNSCOPED_SERVICE_PARTITION_KEY_FANOUT);
+
+    partitioner::HashPartitioner::compute_partition_key((service_name, "unscoped/service", bucket))
+}
+
+#[inline]
+fn random_unscoped_service_partition_key(service_name: &str) -> PartitionKey {
+    // Selects uniformly in [0, FAN_OUT) and maps into the service-specific key set.
+    let bucket = rand::rng().random_range(0..UNSCOPED_SERVICE_PARTITION_KEY_FANOUT);
+    unscoped_service_partition_key(service_name, bucket)
+}
+
+fn unscoped_idempotent_service_partition_key(
+    service_name: &str,
+    idempotency_key: &str,
+) -> PartitionKey {
+    let intermittent_key = partitioner::HashPartitioner::compute_partition_key(idempotency_key);
+    let bucket = intermittent_key % UNSCOPED_SERVICE_PARTITION_KEY_FANOUT;
+
+    unscoped_service_partition_key(service_name, bucket)
 }
 
 /// A family of resource identifiers that tracks the timestamp of its creation.
@@ -220,14 +282,17 @@ impl InvocationUuid {
         Self::from_u128(u128::from_be_bytes(b))
     }
 
-    pub const fn to_bytes(&self) -> [u8; Self::RAW_BYTES_LEN] {
+    pub const fn to_bytes(self) -> [u8; Self::RAW_BYTES_LEN] {
         self.0.to_be_bytes()
     }
 
     pub fn generate(invocation_target: &InvocationTarget, idempotency_key: Option<&str>) -> Self {
+        let scope = invocation_target.scope();
         const HASH_SEPARATOR: u8 = 0x2c;
 
         // --- Rules for deterministic ID
+        // * If the target is _scoped_, use the scope name as part of the hash to avoid collision
+        // with unscoped requests with the same idempotency key.
         // * If the target IS a workflow run, use workflow name + key
         // * If the target IS an idempotent request, use the idempotency scope + key
         // * If the target IS NEITHER an idempotent request or a workflow run, then just generate a random ulid
@@ -237,6 +302,10 @@ impl InvocationUuid {
                 // Workflow run
                 let mut hasher = Sha256::new();
                 hasher.update(b"wf");
+                if let Some(scope) = scope {
+                    hasher.update([HASH_SEPARATOR]);
+                    hasher.update(scope.as_bytes());
+                }
                 hasher.update([HASH_SEPARATOR]);
                 hasher.update(invocation_target.service_name());
                 hasher.update([HASH_SEPARATOR]);
@@ -257,6 +326,10 @@ impl InvocationUuid {
                 // Invocations with Idempotency key
                 let mut hasher = Sha256::new();
                 hasher.update(b"ik");
+                if let Some(scope) = scope {
+                    hasher.update([HASH_SEPARATOR]);
+                    hasher.update(scope.as_bytes());
+                }
                 hasher.update([HASH_SEPARATOR]);
                 hasher.update(invocation_target.service_name());
                 if let Some(key) = invocation_target.key() {
@@ -371,27 +444,50 @@ pub struct ServiceId {
 
     #[bilrost(3)]
     partition_key: PartitionKey,
+
+    /// Optional scope for the service instance. Different scopes have separate state.
+    #[bilrost(4)]
+    pub scope: Option<Scope>,
 }
 
 impl ServiceId {
-    pub fn new(service_name: impl Into<ByteString>, key: impl Into<ByteString>) -> Self {
+    pub fn new(
+        scope: Option<Scope>,
+        service_name: impl Into<ByteString>,
+        key: impl Into<ByteString>,
+    ) -> Self {
         let key = key.into();
-        let partition_key = partitioner::HashPartitioner::compute_partition_key(&key);
-        Self::with_partition_key(partition_key, service_name, key)
+        let partition_key = scope
+            .as_ref()
+            .map(|s| s.partition_key())
+            .unwrap_or_else(|| partitioner::HashPartitioner::compute_partition_key(&key));
+        Self {
+            service_name: service_name.into(),
+            key,
+            partition_key,
+            scope,
+        }
     }
 
     /// # Important
-    /// The `partition_key` must be hash of the `key` computed via [`HashPartitioner`].
+    /// The `partition_key` must be hash of the `key` computed via [`HashPartitioner`],
+    /// or `scope.partition_key()` if scoped.
     pub fn with_partition_key(
         partition_key: PartitionKey,
         service_name: impl Into<ByteString>,
         key: impl Into<ByteString>,
     ) -> Self {
-        Self::from_parts(partition_key, service_name.into(), key.into())
+        Self {
+            service_name: service_name.into(),
+            key: key.into(),
+            partition_key,
+            scope: None,
+        }
     }
 
     /// # Important
-    /// The `partition_key` must be hash of the `key` computed via [`HashPartitioner`].
+    /// The `partition_key` must be hash of the `key` computed via [`HashPartitioner`],
+    /// or `scope.partition_key()` if scoped.
     pub const fn from_parts(
         partition_key: PartitionKey,
         service_name: ByteString,
@@ -401,6 +497,7 @@ impl ServiceId {
             service_name,
             key,
             partition_key,
+            scope: None,
         }
     }
 }
@@ -454,7 +551,7 @@ impl InvocationId {
     /// target/idempotency key when available; otherwise a random partition key is used.
     pub fn generate(invocation_target: &InvocationTarget, idempotency_key: Option<&str>) -> Self {
         Self::generate_or_else(invocation_target, idempotency_key, || {
-            rand::rng().next_u64()
+            random_unscoped_service_partition_key(invocation_target.service_name())
         })
     }
 
@@ -468,15 +565,21 @@ impl InvocationId {
     where
         F: FnOnce() -> PartitionKey,
     {
-        // --- Partition key generation
-        let partition_key =
-                // Either try to generate the deterministic partition key, if possible
-                deterministic_partition_key(
-                    invocation_target.key().map(|bs| bs.as_ref()),
-                    idempotency_key,
-                )
-                // If no deterministic partition key can be generated, just pick a random number
-                .unwrap_or_else(f);
+        let scope = invocation_target.scope();
+        let partition_key = if let Some(scope) = scope {
+            // Scoped invocations inherit the partition key from their owning scope
+            scope.partition_key()
+        } else {
+            // --- Partition key generation
+            // Either try to generate the deterministic partition key, if possible
+            deterministic_partition_key(
+                invocation_target.service_name(),
+                invocation_target.key().map(|bs| bs.as_ref()),
+                idempotency_key,
+            )
+            // If no deterministic partition key can be generated, just pick a random number
+            .unwrap_or_else(f)
+        };
 
         // --- Invocation UUID generation
         InvocationId::from_parts(
@@ -501,7 +604,7 @@ impl InvocationId {
         self.inner
     }
 
-    pub fn to_bytes(&self) -> EncodedInvocationId {
+    pub fn to_bytes(self) -> EncodedInvocationId {
         let mut buf = EncodedInvocationId::default();
         self.encode_raw_bytes(&mut buf);
         buf
@@ -520,12 +623,27 @@ impl InvocationId {
     }
 
     /// Generate random seed to feed RNG in SDKs.
-    pub fn to_random_seed(&self) -> u64 {
+    pub fn to_random_seed(self) -> u64 {
         use std::hash::{DefaultHasher, Hash, Hasher};
 
         let mut hasher = DefaultHasher::new();
         self.to_bytes().hash(&mut hasher);
         hasher.finish()
+    }
+
+    /// Generate random seed combining the invocation id with wal record time.
+    pub fn to_random_seed_with_wal_record_time(self, wal_record_time: u64) -> u64 {
+        let uuid: u128 = self.inner.into();
+        let uuid_lo = uuid as u64;
+        let uuid_hi = (uuid >> 64) as u64;
+
+        // To avoid collapsing entropy, we rotate wal record time and uuid parts (which might contain timestamp, which might be close to wal record time)
+        let mut mixed = uuid_hi ^ uuid_lo.rotate_left(21) ^ wal_record_time.rotate_left(43);
+
+        // Uses xoshiro from Vigna https://docs.rs/xoshiro/latest/src/xoshiro/splitmix64.rs.html#17-19
+        mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d049bb133111eb);
+        mixed ^ (mixed >> 31)
     }
 }
 
@@ -595,12 +713,6 @@ impl WithPartitionKey for InvocationId {
     }
 }
 
-impl<T: WithInvocationId> WithPartitionKey for T {
-    fn partition_key(&self) -> PartitionKey {
-        self.invocation_id().partition_key
-    }
-}
-
 impl Display for InvocationId {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         // encode the id such that it is possible to do a string prefix search for a
@@ -655,6 +767,8 @@ pub struct IdempotencyId {
     pub service_handler: ByteString,
     /// The user supplied idempotency_key
     pub idempotency_key: ByteString,
+    /// Optional scope for vqueue partitioning
+    pub scope: Option<Scope>,
 
     partition_key: PartitionKey,
 }
@@ -665,23 +779,30 @@ impl IdempotencyId {
         service_key: Option<ByteString>,
         service_handler: ByteString,
         idempotency_key: ByteString,
+        scope: Option<Scope>,
     ) -> Self {
-        // The ownership model for idempotent invocations is the following:
-        //
+        // When scoped, the partition key comes from the scope.
+        // Otherwise:
         // * For services without key, the partition key is the hash(idempotency key).
-        //   This makes sure that for a given idempotency key and its scope, we always land in the same partition.
-        // * For services with key, the partition key is the hash(service key), this due to the virtual object locking requirement.
-        let partition_key = deterministic_partition_key(
-            service_key.as_ref().map(|bs| bs.as_ref()),
-            Some(&idempotency_key),
-        )
-        .expect("A deterministic partition key can always be generated for idempotency id");
+        // * For services with key, the partition key is the hash(service key).
+        let partition_key = scope
+            .as_ref()
+            .map(|s| s.partition_key())
+            .or_else(|| {
+                deterministic_partition_key(
+                    &service_name,
+                    service_key.as_ref().map(|bs| bs.as_ref()),
+                    Some(&idempotency_key),
+                )
+            })
+            .expect("A deterministic partition key can always be generated for idempotency id");
 
         Self {
             service_name,
             service_key,
             service_handler,
             idempotency_key,
+            scope,
             partition_key,
         }
     }
@@ -696,6 +817,7 @@ impl IdempotencyId {
             service_key: invocation_target.key().cloned(),
             service_handler: invocation_target.handler_name().clone(),
             idempotency_key,
+            scope: invocation_target.scope().cloned(),
             partition_key: invocation_id.partition_key(),
         }
     }
@@ -711,7 +833,7 @@ impl WithPartitionKey for IdempotencyId {
 pub type ServiceRevision = u32;
 
 pub mod partitioner {
-    use super::PartitionKey;
+    use super::{PARTITION_KEY_HASHER, PartitionKey};
 
     use std::hash::{Hash, Hasher};
 
@@ -720,9 +842,12 @@ pub mod partitioner {
 
     impl HashPartitioner {
         pub fn compute_partition_key(value: impl Hash) -> PartitionKey {
-            let mut hasher = xxhash_rust::xxh3::Xxh3::default();
-            value.hash(&mut hasher);
-            hasher.finish()
+            PARTITION_KEY_HASHER.with_borrow_mut(|hasher| {
+                value.hash(hasher);
+                let key = hasher.finish();
+                hasher.reset();
+                key
+            })
         }
     }
 }
@@ -749,6 +874,12 @@ impl JournalEntryId {
 impl From<(InvocationId, EntryIndex)> for JournalEntryId {
     fn from(value: (InvocationId, EntryIndex)) -> Self {
         Self::from_parts(value.0, value.1)
+    }
+}
+
+impl WithPartitionKey for JournalEntryId {
+    fn partition_key(&self) -> PartitionKey {
+        self.invocation_id.partition_key()
     }
 }
 
@@ -1015,7 +1146,7 @@ macro_rules! ulid_backed_id {
                     Self(ulid)
                 }
 
-                pub fn to_bytes(&self) -> [u8; 16] {
+                pub fn to_bytes(self) -> [u8; 16] {
                     self.0.to_bytes()
                 }
             }
@@ -1078,6 +1209,11 @@ ulid_backed_id!(Deployment @with_resource_id);
 ulid_backed_id!(Subscription @with_resource_id);
 ulid_backed_id!(PartitionProcessorRpcRequest);
 ulid_backed_id!(Snapshot @with_resource_id);
+
+partitioned::partitioned_resource_id!(
+    /// StateMutation request identifier
+    StateMutation
+);
 
 impl SnapshotId {
     pub const INVALID: Self = Self::from_parts(0, 0);
@@ -1318,6 +1454,7 @@ mod mocks {
     impl ServiceId {
         pub fn mock_random() -> Self {
             Self::new(
+                None,
                 Alphanumeric.sample_string(&mut rand::rng(), 8),
                 Alphanumeric.sample_string(&mut rand::rng(), 16),
             )
@@ -1332,6 +1469,7 @@ mod mocks {
                 service_name: ByteString::from_static(service_name),
                 key: ByteString::from_static(service_key),
                 partition_key,
+                scope: None,
             }
         }
     }
@@ -1348,6 +1486,7 @@ mod mocks {
                 service_key: None,
                 service_handler: ByteString::from_static(service_handler),
                 idempotency_key: ByteString::from_static(idempotency_key),
+                scope: None,
                 partition_key,
             }
         }
@@ -1358,6 +1497,7 @@ mod mocks {
                 Some(Alphanumeric.sample_string(&mut rand::rng(), 16).into()),
                 Alphanumeric.sample_string(&mut rand::rng(), 8).into(),
                 Alphanumeric.sample_string(&mut rand::rng(), 8).into(),
+                None,
             )
         }
     }
@@ -1366,6 +1506,8 @@ mod mocks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::collections::HashSet;
 
     use crate::invocation::VirtualObjectHandlerType;
     use rand::distr::{Alphanumeric, SampleString};
@@ -1487,7 +1629,57 @@ mod tests {
     }
 
     #[test]
-    fn test_subscription_id_format() {
+    fn unscoped_service_invocations_use_consistent_bounded_partition_key_set() {
+        fn service_partition_key_set(service_name: &ByteString) -> HashSet<PartitionKey> {
+            (0..UNSCOPED_SERVICE_PARTITION_KEY_FANOUT)
+                .map(|bucket| unscoped_service_partition_key(service_name, bucket))
+                .collect()
+        }
+
+        let invocation_target = InvocationTarget::service("MyService", "MyMethod");
+        let expected_keys = service_partition_key_set(invocation_target.service_name());
+        let expected_keys_recomputed = service_partition_key_set(invocation_target.service_name());
+
+        assert_eq!(expected_keys, expected_keys_recomputed);
+
+        assert_eq!(
+            expected_keys.len(),
+            UNSCOPED_SERVICE_PARTITION_KEY_FANOUT as usize
+        );
+
+        for _ in 0..512 {
+            let partition_key = InvocationId::generate(&invocation_target, None).partition_key();
+            assert!(expected_keys.contains(&partition_key));
+        }
+    }
+
+    #[test]
+    fn unscoped_services_have_different_partition_key_sets() {
+        fn service_partition_key_set(service_name: &ByteString) -> HashSet<PartitionKey> {
+            (0..UNSCOPED_SERVICE_PARTITION_KEY_FANOUT)
+                .map(|bucket| unscoped_service_partition_key(service_name, bucket))
+                .collect()
+        }
+
+        let service_a = InvocationTarget::service("ServiceA", "MyMethod");
+        let service_b = InvocationTarget::service("ServiceB", "MyMethod");
+
+        let service_a_keys = service_partition_key_set(service_a.service_name());
+        let service_b_keys = service_partition_key_set(service_b.service_name());
+
+        assert_eq!(
+            service_a_keys.len(),
+            UNSCOPED_SERVICE_PARTITION_KEY_FANOUT as usize
+        );
+        assert_eq!(
+            service_b_keys.len(),
+            UNSCOPED_SERVICE_PARTITION_KEY_FANOUT as usize
+        );
+        assert_ne!(service_a_keys, service_b_keys);
+    }
+
+    #[test]
+    fn subscription_id_format() {
         let a = SubscriptionId::new();
         assert!(a.timestamp().as_u64() > 0);
         let a_str = a.to_string();
@@ -1495,7 +1687,7 @@ mod tests {
     }
 
     #[test]
-    fn test_subscription_roundtrip() {
+    fn subscription_roundtrip() {
         let a = SubscriptionId::new();
         let b: SubscriptionId = a.to_string().parse().unwrap();
         assert_eq!(a, b);
@@ -1503,7 +1695,45 @@ mod tests {
     }
 
     #[test]
-    fn test_deployment_id_from_str() {
+    fn fixed_encoding_round_trips_leader_epoch() {
+        use bilrost::{Message, OwnedMessage};
+
+        #[derive(Debug, PartialEq, bilrost::Message)]
+        struct EncodedLeaderEpoch {
+            #[bilrost(tag(1), encoding(fixed))]
+            value: LeaderEpoch,
+        }
+
+        let value = EncodedLeaderEpoch {
+            value: LeaderEpoch::from(42),
+        };
+        let encoded = value.encode_to_bytes();
+
+        assert_eq!(encoded.len(), 9);
+        assert_eq!(EncodedLeaderEpoch::decode(encoded).unwrap(), value);
+    }
+
+    #[test]
+    fn general_encoding_keeps_leader_epoch_varint() {
+        use bilrost::{Message, OwnedMessage};
+
+        #[derive(Debug, PartialEq, bilrost::Message)]
+        struct EncodedLeaderEpoch {
+            #[bilrost(tag(1))]
+            value: LeaderEpoch,
+        }
+
+        let value = EncodedLeaderEpoch {
+            value: LeaderEpoch::from(42),
+        };
+        let encoded = value.encode_to_bytes();
+
+        assert_eq!(encoded.as_ref(), &[0x04, 42]);
+        assert_eq!(EncodedLeaderEpoch::decode(encoded).unwrap(), value);
+    }
+
+    #[test]
+    fn deployment_id_from_str() {
         let deployment_id = "dp_11nGQpCRmau6ypL82KH2TnP";
         let from_str_result = DeploymentId::from_str(deployment_id);
         assert!(from_str_result.is_ok());

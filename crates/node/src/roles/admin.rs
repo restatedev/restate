@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use codederror::CodedError;
+
 use restate_admin::StorageAccountingTask;
 use restate_admin::cluster_controller;
 use restate_admin::schema_registry_integration::{MetadataService, TelemetryClient};
@@ -21,12 +22,13 @@ use restate_core::network::NetworkServerBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
 use restate_core::partitions::PartitionRouting;
-use restate_core::worker_api::PartitionProcessorInvocationClient;
 use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_ingestion_client::IngestionClient;
+use restate_limiter::rule_book::RuleBookObserver;
 use restate_partition_store::PartitionStoreManager;
 use restate_service_client::{AssumeRoleCacheMode, HttpClient, ServiceClient};
-use restate_service_protocol::discovery::ServiceDiscovery;
+use restate_service_protocol_v4::discovery::ServiceDiscovery;
+use restate_service_protocol_v4::serdes::SerdesClient;
 use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
 use restate_storage_query_datafusion::empty_invoker_status_handle::EmptyInvokerStatusHandle;
 use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
@@ -44,6 +46,7 @@ use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::AdminStatus;
 use restate_types::retries::RetryPolicy;
 use restate_wal_protocol::Envelope;
+use restate_worker_api::PartitionProcessorInvocationClient;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum AdminRoleBuildError {
@@ -91,20 +94,26 @@ impl<T: TransportConnect> AdminRole<T> {
         server_builder: &mut NetworkServerBuilder,
         address_book: &mut AddressBook,
         local_query_context: Option<QueryContext>,
+        local_rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
     ) -> Result<Self, AdminRoleBuildError> {
         health_status.update(AdminStatus::StartingUp);
         let config = updateable_config.pinned();
 
         // Total duration roughly 1s
         let retry_policy = RetryPolicy::exponential(Duration::from_millis(100), 2.0, Some(4), None);
-        let client =
-            ServiceClient::from_options(&config.common.service_client, AssumeRoleCacheMode::None)?;
-        let service_discovery = ServiceDiscovery::new(retry_policy, client);
+        let service_client = ServiceClient::from_options(
+            &config.worker.invoker.service_client,
+            AssumeRoleCacheMode::None,
+        )?;
+        let serdes_client = SerdesClient::new(service_client.clone());
+        let service_discovery = ServiceDiscovery::new(retry_policy, service_client);
 
         let telemetry_http_client = if config.common.disable_telemetry {
             None
         } else {
-            Some(HttpClient::from_options(&config.common.service_client.http))
+            Some(HttpClient::from_options(
+                &config.worker.invoker.service_client.http,
+            ))
         };
 
         let query_context = if let Some(query_context) = local_query_context {
@@ -113,6 +122,7 @@ impl<T: TransportConnect> AdminRole<T> {
             let remote_scanner_manager = RemoteScannerManager::new(
                 create_remote_scanner_service(networking.clone()),
                 create_partition_locator(partition_routing.clone(), metadata.clone()),
+                metadata.clone(),
             );
 
             // need to create a remote query context since we are not co-located with a worker role
@@ -123,12 +133,14 @@ impl<T: TransportConnect> AdminRole<T> {
                 Option::<EmptyInvokerStatusHandle>::None,
                 metadata.updateable_schema(),
                 remote_scanner_manager,
+                metadata_writer.raw_metadata_store_client().clone(),
+                None,
             )
             .await?
         };
 
         let listeners = address_book.take_listeners::<AdminPort>();
-        let admin = AdminService::new(
+        let mut admin = AdminService::new(
             listeners,
             metadata_writer.clone(),
             ingestion_client,
@@ -137,10 +149,15 @@ impl<T: TransportConnect> AdminRole<T> {
                 partition_table,
                 partition_routing,
             ),
+            serdes_client,
             service_discovery,
             telemetry_http_client,
         )
         .with_query_context(query_context.clone());
+
+        if let Some(observer) = local_rule_book_observer {
+            admin = admin.with_rule_book_observer(observer);
+        }
 
         let controller = if config.admin.is_cluster_controller_enabled() {
             Some(

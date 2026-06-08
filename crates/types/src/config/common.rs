@@ -15,19 +15,21 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use enumset::EnumSet;
+use paste::paste;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use restate_serde_util::{NonZeroByteCount, SerdeableHeaderHashMap};
-use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
+use restate_serde_util::SerdeableHeaderHashMap;
+use restate_util_bytecount::NonZeroByteCount;
+use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
 
 use super::{
-    AwsLambdaOptions, CPU_COUNT, DEFAULT_MESSAGE_SIZE_LIMIT, GossipOptions, HttpOptions,
-    InvalidConfigurationError, ObjectStoreOptions, PerfStatsLevel, RocksDbOptions,
+    CPU_COUNT, DEFAULT_MESSAGE_SIZE_LIMIT, GossipOptions, InvalidConfigurationError,
+    ObjectStoreOptions, PerfStatsLevel, RocksDbOptions,
 };
 use crate::PlainNodeId;
-use crate::config::NetworkingOptions;
 use crate::config::dynamodb_store::DynamoDbOptions;
+use crate::config::{DeprecatedServiceClientOptions, NetworkingOptions};
 use crate::locality::NodeLocation;
 use crate::net::address::{AdvertisedAddress, ListenerPort};
 use crate::net::address::{BindAddress, FabricPort, TokioConsolePort};
@@ -43,13 +45,11 @@ const MIN_MEMTABLE_TOTAL_BUDGET: NonZeroByteCount =
     NonZeroByteCount::new(NonZeroUsize::new(32 * 1024 * 1024).unwrap());
 
 const DEFAULT_STORAGE_DIRECTORY: &str = "restate-data";
-const X_RESTATE_CLUSTER_NAME: http::HeaderName =
-    http::HeaderName::from_static("x-restate-cluster-name");
 
 static HOSTNAME: LazyLock<String> = LazyLock::new(|| {
     hostname::get()
         .map(|h| h.into_string().expect("hostname is valid unicode"))
-        .unwrap_or("INVALID_HOSTANAME".to_owned())
+        .unwrap_or_else(|_| "INVALID_HOSTANAME".to_owned())
 });
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,7 +151,7 @@ impl<P: ListenerPort + 'static> ListenerOptions<P> {
         }
 
         if self.advertised_host.is_none() && self.advertised_address.is_none() {
-            self.advertised_host = other.advertised_host.clone();
+            self.advertised_host.clone_from(&other.advertised_host);
         }
     }
 
@@ -329,7 +329,7 @@ pub struct CommonOptions {
     pub log_disable_ansi_codes: bool,
 
     /// Address to bind for the tokio-console tracing subscriber. If unset and restate-server is
-    /// built with tokio-console support, it'll listen on `0.0.0.0:6669`.
+    /// built with tokio-console support, it'll listen on `[::]:6669`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub tokio_console_bind_address: Option<BindAddress<TokioConsolePort>>,
@@ -342,8 +342,11 @@ pub struct CommonOptions {
     )]
     tokio_console_listener_options: ListenerOptions<TokioConsolePort>,
 
-    #[serde(flatten)]
-    pub service_client: ServiceClientOptions,
+    // todo: remove in Restate v1.8
+    #[serde(flatten, skip_serializing)]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[deprecated(since = "1.7.0", note = "Moved to `worker.invoker.service-client`")]
+    pub(crate) service_client: DeprecatedServiceClientOptions,
 
     /// Disable prometheus metric recording and reporting. Default is `false`.
     pub disable_prometheus: bool,
@@ -463,20 +466,6 @@ pub struct CommonOptions {
     #[serde(flatten)]
     pub gossip: GossipOptions,
 
-    /// Current in heavy development, do not enable this feature unless you are a contributor
-    #[cfg_attr(feature = "schemars", schemars(skip))]
-    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
-    pub experimental_enable_vqueues: bool,
-
-    /// When enabled, invocations that exhaust their memory budget will yield back to
-    /// the scheduler instead of consuming retry attempts. Requires all nodes in the
-    /// cluster to be running v1.7.0 or later because it introduces a new WAL variant.
-    ///
-    /// Since v1.6.3
-    #[cfg_attr(feature = "schemars", schemars(skip))]
-    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
-    pub experimental_enable_invoker_yield: bool,
-
     /// # HLC maximum drift
     ///
     /// Restate uses an internal hybrid-logical-clock (HLC) to track causality between
@@ -494,28 +483,159 @@ pub struct CommonOptions {
     #[serde(default)]
     hlc_max_drift: FriendlyDuration,
 
-    /// # Experimental Kafka batch ingestion
-    ///
-    /// Use the new experimental kafka ingestion path which leverages batching
-    /// for a faster kafka ingestion.
-    ///
-    /// Set to `true` to enable the experimental ingestion mechanism.
-    ///
-    /// The legacy path will be removed in v1.7.
-    ///
-    /// Defaults to `false` in v1.6.
-    pub experimental_kafka_batch_ingestion: bool,
+    #[serde(flatten)]
+    pub experimental: Experimental,
 
-    /// # Experimental Shuffler batch ingestion
+    /// # Explicitly disable the `controlled-idempotent-sharding`
     ///
-    /// Use the new experimental batch ingestion path.
+    /// TODO: Removed in Restate v1.8. This is a stopgap solution to
+    /// fix e2e forward compatibility tests.
     ///
-    /// Set to `true` to enable the experimental ingestion mechanism.
+    /// Since v1.7
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    pub disable_controlled_idempotent_sharding: bool,
+}
+
+/// Declares the [`Experimental`] feature-flag struct from a list of feature names.
+///
+/// Each entry is a bare identifier (optionally preceded by doc comments / attributes) inside
+/// `experimental! { ... }`. For a feature `foo` the macro generates:
+/// - a `experimental_enable_foo: bool` field on [`Experimental`] — this is the on-disk /
+///   JSON-schema name, so the configuration schema always exposes flags as
+///   `experimental_enable_<feature>`;
+/// - `Experimental::is_foo_enabled()` and `Experimental::set_foo(enable)` accessors;
+/// - an entry in [`Experimental::features`] keyed on the bare name `"foo"` (without the
+///   `experimental_enable_` prefix), which is what is surfaced through the admin `/version` API.
+///
+/// Adding a new experimental flag is therefore a one-line change at the invocation site below:
+/// no other code needs to be touched for the flag to show up in `/version`.
+macro_rules! experimental {
+    (@gen_struct [] -> [$($body:tt)*]) => {
+        #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+        #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+        #[cfg_attr(feature = "schemars", schemars(default))]
+        #[serde(rename_all = "kebab-case")]
+        pub struct Experimental {
+            $($body)*
+        }
+    };
+    (@gen_struct [$(#[$($attrss:meta)*])* $feat:ident $(, $($tail:tt)*)?] -> [$($body:tt)*]) => {
+        paste!{
+            experimental!(@gen_struct [$($($tail)*)?] -> [
+                $($body)*
+
+                $(#[$($attrss)*])*
+                #[cfg_attr(feature = "schemars", schemars(skip))]
+                #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+                [<experimental_enable_ $feat>]: bool,
+            ]);
+        }
+    };
+    (@gen_features [] -> [$($field:ident)*]) => {
+        impl Experimental {
+            pub fn features(&self) -> std::collections::HashMap<std::borrow::Cow<'static, str>, bool> {
+                let mut map = std::collections::HashMap::default();
+                $(
+                    paste!{
+                        map.insert(std::borrow::Cow::Borrowed(stringify!($field)), self.[<experimental_enable_ $field>]);
+                    }
+                )*
+                map
+            }
+        }
+    };
+    (@gen_features [$(#[$($attrss:meta)*])* $feat:ident $(, $($tail:tt)*)?] -> [$($acc:ident)*]) => {
+        experimental!(@gen_features [$($($tail)*)?] -> [$($acc)* $feat]);
+    };
+    (@gen_getters [] -> [$($field:ident)*]) => {
+        impl Experimental {
+            $(
+                paste!{
+                    pub fn [<is_ $field _enabled>](&self) -> bool {
+                        self.[<experimental_enable_ $field>]
+                    }
+
+                    pub fn [<set_ $field>](&mut self, enable: bool) {
+                        self.[<experimental_enable_ $field>] = enable;
+                    }
+                }
+            )*
+        }
+    };
+    (@gen_getters [$(#[$($attrss:meta)*])* $feat:ident $(, $($tail:tt)*)?] -> [$($acc:ident)*]) => {
+        experimental!(@gen_getters [$($($tail)*)?] -> [$($acc)* $feat]);
+    };
+
+
+    {$($tokens:tt)*} => {
+        experimental!(@gen_struct [$($tokens)*] -> []);
+        experimental!(@gen_features [$($tokens)*] -> []);
+        experimental!(@gen_getters [$($tokens)*] -> []);
+    };
+}
+
+// List of experimental features. Add a new identifier below to introduce a flag; the
+// `experimental!` macro will generate the `experimental_enable_<name>` config field, the
+// `is_<name>_enabled()` / `set_<name>()` accessors, and the entry exposed (under the bare
+// name, without the `experimental_enable_` prefix) by the admin `/version` API.
+experimental! {
+    /// Current in heavy development, do not enable this feature unless you are a contributor
+    vqueues,
+
+    /// When enabled, invocations that exhaust their memory budget will yield back to
+    /// the scheduler instead of consuming retry attempts. Requires all nodes in the
+    /// cluster to be running v1.7.0 or later because it introduces a new WAL variant.
     ///
-    /// The legacy path will be removed in v1.7.
+    /// Since v1.7.0
+    invoker_yield,
+
+    /// # Enables service protocol v7
     ///
-    /// Defaults to `false` in v1.6.
-    pub experimental_shuffler_batch_ingestion: bool,
+    /// Introduced in Restate v1.7
+    ///
+    /// Set to `true` to enable the experimental service protocol v7
+    ///
+    /// Once enabled, you **cannot** rollback back to previous versions
+    /// where v7 is not supported < v1.7
+    protocol_v7,
+
+    /// # Enables unique random seeds
+    ///
+    /// When enabled, invocations get a unique random seed assigned.
+    ///
+    /// Since v1.7.0
+    unique_random_seeds,
+
+    /// # Migrate the unscoped state and promise tables into their scoped variants
+    ///
+    /// When enabled, partition stores migrate every entry of the legacy unscoped
+    /// state and promise tables into their scoped variants (with `scope = None`)
+    /// on open, and route all subsequent state/promise reads and writes through
+    /// the scoped tables.
+    ///
+    /// Once enabled, you **cannot** roll back to a Restate-server version that
+    /// did not yet recognize the resulting on-disk schema version.
+    ///
+    /// Since v1.7.0
+    migrate_scoped_tables,
+
+    /// # Allow scope on Virtual Object targets
+    ///
+    /// Scoped Virtual Objects are not officially supported in v1.7. Requires
+    /// `vqueues` to be enabled as well.
+    ///
+    /// Since v1.7.0
+    scoped_virtual_objects,
+
+    /// # Enables Kafka header support for scoped invocations
+    ///
+    /// When enabled, Kafka subscriptions read `x-restate-scope` and
+    /// `x-restate-limit-key` record headers to drive vqueue scope and
+    /// hierarchical limit-key routing. Requires `vqueues` to also be enabled.
+    ///
+    /// Since v1.7.0
+    kafka_scope,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
@@ -629,16 +749,17 @@ impl CommonOptions {
 
     pub fn storage_high_priority_bg_threads(&self) -> NonZeroUsize {
         self.storage_high_priority_bg_threads
-            .unwrap_or((*CPU_COUNT).try_into().unwrap())
+            .unwrap_or_else(|| (*CPU_COUNT).try_into().unwrap())
     }
 
     pub fn default_thread_pool_size(&self) -> usize {
-        self.default_thread_pool_size.unwrap_or(CPU_COUNT.get()) as usize
+        self.default_thread_pool_size
+            .unwrap_or_else(|| CPU_COUNT.get()) as usize
     }
 
     pub fn storage_low_priority_bg_threads(&self) -> NonZeroUsize {
         self.storage_low_priority_bg_threads
-            .unwrap_or((*CPU_COUNT).try_into().unwrap())
+            .unwrap_or_else(|| (*CPU_COUNT).try_into().unwrap())
     }
 
     pub fn rocksdb_high_priority_bg_threads(&self) -> NonZeroU32 {
@@ -656,7 +777,7 @@ impl CommonOptions {
     pub fn rocksdb_low_priority_bg_threads(&self) -> NonZeroU32 {
         // Gives us 1/2 the core count unless the user wants to override it.
         self.rocksdb_bg_threads
-            .unwrap_or(CPU_COUNT.div_ceil(NonZeroU32::new(2).unwrap()))
+            .unwrap_or_else(|| CPU_COUNT.div_ceil(NonZeroU32::new(2).unwrap()))
     }
 
     /// set derived values if they are not configured to reduce verbose configurations
@@ -668,23 +789,6 @@ impl CommonOptions {
             .merge(&self.fabric_listener_options);
 
         self.metadata_client.merge(network_options);
-
-        if self.service_client.additional_request_headers.is_none() {
-            let cluster_name_visible_ascii = self
-                .cluster_name()
-                .chars()
-                .filter(|c| *c >= ' ' && *c <= '~')
-                .collect::<String>();
-
-            self.service_client.additional_request_headers = Some(
-                std::collections::HashMap::from_iter([(
-                    X_RESTATE_CLUSTER_NAME,
-                    http::HeaderValue::from_str(&cluster_name_visible_ascii)
-                        .expect("a visible ascii string must be a valid header value"),
-                )])
-                .into(),
-            )
-        }
 
         Ok(())
     }
@@ -719,6 +823,7 @@ impl Default for CommonOptions {
             default_num_partitions: 24,
             default_replication: ReplicationProperty::new_unchecked(1),
             disable_prometheus: false,
+            #[allow(deprecated)]
             service_client: Default::default(),
             shutdown_timeout: NonZeroFriendlyDuration::from_secs_unchecked(60),
             tracing: TracingOptions::default(),
@@ -750,49 +855,11 @@ impl Default for CommonOptions {
             initialization_timeout: NonZeroFriendlyDuration::from_secs_unchecked(5 * 60),
             disable_telemetry: false,
             gossip: GossipOptions::default(),
-            experimental_enable_vqueues: false,
-            experimental_enable_invoker_yield: false,
             hlc_max_drift: FriendlyDuration::from_millis(5000),
-            experimental_kafka_batch_ingestion: false,
-            experimental_shuffler_batch_ingestion: false,
+            experimental: Experimental::default(),
+            disable_controlled_idempotent_sharding: false,
         }
     }
-}
-
-/// # Service Client options
-#[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[cfg_attr(
-    feature = "schemars",
-    schemars(rename = "ServiceClientOptions", default)
-)]
-#[builder(default)]
-#[derive(Default)]
-#[serde(rename_all = "kebab-case")]
-pub struct ServiceClientOptions {
-    #[serde(flatten)]
-    pub http: HttpOptions,
-    #[serde(flatten)]
-    pub lambda: AwsLambdaOptions,
-
-    /// # Request identity private key PEM file
-    ///
-    /// A path to a file, such as "/var/secrets/key.pem", which contains exactly one ed25519 private
-    /// key in PEM format. Such a file can be generated with `openssl genpkey -algorithm ed25519`.
-    /// If provided, this key will be used to attach JWTs to requests from this client which
-    /// SDKs may optionally verify, proving that the caller is a particular Restate instance.
-    ///
-    /// This file is currently only read on client creation, but this may change in future.
-    /// Parsed public keys will be logged at INFO level in the same format that SDKs expect.
-    pub request_identity_private_key_pem_file: Option<PathBuf>,
-
-    /// # Additional request headers
-    ///
-    /// Headers that should be applied to all outgoing requests (HTTP and Lambda).
-    /// Defaults to `x-restate-cluster-name: <cluster name>`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub additional_request_headers: Option<SerdeableHeaderHashMap>,
 }
 
 /// # Log format

@@ -37,6 +37,13 @@ enum ServiceProtocolVersion {
   // * StartMessage.random_seed
   // * Failure.metadata
   V6 = 6;
+  // Added:
+  // * Future & AwaitingOnMessage + Changed the SuspensionMessage
+  // * CallCommandMessage.scope
+  // * CallCommandMessage.limit_key
+  // * OneWayCallCommandMessage.scope
+  // * OneWayCallCommandMessage.limit_key
+  V7 = 7;
 }
 
 // --- Core frames ---
@@ -68,8 +75,8 @@ message StartMessage {
 
   // Retry count since the last stored entry.
   //
-  // Please note that this count might not be accurate, as it's not durably stored,
-  // thus it might get reset in case Restate crashes/changes leader.
+  // Please note that this count might not be accurate, as it's not durably stored on every update,
+  // thus it might get revert to an older value in case Restate crashes/changes leader.
   uint32 retry_count_since_last_stored_entry = 7;
 
   // Duration since the last stored entry, in milliseconds.
@@ -110,7 +117,7 @@ message SuspensionMessage {
   // This list MUST not be empty.
   // False positive, entry_indexes is a valid plural of entry_indices.
   // https://learn.microsoft.com/en-us/style-guide/a-z-word-list-term-collections/i/index-indexes-indices
-  repeated uint32 entry_indexes = 1;  // protolint:disable:this REPEATED_FIELD_NAMES_PLURALIZED
+  repeated uint32 entry_indexes = 1; // protolint:disable:this REPEATED_FIELD_NAMES_PLURALIZED
 }
 
 // Type: 0x0000 + 3

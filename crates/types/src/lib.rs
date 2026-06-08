@@ -10,8 +10,11 @@
 
 //! This crate contains the core types used by various Restate components.
 
+pub mod limit_key;
+
 mod base62_util;
 mod id_util;
+mod locking;
 mod macros;
 mod node_id;
 mod restate_version;
@@ -23,6 +26,7 @@ pub mod cluster;
 pub mod cluster_state;
 pub mod health;
 
+pub mod cluster_marker;
 pub mod config;
 pub mod config_loader;
 pub mod deployment;
@@ -55,15 +59,25 @@ pub mod service_protocol;
 pub mod state_mut;
 pub mod storage;
 pub mod timer;
-pub mod vqueue;
+pub mod vqueues;
 
 pub use id_util::IdResourceType;
+pub use identifiers::PartitionedResourceId;
+pub use limit_key::LimitKey;
+pub use locking::*;
 pub use node_id::*;
+use restate_encoding::BilrostNewType;
+use restate_util_string::{
+    Interned, ReString, RestateString, RestrictedValue, RestrictedValueError,
+};
 pub use restate_version::*;
 pub use version::*;
 
 // Re-export of the old time module by delegating to the restate-clock crate.
 pub use restate_clock::time;
+
+use self::identifiers::partitioner::HashPartitioner;
+use self::identifiers::{PartitionKey, WithPartitionKey};
 pub mod clock {
     pub use restate_clock::*;
 }
@@ -73,8 +87,230 @@ pub mod memory {
     pub use restate_memory::*;
 }
 
-// Re-export metrics' SharedString (Space-efficient Cow + RefCounted variant)
-pub type SharedString = metrics::SharedString;
+// Re-export restate-sharding crate for key range utilities.
+pub mod sharding {
+    pub use restate_sharding::*;
+}
+
+/// An interned service name
+#[derive(
+    derive_more::Display,
+    derive_more::Debug,
+    derive_more::AsRef,
+    derive_more::From,
+    Clone,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Hash,
+    BilrostNewType,
+)]
+#[debug("{}", _0)]
+#[display("{}", _0)]
+#[repr(transparent)]
+pub struct ServiceName(Interned<ReString>);
+
+impl ServiceName {
+    /// Create a new `ServiceName` without interning.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `value` is empty.
+    pub fn new_non_interned(value: &str) -> Self {
+        assert!(!value.is_empty());
+        let inner = ReString::new(value);
+        // SAFETY: no validation rules are applied to `ReString`.
+        Self(unsafe { Interned::from_restring_unchecked(inner) })
+    }
+
+    /// # Panics
+    ///
+    /// Panics if `value` is empty.
+    #[inline]
+    pub fn new(value: &str) -> Self {
+        assert!(!value.is_empty());
+        Self(Interned::<ReString>::new(value))
+    }
+
+    /// # Panics
+    ///
+    /// Panics if `value` is empty.
+    #[inline]
+    pub fn from_static(value: &'static str) -> Self {
+        assert!(!value.is_empty());
+        Self(Interned::from(ReString::from_static(value)))
+    }
+
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl AsRef<str> for ServiceName {
+    #[inline]
+    fn as_ref(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
+impl std::borrow::Borrow<str> for ServiceName {
+    #[inline]
+    fn borrow(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
+impl From<&str> for ServiceName {
+    fn from(value: &str) -> Self {
+        ServiceName::new(value)
+    }
+}
+
+/// An interned scope
+///
+/// A scope defines the partitioning boundary for sets of service instances and
+/// invocations.
+#[derive(
+    derive_more::Display,
+    derive_more::Debug,
+    derive_more::AsRef,
+    derive_more::From,
+    Clone,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Hash,
+    BilrostNewType,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[debug("{}", _0)]
+#[display("{}", _0)]
+#[repr(transparent)]
+pub struct Scope(Interned<RestrictedValue<ReString>>);
+
+impl Scope {
+    pub const fn new(s: RestrictedValue<ReString>) -> Self {
+        Self(Interned::non_interned(s))
+    }
+
+    /// Validate and create a new `Scope` without interning.
+    pub fn try_non_interned(s: &str) -> Result<Self, RestrictedValueError> {
+        let inner: RestrictedValue<ReString> = RestateString::try_new(s)?;
+        Ok(Self(Interned::non_interned(inner)))
+    }
+
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl RestateString for Scope {
+    type Err = RestrictedValueError;
+
+    #[inline]
+    unsafe fn new_unchecked(s: &str) -> Self {
+        Self(unsafe { RestateString::new_unchecked(s) })
+    }
+
+    #[inline]
+    unsafe fn from_restring_unchecked(s: ReString) -> Self {
+        Self(unsafe { RestateString::from_restring_unchecked(s) })
+    }
+
+    #[inline]
+    fn try_from_restring(s: ReString) -> Result<Self, Self::Err> {
+        Ok(Self(RestateString::try_from_restring(s)?))
+    }
+
+    #[inline]
+    fn try_from_static(s: &'static str) -> Result<Self, Self::Err> {
+        Ok(Self(RestateString::try_from_static(s)?))
+    }
+
+    #[inline]
+    fn try_new(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(RestateString::try_new(s)?))
+    }
+
+    #[inline]
+    fn try_from_arc(s: &std::sync::Arc<str>) -> Result<Self, Self::Err> {
+        Ok(Self(RestateString::try_from_arc(s)?))
+    }
+
+    #[inline]
+    fn to_restring(&self) -> ReString {
+        self.0.to_restring()
+    }
+
+    #[inline]
+    fn into_restring(self) -> ReString {
+        self.0.into_restring()
+    }
+}
+
+// Needed for hashbrown's entry_ref API to lazily convert the key reference on insert.
+impl From<&Scope> for Scope {
+    fn from(value: &Scope) -> Self {
+        value.clone()
+    }
+}
+
+impl AsRef<str> for Scope {
+    #[inline]
+    fn as_ref(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
+impl std::borrow::Borrow<str> for Scope {
+    #[inline]
+    fn borrow(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
+impl WithPartitionKey for Scope {
+    #[inline]
+    fn partition_key(&self) -> PartitionKey {
+        // the partition key is calculated directly from the scope value
+        HashPartitioner::compute_partition_key(&self.0)
+    }
+}
 
 /// Trait for merging two attributes
 pub trait Merge {

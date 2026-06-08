@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
-
 use criterion::{Criterion, criterion_group, criterion_main};
 use tokio::runtime::Builder;
 
@@ -22,6 +20,7 @@ use restate_storage_api::deduplication_table::{
 };
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::partitions::Partition;
+use restate_types::sharding::KeyRange;
 
 async fn writing_to_rocksdb(mut rocksdb: PartitionStore) {
     //
@@ -52,12 +51,12 @@ fn basic_writing_reading_benchmark(c: &mut Criterion) {
         //
         // setup
         //
-        let manager = PartitionStoreManager::create()
+        let manager = PartitionStoreManager::create(true)
             .await
             .expect("DB creation succeeds");
         manager
             .open(
-                &Partition::new(PartitionId::MIN, RangeInclusive::new(0, PartitionKey::MAX)),
+                &Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX)),
                 None,
             )
             .await

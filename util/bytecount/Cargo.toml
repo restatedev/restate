@@ -1,0 +1,34 @@
+[package]
+name = "restate-util-bytecount"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+serde = ["dep:serde_core"]
+schema = ["dep:schemars"]
+bilrost = ["dep:bilrost"]
+
+[dependencies]
+restate-workspace-hack = { workspace = true }
+
+restate-util-string = { workspace = true }
+
+bilrost = { workspace = true, optional = true }
+bytesize = { workspace = true }
+schemars = { workspace = true, optional = true }
+serde_core = { workspace = true, optional = true }
+serde_with = { workspace = true }
+
+[dev-dependencies]
+restate-util-bytecount = {path = ".", default-features = false, features = ["serde", "schema"]}
+
+serde_json = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+
+[lints]
+workspace = true

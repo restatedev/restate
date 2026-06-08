@@ -11,7 +11,6 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use metrics::Key;
 
 use restate_encoding::{ArcedSlice, RestateEncoding};
 
@@ -35,7 +34,7 @@ impl IngestRecord {
     }
 
     pub fn estimate_size(&self) -> usize {
-        size_of::<Key>() + self.record.len()
+        size_of::<Keys>() + self.record.len()
     }
 }
 

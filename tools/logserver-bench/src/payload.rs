@@ -50,10 +50,10 @@ use rand::rngs::StdRng;
 use rand::{Rng, RngCore, SeedableRng};
 
 use restate_cli_util::{c_println, c_success};
-use restate_serde_util::ByteCount;
 use restate_types::logs::{Keys, Record};
 use restate_types::storage::PolyBytes;
 use restate_types::time::NanosSinceEpoch;
+use restate_util_bytecount::ByteCount;
 
 // ---------------------------------------------------------------------------
 // CLI types

@@ -59,7 +59,7 @@ use restate_types::logs::metadata::ProviderConfiguration;
 use restate_types::net::address::{
     AdminPort, AdvertisedAddress, FabricPort, HttpIngressPort, ListenerPort, PeerNetAddress,
 };
-use restate_types::nodes_config::MetadataServerState;
+use restate_types::nodes_config::{ClusterFeature, MetadataServerState};
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::replication::ReplicationProperty;
 use restate_types::retries::RetryPolicy;
@@ -94,6 +94,12 @@ pub struct NodeSpec {
     inherit_env: bool,
     #[builder(default)]
     env: Vec<(String, String)>,
+    /// If true, child processes are placed in their own process group,
+    /// isolating them from terminal signals (e.g. Ctrl+C). Default is false,
+    /// meaning children share the parent's process group and receive signals
+    /// like SIGINT directly.
+    #[builder(default = false)]
+    isolate_process_group: bool,
     #[builder(default)]
     #[serde(skip)]
     searcher: Searcher,
@@ -223,6 +229,7 @@ impl NodeSpec {
             args,
             inherit_env,
             env,
+            isolate_process_group,
             searcher,
         } = &self;
 
@@ -290,8 +297,11 @@ impl NodeSpec {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
-        .process_group(0) // avoid terminal control C being propagated
         .args(args);
+
+        if *isolate_process_group {
+            cmd.process_group(0);
+        }
 
         let mut child = cmd.spawn().map_err(NodeStartError::SpawnError)?;
         let pid = child.id().expect("child to have a pid");
@@ -578,10 +588,10 @@ impl StartedNode {
         info!("Restarting node '{}'", self.config().node_name());
 
         match termination_signal {
-            TerminationSignal::SIGKILL => {
+            TerminationSignal::Sigkill => {
                 self.kill().await?;
             }
-            TerminationSignal::SIGTERM => {
+            TerminationSignal::Sigterm => {
                 self.terminate()?;
                 (&mut self.status).await?;
             }
@@ -845,6 +855,7 @@ impl StartedNode {
         num_partitions: Option<NonZeroU16>,
         partition_replication: ReplicationProperty,
         provider_configuration: Option<ProviderConfiguration>,
+        disabled_features: EnumSet<ClusterFeature>,
     ) -> anyhow::Result<bool> {
         let channel = create_tonic_channel(
             self.advertised_address().clone(),
@@ -868,6 +879,10 @@ impl StartedNode {
                     .target_nodeset_size()
                     .map(|nodeset_size| nodeset_size.as_u32())
             }),
+            disabled_features: disabled_features
+                .iter()
+                .map(|f| restate_core::protobuf::node_ctl_svc::ClusterFeature::from(f) as i32)
+                .collect(),
         };
 
         let retry_policy = RetryPolicy::exponential(
@@ -958,8 +973,8 @@ impl StartedNode {
 /// How to terminate a running Restate process
 #[derive(Debug, Clone, Copy, strum::EnumIter)]
 pub enum TerminationSignal {
-    SIGKILL,
-    SIGTERM,
+    Sigkill,
+    Sigterm,
 }
 
 impl TerminationSignal {

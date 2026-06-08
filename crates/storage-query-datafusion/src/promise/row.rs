@@ -21,7 +21,9 @@ pub(crate) fn append_promise_row(
 ) {
     let mut row = builder.row();
     row.partition_key(owned_promise_row.service_id.partition_key());
-
+    if let Some(scope) = &owned_promise_row.service_id.scope {
+        row.scope(scope.as_str());
+    }
     row.service_name(&owned_promise_row.service_id.service_name);
     row.service_key(&owned_promise_row.service_id.key);
     row.key(&owned_promise_row.key);

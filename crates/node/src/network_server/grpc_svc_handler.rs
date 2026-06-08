@@ -31,6 +31,7 @@ use restate_core::protobuf::node_ctl_svc::{
     ClusterHealthResponse, DatabaseCompactionResult, EmbeddedMetadataClusterHealth,
     GetMetadataRequest, GetMetadataResponse, IdentResponse, ProvisionClusterRequest,
     ProvisionClusterResponse, TriggerCompactionRequest, TriggerCompactionResponse,
+    cluster_features_from_proto,
 };
 use restate_core::{Identification, MetadataWriter};
 use restate_core::{Metadata, MetadataKind};
@@ -41,7 +42,7 @@ use restate_types::config::{Configuration, NetworkingOptions};
 use restate_types::errors::{ConversionError, MaybeRetryableError};
 use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration};
 use restate_types::metadata::VersionedValue;
-use restate_types::nodes_config::Role;
+use restate_types::nodes_config::{ClusterFeature, Role};
 use restate_types::protobuf::cluster::ClusterConfiguration as ProtoClusterConfiguration;
 use restate_types::protobuf::common::DatabaseKind;
 use restate_types::replication::ReplicationProperty;
@@ -170,12 +171,16 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         let config = Configuration::pinned();
 
         let dry_run = request.dry_run;
+        let disabled = cluster_features_from_proto(&request.disabled_features)
+            .map_err(|err| Status::invalid_argument(err.to_string()))?;
+        let features = ClusterFeature::default_features() - disabled;
         let cluster_configuration = Self::resolve_cluster_configuration(&config, request)
             .map_err(|err| Status::invalid_argument(err.to_string()))?;
 
         if dry_run {
             return Ok(Response::new(ProvisionClusterResponse::dry_run(
                 ProtoClusterConfiguration::from(cluster_configuration),
+                features,
             )));
         }
 
@@ -183,6 +188,7 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
             &self.metadata_writer,
             &config.common,
             &cluster_configuration,
+            features,
         )
         .await
         .map_err(|err| Status::internal(err.to_string()))?;
@@ -195,6 +201,7 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
 
         Ok(Response::new(ProvisionClusterResponse::provisioned(
             ProtoClusterConfiguration::from(cluster_configuration),
+            features,
         )))
     }
 
@@ -456,7 +463,7 @@ mod tests {
     use restate_types::protobuf::common::DatabaseKind;
 
     #[test]
-    fn test_database_kind_db_names() {
+    fn database_kind_db_names() {
         assert_eq!(DatabaseKind::LogServer.db_name(), "log-server");
         assert_eq!(
             DatabaseKind::MetadataServer.db_name(),

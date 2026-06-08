@@ -24,7 +24,6 @@ pub mod network;
 pub mod partitions;
 pub mod protobuf;
 pub mod task_center;
-pub mod worker_api;
 pub use error::*;
 
 /// Run tests within task-center
@@ -53,7 +52,7 @@ pub use identification::Identification;
 
 pub use metadata::{
     Metadata, MetadataBuilder, MetadataKind, MetadataManager, MetadataWriter, SyncError,
-    TargetVersion, spawn_metadata_manager,
+    TargetVersion, migrate_metadata, spawn_metadata_manager,
 };
 pub use task_center::{
     AsyncRuntime, MetadataFutureExt, RuntimeError, RuntimeTaskHandle, TaskCenter,

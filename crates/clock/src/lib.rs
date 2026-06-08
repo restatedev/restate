@@ -12,6 +12,7 @@
 mod hlc;
 #[cfg(feature = "test-util")]
 mod mock_clock;
+pub mod rough_ts;
 #[cfg(feature = "hlc")]
 pub mod storage;
 pub mod time;
@@ -23,6 +24,7 @@ mod wall_clock;
 pub use hlc::HlcClock;
 #[cfg(feature = "test-util")]
 pub use mock_clock::MockClock;
+pub use rough_ts::RoughTimestamp;
 #[cfg(feature = "hlc")]
 pub use storage::{AtomicStorage, HlcClockStorage, LocalStorage};
 pub use unique_timestamp::{Error, UniqueTimestamp};

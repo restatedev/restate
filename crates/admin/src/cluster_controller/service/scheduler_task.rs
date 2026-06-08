@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use futures::future::OptionFuture;
+use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use restate_core::network::TransportConnect;
@@ -36,6 +37,7 @@ pub struct SchedulerTask<T> {
     cluster_state_watcher: ClusterStateWatcher,
     metadata_client: MetadataStoreClient,
     scheduler: Scheduler<T>,
+    sync_epoch_metadata_rx: mpsc::Receiver<Vec<PartitionId>>,
 }
 
 impl<T> SchedulerTask<T>
@@ -46,11 +48,13 @@ where
         cluster_state_watcher: ClusterStateWatcher,
         scheduler: Scheduler<T>,
         metadata_client: MetadataStoreClient,
+        sync_epoch_metadata_rx: mpsc::Receiver<Vec<PartitionId>>,
     ) -> Self {
         Self {
             cluster_state_watcher,
             scheduler,
             metadata_client,
+            sync_epoch_metadata_rx,
         }
     }
 
@@ -70,7 +74,7 @@ where
         let cs = TaskCenter::with_current(|tc| tc.cluster_state().clone());
         let mut cs_changed = std::pin::pin!(cs.changed());
 
-        let mut fetch_epoch_metadata_task = Some(self.spawn_fetch_epoch_metadata_task()?);
+        let mut fetch_epoch_metadata_task = Some(self.spawn_fetch_epoch_metadata_task(Vec::new())?);
 
         let mut next_fetch_interval = tokio::time::interval(Duration::from_secs(30));
 
@@ -109,8 +113,8 @@ where
                     match epoch_metadata {
                         Ok(epoch_metadata) => {
                             for (partition_id, epoch_metadata) in epoch_metadata {
-                                let (_, _, current, next) = epoch_metadata.into_inner();
-                                self.scheduler.update_partition_configuration(partition_id, current, next);
+                                let (_, _, current, next, leadership_policy) = epoch_metadata.into_inner();
+                                self.scheduler.update_partition_configuration(partition_id, current, next, leadership_policy);
                             }
 
                             // changed partition configurations might mean that we need to select a new
@@ -124,9 +128,23 @@ where
 
                     fetch_epoch_metadata_task = None;
                 }
+                Some(partition_ids) = self.sync_epoch_metadata_rx.recv() => {
+                    debug!("Received sync epoch metadata signal for {partition_ids:?}");
+                    // Cancel any in-flight fetch and restart with the requested partitions.
+                    if let Some(task) = fetch_epoch_metadata_task.take() {
+                        task.abort();
+                        let _ = task.await;
+                    }
+                    match self.spawn_fetch_epoch_metadata_task(partition_ids) {
+                        Ok(task) => fetch_epoch_metadata_task = Some(task),
+                        Err(err) => {
+                            warn!("Failed to spawn fetch epoch metadata task: {err}");
+                        }
+                    }
+                }
                 _ = next_fetch_interval.tick() => {
                     if fetch_epoch_metadata_task.is_none() {
-                        fetch_epoch_metadata_task = Some(self.spawn_fetch_epoch_metadata_task()?);
+                        fetch_epoch_metadata_task = Some(self.spawn_fetch_epoch_metadata_task(Vec::new())?);
                     }
                 }
             }
@@ -144,11 +162,12 @@ where
 
     fn spawn_fetch_epoch_metadata_task(
         &mut self,
+        partition_ids: Vec<PartitionId>,
     ) -> Result<TaskHandle<HashMap<PartitionId, EpochMetadata>>, ShutdownError> {
         TaskCenter::spawn_unmanaged(
             TaskKind::Background,
             "fetch-epoch-metadata",
-            FetchEpochMetadataTask::new(self.metadata_client.clone()).run(),
+            FetchEpochMetadataTask::new(self.metadata_client.clone(), partition_ids).run(),
         )
     }
 
@@ -185,19 +204,29 @@ where
 
 struct FetchEpochMetadataTask {
     metadata_client: MetadataStoreClient,
+    /// Partitions to fetch. Empty = all known partitions.
+    partition_ids: Vec<PartitionId>,
 }
 
 impl FetchEpochMetadataTask {
-    pub fn new(metadata_client: MetadataStoreClient) -> Self {
-        Self { metadata_client }
+    pub fn new(metadata_client: MetadataStoreClient, partition_ids: Vec<PartitionId>) -> Self {
+        Self {
+            metadata_client,
+            partition_ids,
+        }
     }
 
     pub async fn run(self) -> HashMap<PartitionId, EpochMetadata> {
         let mut latest_epoch_metadata = HashMap::default();
 
-        let partition_table = Metadata::with_current(|m| m.partition_table_snapshot());
+        let partition_ids: Vec<PartitionId> = if self.partition_ids.is_empty() {
+            let partition_table = Metadata::with_current(|m| m.partition_table_snapshot());
+            partition_table.iter_ids().cloned().collect()
+        } else {
+            self.partition_ids
+        };
 
-        for partition_id in partition_table.iter_ids() {
+        for partition_id in &partition_ids {
             // todo replace with multi get
             match self
                 .metadata_client

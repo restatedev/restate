@@ -8,12 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::state_machine::Action;
-use crate::partition::state_machine::tests::TestEnv;
-use crate::partition::types::InvokerEffectKind;
 use bytes::Bytes;
 use googletest::prelude::*;
-use restate_invoker_api::Effect;
+
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::journal_table::JournalEntry;
 use restate_types::deployment::PinnedDeployment;
@@ -26,11 +23,15 @@ use restate_types::invocation::{
 use restate_types::journal::enriched::{
     CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
 };
-use restate_types::journal_v2;
-use restate_types::journal_v2::Entry;
+use restate_types::journal_v2::{Entry, UnresolvedFuture};
 use restate_types::service_protocol::ServiceProtocolVersion;
-use restate_wal_protocol::Command;
-use std::collections::HashSet;
+use restate_wal_protocol::v2;
+use restate_wal_protocol::v2::{Command, commands};
+use restate_worker_api::invoker::Effect;
+
+use crate::partition::state_machine::Action;
+use crate::partition::state_machine::tests::TestEnv;
+use crate::partition::types::InvokerEffectKind;
 
 pub fn completed_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
     JournalEntry::Entry(EnrichedRawEntry::new(
@@ -76,57 +77,61 @@ pub fn incomplete_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
     ))
 }
 
-pub fn invoker_entry_effect(invocation_id: InvocationId, entry: impl Into<Entry>) -> Command {
+pub fn invoker_entry_effect(
+    invocation_id: InvocationId,
+    entry: impl Into<Entry>,
+) -> v2::Envelope<v2::Raw> {
     invoker_entry_effect_for_epoch(invocation_id, entry)
 }
 
 pub fn invoker_entry_effect_for_epoch(
     invocation_id: InvocationId,
     entry: impl Into<Entry>,
-) -> Command {
-    Command::InvokerEffect(Box::new(Effect {
+) -> v2::Envelope<v2::Raw> {
+    commands::InvokerEffectCommand::test_envelope(Effect {
         invocation_id,
         kind: InvokerEffectKind::journal_entry(
             entry.into().encode::<ServiceProtocolV4Codec>(),
             None,
         ),
-    }))
+    })
 }
 
-pub fn invoker_end_effect(invocation_id: InvocationId) -> Command {
+pub fn invoker_end_effect(invocation_id: InvocationId) -> v2::Envelope<v2::Raw> {
     invoker_end_effect_for_epoch(invocation_id)
 }
 
-pub fn invoker_end_effect_for_epoch(invocation_id: InvocationId) -> Command {
-    Command::InvokerEffect(Box::new(Effect {
+pub fn invoker_end_effect_for_epoch(invocation_id: InvocationId) -> v2::Envelope<v2::Raw> {
+    commands::InvokerEffectCommand::test_envelope(Effect {
         invocation_id,
         kind: InvokerEffectKind::End,
-    }))
+    })
 }
 
 pub fn pinned_deployment(
     invocation_id: InvocationId,
     service_protocol_version: ServiceProtocolVersion,
-) -> Command {
-    Command::InvokerEffect(Box::new(Effect {
+) -> v2::Envelope<v2::Raw> {
+    commands::InvokerEffectCommand::test_envelope(Effect {
         invocation_id,
         kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
             deployment_id: DeploymentId::default(),
             service_protocol_version,
         }),
-    }))
+    })
 }
 
 pub fn invoker_suspended(
     invocation_id: InvocationId,
-    waiting_for_notifications: impl Into<HashSet<journal_v2::NotificationId>>,
-) -> Command {
-    Command::InvokerEffect(Box::new(Effect {
+    future: impl Into<UnresolvedFuture>,
+) -> v2::Envelope<v2::Raw> {
+    let future = future.into();
+    commands::InvokerEffectCommand::test_envelope(Effect {
         invocation_id,
-        kind: InvokerEffectKind::SuspendedV2 {
-            waiting_for_notifications: waiting_for_notifications.into(),
+        kind: InvokerEffectKind::SuspendedV3 {
+            awaiting_on: future,
         },
-    }))
+    })
 }
 
 pub async fn mock_start_invocation_with_service_id(
@@ -147,11 +152,13 @@ pub async fn mock_start_invocation_with_invocation_target(
     let invocation_id = InvocationId::mock_generate(&invocation_target);
 
     let actions = state_machine
-        .apply(Command::Invoke(Box::new(ServiceInvocation::initialize(
-            invocation_id,
-            invocation_target.clone(),
-            Source::Ingress(PartitionProcessorRpcRequestId::new()),
-        ))))
+        .apply(commands::InvokeCommand::test_envelope(
+            ServiceInvocation::initialize(
+                invocation_id,
+                invocation_target.clone(),
+                Source::Ingress(PartitionProcessorRpcRequestId::new()),
+            ),
+        ))
         .await;
 
     assert_that!(
@@ -176,5 +183,11 @@ pub async fn mock_start_invocation(state_machine: &mut TestEnv) -> InvocationId 
 pub async fn mock_pinned_deployment_v5(state_machine: &mut TestEnv, invocation_id: InvocationId) {
     let _ = state_machine
         .apply(pinned_deployment(invocation_id, ServiceProtocolVersion::V5))
+        .await;
+}
+
+pub async fn mock_pinned_deployment_v7(state_machine: &mut TestEnv, invocation_id: InvocationId) {
+    let _ = state_machine
+        .apply(pinned_deployment(invocation_id, ServiceProtocolVersion::V7))
         .await;
 }

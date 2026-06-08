@@ -80,8 +80,12 @@ impl ConfigLoader {
         // network base options need to be propagated downstream
         config.common.set_derived_values(&config.networking)?;
         config.admin.set_derived_values(&config.common);
-        config.ingress.set_derived_values(&config.common);
-        config.worker.set_derived_values(&config.networking);
+        config
+            .ingress
+            .set_derived_values(&config.common, &config.networking);
+        config
+            .worker
+            .set_derived_values(&config.common, &config.networking);
 
         if self.metadata_migration_mode {
             // In metadata migration mode we keep only Admin and MetadataServer roles that were

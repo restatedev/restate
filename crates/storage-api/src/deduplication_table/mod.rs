@@ -40,6 +40,7 @@ impl DedupInformation {
         }
     }
 
+    #[deprecated]
     pub fn ingress(producer_id: impl Into<ByteString>, sequence_number: MessageIndex) -> Self {
         DedupInformation {
             producer_id: ProducerId::Other(producer_id.into()),
@@ -179,7 +180,7 @@ mod test {
     use crate::deduplication_table::U128;
 
     #[test]
-    fn test_u128() {
+    fn u128() {
         let x = u128::MAX;
         let y = U128::from(x);
         let z = u128::from(y);

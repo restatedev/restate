@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-schemars = ["dep:schemars", "adaptive-timeout/schemars", "restate-serde-util/schema", "restate-time-util/schema", "restate-clock/schemars"]
+schemars = ["dep:schemars", "adaptive-timeout/schemars", "restate-serde-util/schema", "restate-util-bytecount/schema", "restate-util-time/schema", "restate-clock/schemars"]
 utoipa-schema = ["dep:utoipa",]
 unsafe-mutable-config = []
 # Enables the tokio console subscriber and exposes its configuration
@@ -27,17 +27,20 @@ restate-clock = { workspace = true, features = ["prost-types", "jiff", "hlc"] }
 restate-encoding = { workspace = true }
 restate-errors = { workspace = true }
 restate-memory = { workspace = true }
+restate-platform = { workspace = true, features = ["bilrost"] }
 restate-serde-util = { workspace = true }
+restate-sharding = { workspace = true, features = ["serde", "bilrost"] }
 restate-test-util = { workspace = true, optional = true }
-restate-time-util = { workspace = true, features = ["serde", "serde_with"] }
+restate-util-time = { workspace = true, features = ["serde", "serde_with"] }
+restate-util-bytecount = { workspace = true, features = ["serde"] }
+restate-util-string = { workspace = true, features = ["serde", "bilrost"] }
 restate-utoipa = { workspace = true }
 
 adaptive-timeout = { workspace = true, features = ["serde"] }
 ahash = {workspace = true }
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
-# pending release of https://github.com/fbernier/base62/pull/28
-base62 = { git = "http://github.com/restatedev/base62", rev = "dc62ff947d0ea84db0864e5c7e96c129e7b5874c" }
+base62 = { version = "2.2.4" }
 base64 = { workspace = true }
 bitflags = { workspace = true }
 bytes = { workspace = true }
@@ -58,14 +61,13 @@ figment = { version = "0.10.19", features = ["env", "toml"] }
 flexbuffers = { workspace = true }
 futures = { workspace = true }
 gardal = { workspace = true }
-generic-array = { version = "1.3.5" }
+generic-array = { workspace = true }
 hostname = { workspace = true }
 http = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }
 itertools = { workspace = true }
 jsonschema = { workspace = true }
 listenfd = { version = "1" }
-metrics = { workspace = true }
 moka = { workspace = true, features = ["sync", "logging"] }
 notify = { version = "8.2.0" }
 notify-debouncer-full = { version = "0.6" }
@@ -80,16 +82,15 @@ prost-types = { workspace = true }
 rand = { workspace = true }
 regex = { workspace = true }
 regress = { version = "0.10" }
-rustc-hash = "2.1.1"
 schemars = { workspace = true, optional = true }
 semver = { workspace = true }
 serde = { workspace = true, features = ["rc"] }
+serde_core = { workspace = true }
 serde_json = { workspace = true }
 serde_path_to_error = { version = "0.1" }
 serde_with = { workspace = true, features = ["json"] }
 sha2 = { workspace = true }
 smallvec = { workspace = true }
-restate-util-string = { workspace = true, features = ["serde"] }
 static_assertions = { workspace = true }
 strum = { workspace = true }
 tempfile = { workspace = true, optional = true }
@@ -105,6 +106,9 @@ typed-builder = { workspace = true }
 ulid = { workspace = true }
 utoipa = { workspace = true, optional = true, features = ["time"] }
 xxhash-rust = { workspace = true, features = ["xxh3"] }
+
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+sha2 = { workspace = true, features = ["asm"] }
 
 [dev-dependencies]
 restate-types = {path = ".", default-features = false, features = ["test-util"]}

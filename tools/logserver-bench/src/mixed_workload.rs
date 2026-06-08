@@ -24,10 +24,10 @@ use restate_core::{TaskCenter, TaskKind};
 use restate_log_server::loglet_worker::{LogletWorker, LogletWorkerHandle};
 use restate_log_server::logstore::LogStore;
 use restate_log_server::metadata::LogletStateMap;
-use restate_time_util::FriendlyDuration;
 use restate_types::GenerationalNodeId;
 use restate_types::logs::{KeyFilter, LogletId, LogletOffset, Record, SequenceNumber};
 use restate_types::net::log_server::*;
+use restate_util_time::FriendlyDuration;
 
 use restate_types::protobuf::common::DatabaseKind;
 

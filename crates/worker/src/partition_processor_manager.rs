@@ -8,18 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod introspection;
 mod processor_state;
 mod spawn_processor_task;
 
+pub use introspection::{LeaderQueryGuard, PartitionLeaderHandlesRegistry};
+
 use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
-use std::ops::{Add, RangeInclusive};
+use std::ops::Add;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use ahash::{HashMap, HashSet};
 use anyhow::{Context, bail};
+use futures::FutureExt;
 use futures::stream::{FuturesUnordered, StreamExt};
 use itertools::{Either, Itertools};
 use metrics::{counter, gauge};
@@ -38,17 +42,12 @@ use restate_core::network::{
     ServiceReceiver, ShardControlMessage, ShardRegistrationDecision, Sharded, TransportConnect,
     Verdict,
 };
-use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 use restate_core::{
     Metadata, MetadataWriter, TaskCenterFutureExt, TaskHandle, TaskKind, cancellation_watcher,
     my_node_id,
 };
 use restate_core::{RuntimeTaskHandle, TaskCenter};
 use restate_ingestion_client::IngestionClient;
-use restate_invoker_api::StatusHandle;
-use restate_invoker_api::capacity::InvokerCapacity;
-use restate_invoker_impl::ChannelStatusReader;
-
 use restate_metadata_server::{MetadataStoreClient, ReadModifyWriteError};
 use restate_metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};
 use restate_partition_store::PartitionStoreManager;
@@ -56,14 +55,14 @@ use restate_partition_store::snapshots::{
     PartitionSnapshotStatus, SnapshotPartitionTask, SnapshotRepository,
 };
 use restate_partition_store::{SnapshotError, SnapshotErrorKind};
-use restate_time_util::DurationExt;
+use restate_types::GenerationalNodeId;
 use restate_types::cluster::cluster_state::ReplayStatus;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::config::Configuration;
 use restate_types::epoch::EpochMetadata;
 use restate_types::health::HealthStatus;
+use restate_types::identifiers::PartitionId;
 use restate_types::identifiers::SnapshotId;
-use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::live::Live;
 use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
@@ -80,8 +79,11 @@ use restate_types::partitions::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::retries::with_jitter;
-use restate_types::{GenerationalNodeId, SharedString};
+use restate_util_string::format_restring;
+use restate_util_time::DurationExt;
 use restate_wal_protocol::Envelope;
+use restate_worker_api::invoker::capacity::InvokerCapacity;
+use restate_worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 
 use crate::metric_definitions::{
     ERROR_STOP, FLARE_REASON_SNAPSHOT_UNAVAILABLE, GAP_STOP, PARTITION_BLOCKED_FLARE,
@@ -96,12 +98,12 @@ use crate::partition_processor_manager::processor_state::{
     LeaderEpochToken, ProcessorState, StartedProcessor,
 };
 use crate::partition_processor_manager::spawn_processor_task::SpawnPartitionProcessorTask;
+use crate::rule_book_cache::{RuleBookCache, RuleBookCacheHandle};
 
 pub struct PartitionProcessorManager<T> {
     health_status: HealthStatus<WorkerStatus>,
     updateable_config: Live<Configuration>,
     processor_states: BTreeMap<PartitionId, ProcessorState>,
-    name_cache: BTreeMap<PartitionId, SharedString>,
 
     metadata_writer: MetadataWriter,
     partition_store_manager: Arc<PartitionStoreManager>,
@@ -114,7 +116,7 @@ pub struct PartitionProcessorManager<T> {
 
     replica_set_states: PartitionReplicaSetStates,
     target_tail_lsns: HashMap<PartitionId, Lsn>,
-    invokers_status_reader: MultiplexedInvokerStatusReader,
+    leader_handles_registry: PartitionLeaderHandlesRegistry,
 
     asynchronous_operations: JoinSet<AsynchronousEvent>,
 
@@ -131,6 +133,10 @@ pub struct PartitionProcessorManager<T> {
     invoker_capacity: InvokerCapacity,
 
     ingestion_client: IngestionClient<T, Envelope>,
+
+    /// Built in `new`; the polling task is spawned at the start of `run`.
+    rule_book_cache_task: Option<RuleBookCache>,
+    rule_book_cache: RuleBookCacheHandle,
 }
 
 type SnapshotResult = Result<PartitionSnapshotStatus, SnapshotError>;
@@ -189,53 +195,6 @@ impl std::fmt::Display for RestartDelay {
     }
 }
 
-type ChannelStatusReaderList = Vec<(RangeInclusive<PartitionKey>, ChannelStatusReader)>;
-
-#[derive(Debug, Clone, Default)]
-pub struct MultiplexedInvokerStatusReader {
-    readers: Arc<parking_lot::RwLock<ChannelStatusReaderList>>,
-}
-
-impl MultiplexedInvokerStatusReader {
-    fn push(&mut self, key_range: RangeInclusive<PartitionKey>, reader: ChannelStatusReader) {
-        self.readers.write().push((key_range, reader));
-    }
-
-    fn remove(&mut self, key_range: &RangeInclusive<PartitionKey>) {
-        self.readers.write().retain(|elem| &elem.0 != key_range);
-    }
-}
-
-impl StatusHandle for MultiplexedInvokerStatusReader {
-    type Iterator =
-        std::iter::Flatten<std::vec::IntoIter<<ChannelStatusReader as StatusHandle>::Iterator>>;
-
-    async fn read_status(&self, keys: RangeInclusive<PartitionKey>) -> Self::Iterator {
-        let mut overlapping_partitions = Vec::new();
-
-        // first clone the readers while holding the lock, then release the lock before reading the
-        // status to avoid holding the lock across await points
-        for (range, reader) in self.readers.read().iter() {
-            if keys.start() <= range.end() && keys.end() >= range.start() {
-                // if this partition is actually overlapping with the search range
-                overlapping_partitions.push((range.clone(), reader.clone()))
-            }
-        }
-        // although we never have a single scans that cross partitions (thus overlapping_partitions.len() == 1),
-        // we can make this code path a bit more future resilient cheaply, by ordering the partitions by their start key.
-        // (this uniquely defines the order between the partitions)
-        overlapping_partitions.sort_by(|(a, _), (b, _)| a.start().cmp(b.start()));
-
-        let mut result = Vec::with_capacity(overlapping_partitions.len());
-
-        for (_, reader) in overlapping_partitions {
-            result.push(reader.read_status(keys.clone()).await);
-        }
-
-        result.into_iter().flatten()
-    }
-}
-
 impl<T> PartitionProcessorManager<T>
 where
     T: TransportConnect,
@@ -281,11 +240,17 @@ where
         );
 
         let (tx, rx) = mpsc::channel(updateable_config.pinned().worker.internal_queue_length());
+
+        let rule_book_poll_interval = config.worker.rule_book_poll_interval.into();
+        let (rule_book_cache_task, rule_book_cache) = RuleBookCache::create(
+            metadata_writer.raw_metadata_store_client().clone(),
+            rule_book_poll_interval,
+        );
+
         Self {
             health_status,
             updateable_config,
             processor_states: BTreeMap::default(),
-            name_cache: Default::default(),
             metadata_writer,
             partition_store_manager,
             ppm_svc_rx,
@@ -296,7 +261,7 @@ where
             tx,
             replica_set_states,
             target_tail_lsns: HashMap::default(),
-            invokers_status_reader: MultiplexedInvokerStatusReader::default(),
+            leader_handles_registry: PartitionLeaderHandlesRegistry::default(),
             asynchronous_operations: JoinSet::default(),
             pending_snapshots: HashMap::default(),
             latest_snapshots: HashMap::default(),
@@ -308,19 +273,33 @@ where
             wait_for_partition_table_update: false,
             invoker_capacity,
             ingestion_client,
+            rule_book_cache_task: Some(rule_book_cache_task),
+            rule_book_cache,
         }
     }
 
-    pub fn invokers_status_reader(&self) -> MultiplexedInvokerStatusReader {
-        self.invokers_status_reader.clone()
+    pub fn leader_handles_registry(&self) -> PartitionLeaderHandlesRegistry {
+        self.leader_handles_registry.clone()
     }
 
     pub fn handle(&self) -> ProcessorsManagerHandle {
         ProcessorsManagerHandle::new(self.tx.clone())
     }
 
+    pub fn rule_book_cache_handle(&self) -> RuleBookCacheHandle {
+        self.rule_book_cache.clone()
+    }
+
     pub async fn run(mut self) -> anyhow::Result<()> {
         let mut shutdown = std::pin::pin!(cancellation_watcher());
+
+        if let Some(cache) = self.rule_book_cache_task.take() {
+            TaskCenter::spawn_child(
+                TaskKind::MetadataBackgroundSync,
+                "rule-book-cache",
+                cache.run().map(|()| Ok(())),
+            )?;
+        }
 
         let metadata = Metadata::current();
 
@@ -522,10 +501,9 @@ where
                                     delay,
                                 } => {
                                     debug!(%target_run_mode, "Partition processor was successfully created.");
-                                    self.invokers_status_reader.push(
-                                        started_processor.key_range().clone(),
-                                        started_processor.invoker_status_reader().clone(),
-                                    );
+                                    // Note: leader-side handles are registered by the partition
+                                    // processor itself on leadership transition — see
+                                    // `LeadershipState::become_leader`.
 
                                     // Pre-register the shard so messages route
                                     // directly to this PP without going through
@@ -622,8 +600,12 @@ where
                             delay,
                             ..
                         } => {
-                            self.invokers_status_reader
-                                .remove(processor.as_ref().expect("must be some").key_range());
+                            // Defensive: normally the processor unregisters itself during
+                            // step_down before run() returns, but this guards against panics
+                            // or abnormal exits that skip that path.
+                            self.leader_handles_registry.unregister_all(
+                                processor.as_ref().expect("must be some").key_range(),
+                            );
 
                             match &result {
                                 Err(ProcessorError::TrimGapEncountered {
@@ -673,7 +655,8 @@ where
                         }
                         ProcessorState::Stopping { processor, .. } => {
                             if let Some(processor) = processor {
-                                self.invokers_status_reader.remove(processor.key_range());
+                                self.leader_handles_registry
+                                    .unregister_all(processor.key_range());
                             }
                             counter!(PARTITION_STOP, PARTITION_LABEL => partition_id.to_string(), TYPE_LABEL => NORMAL_STOP).increment(1);
                             RestartDelay::Immediate
@@ -1282,7 +1265,7 @@ where
             .read_modify_write(partition_processor_epoch_key(partition_id), |epoch| {
                 let next_epoch = epoch
                     .map(|epoch: EpochMetadata| epoch.claim_leadership(node_id, partition_id))
-                    .ok_or("missing epoch metadata".to_owned())?;
+                    .ok_or_else(|| "missing epoch metadata".to_owned())?;
 
                 Ok(next_epoch)
             })
@@ -1391,28 +1374,22 @@ where
 
         debug!("Starting new partition processor",);
 
-        // the name is also used as thread names for the corresponding tokio runtimes, let's keep
-        // it short.
-        let task_name = self
-            .name_cache
-            .entry(partition_id)
-            .or_insert_with(|| SharedString::from(Arc::from(format!("pp-{partition_id}"))));
-
         let starting_task = SpawnPartitionProcessorTask::new(
-            task_name.clone(),
+            format_restring!("pp-{partition_id}"),
             partition,
-            self.updateable_config.clone(),
             self.bifrost.clone(),
             self.replica_set_states.clone(),
             self.partition_store_manager.clone(),
             self.fast_forward_on_startup.remove(&partition_id),
             self.invoker_capacity.clone(),
             self.ingestion_client.clone(),
+            self.leader_handles_registry.clone(),
+            self.rule_book_cache.clone(),
         );
 
         self.asynchronous_operations
             .build_task()
-            .name(&format!("start-pp-{partition_id}"))
+            .name(&format_restring!("start-pp-{partition_id}"))
             .spawn(
                 async move {
                     counter!(PARTITION_START, PARTITION_LABEL => partition_id.to_string())
@@ -1618,7 +1595,7 @@ mod tests {
 
         let replica_set_states = PartitionReplicaSetStates::default();
 
-        let partition_store_manager = PartitionStoreManager::create().await?;
+        let partition_store_manager = PartitionStoreManager::create(true).await?;
 
         let ingestion_client = IngestionClient::new(
             env_builder.networking.clone(),
@@ -1698,6 +1675,7 @@ mod tests {
             version = version.next();
         }
 
+        TaskCenter::shutdown_node("test completed", 0).await;
         RocksDbManager::get().shutdown().await;
         Ok(())
     }

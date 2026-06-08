@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+#![allow(clippy::large_futures)]
+
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -91,6 +93,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
             None,
             ReplicationProperty::new_unchecked(1),
             Some(ProviderConfiguration::Replicated(replicated_loglet_config)),
+            EnumSet::empty(),
         )
         .await
         .into_test_result()?;

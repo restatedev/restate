@@ -20,15 +20,13 @@ mod purge_journal;
 mod restart_as_new_invocation;
 mod resume_invocation;
 
-use crate::partition;
-use crate::partition::leadership::LeadershipState;
+use std::marker::PhantomData;
+use std::sync::Arc;
+
 use restate_core::network::{Oneshot, Reciprocal, TransportConnect};
-use restate_invoker_api::InvokerHandle;
-use restate_storage_api::idempotency_table::ReadOnlyIdempotencyTable;
 use restate_storage_api::invocation_status_table::ReadInvocationStatusTable;
 use restate_storage_api::journal_table as journal_table_v1;
 use restate_storage_api::journal_table_v2::ReadJournalTable;
-use restate_storage_api::service_status_table::ReadVirtualObjectStatusTable;
 use restate_types::identifiers::{
     InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId,
 };
@@ -39,25 +37,33 @@ use restate_types::net::partition_processor::{
 };
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_wal_protocol::Command;
-use std::marker::PhantomData;
-use std::sync::Arc;
+use restate_worker_api::invoker::InvokerHandle;
+
+use crate::partition::leadership::LeadershipState;
 
 #[cfg_attr(test, mockall::automock)]
 pub(super) trait Actuator {
-    fn self_propose_and_respond_asynchronously<O: 'static + Into<PartitionProcessorRpcResponse>>(
-        &mut self,
-        partition_key: PartitionKey,
-        cmd: Command,
-        replier: Replier<O>,
-        on_proposed_response: O,
-    ) -> impl Future<Output = ()>;
-
     fn handle_rpc_proposal_command<O: 'static>(
         &mut self,
         partition_key: PartitionKey,
         cmd: Command,
         request_id: PartitionProcessorRpcRequestId,
         replier: Replier<O>,
+    ) -> impl Future<Output = ()>;
+
+    /// Appends a command to Bifrost **without** dedup information, responding on Bifrost commit.
+    ///
+    /// Records appended this way are never filtered by the dedup mechanism during leadership
+    /// transitions, making this safe for fire-and-forget ingress commands (signals, invocation
+    /// responses).
+    fn append_and_respond_asynchronously<
+        O: 'static + Into<PartitionProcessorRpcResponse> + Send + Sync,
+    >(
+        &mut self,
+        partition_key: PartitionKey,
+        cmd: Command,
+        replier: Replier<O>,
+        success_response: O,
     ) -> impl Future<Output = ()>;
 
     fn notify_invoker_to_retry_now(&mut self, invocation_id: InvocationId);
@@ -69,23 +75,18 @@ pub(super) trait Actuator {
     fn partition_id(&self) -> PartitionId;
 }
 
-impl<T, I> Actuator for LeadershipState<T, I>
+impl<T> Actuator for LeadershipState<T>
 where
     T: TransportConnect,
-    I: InvokerHandle<
-        partition::invoker_storage_reader::InvokerStorageReader<
-            restate_partition_store::PartitionStore,
-        >,
-    >,
 {
-    async fn self_propose_and_respond_asynchronously<O: Into<PartitionProcessorRpcResponse>>(
+    async fn append_and_respond_asynchronously<O: Into<PartitionProcessorRpcResponse>>(
         &mut self,
         partition_key: PartitionKey,
         cmd: Command,
         replier: Replier<O>,
         on_proposed_response: O,
     ) {
-        LeadershipState::self_propose_and_respond_asynchronously(
+        LeadershipState::append_and_respond_asynchronously(
             self,
             partition_key,
             cmd,
@@ -113,19 +114,17 @@ where
     }
 
     fn notify_invoker_to_retry_now(&mut self, invocation_id: InvocationId) {
-        let Some((partition_leader_epoch, invoker_handle)) = LeadershipState::invoker_handle(self)
-        else {
+        let Some(invoker_handle) = LeadershipState::invoker_handle(self) else {
             return;
         };
-        let _ = invoker_handle.retry_invocation_now(partition_leader_epoch, invocation_id);
+        let _ = invoker_handle.retry_invocation_now(invocation_id);
     }
 
     fn notify_invoker_to_pause(&mut self, invocation_id: InvocationId) {
-        let Some((partition_leader_epoch, invoker_handle)) = LeadershipState::invoker_handle(self)
-        else {
+        let Some(invoker_handle) = LeadershipState::invoker_handle(self) else {
             return;
         };
-        let _ = invoker_handle.pause_invocation(partition_leader_epoch, invocation_id);
+        let _ = invoker_handle.pause_invocation(invocation_id);
     }
 
     fn is_leader(&self) -> bool {
@@ -200,11 +199,7 @@ impl<'a, TActuator, TSchemas, TStorage> RpcHandler<PartitionProcessorRpcRequest>
 where
     TActuator: Actuator,
     TSchemas: DeploymentResolver,
-    TStorage: ReadInvocationStatusTable
-        + ReadVirtualObjectStatusTable
-        + ReadOnlyIdempotencyTable
-        + ReadJournalTable
-        + journal_table_v1::ReadJournalTable,
+    TStorage: ReadInvocationStatusTable + ReadJournalTable + journal_table_v1::ReadJournalTable,
 {
     type Output = PartitionProcessorRpcResponse;
     type Error = ();

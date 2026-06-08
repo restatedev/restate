@@ -15,7 +15,7 @@ use bitflags::bitflags;
 use prost_dto::{FromProst, IntoProst};
 
 use restate_encoding::{ArcedSlice, BilrostNewType, NetSerde};
-use restate_memory::EstimatedMemorySize;
+use restate_platform::memory::EstimatedMemorySize;
 
 use super::{RpcResponse, ServiceTag};
 use crate::GenerationalNodeId;

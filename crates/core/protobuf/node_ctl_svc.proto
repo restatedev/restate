@@ -35,6 +35,11 @@ service NodeCtlSvc {
       returns (TriggerCompactionResponse);
 }
 
+enum ClusterFeature {
+  ClusterFeature_UNKNOWN = 0;
+  CONTROLLED_IDEMPOTENT_SHARDING = 1;
+} 
+
 message ProvisionClusterRequest {
   bool dry_run = 1;
   // if unset then the configured cluster num partitions will be used
@@ -52,11 +57,20 @@ message ProvisionClusterRequest {
   // if unset then the configured cluster default target nodeset size will be
   // used
   optional uint32 target_nodeset_size = 6;
+  // A set of cluster-wide features to opt out of. At provision time the server
+  // enables all default features except those listed here. Leaving this empty
+  // (or sending it from an older client that doesn't know about a feature) will
+  // result in all current default features being enabled.
+  repeated ClusterFeature disabled_features = 7;
 }
 
 message ProvisionClusterResponse {
   bool dry_run = 1;
   restate.cluster.ClusterConfiguration cluster_configuration = 2;
+  // The features that will be enabled on this cluster (defaults minus
+  // disabled_features from the request). Populated by the server so older
+  // clients can render an authoritative preview.
+  repeated ClusterFeature enabled_features = 3;
 }
 
 message IdentResponse {

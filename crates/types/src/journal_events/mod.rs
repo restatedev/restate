@@ -11,7 +11,7 @@
 //! This module contains the data model of journal events.
 
 use crate::errors::InvocationErrorCode;
-use crate::journal_v2::CommandType;
+use crate::journal_v2::{CommandType, UnresolvedFuture};
 use serde::{Deserialize, Serialize};
 use strum::EnumString;
 
@@ -34,7 +34,7 @@ pub enum EventType {
     Unknown = 0,
     TransientError = 1,
     Paused = 2,
-    Killed = 3,
+    Suspended = 3,
 }
 
 #[derive(
@@ -44,7 +44,7 @@ pub enum EventType {
 pub enum Event {
     TransientError(TransientErrorEvent),
     Paused(PausedEvent),
-    Killed(KilledEvent),
+    Suspended(SuspendedEvent),
     /// This is used when it's not possible to parse in this Restate version the event.
     Unknown,
 }
@@ -75,9 +75,6 @@ pub struct PausedEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct KilledEvent {
-    /// The last transient error before being killed, if any.
-    /// Empty when killed via admin API without prior retry failures.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_failure: Option<TransientErrorEvent>,
+pub struct SuspendedEvent {
+    pub awaiting_on: UnresolvedFuture,
 }

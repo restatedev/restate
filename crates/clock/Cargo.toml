@@ -14,12 +14,14 @@ test-util = []
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
-restate-encoding = { workspace = true }
+
+restate-platform = { workspace = true }
 
 bilrost = { workspace = true }
-libc = { version = "0.2" }
 jiff = { workspace = true, optional = true }
+libc = { version = "0.2" }
 prost-types = { workspace = true, optional = true }
+rand = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
@@ -46,3 +48,6 @@ required-features = ["hlc"]
 [[example]]
 name = "brrr_multi"
 required-features = ["hlc"]
+
+[lints]
+workspace = true

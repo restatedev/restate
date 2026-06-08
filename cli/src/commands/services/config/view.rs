@@ -16,8 +16,8 @@ use indoc::indoc;
 
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::{c_println, c_tip};
-use restate_time_util::DurationExt;
 use restate_types::invocation::ServiceType;
+use restate_util_time::DurationExt;
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface};

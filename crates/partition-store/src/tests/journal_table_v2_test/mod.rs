@@ -18,11 +18,13 @@ use futures_util::StreamExt;
 use restate_rocksdb::RocksDbManager;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::Transaction;
-use restate_storage_api::journal_table_v2::{ReadJournalTable, WriteJournalTable};
+use restate_storage_api::journal_table_v2::{
+    NotificationEntryIndex, ReadJournalTable, WriteJournalTable,
+};
 use restate_test_util::let_assert;
 use restate_types::identifiers::{InvocationId, InvocationUuid};
 use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
-use restate_types::journal_v2::raw::RawCommandSpecificMetadata;
+use restate_types::journal_v2::raw::{RawCommandSpecificMetadata, RawNotificationResultVariant};
 use restate_types::journal_v2::{
     CallCommand, CallRequest, CommandType, CompletionId, CompletionType, Entry, EntryMetadata,
     EntryType, NotificationId, NotificationType, OneWayCallCommand, SleepCommand, SleepCompletion,
@@ -55,6 +57,7 @@ fn mock_call_command(
             invocation_target: InvocationTarget::Service {
                 name: ByteString::from_static("MySvc"),
                 handler: ByteString::from_static("MyHandler"),
+                scope: None,
             },
             span_context: ServiceInvocationSpanContext::empty(),
             parameter: Bytes::from_static(b"some payload"),
@@ -62,6 +65,7 @@ fn mock_call_command(
             idempotency_key: Some(ByteString::from_static("my-idempotency-key")),
             completion_retention_duration: Duration::from_secs(10),
             journal_retention_duration: Duration::from_secs(11),
+            limit_key: Default::default(),
         },
         invocation_id_completion_id,
         name: Default::default(),
@@ -76,6 +80,7 @@ fn mock_one_way_call_command(invocation_id_completion_id: CompletionId) -> Entry
             invocation_target: InvocationTarget::Service {
                 name: ByteString::from_static("MySvc"),
                 handler: ByteString::from_static("MyHandler"),
+                scope: None,
             },
             span_context: ServiceInvocationSpanContext::empty(),
             parameter: Bytes::from_static(b"some payload"),
@@ -83,6 +88,7 @@ fn mock_one_way_call_command(invocation_id_completion_id: CompletionId) -> Entry
             idempotency_key: Some(ByteString::from_static("my-idempotency-key")),
             completion_retention_duration: Duration::from_secs(10),
             journal_retention_duration: Duration::from_secs(11),
+            limit_key: Default::default(),
         },
         invoke_time: 0.into(),
         invocation_id_completion_id,
@@ -93,7 +99,7 @@ fn mock_one_way_call_command(invocation_id_completion_id: CompletionId) -> Entry
 fn populate_sleep_journal<T: WriteJournalTable>(txn: &mut T) {
     for i in 0..5 {
         txn.put_journal_entry(
-            MOCK_INVOCATION_ID_1,
+            &MOCK_INVOCATION_ID_1,
             i,
             &StoredRawEntry::new(
                 StoredRawEntryHeader::new(MillisSinceEpoch::now()),
@@ -105,7 +111,7 @@ fn populate_sleep_journal<T: WriteJournalTable>(txn: &mut T) {
     }
     for i in 5..10 {
         txn.put_journal_entry(
-            MOCK_INVOCATION_ID_1,
+            &MOCK_INVOCATION_ID_1,
             i,
             &StoredRawEntry::new(
                 StoredRawEntryHeader::new(MillisSinceEpoch::now()),
@@ -154,7 +160,10 @@ async fn check_sleep_notification_index<T: ReadJournalTable>(txn: &mut T) {
             .await
             .unwrap(),
         (0..5)
-            .map(|i| (NotificationId::for_completion(i), i + 5))
+            .map(|i| (
+                NotificationId::for_completion(i),
+                NotificationEntryIndex::from_entry_index(i + 5, RawNotificationResultVariant::Void)
+            ))
             .collect()
     );
 }
@@ -190,7 +199,7 @@ async fn sleep_point_lookups<T: ReadJournalTable>(txn: &mut T) {
 }
 
 fn delete_journal<T: WriteJournalTable>(txn: &mut T, length: usize) {
-    txn.delete_journal(MOCK_INVOCATION_ID_1, length as u32)
+    txn.delete_journal(&MOCK_INVOCATION_ID_1, length as u32)
         .unwrap();
 }
 
@@ -220,7 +229,7 @@ async fn verify_journal_deleted<T: ReadJournalTable>(txn: &mut T, length: usize)
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_sleep_journal() {
+async fn sleep_journal() {
     let mut rocksdb = storage_test_environment().await;
 
     let mut txn = rocksdb.transaction();
@@ -235,6 +244,7 @@ async fn test_sleep_journal() {
     delete_journal(&mut txn, 10);
 
     txn.commit().await.expect("should not fail");
+    drop(txn);
 
     let mut txn = rocksdb.transaction();
     verify_journal_deleted(&mut txn, 10).await;
@@ -243,14 +253,14 @@ async fn test_sleep_journal() {
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_call_journal() {
+async fn call_journal() {
     let mut rocksdb = storage_test_environment().await;
 
     let mut txn = rocksdb.transaction();
 
     // Populate
     txn.put_journal_entry(
-        MOCK_INVOCATION_ID_1,
+        &MOCK_INVOCATION_ID_1,
         0,
         &StoredRawEntry::new(
             StoredRawEntryHeader::new(MillisSinceEpoch::now()),
@@ -260,7 +270,7 @@ async fn test_call_journal() {
     )
     .unwrap();
     txn.put_journal_entry(
-        MOCK_INVOCATION_ID_1,
+        &MOCK_INVOCATION_ID_1,
         1,
         &StoredRawEntry::new(
             StoredRawEntryHeader::new(MillisSinceEpoch::now()),

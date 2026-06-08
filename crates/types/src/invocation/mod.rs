@@ -12,19 +12,6 @@
 
 pub mod client;
 
-use crate::errors::InvocationError;
-use crate::identifiers::{
-    DeploymentId, EntryIndex, IdempotencyId, InvocationId, PartitionKey,
-    PartitionProcessorRpcRequestId, ServiceId, SubscriptionId, WithInvocationId, WithPartitionKey,
-};
-use crate::journal_v2::{CompletionId, GetInvocationOutputResult, Signal};
-use crate::time::MillisSinceEpoch;
-use crate::{GenerationalNodeId, RestateVersion};
-
-use bytes::Bytes;
-use bytestring::ByteString;
-use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceState};
-use serde_with::{DisplayFromStr, FromInto, serde_as};
 use std::borrow::Cow;
 use std::hash::Hash;
 use std::ops::Deref;
@@ -32,8 +19,26 @@ use std::str::FromStr;
 use std::time::Duration;
 use std::{cmp, fmt};
 
+use bytes::Bytes;
+use bytestring::ByteString;
+use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceState};
 // Re-exporting opentelemetry [`TraceId`] to avoid having to import opentelemetry in all crates.
 pub use opentelemetry::trace::TraceId;
+use serde_with::{DisplayFromStr, FromInto, serde_as};
+
+use restate_memory::ByteCount;
+use restate_util_string::ReString;
+
+use crate::Scope;
+use crate::errors::InvocationError;
+use crate::identifiers::{
+    DeploymentId, EntryIndex, IdempotencyId, InvocationId, PartitionKey,
+    PartitionProcessorRpcRequestId, ServiceId, SubscriptionId, WithInvocationId, WithPartitionKey,
+};
+use crate::journal_v2::{CompletionId, GetInvocationOutputResult, Signal};
+use crate::limit_key::LimitKey;
+use crate::time::MillisSinceEpoch;
+use crate::{GenerationalNodeId, LockName, RestateVersion, ServiceName};
 
 #[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -152,18 +157,24 @@ pub enum InvocationTarget {
     Service {
         name: ByteString,
         handler: ByteString,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        scope: Option<Scope>,
     },
     VirtualObject {
         name: ByteString,
         key: ByteString,
         handler: ByteString,
         handler_ty: VirtualObjectHandlerType,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        scope: Option<Scope>,
     },
     Workflow {
         name: ByteString,
         key: ByteString,
         handler: ByteString,
         handler_ty: WorkflowHandlerType,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        scope: Option<Scope>,
     },
 }
 
@@ -172,12 +183,25 @@ impl InvocationTarget {
         Self::Service {
             name: name.into(),
             handler: handler.into(),
+            scope: None,
+        }
+    }
+
+    pub fn scoped_service(
+        name: impl Into<ByteString>,
+        handler: impl Into<ByteString>,
+        scope: Scope,
+    ) -> Self {
+        Self::Service {
+            name: name.into(),
+            handler: handler.into(),
+            scope: Some(scope),
         }
     }
 
     pub fn short(&self) -> Short<'_> {
         match self {
-            Self::Service { name, handler } => Short::UnKeyed { name, handler },
+            Self::Service { name, handler, .. } => Short::UnKeyed { name, handler },
             Self::VirtualObject { name, handler, .. } | Self::Workflow { name, handler, .. } => {
                 Short::Keyed { name, handler }
             }
@@ -195,6 +219,23 @@ impl InvocationTarget {
             key: key.into(),
             handler: handler.into(),
             handler_ty,
+            scope: None,
+        }
+    }
+
+    pub fn scoped_virtual_object(
+        name: impl Into<ByteString>,
+        key: impl Into<ByteString>,
+        handler: impl Into<ByteString>,
+        handler_ty: VirtualObjectHandlerType,
+        scope: Scope,
+    ) -> Self {
+        Self::VirtualObject {
+            name: name.into(),
+            key: key.into(),
+            handler: handler.into(),
+            handler_ty,
+            scope: Some(scope),
         }
     }
 
@@ -209,6 +250,41 @@ impl InvocationTarget {
             key: key.into(),
             handler: handler.into(),
             handler_ty,
+            scope: None,
+        }
+    }
+
+    pub fn scoped_workflow(
+        name: impl Into<ByteString>,
+        key: impl Into<ByteString>,
+        handler: impl Into<ByteString>,
+        handler_ty: WorkflowHandlerType,
+        scope: Scope,
+    ) -> Self {
+        Self::Workflow {
+            name: name.into(),
+            key: key.into(),
+            handler: handler.into(),
+            handler_ty,
+            scope: Some(scope),
+        }
+    }
+
+    /// Creates the same target but with a scope attached.
+    pub fn with_scope(mut self, scope: Option<Scope>) -> Self {
+        match &mut self {
+            Self::Service { scope: s, .. }
+            | Self::VirtualObject { scope: s, .. }
+            | Self::Workflow { scope: s, .. } => *s = scope,
+        }
+        self
+    }
+
+    pub fn scope(&self) -> Option<&Scope> {
+        match self {
+            InvocationTarget::Service { scope, .. }
+            | InvocationTarget::VirtualObject { scope, .. }
+            | InvocationTarget::Workflow { scope, .. } => scope.as_ref(),
         }
     }
 
@@ -217,6 +293,30 @@ impl InvocationTarget {
             InvocationTarget::Service { name, .. } => name,
             InvocationTarget::VirtualObject { name, .. } => name,
             InvocationTarget::Workflow { name, .. } => name,
+        }
+    }
+
+    pub fn lock_name(&self) -> Option<LockName> {
+        match self {
+            // Exclusive handler require holding a lock
+            InvocationTarget::VirtualObject {
+                name,
+                key,
+                handler_ty,
+                ..
+            } if handler_ty == &VirtualObjectHandlerType::Exclusive => Some(LockName::new(
+                ServiceName::new(name.as_ref()),
+                ReString::new(key),
+            )),
+            // NOTE: Workflows don't have locks as their invariant (run once per ID) is enforced by
+            // the partition processor at ingestion/creation time (via invocation/entry status)
+            // Therefore, we treat them as normal services when it comes to locking and vqueue
+            // management.
+            //
+            // Also on virtual objects, shared handlers do not require locking.
+            InvocationTarget::VirtualObject { .. }
+            | InvocationTarget::Service { .. }
+            | InvocationTarget::Workflow { .. } => None,
         }
     }
 
@@ -239,12 +339,12 @@ impl InvocationTarget {
     pub fn as_keyed_service_id(&self) -> Option<ServiceId> {
         match self {
             InvocationTarget::Service { .. } => None,
-            InvocationTarget::VirtualObject { name, key, .. } => {
-                Some(ServiceId::new(name.clone(), key.clone()))
-            }
-            InvocationTarget::Workflow { name, key, .. } => {
-                Some(ServiceId::new(name.clone(), key.clone()))
-            }
+            InvocationTarget::VirtualObject {
+                name, key, scope, ..
+            } => Some(ServiceId::new(scope.clone(), name.clone(), key.clone())),
+            InvocationTarget::Workflow {
+                name, key, scope, ..
+            } => Some(ServiceId::new(scope.clone(), name.clone(), key.clone())),
         }
     }
 
@@ -318,6 +418,12 @@ pub struct InvocationRequestHeader {
     /// Time when the request should be executed. If none, it's executed immediately.
     pub execution_time: Option<MillisSinceEpoch>,
 
+    /// Limit key for hierarchical concurrency/rate limiting.
+    /// Invariant: `limit_key != LimitKey::None` requires `target.scope().is_some()`.
+    /// Since v1.7.0
+    #[serde(default, skip_serializing_if = "LimitKey::is_none")]
+    pub limit_key: LimitKey<ReString>,
+
     /// Retention duration of the completed status.
     /// If zero, the completed status is not retained.
     #[serde(default)]
@@ -339,6 +445,7 @@ impl InvocationRequestHeader {
             span_context: ServiceInvocationSpanContext::empty(),
             idempotency_key: None,
             execution_time: None,
+            limit_key: LimitKey::None,
             completion_retention_duration: Duration::ZERO,
             journal_retention_duration: Duration::ZERO,
         }
@@ -395,6 +502,12 @@ impl InvocationRequest {
     }
 }
 
+impl WithPartitionKey for InvocationRequest {
+    fn partition_key(&self) -> PartitionKey {
+        self.header.invocation_id().partition_key()
+    }
+}
+
 impl WithInvocationId for InvocationRequest {
     fn invocation_id(&self) -> InvocationId {
         self.header.invocation_id()
@@ -402,7 +515,7 @@ impl WithInvocationId for InvocationRequest {
 }
 
 /// Struct representing an invocation to a service. This struct is processed by Restate to execute the invocation.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(derive_more::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(
     from = "serde_hacks::ServiceInvocation",
     into = "serde_hacks::ServiceInvocation"
@@ -410,6 +523,7 @@ impl WithInvocationId for InvocationRequest {
 pub struct ServiceInvocation {
     pub invocation_id: InvocationId,
     pub invocation_target: InvocationTarget,
+    #[debug("Bytes({})", ByteCount::from(argument.len()))]
     pub argument: Bytes,
     pub source: Source,
     pub span_context: ServiceInvocationSpanContext,
@@ -424,6 +538,12 @@ pub struct ServiceInvocation {
     pub journal_retention_duration: Duration,
 
     pub idempotency_key: Option<ByteString>,
+
+    /// Limit key for hierarchical concurrency/rate limiting.
+    /// Invariant: `limit_key != LimitKey::None` requires `invocation_target.scope().is_some()`.
+    /// Since v1.7.0
+    #[serde(default, skip_serializing_if = "LimitKey::is_none")]
+    pub limit_key: LimitKey<ReString>,
 
     // Where to send the response, if any
     pub response_sink: Option<ServiceInvocationResponseSink>,
@@ -463,6 +583,7 @@ impl ServiceInvocation {
                 request.header.completion_retention_duration,
             ),
             idempotency_key: request.header.idempotency_key,
+            limit_key: request.header.limit_key,
             response_sink: None,
             submit_notification_sink: None,
             restate_version: RestateVersion::current(),
@@ -486,6 +607,7 @@ impl ServiceInvocation {
             completion_retention_duration: Duration::ZERO,
             journal_retention_duration: Duration::ZERO,
             idempotency_key: None,
+            limit_key: LimitKey::None,
             submit_notification_sink: None,
             restate_version: RestateVersion::current(),
         }
@@ -558,6 +680,12 @@ impl JournalCompletionTarget {
     }
 }
 
+impl WithPartitionKey for JournalCompletionTarget {
+    fn partition_key(&self) -> PartitionKey {
+        self.caller_id.partition_key()
+    }
+}
+
 impl WithInvocationId for JournalCompletionTarget {
     fn invocation_id(&self) -> InvocationId {
         self.caller_id
@@ -575,15 +703,23 @@ pub struct InvocationResponse {
     pub result: ResponseResult,
 }
 
+impl WithPartitionKey for InvocationResponse {
+    fn partition_key(&self) -> PartitionKey {
+        self.target.invocation_id().partition_key()
+    }
+}
+
 impl WithInvocationId for InvocationResponse {
     fn invocation_id(&self) -> InvocationId {
         self.target.invocation_id()
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(derive_more::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ResponseResult {
+    #[debug("Success(<data>)")]
     Success(Bytes),
+    #[debug("Failure({_0})")]
     Failure(InvocationError),
 }
 
@@ -855,6 +991,12 @@ impl Default for ServiceInvocationSpanContext {
 impl From<ServiceInvocationSpanContext> for SpanContextDef {
     fn from(value: ServiceInvocationSpanContext) -> Self {
         value.span_context
+    }
+}
+
+impl From<ServiceInvocationSpanContext> for SpanContext {
+    fn from(value: ServiceInvocationSpanContext) -> Self {
+        value.span_context.into()
     }
 }
 
@@ -1266,6 +1408,7 @@ impl InvocationQuery {
                     handler: Default::default(),
                     // Must be the workflow handler type
                     handler_ty: WorkflowHandlerType::Workflow,
+                    scope: wfid.scope.clone(),
                 },
                 None,
             ),
@@ -1274,6 +1417,7 @@ impl InvocationQuery {
                 service_key,
                 service_handler,
                 idempotency_key,
+                scope,
                 ..
             }) => {
                 let target = match service_key {
@@ -1287,7 +1431,8 @@ impl InvocationQuery {
                         // Doesn't really matter
                         VirtualObjectHandlerType::Exclusive,
                     ),
-                };
+                }
+                .with_scope(scope.clone());
                 InvocationId::generate(&target, Some(idempotency_key.deref()))
             }
         }
@@ -1329,6 +1474,12 @@ pub struct NotifySignalRequest {
     pub signal: Signal,
 }
 
+impl WithPartitionKey for NotifySignalRequest {
+    fn partition_key(&self) -> PartitionKey {
+        self.invocation_id.partition_key()
+    }
+}
+
 impl WithInvocationId for NotifySignalRequest {
     fn invocation_id(&self) -> InvocationId {
         self.invocation_id
@@ -1356,6 +1507,8 @@ mod serde_hacks {
         #[serde(default, skip_serializing_if = "Duration::is_zero")]
         pub journal_retention_duration: Duration,
         pub idempotency_key: Option<ByteString>,
+        #[serde(default, skip_serializing_if = "LimitKey::is_none")]
+        pub limit_key: LimitKey<ReString>,
         pub response_sink: Option<ServiceInvocationResponseSink>,
         pub submit_notification_sink: Option<SubmitNotificationSink>,
 
@@ -1389,6 +1542,7 @@ mod serde_hacks {
                 completion_retention_duration,
                 journal_retention_duration,
                 idempotency_key,
+                limit_key,
                 response_sink,
                 submit_notification_sink,
                 restate_version,
@@ -1405,6 +1559,7 @@ mod serde_hacks {
                 completion_retention_duration: completion_retention_duration.unwrap_or_default(),
                 journal_retention_duration,
                 idempotency_key,
+                limit_key,
                 response_sink: response_sink.map(Into::into),
                 submit_notification_sink: submit_notification_sink.map(Into::into),
                 source: match source {
@@ -1434,6 +1589,7 @@ mod serde_hacks {
                 completion_retention_duration,
                 journal_retention_duration,
                 idempotency_key,
+                limit_key,
                 response_sink,
                 submit_notification_sink,
                 restate_version,
@@ -1455,6 +1611,7 @@ mod serde_hacks {
                 completion_retention_duration: Some(completion_retention_duration),
                 journal_retention_duration,
                 idempotency_key,
+                limit_key,
                 response_sink: response_sink.map(Into::into),
                 submit_notification_sink: submit_notification_sink.map(Into::into),
                 restate_version,
@@ -1682,6 +1839,7 @@ mod mocks {
                 completion_retention_duration: Duration::ZERO,
                 journal_retention_duration: Duration::ZERO,
                 idempotency_key: None,
+                limit_key: LimitKey::None,
                 submit_notification_sink: None,
                 restate_version: RestateVersion::current(),
             }
@@ -1706,6 +1864,7 @@ mod mocks {
                 span_context: Default::default(),
                 idempotency_key: None,
                 execution_time: None,
+                limit_key: LimitKey::None,
                 completion_retention_duration: Default::default(),
                 journal_retention_duration: Default::default(),
             }

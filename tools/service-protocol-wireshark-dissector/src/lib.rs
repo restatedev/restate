@@ -12,8 +12,8 @@ use bytes::Bytes;
 use mlua::prelude::*;
 use mlua::{Table, Value};
 use restate_service_protocol_v4::message_codec::{Decoder, Message, MessageType};
-use restate_time_util::DurationExt;
 use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_util_time::DurationExt;
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
@@ -34,7 +34,7 @@ fn decode_packages(lua: &Lua, buf_lua: Value) -> LuaResult<Table> {
     // so we just keep it simple and assume all messages are self contained within the same http data frame
     // https://ask.wireshark.org/question/11650/lua-wireshark-dissector-combine-data-from-2-udp-packets
     let mut dec = Decoder::new(
-        ServiceProtocolVersion::V4,
+        ServiceProtocolVersion::V7,
         NonZeroUsize::MAX,
         NonZeroUsize::MAX,
     );
@@ -58,8 +58,8 @@ fn decode_packages(lua: &Lua, buf_lua: Value) -> LuaResult<Table> {
         );
 
         // Optional flags
-        if let Some(requires_ack) = header.requires_ack() {
-            set_table_values!(message_table, "requires_ack" => requires_ack);
+        if let Some(requested_ack) = header.requested_ack() {
+            set_table_values!(message_table, "requested_ack" => requested_ack);
         }
 
         // For some messages, spit out more stuff

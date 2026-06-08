@@ -13,10 +13,12 @@ use std::mem;
 use assert2::let_assert;
 use futures::future::OptionFuture;
 use itertools::Itertools;
+use tokio::sync::mpsc;
 use tracing::info;
 
 use restate_core::network::TransportConnect;
 use restate_core::{TaskCenter, TaskId, TaskKind, my_node_id};
+use restate_types::identifiers::PartitionId;
 use restate_types::nodes_config::NodesConfiguration;
 
 use crate::cluster_controller::service::Service;
@@ -83,6 +85,7 @@ impl ClusterControllerState {
 
 pub struct Leader {
     scheduler_task: TaskId,
+    sync_epoch_metadata_tx: mpsc::Sender<Vec<PartitionId>>,
 }
 
 impl Leader {
@@ -93,6 +96,8 @@ impl Leader {
             service.replica_set_states.clone(),
         );
 
+        let (sync_epoch_metadata_tx, sync_epoch_metadata_rx) = mpsc::channel(1);
+
         // We spawn the scheduler task as a child task to make use of the built-in error handling of
         // managed tasks. Otherwise, we would have to monitor for failed tasks ourselves.
         let scheduler_task = TaskCenter::spawn_child(
@@ -102,12 +107,20 @@ impl Leader {
                 service.cluster_state_refresher.cluster_state_watcher(),
                 scheduler,
                 service.metadata_writer.raw_metadata_store_client().clone(),
+                sync_epoch_metadata_rx,
             )
             .run(),
         )
         .expect("failed to spawn scheduler task");
 
-        Self { scheduler_task }
+        Self {
+            scheduler_task,
+            sync_epoch_metadata_tx,
+        }
+    }
+
+    pub fn sync_epoch_metadata_tx(&self) -> &mpsc::Sender<Vec<PartitionId>> {
+        &self.sync_epoch_metadata_tx
     }
 
     /// Stops the leader tasks to make sure that no other leader activity is running.

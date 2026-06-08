@@ -12,7 +12,9 @@ use std::num::NonZeroUsize;
 
 use serde::{Deserialize, Serialize};
 
-use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
+use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
+
+const DEFAULT_INVOCATION_YIELD_THRESHOLD: FriendlyDuration = FriendlyDuration::from_secs(2);
 
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder, PartialEq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -33,11 +35,55 @@ pub struct InvocationOptions {
     /// # Maximum journal retention duration
     ///
     /// Maximum journal retention duration that can be configured.
-    /// When discovering a service deployment, or when modifying the journal retention using the Admin API, the given value will be clamped.
+    /// Applied when ingesting the invocation: values higher than this limit are clamped down to it.
     ///
     /// Unset means no limit.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub max_journal_retention: Option<FriendlyDuration>,
+
+    /// # Default idempotency retention
+    ///
+    /// Default idempotency retention for all invocations carrying an idempotency key.
+    ///
+    /// This default is used when neither the service nor the handler configures an idempotency retention,
+    /// and can be overridden per service/handler using the respective SDK APIs.
+    ///
+    /// Since v1.7.0
+    #[serde(skip_serializing_if = "FriendlyDuration::is_zero", default)]
+    pub default_idempotency_retention: FriendlyDuration,
+
+    /// # Maximum idempotency retention duration
+    ///
+    /// Maximum idempotency retention duration that can be configured.
+    /// Applied when ingesting the invocation: values higher than this limit are clamped down to it.
+    ///
+    /// Unset means no limit.
+    ///
+    /// Since v1.7.0
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_idempotency_retention: Option<FriendlyDuration>,
+
+    /// # Default workflow completion retention
+    ///
+    /// Default workflow completion retention for all workflow invocations.
+    ///
+    /// This default is used when neither the workflow service nor the handler configures a workflow completion retention,
+    /// and can be overridden per service/handler using the respective SDK APIs.
+    ///
+    /// Since v1.7.0
+    #[serde(skip_serializing_if = "FriendlyDuration::is_zero", default)]
+    pub default_workflow_completion_retention: FriendlyDuration,
+
+    /// # Maximum workflow completion retention duration
+    ///
+    /// Maximum workflow completion retention duration that can be configured.
+    /// Applied when ingesting the invocation: values higher than this limit are clamped down to it.
+    ///
+    /// Unset means no limit.
+    ///
+    /// Since v1.7.0
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_workflow_completion_retention: Option<FriendlyDuration>,
 
     /// # Default retry policy
     ///
@@ -56,6 +102,26 @@ pub struct InvocationOptions {
     /// `None` means no limit, that is infinite retries is enabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_retry_policy_max_attempts: Option<NonZeroUsize>,
+
+    /// # Yield from invoker threshold
+    ///
+    /// If an invocation needs retrying, it'll hold its invoker concurrency slot and
+    /// while backing-off. This threshold allows the invoker to yield the invocation
+    /// back to the scheduler when the next back-off duration exceeds this value.
+    ///
+    /// When an invocation yields, its invoker concurrency slot is released and the
+    /// scheduler is given a chance to scheduler other invocations that may make progress
+    /// instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    invocation_yield_threshold: Option<FriendlyDuration>,
+}
+
+impl InvocationOptions {
+    pub fn invocation_yield_threshold(&self) -> FriendlyDuration {
+        self.invocation_yield_threshold
+            .unwrap_or(DEFAULT_INVOCATION_YIELD_THRESHOLD)
+    }
 }
 
 impl Default for InvocationOptions {
@@ -63,8 +129,13 @@ impl Default for InvocationOptions {
         Self {
             default_journal_retention: FriendlyDuration::from_secs(60 * 60 * 24),
             max_journal_retention: None,
+            default_idempotency_retention: FriendlyDuration::from_secs(60 * 60 * 24),
+            max_idempotency_retention: None,
+            default_workflow_completion_retention: FriendlyDuration::from_secs(60 * 60 * 24),
+            max_workflow_completion_retention: None,
             default_retry_policy: InvocationRetryPolicyOptions::default(),
             max_retry_policy_max_attempts: None,
+            invocation_yield_threshold: None,
         }
     }
 }

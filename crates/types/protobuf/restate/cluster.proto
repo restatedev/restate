@@ -72,6 +72,14 @@ message PartitionProcessorStatus {
   optional restate.common.Lsn last_archived_log_lsn = 12;
   // Set if replay_status is CATCHING_UP
   optional restate.common.Lsn target_tail_lsn = 11;
+  optional restate.common.Version last_applied_rule_book_version = 13;
+  optional restate.common.Version last_applied_schema_version = 14;
+  // Names of state-machine features currently enabled on this partition
+  // processor. Carried as strings so that older clients can render feature
+  // names they don't recognise.
+  repeated string enabled_features = 15;
+  // Partition-store on-disk storage version (StorageVersion discriminant).
+  optional uint32 storage_version = 16;
 }
 
 message ReplicationProperty { string replication_property = 1; }

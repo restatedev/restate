@@ -11,7 +11,7 @@
 use bytes::{Buf, BytesMut};
 
 use restate_types::SemanticRestateVersion;
-use restate_types::errors::IdDecodeError;
+use restate_types::errors::ConversionError;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageDecodeError, StorageEncode};
 
 use crate::StorageError;
@@ -71,50 +71,14 @@ impl<T: prost::Message + Default> StorageDecode for ProtobufStorageWrapper<T> {
     }
 }
 
-/// Error type for conversion related problems (e.g. Rust <-> Protobuf)
-#[derive(Debug, thiserror::Error)]
-pub enum ConversionError {
-    #[error("missing field '{0}'")]
-    MissingField(&'static str),
-    #[error("unexpected enum variant {1} for field '{0}'")]
-    UnexpectedEnumVariant(&'static str, i32),
-    #[error("invalid data: {0}")]
-    InvalidData(anyhow::Error),
-}
-
-impl ConversionError {
-    pub fn invalid_data(source: impl Into<anyhow::Error>) -> Self {
-        ConversionError::InvalidData(source.into())
-    }
-
-    pub fn missing_field(field: &'static str) -> Self {
-        ConversionError::MissingField(field)
-    }
-
-    pub fn unexpected_enum_variant(field: &'static str, enum_variant: impl Into<i32>) -> Self {
-        ConversionError::UnexpectedEnumVariant(field, enum_variant.into())
-    }
-}
-
-impl From<IdDecodeError> for ConversionError {
-    fn from(value: IdDecodeError) -> Self {
-        ConversionError::invalid_data(value)
-    }
-}
-
 impl From<ConversionError> for StorageError {
     fn from(value: ConversionError) -> Self {
         StorageError::Conversion(value.into())
     }
 }
 
-impl From<ConversionError> for StorageDecodeError {
-    fn from(value: ConversionError) -> Self {
-        StorageDecodeError::DecodeValue(value.into())
-    }
-}
-
 pub mod v1 {
+    #![allow(clippy::enum_variant_names)]
     #![allow(clippy::large_enum_variant)]
 
     include!(concat!(
@@ -124,6 +88,7 @@ pub mod v1 {
 
     pub mod pb_conversion {
         use std::collections::HashSet;
+        use std::str::FromStr;
 
         use anyhow::anyhow;
         use bytes::{Buf, Bytes};
@@ -136,11 +101,16 @@ pub mod v1 {
         };
         use restate_types::invocation::{InvocationTermination, TerminationFlavor};
         use restate_types::journal::enriched::AwakeableEnrichmentResult;
-        use restate_types::journal_v2::{EntryMetadata, NotificationId};
+        use restate_types::journal_v2::raw::RawNotificationResultVariant;
+        use restate_types::journal_v2::{
+            CombinatorType, EntryMetadata, NotificationId, SignalId, UnresolvedFuture,
+        };
         use restate_types::logs::Lsn;
         use restate_types::service_protocol::ServiceProtocolVersion;
         use restate_types::time::MillisSinceEpoch;
-        use restate_types::{GenerationalNodeId, journal_v2};
+        use restate_types::vqueues::VQueueId;
+        use restate_types::{GenerationalNodeId, LimitKey, Scope, journal_v2};
+        use restate_util_string::RestateString;
 
         use super::dedup_sequence_number::Variant;
         use super::enriched_entry_header::{
@@ -159,21 +129,23 @@ pub mod v1 {
         use super::{
             BackgroundCallResolutionResult, DedupSequenceNumber, Duration, EnrichedEntryHeader,
             Entry, EntryResult, EpochSequenceNumber, FailureMetadata, Header, IdempotencyId,
-            IdempotencyMetadata, InboxEntry, InvocationId, InvocationResolutionResult,
-            InvocationStatusV2, InvocationTarget, InvocationV2Lite, JournalCompletionTarget,
-            JournalEntry, JournalEntryIndex, JournalMeta, KvPair, OutboxMessage,
-            PartitionDurability, Promise, ResponseResult, RestateVersion, SequenceNumber,
-            ServiceId, ServiceInvocation, ServiceInvocationResponseSink, Source, SpanContext,
-            SpanRelation, StateMutation, SubmitNotificationSink, Timer, VirtualObjectStatus,
-            enriched_entry_header, entry, entry_result, inbox_entry, invocation_resolution_result,
-            invocation_status_v2, invocation_target, journal_entry, outbox_message, promise,
-            response_result, source, span_relation, submit_notification_sink, timer,
-            virtual_object_status,
+            InboxEntry, InvocationId, InvocationResolutionResult, InvocationStatusV2,
+            InvocationTarget, InvocationV2Lite, JournalCompletionTarget, JournalEntry,
+            JournalEntryIndex, JournalMeta, KvPair, OutboxMessage, PartitionDurability, Promise,
+            ResponseResult, RestateVersion, SequenceNumber, ServiceId, ServiceInvocation,
+            ServiceInvocationResponseSink, Source, SpanContext, SpanRelation, StateMutation,
+            SubmitNotificationSink, Timer, VirtualObjectStatus, enriched_entry_header, entry,
+            entry_result, inbox_entry, invocation_resolution_result, invocation_status_v2,
+            invocation_target, journal_entry, outbox_message, promise, response_result, source,
+            span_relation, submit_notification_sink, timer, virtual_object_status,
         };
         use crate::invocation_status_table::{
             PreFlightInvocationArgument, PreFlightInvocationInput, PreFlightInvocationJournal,
         };
         use crate::protobuf_types::ConversionError;
+        use crate::protobuf_types::v1::{
+            Future, NotificationEntryIndex, NotificationResultVariant,
+        };
 
         impl TryFrom<VirtualObjectStatus> for crate::service_status_table::VirtualObjectStatus {
             type Error = ConversionError;
@@ -182,14 +154,14 @@ pub mod v1 {
                 Ok(
                     match value
                         .status
-                        .ok_or(ConversionError::missing_field("status"))?
+                        .ok_or_else(|| ConversionError::missing_field("status"))?
                     {
                         virtual_object_status::Status::Locked(locked) => {
                             crate::service_status_table::VirtualObjectStatus::Locked(
                                 restate_types::identifiers::InvocationId::try_from(
-                                    locked
-                                        .invocation_id
-                                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                    locked.invocation_id.ok_or_else(|| {
+                                        ConversionError::missing_field("invocation_id")
+                                    })?,
                                 )?,
                             )
                         }
@@ -255,6 +227,7 @@ pub mod v1 {
                     service_key: value.service_key.map(Into::into),
                     handler_name: value.service_handler.into(),
                     idempotency_key: value.idempotency_key.into(),
+                    scope: value.scope.map(|s| s.to_string()),
                 }
             }
         }
@@ -263,11 +236,17 @@ pub mod v1 {
             type Error = ConversionError;
 
             fn try_from(value: IdempotencyId) -> Result<Self, ConversionError> {
+                let scope = value
+                    .scope
+                    .map(|scope| Scope::try_new(&scope))
+                    .transpose()
+                    .map_err(ConversionError::invalid_data)?;
                 Ok(restate_types::identifiers::IdempotencyId::new(
                     value.service_name.into(),
                     value.service_key.map(Into::into),
                     value.handler_name.into(),
                     value.idempotency_key.into(),
+                    scope,
                 ))
             }
         }
@@ -327,7 +306,7 @@ pub mod v1 {
                 Ok(
                     match value
                         .result
-                        .ok_or(ConversionError::missing_field("result"))?
+                        .ok_or_else(|| ConversionError::missing_field("result"))?
                     {
                         entry_result::Result::Value(s) => {
                             restate_types::journal::EntryResult::Success(s)
@@ -389,7 +368,7 @@ pub mod v1 {
                 Ok(
                     match value
                         .result
-                        .ok_or(ConversionError::missing_field("result"))?
+                        .ok_or_else(|| ConversionError::missing_field("result"))?
                     {
                         entry_result::Result::Value(s) => {
                             crate::promise_table::PromiseResult::Success(s)
@@ -411,7 +390,7 @@ pub mod v1 {
         // Little macro to try conversion or fail
         macro_rules! expect_or_fail {
             ($field:ident) => {
-                $field.ok_or(ConversionError::missing_field(stringify!($field)))
+                $field.ok_or_else(|| ConversionError::missing_field(stringify!($field)))
             };
         }
         pub(super) use expect_or_fail;
@@ -422,6 +401,8 @@ pub mod v1 {
             fn try_from(value: InvocationStatusV2) -> Result<Self, ConversionError> {
                 let InvocationStatusV2 {
                     status,
+                    vqueue_id,
+                    limit_key,
                     invocation_target,
                     source,
                     span_context,
@@ -448,11 +429,16 @@ pub mod v1 {
                     waiting_for_completions,
                     waiting_for_signal_indexes,
                     waiting_for_signal_names,
+                    nested_futures,
+                    combinator_type,
                     result,
                     hotfix_apply_cancellation_after_deployment_is_pinned,
                 } = value;
 
                 let invocation_target = expect_or_fail!(invocation_target)?.try_into()?;
+                let vqueue_id = vqueue_id.map(|buf| VQueueId::from_raw_bytes(&mut buf.as_ref()));
+
+                let limit_key = LimitKey::from_str(&limit_key).expect("valid limit key format");
                 let created_using_restate_version =
                     restate_version_from_pb(created_using_restate_version);
                 let timestamps = crate::invocation_status_table::StatusTimestamps::new(
@@ -471,7 +457,7 @@ pub mod v1 {
                             restate_types::invocation::ServiceInvocationResponseSink,
                         >::try_from(s)
                             .transpose()
-                            .ok_or(ConversionError::missing_field("response_sink"))?
+                            .ok_or_else(|| ConversionError::missing_field("response_sink"))?
                     })
                     .collect::<Result<HashSet<_>, _>>()?;
                 let headers = headers
@@ -507,6 +493,8 @@ pub mod v1 {
                             crate::invocation_status_table::ScheduledInvocation {
                                 metadata:
                                     crate::invocation_status_table::PreFlightInvocationMetadata {
+                                        vqueue_id,
+                                        limit_key,
                                         response_sinks,
                                         timestamps,
                                         invocation_target,
@@ -555,6 +543,8 @@ pub mod v1 {
                                 inbox_sequence_number: expect_or_fail!(inbox_sequence_number)?,
                                 metadata:
                                     crate::invocation_status_table::PreFlightInvocationMetadata {
+                                        vqueue_id,
+                                        limit_key,
                                         response_sinks,
                                         timestamps,
                                         invocation_target,
@@ -578,6 +568,8 @@ pub mod v1 {
                     invocation_status_v2::Status::Invoked => {
                         Ok(crate::invocation_status_table::InvocationStatus::Invoked(
                             crate::invocation_status_table::InFlightInvocationMetadata {
+                                vqueue_id,
+                                limit_key,
                                 response_sinks,
                                 timestamps,
                                 invocation_target,
@@ -605,55 +597,58 @@ pub mod v1 {
                             },
                         ))
                     }
-                    invocation_status_v2::Status::Suspended => Ok(
-                        crate::invocation_status_table::InvocationStatus::Suspended {
-                            metadata: crate::invocation_status_table::InFlightInvocationMetadata {
-                                response_sinks,
-                                timestamps,
-                                invocation_target,
-                                created_using_restate_version,
-                                journal_metadata: crate::invocation_status_table::JournalMetadata {
-                                    length: journal_length,
-                                    commands,
-                                    span_context: expect_or_fail!(span_context)?.try_into()?,
-                                },
-                                pinned_deployment: derive_pinned_deployment(
-                                    deployment_id,
-                                    service_protocol_version,
-                                )?,
-                                source,
-                                execution_time: execution_time.map(MillisSinceEpoch::new),
-                                completion_retention_duration: completion_retention_duration
-                                    .unwrap_or_default()
-                                    .try_into()?,
-                                journal_retention_duration: journal_retention_duration
-                                    .unwrap_or_default()
-                                    .try_into()?,
-                                idempotency_key: idempotency_key.map(ByteString::from),
-                                hotfix_apply_cancellation_after_deployment_is_pinned,
-                                random_seed,
+                    invocation_status_v2::Status::Suspended => {
+                        let awaiting_on = Future {
+                            waiting_completions: waiting_for_completions,
+                            waiting_signals: waiting_for_signal_indexes,
+                            waiting_named_signals: waiting_for_signal_names,
+                            combinator_type,
+                            nested_futures,
+                        };
+
+                        Ok(
+                            crate::invocation_status_table::InvocationStatus::Suspended {
+                                metadata:
+                                    crate::invocation_status_table::InFlightInvocationMetadata {
+                                        vqueue_id,
+                                        limit_key,
+                                        response_sinks,
+                                        timestamps,
+                                        invocation_target,
+                                        created_using_restate_version,
+                                        journal_metadata:
+                                            crate::invocation_status_table::JournalMetadata {
+                                                length: journal_length,
+                                                commands,
+                                                span_context: expect_or_fail!(span_context)?
+                                                    .try_into()?,
+                                            },
+                                        pinned_deployment: derive_pinned_deployment(
+                                            deployment_id,
+                                            service_protocol_version,
+                                        )?,
+                                        source,
+                                        execution_time: execution_time.map(MillisSinceEpoch::new),
+                                        completion_retention_duration:
+                                            completion_retention_duration
+                                                .unwrap_or_default()
+                                                .try_into()?,
+                                        journal_retention_duration: journal_retention_duration
+                                            .unwrap_or_default()
+                                            .try_into()?,
+                                        idempotency_key: idempotency_key.map(ByteString::from),
+                                        hotfix_apply_cancellation_after_deployment_is_pinned,
+                                        random_seed,
+                                    },
+                                awaiting_on: awaiting_on.try_into()?,
                             },
-                            waiting_for_notifications: waiting_for_completions
-                                .into_iter()
-                                .map(NotificationId::for_completion)
-                                .chain(
-                                    waiting_for_signal_indexes
-                                        .into_iter()
-                                        .map(journal_v2::SignalId::for_index)
-                                        .map(NotificationId::for_signal),
-                                )
-                                .chain(
-                                    waiting_for_signal_names
-                                        .into_iter()
-                                        .map(|s| journal_v2::SignalId::for_name(s.into()))
-                                        .map(NotificationId::for_signal),
-                                )
-                                .collect(),
-                        },
-                    ),
+                        )
+                    }
                     invocation_status_v2::Status::Paused => {
                         Ok(crate::invocation_status_table::InvocationStatus::Paused(
                             crate::invocation_status_table::InFlightInvocationMetadata {
+                                vqueue_id,
+                                limit_key,
                                 response_sinks,
                                 timestamps,
                                 invocation_target,
@@ -684,6 +679,8 @@ pub mod v1 {
                     invocation_status_v2::Status::Completed => {
                         Ok(crate::invocation_status_table::InvocationStatus::Completed(
                             crate::invocation_status_table::CompletedInvocation {
+                                vqueue_id,
+                                limit_key,
                                 timestamps,
                                 invocation_target,
                                 created_using_restate_version,
@@ -725,6 +722,8 @@ pub mod v1 {
                             metadata:
                                 crate::invocation_status_table::PreFlightInvocationMetadata {
                                     response_sinks,
+                                    vqueue_id,
+                                    limit_key,
                                     timestamps,
                                     invocation_target,
                                     created_using_restate_version,
@@ -744,6 +743,8 @@ pub mod v1 {
                         },
                     ) => InvocationStatusV2 {
                         status: invocation_status_v2::Status::Scheduled.into(),
+                        vqueue_id: vqueue_id.map(|qid| Bytes::copy_from_slice(qid.as_raw_bytes())),
+                        limit_key: limit_key.to_string(),
                         invocation_target: Some(invocation_target.into()),
                         source: Some(source.into()),
                         span_context: Some(span_context.into()),
@@ -781,6 +782,8 @@ pub mod v1 {
                         waiting_for_completions: vec![],
                         waiting_for_signal_indexes: vec![],
                         waiting_for_signal_names: vec![],
+                        nested_futures: vec![],
+                        combinator_type: super::CombinatorType::Unknown.into(),
                         result: None,
                         random_seed,
                     },
@@ -788,6 +791,8 @@ pub mod v1 {
                         crate::invocation_status_table::ScheduledInvocation {
                             metadata:
                                 crate::invocation_status_table::PreFlightInvocationMetadata {
+                                    vqueue_id,
+                                    limit_key,
                                     response_sinks,
                                     timestamps,
                                     invocation_target,
@@ -818,6 +823,9 @@ pub mod v1 {
 
                         InvocationStatusV2 {
                             status: invocation_status_v2::Status::Scheduled.into(),
+                            vqueue_id: vqueue_id
+                                .map(|qid| Bytes::copy_from_slice(qid.as_raw_bytes())),
+                            limit_key: limit_key.to_string(),
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
@@ -858,6 +866,8 @@ pub mod v1 {
                             waiting_for_completions: vec![],
                             waiting_for_signal_indexes: vec![],
                             waiting_for_signal_names: vec![],
+                            nested_futures: vec![],
+                            combinator_type: super::CombinatorType::Unknown.into(),
                             result: None,
                             random_seed,
                         }
@@ -866,6 +876,8 @@ pub mod v1 {
                         crate::invocation_status_table::InboxedInvocation {
                             metadata:
                                 crate::invocation_status_table::PreFlightInvocationMetadata {
+                                    vqueue_id,
+                                    limit_key,
                                     response_sinks,
                                     timestamps,
                                     invocation_target,
@@ -887,6 +899,8 @@ pub mod v1 {
                         },
                     ) => InvocationStatusV2 {
                         status: invocation_status_v2::Status::Inboxed.into(),
+                        vqueue_id: vqueue_id.map(|qid| Bytes::copy_from_slice(qid.as_raw_bytes())),
+                        limit_key: limit_key.to_string(),
                         invocation_target: Some(invocation_target.into()),
                         source: Some(source.into()),
                         span_context: Some(span_context.into()),
@@ -924,6 +938,8 @@ pub mod v1 {
                         waiting_for_completions: vec![],
                         waiting_for_signal_indexes: vec![],
                         waiting_for_signal_names: vec![],
+                        nested_futures: vec![],
+                        combinator_type: super::CombinatorType::Unknown.into(),
                         result: None,
                         random_seed,
                     },
@@ -931,6 +947,8 @@ pub mod v1 {
                         crate::invocation_status_table::InboxedInvocation {
                             metadata:
                                 crate::invocation_status_table::PreFlightInvocationMetadata {
+                                    vqueue_id,
+                                    limit_key,
                                     response_sinks,
                                     timestamps,
                                     invocation_target,
@@ -961,6 +979,9 @@ pub mod v1 {
                         };
                         InvocationStatusV2 {
                             status: invocation_status_v2::Status::Inboxed.into(),
+                            vqueue_id: vqueue_id
+                                .map(|qid| Bytes::copy_from_slice(qid.as_raw_bytes())),
+                            limit_key: limit_key.to_string(),
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
@@ -1001,12 +1022,16 @@ pub mod v1 {
                             waiting_for_completions: vec![],
                             waiting_for_signal_indexes: vec![],
                             waiting_for_signal_names: vec![],
+                            nested_futures: vec![],
+                            combinator_type: super::CombinatorType::Unknown.into(),
                             result: None,
                             random_seed,
                         }
                     }
                     crate::invocation_status_table::InvocationStatus::Invoked(
                         crate::invocation_status_table::InFlightInvocationMetadata {
+                            vqueue_id,
+                            limit_key,
                             invocation_target,
                             created_using_restate_version,
                             journal_metadata,
@@ -1032,6 +1057,9 @@ pub mod v1 {
 
                         InvocationStatusV2 {
                             status: invocation_status_v2::Status::Invoked.into(),
+                            vqueue_id: vqueue_id
+                                .map(|qid| Bytes::copy_from_slice(qid.as_raw_bytes())),
+                            limit_key: limit_key.to_string(),
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
@@ -1071,6 +1099,8 @@ pub mod v1 {
                             waiting_for_completions: vec![],
                             waiting_for_signal_indexes: vec![],
                             waiting_for_signal_names: vec![],
+                            nested_futures: vec![],
+                            combinator_type: super::CombinatorType::Unknown.into(),
                             result: None,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             random_seed,
@@ -1079,6 +1109,8 @@ pub mod v1 {
                     crate::invocation_status_table::InvocationStatus::Suspended {
                         metadata:
                             crate::invocation_status_table::InFlightInvocationMetadata {
+                                vqueue_id,
+                                limit_key,
                                 invocation_target,
                                 created_using_restate_version,
                                 journal_metadata,
@@ -1093,7 +1125,7 @@ pub mod v1 {
                                 hotfix_apply_cancellation_after_deployment_is_pinned,
                                 random_seed,
                             },
-                        waiting_for_notifications,
+                        awaiting_on,
                     } => {
                         let (deployment_id, service_protocol_version) = match pinned_deployment {
                             None => (None, None),
@@ -1103,10 +1135,14 @@ pub mod v1 {
                             ),
                         };
 
+                        let (combinator_type, notification_ids, nested_futures) =
+                            awaiting_on.split();
+
                         let mut waiting_for_completions: Vec<u32> = Default::default();
                         let mut waiting_for_signal_indexes: Vec<u32> = Default::default();
                         let mut waiting_for_signal_names: Vec<String> = Default::default();
-                        for id in waiting_for_notifications {
+
+                        for id in notification_ids {
                             match id {
                                 journal_v2::NotificationId::CompletionId(c) => {
                                     waiting_for_completions.push(c);
@@ -1122,6 +1158,9 @@ pub mod v1 {
 
                         InvocationStatusV2 {
                             status: invocation_status_v2::Status::Suspended.into(),
+                            vqueue_id: vqueue_id
+                                .map(|qid| Bytes::copy_from_slice(qid.as_raw_bytes())),
+                            limit_key: limit_key.to_string(),
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
@@ -1161,6 +1200,8 @@ pub mod v1 {
                             waiting_for_completions,
                             waiting_for_signal_indexes,
                             waiting_for_signal_names,
+                            nested_futures: nested_futures.into_iter().map(Into::into).collect(),
+                            combinator_type: super::CombinatorType::from(combinator_type).into(),
                             result: None,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             random_seed,
@@ -1168,6 +1209,8 @@ pub mod v1 {
                     }
                     crate::invocation_status_table::InvocationStatus::Paused(
                         crate::invocation_status_table::InFlightInvocationMetadata {
+                            vqueue_id,
+                            limit_key,
                             invocation_target,
                             created_using_restate_version,
                             journal_metadata,
@@ -1193,6 +1236,9 @@ pub mod v1 {
 
                         InvocationStatusV2 {
                             status: invocation_status_v2::Status::Paused.into(),
+                            vqueue_id: vqueue_id
+                                .map(|qid| Bytes::copy_from_slice(qid.as_raw_bytes())),
+                            limit_key: limit_key.to_string(),
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
@@ -1232,6 +1278,8 @@ pub mod v1 {
                             waiting_for_completions: vec![],
                             waiting_for_signal_indexes: vec![],
                             waiting_for_signal_names: vec![],
+                            nested_futures: vec![],
+                            combinator_type: super::CombinatorType::Unknown.into(),
                             result: None,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             random_seed,
@@ -1239,6 +1287,8 @@ pub mod v1 {
                     }
                     crate::invocation_status_table::InvocationStatus::Completed(
                         crate::invocation_status_table::CompletedInvocation {
+                            vqueue_id,
+                            limit_key,
                             invocation_target,
                             created_using_restate_version,
                             source,
@@ -1263,6 +1313,9 @@ pub mod v1 {
 
                         InvocationStatusV2 {
                             status: invocation_status_v2::Status::Completed.into(),
+                            vqueue_id: vqueue_id
+                                .map(|qid| Bytes::copy_from_slice(qid.as_raw_bytes())),
+                            limit_key: limit_key.to_string(),
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
@@ -1300,6 +1353,8 @@ pub mod v1 {
                             waiting_for_completions: vec![],
                             waiting_for_signal_indexes: vec![],
                             waiting_for_signal_names: vec![],
+                            nested_futures: vec![],
+                            combinator_type: super::CombinatorType::Unknown.into(),
                             result: Some(response_result.into()),
                             random_seed,
                         }
@@ -1320,6 +1375,7 @@ pub mod v1 {
                 let InvocationV2Lite {
                     status,
                     invocation_target,
+                    vqueue_id,
                 } = value;
 
                 let invocation_target = expect_or_fail!(invocation_target)?.try_into()?;
@@ -1350,9 +1406,11 @@ pub mod v1 {
                     }
                 };
 
+                let vqueue_id = vqueue_id.map(|buf| VQueueId::from_raw_bytes(&mut buf.as_ref()));
                 Ok(crate::invocation_status_table::InvocationLite {
                     status,
                     invocation_target,
+                    vqueue_id,
                 })
             }
         }
@@ -1374,9 +1432,9 @@ pub mod v1 {
 
             if let Some(deployment_id) = deployment_id {
                 let service_protocol_version = service_protocol_version.ok_or_else(|| {
-                    ConversionError::invalid_data(anyhow!(
-                        "service_protocol_version has not been set"
-                    ))
+                    ConversionError::invalid_data_static(
+                        "service_protocol_version has not been set",
+                    )
                 })?;
                 let service_protocol_version =
                     ServiceProtocolVersion::try_from(service_protocol_version).map_err(|_| {
@@ -1403,7 +1461,7 @@ pub mod v1 {
                     restate_types::invocation::ServiceInvocationSpanContext::try_from(
                         value
                             .span_context
-                            .ok_or(ConversionError::missing_field("span_context"))?,
+                            .ok_or_else(|| ConversionError::missing_field("span_context"))?,
                     )?;
                 Ok(crate::invocation_status_table::JournalMetadata {
                     length,
@@ -1434,7 +1492,7 @@ pub mod v1 {
             fn try_from(value: Source) -> Result<Self, ConversionError> {
                 let source = match value
                     .source
-                    .ok_or(ConversionError::missing_field("source"))?
+                    .ok_or_else(|| ConversionError::missing_field("source"))?
                 {
                     source::Source::Ingress(ingress) => restate_types::invocation::Source::Ingress(
                         PartitionProcessorRpcRequestId::from_slice(&ingress.rpc_id)
@@ -1453,20 +1511,20 @@ pub mod v1 {
                         restate_types::identifiers::InvocationId::try_from(
                             service
                                 .invocation_id
-                                .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                .ok_or_else(|| ConversionError::missing_field("invocation_id"))?,
                         )?,
                         restate_types::invocation::InvocationTarget::try_from(
-                            service
-                                .invocation_target
-                                .ok_or(ConversionError::missing_field("invocation_target"))?,
+                            service.invocation_target.ok_or_else(|| {
+                                ConversionError::missing_field("invocation_target")
+                            })?,
                         )?,
                     ),
                     source::Source::RestartAsNew(service) => {
                         restate_types::invocation::Source::RestartAsNew(
                             restate_types::identifiers::InvocationId::try_from(
-                                service
-                                    .invocation_id
-                                    .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                service.invocation_id.ok_or_else(|| {
+                                    ConversionError::missing_field("invocation_id")
+                                })?,
                             )?,
                         )
                     }
@@ -1550,18 +1608,21 @@ pub mod v1 {
 
             fn try_from(value: InboxEntry) -> Result<Self, ConversionError> {
                 Ok(
-                    match value.entry.ok_or(ConversionError::missing_field("entry"))? {
+                    match value
+                        .entry
+                        .ok_or_else(|| ConversionError::missing_field("entry"))?
+                    {
                         inbox_entry::Entry::Invocation(invocation) => {
                             crate::inbox_table::InboxEntry::Invocation(
                                 restate_types::identifiers::ServiceId::try_from(
-                                    invocation
-                                        .service_id
-                                        .ok_or(ConversionError::missing_field("service_id"))?,
+                                    invocation.service_id.ok_or_else(|| {
+                                        ConversionError::missing_field("service_id")
+                                    })?,
                                 )?,
                                 restate_types::identifiers::InvocationId::try_from(
-                                    invocation
-                                        .invocation_id
-                                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                    invocation.invocation_id.ok_or_else(|| {
+                                        ConversionError::missing_field("invocation_id")
+                                    })?,
                                 )?,
                             )
                         }
@@ -1615,28 +1676,32 @@ pub mod v1 {
                     journal_retention_duration,
                     submit_notification_sink,
                     restate_version,
+                    limit_key,
                 } = value;
 
                 let invocation_id = restate_types::identifiers::InvocationId::try_from(
-                    invocation_id.ok_or(ConversionError::missing_field("invocation_id"))?,
+                    invocation_id.ok_or_else(|| ConversionError::missing_field("invocation_id"))?,
                 )?;
 
                 let invocation_target = restate_types::invocation::InvocationTarget::try_from(
-                    invocation_target.ok_or(ConversionError::missing_field("invocation_target"))?,
+                    invocation_target
+                        .ok_or_else(|| ConversionError::missing_field("invocation_target"))?,
                 )?;
 
                 let span_context =
                     restate_types::invocation::ServiceInvocationSpanContext::try_from(
-                        span_context.ok_or(ConversionError::missing_field("span_context"))?,
+                        span_context
+                            .ok_or_else(|| ConversionError::missing_field("span_context"))?,
                     )?;
 
-                let response_sink =
-                    Option::<restate_types::invocation::ServiceInvocationResponseSink>::try_from(
-                        response_sink.ok_or(ConversionError::missing_field("response_sink"))?,
-                    )?;
+                let response_sink = Option::<
+                    restate_types::invocation::ServiceInvocationResponseSink,
+                >::try_from(
+                    response_sink.ok_or_else(|| ConversionError::missing_field("response_sink"))?,
+                )?;
 
                 let source = restate_types::invocation::Source::try_from(
-                    source.ok_or(ConversionError::missing_field("source"))?,
+                    source.ok_or_else(|| ConversionError::missing_field("source"))?,
                 )?;
 
                 let headers = headers
@@ -1665,6 +1730,9 @@ pub mod v1 {
                     .map(TryInto::try_into)
                     .transpose()?;
 
+                // Scope is persisted as part of InvocationTarget since v1.7.0
+                let limit_key = limit_key.parse().map_err(ConversionError::invalid_data)?;
+
                 Ok(restate_types::invocation::ServiceInvocation {
                     invocation_id,
                     invocation_target,
@@ -1677,6 +1745,7 @@ pub mod v1 {
                     completion_retention_duration,
                     journal_retention_duration,
                     idempotency_key,
+                    limit_key,
                     submit_notification_sink,
                     restate_version: restate_version_from_pb(restate_version),
                 })
@@ -1685,6 +1754,8 @@ pub mod v1 {
 
         impl From<restate_types::invocation::ServiceInvocation> for ServiceInvocation {
             fn from(value: restate_types::invocation::ServiceInvocation) -> Self {
+                let limit_key = value.limit_key.to_string();
+                // Scope is persisted as part of InvocationTarget since v1.7.0
                 let invocation_target = InvocationTarget::from(value.invocation_target);
                 let span_context = SpanContext::from(value.span_context);
                 let response_sink = ServiceInvocationResponseSink::from(value.response_sink);
@@ -1705,40 +1776,21 @@ pub mod v1 {
                     idempotency_key: value.idempotency_key.map(|s| s.to_string()),
                     submit_notification_sink: value.submit_notification_sink.map(Into::into),
                     restate_version: value.restate_version.into_string(),
+                    limit_key,
                 }
             }
         }
 
         impl From<Box<restate_types::invocation::ServiceInvocation>> for ServiceInvocation {
             fn from(value: Box<restate_types::invocation::ServiceInvocation>) -> Self {
-                let invocation_target = InvocationTarget::from(value.invocation_target);
-                let span_context = SpanContext::from(value.span_context);
-                let response_sink = ServiceInvocationResponseSink::from(value.response_sink);
-                let source = Source::from(value.source);
-                let headers = value.headers.into_iter().map(Into::into).collect();
-
-                ServiceInvocation {
-                    invocation_id: Some(InvocationId::from(value.invocation_id)),
-                    invocation_target: Some(invocation_target),
-                    span_context: Some(span_context),
-                    response_sink: Some(response_sink),
-                    argument: value.argument,
-                    source: Some(source),
-                    headers,
-                    execution_time: value.execution_time.map(|m| m.as_u64()).unwrap_or_default(),
-                    completion_retention_duration: Some(value.completion_retention_duration.into()),
-                    journal_retention_duration: Some(value.journal_retention_duration.into()),
-                    idempotency_key: value.idempotency_key.map(|s| s.to_string()),
-                    submit_notification_sink: value.submit_notification_sink.map(Into::into),
-                    restate_version: value.restate_version.into_string(),
-                }
+                Self::from(*value)
             }
         }
 
         impl From<&restate_types::invocation::ServiceInvocation> for ServiceInvocation {
             fn from(value: &restate_types::invocation::ServiceInvocation) -> Self {
                 let invocation_target = InvocationTarget::from(&value.invocation_target);
-                let span_context = SpanContext::from(&value.span_context);
+                let span_context = value.span_context.clone().into();
                 let response_sink =
                     ServiceInvocationResponseSink::from(value.response_sink.as_ref());
                 let source = Source::from(&value.source);
@@ -1758,6 +1810,7 @@ pub mod v1 {
                     idempotency_key: value.idempotency_key.as_ref().map(|s| s.to_string()),
                     submit_notification_sink: value.submit_notification_sink.map(Into::into),
                     restate_version: value.restate_version.clone().into_string(),
+                    limit_key: value.limit_key.to_string(),
                 }
             }
         }
@@ -1768,7 +1821,7 @@ pub mod v1 {
             fn try_from(value: SubmitNotificationSink) -> Result<Self, ConversionError> {
                 let notification_sink = match value
                     .notification_sink
-                    .ok_or(ConversionError::missing_field("notification_sink"))?
+                    .ok_or_else(|| ConversionError::missing_field("notification_sink"))?
                 {
                     submit_notification_sink::NotificationSink::Ingress(
                         submit_notification_sink::Ingress { request_id },
@@ -1810,7 +1863,7 @@ pub mod v1 {
                 let service_id = restate_types::identifiers::ServiceId::try_from(
                     state_mutation
                         .service_id
-                        .ok_or(ConversionError::missing_field("service_id"))?,
+                        .ok_or_else(|| ConversionError::missing_field("service_id"))?,
                 )?;
                 let state = state_mutation
                     .kv_pairs
@@ -1851,10 +1904,19 @@ pub mod v1 {
                     ByteString::try_from(value.name).map_err(ConversionError::invalid_data)?;
                 let handler =
                     ByteString::try_from(value.handler).map_err(ConversionError::invalid_data)?;
+                let scope = if let Some(ref scope) = value.scope {
+                    Some(Scope::try_new(scope).map_err(ConversionError::invalid_data)?)
+                } else {
+                    None
+                };
 
                 match invocation_target::Ty::try_from(value.service_and_handler_ty) {
                     Ok(invocation_target::Ty::Service) => {
-                        Ok(restate_types::invocation::InvocationTarget::Service { name, handler })
+                        Ok(restate_types::invocation::InvocationTarget::Service {
+                            name,
+                            handler,
+                            scope,
+                        })
                     }
                     Ok(invocation_target::Ty::VirtualObjectExclusive) => {
                         Ok(restate_types::invocation::InvocationTarget::VirtualObject {
@@ -1864,6 +1926,7 @@ pub mod v1 {
                                 .map_err(ConversionError::invalid_data)?,
                             handler_ty:
                                 restate_types::invocation::VirtualObjectHandlerType::Exclusive,
+                            scope,
                         })
                     }
                     Ok(invocation_target::Ty::VirtualObjectShared) => {
@@ -1873,6 +1936,7 @@ pub mod v1 {
                             key: ByteString::try_from(value.key)
                                 .map_err(ConversionError::invalid_data)?,
                             handler_ty: restate_types::invocation::VirtualObjectHandlerType::Shared,
+                            scope,
                         })
                     }
                     Ok(invocation_target::Ty::WorkflowWorkflow) => {
@@ -1882,6 +1946,7 @@ pub mod v1 {
                             key: ByteString::try_from(value.key)
                                 .map_err(ConversionError::invalid_data)?,
                             handler_ty: restate_types::invocation::WorkflowHandlerType::Workflow,
+                            scope,
                         })
                     }
                     Ok(invocation_target::Ty::WorkflowShared) => {
@@ -1891,6 +1956,7 @@ pub mod v1 {
                             key: ByteString::try_from(value.key)
                                 .map_err(ConversionError::invalid_data)?,
                             handler_ty: restate_types::invocation::WorkflowHandlerType::Shared,
+                            scope,
                         })
                     }
                     _ => Err(ConversionError::unexpected_enum_variant(
@@ -1903,24 +1969,28 @@ pub mod v1 {
 
         impl From<restate_types::invocation::InvocationTarget> for InvocationTarget {
             fn from(value: restate_types::invocation::InvocationTarget) -> Self {
+                let scope = value.scope().map(|s| s.to_string());
                 match value {
-                    restate_types::invocation::InvocationTarget::Service { name, handler } => {
-                        InvocationTarget {
-                            name: name.into_bytes(),
-                            handler: handler.into_bytes(),
-                            service_and_handler_ty: invocation_target::Ty::Service.into(),
-                            ..InvocationTarget::default()
-                        }
-                    }
+                    restate_types::invocation::InvocationTarget::Service {
+                        name, handler, ..
+                    } => InvocationTarget {
+                        name: name.into_bytes(),
+                        handler: handler.into_bytes(),
+                        service_and_handler_ty: invocation_target::Ty::Service.into(),
+                        scope,
+                        ..InvocationTarget::default()
+                    },
                     restate_types::invocation::InvocationTarget::VirtualObject {
                         name,
                         key,
                         handler,
                         handler_ty,
+                        ..
                     } => InvocationTarget {
                         name: name.into_bytes(),
                         handler: handler.into_bytes(),
                         key: key.into_bytes(),
+                        scope,
                         service_and_handler_ty: match handler_ty {
                             restate_types::invocation::VirtualObjectHandlerType::Shared => {
                                 invocation_target::Ty::VirtualObjectShared
@@ -1936,10 +2006,12 @@ pub mod v1 {
                         key,
                         handler,
                         handler_ty,
+                        ..
                     } => InvocationTarget {
                         name: name.into_bytes(),
                         handler: handler.into_bytes(),
                         key: key.into_bytes(),
+                        scope,
                         service_and_handler_ty: match handler_ty {
                             restate_types::invocation::WorkflowHandlerType::Shared => {
                                 invocation_target::Ty::WorkflowShared
@@ -1956,24 +2028,28 @@ pub mod v1 {
 
         impl From<&restate_types::invocation::InvocationTarget> for InvocationTarget {
             fn from(value: &restate_types::invocation::InvocationTarget) -> Self {
+                let scope = value.scope().map(|s| s.to_string());
                 match value {
-                    restate_types::invocation::InvocationTarget::Service { name, handler } => {
-                        InvocationTarget {
-                            name: name.as_bytes().clone(),
-                            handler: handler.as_bytes().clone(),
-                            service_and_handler_ty: invocation_target::Ty::Service.into(),
-                            ..InvocationTarget::default()
-                        }
-                    }
+                    restate_types::invocation::InvocationTarget::Service {
+                        name, handler, ..
+                    } => InvocationTarget {
+                        name: name.as_bytes().clone(),
+                        handler: handler.as_bytes().clone(),
+                        service_and_handler_ty: invocation_target::Ty::Service.into(),
+                        scope,
+                        ..InvocationTarget::default()
+                    },
                     restate_types::invocation::InvocationTarget::VirtualObject {
                         name,
                         key,
                         handler,
                         handler_ty,
+                        ..
                     } => InvocationTarget {
                         name: name.as_bytes().clone(),
                         handler: handler.as_bytes().clone(),
                         key: key.as_bytes().clone(),
+                        scope,
                         service_and_handler_ty: match handler_ty {
                             restate_types::invocation::VirtualObjectHandlerType::Shared => {
                                 invocation_target::Ty::VirtualObjectShared
@@ -1989,10 +2065,12 @@ pub mod v1 {
                         key,
                         handler,
                         handler_ty,
+                        ..
                     } => InvocationTarget {
                         name: name.as_bytes().clone(),
                         handler: handler.as_bytes().clone(),
                         key: key.as_bytes().clone(),
+                        scope,
                         service_and_handler_ty: match handler_ty {
                             restate_types::invocation::WorkflowHandlerType::Shared => {
                                 invocation_target::Ty::WorkflowShared
@@ -2011,7 +2089,15 @@ pub mod v1 {
             type Error = ConversionError;
 
             fn try_from(service_id: ServiceId) -> Result<Self, ConversionError> {
+                // Safety: In principle, data is meant to be validated _before_ they
+                // are written to storage.
+                // RestrictedValue. Therefore, we validate it here.
+                let scope = service_id
+                    .scope
+                    .as_ref()
+                    .map(|scope| unsafe { Scope::new_unchecked(scope) });
                 Ok(restate_types::identifiers::ServiceId::new(
+                    scope,
                     ByteString::try_from(service_id.service_name)
                         .map_err(ConversionError::invalid_data)?,
                     ByteString::try_from(service_id.service_key)
@@ -2025,6 +2111,7 @@ pub mod v1 {
                 ServiceId {
                     service_key: service_id.key.into_bytes(),
                     service_name: service_id.service_name.into_bytes(),
+                    scope: service_id.scope.map(|s| s.to_string()),
                 }
             }
         }
@@ -2083,8 +2170,7 @@ pub mod v1 {
                 let trace_id = Bytes::copy_from_slice(&span_context.trace_id().to_bytes());
                 let is_remote = span_context.is_remote();
                 let trace_state = span_context.into_trace_state().into_header();
-                let span_relation =
-                    span_cause.map(|span_relation| SpanRelation::from(span_relation.clone()));
+                let span_relation = span_cause.map(SpanRelation::from);
 
                 SpanContext {
                     trace_state,
@@ -2124,7 +2210,10 @@ pub mod v1 {
             type Error = ConversionError;
 
             fn try_from(value: SpanRelation) -> Result<Self, ConversionError> {
-                match value.kind.ok_or(ConversionError::missing_field("kind"))? {
+                match value
+                    .kind
+                    .ok_or_else(|| ConversionError::missing_field("kind"))?
+                {
                     span_relation::Kind::Parent(span_relation::Parent { span_id }) => {
                         let span_id =
                             opentelemetry::trace::SpanId::from_bytes(span_id.to_be_bytes());
@@ -2181,7 +2270,7 @@ pub mod v1 {
             fn try_from(value: ServiceInvocationResponseSink) -> Result<Self, ConversionError> {
                 let response_sink = match value
                     .response_sink
-                    .ok_or(ConversionError::missing_field("response_sink"))?
+                    .ok_or_else(|| ConversionError::missing_field("response_sink"))?
                 {
                     ResponseSink::PartitionProcessor(partition_processor) => {
                         Some(
@@ -2307,7 +2396,7 @@ pub mod v1 {
             fn try_from(value: JournalEntry) -> Result<Self, ConversionError> {
                 let journal_entry = match value
                     .kind
-                    .ok_or(ConversionError::missing_field("kind"))?
+                    .ok_or_else(|| ConversionError::missing_field("kind"))?
                 {
                     Kind::Entry(journal_entry) => crate::journal_table::JournalEntry::Entry(
                         restate_types::journal::enriched::EnrichedRawEntry::try_from(
@@ -2361,7 +2450,7 @@ pub mod v1 {
                 let journal_entry::Entry { header, raw_entry } = value;
 
                 let header = restate_types::journal::enriched::EnrichedEntryHeader::try_from(
-                    header.ok_or(ConversionError::missing_field("header"))?,
+                    header.ok_or_else(|| ConversionError::missing_field("header"))?,
                 )?;
 
                 Ok(restate_types::journal::enriched::EnrichedRawEntry::new(
@@ -2386,7 +2475,7 @@ pub mod v1 {
             fn try_from(value: CompletionResult) -> Result<Self, ConversionError> {
                 let result = match value
                     .result
-                    .ok_or(ConversionError::missing_field("result"))?
+                    .ok_or_else(|| ConversionError::missing_field("result"))?
                 {
                     completion_result::Result::Empty(_) => {
                         restate_types::journal::CompletionResult::Empty
@@ -2442,7 +2531,7 @@ pub mod v1 {
 
                 let enriched_header = match value
                     .kind
-                    .ok_or(ConversionError::missing_field("kind"))?
+                    .ok_or_else(|| ConversionError::missing_field("kind"))?
                 {
                     enriched_entry_header::Kind::Input(_) => {
                         restate_types::journal::enriched::EnrichedEntryHeader::Input {}
@@ -2493,9 +2582,9 @@ pub mod v1 {
                         let enrichment_result = Option::<
                             restate_types::journal::enriched::CallEnrichmentResult,
                         >::try_from(
-                            invoke
-                                .resolution_result
-                                .ok_or(ConversionError::missing_field("resolution_result"))?,
+                            invoke.resolution_result.ok_or_else(|| {
+                                ConversionError::missing_field("resolution_result")
+                            })?,
                         )?;
 
                         restate_types::journal::enriched::EnrichedEntryHeader::Call {
@@ -2506,9 +2595,9 @@ pub mod v1 {
                     enriched_entry_header::Kind::BackgroundCall(background_call) => {
                         let enrichment_result =
                             restate_types::journal::enriched::CallEnrichmentResult::try_from(
-                                background_call
-                                    .resolution_result
-                                    .ok_or(ConversionError::missing_field("resolution_result"))?,
+                                background_call.resolution_result.ok_or_else(|| {
+                                    ConversionError::missing_field("resolution_result")
+                                })?,
                             )?;
 
                         restate_types::journal::enriched::EnrichedEntryHeader::OneWayCall {
@@ -2527,8 +2616,9 @@ pub mod v1 {
                         restate_types::journal::enriched::EnrichedEntryHeader::CompleteAwakeable {
                             enrichment_result: AwakeableEnrichmentResult {
                                 invocation_id: restate_types::identifiers::InvocationId::try_from(
-                                    invocation_id
-                                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                    invocation_id.ok_or_else(|| {
+                                        ConversionError::missing_field("invocation_id")
+                                    })?,
                                 )
                                 .map_err(ConversionError::invalid_data)?,
                                 entry_index,
@@ -2681,28 +2771,28 @@ pub mod v1 {
             fn try_from(value: InvocationResolutionResult) -> Result<Self, ConversionError> {
                 let result = match value
                     .result
-                    .ok_or(ConversionError::missing_field("result"))?
+                    .ok_or_else(|| ConversionError::missing_field("result"))?
                 {
                     invocation_resolution_result::Result::None(_) => None,
                     invocation_resolution_result::Result::Success(success) => {
                         let invocation_id = restate_types::identifiers::InvocationId::try_from(
                             success
                                 .invocation_id
-                                .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                .ok_or_else(|| ConversionError::missing_field("invocation_id"))?,
                         )?;
 
                         let invocation_target =
                             restate_types::invocation::InvocationTarget::try_from(
-                                success
-                                    .invocation_target
-                                    .ok_or(ConversionError::missing_field("invocation_target"))?,
+                                success.invocation_target.ok_or_else(|| {
+                                    ConversionError::missing_field("invocation_target")
+                                })?,
                             )?;
 
                         let span_context =
                             restate_types::invocation::ServiceInvocationSpanContext::try_from(
-                                success
-                                    .span_context
-                                    .ok_or(ConversionError::missing_field("span_context"))?,
+                                success.span_context.ok_or_else(|| {
+                                    ConversionError::missing_field("span_context")
+                                })?,
                             )?;
 
                         let completion_retention_time = Some(std::time::Duration::try_from(
@@ -2764,19 +2854,19 @@ pub mod v1 {
                 let invocation_id = restate_types::identifiers::InvocationId::try_from(
                     value
                         .invocation_id
-                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                        .ok_or_else(|| ConversionError::missing_field("invocation_id"))?,
                 )?;
 
                 let invocation_target = restate_types::invocation::InvocationTarget::try_from(
                     value
                         .invocation_target
-                        .ok_or(ConversionError::missing_field("invocation_target"))?,
+                        .ok_or_else(|| ConversionError::missing_field("invocation_target"))?,
                 )?;
                 let span_context =
                     restate_types::invocation::ServiceInvocationSpanContext::try_from(
                         value
                             .span_context
-                            .ok_or(ConversionError::missing_field("span_context"))?,
+                            .ok_or_else(|| ConversionError::missing_field("span_context"))?,
                     )?;
 
                 let completion_retention_time = Some(std::time::Duration::try_from(
@@ -2814,19 +2904,19 @@ pub mod v1 {
                 let invocation_id = restate_types::identifiers::InvocationId::try_from(
                     value
                         .invocation_id
-                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                        .ok_or_else(|| ConversionError::missing_field("invocation_id"))?,
                 )?;
 
                 let invocation_target = restate_types::invocation::InvocationTarget::try_from(
                     value
                         .invocation_target
-                        .ok_or(ConversionError::missing_field("invocation_target"))?,
+                        .ok_or_else(|| ConversionError::missing_field("invocation_target"))?,
                 )?;
                 let span_context =
                     restate_types::invocation::ServiceInvocationSpanContext::try_from(
                         value
                             .span_context
-                            .ok_or(ConversionError::missing_field("span_context"))?,
+                            .ok_or_else(|| ConversionError::missing_field("span_context"))?,
                     )?;
 
                 let completion_retention_duration = std::time::Duration::try_from(
@@ -3125,7 +3215,7 @@ pub mod v1 {
                         journal_v2::EntryType::Notification(notification_ty) => {
                             let notification_id = match value
                                 .notification_id
-                                .ok_or(ConversionError::missing_field("notification_id"))?
+                                .ok_or_else(|| ConversionError::missing_field("notification_id"))?
                             {
                                 entry::NotificationId::CompletionIdx(c) => {
                                     journal_v2::NotificationId::CompletionId(c)
@@ -3138,11 +3228,22 @@ pub mod v1 {
                                 }
                             };
 
+                            let result_variant = NotificationResultVariant::try_from(
+                                value.notification_result_variant,
+                            )
+                            .map_err(|e| {
+                                ConversionError::unexpected_enum_variant(
+                                    "notification_result_variant",
+                                    e.0,
+                                )
+                            })?;
+
                             restate_types::storage::StoredRawEntry::new(
                                 header,
                                 journal_v2::raw::RawNotification::new(
                                     notification_ty,
                                     notification_id,
+                                    result_variant.into(),
                                     value.content,
                                 ),
                             )
@@ -3156,11 +3257,11 @@ pub mod v1 {
                                 .with_command_specific_metadata(
                                 journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(Box::new(
                                     journal_v2::raw::CallOrSendMetadata::try_from(
-                                        value.call_or_send_command_metadata.ok_or(
+                                        value.call_or_send_command_metadata.ok_or_else(|| {
                                             ConversionError::missing_field(
                                                 "call_command_journal_entry_additional_metadata",
-                                            ),
-                                        )?,
+                                            )
+                                        })?,
                                     )?,
                                 )),
                             ),
@@ -3186,6 +3287,8 @@ pub mod v1 {
                 let mut call_or_send_command_metadata: Option<entry::CallOrSendCommandMetadata> =
                     None;
                 let mut notification_id: Option<entry::NotificationId> = None;
+                let mut notification_result_variant: NotificationResultVariant =
+                    NotificationResultVariant::Unknown;
                 let content = match raw_entry.inner {
                     journal_v2::raw::RawEntry::Command(cmd) => {
                         match cmd.command_specific_metadata {
@@ -3213,6 +3316,8 @@ pub mod v1 {
                             }
                         });
 
+                        notification_result_variant = notification.result_variant().into();
+
                         notification.serialized_content()
                     }
                 };
@@ -3223,6 +3328,7 @@ pub mod v1 {
                     append_time,
                     call_or_send_command_metadata,
                     notification_id,
+                    notification_result_variant: notification_result_variant.into(),
                 }
             }
         }
@@ -3276,7 +3382,7 @@ pub mod v1 {
                 Ok(
                     Self {
                         invocation_query: match query
-                            .ok_or(ConversionError::missing_field("query"))?
+                            .ok_or_else(|| ConversionError::missing_field("query"))?
                         {
                             outbox_message::attach_invocation_request::Query::InvocationId(id) => {
                                 restate_types::invocation::InvocationQuery::Invocation(
@@ -3296,10 +3402,11 @@ pub mod v1 {
                         response_sink: Option::<
                             restate_types::invocation::ServiceInvocationResponseSink,
                         >::try_from(
-                            response_sink.ok_or(ConversionError::missing_field("response_sink"))?,
+                            response_sink
+                                .ok_or_else(|| ConversionError::missing_field("response_sink"))?,
                         )
                         .transpose()
-                        .ok_or(ConversionError::missing_field("response_sink"))??,
+                        .ok_or_else(|| ConversionError::missing_field("response_sink"))??,
                     },
                 )
             }
@@ -3336,12 +3443,14 @@ pub mod v1 {
                 Ok(Self {
                     target: restate_types::invocation::JournalCompletionTarget {
                         caller_id: restate_types::identifiers::InvocationId::try_from(
-                            invocation_id.ok_or(ConversionError::missing_field("invocation_id"))?,
+                            invocation_id
+                                .ok_or_else(|| ConversionError::missing_field("invocation_id"))?,
                         )?,
                         caller_completion_id: entry_index,
                     },
                     result: restate_types::invocation::ResponseResult::try_from(
-                        response_result.ok_or(ConversionError::missing_field("response_result"))?,
+                        response_result
+                            .ok_or_else(|| ConversionError::missing_field("response_result"))?,
                     )?,
                 })
             }
@@ -3438,14 +3547,14 @@ pub mod v1 {
             fn try_from(value: OutboxMessage) -> Result<Self, ConversionError> {
                 let result = match value
                     .outbox_message
-                    .ok_or(ConversionError::missing_field("outbox_message"))?
+                    .ok_or_else(|| ConversionError::missing_field("outbox_message"))?
                 {
                     outbox_message::OutboxMessage::ServiceInvocationCase(service_invocation) => {
                         crate::outbox_table::OutboxMessage::ServiceInvocation(Box::new(
                             restate_types::invocation::ServiceInvocation::try_from(
-                                service_invocation
-                                    .service_invocation
-                                    .ok_or(ConversionError::missing_field("service_invocation"))?,
+                                service_invocation.service_invocation.ok_or_else(|| {
+                                    ConversionError::missing_field("service_invocation")
+                                })?,
                             )?,
                         ))
                     }
@@ -3458,9 +3567,9 @@ pub mod v1 {
                         crate::outbox_table::OutboxMessage::InvocationTermination(
                             InvocationTermination {
                                 invocation_id: restate_types::identifiers::InvocationId::try_from(
-                                    outbox_kill
-                                        .invocation_id
-                                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                    outbox_kill.invocation_id.ok_or_else(|| {
+                                        ConversionError::missing_field("invocation_id")
+                                    })?,
                                 )?,
                                 flavor: TerminationFlavor::Kill,
                                 response_sink: None,
@@ -3471,9 +3580,9 @@ pub mod v1 {
                         crate::outbox_table::OutboxMessage::InvocationTermination(
                             InvocationTermination {
                                 invocation_id: restate_types::identifiers::InvocationId::try_from(
-                                    outbox_cancel
-                                        .invocation_id
-                                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                    outbox_cancel.invocation_id.ok_or_else(|| {
+                                        ConversionError::missing_field("invocation_id")
+                                    })?,
                                 )?,
                                 flavor: TerminationFlavor::Cancel,
                                 response_sink: None,
@@ -3565,7 +3674,7 @@ pub mod v1 {
             fn try_from(value: ResponseResult) -> Result<Self, ConversionError> {
                 let result = match value
                     .response_result
-                    .ok_or(ConversionError::missing_field("response_result"))?
+                    .ok_or_else(|| ConversionError::missing_field("response_result"))?
                 {
                     response_result::ResponseResult::ResponseSuccess(success) => {
                         restate_types::invocation::ResponseResult::Success(success.value)
@@ -3626,12 +3735,16 @@ pub mod v1 {
 
             fn try_from(value: Timer) -> Result<Self, ConversionError> {
                 Ok(
-                    match value.value.ok_or(ConversionError::missing_field("value"))? {
+                    match value
+                        .value
+                        .ok_or_else(|| ConversionError::missing_field("value"))?
+                    {
                         timer::Value::CompleteSleepEntry(cse) => {
                             crate::timer_table::Timer::CompleteJournalEntry(
                                 restate_types::identifiers::InvocationId::try_from(
-                                    cse.invocation_id
-                                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                    cse.invocation_id.ok_or_else(|| {
+                                        ConversionError::missing_field("invocation_id")
+                                    })?,
                                 )?,
                                 cse.entry_index,
                             )
@@ -3645,9 +3758,9 @@ pub mod v1 {
                         timer::Value::CleanInvocationStatus(clean_invocation_status) => {
                             crate::timer_table::Timer::CleanInvocationStatus(
                                 restate_types::identifiers::InvocationId::try_from(
-                                    clean_invocation_status
-                                        .invocation_id
-                                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                    clean_invocation_status.invocation_id.ok_or_else(|| {
+                                        ConversionError::missing_field("invocation_id")
+                                    })?,
                                 )?,
                             )
                         }
@@ -3709,7 +3822,7 @@ pub mod v1 {
                 Ok(
                     match value
                         .variant
-                        .ok_or(ConversionError::missing_field("variant"))?
+                        .ok_or_else(|| ConversionError::missing_field("variant"))?
                     {
                         Variant::SequenceNumber(sn) => {
                             crate::deduplication_table::DedupSequenceNumber::Sn(sn)
@@ -3761,29 +3874,6 @@ pub mod v1 {
             }
         }
 
-        impl From<crate::idempotency_table::IdempotencyMetadata> for IdempotencyMetadata {
-            fn from(value: crate::idempotency_table::IdempotencyMetadata) -> Self {
-                IdempotencyMetadata {
-                    invocation_id: Some(InvocationId::from(value.invocation_id)),
-                }
-            }
-        }
-
-        impl TryFrom<IdempotencyMetadata> for crate::idempotency_table::IdempotencyMetadata {
-            type Error = ConversionError;
-
-            fn try_from(value: IdempotencyMetadata) -> Result<Self, ConversionError> {
-                Ok(crate::idempotency_table::IdempotencyMetadata {
-                    invocation_id: restate_types::identifiers::InvocationId::try_from(
-                        value
-                            .invocation_id
-                            .ok_or(ConversionError::missing_field("invocation_id"))?,
-                    )
-                    .map_err(ConversionError::invalid_data)?,
-                })
-            }
-        }
-
         impl From<crate::promise_table::Promise> for Promise {
             fn from(value: crate::promise_table::Promise) -> Self {
                 match value.state {
@@ -3811,11 +3901,14 @@ pub mod v1 {
 
             fn try_from(value: Promise) -> Result<Self, ConversionError> {
                 Ok(crate::promise_table::Promise {
-                    state: match value.state.ok_or(ConversionError::missing_field("state"))? {
+                    state: match value
+                        .state
+                        .ok_or_else(|| ConversionError::missing_field("state"))?
+                    {
                         promise::State::CompletedState(s) => {
                             crate::promise_table::PromiseState::Completed(
                                 s.result
-                                    .ok_or(ConversionError::missing_field("result"))?
+                                    .ok_or_else(|| ConversionError::missing_field("result"))?
                                     .try_into()?,
                             )
                         }
@@ -3896,6 +3989,151 @@ pub mod v1 {
             }
         }
 
+        impl From<crate::journal_table_v2::NotificationEntryIndex> for NotificationEntryIndex {
+            fn from(value: crate::journal_table_v2::NotificationEntryIndex) -> Self {
+                Self {
+                    entry_index: value.entry_index,
+                    result_variant: NotificationResultVariant::from(value.result_variant).into(),
+                }
+            }
+        }
+
+        impl TryFrom<NotificationEntryIndex> for crate::journal_table_v2::NotificationEntryIndex {
+            type Error = ConversionError;
+
+            fn try_from(value: NotificationEntryIndex) -> Result<Self, Self::Error> {
+                Ok(Self {
+                    entry_index: value.entry_index,
+                    result_variant: NotificationResultVariant::try_from(value.result_variant)
+                        .map_err(|err| {
+                            ConversionError::unexpected_enum_variant("result_variant", err.0)
+                        })?
+                        .into(),
+                })
+            }
+        }
+
+        impl From<RawNotificationResultVariant> for NotificationResultVariant {
+            fn from(value: RawNotificationResultVariant) -> Self {
+                match value {
+                    RawNotificationResultVariant::Unknown => NotificationResultVariant::Unknown,
+                    RawNotificationResultVariant::Void => NotificationResultVariant::Void,
+                    RawNotificationResultVariant::Value => NotificationResultVariant::Value,
+                    RawNotificationResultVariant::Failure => NotificationResultVariant::Failure,
+                    RawNotificationResultVariant::InvocationId => {
+                        NotificationResultVariant::InvocationId
+                    }
+                    RawNotificationResultVariant::StateKeys => NotificationResultVariant::StateKeys,
+                }
+            }
+        }
+
+        impl From<NotificationResultVariant> for RawNotificationResultVariant {
+            fn from(value: NotificationResultVariant) -> Self {
+                match value {
+                    NotificationResultVariant::Unknown => RawNotificationResultVariant::Unknown,
+                    NotificationResultVariant::Void => RawNotificationResultVariant::Void,
+                    NotificationResultVariant::Value => RawNotificationResultVariant::Value,
+                    NotificationResultVariant::Failure => RawNotificationResultVariant::Failure,
+                    NotificationResultVariant::InvocationId => {
+                        RawNotificationResultVariant::InvocationId
+                    }
+                    NotificationResultVariant::StateKeys => RawNotificationResultVariant::StateKeys,
+                }
+            }
+        }
+
+        impl From<CombinatorType> for super::CombinatorType {
+            fn from(value: CombinatorType) -> Self {
+                match value {
+                    CombinatorType::Unknown => Self::Unknown,
+                    CombinatorType::FirstCompleted => Self::FirstCompleted,
+                    CombinatorType::AllCompleted => Self::AllCompleted,
+                    CombinatorType::FirstSucceededOrAllFailed => Self::FirstSucceededOrAllFailed,
+                    CombinatorType::AllSucceededOrFirstFailed => Self::AllSucceededOrFirstFailed,
+                }
+            }
+        }
+
+        impl From<super::CombinatorType> for CombinatorType {
+            fn from(value: super::CombinatorType) -> Self {
+                match value {
+                    super::CombinatorType::Unknown => Self::Unknown,
+                    super::CombinatorType::FirstCompleted => Self::FirstCompleted,
+                    super::CombinatorType::AllCompleted => Self::AllCompleted,
+                    super::CombinatorType::FirstSucceededOrAllFailed => {
+                        Self::FirstSucceededOrAllFailed
+                    }
+                    super::CombinatorType::AllSucceededOrFirstFailed => {
+                        Self::AllSucceededOrFirstFailed
+                    }
+                }
+            }
+        }
+
+        impl From<UnresolvedFuture> for super::Future {
+            fn from(value: UnresolvedFuture) -> Self {
+                let (combinator, notifications, nested) = value.split();
+
+                let mut f = Self {
+                    combinator_type: super::CombinatorType::from(combinator).into(),
+                    nested_futures: nested.into_iter().map(Into::into).collect(),
+                    ..Default::default()
+                };
+
+                for notif in notifications {
+                    match notif {
+                        NotificationId::CompletionId(v) => f.waiting_completions.push(v),
+                        NotificationId::SignalIndex(v) => f.waiting_signals.push(v),
+                        NotificationId::SignalName(v) => f.waiting_named_signals.push(v.into()),
+                    }
+                }
+
+                f
+            }
+        }
+
+        impl TryFrom<super::Future> for UnresolvedFuture {
+            type Error = ConversionError;
+            fn try_from(value: super::Future) -> Result<Self, Self::Error> {
+                let super::Future {
+                    combinator_type,
+                    nested_futures,
+                    waiting_completions,
+                    waiting_named_signals,
+                    waiting_signals,
+                } = value;
+
+                let combinator: CombinatorType = super::CombinatorType::try_from(combinator_type)
+                    .map_err(|v| ConversionError::unexpected_enum_variant("combinator_type", v.0))?
+                    .into();
+
+                let notifications = waiting_completions
+                    .into_iter()
+                    .map(NotificationId::for_completion)
+                    .chain(
+                        waiting_signals
+                            .into_iter()
+                            .map(SignalId::for_index)
+                            .map(NotificationId::for_signal),
+                    )
+                    .chain(
+                        waiting_named_signals
+                            .into_iter()
+                            .map(|s| SignalId::for_name(s.into()))
+                            .map(NotificationId::for_signal),
+                    );
+
+                let mut builder = UnresolvedFuture::builder(combinator).futures(notifications);
+
+                for fut in nested_futures {
+                    builder = builder.future(UnresolvedFuture::try_from(fut)?);
+                }
+
+                builder.build().map_err(ConversionError::invalid_data)
+            }
+        }
+
         fn restate_version_from_pb(restate_version: String) -> restate_types::RestateVersion {
             if restate_version.is_empty() {
                 restate_types::RestateVersion::unknown()
@@ -3910,6 +4148,8 @@ pub mod v1 {
 
         use bytes::Bytes;
         use prost::Message;
+        use restate_types::journal_v2::UnresolvedFuture;
+        use restate_types::vqueues::VQueueId;
         use restate_types::{
             errors::ConversionError,
             identifiers::{DeploymentId, InvocationId, SubscriptionId},
@@ -3927,7 +4167,6 @@ pub mod v1 {
             wire_type: prost::encoding::WireType,
             value: &mut &'a [u8],
             buf: &mut &'a [u8],
-            _ctx: prost::encoding::DecodeContext,
         ) -> Result<(), prost::DecodeError> {
             use prost::encoding::*;
             check_wire_type(WireType::LengthDelimited, wire_type)?;
@@ -3963,6 +4202,10 @@ pub mod v1 {
             pub journal_retention_duration_lazy: Option<&'a [u8]>,
             // 30
             pub created_using_restate_version: &'a [u8],
+            // 34
+            pub vqueue_id: Option<&'a [u8]>,
+            // 35
+            pub limit_key: &'a [u8],
         }
 
         impl<'a> InvocationStatusV2Lazy<'a> {
@@ -3987,76 +4230,113 @@ pub mod v1 {
                 match tag {
                     2u32 => {
                         let value = &mut self.invocation_target_lazy;
-                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
-                            .map_err(|mut error| {
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf).map_err(
+                            |mut error| {
                                 error.push(STRUCT_NAME, "invocation_target_lazy");
                                 error
-                            })
+                            },
+                        )
                     }
                     3u32 => {
                         let value = &mut self.source_lazy;
-                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
-                            .map_err(|mut error| {
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf).map_err(
+                            |mut error| {
                                 error.push(STRUCT_NAME, "source_lazy");
                                 error
-                            })
+                            },
+                        )
                     }
                     4u32 => {
                         let value = &mut self.span_context_lazy;
-                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
-                            .map_err(|mut error| {
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf).map_err(
+                            |mut error| {
                                 error.push(STRUCT_NAME, "span_context_lazy");
                                 error
-                            })
+                            },
+                        )
                     }
                     11u32 => {
                         let value = &mut self.completion_retention_duration_lazy;
-                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
-                            .map_err(|mut error| {
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf).map_err(
+                            |mut error| {
                                 error.push(STRUCT_NAME, "completion_retention_duration_lazy");
                                 error
-                            })
+                            },
+                        )
                     }
                     12u32 => {
                         let value = &mut self.idempotency_key;
-                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
-                            .map_err(|mut error| {
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf).map_err(
+                            |mut error| {
                                 error.push(STRUCT_NAME, "idempotency_key");
                                 error
-                            })
+                            },
+                        )
                     }
                     15u32 => {
                         let value = &mut self.deployment_id;
-                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
-                            .map_err(|mut error| {
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf).map_err(
+                            |mut error| {
                                 error.push(STRUCT_NAME, "deployment_id");
                                 error
-                            })
+                            },
+                        )
                     }
                     18u32 => {
                         let value = &mut self.result_lazy;
-                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
-                            .map_err(|mut error| {
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf).map_err(
+                            |mut error| {
                                 error.push(STRUCT_NAME, "result_lazy");
                                 error
-                            })
+                            },
+                        )
                     }
                     29u32 => {
                         let value = &mut self.journal_retention_duration_lazy;
-                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
-                            .map_err(|mut error| {
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf).map_err(
+                            |mut error| {
                                 error.push(STRUCT_NAME, "journal_retention_duration_lazy");
                                 error
-                            })
+                            },
+                        )
                     }
                     30u32 => {
                         let value = &mut self.created_using_restate_version;
-                        merge_bytes_zerocopy(wire_type, value, buf, ctx).map_err(|mut error| {
+                        merge_bytes_zerocopy(wire_type, value, buf).map_err(|mut error| {
                             error.push(STRUCT_NAME, "created_using_restate_version");
                             error
                         })
                     }
+                    34u32 => {
+                        let value = &mut self.vqueue_id;
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf).map_err(
+                            |mut error| {
+                                error.push(STRUCT_NAME, "vqueue_id");
+                                error
+                            },
+                        )
+                    }
+                    35u32 => {
+                        let value = &mut self.limit_key;
+                        merge_bytes_zerocopy(wire_type, value, buf).map_err(|mut error| {
+                            error.push(STRUCT_NAME, "limit_key");
+                            error
+                        })
+                    }
                     _ => prost::Message::merge_field(&mut self.inner, tag, wire_type, buf, ctx),
+                }
+            }
+
+            pub fn vqueue_id(&'a self) -> Option<VQueueId> {
+                self.vqueue_id
+                    .map(|buf| VQueueId::from_raw_bytes(&mut &buf[..]))
+            }
+
+            pub fn limit_key_fmt(&'a self) -> Option<impl std::fmt::Display + 'a> {
+                if self.limit_key.is_empty() {
+                    None
+                } else {
+                    Some(StrFormatter(self.limit_key))
                 }
             }
 
@@ -4067,7 +4347,9 @@ pub mod v1 {
                 match self.inner.service_protocol_version {
                     Some(service_protocol_version) => {
                         ServiceProtocolVersion::try_from(service_protocol_version)
-                            .map_err(|_| ConversionError::invalid_data("service_protocol_version"))
+                            .map_err(|_| {
+                                ConversionError::invalid_data_static("service_protocol_version")
+                            })
                             .map(Some)
                     }
                     None => Ok(None),
@@ -4095,7 +4377,7 @@ pub mod v1 {
                 let mut target = InvocationTargetLazy::default();
                 target
                     .merge(invocation_target)
-                    .map_err(|_| ConversionError::invalid_data("invocation_target"))?;
+                    .map_err(|_| ConversionError::invalid_data_static("invocation_target"))?;
                 Ok(Some(target))
             }
 
@@ -4109,7 +4391,7 @@ pub mod v1 {
                     | Status::Paused
                     | Status::Completed => {}
                     Status::UnknownStatus => {
-                        return Err(ConversionError::invalid_data("status"));
+                        return Err(ConversionError::invalid_data_static("status"));
                     }
                 }
 
@@ -4122,12 +4404,12 @@ pub mod v1 {
 
                 let source = Bytes::copy_from_slice(source);
 
-                let source =
-                    Source::decode(source).map_err(|_| ConversionError::invalid_data("source"))?;
+                let source = Source::decode(source)
+                    .map_err(|_| ConversionError::invalid_data_static("source"))?;
 
                 source
                     .source
-                    .ok_or(ConversionError::missing_field("source"))
+                    .ok_or_else(|| ConversionError::missing_field("source"))
             }
 
             pub fn trace_id(&self) -> Result<opentelemetry::trace::TraceId, ConversionError> {
@@ -4136,10 +4418,10 @@ pub mod v1 {
                 let span_context = expect_or_fail!(span_context)?;
 
                 let span_context = SpanContextLite::decode(*span_context)
-                    .map_err(|_| ConversionError::invalid_data("span_context"))?;
+                    .map_err(|_| ConversionError::invalid_data_static("span_context"))?;
 
                 let trace_id = try_bytes_into_trace_id(span_context.trace_id.as_ref())
-                    .map_err(|_| ConversionError::InvalidData("trace_id"))?;
+                    .map_err(|_| ConversionError::invalid_data_static("trace_id"))?;
                 Ok(trace_id)
             }
 
@@ -4149,20 +4431,20 @@ pub mod v1 {
                 match self.completion_retention_duration_lazy {
                     Some(completion_retention_duration) => {
                         super::Duration::decode(completion_retention_duration).map_err(|_| {
-                            ConversionError::invalid_data("completion_retention_duration")
+                            ConversionError::invalid_data_static("completion_retention_duration")
                         })?
                     }
                     None => super::Duration::default(),
                 }
                 .try_into()
-                .map_err(|_| ConversionError::invalid_data("completion_retention_duration"))
+                .map_err(|_| ConversionError::invalid_data_static("completion_retention_duration"))
             }
 
             pub fn idempotency_key(&self) -> std::result::Result<Option<&str>, ConversionError> {
                 self.idempotency_key
                     .map(str::from_utf8)
                     .transpose()
-                    .map_err(|_| ConversionError::invalid_data("idempotency_key"))
+                    .map_err(|_| ConversionError::invalid_data_static("idempotency_key"))
             }
 
             pub fn deployment_id(
@@ -4172,9 +4454,9 @@ pub mod v1 {
 
                 match self.deployment_id {
                     Some(deployment_id) => str::from_utf8(deployment_id)
-                        .map_err(|_| ConversionError::invalid_data("deployment_id"))?
+                        .map_err(|_| ConversionError::invalid_data_static("deployment_id"))?
                         .parse()
-                        .map_err(|_| ConversionError::invalid_data("deployment_id"))
+                        .map_err(|_| ConversionError::invalid_data_static("deployment_id"))
                         .map(Some),
                     None => Ok(None),
                 }
@@ -4189,7 +4471,7 @@ pub mod v1 {
                 let result = expect_or_fail!(result)?;
 
                 let result = ResponseResult::decode(*result)
-                    .map_err(|_| ConversionError::invalid_data("result"))?;
+                    .map_err(|_| ConversionError::invalid_data_static("result"))?;
 
                 let response_result = result.response_result.as_ref();
                 let response_result = expect_or_fail!(response_result)?;
@@ -4203,13 +4485,13 @@ pub mod v1 {
                 match self.journal_retention_duration_lazy {
                     Some(journal_retention_duration) => {
                         super::Duration::decode(journal_retention_duration).map_err(|_| {
-                            ConversionError::invalid_data("journal_retention_duration")
+                            ConversionError::invalid_data_static("journal_retention_duration")
                         })?
                     }
                     None => super::Duration::default(),
                 }
                 .try_into()
-                .map_err(|_| ConversionError::invalid_data("journal_retention_duration"))
+                .map_err(|_| ConversionError::invalid_data_static("journal_retention_duration"))
             }
 
             pub fn created_using_restate_version(
@@ -4218,9 +4500,22 @@ pub mod v1 {
                 if self.created_using_restate_version.is_empty() {
                     Ok(restate_types::RestateVersion::UNKNOWN_STR)
                 } else {
-                    str::from_utf8(self.created_using_restate_version)
-                        .map_err(|_| ConversionError::invalid_data("created_using_restate_version"))
+                    str::from_utf8(self.created_using_restate_version).map_err(|_| {
+                        ConversionError::invalid_data_static("created_using_restate_version")
+                    })
                 }
+            }
+
+            pub fn awaiting_on(&self) -> std::result::Result<UnresolvedFuture, ConversionError> {
+                super::Future {
+                    waiting_completions: self.inner.waiting_for_completions.clone(),
+                    waiting_signals: self.inner.waiting_for_signal_indexes.clone(),
+                    waiting_named_signals: self.inner.waiting_for_signal_names.clone(),
+                    combinator_type: self.inner.combinator_type,
+                    nested_futures: self.inner.nested_futures.clone(),
+                }
+                .try_into()
+                .map_err(|_| ConversionError::invalid_data_static("awaiting_on"))
             }
         }
 
@@ -4232,23 +4527,23 @@ pub mod v1 {
                 self.invocation_target
                     .as_ref()
                     .map(InvocationTargetLazy::from)
-                    .ok_or(ConversionError::missing_field("invocation_target"))
+                    .ok_or_else(|| ConversionError::missing_field("invocation_target"))
             }
 
             pub fn invocation_id(&self) -> std::result::Result<InvocationId, ConversionError> {
                 InvocationId::try_from(
                     self.invocation_id
                         .as_ref()
-                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                        .ok_or_else(|| ConversionError::missing_field("invocation_id"))?,
                 )
-                .map_err(|_| ConversionError::invalid_data("invocation_id"))
+                .map_err(|_| ConversionError::invalid_data_static("invocation_id"))
             }
         }
 
         impl super::source::Subscription {
             pub fn subscription_id(&self) -> std::result::Result<SubscriptionId, ConversionError> {
                 SubscriptionId::from_slice(self.subscription_id.as_ref())
-                    .map_err(|_| ConversionError::invalid_data("subscription_id"))
+                    .map_err(|_| ConversionError::invalid_data_static("subscription_id"))
             }
         }
 
@@ -4257,9 +4552,9 @@ pub mod v1 {
                 InvocationId::try_from(
                     self.invocation_id
                         .as_ref()
-                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                        .ok_or_else(|| ConversionError::missing_field("invocation_id"))?,
                 )
-                .map_err(|_| ConversionError::invalid_data("invocation_id"))
+                .map_err(|_| ConversionError::invalid_data_static("invocation_id"))
             }
         }
 
@@ -4273,6 +4568,8 @@ pub mod v1 {
             pub handler: &'a [u8],
             // tag 4
             pub key: &'a [u8],
+            // tag 5
+            pub scope: Option<&'a [u8]>,
         }
 
         impl<'a> InvocationTargetLazy<'a> {
@@ -4296,30 +4593,39 @@ pub mod v1 {
                             })?;
                         }
                         2u32 => {
-                            merge_bytes_zerocopy(wire_type, &mut self.name, &mut buf, ctx.clone())
-                                .map_err(|mut error| {
+                            merge_bytes_zerocopy(wire_type, &mut self.name, &mut buf).map_err(
+                                |mut error| {
                                     error.push(STRUCT_NAME, "name");
                                     error
-                                })?;
+                                },
+                            )?;
                         }
                         3u32 => {
-                            merge_bytes_zerocopy(
-                                wire_type,
-                                &mut self.handler,
-                                &mut buf,
-                                ctx.clone(),
-                            )
-                            .map_err(|mut error| {
-                                error.push(STRUCT_NAME, "handler");
-                                error
-                            })?;
+                            merge_bytes_zerocopy(wire_type, &mut self.handler, &mut buf).map_err(
+                                |mut error| {
+                                    error.push(STRUCT_NAME, "handler");
+                                    error
+                                },
+                            )?;
                         }
                         4u32 => {
-                            merge_bytes_zerocopy(wire_type, &mut self.key, &mut buf, ctx.clone())
-                                .map_err(|mut error| {
+                            merge_bytes_zerocopy(wire_type, &mut self.key, &mut buf).map_err(
+                                |mut error| {
                                     error.push(STRUCT_NAME, "key");
                                     error
-                                })?
+                                },
+                            )?;
+                        }
+                        5u32 => {
+                            merge_bytes_zerocopy(
+                                wire_type,
+                                self.scope.get_or_insert_default(),
+                                &mut buf,
+                            )
+                            .map_err(|mut error| {
+                                error.push(STRUCT_NAME, "scope");
+                                error
+                            })?;
                         }
                         _ => {
                             skip_field(wire_type, tag, &mut buf, ctx.clone())?;
@@ -4329,8 +4635,9 @@ pub mod v1 {
                 Ok(())
             }
 
-            pub fn service_name(&self) -> std::result::Result<&str, ConversionError> {
-                str::from_utf8(self.name).map_err(|_| ConversionError::invalid_data("name"))
+            pub fn service_name(&self) -> &str {
+                // Safety: Storage is trusted. Data is validated on the write path.
+                unsafe { str::from_utf8_unchecked(self.name) }
             }
 
             pub fn key(&self) -> std::result::Result<Option<&str>, ConversionError> {
@@ -4342,20 +4649,21 @@ pub mod v1 {
                         | Ty::WorkflowWorkflow
                         | Ty::WorkflowShared,
                     ) => {
-                        let key = str::from_utf8(self.key)
-                            .map_err(|_| ConversionError::invalid_data("key"))?;
+                        // Safety: Storage is trusted. Data is validated on the write path.
+                        let key = unsafe { str::from_utf8_unchecked(self.key) };
 
                         Ok(Some(key))
                     }
                     Ok(Ty::Service) => Ok(None),
-                    Err(_) | Ok(Ty::UnknownTy) => {
-                        Err(ConversionError::invalid_data("service_and_handler_ty"))
-                    }
+                    Err(_) | Ok(Ty::UnknownTy) => Err(ConversionError::invalid_data_static(
+                        "service_and_handler_ty",
+                    )),
                 }
             }
 
-            pub fn handler_name(&self) -> std::result::Result<&str, ConversionError> {
-                str::from_utf8(self.handler).map_err(|_| ConversionError::invalid_data("name"))
+            pub fn handler_name(&self) -> &str {
+                // Safety: Storage is trusted. Data is validated on the write path.
+                unsafe { str::from_utf8_unchecked(self.handler) }
             }
 
             pub fn service_ty(&self) -> Result<ServiceType, ConversionError> {
@@ -4366,19 +4674,25 @@ pub mod v1 {
                         Ok(ServiceType::VirtualObject)
                     }
                     Ok(Ty::WorkflowWorkflow | Ty::WorkflowShared) => Ok(ServiceType::Workflow),
-                    Err(_) | Ok(Ty::UnknownTy) => {
-                        Err(ConversionError::invalid_data("service_and_handler_ty"))
-                    }
+                    Err(_) | Ok(Ty::UnknownTy) => Err(ConversionError::invalid_data_static(
+                        "service_and_handler_ty",
+                    )),
                 }
             }
 
             pub fn target_fmt(
                 &'a self,
             ) -> std::result::Result<TargetFormatter<'a>, ConversionError> {
-                let service_name = self.service_name()?;
+                let service_name = self.service_name();
                 let key = self.key()?;
-                let handler_name = self.handler_name()?;
+                let handler_name = self.handler_name();
                 Ok(TargetFormatter(service_name, key, handler_name))
+            }
+
+            pub fn scope(&self) -> Option<&str> {
+                // Safety: Storage is trusted. Data is validated on the write path.
+                self.scope
+                    .map(|buf| unsafe { str::from_utf8_unchecked(buf) })
             }
         }
 
@@ -4389,6 +4703,7 @@ pub mod v1 {
                     name: &value.name,
                     handler: &value.handler,
                     key: &value.key,
+                    scope: value.scope.as_deref().map(|x| x.as_bytes()),
                 }
             }
         }
@@ -4402,6 +4717,15 @@ pub mod v1 {
                 } else {
                     write!(f, "{}/{}", self.0, self.2)
                 }
+            }
+        }
+
+        struct StrFormatter<'a>(&'a [u8]);
+
+        impl<'a> Display for StrFormatter<'a> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                // Safety: Storage is trusted. Data is validated on the write path.
+                f.write_str(unsafe { str::from_utf8_unchecked(self.0) })
             }
         }
     }

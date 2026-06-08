@@ -13,9 +13,10 @@ use std::ops::RangeInclusive;
 use futures::Stream;
 
 use restate_memory::{LocalMemoryLease, LocalMemoryPool};
-use restate_types::identifiers::{EntryIndex, InvocationId, JournalEntryId, PartitionKey};
+use restate_types::identifiers::{EntryIndex, InvocationId, JournalEntryId};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::{CompletionResult, EntryType};
+use restate_types::sharding::KeyRange;
 
 use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::{BudgetedReadError, Result};
@@ -107,7 +108,7 @@ pub trait ReadJournalTable {
 
 #[derive(Debug, Clone)]
 pub enum ScanJournalTableRange {
-    PartitionKey(RangeInclusive<PartitionKey>),
+    PartitionKey(KeyRange),
     InvocationId(RangeInclusive<InvocationId>),
 }
 

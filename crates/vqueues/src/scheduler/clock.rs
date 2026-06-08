@@ -21,7 +21,16 @@ pub struct SchedulerClock;
 impl SchedulerClock {
     /// Returns the current unix timestamp in milliseconds
     pub fn now_millis(&self) -> MillisSinceEpoch {
-        MillisSinceEpoch::now()
+        let recent_us = WallClock::recent_us();
+        if recent_us > 0 {
+            MillisSinceEpoch::new(recent_us / 1_000)
+        } else {
+            // In tests or binaries where the upkeep thread is not running, we don't
+            // care about the performance of this call, so we can always call now()
+            // but we keep is non-inlined to hint to the compiler that it's unlikely
+            // the case.
+            WallClock::now_ms()
+        }
     }
 }
 

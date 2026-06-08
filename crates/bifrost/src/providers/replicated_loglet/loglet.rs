@@ -517,7 +517,7 @@ mod tests {
 
     // ** Single-node replicated-loglet smoke tests **
     #[test(restate_core::test(start_paused = true))]
-    async fn test_append_local_sequencer_single_node() -> Result<()> {
+    async fn append_local_sequencer_single_node() -> Result<()> {
         let loglet_id = LogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
             loglet_id,
@@ -560,7 +560,7 @@ mod tests {
 
     // ** Single-node replicated-loglet seal **
     #[test(restate_core::test(start_paused = true))]
-    async fn test_seal_local_sequencer_single_node() -> Result<()> {
+    async fn seal_local_sequencer_single_node() -> Result<()> {
         let loglet_id = LogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
             loglet_id,

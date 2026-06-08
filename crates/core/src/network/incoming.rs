@@ -13,7 +13,7 @@ use std::marker::PhantomData;
 use bytes::Bytes;
 use tokio::sync::{oneshot, watch};
 
-use restate_memory::EstimatedMemorySize;
+use restate_platform::memory::EstimatedMemorySize;
 
 pub use restate_memory::MemoryLease;
 use restate_types::GenerationalNodeId;

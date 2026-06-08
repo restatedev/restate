@@ -15,9 +15,9 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytes_utils::SegmentedBuf;
 use tracing::warn;
 
-use restate_serde_util::ByteCount;
 use restate_types::journal::raw::{PlainEntryHeader, RawEntry};
 use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_util_bytecount::ByteCount;
 
 use super::header::UnknownMessageType;
 use super::*;
@@ -485,7 +485,7 @@ mod tests {
         let expected_msg_size = message.encoded_len();
         let msg = encoder.encode(message);
 
-        decoder.push(msg.clone());
+        decoder.push(msg);
         let_assert!(
             EncodingError::MessageSizeLimit(msg_size, limit) = decoder.consume_next().unwrap_err()
         );

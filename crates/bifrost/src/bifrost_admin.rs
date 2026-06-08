@@ -218,7 +218,7 @@ impl<'a> BifrostAdmin<'a> {
                         %err,
                         "Seal operation failed"
                     );
-                    return Err(Error::LogletError(err));
+                    return Err(Error::Loglet(err));
                 }
             }
         }

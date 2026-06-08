@@ -28,24 +28,32 @@ use restate_types::journal::enriched::EnrichedEntryHeader;
 use restate_types::journal_events::raw::RawEvent;
 use restate_types::journal_events::{Event, KilledEvent, TransientErrorEvent};
 use restate_types::journal_v2::NotificationId;
+use restate_types::journal_v2::UnresolvedFuture;
+use restate_types::partitions::PartitionFeatureChange;
 use restate_types::service_protocol;
 use rstest::rstest;
 use test_log::test;
 
 #[restate_core::test]
 async fn kill_inboxed_invocation() -> anyhow::Result<()> {
-    run_kill_inboxed_invocation(SemanticRestateVersion::unknown()).await
+    Box::pin(run_kill_inboxed_invocation(
+        PersistedStateMachineFeatures::default(),
+    ))
+    .await
 }
 
 #[restate_core::test]
 async fn kill_inboxed_invocation_journal_v2_enabled() -> anyhow::Result<()> {
-    run_kill_inboxed_invocation(RESTATE_VERSION_1_6_0.clone()).await
+    Box::pin(run_kill_inboxed_invocation(
+        PersistedStateMachineFeatures::from_iter([PartitionFeatureChange::EnableJournalV2]),
+    ))
+    .await
 }
 
 async fn run_kill_inboxed_invocation(
-    min_restate_version: SemanticRestateVersion,
+    features: PersistedStateMachineFeatures,
 ) -> anyhow::Result<()> {
-    let mut test_env = TestEnv::create_with_min_restate_version(min_restate_version).await;
+    let mut test_env = TestEnv::create_with_features(features).await;
 
     let invocation_target = InvocationTarget::mock_virtual_object();
     let invocation_id = InvocationId::mock_generate(&invocation_target);
@@ -56,22 +64,22 @@ async fn run_kill_inboxed_invocation(
     let caller_id = InvocationId::mock_random();
 
     let _ = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             ..ServiceInvocation::mock()
-        })))
+        }))
         .await;
 
     let _ = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id: inboxed_id,
             invocation_target: inboxed_target,
             response_sink: Some(ServiceInvocationResponseSink::PartitionProcessor(
                 JournalCompletionTarget::from_parts(caller_id, 0),
             )),
             ..ServiceInvocation::mock()
-        })))
+        }))
         .await;
 
     let current_invocation_status = test_env
@@ -84,13 +92,15 @@ async fn run_kill_inboxed_invocation(
 
     let request_id = PartitionProcessorRpcRequestId::new();
     let actions = test_env
-        .apply(Command::TerminateInvocation(InvocationTermination {
-            invocation_id: inboxed_id,
-            flavor: TerminationFlavor::Kill,
-            response_sink: Some(InvocationMutationResponseSink::Ingress(
-                IngressInvocationResponseSink { request_id },
-            )),
-        }))
+        .apply(commands::TerminateInvocationCommand::test_envelope(
+            InvocationTermination {
+                invocation_id: inboxed_id,
+                flavor: TerminationFlavor::Kill,
+                response_sink: Some(InvocationMutationResponseSink::Ingress(
+                    IngressInvocationResponseSink { request_id },
+                )),
+            },
+        ))
         .await;
 
     let current_invocation_status = test_env
@@ -163,12 +173,12 @@ async fn terminate_scheduled_invocation(
     let rpc_id = PartitionProcessorRpcRequestId::new();
 
     let _ = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             execution_time: Some(MillisSinceEpoch::MAX),
             response_sink: Some(ServiceInvocationResponseSink::ingress(rpc_id)),
             ..ServiceInvocation::mock()
-        })))
+        }))
         .await;
 
     // assert that inboxed invocation is in invocation_status
@@ -179,11 +189,13 @@ async fn terminate_scheduled_invocation(
     assert!(let InvocationStatus::Scheduled(_) = current_invocation_status);
 
     let actions = test_env
-        .apply(Command::TerminateInvocation(InvocationTermination {
-            invocation_id,
-            flavor: termination_flavor,
-            response_sink: None,
-        }))
+        .apply(commands::TerminateInvocationCommand::test_envelope(
+            InvocationTermination {
+                invocation_id,
+                flavor: termination_flavor,
+                response_sink: None,
+            },
+        ))
         .await;
     assert_that!(
         actions,
@@ -223,20 +235,20 @@ async fn kill_call_tree() -> anyhow::Result<()> {
     let enqueued_invocation_id_on_same_target = InvocationId::mock_generate(&invocation_target);
 
     let _ = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             ..ServiceInvocation::mock()
-        })))
+        }))
         .await;
 
     // Let's enqueue an invocation afterward
     let _ = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id: enqueued_invocation_id_on_same_target,
             invocation_target: invocation_target.clone(),
             ..ServiceInvocation::mock()
-        })))
+        }))
         .await;
 
     // Let's add some journal entries
@@ -260,14 +272,17 @@ async fn kill_call_tree() -> anyhow::Result<()> {
     invocation_status.get_journal_metadata_mut().unwrap().length = 4;
     tx.put_invocation_status(&invocation_id, &invocation_status)?;
     tx.commit().await?;
+    drop(tx);
 
     // Now let's send the termination command
     let actions = test_env
-        .apply(Command::TerminateInvocation(InvocationTermination {
-            invocation_id,
-            flavor: TerminationFlavor::Kill,
-            response_sink: None,
-        }))
+        .apply(commands::TerminateInvocationCommand::test_envelope(
+            InvocationTermination {
+                invocation_id,
+                flavor: TerminationFlavor::Kill,
+                response_sink: None,
+            },
+        ))
         .await;
 
     assert_that!(
@@ -360,18 +375,18 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
 
     let _ = test_env
         .apply_multiple([
-            Command::Invoke(Box::new(ServiceInvocation {
+            commands::InvokeCommand::test_envelope(ServiceInvocation {
                 invocation_id,
                 invocation_target: invocation_target.clone(),
                 ..ServiceInvocation::mock()
-            })),
-            Command::InvokerEffect(Box::new(Effect {
+            }),
+            commands::InvokerEffectCommand::test_envelope(Effect {
                 invocation_id,
                 kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
                     deployment_id: Default::default(),
                     service_protocol_version: ServiceProtocolVersion::V3,
                 }),
-            })),
+            }),
         ])
         .await;
 
@@ -414,13 +429,16 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
         &Timer::CompleteJournalEntry(invocation_id, (sleep_entry_idx + 1) as u32),
     )?;
     tx.commit().await?;
+    drop(tx);
 
     let actions = test_env
-        .apply(Command::TerminateInvocation(InvocationTermination {
-            invocation_id,
-            flavor: TerminationFlavor::Cancel,
-            response_sink: None,
-        }))
+        .apply(commands::TerminateInvocationCommand::test_envelope(
+            InvocationTermination {
+                invocation_id,
+                flavor: TerminationFlavor::Cancel,
+                response_sink: None,
+            },
+        ))
         .await;
 
     // Invocation shouldn't be gone
@@ -482,18 +500,18 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
 
     let _ = test_env
         .apply_multiple([
-            Command::Invoke(Box::new(ServiceInvocation {
+            commands::InvokeCommand::test_envelope(ServiceInvocation {
                 invocation_id,
                 invocation_target: invocation_target.clone(),
                 ..ServiceInvocation::mock()
-            })),
-            Command::InvokerEffect(Box::new(Effect {
+            }),
+            commands::InvokerEffectCommand::test_envelope(Effect {
                 invocation_id,
                 kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
                     deployment_id: Default::default(),
                     service_protocol_version: ServiceProtocolVersion::V3,
                 }),
-            })),
+            }),
         ])
         .await;
 
@@ -523,11 +541,12 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
     let invocation_status = tx.get_invocation_status(&invocation_id).await?;
     let_assert!(InvocationStatus::Invoked(mut in_flight_meta) = invocation_status);
     in_flight_meta.journal_metadata.length = (journal_length + 1) as EntryIndex;
+
     tx.put_invocation_status(
         &invocation_id,
         &InvocationStatus::Suspended {
             metadata: in_flight_meta,
-            waiting_for_notifications: HashSet::from([
+            awaiting_on: UnresolvedFuture::unknown_from_iter([
                 NotificationId::for_completion(3),
                 NotificationId::for_completion(4),
                 NotificationId::for_completion(5),
@@ -550,16 +569,19 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
         &Timer::CompleteJournalEntry(invocation_id, (sleep_entry_idx + 1) as u32),
     )?;
     tx.commit().await?;
+    drop(tx);
 
     let request_id = PartitionProcessorRpcRequestId::new();
     let actions = test_env
-        .apply(Command::TerminateInvocation(InvocationTermination {
-            invocation_id,
-            flavor: TerminationFlavor::Cancel,
-            response_sink: Some(InvocationMutationResponseSink::Ingress(
-                IngressInvocationResponseSink { request_id },
-            )),
-        }))
+        .apply(commands::TerminateInvocationCommand::test_envelope(
+            InvocationTermination {
+                invocation_id,
+                flavor: TerminationFlavor::Cancel,
+                response_sink: Some(InvocationMutationResponseSink::Ingress(
+                    IngressInvocationResponseSink { request_id },
+                )),
+            },
+        ))
         .await;
 
     // Invocation shouldn't be gone
@@ -621,11 +643,11 @@ async fn cancel_invocation_entry_referring_to_previous_entry() {
     let callee_2 = InvocationId::mock_random();
 
     let _ = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             ..ServiceInvocation::mock()
-        })))
+        }))
         .await;
 
     // Add call and one way call journal entry
@@ -647,11 +669,12 @@ async fn cancel_invocation_entry_referring_to_previous_entry() {
     tx.put_invocation_status(&invocation_id, &invocation_status)
         .unwrap();
     tx.commit().await.unwrap();
+    drop(tx);
 
     // Now create cancel invocation entry
     let actions = test_env
         .apply_multiple(vec![
-            Command::InvokerEffect(Box::new(Effect {
+            commands::InvokerEffectCommand::test_envelope(Effect {
                 invocation_id,
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 3,
@@ -659,8 +682,8 @@ async fn cancel_invocation_entry_referring_to_previous_entry() {
                         CancelInvocationTarget::InvocationId(callee_1.to_string().into()),
                     )),
                 },
-            })),
-            Command::InvokerEffect(Box::new(Effect {
+            }),
+            commands::InvokerEffectCommand::test_envelope(Effect {
                 invocation_id,
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 4,
@@ -668,7 +691,7 @@ async fn cancel_invocation_entry_referring_to_previous_entry() {
                         CancelInvocationTarget::CallEntryIndex(2),
                     )),
                 },
-            })),
+            }),
         ])
         .await;
 

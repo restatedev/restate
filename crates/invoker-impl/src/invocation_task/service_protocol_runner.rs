@@ -12,6 +12,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use bytes::Bytes;
+use bytestring::ByteString;
 use futures::{Stream, StreamExt};
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
@@ -21,13 +22,8 @@ use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
 
 use restate_errors::warn_it;
-use restate_invoker_api::invocation_reader::{
-    EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
-    JournalKind,
-};
-use restate_invoker_api::{EntryEnricher, JournalMetadata};
-use restate_memory::{LocalMemoryLease, LocalMemoryPool};
-use restate_service_client::{Endpoint, Method, Parts, Request};
+use restate_memory::{LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream};
+use restate_service_client::{Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::message::{
     Decoder, Encoder, MessageHeader, MessageType, ProtocolMessage, StateEntry,
@@ -41,8 +37,13 @@ use restate_types::journal::raw::RawEntryCodec;
 use restate_types::journal::{Completion, CompletionResult, EntryType};
 use restate_types::journal_v2;
 use restate_types::journal_v2::EntryMetadata;
-use restate_types::schema::deployment::{Deployment, DeploymentType, ProtocolType};
+use restate_types::schema::deployment::{Deployment, ProtocolType};
 use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_worker_api::invoker::invocation_reader::{
+    EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
+    JournalKind,
+};
+use restate_worker_api::invoker::{EntryEnricher, JournalMetadata};
 
 use crate::Notification;
 use crate::error::{InvocationErrorRelatedEntry, InvokerError, SdkInvocationError};
@@ -163,6 +164,7 @@ where
             self.service_protocol_version,
             &self.invocation_task.invocation_id,
             &service_invocation_span_context,
+            self.invocation_task.invocation_target.key(),
         );
 
         // Initialize the response stream state
@@ -267,12 +269,13 @@ where
         service_protocol_version: ServiceProtocolVersion,
         invocation_id: &InvocationId,
         parent_span_context: &ServiceInvocationSpanContext,
+        service_key: Option<&ByteString>,
     ) -> (InvokerBodySender, Request<InvokerBodyType>) {
         // Use an unbounded channel: backpressure is provided by the memory budget
         // (each frame's Bytes embeds a LocalMemoryLease via from_owner) rather than
         // channel capacity.
         let (http_stream_tx, http_stream_rx) = mpsc::unbounded_channel();
-        let req_body = new_invoker_body(http_stream_rx);
+        let request_body = new_invoker_body(http_stream_rx);
 
         let service_protocol_header_value =
             service_protocol_version_to_header_value(service_protocol_version);
@@ -315,25 +318,12 @@ where
             }
         }
 
-        let address = match deployment.ty {
-            DeploymentType::Lambda {
-                arn,
-                assume_role_arn,
-                compression,
-            } => Endpoint::Lambda(arn, assume_role_arn, compression),
-            DeploymentType::Http {
-                address,
-                http_version,
-                ..
-            } => Endpoint::Http(address, Some(http_version)),
-        };
+        let mut request_parts = Parts::from_deployment(deployment, Method::Post, path, headers);
+        if let Some(service_key) = service_key {
+            request_parts = request_parts.with_request_identity_sub_field(service_key.clone());
+        }
 
-        headers.extend(deployment.additional_headers);
-
-        (
-            http_stream_tx,
-            Request::new(Parts::new(Method::POST, address, path, headers), req_body),
-        )
+        (http_stream_tx, Request::new(request_parts, request_body))
     }
 
     // --- Loops
@@ -445,11 +435,11 @@ where
                             trace!("Sending the completion to the wire");
                             crate::shortcircuit!(self.write_with_lease(&mut http_stream_tx, completion.into(), Some(lease)));
                         },
-                        Some(Notification::Ack(entry_index)) => {
+                        Some(Notification::CommandAck(entry_index)) => {
                             trace!("Sending the ack to the wire");
                             crate::shortcircuit!(self.write(&mut http_stream_tx, ProtocolMessage::new_entry_ack(entry_index)));
                         },
-                        Some(Notification::Entry { .. }) => {
+                        Some(Notification::Entry { .. }) | Some(Notification::ProposeRunCompletionAck(_)) => {
                             panic!("We don't expect to receive journal_v2 entries, this is an invoker bug.")
                         },
                         None => {
@@ -517,7 +507,7 @@ where
         duration_since_last_stored_entry: Duration,
     ) -> Result<(), InvokerError>
     where
-        S: Stream<Item = Result<(Bytes, Bytes, LocalMemoryLease), E>> + Send,
+        S: PinnableMemoryStream<Item = Result<(Bytes, Bytes, LocalMemoryLease), E>> + Send,
         E: InvocationReaderError,
     {
         // Collect state entries with size limit

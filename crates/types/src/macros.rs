@@ -35,6 +35,7 @@ macro_rules! prefixed_ids {
             pub const fn as_str(&self) -> &'static str {
                 match self {
                     $(
+                        $(#[$variant_meta])*
                         $typename::$variant => $variant_prefix,
                     )+
                 }
@@ -42,6 +43,7 @@ macro_rules! prefixed_ids {
             pub fn iter() -> ::core::slice::Iter<'static, $typename> {
                 static VARIANTS: &'static [$typename] = &[
                     $(
+                        $(#[$variant_meta])*
                         $typename::$variant,
                     )+
                 ];
@@ -57,6 +59,7 @@ macro_rules! prefixed_ids {
             fn from_str(value: &str) -> Result<Self, Self::Err> {
                 match value {
                     $(
+                        $(#[$variant_meta])*
                         $variant_prefix => Ok($typename::$variant),
                     )+
                     _ => Err(crate::errors::IdDecodeError::UnrecognizedType(value.to_string())),

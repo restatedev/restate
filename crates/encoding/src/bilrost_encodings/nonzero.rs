@@ -77,7 +77,7 @@ mod test {
     }
 
     #[test]
-    fn test_range_encoding() {
+    fn range_encoding() {
         let message = NonZeroMessage {
             inner: Some(NonZeroU64::new(10).unwrap()),
         };

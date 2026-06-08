@@ -24,12 +24,12 @@ use restate_core::network::{
 use restate_core::task_center::TaskGuard;
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_token};
 use restate_futures_util::waiter_queue::WaiterQueue;
-use restate_memory::EstimatedMemorySize;
-use restate_serde_util::ByteCount;
+use restate_platform::memory::EstimatedMemorySize;
 use restate_types::GenerationalNodeId;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber, TailState};
 use restate_types::net::{RpcRequest, UnaryMessage, log_server::*};
 use restate_types::retries::with_jitter;
+use restate_util_bytecount::ByteCount;
 
 use crate::logstore::{LogStore, LogletWriter, WriteDisableReason};
 use crate::metadata::{IntrospectLogletWorker, LogletState, LogletWorkerState};
@@ -268,7 +268,7 @@ impl<S: LogStore> LogletWorker<S> {
         self.persist_global_tail();
         counter!(LOG_SERVER_LOGLET_STOPPED).increment(1);
 
-        info!(loglet_id = %self.loglet_id, "loglet worker stopped");
+        debug!(loglet_id = %self.loglet_id, "loglet worker stopped");
     }
 
     fn on_local_tail_change(&mut self, new_tail: TailState<LogletOffset>) {
@@ -979,7 +979,7 @@ mod tests {
     }
 
     #[test(restate_core::test(start_paused = true))]
-    async fn test_simple_store_flow() -> Result<()> {
+    async fn simple_store_flow() -> Result<()> {
         let log_store = setup().await?;
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
         const LOGLET: LogletId = LogletId::new_unchecked(1);
@@ -1042,7 +1042,7 @@ mod tests {
     }
 
     #[test(restate_core::test(start_paused = true))]
-    async fn test_store_and_seal() -> Result<()> {
+    async fn store_and_seal() -> Result<()> {
         let log_store = setup().await?;
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
         const LOGLET: LogletId = LogletId::new_unchecked(1);
@@ -1162,7 +1162,7 @@ mod tests {
     }
 
     #[test(restate_core::test(start_paused = true))]
-    async fn test_repair_store() -> Result<()> {
+    async fn repair_store() -> Result<()> {
         let log_store = setup().await?;
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
         const PEER: GenerationalNodeId = GenerationalNodeId::new(2, 2);
@@ -1303,7 +1303,7 @@ mod tests {
     }
 
     #[test(restate_core::test(start_paused = true))]
-    async fn test_simple_get_records_flow() -> Result<()> {
+    async fn simple_get_records_flow() -> Result<()> {
         let log_store = setup().await?;
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
         const LOGLET: LogletId = LogletId::new_unchecked(1);
@@ -1501,7 +1501,7 @@ mod tests {
     }
 
     #[test(restate_core::test(start_paused = true))]
-    async fn test_trim_basics() -> Result<()> {
+    async fn trim_basics() -> Result<()> {
         let log_store = setup().await?;
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
         const LOGLET: LogletId = LogletId::new_unchecked(1);

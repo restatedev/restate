@@ -10,12 +10,13 @@
 
 use super::*;
 
-use crate::identifiers::DeploymentId;
-use crate::invocation::{VirtualObjectHandlerType, WorkflowHandlerType};
-use restate_time_util::FriendlyDuration;
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use std::collections::HashMap;
+
+use crate::identifiers::DeploymentId;
+use crate::invocation::{VirtualObjectHandlerType, WorkflowHandlerType};
 
 mod v1_data_model {
     use super::*;
@@ -441,6 +442,7 @@ impl From<Schema> for super::Schema {
                     .collect(),
                 subscriptions,
                 kafka_clusters,
+                legacy_v1: false,
             }
         } else if let (Some(services), Some(deployments)) = (services, deployments) {
             let conversions::V2Schemas { deployments } = conversions::V1Schemas {
@@ -458,6 +460,7 @@ impl From<Schema> for super::Schema {
                     .collect(),
                 subscriptions,
                 kafka_clusters,
+                legacy_v1: true,
             }
         } else {
             panic!(
@@ -567,6 +570,7 @@ mod conversions {
                     created_at: deployment.metadata.created_at,
                     metadata: Default::default(),
                     services: v2_services,
+                    limits: None,
                 };
                 v2_deployments.push(v2_deployment);
             }
@@ -839,12 +843,14 @@ mod conversions {
                             address: "http://localhost:9080/".parse().unwrap(),
                             protocol_type: ProtocolType::BidiStream,
                             http_version: http::Version::HTTP_2,
+                            auth: None,
                         },
                         delivery_options: Default::default(),
                         supported_protocol_versions: 5..=5,
                         sdk_version: None,
                         created_at: MillisSinceEpoch::now(),
                         metadata: Default::default(),
+                        limits: None,
                         services: HashMap::from([
                             (
                                 "Greeter".to_owned(),
@@ -975,12 +981,14 @@ mod conversions {
                             address: "http://localhost:9081/".parse().unwrap(),
                             protocol_type: ProtocolType::RequestResponse,
                             http_version: http::Version::HTTP_2,
+                            auth: None,
                         },
                         delivery_options: Default::default(),
                         supported_protocol_versions: 5..=5,
                         sdk_version: None,
                         created_at: MillisSinceEpoch::now(),
                         metadata: Default::default(),
+                        limits: None,
                         services: HashMap::from([(
                             "Greeter".to_owned(),
                             Arc::new(ServiceRevision {
@@ -1116,6 +1124,7 @@ mod conversions {
                                     address: "http://localhost:9080/".parse().unwrap(),
                                     protocol_type: ProtocolType::BidiStream,
                                     http_version: http::Version::HTTP_2,
+                                    auth: None,
                                 },
                                 delivery_options: Default::default(),
                                 supported_protocol_versions: 5..=5,
@@ -1234,6 +1243,7 @@ mod conversions {
                                     address: "http://localhost:9081/".parse().unwrap(),
                                     protocol_type: ProtocolType::RequestResponse,
                                     http_version: http::Version::HTTP_2,
+                                    auth: None,
                                 },
                                 delivery_options: Default::default(),
                                 supported_protocol_versions: 5..=5,

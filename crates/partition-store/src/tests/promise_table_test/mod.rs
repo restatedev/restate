@@ -36,7 +36,7 @@ const PROMISE_COMPLETED: Promise = Promise {
 };
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_promise_table() {
+async fn promise_table() {
     let mut rocksdb = storage_test_environment().await;
 
     let promise_not_completed = Promise {
@@ -61,6 +61,7 @@ async fn test_promise_table() {
     txn.put_promise(&SERVICE_ID_2, &PROMISE_KEY_3, &PROMISE_COMPLETED)
         .unwrap();
     txn.commit().await.unwrap();
+    drop(txn);
 
     // Query
     assert_eq!(
@@ -96,6 +97,7 @@ async fn test_promise_table() {
     let mut txn = rocksdb.transaction();
     txn.delete_all_promises(&SERVICE_ID_1).unwrap();
     txn.commit().await.unwrap();
+    drop(txn);
 
     assert_eq!(
         rocksdb

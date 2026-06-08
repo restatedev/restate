@@ -14,12 +14,13 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 
-use restate_futures_util::concurrency::Permit;
 use restate_memory::LocalMemoryPool;
 use restate_types::identifiers::EntryIndex;
 use restate_types::retries;
 use restate_types::schema::invocation_target::OnMaxAttempts;
-use restate_types::vqueue::VQueueId;
+use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_types::vqueues::VQueueId;
+use restate_worker_api::resources::ReservedResources;
 
 use crate::quota::ConcurrencySlot;
 
@@ -42,8 +43,11 @@ pub(super) struct InvocationStateMachine<K: TimerKey = tokio_util::time::delay_q
     #[allow(dead_code)]
     pub(super) qid: Option<VQueueId>,
     #[allow(dead_code)]
-    pub(super) _permit: Permit,
+    #[debug(skip)]
+    pub(super) _permit: ReservedResources,
     pub(super) invocation_target: InvocationTarget,
+    pub(super) limit_key: LimitKey<ReString>,
+    pub(super) idempotency_key: Option<ReString>,
     pub(super) last_transient_error_event: Option<TransientErrorEvent>,
     invocation_state: AttemptState<K>,
     retry_policy_state: RetryPolicyState,
@@ -144,6 +148,17 @@ enum AttemptState<K: TimerKey> {
         // Acks that should be propagated back to the SDK
         command_acks_to_propagate: HashSet<CommandIndex>,
 
+        // Run completions the SDK proposed during this attempt. When the partition
+        // processor echoes the stored notification back via [`Self::notify_entry`],
+        // we swap [`Notification::Entry`] for [`Notification::ProposeRunCompletionAck`]
+        // so the SDK gets the ack message on the wire (only protocol >= v7).
+        //
+        // The SDK will replace the ack message with the full notification, kept around locally.
+        //
+        // This mechanism is used only in PROCESSING, for run completions proposed during the current attempt,
+        // and not when the invocation is REPLAYING.
+        run_completion_proposals_to_ack: HashSet<CompletionId>,
+
         // Deployment being used during this attempt
         using_deployment: Option<PinnedDeployment>,
         // If true, we need to notify the deployment id to the partition processor
@@ -201,18 +216,26 @@ struct RetryPolicyState {
 }
 
 impl<K: TimerKey> InvocationStateMachine<K> {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn create(
         qid: Option<VQueueId>,
-        permit: Permit,
+        permit: ReservedResources,
         invocation_target: InvocationTarget,
+        limit_key: LimitKey<ReString>,
+        idempotency_key: Option<ReString>,
         retry_iter: retries::RetryIter<'static>,
         on_max_attempts: OnMaxAttempts,
         concurrency_slot: ConcurrencySlot,
     ) -> InvocationStateMachine<K> {
+        let start_message_retry_count_since_last_stored_command =
+            permit.metadata.retry_count_since_last_stored_command;
+
         Self {
             qid,
             _permit: permit,
             invocation_target,
+            limit_key,
+            idempotency_key,
             last_transient_error_event: None,
             invocation_state: AttemptState::New,
             retry_policy_state: RetryPolicyState {
@@ -220,7 +243,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
                 retry_iter,
                 on_max_attempts,
             },
-            start_message_retry_count_since_last_stored_command: 0,
+            start_message_retry_count_since_last_stored_command,
             requested_pause: false,
             _concurrency_slot: concurrency_slot,
             budget: None,
@@ -242,9 +265,15 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             journal_tracker: Default::default(),
             abort_handle,
             command_acks_to_propagate: Default::default(),
+            run_completion_proposals_to_ack: Default::default(),
             using_deployment: None,
             should_notify_pinned_deployment: false,
         };
+    }
+
+    /// The cumulative number of retry attempts this invocation has made so far
+    pub(super) fn retry_attempts(&self) -> usize {
+        self.retry_policy_state.retry_iter.attempts()
     }
 
     pub(super) fn abort(&mut self) {
@@ -267,11 +296,14 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             return;
         }
 
-        let (retry_iter, on_max_attempts) = target_resolver.resolve_invocation_retry_policy(
+        let (mut retry_iter, on_max_attempts) = target_resolver.resolve_invocation_retry_policy(
             Some(&selected_deployment_id),
             self.invocation_target.service_name(),
             self.invocation_target.handler_name(),
         );
+        // We advance the retry iterator to continue the same retry journey as previous
+        // incarinations.
+        retry_iter.fast_forward(self.retry_policy_state.retry_iter.attempts());
         self.retry_policy_state = RetryPolicyState {
             selected_from_deployment_id: Some(selected_deployment_id),
             retry_iter,
@@ -330,7 +362,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         }
     }
 
-    pub(super) fn notify_new_command(&mut self, command_index: CommandIndex, requires_ack: bool) {
+    pub(super) fn notify_new_command(&mut self, command_index: CommandIndex, requested_ack: bool) {
         debug_assert!(matches!(
             &self.invocation_state,
             AttemptState::InFlight { .. }
@@ -346,23 +378,55 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             ..
         } = &mut self.invocation_state
         {
-            if requires_ack {
+            if requested_ack {
                 entries_to_ack.insert(command_index);
             }
             journal_tracker.notify_command_sent_to_partition_processor(command_index);
         }
     }
 
-    pub(super) fn notify_new_notification_proposal(&mut self, notification_id: NotificationId) {
+    pub(super) fn notify_new_notification_proposal(
+        &mut self,
+        notification_type: NotificationType,
+        notification_id: NotificationId,
+        requested_ack: bool,
+    ) {
         debug_assert!(matches!(
             &self.invocation_state,
             AttemptState::InFlight { .. }
         ));
 
+        // The only notification proposal currently defined in the protocol is
+        // ProposeRunCompletionMessage. We assert the invariant explicitly so that
+        // if/when new proposal-like messages are added, this code is forced to be
+        // revisited rather than silently mistreating them as run completions.
+        assert_eq!(
+            notification_type,
+            NotificationType::Completion(CompletionType::Run),
+            "the only notification proposal currently defined in the protocol is ProposeRunCompletionMessage",
+        );
+        let completion_id = *notification_id
+            .try_as_completion_id_ref()
+            .expect("RunCompletion notification id must be a CompletionId");
+
         if let AttemptState::InFlight {
-            journal_tracker, ..
+            journal_tracker,
+            run_completion_proposals_to_ack,
+            using_deployment,
+            ..
         } = &mut self.invocation_state
         {
+            // We track the run completion proposal to ack only if the SDK asked for
+            // an ack (header flag) AND the negotiated protocol supports it (>= v7).
+            // If either condition is missing, the proposal flows through the normal
+            // `notify_entry` → `Notification::Entry` path and the SDK receives the
+            // full `RunCompletionNotificationMessage` like on older protocols.
+            if requested_ack
+                && let Some(pinned_deployment) = using_deployment
+                && pinned_deployment.service_protocol_version >= ServiceProtocolVersion::V7
+            {
+                run_completion_proposals_to_ack.insert(completion_id);
+            }
             journal_tracker.notify_notification_proposed_to_partition_processor(notification_id);
         }
     }
@@ -376,7 +440,10 @@ impl<K: TimerKey> InvocationStateMachine<K> {
                 ..
             } => {
                 if command_acks_to_propagate.remove(&command_index) {
-                    Self::try_send_notification(notifications_tx, Notification::Ack(command_index));
+                    Self::try_send_notification(
+                        notifications_tx,
+                        Notification::CommandAck(command_index),
+                    );
                 }
                 journal_tracker.notify_acked_command_from_partition_processor(command_index);
             }
@@ -407,12 +474,20 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             AttemptState::InFlight {
                 journal_tracker,
                 notifications_tx,
+                run_completion_proposals_to_ack,
                 ..
             } => {
-                journal_tracker
-                    .notify_acked_notification_from_partition_processor(notification_id.clone());
-
-                Self::try_send_notification(notifications_tx, Notification::Entry(entry_index));
+                let to_send = match &notification_id {
+                    // We send RunCompletionAck only if we're tracking this specific run completion.
+                    NotificationId::CompletionId(c)
+                        if run_completion_proposals_to_ack.remove(c) =>
+                    {
+                        Notification::ProposeRunCompletionAck(*c)
+                    }
+                    _ => Notification::Entry(entry_index),
+                };
+                journal_tracker.notify_acked_notification_from_partition_processor(notification_id);
+                Self::try_send_notification(notifications_tx, to_send);
             }
             AttemptState::WaitingRetry {
                 journal_tracker, ..
@@ -470,31 +545,38 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         &mut self,
         error_is_transient: bool,
         next_retry_interval_override: Option<Duration>,
+        should_pause: bool,
         should_bump_start_message_retry_count_since_last_stored_command: bool,
         register_timer: impl FnOnce(Duration) -> K,
     ) -> OnTaskError {
-        let journal_tracker = match &self.invocation_state {
+        if self.requested_pause {
+            // Shortcircuit to pause, as this is what the user asked for
+            return OnTaskError::Pause;
+        }
+
+        let journal_tracker = match self.invocation_state {
             AttemptState::InFlight {
-                journal_tracker, ..
-            } => journal_tracker.clone(),
-            AttemptState::New => JournalTracker::default(),
+                ref journal_tracker,
+                ..
+            } => Some(journal_tracker),
+            AttemptState::New => None,
             AttemptState::WaitingRetry {
-                journal_tracker,
+                ref journal_tracker,
                 timer_fired,
                 ..
             } => {
                 // TODO: https://github.com/restatedev/restate/issues/538
                 assert!(
-                    *timer_fired,
+                    timer_fired,
                     "Restate does not support multiple retry timers yet. This would require \
                         deduplicating timers by some mean (e.g. fencing them off, overwriting \
                         old timers, not registering a new timer if an old timer has not fired yet, etc.)"
                 );
-                journal_tracker.clone()
+                Some(journal_tracker)
             }
         };
 
-        if self.requested_pause {
+        if self.requested_pause || should_pause {
             // Shortcircuit to pause, as this is what the user asked for
             return OnTaskError::Pause;
         }
@@ -506,10 +588,30 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             if should_bump_start_message_retry_count_since_last_stored_command {
                 self.start_message_retry_count_since_last_stored_command += 1;
             }
+
+            // if Qid is present, vqueues are used so we switch into retrying via the scheduler
+            // when the retry interval is greater > (threshold) second.
+            if let Some(ref qid) = self.qid
+                && next_timer
+                    >= Configuration::pinned()
+                        .invocation
+                        .invocation_yield_threshold()
+            {
+                trace!(
+                    vqueue = %qid,
+                    "Invocation is using vqueues, switching to retrying via scheduler");
+                return OnTaskError::RetryViaScheduler {
+                    retry_after: next_timer,
+                    retry_attempts: u32::try_from(self.retry_policy_state.retry_iter.attempts())
+                        .unwrap_or(u32::MAX),
+                    retry_count_since_last_stored_command: self
+                        .start_message_retry_count_since_last_stored_command,
+                };
+            };
             let retry_timer_key = register_timer(next_timer);
             self.invocation_state = AttemptState::WaitingRetry {
                 timer_fired: false,
-                journal_tracker,
+                journal_tracker: journal_tracker.cloned().unwrap_or_default(),
                 retry_timer_key,
             };
             OnTaskError::Retrying(next_timer)
@@ -590,6 +692,16 @@ impl<K: TimerKey> InvocationStateMachine<K> {
 
 #[derive(Debug)]
 pub(super) enum OnTaskError {
+    RetryViaScheduler {
+        retry_after: Duration,
+        /// For service-level retry configuration. This is the total number of retries
+        /// we have performed throughout.
+        retry_attempts: u32,
+        /// For sdk-controlled retries. This defines the retry-count value that will be
+        /// sent downstream to the SDK to be used for its ctx.run() retries on the next
+        /// start message.
+        retry_count_since_last_stored_command: u32,
+    },
     Retrying(Duration),
     Pause,
     Kill,
@@ -623,8 +735,10 @@ mod tests {
     fn create_test_invocation_state_machine() -> InvocationStateMachine<u64> {
         InvocationStateMachine::create(
             None,
-            Permit::new_empty(),
+            ReservedResources::new_empty(),
             InvocationTarget::mock_virtual_object(),
+            LimitKey::None,
+            None,
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
             OnMaxAttempts::Kill,
             ConcurrencySlot::empty(),
@@ -637,7 +751,7 @@ mod tests {
 
         let_assert!(
             OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, true, |_| 0)
+                invocation_state_machine.handle_task_error(true, None, false, true, |_| 0)
         );
         check!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 
@@ -646,13 +760,13 @@ mod tests {
         // We stay in `WaitingForRetry`
         let_assert!(
             OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, true, |_| 1)
+                invocation_state_machine.handle_task_error(true, None, false, true, |_| 1)
         );
         check!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
     }
 
     #[test(tokio::test)]
-    async fn handle_requires_ack() {
+    async fn handle_requested_ack() {
         let mut invocation_state_machine = create_test_invocation_state_machine();
 
         let abort_handle = tokio::spawn(async {}).abort_handle();
@@ -669,13 +783,104 @@ mod tests {
 
         // Check notification was sent for ack 1 and 3
         let notification = rx.recv().await;
-        assert_that!(notification, some(pat!(Notification::Ack(eq(1)))));
+        assert_that!(notification, some(pat!(Notification::CommandAck(eq(1)))));
         let notification = rx.recv().await;
-        assert_that!(notification, some(pat!(Notification::Ack(eq(3)))));
+        assert_that!(notification, some(pat!(Notification::CommandAck(eq(3)))));
 
         // Channel should be empty
         let try_recv = rx.try_recv();
         assert_that!(try_recv, err(eq(TryRecvError::Empty)));
+    }
+
+    fn start_with_protocol(
+        ism: &mut InvocationStateMachine<u64>,
+        version: ServiceProtocolVersion,
+    ) -> mpsc::UnboundedReceiver<Notification> {
+        let abort_handle = tokio::spawn(async {}).abort_handle();
+        let (tx, rx) = mpsc::unbounded_channel();
+        ism.start(abort_handle, tx);
+        ism.notify_pinned_deployment(
+            PinnedDeployment::new(DeploymentId::default(), version),
+            true,
+        );
+        rx
+    }
+
+    #[test(tokio::test)]
+    async fn notify_entry_swaps_proposed_run_completion_to_ack_on_v7() {
+        let mut ism = create_test_invocation_state_machine();
+        let mut rx = start_with_protocol(&mut ism, ServiceProtocolVersion::V7);
+
+        // Track a proposal for CompletionId 5 with requested_ack=true
+        ism.notify_new_notification_proposal(
+            NotificationType::Completion(CompletionType::Run),
+            NotificationId::CompletionId(5),
+            true,
+        );
+
+        // PP echoes back the stored notification — the ISM must swap to the ack
+        ism.notify_entry(7, NotificationId::CompletionId(5));
+        assert_that!(
+            rx.recv().await,
+            some(pat!(Notification::ProposeRunCompletionAck(eq(5))))
+        );
+
+        // The proposal was consumed: a second notify_entry for the same id falls
+        // back to the regular Entry path.
+        ism.notify_entry(7, NotificationId::CompletionId(5));
+        assert_that!(rx.recv().await, some(pat!(Notification::Entry(eq(7)))));
+    }
+
+    #[test(tokio::test)]
+    async fn notify_entry_does_not_swap_on_v6_old_path_preserved() {
+        let mut ism = create_test_invocation_state_machine();
+        let mut rx = start_with_protocol(&mut ism, ServiceProtocolVersion::V6);
+
+        // Proposal is recorded in the journal tracker (for retry safety) but NOT
+        // tracked for swapping, because the deployment is on protocol v6 — even
+        // if the SDK had set requested_ack, the runtime caps the behaviour at v7.
+        ism.notify_new_notification_proposal(
+            NotificationType::Completion(CompletionType::Run),
+            NotificationId::CompletionId(5),
+            true,
+        );
+
+        // PP echoes back the stored notification — the ISM forwards the full Entry,
+        // exactly like before protocol v7 existed.
+        ism.notify_entry(7, NotificationId::CompletionId(5));
+        assert_that!(rx.recv().await, some(pat!(Notification::Entry(eq(7)))));
+    }
+
+    #[test(tokio::test)]
+    async fn notify_entry_on_v7_without_requested_ack_falls_through_to_entry() {
+        let mut ism = create_test_invocation_state_machine();
+        let mut rx = start_with_protocol(&mut ism, ServiceProtocolVersion::V7);
+
+        // V7 deployment but SDK did NOT set the requested_ack header flag — the
+        // proposal is tracked in the journal tracker for retry safety, but no
+        // swap happens, and the SDK gets the full notification back.
+        ism.notify_new_notification_proposal(
+            NotificationType::Completion(CompletionType::Run),
+            NotificationId::CompletionId(5),
+            false,
+        );
+
+        ism.notify_entry(7, NotificationId::CompletionId(5));
+        assert_that!(rx.recv().await, some(pat!(Notification::Entry(eq(7)))));
+    }
+
+    #[test(tokio::test)]
+    async fn notify_entry_on_v7_without_proposal_falls_through_to_entry() {
+        let mut ism = create_test_invocation_state_machine();
+        let mut rx = start_with_protocol(&mut ism, ServiceProtocolVersion::V7);
+
+        // No prior proposal: a completion notification flows through as Entry.
+        ism.notify_entry(3, NotificationId::CompletionId(5));
+        assert_that!(rx.recv().await, some(pat!(Notification::Entry(eq(3)))));
+
+        // Signals are also never swapped — only completion ids tracked at propose time qualify.
+        ism.notify_entry(4, NotificationId::SignalIndex(17));
+        assert_that!(rx.recv().await, some(pat!(Notification::Entry(eq(4)))));
     }
 
     #[test(tokio::test)]
@@ -691,7 +896,7 @@ mod tests {
         // Notify error
         let_assert!(
             OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, true, |_| 0)
+                invocation_state_machine.handle_task_error(true, None, false, true, |_| 0)
         );
         assert_eq!(
             invocation_state_machine.start_message_retry_count_since_last_stored_command,
@@ -707,7 +912,7 @@ mod tests {
         // Get error again
         let_assert!(
             OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, true, |_| 1)
+                invocation_state_machine.handle_task_error(true, None, false, true, |_| 1)
         );
         assert_eq!(
             invocation_state_machine.start_message_retry_count_since_last_stored_command,
@@ -745,7 +950,7 @@ mod tests {
         invocation_state_machine.notify_new_command(1, false);
         let_assert!(
             OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, true, |_| 0)
+                invocation_state_machine.handle_task_error(true, None, false, true, |_| 0)
         );
 
         // PP sends ack for command 1
@@ -768,19 +973,30 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
 
         invocation_state_machine.start(abort_handle, tx);
-        invocation_state_machine.notify_new_notification_proposal(NotificationId::SignalIndex(18));
-        invocation_state_machine.notify_new_notification_proposal(NotificationId::CompletionId(1));
+        // Only RunCompletion notifications are valid proposals today; the ISM asserts this.
+        // requested_ack=false because this test is about journal-tracker accounting for
+        // retry safety, not about the v7 ack swap.
+        invocation_state_machine.notify_new_notification_proposal(
+            NotificationType::Completion(CompletionType::Run),
+            NotificationId::CompletionId(18),
+            false,
+        );
+        invocation_state_machine.notify_new_notification_proposal(
+            NotificationType::Completion(CompletionType::Run),
+            NotificationId::CompletionId(1),
+            false,
+        );
         let_assert!(
             OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, true, |_| 0)
+                invocation_state_machine.handle_task_error(true, None, false, true, |_| 0)
         );
 
         // Waiting notifications acks and retry timer fired
         assert!(!invocation_state_machine.is_ready_to_retry());
         assert!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 
-        // Got signal 18
-        invocation_state_machine.notify_entry(0, NotificationId::SignalIndex(18));
+        // Got completion 18
+        invocation_state_machine.notify_entry(0, NotificationId::CompletionId(18));
 
         // Retry timer fired
         invocation_state_machine.notify_retry_timer_fired(0);
@@ -810,7 +1026,7 @@ mod tests {
         // Put the ISM in WaitingRetry state with timer key 0
         let_assert!(
             OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, true, |_| 0)
+                invocation_state_machine.handle_task_error(true, None, false, true, |_| 0)
         );
         check!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 

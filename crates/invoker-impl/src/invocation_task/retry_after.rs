@@ -52,12 +52,12 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_retry_after_missing_header() {
+    fn parse_retry_after_missing_header() {
         assert_eq!(parse_retry_after(&parts_without_retry_after()), None);
     }
 
     #[test]
-    fn test_parse_retry_after_seconds() {
+    fn parse_retry_after_seconds() {
         // valid integer seconds
         assert_eq!(
             parse_retry_after(&parts_with_retry_after("120")),
@@ -71,7 +71,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_retry_after_rfc2822_date() {
+    fn parse_retry_after_rfc2822_date() {
         // a date far in the future must return Some with a positive duration
         let result = parse_retry_after(&parts_with_retry_after("Fri, 01 Jan 2100 00:00:00 +0000"));
         assert!(result.is_some_and(|d| d > Duration::ZERO));
@@ -82,7 +82,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_retry_after_invalid() {
+    fn parse_retry_after_invalid() {
         assert_eq!(
             parse_retry_after(&parts_with_retry_after("not-a-value")),
             None

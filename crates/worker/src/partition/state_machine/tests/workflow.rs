@@ -31,7 +31,7 @@ async fn start_workflow_method() {
 
     // Send fresh invocation
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             completion_retention_duration: Duration::from_secs(60),
@@ -39,7 +39,7 @@ async fn start_workflow_method() {
                 request_id: request_id_1,
             }),
             ..ServiceInvocation::mock()
-        })))
+        }))
         .await;
     assert_that!(
         actions,
@@ -60,14 +60,14 @@ async fn start_workflow_method() {
 
     // Sending another invocation won't re-execute
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
                 request_id: request_id_2,
             }),
             ..ServiceInvocation::mock()
-        })))
+        }))
         .await;
     assert_that!(
         actions,
@@ -90,7 +90,7 @@ async fn start_workflow_method() {
     let response_bytes = Bytes::from_static(b"123");
     let actions = test_env
         .apply_multiple([
-            Command::InvokerEffect(Box::new(Effect {
+            commands::InvokerEffectCommand::test_envelope(Effect {
                 invocation_id,
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 1,
@@ -98,11 +98,11 @@ async fn start_workflow_method() {
                         EntryResult::Success(response_bytes.clone()),
                     )),
                 },
-            })),
-            Command::InvokerEffect(Box::new(Effect {
+            }),
+            commands::InvokerEffectCommand::test_envelope(Effect {
                 invocation_id,
                 kind: InvokerEffectKind::End,
-            })),
+            }),
         ])
         .await;
 
@@ -146,14 +146,14 @@ async fn start_workflow_method() {
     // Sending a new request will not be completed because we don't support attach semantics
     let request_id_3 = PartitionProcessorRpcRequestId::default();
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
                 request_id: request_id_3,
             }),
             ..ServiceInvocation::mock()
-        })))
+        }))
         .await;
     assert_that!(
         actions,
@@ -180,7 +180,7 @@ async fn attach_by_workflow_key() {
 
     // Send fresh invocation
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             completion_retention_duration: Duration::from_secs(60),
@@ -188,7 +188,7 @@ async fn attach_by_workflow_key() {
                 request_id: request_id_1,
             }),
             ..ServiceInvocation::mock()
-        })))
+        }))
         .await;
     assert_that!(
         actions,
@@ -199,15 +199,17 @@ async fn attach_by_workflow_key() {
 
     // Sending another invocation won't re-execute
     let actions = test_env
-        .apply(Command::AttachInvocation(AttachInvocationRequest {
-            invocation_query: InvocationQuery::Workflow(
-                invocation_target.as_keyed_service_id().unwrap(),
-            ),
-            block_on_inflight: true,
-            response_sink: ServiceInvocationResponseSink::Ingress {
-                request_id: request_id_2,
+        .apply(commands::AttachInvocationCommand::test_envelope(
+            AttachInvocationRequest {
+                invocation_query: InvocationQuery::Workflow(
+                    invocation_target.as_keyed_service_id().unwrap(),
+                ),
+                block_on_inflight: true,
+                response_sink: ServiceInvocationResponseSink::Ingress {
+                    request_id: request_id_2,
+                },
             },
-        }))
+        ))
         .await;
     assert_that!(
         actions,
@@ -223,7 +225,7 @@ async fn attach_by_workflow_key() {
     let response_bytes = Bytes::from_static(b"123");
     let actions = test_env
         .apply_multiple([
-            Command::InvokerEffect(Box::new(Effect {
+            commands::InvokerEffectCommand::test_envelope(Effect {
                 invocation_id,
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 1,
@@ -231,11 +233,11 @@ async fn attach_by_workflow_key() {
                         EntryResult::Success(response_bytes.clone()),
                     )),
                 },
-            })),
-            Command::InvokerEffect(Box::new(Effect {
+            }),
+            commands::InvokerEffectCommand::test_envelope(Effect {
                 invocation_id,
                 kind: InvokerEffectKind::End,
-            })),
+            }),
         ])
         .await;
 
@@ -277,15 +279,17 @@ async fn attach_by_workflow_key() {
 
     // Sending another attach will be completed immediately
     let actions = test_env
-        .apply(Command::AttachInvocation(AttachInvocationRequest {
-            invocation_query: InvocationQuery::Workflow(
-                invocation_target.as_keyed_service_id().unwrap(),
-            ),
-            block_on_inflight: true,
-            response_sink: ServiceInvocationResponseSink::Ingress {
-                request_id: request_id_3,
+        .apply(commands::AttachInvocationCommand::test_envelope(
+            AttachInvocationRequest {
+                invocation_query: InvocationQuery::Workflow(
+                    invocation_target.as_keyed_service_id().unwrap(),
+                ),
+                block_on_inflight: true,
+                response_sink: ServiceInvocationResponseSink::Ingress {
+                    request_id: request_id_3,
+                },
             },
-        }))
+        ))
         .await;
     assert_that!(
         actions,
@@ -308,7 +312,7 @@ async fn purge_completed_workflow() {
     let invocation_target = InvocationTarget::mock_workflow();
     let invocation_id = InvocationId::mock_random();
 
-    // Prepare idempotency metadata and completed status
+    // Prepare a completed workflow invocation
     let mut txn = test_env.storage().transaction();
     txn.put_invocation_status(
         &invocation_id,
@@ -319,22 +323,19 @@ async fn purge_completed_workflow() {
         }),
     )
     .unwrap();
-    txn.put_virtual_object_status(
-        &invocation_target.as_keyed_service_id().unwrap(),
-        &VirtualObjectStatus::Locked(invocation_id),
-    )
-    .unwrap();
     txn.commit().await.unwrap();
+    drop(txn);
 
-    // Send timer fired command
     let request_id = PartitionProcessorRpcRequestId::new();
     let actions = test_env
-        .apply(Command::PurgeInvocation(PurgeInvocationRequest {
-            invocation_id,
-            response_sink: Some(InvocationMutationResponseSink::Ingress(
-                IngressInvocationResponseSink { request_id },
-            )),
-        }))
+        .apply(commands::PurgeInvocationCommand::test_envelope(
+            PurgeInvocationRequest {
+                invocation_id,
+                response_sink: Some(InvocationMutationResponseSink::Ingress(
+                    IngressInvocationResponseSink { request_id },
+                )),
+            },
+        ))
         .await;
     assert_that!(
         actions,
@@ -350,14 +351,6 @@ async fn purge_completed_workflow() {
             .await
             .unwrap(),
         pat!(InvocationStatus::Free)
-    );
-    assert_that!(
-        test_env
-            .storage()
-            .get_virtual_object_status(&invocation_target.as_keyed_service_id().unwrap())
-            .await
-            .unwrap(),
-        pat!(VirtualObjectStatus::Unlocked)
     );
     test_env.shutdown().await;
 }

@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
+use std::{borrow::Cow, collections::HashMap, ops::RangeInclusive};
 
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +28,9 @@ pub enum AdminApiVersion {
     V1 = 1,
     V2 = 2,
     V3 = 3,
+    /// Added with v1.7.0. Added scope column to sys_state and sys_promise tables. More changes to
+    /// follow with the vqueues changes. Removed sys_idempotency table.
+    V4 = 4,
 }
 
 impl AdminApiVersion {
@@ -72,6 +75,12 @@ pub struct VersionInformation {
     ///
     /// Ingress endpoint that the Web UI should use to interact with.
     pub ingress_endpoint: Option<AdvertisedAddress<HttpIngressPort>>,
+
+    /// # Restate experimental features
+    ///
+    /// List experimental features with their
+    /// enabled state.
+    pub features: HashMap<Cow<'static, str>, bool>,
 }
 
 #[cfg(test)]

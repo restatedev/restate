@@ -12,13 +12,13 @@ pub mod deduplication_table;
 mod durable_lsn_tracking;
 pub mod error;
 pub mod fsm_table;
-pub mod idempotency_table;
 pub mod inbox_table;
 pub mod invocation_status_table;
 pub mod journal_events;
 pub mod journal_table;
 pub mod journal_table_v2;
 pub mod keys;
+pub mod locks_table;
 mod memory;
 mod metric_definitions;
 mod migrations;
@@ -47,3 +47,17 @@ pub use partition_store_manager::*;
 pub use restate_rocksdb::Priority;
 
 use crate::scan::TableScan;
+
+// Optimized for modern CPU branch predictors
+#[inline]
+fn convert_to_upper_bound(bytes: &mut [u8]) -> bool {
+    for b in bytes.iter_mut().rev() {
+        let x = *b;
+        if x != 0xFF {
+            *b = x.wrapping_add(1); // safe: we just checked != 0xFF
+            return true;
+        }
+        *b = 0;
+    }
+    false
+}

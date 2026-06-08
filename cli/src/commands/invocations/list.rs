@@ -9,6 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashSet;
+use std::fmt;
+use std::str::FromStr;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -24,6 +26,35 @@ use restate_cli_util::ui::watcher::Watch;
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::{InvocationState, find_and_count_active_invocations};
 use crate::ui::invocations::render_invocation_compact;
+
+#[derive(Clone, Debug)]
+pub enum CompletionResult {
+    Success,
+    Failure,
+}
+
+impl FromStr for CompletionResult {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "success" => Ok(Self::Success),
+            "failure" => Ok(Self::Failure),
+            _ => Err(format!(
+                "invalid completion result '{s}', expected 'success' or 'failure'"
+            )),
+        }
+    }
+}
+
+impl fmt::Display for CompletionResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CompletionResult::Success => write!(f, "success"),
+            CompletionResult::Failure => write!(f, "failure"),
+        }
+    }
+}
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap(visible_alias = "ls")]
@@ -41,6 +72,9 @@ pub struct List {
     /// Filter by status(es)
     #[clap(long, ignore_case = true, value_delimiter = ',')]
     status: Vec<InvocationState>,
+    /// Filter completed invocations by result: 'success' or 'failure'. Implies --status=completed.
+    #[clap(long, ignore_case = true, conflicts_with_all = ["all", "status"])]
+    completion_result: Option<CompletionResult>,
     /// Filter by deployment ID
     #[clap(long, visible_alias = "dp", value_delimiter = ',')]
     deployment: Vec<String>,
@@ -122,7 +156,11 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
         ));
     }
 
-    if opts.all {
+    if let Some(completion) = &opts.completion_result {
+        // --completion-result implies completed status
+        active_filters.push("status = 'completed'".to_owned());
+        active_filters.push(format!("inv.completion_result = '{completion}'"));
+    } else if opts.all {
         // No filter
     } else if statuses.is_empty() {
         // Default hide completed invocations

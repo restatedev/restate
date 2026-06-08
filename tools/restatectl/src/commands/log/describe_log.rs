@@ -76,15 +76,15 @@ async fn describe_logs(
     let log_ids = if opts.log_id.is_empty() {
         logs.iter()
             .sorted_by(|a, b| Ord::cmp(a.0, b.0))
-            .map(|(id, _)| RangeParam::from(*id))
+            .map(|(id, _)| RangeParam::single(u32::from(*id)))
             .collect::<Vec<_>>()
     } else {
         opts.log_id.clone()
     };
 
     for range in log_ids {
-        for log_id in range.iter() {
-            describe_log(opts, &nodes_config, &logs, log_id.into(), connection).await?;
+        for log_id in &range {
+            describe_log(opts, &nodes_config, &logs, LogId::from(log_id), connection).await?;
         }
     }
 

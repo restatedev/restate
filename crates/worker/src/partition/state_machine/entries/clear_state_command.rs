@@ -12,7 +12,6 @@ use crate::debug_if_leader;
 use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::state_table::WriteStateTable;
-use restate_tracing_instrumentation as instrumentation;
 use restate_types::journal_v2::{ClearStateCommand, EntryMetadata};
 use tracing::warn;
 
@@ -29,21 +28,6 @@ where
             .get_invocation_metadata()
             .expect("In-Flight invocation metadata must be present");
 
-        if ctx.is_leader {
-            let _span = instrumentation::info_invocation_span!(
-                relation = invocation_metadata
-                    .journal_metadata
-                    .span_context
-                    .as_parent(),
-                id = self.invocation_id,
-                name = "clear-state",
-                tags = (rpc.service = invocation_metadata
-                    .invocation_target
-                    .service_name()
-                    .to_string())
-            );
-        }
-
         if let Some(service_id) = invocation_metadata.invocation_target.as_keyed_service_id() {
             debug_if_leader!(
                 ctx.is_leader,
@@ -52,7 +36,7 @@ where
             );
 
             ctx.storage
-                .delete_user_state(&service_id, &self.entry.key)
+                .delete_user_state(&service_id, self.entry.key.as_bytes())
                 .map_err(Error::Storage)?;
         } else {
             warn!(

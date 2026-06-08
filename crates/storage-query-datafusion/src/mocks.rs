@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
+use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -16,19 +17,18 @@ use async_trait::async_trait;
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
-use datafusion::execution::SendableRecordBatchStream;
+
 use googletest::matcher::{Matcher, MatcherResult};
 use serde_json::Value;
 
-use restate_invoker_api::StatusHandle;
-use restate_invoker_api::status_handle::test_util::MockStatusHandle;
+use restate_metadata_store::MetadataStoreClient;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_types::NodeId;
 use restate_types::config::QueryEngineOptions;
 use restate_types::deployment::{DeploymentAddress, Headers};
 use restate_types::errors::GenericError;
-use restate_types::identifiers::{DeploymentId, PartitionId, PartitionKey, ServiceRevision};
+use restate_types::identifiers::{DeploymentId, PartitionId, ServiceRevision};
 use restate_types::live::Live;
 use restate_types::net::address::{AdvertisedAddress, HttpIngressPort};
 use restate_types::net::remote_query_scanner::RemoteQueryScannerOpen;
@@ -37,13 +37,34 @@ use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry
 use restate_types::schema::deployment::{Deployment, DeploymentResolver};
 use restate_types::schema::service::test_util::MockServiceMetadataResolver;
 use restate_types::schema::service::{ServiceMetadata, ServiceMetadataResolver};
+use restate_types::sharding::KeyRange;
+use restate_worker_api::invoker::{InvocationStatusReport, StatusHandle};
+use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
 
 use super::context::QueryContext;
-use crate::context::SelectPartitions;
+use crate::context::{PartitionLeaderStatusHandle, SelectPartitions};
 use crate::remote_query_scanner_client::{RemoteScanner, RemoteScannerService};
 use crate::remote_query_scanner_manager::{
     PartitionLocation, PartitionLocator, RemoteScannerManager,
 };
+
+#[derive(Debug, Clone, Default)]
+pub struct MockStatusHandle(Vec<InvocationStatusReport>);
+
+impl MockStatusHandle {
+    pub fn with(mut self, invocation_status_report: InvocationStatusReport) -> Self {
+        self.0.push(invocation_status_report);
+        self
+    }
+}
+
+impl StatusHandle for MockStatusHandle {
+    type Iterator = std::vec::IntoIter<InvocationStatusReport>;
+
+    async fn read_status(&self, _keys: KeyRange) -> Self::Iterator {
+        self.0.clone().into_iter()
+    }
+}
 
 #[derive(Default, Clone, Debug)]
 pub(crate) struct MockSchemas(
@@ -70,6 +91,28 @@ impl ServiceMetadataResolver for MockSchemas {
 
     fn list_service_names(&self) -> Vec<String> {
         self.0.list_service_names()
+    }
+}
+
+impl PartitionLeaderStatusHandle for MockStatusHandle {
+    type SchedulerStatus = SchedulerStatusEntry;
+    type SchedulerStatusIterator = std::iter::Empty<Self::SchedulerStatus>;
+
+    type UserLimitCounter = UserLimitCounterEntry;
+    type UserLimitCounterIterator = std::iter::Empty<Self::UserLimitCounter>;
+
+    fn read_scheduler_status(
+        &self,
+        _keys: KeyRange,
+    ) -> impl Future<Output = Self::SchedulerStatusIterator> + Send {
+        std::future::ready(std::iter::empty())
+    }
+
+    fn read_user_limit_counters(
+        &self,
+        _keys: KeyRange,
+    ) -> impl Future<Output = Self::UserLimitCounterIterator> + Send {
+        std::future::ready(std::iter::empty())
     }
 }
 
@@ -113,8 +156,7 @@ struct MockPartitionSelector;
 impl SelectPartitions for MockPartitionSelector {
     async fn get_live_partitions(&self) -> Result<Vec<(PartitionId, Partition)>, GenericError> {
         let id = PartitionId::MIN;
-        let partition_range = 0..=PartitionKey::MAX;
-        let partition = Partition::new(id, partition_range);
+        let partition = Partition::new(id, KeyRange::FULL);
         Ok(vec![(id, partition)])
     }
 }
@@ -149,7 +191,10 @@ impl PartitionLocator for AlwaysLocalPartitionLocator {
 
 impl MockQueryEngine {
     pub async fn create_with(
-        status: impl StatusHandle + Send + Sync + Debug + Clone + 'static,
+        status: impl PartitionLeaderStatusHandle<
+            SchedulerStatus = SchedulerStatusEntry,
+            UserLimitCounter = UserLimitCounterEntry,
+        >,
         schemas: impl DeploymentResolver
         + ServiceMetadataResolver
         + Send
@@ -160,14 +205,11 @@ impl MockQueryEngine {
     ) -> Self {
         // Prepare Rocksdb
         RocksDbManager::init();
-        let manager = PartitionStoreManager::create()
+        let manager = PartitionStoreManager::create(true)
             .await
             .expect("DB creation succeeds");
         let partition_store = manager
-            .open(
-                &Partition::new(PartitionId::MIN, PartitionKey::MIN..=PartitionKey::MAX),
-                None,
-            )
+            .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
             .await
             .unwrap();
 
@@ -184,7 +226,13 @@ impl MockQueryEngine {
                 RemoteScannerManager::new(
                     Arc::new(NoopSvc),
                     Arc::new(AlwaysLocalPartitionLocator) as Arc<dyn PartitionLocator>,
+                    // The mock locator always returns `Local`, so the manager
+                    // never invokes `allocate_scanner_id` and never reads
+                    // `my_node_id`. A blank Metadata is sufficient here.
+                    restate_core::MetadataBuilder::default().to_metadata(),
                 ),
+                MetadataStoreClient::new_in_memory(),
+                None,
             )
             .await
             .unwrap(),
@@ -202,7 +250,7 @@ impl MockQueryEngine {
     pub async fn execute(
         &self,
         sql: impl AsRef<str> + Send,
-    ) -> datafusion::common::Result<SendableRecordBatchStream> {
+    ) -> datafusion::common::Result<crate::context::QueryResult> {
         self.2.execute(sql.as_ref()).await
     }
 }

@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+#![allow(clippy::large_futures)]
+
 mod build_info;
 
 mod app;
@@ -15,6 +17,7 @@ mod cli_env;
 mod clients;
 mod commands;
 mod ui;
+mod util;
 
 pub use app::CliApp;
 pub(crate) use restate_cli_util::ui::console;

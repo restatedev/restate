@@ -21,6 +21,10 @@ define_table!(sys_invocation_status(
     /// [Invocation ID](/operate/invocation#invocation-identifier).
     id: DataType::LargeUtf8,
 
+    /// The VQueue assigned to the the invocation. NULL if invocation was not migrated to vqueues.
+    /// Since v1.7.0.
+    vqueue_id: DataType::Utf8,
+
     /// Either `inboxed` or `scheduled` or `invoked` or `suspended` or `paused` or `completed`
     status: DataType::LargeUtf8,
 
@@ -46,6 +50,14 @@ define_table!(sys_invocation_status(
 
     /// The service type. Either `service` or `virtual_object` or `workflow`.
     target_service_ty: DataType::LargeUtf8,
+
+    /// The scope of the invocation for vqueue partitioning, if scoped. NULL for unscoped invocations.
+    /// Since v1.7.0.
+    scope: DataType::Utf8,
+
+    /// The limit key that was used for the invocation. NULL if no limit key was set.
+    /// Since v1.7.0.
+    limit_key: DataType::Utf8,
 
     /// Idempotency key, if any.
     idempotency_key: DataType::LargeUtf8,
@@ -124,8 +136,13 @@ define_table!(sys_invocation_status(
     journal_retention: DataType::Duration,
 
     /// List of completion ids the invocation is awaiting on, if `status = suspended`.
+    /// DEPRECATED: use `suspended_waiting_future_json` instead.
     suspended_waiting_for_completions: UInt32List,
 
     /// List of signals the invocation is awaiting on, if `status = suspended`.
+    /// DEPRECATED: use `suspended_waiting_future_json` instead.
     suspended_waiting_for_signals: UInt32List,
+
+    /// Future tree the invocation is suspended on, if `status = suspended`.
+    suspended_waiting_future_json: DataType::LargeUtf8,
 ));

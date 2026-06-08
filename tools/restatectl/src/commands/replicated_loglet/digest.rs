@@ -152,7 +152,7 @@ async fn get_digest(connection: &ConnectionInfo, opts: &DigestOpts) -> anyhow::R
         }
     });
     let mut heading = vec![Cell::new("OFFSET")];
-    heading.extend(node_ids.into_iter());
+    heading.extend(node_ids);
     heading.extend(vec![Cell::new("ISSUES")]);
     records_table.set_header(heading);
 

@@ -12,7 +12,6 @@ use crate::debug_if_leader;
 use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::state_table::WriteStateTable;
-use restate_tracing_instrumentation as instrumentation;
 use restate_types::journal_v2::{ClearAllStateCommand, EntryMetadata};
 use tracing::warn;
 
@@ -28,21 +27,6 @@ where
             .invocation_status
             .get_invocation_metadata()
             .expect("In-Flight invocation metadata must be present");
-
-        if ctx.is_leader {
-            let _span = instrumentation::info_invocation_span!(
-                relation = invocation_metadata
-                    .journal_metadata
-                    .span_context
-                    .as_parent(),
-                id = self.invocation_id,
-                name = "clear-all-state",
-                tags = (rpc.service = invocation_metadata
-                    .invocation_target
-                    .service_name()
-                    .to_string())
-            );
-        }
 
         if let Some(service_id) = invocation_metadata.invocation_target.as_keyed_service_id() {
             debug_if_leader!(ctx.is_leader, "Clear all state");
@@ -75,15 +59,16 @@ mod tests {
     #[restate_core::test]
     async fn clear_all_user_states() {
         let mut test_env = TestEnv::create().await;
-        let service_id = ServiceId::new("MySvc", "my-key");
+        let service_id = ServiceId::new(None, "MySvc", "my-key");
 
         // Fill with some state the service K/V store
         let mut txn = test_env.storage.transaction();
-        txn.put_user_state(&service_id, b"my-key-1", b"my-val-1")
+        txn.put_user_state(&service_id, &Bytes::from_static(b"my-key-1"), b"my-val-1")
             .unwrap();
-        txn.put_user_state(&service_id, b"my-key-2", b"my-val-2")
+        txn.put_user_state(&service_id, &Bytes::from_static(b"my-key-2"), b"my-val-2")
             .unwrap();
         txn.commit().await.unwrap();
+        drop(txn);
 
         let invocation_id =
             fixtures::mock_start_invocation_with_service_id(&mut test_env, service_id.clone())

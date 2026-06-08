@@ -45,6 +45,7 @@ static MOCK_INVOKE_JOURNAL_ENTRY: LazyLock<JournalEntry> = LazyLock::new(|| {
                 invocation_target: InvocationTarget::Service {
                     name: ByteString::from_static("MySvc"),
                     handler: ByteString::from_static("MyHandler"),
+                    scope: None,
                 },
                 completion_retention_time: Some(Duration::from_secs(10)),
                 span_context: ServiceInvocationSpanContext::empty(),
@@ -145,6 +146,7 @@ async fn journal_tests() {
     delete_journal(&mut txn);
 
     txn.commit().await.expect("should not fail");
+    drop(txn);
 
     let mut txn = rocksdb.transaction();
     verify_journal_deleted(&mut txn).await;

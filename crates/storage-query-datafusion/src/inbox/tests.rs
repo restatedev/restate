@@ -40,12 +40,14 @@ async fn get_inbox() {
     )
     .unwrap();
     tx.commit().await.unwrap();
+    drop(tx);
 
     let records = engine
         .execute("SELECT * FROM sys_inbox ORDER BY sequence_number")
         .await
         .unwrap()
-        .collect::<Vec<Result<RecordBatch, _>>>()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
         .await
         .remove(0)
         .unwrap();

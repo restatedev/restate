@@ -89,3 +89,18 @@ impl From<Failure> for InvocationError {
         )
     }
 }
+
+#[cfg(any(test, feature = "test-util"))]
+mod test_util {
+    use super::*;
+
+    impl Failure {
+        pub const fn mock() -> Self {
+            Self {
+                code: InvocationErrorCode::new(500),
+                message: ByteString::new(),
+                metadata: vec![],
+            }
+        }
+    }
+}

@@ -17,9 +17,7 @@ use url::Url;
 
 #[derive(Debug, Deserialize)]
 pub struct DiscoveredAuthConfig {
-    pub provider: String,
     pub client_id: String,
-    pub login_base_url: Option<Url>,
 }
 
 pub async fn fetch_auth_config(discovery_url: &Url) -> Result<DiscoveredAuthConfig> {

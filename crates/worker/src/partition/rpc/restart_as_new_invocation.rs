@@ -67,6 +67,16 @@ where
         }: Request,
         replier: Replier<Self::Output>,
     ) -> Result<(), Self::Error> {
+        // Reading from a non-leader partition processor can return stale results
+        // (e.g. NotFound for an invocation that exists on the leader) because the
+        // follower's local store may not have replayed all log entries yet.
+        if !self.proposer.is_leader() {
+            replier.send_result(Err(PartitionProcessorRpcError::NotLeader(
+                self.proposer.partition_id(),
+            )));
+            return Ok(());
+        }
+
         // -- Resolve completed invocation status and input command
 
         // Retrieve the completed invocation
@@ -233,8 +243,9 @@ where
             let cmd = Command::Invoke(Box::new(service_invocation));
 
             // Propose and done
+            // This path should be no longer needed once we switch to the journal v2 by default.
             self.proposer
-                .self_propose_and_respond_asynchronously(
+                .append_and_respond_asynchronously(
                     invocation_id.partition_key(),
                     cmd,
                     replier,
@@ -380,13 +391,14 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
     use std::future::ready;
 
     use assert2::let_assert;
     use bytes::Bytes;
     use futures::{FutureExt, Stream, StreamExt, stream};
     use googletest::prelude::*;
+    use restate_storage_api::journal_table_v2::NotificationEntryIndex;
     use rstest::rstest;
     use test_log::test;
 
@@ -401,7 +413,7 @@ mod tests {
     use restate_types::invocation::{Header, InvocationTarget};
     use restate_types::journal::raw::RawEntryCodec;
     use restate_types::journal_v2::raw::RawCommand;
-    use restate_types::journal_v2::{CompletionId, Entry, NotificationId};
+    use restate_types::journal_v2::{CompletionId, Entry, NotificationId, UnresolvedFuture};
     use restate_types::schema::deployment::Deployment;
     use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry;
     use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
@@ -514,8 +526,9 @@ mod tests {
         fn get_notifications_index(
             &mut self,
             _: InvocationId,
-        ) -> impl Future<Output = restate_storage_api::Result<HashMap<NotificationId, EntryIndex>>> + Send
-        {
+        ) -> impl Future<
+            Output = restate_storage_api::Result<HashMap<NotificationId, NotificationEntryIndex>>,
+        > + Send {
             panic!("This should be unused");
             #[allow(unreachable_code)]
             std::future::ready(Ok(HashMap::new()))
@@ -700,6 +713,13 @@ mod tests {
         ) -> impl Future<Output = restate_storage_api::Result<InvocationStatus>> + Send {
             ready(Ok(self.status.clone()))
         }
+
+        fn any_non_completed_invocation_in_range(
+            &mut self,
+            _: restate_types::sharding::KeyRange,
+        ) -> impl Future<Output = restate_storage_api::Result<bool>> + Send {
+            ready(Ok(false))
+        }
     }
 
     #[test(restate_core::test)]
@@ -710,11 +730,12 @@ mod tests {
         let payload = rand::bytes();
 
         let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
         let invocation_target_clone = invocation_target.clone();
         let headers_clone = vec![Header::new("key", "value")];
         let payload_clone = payload.clone();
         proposer
-            .expect_self_propose_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
             .return_once_st(move |_, cmd, _, response| {
                 let_assert!(Command::Invoke(service_invocation) = cmd);
                 assert_that!(
@@ -780,8 +801,9 @@ mod tests {
         let invocation_target = InvocationTarget::mock_virtual_object();
 
         let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_self_propose_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
             .never();
         proposer
             .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
@@ -834,8 +856,9 @@ mod tests {
         let headers = vec![Header::new("k", "v")];
 
         let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_self_propose_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
             .never();
         proposer
             .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
@@ -880,8 +903,9 @@ mod tests {
         let invocation_target = InvocationTarget::mock_virtual_object();
 
         let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_self_propose_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
             .never();
         proposer
             .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
@@ -933,8 +957,9 @@ mod tests {
         let invocation_target = InvocationTarget::mock_virtual_object();
 
         let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_self_propose_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
             .never();
         proposer
             .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
@@ -988,6 +1013,7 @@ mod tests {
         );
 
         let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
         proposer
             .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
             .return_once_st(move |_, cmd, _, _| {
@@ -1003,7 +1029,7 @@ mod tests {
                 ready(()).boxed()
             });
         proposer
-            .expect_self_propose_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
             .never();
 
         let (tx, rx) = Reciprocal::mock();
@@ -1049,6 +1075,7 @@ mod tests {
         );
 
         let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
         proposer
             .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
             .return_once_st(move |_, cmd, _, _| {
@@ -1064,7 +1091,7 @@ mod tests {
                 ready(()).boxed()
             });
         proposer
-            .expect_self_propose_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
             .never();
 
         let (tx, rx) = Reciprocal::mock();
@@ -1093,8 +1120,9 @@ mod tests {
         let invocation_id = InvocationId::mock_random();
 
         let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_self_propose_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
             .never();
         proposer
             .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
@@ -1129,8 +1157,9 @@ mod tests {
         let invocation_id = InvocationId::mock_random();
 
         let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_self_propose_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
             .never();
         proposer
             .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
@@ -1178,7 +1207,7 @@ mod tests {
         #[values(
             InvocationStatus::Suspended {
                 metadata: InFlightInvocationMetadata::mock(),
-                waiting_for_notifications: HashSet::new(),
+                awaiting_on: UnresolvedFuture::empty(),
             },
             InvocationStatus::Invoked(InFlightInvocationMetadata::mock())
         )]
@@ -1187,8 +1216,9 @@ mod tests {
         let invocation_id = InvocationId::mock_random();
 
         let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_self_propose_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
             .never();
         proposer
             .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
@@ -1235,8 +1265,9 @@ mod tests {
         let invocation_id = InvocationId::mock_random();
 
         let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_self_propose_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
             .never();
         proposer
             .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
@@ -1318,6 +1349,7 @@ mod tests {
         );
 
         let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
         proposer
             .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
             .return_once_st(move |_, cmd, _, _| {
@@ -1333,7 +1365,7 @@ mod tests {
                 ready(()).boxed()
             });
         proposer
-            .expect_self_propose_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
             .never();
 
         let (tx, rx) = Reciprocal::mock();
@@ -1381,6 +1413,7 @@ mod tests {
         );
 
         let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
         proposer
             .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
             .return_once_st(move |_, cmd, _, _| {
@@ -1396,7 +1429,7 @@ mod tests {
                 ready(()).boxed()
             });
         proposer
-            .expect_self_propose_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
             .never();
 
         let (tx, rx) = Reciprocal::mock();
@@ -1438,11 +1471,12 @@ mod tests {
         );
 
         let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
         proposer
             .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
             .never();
         proposer
-            .expect_self_propose_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
             .never();
 
         let (tx, rx) = Reciprocal::mock();
@@ -1488,6 +1522,7 @@ mod tests {
         );
 
         let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
         proposer
             .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
             .never();
@@ -1528,6 +1563,7 @@ mod tests {
         );
 
         let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
         proposer
             .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
             .never();
@@ -1568,6 +1604,7 @@ mod tests {
             MockStorage::new_without_journal(invocation_id, InvocationStatus::Completed(completed));
 
         let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
         proposer
             .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
             .never();
@@ -1596,5 +1633,43 @@ mod tests {
                 RestartAsNewInvocationRpcResponse::Unsupported
             )
         );
+    }
+
+    #[test(restate_core::test)]
+    async fn reply_not_leader_when_not_leader() {
+        let invocation_id = InvocationId::mock_random();
+
+        let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(false);
+        proposer
+            .expect_partition_id()
+            .return_const(PartitionId::from(0));
+        proposer
+            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .never();
+        proposer
+            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
+            .never();
+
+        let mut storage = MockStorage::new_without_journal(invocation_id, Default::default());
+
+        let (tx, rx) = Reciprocal::mock();
+        RpcHandler::handle(
+            RpcContext::new(&mut proposer, &(), &mut storage),
+            Request {
+                request_id: Default::default(),
+                invocation_id,
+                copy_prefix_up_to_index_included: 0,
+                patch_deployment_id: Default::default(),
+            },
+            Replier::new(tx),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            rx.recv().await,
+            Err(PartitionProcessorRpcError::NotLeader(_))
+        ));
     }
 }

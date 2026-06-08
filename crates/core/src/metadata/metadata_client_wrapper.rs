@@ -15,13 +15,13 @@ use bytestring::ByteString;
 use tracing::debug;
 
 use restate_metadata_store::{ReadError, ReadModifyWriteError, ReadWriteError, WriteError};
-use restate_time_util::DurationExt;
 use restate_types::Version;
 use restate_types::config::Configuration;
 use restate_types::errors::MaybeRetryableError;
 use restate_types::metadata::{GlobalMetadata, Precondition};
 use restate_types::net::metadata::Extraction;
 use restate_types::retries::WaitDuration;
+use restate_util_time::DurationExt;
 
 use super::MetadataWriter;
 

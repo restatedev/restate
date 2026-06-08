@@ -124,7 +124,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_record_key() {
+    fn record_key() {
         let key = RecordKey::new(1, LogletOffset::new(2));
         let mut buf = BytesMut::new();
         let bytes = key.encode_and_split(&mut buf);
@@ -133,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn test_metadata_key() {
+    fn metadata_key() {
         let key = MetadataKey::new(1, MetadataKind::LogState);
         assert_eq!(key.loglet_id, 1);
         assert_eq!(key.kind, MetadataKind::LogState);

@@ -20,5 +20,5 @@ indexmap = { workspace = true, features = ["serde"] }
 [dev-dependencies]
 restate-utoipa = { path = ".", features = ["debug"] }
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(doc_cfg)'] }
+[lints]
+workspace = true

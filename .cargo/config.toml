@@ -12,9 +12,17 @@ rustflags = [
     "--cfg", "tokio_unstable", # Enable unstable tokio
 ]
 
+# The `-Ctarget-cpu` flags below are intentionally scoped to Docker image builds only.
+# Our cargo-dist release pipeline (npm/tarball artifacts) sets `RUSTFLAGS` as an env var
+# in .github/workflows/steps/release-build-setup.yml, which fully overrides these per-target
+# `rustflags` (Cargo treats env RUSTFLAGS and config rustflags as mutually exclusive).
+# This preserves the broader-microarchitecture floor for the published binaries.
+# If a future change needs `-Ctarget-cpu` to also apply to npm/tarball dists,
+# update the RUSTFLAGS line in release-build-setup.yml (and regenerate release.yml).
 [target.x86_64-unknown-linux-gnu]
 # when changing these please also change .github/workflows/steps/release-build-setup.yml
 rustflags = [
+    "-Ctarget-cpu=broadwell", # Enable SSE4.2 and AVX2 instructions
     "-C", "force-unwind-tables", # Include full unwind tables when aborting on panic
     "--cfg", "uuid_unstable", # Enable unstable Uuid
     "--cfg", "tokio_unstable", # Enable unstable tokio
@@ -22,6 +30,7 @@ rustflags = [
 
 [target.aarch64-unknown-linux-gnu]
 rustflags = [
+    "-Ctarget-cpu=neoverse-n1", # Enable NEON instructions
     "-C", "force-unwind-tables", # Include full unwind tables when aborting on panic
     "--cfg", "uuid_unstable", # Enable unstable Uuid
     "--cfg", "tokio_unstable", # Enable unstable tokio
@@ -30,6 +39,7 @@ rustflags = [
 
 [target.x86_64-unknown-linux-musl]
 rustflags = [
+    "-Ctarget-cpu=broadwell", # Enable SSE4.2 and AVX2 instructions
     "-C", "force-unwind-tables", # Include full unwind tables when aborting on panic
     "--cfg", "uuid_unstable", # Enable unstable Uuid
     "--cfg", "tokio_unstable", # Enable unstable tokio
@@ -38,6 +48,7 @@ rustflags = [
 
 [target.aarch64-unknown-linux-musl]
 rustflags = [
+    "-Ctarget-cpu=neoverse-n1", # Enable NEON instructions
     "-C", "force-unwind-tables", # Include full unwind tables when aborting on panic
     "--cfg", "uuid_unstable", # Enable unstable Uuid
     "--cfg", "tokio_unstable", # Enable unstable tokio

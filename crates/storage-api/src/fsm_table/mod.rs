@@ -12,9 +12,11 @@ use std::future::Future;
 
 use bytes::BytesMut;
 
+use restate_limiter::RuleBook;
 use restate_types::identifiers::LeaderEpoch;
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
+use restate_types::partitions::features::PersistedStateMachineFeatures;
 use restate_types::partitions::state::ReplicaSetState;
 use restate_types::replication::ReplicationProperty;
 use restate_types::schema::Schema;
@@ -48,6 +50,21 @@ pub trait ReadFsmTable {
     fn get_partition_config_state(
         &mut self,
     ) -> impl Future<Output = Result<Option<CachedEpochMetadata>>> + Send + '_;
+
+    /// The rule book persisted for this partition. Returns `None` when the
+    /// partition has not yet observed any rule-book update, in which case
+    /// callers should treat it as the empty default.
+    /// *Since v1.7.0*
+    fn get_rule_book(&mut self) -> impl Future<Output = Result<Option<RuleBook>>> + Send + '_;
+
+    /// The set of state-machine features enabled for this partition. Defaults to
+    /// [`PersistedStateMachineFeatures::default`] (all features disabled) when the
+    /// partition has not yet applied a [`VersionBarrierCommand`] carrying feature
+    /// changes.
+    /// *Since v1.7.0*
+    fn get_state_machine_features(
+        &mut self,
+    ) -> impl Future<Output = Result<PersistedStateMachineFeatures>> + Send + '_;
 }
 
 pub trait WriteFsmTable {
@@ -64,6 +81,17 @@ pub trait WriteFsmTable {
     fn put_schema(&mut self, schema: &Schema) -> Result<()>;
 
     fn put_partition_config_state(&mut self, state: &CachedEpochMetadata) -> Result<()>;
+
+    /// Persist the rule book for this partition.
+    /// *Since v1.7.0*
+    fn put_rule_book(&mut self, rule_book: &RuleBook) -> Result<()>;
+
+    /// Persist the set of state-machine features enabled for this partition.
+    /// *Since v1.7.0*
+    fn put_state_machine_features(
+        &mut self,
+        features: &PersistedStateMachineFeatures,
+    ) -> Result<()>;
 }
 
 #[derive(Debug, Clone, Copy, derive_more::From, derive_more::Into)]

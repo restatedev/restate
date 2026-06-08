@@ -28,10 +28,10 @@ static_assertions::const_assert_eq!(9, KeyPrefix::size());
 pub enum KeyPrefixKind {
     // data column family
     DataRecord = b'd',
-    /// Introduced in v1.6.3. No compatibility version barrier required.
-    /// Will receive writes in v1.6.3
+    /// Introduced in v1.7.0. No compatibility version barrier required.
+    /// Will receive writes in v1.7.0
     LastKnownGlobalTail = b'g',
-    // Introduced in v1.6.3 for forward-compatibility.
+    // Introduced in v1.7.0 for forward-compatibility.
     // Should receive writes in >= v1.8
     LocalTail = b'l',
     // metadata column family
@@ -202,7 +202,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_data_record_key() {
+    fn data_record_key() {
         let key = DataRecordKey::new(1.into(), LogletOffset::new(2));
         let bytes = key.to_binary_array();
         let key2 = DataRecordKey::from_slice(&mut bytes.as_slice());
@@ -210,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn test_metadata_key() {
+    fn metadata_key() {
         let key = MetadataKey::new(KeyPrefixKind::Seal, 1.into());
         assert_eq!(*key.loglet_id(), 1);
         assert_eq!(key.kind(), KeyPrefixKind::Seal);
@@ -220,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn test_upper_bound() {
+    fn upper_bound() {
         // loglet is within bounds
         let my_key = DataRecordKey::new(10.into(), 10.into());
         let upper_bound_bytes = DataRecordKey::exclusive_upper_bound(10.into());

@@ -12,9 +12,9 @@ use tokio::time::Instant;
 use tracing::trace;
 
 use restate_core::network::{Oneshot, Reciprocal};
-use restate_time_util::DurationExt;
 use restate_types::logs::{LogletId, LogletOffset, TailOffsetWatch, TailState};
 use restate_types::net::log_server::{Sealed, Status};
+use restate_util_time::DurationExt;
 
 use super::{OnComplete, WriteStorageTask};
 

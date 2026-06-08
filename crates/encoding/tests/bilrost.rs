@@ -76,7 +76,7 @@ struct RangeMessage {
 }
 
 #[test]
-fn test_range_encoding() {
+fn range_encoding() {
     let message = RangeMessage { range: 1..=10 };
     let encoded = <RangeMessage as bilrost::Message>::encode_to_bytes(&message);
 
@@ -91,7 +91,7 @@ struct NonZeroMessage {
 }
 
 #[test]
-fn test_nonzero_encoding() {
+fn nonzero_encoding() {
     let message = NonZeroMessage {
         inner: Some(NonZeroU64::new(10).unwrap()),
     };
@@ -102,7 +102,7 @@ fn test_nonzero_encoding() {
 }
 
 #[test]
-fn test_as_string() {
+fn as_string() {
     #[derive(bilrost::Message)]
     struct Container {
         #[bilrost(1)]
@@ -128,7 +128,7 @@ fn test_as_string() {
 }
 
 #[test]
-fn test_as_from_into() {
+fn as_from_into() {
     #[derive(bilrost::Message)]
     struct Container {
         #[bilrost(1)]

@@ -108,7 +108,7 @@ pub async fn list_metadata_servers(
                 status
                     .leader
                     .map(|leader_id| PlainNodeId::new(leader_id).to_string())
-                    .unwrap_or("-".to_owned()),
+                    .unwrap_or_else(|| "-".to_owned()),
             ),
             Cell::new(
                 status
@@ -125,7 +125,7 @@ pub async fn list_metadata_servers(
                                 .join(",")
                         )
                     })
-                    .unwrap_or("[]".to_owned()),
+                    .unwrap_or_else(|| "[]".to_owned()),
             ),
             Cell::new(status.raft.map(|raft| raft.applied).unwrap_or_default()),
             Cell::new(status.raft.map(|raft| raft.committed).unwrap_or_default()),

@@ -34,8 +34,10 @@ use restate_types::journal_v2::lite::{
 };
 use restate_types::journal_v2::raw::{
     CallOrSendMetadata, RawCommand, RawCommandSpecificMetadata, RawEntry, RawNotification,
+    RawNotificationResultVariant,
 };
-use restate_types::journal_v2::*;
+use restate_types::{LimitKey, Scope, journal_v2::*};
+use restate_util_string::RestateString;
 
 use crate::proto;
 use crate::proto::{
@@ -123,6 +125,7 @@ impl Encoder for ServiceProtocolV4Codec {
                         span_context,
                         completion_retention_duration,
                         journal_retention_duration,
+                        limit_key,
                     },
                 invocation_id_completion_id,
                 result_completion_id,
@@ -139,6 +142,12 @@ impl Encoder for ServiceProtocolV4Codec {
                         .unwrap_or(&ByteString::new())
                         .to_string(),
                     idempotency_key: idempotency_key.map(|s| s.to_string()),
+                    scope: invocation_target.scope().map(ToString::to_string),
+                    limit_key: if limit_key == LimitKey::None {
+                        None
+                    } else {
+                        Some(limit_key.to_string())
+                    },
                     name: name.to_string(),
                     invocation_id_notification_idx: invocation_id_completion_id,
                     result_completion_id,
@@ -167,6 +176,7 @@ impl Encoder for ServiceProtocolV4Codec {
                         span_context,
                         completion_retention_duration,
                         journal_retention_duration,
+                        limit_key,
                     },
                 invoke_time,
                 invocation_id_completion_id,
@@ -184,6 +194,12 @@ impl Encoder for ServiceProtocolV4Codec {
                         .unwrap_or(&ByteString::new())
                         .to_string(),
                     idempotency_key: idempotency_key.map(|s| s.to_string()),
+                    scope: invocation_target.scope().map(ToString::to_string),
+                    limit_key: if limit_key == LimitKey::None {
+                        None
+                    } else {
+                        Some(limit_key.to_string())
+                    },
                     name: name.to_string(),
                     invocation_id_notification_idx: invocation_id_completion_id,
                 }
@@ -399,6 +415,7 @@ impl Encoder for ServiceProtocolV4Codec {
             ))) => RawNotification::new(
                 CompletionType::GetLazyState,
                 NotificationId::CompletionId(completion_id),
+                RawNotificationResultVariant::Value,
                 proto::GetLazyStateCompletionNotificationMessage {
                     completion_id,
                     result: Some(result.into()),
@@ -414,6 +431,7 @@ impl Encoder for ServiceProtocolV4Codec {
             ))) => RawNotification::new(
                 CompletionType::GetLazyStateKeys,
                 NotificationId::CompletionId(completion_id),
+                RawNotificationResultVariant::StateKeys,
                 proto::GetLazyStateKeysCompletionNotificationMessage {
                     completion_id,
                     state_keys: Some(proto::StateKeys {
@@ -432,6 +450,10 @@ impl Encoder for ServiceProtocolV4Codec {
             ))) => RawNotification::new(
                 CompletionType::GetPromise,
                 NotificationId::CompletionId(completion_id),
+                match &result {
+                    GetPromiseResult::Success(_) => RawNotificationResultVariant::Value,
+                    GetPromiseResult::Failure(_) => RawNotificationResultVariant::Failure,
+                },
                 proto::GetPromiseCompletionNotificationMessage {
                     completion_id,
                     result: Some(result.into()),
@@ -447,6 +469,11 @@ impl Encoder for ServiceProtocolV4Codec {
             ))) => RawNotification::new(
                 CompletionType::PeekPromise,
                 NotificationId::CompletionId(completion_id),
+                match &result {
+                    PeekPromiseResult::Void => RawNotificationResultVariant::Void,
+                    PeekPromiseResult::Success(_) => RawNotificationResultVariant::Value,
+                    PeekPromiseResult::Failure(_) => RawNotificationResultVariant::Failure,
+                },
                 proto::PeekPromiseCompletionNotificationMessage {
                     completion_id,
                     result: Some(result.into()),
@@ -462,6 +489,10 @@ impl Encoder for ServiceProtocolV4Codec {
             ))) => RawNotification::new(
                 CompletionType::CompletePromise,
                 NotificationId::CompletionId(completion_id),
+                match &result {
+                    CompletePromiseResult::Void => RawNotificationResultVariant::Void,
+                    CompletePromiseResult::Failure(_) => RawNotificationResultVariant::Failure,
+                },
                 proto::CompletePromiseCompletionNotificationMessage {
                     completion_id,
                     result: Some(result.into()),
@@ -475,6 +506,7 @@ impl Encoder for ServiceProtocolV4Codec {
             }))) => RawNotification::new(
                 CompletionType::Sleep,
                 NotificationId::CompletionId(completion_id),
+                RawNotificationResultVariant::Void,
                 proto::SleepCompletionNotificationMessage {
                     completion_id,
                     void: Some(proto::Void::default()),
@@ -491,6 +523,7 @@ impl Encoder for ServiceProtocolV4Codec {
             ))) => RawNotification::new(
                 CompletionType::CallInvocationId,
                 NotificationId::CompletionId(completion_id),
+                RawNotificationResultVariant::InvocationId,
                 proto::CallInvocationIdCompletionNotificationMessage {
                     completion_id,
                     invocation_id: invocation_id.to_string(),
@@ -504,6 +537,10 @@ impl Encoder for ServiceProtocolV4Codec {
             }))) => RawNotification::new(
                 CompletionType::Call,
                 NotificationId::CompletionId(completion_id),
+                match &result {
+                    CallResult::Success(_) => RawNotificationResultVariant::Value,
+                    CallResult::Failure(_) => RawNotificationResultVariant::Failure,
+                },
                 proto::CallCompletionNotificationMessage {
                     completion_id,
                     result: Some(result.into()),
@@ -518,6 +555,10 @@ impl Encoder for ServiceProtocolV4Codec {
             }))) => RawNotification::new(
                 CompletionType::Run,
                 NotificationId::CompletionId(completion_id),
+                match &result {
+                    RunResult::Success(_) => RawNotificationResultVariant::Value,
+                    RunResult::Failure(_) => RawNotificationResultVariant::Failure,
+                },
                 proto::RunCompletionNotificationMessage {
                     completion_id,
                     result: Some(result.into()),
@@ -534,6 +575,10 @@ impl Encoder for ServiceProtocolV4Codec {
             ))) => RawNotification::new(
                 CompletionType::AttachInvocation,
                 NotificationId::CompletionId(completion_id),
+                match &result {
+                    AttachInvocationResult::Success(_) => RawNotificationResultVariant::Value,
+                    AttachInvocationResult::Failure(_) => RawNotificationResultVariant::Failure,
+                },
                 proto::AttachInvocationCompletionNotificationMessage {
                     completion_id,
                     result: Some(result.into()),
@@ -549,6 +594,11 @@ impl Encoder for ServiceProtocolV4Codec {
             ))) => RawNotification::new(
                 CompletionType::GetInvocationOutput,
                 NotificationId::CompletionId(completion_id),
+                match &result {
+                    GetInvocationOutputResult::Void => RawNotificationResultVariant::Void,
+                    GetInvocationOutputResult::Success(_) => RawNotificationResultVariant::Value,
+                    GetInvocationOutputResult::Failure(_) => RawNotificationResultVariant::Failure,
+                },
                 proto::GetInvocationOutputCompletionNotificationMessage {
                     completion_id,
                     result: Some(result.into()),
@@ -561,6 +611,11 @@ impl Encoder for ServiceProtocolV4Codec {
                 RawNotification::new(
                     NotificationType::Signal,
                     id.clone().into(),
+                    match &result {
+                        SignalResult::Void => RawNotificationResultVariant::Void,
+                        SignalResult::Success(_) => RawNotificationResultVariant::Value,
+                        SignalResult::Failure(_) => RawNotificationResultVariant::Failure,
+                    },
                     proto::SignalNotificationMessage {
                         signal_id: Some(match id {
                             SignalId::Index(idx) => {
@@ -671,6 +726,7 @@ impl Decoder for ServiceProtocolV4Codec {
                         parameter,
                         headers,
                         idempotency_key,
+                        limit_key,
                         invocation_id_notification_idx,
                         result_completion_id,
                         name,
@@ -680,6 +736,7 @@ impl Decoder for ServiceProtocolV4Codec {
                         RawCommandSpecificMetadata::CallOrSend(metadata) =
                             cmd.command_specific_metadata()
                     );
+                    // Scope is part of the InvocationTarget in the stored metadata
                     CallCommand {
                         request: CallRequest {
                             invocation_id: metadata.invocation_id,
@@ -690,6 +747,11 @@ impl Decoder for ServiceProtocolV4Codec {
                             idempotency_key: idempotency_key.map(|s| s.into()),
                             completion_retention_duration: metadata.completion_retention_duration,
                             journal_retention_duration: metadata.journal_retention_duration,
+                            limit_key: if let Some(limit_key) = limit_key {
+                                limit_key.parse().map_err(GenericError::from)?
+                            } else {
+                                LimitKey::None
+                            },
                         },
                         invocation_id_completion_id: invocation_id_notification_idx,
                         result_completion_id,
@@ -703,6 +765,7 @@ impl Decoder for ServiceProtocolV4Codec {
                         invoke_time,
                         headers,
                         idempotency_key,
+                        limit_key,
                         invocation_id_notification_idx,
                         name,
                         ..
@@ -711,6 +774,7 @@ impl Decoder for ServiceProtocolV4Codec {
                         RawCommandSpecificMetadata::CallOrSend(metadata) =
                             cmd.command_specific_metadata()
                     );
+                    // Scope is part of the InvocationTarget in the stored metadata
                     OneWayCallCommand {
                         request: CallRequest {
                             invocation_id: metadata.invocation_id,
@@ -721,6 +785,11 @@ impl Decoder for ServiceProtocolV4Codec {
                             idempotency_key: idempotency_key.map(|s| s.into()),
                             completion_retention_duration: metadata.completion_retention_duration,
                             journal_retention_duration: metadata.journal_retention_duration,
+                            limit_key: if let Some(limit_key) = limit_key {
+                                limit_key.parse().map_err(GenericError::from)?
+                            } else {
+                                LimitKey::None
+                            },
                         },
                         invoke_time: invoke_time.into(),
                         invocation_id_completion_id: invocation_id_notification_idx,
@@ -1554,11 +1623,13 @@ impl From<AttachInvocationTarget> for proto::attach_invocation_command_message::
                     service_key: id.service_key.map(Into::into),
                     handler_name: id.service_handler.into(),
                     idempotency_key: id.idempotency_key.into(),
+                    scope: id.scope.map(|s| s.to_string()),
                 })
             }
             AttachInvocationTarget::Workflow(id) => Self::WorkflowTarget(proto::WorkflowTarget {
                 workflow_name: id.service_name.into(),
                 workflow_key: id.key.into(),
+                scope: id.scope.map(|s| s.to_string()),
             }),
         }
     }
@@ -1572,18 +1643,36 @@ impl TryFrom<proto::attach_invocation_command_message::Target> for AttachInvocat
     ) -> Result<Self, Self::Error> {
         Ok(match value {
             proto::attach_invocation_command_message::Target::InvocationId(invocation_id) => {
+                // Before we accept an idempotent request we validate in
+                // ServiceProtocolRunner::handle_message that the invocation_id value is valid.
                 Self::InvocationId(to_invocation_id_or_bail!(invocation_id))
             }
             proto::attach_invocation_command_message::Target::IdempotentRequestTarget(
                 idempotent_request,
-            ) => Self::IdempotentRequest(IdempotencyId::new(
-                idempotent_request.service_name.into(),
-                idempotent_request.service_key.map(Into::into),
-                idempotent_request.handler_name.into(),
-                idempotent_request.idempotency_key.into(),
-            )),
+            ) => {
+                // Safety: Before we accept an idempotent request we validate in
+                // ServiceProtocolRunner::handle_message that the scope value is valid.
+                let scope = idempotent_request
+                    .scope
+                    .as_ref()
+                    .map(|scope| unsafe { Scope::new_unchecked(scope) });
+                Self::IdempotentRequest(IdempotencyId::new(
+                    idempotent_request.service_name.into(),
+                    idempotent_request.service_key.map(Into::into),
+                    idempotent_request.handler_name.into(),
+                    idempotent_request.idempotency_key.into(),
+                    scope,
+                ))
+            }
             proto::attach_invocation_command_message::Target::WorkflowTarget(workflow_target) => {
+                // Safety: Before we accept a workflow target we validate in
+                // ServiceProtocolRunner::handle_message that the scope value is valid.
+                let scope = workflow_target
+                    .scope
+                    .as_ref()
+                    .map(|scope| unsafe { Scope::new_unchecked(scope) });
                 Self::Workflow(ServiceId::new(
+                    scope,
                     workflow_target.workflow_name,
                     workflow_target.workflow_key,
                 ))
@@ -1602,11 +1691,13 @@ impl From<AttachInvocationTarget> for proto::get_invocation_output_command_messa
                     service_key: id.service_key.map(Into::into),
                     handler_name: id.service_handler.into(),
                     idempotency_key: id.idempotency_key.into(),
+                    scope: id.scope.map(|s| s.to_string()),
                 })
             }
             AttachInvocationTarget::Workflow(id) => Self::WorkflowTarget(proto::WorkflowTarget {
                 workflow_name: id.service_name.into(),
                 workflow_key: id.key.into(),
+                scope: id.scope.map(|s| s.to_string()),
             }),
         }
     }
@@ -1620,22 +1711,40 @@ impl TryFrom<proto::get_invocation_output_command_message::Target> for AttachInv
     ) -> Result<Self, Self::Error> {
         Ok(match value {
             proto::get_invocation_output_command_message::Target::InvocationId(invocation_id) => {
+                // Before we accept an idempotent request we validate in
+                // ServiceProtocolRunner::handle_message that the invocation_id value is valid.
                 Self::InvocationId(to_invocation_id_or_bail!(invocation_id))
             }
             proto::get_invocation_output_command_message::Target::IdempotentRequestTarget(
                 idempotent_request,
-            ) => Self::IdempotentRequest(IdempotencyId::new(
-                idempotent_request.service_name.into(),
-                idempotent_request.service_key.map(Into::into),
-                idempotent_request.handler_name.into(),
-                idempotent_request.idempotency_key.into(),
-            )),
+            ) => {
+                // Safety: Before we accept an idempotent request we validate in
+                // ServiceProtocolRunner::handle_message that the scope value is valid.
+                let scope = idempotent_request
+                    .scope
+                    .map(|ref scope| unsafe { Scope::new_unchecked(scope) });
+                Self::IdempotentRequest(IdempotencyId::new(
+                    idempotent_request.service_name.into(),
+                    idempotent_request.service_key.map(Into::into),
+                    idempotent_request.handler_name.into(),
+                    idempotent_request.idempotency_key.into(),
+                    scope,
+                ))
+            }
             proto::get_invocation_output_command_message::Target::WorkflowTarget(
                 workflow_target,
-            ) => Self::Workflow(ServiceId::new(
-                workflow_target.workflow_name,
-                workflow_target.workflow_key,
-            )),
+            ) => {
+                // Safety: Before we accept a workflow target we validate in
+                // ServiceProtocolRunner::handle_message that the scope value is valid.
+                let scope = workflow_target
+                    .scope
+                    .map(|ref scope| unsafe { Scope::new_unchecked(scope) });
+                Self::Workflow(ServiceId::new(
+                    scope,
+                    workflow_target.workflow_name,
+                    workflow_target.workflow_key,
+                ))
+            }
         })
     }
 }

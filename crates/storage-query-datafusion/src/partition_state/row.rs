@@ -58,4 +58,18 @@ pub(crate) fn append_partition_row(
     if let Some(lsn) = state.target_tail_lsn {
         row.target_tail_lsn(lsn.into());
     }
+
+    if let Some(version) = state.last_applied_rule_book_version {
+        row.applied_rule_book_version(u32::from(version));
+    }
+
+    if let Some(version) = state.last_applied_schema_version {
+        row.applied_schema_version(u32::from(version));
+    }
+
+    row.enabled_features(state.enabled_features.enabled_names().map(Some));
+
+    if let Some(version) = state.storage_version {
+        row.storage_version(version as u32);
+    }
 }

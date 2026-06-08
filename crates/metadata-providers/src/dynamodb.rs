@@ -361,7 +361,7 @@ mod test {
 
     #[ignore = "requires running dynamodb on localhost:8000"]
     #[tokio::test]
-    async fn test_put_does_not_exist() {
+    async fn put_does_not_exist() {
         let client =
             DynamoDbMetadataStore::new_test_store("metadata", "http://localhost:8000").await;
 
@@ -388,7 +388,7 @@ mod test {
 
     #[ignore = "requires running dynamodb on localhost:8000"]
     #[tokio::test]
-    async fn test_put_with_version() {
+    async fn put_with_version() {
         let client =
             DynamoDbMetadataStore::new_test_store("metadata", "http://localhost:8000").await;
 
@@ -446,7 +446,7 @@ mod test {
 
     #[ignore = "requires running dynamodb on localhost:8000"]
     #[tokio::test]
-    async fn test_put_force() {
+    async fn put_force() {
         let client =
             DynamoDbMetadataStore::new_test_store("metadata", "http://localhost:8000").await;
 
@@ -490,7 +490,7 @@ mod test {
 
     #[ignore = "requires running dynamodb on localhost:8000"]
     #[tokio::test]
-    async fn test_delete() {
+    async fn delete() {
         let client =
             DynamoDbMetadataStore::new_test_store("metadata", "http://localhost:8000").await;
 

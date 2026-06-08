@@ -18,6 +18,8 @@ use restate_encoding::NetSerde;
 
 use crate::identifiers::{LeaderEpoch, PartitionId};
 use crate::logs::Lsn;
+use crate::partitions::StorageVersion;
+use crate::partitions::features::PersistedStateMachineFeatures;
 use crate::time::MillisSinceEpoch;
 use crate::{GenerationalNodeId, PlainNodeId, Version};
 
@@ -206,6 +208,34 @@ pub struct PartitionProcessorStatus {
     // Set if replay_status is CatchingUp
     #[bilrost(12)]
     pub target_tail_lsn: Option<Lsn>,
+    /// Version of the rule book currently applied by the partition processor.
+    /// `None` until the first rule book is observed (i.e. while the state
+    /// machine still holds `RuleBook::default()` at `Version::INVALID`).
+    #[bilrost(13)]
+    pub last_applied_rule_book_version: Option<Version>,
+    /// Version of the schema currently applied by the partition processor.
+    /// `None` until the first schema is observed.
+    #[bilrost(14)]
+    pub last_applied_schema_version: Option<Version>,
+    /// State-machine features currently enabled on this partition processor.
+    /// Translated to a list of names at the protobuf boundary so older clients
+    /// can render unknown feature names without code changes.
+    #[into_prost(map = "enabled_features_to_proto", map_by_ref)]
+    #[bilrost(15)]
+    pub enabled_features: PersistedStateMachineFeatures,
+    /// Partition-store on-disk storage version (StorageVersion discriminant).
+    /// Set once on partition open by `verify_and_run_migrations`.
+    #[bilrost(16)]
+    #[into_prost(map = "storage_version_to_u32")]
+    pub storage_version: Option<StorageVersion>,
+}
+
+fn storage_version_to_u32(v: StorageVersion) -> u32 {
+    v as u32
+}
+
+fn enabled_features_to_proto(f: &PersistedStateMachineFeatures) -> Vec<String> {
+    f.enabled_names().map(String::from).collect()
 }
 
 impl Default for PartitionProcessorStatus {
@@ -223,6 +253,10 @@ impl Default for PartitionProcessorStatus {
             durable_lsn: None,
             last_archived_log_lsn: None,
             target_tail_lsn: None,
+            last_applied_rule_book_version: None,
+            last_applied_schema_version: None,
+            enabled_features: PersistedStateMachineFeatures::default(),
+            storage_version: None,
         }
     }
 }

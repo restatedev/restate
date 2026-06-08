@@ -9,18 +9,30 @@ publish = false
 
 [features]
 default = []
-serde = ["dep:serde", "compact_str/serde"]
+serde = ["dep:serde_core", "compact_str/serde"]
 bytes = ["dep:bytes", "compact_str/bytes"]
 bilrost = ["dep:bilrost", "bytes"]
+opentelemetry = ["dep:opentelemetry"]
+metrics = ["dep:metrics"]
+bytestring = ["dep:bytestring", "bytes"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
+ahash = { workspace = true }
 bilrost = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
+bytestring = { workspace = true, optional = true }
 compact_str = { workspace = true, features = ["std"] }
-serde = { workspace = true, optional = true }
+hashbrown = { workspace = true }
+metrics = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
+serde_core = { workspace = true, optional = true }
 
 [dev-dependencies]
 restate-util-string = {path = ".", default-features = false, features = ["bytes", "bilrost", "serde"]}
 
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

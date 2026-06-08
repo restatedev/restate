@@ -21,7 +21,7 @@ fn populate_data<T: WriteStateTable>(table: &mut T) {
     table
         .put_user_state(
             &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
-            Bytes::from_static(b"k1"),
+            &Bytes::from_static(b"k1"),
             Bytes::from_static(b"v1"),
         )
         .expect("");
@@ -29,7 +29,7 @@ fn populate_data<T: WriteStateTable>(table: &mut T) {
     table
         .put_user_state(
             &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
-            Bytes::from_static(b"k2"),
+            &Bytes::from_static(b"k2"),
             Bytes::from_static(b"v2"),
         )
         .unwrap();
@@ -37,7 +37,7 @@ fn populate_data<T: WriteStateTable>(table: &mut T) {
     table
         .put_user_state(
             &ServiceId::with_partition_key(1337, "svc-1", "key-2"),
-            Bytes::from_static(b"k2"),
+            &Bytes::from_static(b"k2"),
             Bytes::from_static(b"v2"),
         )
         .unwrap();
@@ -47,7 +47,7 @@ async fn point_lookup<T: ReadStateTable>(table: &mut T) {
     let result = table
         .get_user_state(
             &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
-            Bytes::from_static(b"k1"),
+            &Bytes::from_static(b"k1"),
         )
         .await
         .expect("should not fail");
@@ -71,7 +71,7 @@ fn deletes<T: WriteStateTable>(table: &mut T) {
     table
         .delete_user_state(
             &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
-            Bytes::from_static(b"k2"),
+            &Bytes::from_static(b"k2"),
         )
         .unwrap();
 }
@@ -106,6 +106,7 @@ pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     deletes(&mut txn);
 
     txn.commit().await.expect("should not fail");
+    drop(txn);
 
     let mut txn = rocksdb.transaction();
     verify_delete(&mut txn).await;
@@ -113,19 +114,21 @@ pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_delete_all() {
+async fn delete_all() {
     let mut rocksdb = storage_test_environment().await;
 
     let mut txn = rocksdb.transaction();
 
     populate_data(&mut txn);
     txn.commit().await.expect("should not fail");
+    drop(txn);
 
     // Do delete all
     let mut txn = rocksdb.transaction();
     txn.delete_all_user_state(&ServiceId::with_partition_key(1337, "svc-1", "key-1"))
         .unwrap();
     txn.commit().await.expect("should not fail");
+    drop(txn);
 
     // No more state for key-1
     let mut txn = rocksdb.transaction();

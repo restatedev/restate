@@ -44,12 +44,12 @@ pub fn net_serde_inner(input: DeriveInput) -> Result<TokenStream, syn::Error> {
 
     let where_clauses = field_types.iter().map(|ty| {
         quote! {
-            #ty: NetSerde
+            #ty: ::restate_platform::network::NetSerde
         }
     });
 
     let expanded = quote! {
-        impl ::restate_encoding::NetSerde for #name where #(#where_clauses),* {}
+        impl ::restate_platform::network::NetSerde for #name where #(#where_clauses),* {}
     };
 
     Ok(TokenStream::from(expanded))

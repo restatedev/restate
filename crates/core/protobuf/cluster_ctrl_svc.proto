@@ -43,6 +43,11 @@ service ClusterCtrlSvc {
   rpc Query(QueryRequest) returns (stream QueryResponse);
 
   rpc MigrateMetadata(MigrateMetadataRequest) returns (MigrateMetadataResponse);
+
+  // Signal the cluster controller to re-fetch epoch metadata for the given
+  // partitions. An empty list means all known partitions.
+  rpc SyncEpochMetadata(SyncEpochMetadataRequest)
+      returns (SyncEpochMetadataResponse);
 }
 
 message SetClusterConfigurationResponse {}
@@ -184,6 +189,17 @@ message QueryRequest {
 message QueryResponse {
   // arrow encoded record batch
   bytes encoded = 1;
+  // Per-node errors encountered during distributed query execution.
+  // Populated on the final response message when some nodes failed but
+  // partial results are still available.
+  repeated QueryWarning warnings = 2;
+}
+
+message QueryWarning {
+  // Node identifier (e.g. "N1", "N2") where the error originated
+  string node_id = 1;
+  // Human-readable error message
+  string message = 2;
 }
 
 message MigrateMetadataRequest {
@@ -194,3 +210,10 @@ message MigrateMetadataRequest {
 }
 
 message MigrateMetadataResponse {}
+
+message SyncEpochMetadataRequest {
+  // Partitions to re-fetch. Empty = all known partitions.
+  repeated uint32 partition_ids = 1;
+}
+
+message SyncEpochMetadataResponse {}

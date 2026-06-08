@@ -33,7 +33,7 @@ use restate_cli_util::{
     },
 };
 use restate_core::protobuf::cluster_ctrl_svc::{
-    QueryRequest, QueryResponse, new_cluster_ctrl_client,
+    QueryRequest, QueryResponse, QueryWarning, new_cluster_ctrl_client,
 };
 use tonic::{Status, Streaming};
 
@@ -118,6 +118,7 @@ async fn query(connection: &ConnectionInfo, args: &SqlOpts) -> anyhow::Result<()
                 }
                 table.add_row(cells);
             }
+            row_count += batch.num_rows();
         }
 
         // Only print if there are actual results.
@@ -125,6 +126,16 @@ async fn query(connection: &ConnectionInfo, args: &SqlOpts) -> anyhow::Result<()
             c_println!("{}", table);
             c_println!();
         }
+    }
+
+    // Display per-node warnings collected during query execution
+    for warning in stream.warnings() {
+        c_eprintln!("WARNING (partial results):");
+        c_eprintln!(
+            "  {}: {}",
+            Styled(Style::Warn, &warning.node_id),
+            Styled(Style::Warn, &warning.message),
+        );
     }
 
     c_eprintln!(
@@ -141,6 +152,7 @@ pub struct RecordBatchStream {
     decoder: StreamDecoder,
     buffer: Option<Buffer>,
     done: bool,
+    warnings: Vec<QueryWarning>,
 }
 
 impl RecordBatchStream {
@@ -150,7 +162,14 @@ impl RecordBatchStream {
             decoder: StreamDecoder::new(),
             buffer: None,
             done: false,
+            warnings: Vec::new(),
         }
+    }
+
+    /// Returns warnings collected during query execution.
+    /// Should be called after the stream is fully consumed.
+    pub fn warnings(&self) -> &[QueryWarning] {
+        &self.warnings
     }
 }
 
@@ -164,39 +183,49 @@ impl Stream for RecordBatchStream {
     type Item = Result<RecordBatch, RecordBatchStreamError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if self.done {
-            return Poll::Ready(None);
-        }
+        loop {
+            if self.done {
+                return Poll::Ready(None);
+            }
 
-        if self.buffer.as_ref().is_none_or(|b| b.is_empty()) {
-            let item = ready!(self.inner.poll_next_unpin(cx));
-            match item {
-                None => {
-                    self.done = true;
-                    return Poll::Ready(None);
-                }
-                Some(Err(err)) => {
-                    self.done = true;
-                    return Poll::Ready(Some(Err(err.into())));
-                }
-                Some(Ok(batch)) => {
-                    self.buffer = Some(Buffer::from(&*batch.encoded));
+            if self.buffer.as_ref().is_none_or(|b| b.is_empty()) {
+                let item = ready!(self.inner.poll_next_unpin(cx));
+                match item {
+                    None => {
+                        self.done = true;
+                        return Poll::Ready(None);
+                    }
+                    Some(Err(err)) => {
+                        self.done = true;
+                        return Poll::Ready(Some(Err(err.into())));
+                    }
+                    Some(Ok(response)) => {
+                        // Collect any per-node warnings from this response
+                        if !response.warnings.is_empty() {
+                            self.warnings.extend(response.warnings);
+                        }
+                        // Skip responses with empty encoded data (warnings-only messages)
+                        if response.encoded.is_empty() {
+                            continue;
+                        }
+                        self.buffer = Some(Buffer::from(&*response.encoded));
+                    }
                 }
             }
-        }
 
-        let mut buffer = self.buffer.take().unwrap();
-        match self.decoder.decode(&mut buffer) {
-            Err(err) => {
-                self.done = true;
-                Poll::Ready(Some(Err(err.into())))
-            }
-            Ok(batch) => {
-                if !buffer.is_empty() {
-                    self.buffer = Some(buffer);
+            let mut buffer = self.buffer.take().unwrap();
+            return match self.decoder.decode(&mut buffer) {
+                Err(err) => {
+                    self.done = true;
+                    Poll::Ready(Some(Err(err.into())))
                 }
-                Poll::Ready(Ok(batch).transpose())
-            }
+                Ok(batch) => {
+                    if !buffer.is_empty() {
+                        self.buffer = Some(buffer);
+                    }
+                    Poll::Ready(Ok(batch).transpose())
+                }
+            };
         }
     }
 }

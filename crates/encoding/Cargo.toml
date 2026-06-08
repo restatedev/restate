@@ -11,11 +11,13 @@ publish = false
 restate-workspace-hack = { workspace = true }
 
 restate-encoding-derive = { version = "0.1.0", path = "derive" }
+restate-platform = { workspace = true }
 
 bilrost = { workspace = true }
 bytes = { workspace = true }
-bytestring = { workspace = true }
 
 [dev-dependencies]
 rand = { workspace = true }
-static_assertions = { workspace = true }
+
+[lints]
+workspace = true

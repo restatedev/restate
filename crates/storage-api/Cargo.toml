@@ -14,12 +14,16 @@ test-util = []
 restate-workspace-hack = { workspace = true }
 
 restate-clock = { workspace = true }
+restate-limiter = { workspace = true, features = ["bilrost", "rule-book"] }
 restate-memory = { workspace = true }
+restate-sharding = { workspace = true }
 restate-types = { workspace = true }
+restate-util-string = { workspace = true, features = ["bilrost", "bytes"] }
+restate-util-bytecount = { workspace = true, features = ["bilrost"] }
 
 ahash = { workspace = true }
 anyhow = { workspace = true }
-bilrost = { workspace = true, features = ["smallvec"] }
+bilrost = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 derive_more = { workspace = true, features = ["from", "into"] }
@@ -27,10 +31,12 @@ futures = { workspace = true }
 opentelemetry = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }
-smallvec = { workspace = true }
 static_assertions = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
 
 [build-dependencies]
 prost-build = { workspace = true }
+
+[lints]
+workspace = true

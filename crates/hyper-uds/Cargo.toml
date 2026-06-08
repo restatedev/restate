@@ -19,3 +19,5 @@ pin-project = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
 tower = { workspace = true }
 
+[lints]
+workspace = true

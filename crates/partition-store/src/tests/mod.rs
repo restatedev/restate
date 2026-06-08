@@ -10,7 +10,6 @@
 
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::ops::RangeInclusive;
 use std::pin::pin;
 use std::sync::Arc;
 
@@ -26,16 +25,17 @@ use restate_types::identifiers::{
     InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, ServiceId,
 };
 use restate_types::invocation::{InvocationTarget, ServiceInvocation, Source};
+use restate_types::sharding::KeyRange;
 use restate_types::state_mut::ExternalStateMutation;
 
 mod barrier_test;
 mod durable_lsn_tracking_test;
-mod idempotency_table_test;
 mod inbox_table_test;
 mod invocation_status_table_test;
 mod journal_events_table_test;
 mod journal_table_test;
 mod journal_table_v2_test;
+mod locks_table_test;
 mod outbox_table_test;
 mod promise_table_test;
 mod snapshots_test;
@@ -53,16 +53,13 @@ async fn storage_test_environment_with_manager() -> (Arc<PartitionStoreManager>,
     // create a rocksdb storage from options
     //
     RocksDbManager::init();
-    let manager = PartitionStoreManager::create()
+    let manager = PartitionStoreManager::create(true)
         .await
         .expect("DB storage creation succeeds");
     // A single partition store that spans all keys.
     let store = manager
         .open(
-            &Partition::new(
-                PartitionId::MIN,
-                RangeInclusive::new(0, PartitionKey::MAX - 1),
-            ),
+            &Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1)),
             None,
         )
         .await
@@ -72,7 +69,7 @@ async fn storage_test_environment_with_manager() -> (Arc<PartitionStoreManager>,
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_read_write() {
+async fn read_write() {
     let _env = TestCoreEnv::create_with_single_node(1, 1).await;
 
     let (manager, store) = storage_test_environment_with_manager().await;
@@ -83,6 +80,7 @@ async fn test_read_write() {
     virtual_object_status_table_test::run_tests(store.clone()).await;
     timer_table_test::run_tests(store.clone()).await;
     vqueue_table_test::run_tests(store.clone()).await;
+    locks_table_test::run_tests(store.clone()).await;
 
     snapshots_test::run_tests(manager.clone(), store.clone()).await;
     RocksDbManager::get().shutdown().await;

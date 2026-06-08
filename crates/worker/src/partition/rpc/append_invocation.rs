@@ -43,15 +43,7 @@ impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
 
         match append_invocation_reply_on {
             AppendInvocationReplyOn::Appended => {
-                self.proposer
-                    .self_propose_and_respond_asynchronously(
-                        service_invocation.partition_key(),
-                        Command::Invoke(Box::new(service_invocation)),
-                        replier,
-                        PartitionProcessorRpcResponse::Appended,
-                    )
-                    .await;
-                return Ok(());
+                // No sinks needed — respond on Bifrost commit
             }
             AppendInvocationReplyOn::Submitted => {
                 service_invocation.submit_notification_sink =
@@ -63,14 +55,26 @@ impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
             }
         };
 
-        self.proposer
-            .handle_rpc_proposal_command(
-                service_invocation.partition_key(),
-                Command::Invoke(Box::new(service_invocation)),
-                request_id,
-                replier,
-            )
-            .await;
+        let partition_key = service_invocation.partition_key();
+        let cmd = Command::Invoke(Box::new(service_invocation));
+
+        match append_invocation_reply_on {
+            AppendInvocationReplyOn::Appended => {
+                self.proposer
+                    .append_and_respond_asynchronously(
+                        partition_key,
+                        cmd,
+                        replier,
+                        PartitionProcessorRpcResponse::Appended,
+                    )
+                    .await;
+            }
+            AppendInvocationReplyOn::Submitted | AppendInvocationReplyOn::Output => {
+                self.proposer
+                    .handle_rpc_proposal_command(partition_key, cmd, request_id, replier)
+                    .await;
+            }
+        }
 
         Ok(())
     }
@@ -91,7 +95,7 @@ mod tests {
     async fn reply_on_appended() {
         let mut proposer = MockActuator::new();
         proposer
-            .expect_self_propose_and_respond_asynchronously::<PartitionProcessorRpcResponse>()
+            .expect_append_and_respond_asynchronously::<PartitionProcessorRpcResponse>()
             .return_once_st(|_, cmd, _, _| {
                 let_assert!(Command::Invoke(service_invocation) = cmd);
                 assert_that!(
@@ -126,7 +130,7 @@ mod tests {
         let request_id = PartitionProcessorRpcRequestId::new();
         let mut proposer = MockActuator::new();
         proposer
-            .expect_self_propose_and_respond_asynchronously::<PartitionProcessorRpcResponse>()
+            .expect_append_and_respond_asynchronously::<PartitionProcessorRpcResponse>()
             .never();
         proposer
             .expect_handle_rpc_proposal_command::<PartitionProcessorRpcResponse>()
@@ -164,7 +168,7 @@ mod tests {
         let request_id = PartitionProcessorRpcRequestId::new();
         let mut proposer = MockActuator::new();
         proposer
-            .expect_self_propose_and_respond_asynchronously::<PartitionProcessorRpcResponse>()
+            .expect_append_and_respond_asynchronously::<PartitionProcessorRpcResponse>()
             .never();
         proposer
             .expect_handle_rpc_proposal_command::<PartitionProcessorRpcResponse>()

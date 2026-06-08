@@ -289,9 +289,9 @@ impl LogServerService {
                                 // It cannot happen that there is a newer generation of me that changed the StorageState,
                                 // because then I would have failed before when retrieving my NodeConfig with my generational
                                 // node id.
-                                Err(StorageStateUpdateError::PreviousAttemptSucceeded(
+                                Err(StorageStateUpdateError::PreviousAttemptSucceeded(Box::new(
                                     nodes_config,
-                                ))
+                                )))
                             };
                         }
 
@@ -313,7 +313,7 @@ impl LogServerService {
             )))
             | Err(RetryError::RetriesExhausted(
                 StorageStateUpdateError::PreviousAttemptSucceeded(nodes_config),
-            )) => nodes_config,
+            )) => *nodes_config,
             Err(err) => {
                 return Err(err).with_context(|| {
                     format!("failed to update this log-server's storage-state to {target_state}")
@@ -343,7 +343,7 @@ enum StorageStateUpdateError {
     )]
     NotInExpectedState(StorageState),
     #[error("succeeded updating NodesConfiguration in a previous attempt")]
-    PreviousAttemptSucceeded(NodesConfiguration),
+    PreviousAttemptSucceeded(Box<NodesConfiguration>),
     #[error(transparent)]
     MetadataStore(#[from] ReadWriteError),
 }

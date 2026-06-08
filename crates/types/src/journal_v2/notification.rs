@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt;
+use std::fmt::{self, Debug};
 
 use bytes::Bytes;
 use enum_dispatch::enum_dispatch;
@@ -21,7 +21,7 @@ use crate::journal_v2::{
 };
 
 /// See [`Notification`].
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, strum::EnumTryAs)]
 pub enum NotificationId {
     CompletionId(CompletionId),
     SignalIndex(SignalIndex),

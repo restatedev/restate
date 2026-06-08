@@ -195,7 +195,7 @@ mod tests {
     use crate::providers::replicated_loglet::test_util::generate_logserver_nodes_config;
 
     #[test]
-    fn test_with_fixed_spread_selector() -> Result<()> {
+    fn with_fixed_spread_selector() -> Result<()> {
         let nodes_config = generate_logserver_nodes_config(10, StorageState::ReadWrite);
         let replication = ReplicationProperty::new(3.try_into().unwrap());
         let nodeset: NodeSet = (1..=5).collect();
@@ -242,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn test_flood_spread_selector() -> Result<()> {
+    fn flood_spread_selector() -> Result<()> {
         let nodes_config = generate_logserver_nodes_config(10, StorageState::ReadWrite);
         let replication = ReplicationProperty::new(3.try_into().unwrap());
         let nodeset: NodeSet = (1..=5).collect();

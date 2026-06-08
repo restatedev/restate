@@ -93,10 +93,12 @@ pub(crate) async fn update_state(
     service_key: &str,
     new_state: HashMap<String, Bytes>,
 ) -> anyhow::Result<()> {
+    // TODO(tillrohrmann): allow CLI state commands to specify scope
     let req = ModifyServiceStateRequest {
         version: expected_version,
         new_state,
         object_key: service_key.to_string(),
+        scope: None,
     };
 
     let client = AdminClient::new(env).await?;
@@ -116,7 +118,11 @@ pub(crate) fn compute_version(user_state: &HashMap<String, Bytes>) -> String {
 pub(crate) fn as_json(state: HashMap<String, Bytes>, binary_values: bool) -> anyhow::Result<Value> {
     let current_state_json: HashMap<String, Value> = state
         .into_iter()
-        .map(|(k, v)| bytes_as_json(v, binary_values).map(|v| (k, v)))
+        .map(|(k, v)| {
+            bytes_as_json(v, binary_values)
+                .context(format!("unable to convert the value of state key \"{k}\" to JSON. Pass --binary to render it as a base64 string instead"))
+                .map(|v| (k, v))
+        })
         .try_collect()?;
 
     serde_json::to_value(current_state_json).context("unable to create a JSON object.")

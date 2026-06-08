@@ -8,20 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_storage_api::Result;
+use crate::TableKind::PartitionStateMachine;
+use crate::keys::{EncodeTableKeyPrefix, KeyKind, define_table_key};
+use crate::{
+    PaddedPartitionId, PartitionDb, PartitionStore, PartitionStoreTransaction, StorageAccess,
+};
+use restate_limiter::RuleBook;
 use restate_storage_api::fsm_table::{
     CachedEpochMetadata, PartitionDurability, ReadFsmTable, SequenceNumber, WriteFsmTable,
 };
-use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
+use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
+use restate_storage_api::{Result, StorageError};
 use restate_types::SemanticRestateVersion;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
+use restate_types::partitions::StorageVersion;
+use restate_types::partitions::features::PersistedStateMachineFeatures;
 use restate_types::schema::Schema;
-
-use crate::TableKind::PartitionStateMachine;
-use crate::keys::{KeyKind, define_table_key};
-use crate::{PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess};
+use restate_types::storage::StorageCodec;
 
 define_table_key!(
     PartitionStateMachine,
@@ -64,8 +69,20 @@ pub(crate) mod fsm_variable {
     ///
     /// Can be removed in v1.8 once we are confident this cleanup has been executed on all
     /// deployments.
-    /// *Since v1.6.3*
+    /// *Since v1.7.0*
     pub(crate) const JC_ORPHAN_CLEANUP_DONE: u64 = 8;
+
+    /// Cluster-global rule book persisted per-partition. Each partition writes
+    /// the same logical rule book (via `Command::UpsertRuleBook` log entries),
+    /// and reads it back on PP startup so leader transitions inherit the same
+    /// rule set without an extra metadata-store round trip.
+    /// *Since v1.7.0*
+    pub(crate) const RULE_BOOK: u64 = 9;
+
+    /// Set of state-machine features enabled for this partition. Updated by
+    /// `VersionBarrierCommand` entries carrying feature changes.
+    /// *Since v1.7.0*
+    pub(crate) const STATE_MACHINE_FEATURES: u64 = 10;
 }
 
 fn get<T: PartitionStoreProtobufValue, S: StorageAccess>(
@@ -116,9 +133,48 @@ pub async fn get_locally_durable_lsn(partition_store: &mut PartitionStore) -> Re
 pub(crate) async fn get_storage_version<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
-) -> Result<u16> {
-    get::<SequenceNumber, _>(storage, partition_id, fsm_variable::STORAGE_VERSION)
-        .map(|opt| opt.map(|s| s.0 as u16).unwrap_or_default())
+) -> Result<StorageVersion> {
+    get::<SequenceNumber, _>(storage, partition_id, fsm_variable::STORAGE_VERSION).and_then(|opt| {
+        let storage_version = if let Some(seq_number) = opt {
+            StorageVersion::try_from(
+                u16::try_from(seq_number.0).map_err(|_| StorageError::DataIntegrityError)?,
+            )?
+        } else {
+            StorageVersion::None
+        };
+
+        Ok(storage_version)
+    })
+}
+
+pub(crate) fn get_storage_version_from_partition_db(db: &PartitionDb) -> Result<StorageVersion> {
+    let cf = db.cf_handle();
+    let key = create_key(db.partition().partition_id, fsm_variable::STORAGE_VERSION);
+    let sequence_number: Option<SequenceNumber> = db
+        .rocksdb()
+        .inner()
+        .as_raw_db()
+        .get_pinned_cf(cf, key.serialize())
+        .map_err(|err| StorageError::Generic(err.into()))?
+        .map(|value| {
+            let mut slice = value.as_ref();
+            StorageCodec::decode::<
+                ProtobufStorageWrapper<
+                    <SequenceNumber as PartitionStoreProtobufValue>::ProtobufType,
+                >,
+                _,
+            >(&mut slice)
+            .map(|v| v.0.into())
+        })
+        .transpose()
+        .map_err(|err| StorageError::Generic(err.into()))?;
+
+    Ok(if let Some(sequence_number) = sequence_number {
+        let raw = u16::try_from(sequence_number.0).map_err(|_| StorageError::DataIntegrityError)?;
+        StorageVersion::try_from(raw)?
+    } else {
+        StorageVersion::None
+    })
 }
 
 pub(crate) async fn put_storage_version<S: StorageAccess>(
@@ -132,6 +188,33 @@ pub(crate) async fn put_storage_version<S: StorageAccess>(
         fsm_variable::STORAGE_VERSION,
         &SequenceNumber::from(last_executed_migration as u64),
     )
+}
+
+/// Append a `STORAGE_VERSION = version` put to `wb`.
+pub(crate) fn append_storage_version_to_wb(
+    cf_handle: &std::sync::Arc<rocksdb::BoundColumnFamily<'_>>,
+    wb: &mut rocksdb::WriteBatch,
+    partition_id: PartitionId,
+    version: StorageVersion,
+) -> Result<()> {
+    use bytes::BytesMut;
+    use restate_types::storage::StorageCodec;
+
+    let key = create_key(partition_id, fsm_variable::STORAGE_VERSION);
+    let key_buffer = key.serialize();
+
+    let value = SequenceNumber::from(version as u64);
+    let mut value_buffer = BytesMut::new();
+    StorageCodec::encode(
+        &ProtobufStorageWrapper::<<SequenceNumber as PartitionStoreProtobufValue>::ProtobufType>(
+            value.into(),
+        ),
+        &mut value_buffer,
+    )
+    .map_err(|e| restate_storage_api::StorageError::Generic(e.into()))?;
+
+    wb.put_cf(cf_handle, &key_buffer, &value_buffer);
+    Ok(())
 }
 
 pub(crate) fn is_jc_orphan_cleanup_done<S: StorageAccess>(
@@ -196,6 +279,17 @@ impl ReadFsmTable for PartitionStore {
         let key = create_key(self.partition_id(), fsm_variable::PARTITION_CONFIG_STATE);
         self.get_value_storage_codec(key)
     }
+
+    async fn get_rule_book(&mut self) -> Result<Option<RuleBook>> {
+        let key = create_key(self.partition_id(), fsm_variable::RULE_BOOK);
+        self.get_value_storage_codec(key)
+    }
+
+    async fn get_state_machine_features(&mut self) -> Result<PersistedStateMachineFeatures> {
+        let key = create_key(self.partition_id(), fsm_variable::STATE_MACHINE_FEATURES);
+        self.get_value_storage_codec(key)
+            .map(|opt| opt.unwrap_or_default())
+    }
 }
 
 impl WriteFsmTable for PartitionStoreTransaction<'_> {
@@ -252,5 +346,18 @@ impl WriteFsmTable for PartitionStoreTransaction<'_> {
     fn put_partition_config_state(&mut self, state: &CachedEpochMetadata) -> Result<()> {
         let key = create_key(self.partition_id(), fsm_variable::PARTITION_CONFIG_STATE);
         self.put_kv_storage_codec(key, state)
+    }
+
+    fn put_rule_book(&mut self, rule_book: &RuleBook) -> Result<()> {
+        let key = create_key(self.partition_id(), fsm_variable::RULE_BOOK);
+        self.put_kv_storage_codec(key, rule_book)
+    }
+
+    fn put_state_machine_features(
+        &mut self,
+        features: &PersistedStateMachineFeatures,
+    ) -> Result<()> {
+        let key = create_key(self.partition_id(), fsm_variable::STATE_MACHINE_FEATURES);
+        self.put_kv_storage_codec(key, features)
     }
 }

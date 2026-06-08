@@ -16,8 +16,11 @@ use tonic::Code;
 
 use restate_cli_util::ui::console::confirm_or_exit;
 use restate_cli_util::{CliContext, c_error, c_println, c_warn};
-use restate_core::protobuf::node_ctl_svc::{ProvisionClusterRequest, new_node_ctl_client};
+use restate_core::protobuf::node_ctl_svc::{
+    ClusterFeature as ProtoClusterFeature, ProvisionClusterRequest, new_node_ctl_client,
+};
 use restate_types::logs::metadata::{ProviderConfiguration, ProviderKind};
+use restate_types::nodes_config::ClusterFeature;
 use restate_types::replication::ReplicationProperty;
 
 use crate::commands::config::cluster_config_string;
@@ -54,6 +57,15 @@ pub struct ProvisionOpts {
     /// It's recommended to leave it unset (defaults to 0)
     #[clap(long)]
     log_default_nodeset_size: Option<u16>,
+
+    /// Cluster-wide features to disable. All available features are enabled by
+    /// default at provision time; pass this flag to explicitly opt out of one or
+    /// more of them. Can only be set at provision time.
+    ///
+    /// Accepts comma-separated values or repeated flags
+    /// (e.g. `--disable-feature a,b` or `--disable-feature a --disable-feature b`).
+    #[clap(long = "disable-feature", value_delimiter = ',', num_args = 1..)]
+    disable_features: Vec<ClusterFeature>,
 }
 
 async fn provision_cluster(
@@ -81,14 +93,21 @@ async fn provision_cluster(
     let partition_replication = provision_opts
         .partition_replication
         .clone()
-        .or(provision_opts.replication.clone())
+        .or_else(|| provision_opts.replication.clone())
         .map(Into::into);
 
     let log_replication = provision_opts
         .log_replication
         .clone()
-        .or(provision_opts.replication.clone())
+        .or_else(|| provision_opts.replication.clone())
         .map(Into::into);
+
+    let disabled_features: Vec<i32> = provision_opts
+        .disable_features
+        .iter()
+        .copied()
+        .map(|f| ProtoClusterFeature::from(f) as i32)
+        .collect();
 
     let request = ProvisionClusterRequest {
         dry_run: true,
@@ -99,6 +118,7 @@ async fn provision_cluster(
             .map(|provider| provider.to_string()),
         log_replication,
         target_nodeset_size: provision_opts.log_default_nodeset_size.map(Into::into),
+        disabled_features: disabled_features.clone(),
     };
 
     let response = match client.provision_cluster(request).await {
@@ -113,6 +133,7 @@ async fn provision_cluster(
     };
 
     debug_assert!(response.dry_run, "Provision with dry run");
+    let enabled_features = response.enabled_features.clone();
     let cluster_configuration_to_provision = response
         .cluster_configuration
         .expect("Provision response should carry a cluster configuration");
@@ -121,6 +142,28 @@ async fn provision_cluster(
         "{}",
         cluster_config_string(&cluster_configuration_to_provision)?
     );
+
+    if !enabled_features.is_empty() {
+        c_println!("Features to enable:");
+        for raw in &enabled_features {
+            match ProtoClusterFeature::try_from(*raw) {
+                Ok(ProtoClusterFeature::Unknown) | Err(_) => {
+                    c_println!("  - Unknown feature ({raw})")
+                }
+                Ok(proto_feature) => {
+                    let feature = ClusterFeature::from(proto_feature);
+                    c_println!("  - {feature}");
+                }
+            }
+        }
+    }
+
+    if !provision_opts.disable_features.is_empty() {
+        c_println!("Features explicitly disabled:");
+        for f in &provision_opts.disable_features {
+            c_println!("  - {f}");
+        }
+    }
 
     if let Some(default_provider) = &cluster_configuration_to_provision.bifrost_provider {
         let default_provider = ProviderConfiguration::try_from(default_provider.clone())?;
@@ -163,6 +206,7 @@ async fn provision_cluster(
         log_provider,
         log_replication,
         target_nodeset_size,
+        disabled_features,
     };
 
     match client.provision_cluster(request).await {

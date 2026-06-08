@@ -56,5 +56,19 @@ define_table!(
 
         /// Target tail LSN
         target_tail_lsn: DataType::UInt64,
+
+        /// Version of the rule book currently applied by the partition processor
+        applied_rule_book_version: DataType::UInt32,
+
+        /// Version of the schema currently applied by the partition processor
+        applied_schema_version: DataType::UInt32,
+
+        /// State-machine features currently enabled on the partition processor.
+        /// Query membership with `array_has(enabled_features, 'vqueues')`.
+        enabled_features: Utf8List,
+
+        /// Partition-store on-disk storage version (StorageVersion discriminant).
+        /// Set once on partition open.
+        storage_version: DataType::UInt32,
     )
 );

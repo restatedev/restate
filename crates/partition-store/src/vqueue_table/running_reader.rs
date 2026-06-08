@@ -9,15 +9,16 @@
 // by the Apache License, Version 2.0.
 
 use anyhow::Context;
+use bilrost::OwnedMessage;
 use rocksdb::DBRawIteratorWithThreadMode;
 
 use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::{EntryCard, Stage, VQueueCursor};
-use restate_types::vqueue::VQueueId;
+use restate_storage_api::vqueue_table::{EntryKey, EntryValue, VQueueRunningCursor};
+use restate_types::vqueues::VQueueId;
 
 use crate::PartitionDb;
-use crate::keys::{TableKey, TableKeyPrefix};
-use crate::vqueue_table::InboxKey;
+use crate::keys::{EncodeTableKeyPrefix, KeyDecode};
+use crate::vqueue_table::inbox::{RunningKey, RunningKeyRef};
 
 pub struct VQueueRunningReader {
     it: DBRawIteratorWithThreadMode<'static, rocksdb::DB>,
@@ -30,20 +31,17 @@ impl VQueueRunningReader {
         // this is not the place to be concerned about corruption, we favor speed
         // over safety for this particular use-case.
         readopts.set_verify_checksums(false);
-        // Do not remove this!
-        readopts.set_total_order_seek(true);
+        // use prefix extractors for efficient filtering.
+        readopts.set_prefix_same_as_start(true);
 
         // we know how big the prefix is
-        let mut key_buf = [0u8; InboxKey::by_stage_prefix_len()];
-        InboxKey::builder()
-            .partition_key(qid.partition_key)
-            .parent(qid.parent)
-            .instance(qid.instance)
-            .stage(Stage::Run)
+        let mut key_buf = [0u8; RunningKey::by_qid_prefix_len()];
+        RunningKeyRef::builder()
+            .qid(qid)
             .serialize_to(&mut key_buf.as_mut());
 
         readopts.set_iterate_lower_bound(key_buf);
-        let success = super::convert_to_upper_bound(&mut key_buf);
+        let success = crate::convert_to_upper_bound(&mut key_buf);
         debug_assert!(success);
         readopts.set_iterate_upper_bound(key_buf);
 
@@ -62,26 +60,24 @@ impl VQueueRunningReader {
     }
 }
 
-impl VQueueCursor for VQueueRunningReader {
-    type Item = EntryCard;
-
+impl VQueueRunningCursor for VQueueRunningReader {
     fn seek_to_first(&mut self) {
         self.it.seek_to_first();
-    }
-
-    fn seek_after(&mut self, _qid: &VQueueId, _item: &Self::Item) {
-        panic!("seek_after is not supported for running snapshot reader");
     }
 
     fn advance(&mut self) {
         self.it.next();
     }
 
-    fn peek(&mut self) -> Result<Option<EntryCard>, StorageError> {
-        if let Some((mut key, _value)) = self.it.item() {
-            let key = InboxKey::deserialize_from(&mut key)?;
-            assert_eq!(*key.stage(), Stage::Run);
-            Ok(Some(EntryCard::from(key)))
+    fn peek(&mut self) -> Result<Option<(EntryKey, EntryValue)>, StorageError> {
+        if let Some((key, mut value)) = self.it.item() {
+            debug_assert_eq!(key.len(), RunningKey::serialized_length_fixed());
+
+            let entry_key =
+                <EntryKey as KeyDecode>::decode(&mut &key[RunningKey::offset_of_entry_key()..])?;
+            let value = EntryValue::decode(&mut value)?;
+
+            Ok(Some((entry_key, value)))
         } else {
             // we reached the end (or an error). We cannot recover from this without seek.
             // todo: add support for iterator refresh().

@@ -15,7 +15,7 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
-use tower_service::Service;
+use tower::Service;
 
 #[derive(Clone, Debug)]
 pub struct ProxyConnector<C> {

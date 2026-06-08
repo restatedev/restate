@@ -16,3 +16,6 @@ quote = { workspace = true }
 syn = { workspace = true, features = ["full"] }
 
 restate-workspace-hack = { workspace = true }
+
+[lints]
+workspace = true

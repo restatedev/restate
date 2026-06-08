@@ -17,7 +17,6 @@ use tracing::{Instrument, Span, debug, error, info, instrument, trace, warn};
 
 use restate_core::network::{NetworkSender, Networking, RpcError, Swimlane, TransportConnect};
 use restate_core::{Metadata, TaskCenter, TaskCenterFutureExt};
-use restate_time_util::DurationExt;
 use restate_types::cluster_state::ClusterState;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::SegmentIndex;
@@ -30,6 +29,7 @@ use restate_types::nodes_config::{NodesConfigError, NodesConfiguration};
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 use restate_types::replication::NodeSetChecker;
 use restate_types::{GenerationalNodeId, PlainNodeId};
+use restate_util_time::DurationExt;
 
 use super::{NodeTailStatus, RepairTail, RepairTailResult, SealTask};
 use crate::providers::replicated_loglet::LATENCY_TRACKER;

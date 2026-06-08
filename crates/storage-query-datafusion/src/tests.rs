@@ -8,32 +8,169 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::future::Future;
 use std::time::{Duration, SystemTime};
 
-use crate::mocks::*;
-use crate::row;
+use bytes::Bytes;
 use datafusion::arrow::array::{
-    ArrayRef, LargeStringArray, ListArray, TimestampMillisecondArray, UInt32Array, UInt64Array,
+    ArrayRef, DurationMillisecondArray, LargeStringArray, ListArray, StringArray,
+    TimestampMillisecondArray, UInt32Array, UInt64Array,
 };
 use datafusion::arrow::record_batch::RecordBatch;
 use futures::StreamExt;
 use googletest::prelude::{all, assert_that, eq};
 use googletest::unordered_elements_are;
-use restate_invoker_api::status_handle::InvocationStatusReportInner;
-use restate_invoker_api::status_handle::test_util::MockStatusHandle;
-use restate_invoker_api::{InvocationErrorReport, InvocationStatusReport};
+
+use restate_limiter::{Level, LimitKey};
 use restate_storage_api::Transaction;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InvocationStatus, WriteInvocationStatusTable,
 };
+use restate_storage_api::state_table::WriteStateTable;
+use restate_storage_api::vqueue_table::stats::WaitStats;
+use restate_types::Scope;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::PartitionId;
-use restate_types::identifiers::{DeploymentId, InvocationId};
-use restate_types::identifiers::{InvocationUuid, LeaderEpoch};
+use restate_types::identifiers::InvocationUuid;
+use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, ServiceId};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::EntryType;
 use restate_types::journal_v2::NotificationId;
+use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_types::sharding::KeyRange;
+use restate_types::vqueues::EntryId;
+use restate_types::vqueues::VQueueId;
+use restate_util_string::{ReString, RestateString, RestrictedValue};
+use restate_worker_api::invoker::status_handle::InvocationStatusReportInner;
+use restate_worker_api::invoker::{InvocationErrorReport, InvocationStatusReport, StatusHandle};
+use restate_worker_api::{
+    BlockedResource, SchedulerStatusEntry, SchedulingStatus, UserLimitCounterEntry,
+    VQueueSchedulerStatus,
+};
+
+use crate::context::PartitionLeaderStatusHandle;
+use crate::mocks::*;
+use crate::row;
+
+#[derive(Clone, Debug)]
+struct MockPartitionLeaderStatusHandle {
+    scheduler_statuses: Vec<SchedulerStatusEntry>,
+}
+
+impl StatusHandle for MockPartitionLeaderStatusHandle {
+    type Iterator = std::iter::Empty<InvocationStatusReport>;
+
+    fn read_status(&self, _keys: KeyRange) -> impl Future<Output = Self::Iterator> + Send {
+        std::future::ready(std::iter::empty())
+    }
+}
+
+impl PartitionLeaderStatusHandle for MockPartitionLeaderStatusHandle {
+    type SchedulerStatus = SchedulerStatusEntry;
+    type SchedulerStatusIterator = std::vec::IntoIter<Self::SchedulerStatus>;
+
+    type UserLimitCounter = UserLimitCounterEntry;
+    type UserLimitCounterIterator = std::iter::Empty<Self::UserLimitCounter>;
+
+    fn read_scheduler_status(
+        &self,
+        _keys: KeyRange,
+    ) -> impl Future<Output = Self::SchedulerStatusIterator> + Send {
+        std::future::ready(self.scheduler_statuses.clone().into_iter())
+    }
+
+    fn read_user_limit_counters(
+        &self,
+        _keys: KeyRange,
+    ) -> impl Future<Output = Self::UserLimitCounterIterator> + Send {
+        std::future::ready(std::iter::empty())
+    }
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_sys_scheduler() {
+    let qid = VQueueId::custom(PartitionKey::MIN, "scheduler-row");
+    let head_invocation_id = InvocationId::mock_random();
+    let head_entry_id = EntryId::from(head_invocation_id);
+    let expected_head_entry_display = head_entry_id.display(qid.partition_key()).to_string();
+
+    // A BlockedOn(LimitKeyConcurrency) row exercises both the resolved rule
+    // pattern (feedback #2) and the structured Display impl (feedback #1).
+    let scope = Scope::try_from_static("svc-A").unwrap();
+    let tenant = RestrictedValue::<ReString>::new(ReString::new("tenant-1")).unwrap();
+    let limit_key = LimitKey::L1(tenant);
+    let blocked_resource = BlockedResource::LimitKeyConcurrency {
+        scope,
+        limit_key,
+        blocked_level: Level::Level1,
+        blocked_rule: Some(ReString::new("svc-A/tenant-*")),
+    };
+    let expected_blocked_display = blocked_resource.to_string();
+
+    let engine = MockQueryEngine::create_with(
+        MockPartitionLeaderStatusHandle {
+            scheduler_statuses: vec![(
+                qid.clone(),
+                VQueueSchedulerStatus {
+                    wait_stats: WaitStats {
+                        blocked_on_invoker_concurrency_ms: 15,
+                        blocked_on_throttling_rules_ms: 20,
+                        blocked_on_invoker_throttling_ms: 25,
+                        blocked_on_invoker_memory_ms: 30,
+                        blocked_on_concurrency_rules_ms: 35,
+                        blocked_on_lock_ms: 40,
+                        blocked_on_deployment_concurrency_ms: 45,
+                    },
+                    remaining_running: 3,
+                    waiting_inbox: 7,
+                    status: SchedulingStatus::BlockedOn(blocked_resource),
+                    head_entry_id: Some(head_entry_id),
+                },
+            )],
+        },
+        MockSchemas::default(),
+    )
+    .await;
+
+    let records = engine
+        .execute(
+            "SELECT
+                id,
+                status,
+                head_entry_id,
+                num_inbox,
+                blocked_on,
+                invoker_concurrency_block_duration,
+                concurrency_rules_block_duration,
+                deployment_concurrency_block_duration
+            FROM sys_scheduler
+            LIMIT 1",
+        )
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_that!(
+        records,
+        all!(row!(
+            0,
+            {
+                "id" => StringArray: eq(qid.to_string()),
+                "status" => StringArray: eq("blocked"),
+                "head_entry_id" => StringArray: eq(expected_head_entry_display),
+                "num_inbox" => UInt64Array: eq(7),
+                "blocked_on" => StringArray: eq(expected_blocked_display),
+                "invoker_concurrency_block_duration" => DurationMillisecondArray: eq(15),
+                "concurrency_rules_block_duration" => DurationMillisecondArray: eq(35),
+                "deployment_concurrency_block_duration" => DurationMillisecondArray: eq(45),
+            }
+        ))
+    );
+}
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn query_sys_invocation() {
@@ -44,7 +181,6 @@ async fn query_sys_invocation() {
     let mut engine = MockQueryEngine::create_with(
         MockStatusHandle::default().with(InvocationStatusReport::new(
             invocation_id,
-            (PartitionId::MIN, LeaderEpoch::INITIAL),
             InvocationStatusReportInner {
                 in_flight: false,
                 start_count: 1,
@@ -56,6 +192,7 @@ async fn query_sys_invocation() {
                     related_entry_name: Some("my-side-effect".to_string()),
                     related_entry_type: Some(EntryType::Run),
                 }),
+                last_awaiting_on_unresolved_future: None,
                 next_retry_at: Some(SystemTime::now() + Duration::from_secs(10)),
                 last_attempt_deployment_id: Some(DeploymentId::new()),
                 last_attempt_protocol_version: Some(ServiceProtocolVersion::V3),
@@ -77,6 +214,7 @@ async fn query_sys_invocation() {
     )
     .unwrap();
     tx.commit().await.unwrap();
+    drop(tx);
 
     let assert_rows = |records: RecordBatch| {
         assert_that!(
@@ -113,7 +251,8 @@ async fn query_sys_invocation() {
         )
         .await
         .unwrap()
-        .collect::<Vec<Result<RecordBatch, _>>>()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
         .await
         .remove(0)
         .unwrap();
@@ -136,7 +275,8 @@ async fn query_sys_invocation() {
         )
         .await
         .unwrap()
-        .collect::<Vec<Result<RecordBatch, _>>>()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
         .await
         .remove(0)
         .unwrap();
@@ -159,7 +299,8 @@ async fn query_sys_invocation() {
         ))
         .await
         .unwrap()
-        .collect::<Vec<Result<RecordBatch, _>>>()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
         .await
         .remove(0)
         .unwrap();
@@ -175,7 +316,6 @@ async fn query_sys_invocation_with_protocol_v4() {
     let mut engine = MockQueryEngine::create_with(
         MockStatusHandle::default().with(InvocationStatusReport::new(
             invocation_id,
-            (PartitionId::MIN, LeaderEpoch::INITIAL),
             InvocationStatusReportInner {
                 in_flight: false,
                 start_count: 1,
@@ -187,6 +327,7 @@ async fn query_sys_invocation_with_protocol_v4() {
                     related_entry_name: Some("my-side-effect".to_string()),
                     related_entry_type: Some(EntryType::Run),
                 }),
+                last_awaiting_on_unresolved_future: None,
                 next_retry_at: Some(SystemTime::now() + Duration::from_secs(10)),
                 last_attempt_deployment_id: Some(DeploymentId::new()),
                 last_attempt_protocol_version: Some(ServiceProtocolVersion::V4),
@@ -208,6 +349,7 @@ async fn query_sys_invocation_with_protocol_v4() {
     )
     .unwrap();
     tx.commit().await.unwrap();
+    drop(tx);
 
     let records = engine
         .execute(
@@ -221,7 +363,8 @@ async fn query_sys_invocation_with_protocol_v4() {
         )
         .await
         .unwrap()
-        .collect::<Vec<Result<RecordBatch, _>>>()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
         .await
         .remove(0)
         .unwrap();
@@ -289,6 +432,7 @@ async fn query_sys_invocation_status_completed() {
     )
     .unwrap();
     tx.commit().await.unwrap();
+    drop(tx);
 
     let records = engine
         .execute(
@@ -302,7 +446,8 @@ async fn query_sys_invocation_status_completed() {
         )
         .await
         .unwrap()
-        .collect::<Vec<Result<RecordBatch, _>>>()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
         .await
         .remove(0)
         .unwrap();
@@ -344,18 +489,18 @@ async fn query_sys_invocation_suspended_waiting() {
                 invocation_target: InvocationTarget::mock_service(),
                 ..InFlightInvocationMetadata::mock()
             },
-            waiting_for_notifications: [
+            awaiting_on: UnresolvedFuture::unknown_from_iter([
                 NotificationId::for_completion(1),
                 NotificationId::for_completion(2),
                 NotificationId::for_completion(3),
                 NotificationId::SignalIndex(10),
                 NotificationId::SignalIndex(20),
-            ]
-            .into(),
+            ]),
         },
     )
     .unwrap();
     tx.commit().await.unwrap();
+    drop(tx);
 
     let records = engine
         .execute(
@@ -369,7 +514,8 @@ async fn query_sys_invocation_suspended_waiting() {
         )
         .await
         .unwrap()
-        .collect::<Vec<Result<RecordBatch, _>>>()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
         .await
         .remove(0)
         .unwrap();
@@ -415,4 +561,226 @@ fn extract_uint32_list(column: &ArrayRef, row: usize) -> Option<Vec<u32>> {
         .expect("Downcast ref to UInt32Array");
 
     Some(row_value_downcast.values().to_owned().into())
+}
+
+fn extract_nullable_string(column: &ArrayRef, row: usize) -> Option<Option<String>> {
+    use datafusion::arrow::array::Array;
+
+    let column = column
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("Downcast ref to StringArray");
+    if column.len() <= row {
+        return None;
+    }
+    if column.is_null(row) {
+        Some(None)
+    } else {
+        Some(Some(column.value(row).to_string()))
+    }
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_sys_invocation_status_scope() {
+    let scoped_id = InvocationId::from_parts(0, InvocationUuid::from_u128(1));
+    let unscoped_id = InvocationId::from_parts(0, InvocationUuid::from_u128(2));
+
+    let scope = Scope::try_from_static("tenant-A").unwrap();
+    let scoped_target = InvocationTarget::scoped_service("svc", "h", scope);
+    let unscoped_target = InvocationTarget::service("svc", "h");
+
+    let mut engine = MockQueryEngine::create().await;
+
+    let mut tx = engine.partition_store().transaction();
+    tx.put_invocation_status(
+        &scoped_id,
+        &InvocationStatus::Invoked(InFlightInvocationMetadata {
+            invocation_target: scoped_target,
+            ..InFlightInvocationMetadata::mock()
+        }),
+    )
+    .unwrap();
+    tx.put_invocation_status(
+        &unscoped_id,
+        &InvocationStatus::Invoked(InFlightInvocationMetadata {
+            invocation_target: unscoped_target,
+            ..InFlightInvocationMetadata::mock()
+        }),
+    )
+    .unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let records = engine
+        .execute("SELECT id, scope FROM sys_invocation_status ORDER BY id ASC")
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_that!(
+        records,
+        all!(
+            row!(0, {
+                "id" => LargeStringArray: eq(scoped_id.to_string()),
+            }),
+            row_column_matcher(
+                0,
+                "scope",
+                extract_nullable_string,
+                eq(Some("tenant-A".to_string()))
+            ),
+            row!(1, {
+                "id" => LargeStringArray: eq(unscoped_id.to_string()),
+            }),
+            row_column_matcher(1, "scope", extract_nullable_string, eq(None)),
+        )
+    );
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_scoped_state_with_service_key_filter() {
+    // Regression: combining `scope = ...` and `service_key = ...` filters used to
+    // return zero rows because the partition-key extractor narrowed the scan to
+    // hash(service_key), but scoped rows live under hash(scope).
+    let scope = Scope::try_from_static("c").unwrap();
+    let scoped_i1 = ServiceId::new(Some(scope.clone()), "workflow", "i1");
+    let scoped_i2 = ServiceId::new(Some(scope.clone()), "workflow", "i2");
+    let state_key = Bytes::from_static(b"a");
+    let value = b"\"b\"";
+
+    let mut engine = MockQueryEngine::create().await;
+
+    let mut tx = engine.partition_store().transaction();
+    tx.put_user_state(&scoped_i1, &state_key, value).unwrap();
+    tx.put_user_state(&scoped_i2, &state_key, value).unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let scope_only = engine
+        .execute(
+            "SELECT service_key FROM state \
+             WHERE service_name = 'workflow' AND scope = 'c' \
+             ORDER BY service_key",
+        )
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_eq!(scope_only.num_rows(), 2);
+    assert_that!(
+        scope_only,
+        all!(
+            row!(0, { "service_key" => LargeStringArray: eq("i1") }),
+            row!(1, { "service_key" => LargeStringArray: eq("i2") }),
+        )
+    );
+
+    let scope_and_key = engine
+        .execute(
+            "SELECT service_key FROM state \
+             WHERE service_name = 'workflow' AND scope = 'c' AND service_key = 'i1'",
+        )
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_eq!(scope_and_key.num_rows(), 1);
+    assert_that!(
+        scope_and_key,
+        row!(0, { "service_key" => LargeStringArray: eq("i1") })
+    );
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_state_with_service_key_filter() {
+    // Regression: `service_key = ...` filters used to return only unscoped state entries
+    // because the partition-key extractor narrowed the scan to hash(service_key). This ignores
+    // scoped state entries for the same service_key.
+    let scope = Scope::try_from_static("c").unwrap();
+    let scoped_i1 = ServiceId::new(Some(scope.clone()), "scoped", "i1");
+    let unscoped_i1 = ServiceId::new(None, "unscoped", "i1");
+    let state_key = Bytes::from_static(b"a");
+    let value = b"\"b\"";
+
+    let mut engine = MockQueryEngine::create().await;
+
+    let mut tx = engine.partition_store().transaction();
+    tx.put_user_state(&scoped_i1, &state_key, value).unwrap();
+    tx.put_user_state(&unscoped_i1, &state_key, value).unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let scope_only = engine
+        .execute(
+            "SELECT service_name FROM state \
+             WHERE scope = 'c'",
+        )
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_eq!(scope_only.num_rows(), 1);
+    assert_that!(
+        scope_only,
+        row!(0, { "service_name" => LargeStringArray: eq("scoped") })
+    );
+
+    let service_key_only = engine
+        .execute(
+            "SELECT service_name FROM state \
+             WHERE service_key = 'i1' \
+             ORDER BY service_name",
+        )
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_eq!(service_key_only.num_rows(), 2);
+    assert_that!(
+        service_key_only,
+        all!(
+            row!(0, { "service_name" => LargeStringArray: eq("scoped") }),
+            row!(1, { "service_name" => LargeStringArray: eq("unscoped") })
+        )
+    );
+
+    // With `scope IS NULL` explicit, the conditional extractor narrows to hash(service_key).
+    let null_scope_service_key = engine
+        .execute(
+            "SELECT service_name FROM state \
+             WHERE service_key = 'i1' AND scope IS NULL",
+        )
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_eq!(null_scope_service_key.num_rows(), 1);
+    assert_that!(
+        null_scope_service_key,
+        row!(0, { "service_name" => LargeStringArray: eq("unscoped") })
+    );
 }

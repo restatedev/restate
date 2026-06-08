@@ -8,9 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::cluster_marker::mark_cluster_as_provisioned;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use tracing::{Level, debug, enabled, info, trace, warn};
+
 use restate_core::{MetadataWriter, ShutdownError, TaskCenter, cancellation_token};
 use restate_metadata_store::{MetadataStoreClient, ReadWriteError};
+use restate_types::cluster_marker::ClusterMarker;
 use restate_types::config::Configuration;
 use restate_types::errors::MaybeRetryableError;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
@@ -19,9 +24,6 @@ use restate_types::nodes_config::{
 };
 use restate_types::retries::RetryPolicy;
 use restate_types::{PlainNodeId, RestateVersion};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tracing::{Level, debug, enabled, info, trace, warn};
 
 #[derive(Debug, thiserror::Error)]
 enum JoinError {
@@ -78,7 +80,7 @@ impl<'a> NodeInit<'a> {
             // If we fail at this point, then we might restart as if the cluster has not been
             // provisioned yet. This is not a problem because the provisioning operation is
             // idempotent.
-            mark_cluster_as_provisioned()?;
+            ClusterMarker::mark_cluster_as_provisioned(nodes_configuration.cluster_fingerprint())?;
         }
 
         // Find my node in nodes configuration.

@@ -16,9 +16,9 @@ use ahash::{HashMap, HashMapExt};
 use tracing::{info, trace, warn};
 
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
-use restate_serde_util::ByteCount;
 use restate_types::config::Configuration;
 use restate_types::identifiers::PartitionId;
+use restate_util_bytecount::ByteCount;
 
 use crate::{PartitionDb, SharedState};
 
@@ -214,9 +214,8 @@ async fn rebalance_memory(
         report_memory_usage(&collected, total_budget);
     }
 
-    if collected.num_open_partitions > 0 {
-        // possibly update memory budget
-        let new_partition_budget = total_budget / collected.num_open_partitions;
+    // possibly update memory budget
+    if let Some(new_partition_budget) = total_budget.checked_div(collected.num_open_partitions) {
         // budget has changed since last time we checked
         if new_partition_budget != current_per_partition_budget {
             if DEBUG_MEMORY_REPORTING {

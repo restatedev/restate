@@ -20,7 +20,7 @@ test-util = [
   "restate-types/test-util",
   "tokio/test-util"
 ]
-taskdump = ["tokio/taskdump"]
+taskdump = []
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
@@ -29,8 +29,10 @@ restate-core-derive = { workspace = true, optional = true }
 restate-futures-util = { workspace = true }
 restate-memory = { workspace = true }
 restate-metadata-store = { workspace = true }
-restate-time-util = { workspace = true }
+restate-platform = { workspace = true }
+restate-util-time = { workspace = true }
 restate-types = { workspace = true }
+restate-util-string = { workspace = true, features = ["metrics"] }
 
 ahash = { workspace = true }
 anyhow = { workspace = true }
@@ -83,3 +85,9 @@ googletest = { workspace = true }
 test-log = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }
+
+[target.'cfg(all(target_os = "linux", any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")))'.dependencies]
+tokio = { workspace = true, features = ["taskdump"] }
+
+[lints]
+workspace = true

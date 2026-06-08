@@ -32,11 +32,12 @@ pub(crate) fn append_invocation_status_row<'a>(
         || row.is_target_service_key_defined()
         || row.is_target_handler_name_defined()
         || row.is_target_defined()
-        || row.is_target_service_ty_defined())
+        || row.is_target_service_ty_defined()
+        || row.is_scope_defined())
         && let Some(invocation_target) = invocation_status.invocation_target()?
     {
         if row.is_target_service_name_defined() {
-            row.target_service_name(invocation_target.service_name()?);
+            row.fmt_target_service_name(invocation_target.service_name());
         }
         if row.is_target_service_key_defined()
             && let Some(key) = invocation_target.key()?
@@ -44,7 +45,7 @@ pub(crate) fn append_invocation_status_row<'a>(
             row.target_service_key(key);
         }
         if row.is_target_handler_name_defined() {
-            row.target_handler_name(invocation_target.handler_name()?);
+            row.target_handler_name(invocation_target.handler_name());
         }
         if row.is_target_defined() {
             row.fmt_target(invocation_target.target_fmt()?);
@@ -56,11 +57,28 @@ pub(crate) fn append_invocation_status_row<'a>(
                 ServiceType::Workflow => "workflow",
             });
         }
+        if row.is_scope_defined()
+            && let Some(scope) = invocation_target.scope()
+        {
+            row.scope(scope);
+        }
     }
 
     // Invocation id
     if row.is_id_defined() {
         row.fmt_id(invocation_id);
+    }
+
+    if row.is_vqueue_id_defined()
+        && let Some(vqueue_id) = invocation_status.vqueue_id()
+    {
+        row.fmt_vqueue_id(vqueue_id);
+    }
+
+    if row.is_limit_key_defined()
+        && let Some(limit_key) = invocation_status.limit_key_fmt()
+    {
+        row.fmt_limit_key(limit_key);
     }
 
     if row.is_idempotency_key_defined()
@@ -160,6 +178,13 @@ pub(crate) fn append_invocation_status_row<'a>(
                         .map(|c| Some(*c)),
                 );
             }
+            if row.is_suspended_waiting_future_json_defined() {
+                let awaiting_on_json = serde_json::to_string(&invocation_status.awaiting_on()?)
+                    .map_err(|_| {
+                        ConversionError::invalid_data_static("suspended_waiting_future_json")
+                    })?;
+                row.suspended_waiting_future_json(awaiting_on_json);
+            }
 
             fill_journal_metadata(&mut row, invocation_status)?;
             fill_in_flight_invocation_metadata(&mut row, invocation_status)?;
@@ -220,8 +245,10 @@ pub(crate) fn append_invocation_status_row<'a>(
                     ) => {
                         row.completion_result("failure");
                         if row.is_completion_failure_defined() {
-                            let message = str::from_utf8(failure_message.as_ref())
-                                .map_err(|_| ConversionError::invalid_data("failure_message"))?;
+                            let message =
+                                str::from_utf8(failure_message.as_ref()).map_err(|_| {
+                                    ConversionError::invalid_data_static("failure_message")
+                                })?;
                             row.fmt_completion_failure(format_args!(
                                 "[{}] {}",
                                 failure_code, message,
@@ -231,7 +258,7 @@ pub(crate) fn append_invocation_status_row<'a>(
                 }
             }
         }
-        Status::UnknownStatus => return Err(ConversionError::invalid_data("status")),
+        Status::UnknownStatus => return Err(ConversionError::invalid_data_static("status")),
     };
 
     Ok(())
@@ -291,7 +318,7 @@ fn fill_invoked_by(
                 let invocation_target = service.invocation_target()?;
 
                 if row.is_invoked_by_service_name_defined() {
-                    row.invoked_by_service_name(invocation_target.service_name()?);
+                    row.invoked_by_service_name(invocation_target.service_name());
                 }
 
                 if row.is_invoked_by_target_defined() {

@@ -148,7 +148,7 @@ impl UniqueTimestamp {
         Self::from_parts_unchecked(unix_millis.as_u64() - RESTATE_EPOCH.as_u64(), 0)
     }
 
-    pub const fn to_unix_millis(&self) -> MillisSinceEpoch {
+    pub const fn to_unix_millis(self) -> MillisSinceEpoch {
         MillisSinceEpoch::new(self.physical_raw() + RESTATE_EPOCH.as_u64())
     }
 
@@ -163,6 +163,13 @@ impl UniqueTimestamp {
     #[inline]
     pub const fn as_u64(&self) -> u64 {
         self.0.get() - 1
+    }
+
+    /// Calculates the number of milliseconds between this timestamp and the earlier timestamp
+    /// If the earlier timestamp is later than this timestamp, this will return zero.
+    #[inline]
+    pub const fn saturating_sub_ms(&self, earlier: Self) -> u64 {
+        self.physical_raw().saturating_sub(earlier.physical_raw())
     }
 
     /// Splits the timestamp into its physical and logical components.
@@ -292,6 +299,13 @@ mod bilrost_encoding {
         use encoding (bilrost::encoding::Varint)
         to encode proxied type (UniqueTimestamp)
         with general encodings including distinguished
+    );
+
+    bilrost::delegate_proxied_encoding!(
+        use encoding (bilrost::encoding::Fixed)
+        to encode proxied type (UniqueTimestamp)
+        with encoding (bilrost::encoding::Fixed)
+        including distinguished
     );
 }
 

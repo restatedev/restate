@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use crate::clients::Deployment;
 use crate::ui::datetime::DateTimeExt;
-use restate_admin_rest_model::deployments::ServiceNameRevPair;
+use restate_admin_rest_model::deployments::{HttpAuth, ServiceNameRevPair};
 use restate_cli_util::ui::console::StyledTable;
 use restate_types::deployment;
 use restate_types::identifiers::DeploymentId;
@@ -119,11 +119,26 @@ pub fn add_deployment_to_kv_table(deployment: &Deployment, table: &mut Table) {
             max_protocol_version,
             metadata,
             sdk_version,
+            auth,
             ..
         } => {
             table.add_kv_row("Transport:", render_transport_protocol(deployment));
             table.add_kv_row("Protocol Style:", format!("{protocol_type}"));
             table.add_kv_row("Endpoint:", uri);
+            if let Some(HttpAuth::GoogleIdToken(token_auth)) = auth {
+                let impersonation = token_auth
+                    .impersonate_service_account
+                    .as_ref()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "(ambient ADC)".to_owned());
+                let audience = match &token_auth.audience {
+                    Some(a) => a.to_string(),
+                    None => "(not set - re-register with --force to refresh)".to_owned(),
+                };
+                table.add_kv_row("Authentication:", "Google OIDC ID token");
+                table.add_kv_row("Impersonation:", impersonation);
+                table.add_kv_row("Audience:", audience);
+            }
             (
                 additional_headers.clone(),
                 metadata.clone(),

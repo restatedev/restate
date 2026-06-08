@@ -8,93 +8,397 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use smallvec::SmallVec;
-
 use restate_clock::time::MillisSinceEpoch;
+use restate_limiter::LimitKey;
 use restate_types::clock::UniqueTimestamp;
-use restate_types::vqueue::EffectivePriority;
+use restate_types::{LockName, LockNameRef, Scope, ServiceName};
+use restate_util_string::ReString;
 
-use super::{Stage, VisibleAt};
+use super::Stage;
 
-#[derive(Debug, Default, Clone, bilrost::Message)]
+#[derive(Debug, Clone, bilrost::Message)]
 pub struct VQueueStatistics {
-    /// The time spend in the queue before the first attempt to run. Measured by EMA of time
-    /// from initial scheduled run time to first "dequeue/start".
-    #[bilrost(tag(1))]
-    pub(crate) avg_queue_duration_ms: u32,
-    /// Timestamp of the last successful enqueue.
+    /// Creation time of this vqueue metadata record.
+    #[bilrost(tag(1), encoding(fixed))]
+    pub(crate) created_at: UniqueTimestamp,
+    /// Exponential moving average (EMA) of first-attempt wait time.
+    ///
+    /// For an entry's first transition to `Run`, this tracks
+    /// `run_started_at - first_runnable_at`, where
+    /// `first_runnable_at = max(created_at, original_run_at)`.
+    ///
+    /// This indicates how long brand new work waits before it gets its first execution slot.
     #[bilrost(tag(2))]
-    pub(crate) last_enqueued_at: Option<MillisSinceEpoch>,
-    /// The timestamp of the last start of a new entry.
-    #[bilrost(tag(3))]
-    pub(crate) last_start_at: Option<MillisSinceEpoch>,
-    #[bilrost(tag(4))]
-    pub(crate) last_completion_at: Option<MillisSinceEpoch>,
-    /// The timestamp of the last run attempt of a previously started entry.
-    #[bilrost(tag(5))]
-    pub(crate) last_resume_at: Option<MillisSinceEpoch>,
+    pub(crate) avg_queue_duration_ms: u64,
+    /// Last timestamp an entry was moved into `Inbox`.
+    ///
+    /// This covers items enqueued for the first time only.
+    #[bilrost(tag(3), encoding(fixed))]
+    pub(crate) last_enqueued_at: Option<UniqueTimestamp>,
+    /// Last timestamp an entry had its first transition to `Run`.
+    ///
+    /// This marks when a new entry starts for the first time.
+    #[bilrost(tag(4), encoding(fixed))]
+    pub(crate) last_start_at: Option<UniqueTimestamp>,
+    /// Last timestamp an entry completed (transitioned into `Finished`)
+    #[bilrost(tag(5), encoding(fixed))]
+    pub(crate) last_finish_at: Option<UniqueTimestamp>,
+    /// Last timestamp an entry transitioned to `Run`.
+    ///
+    /// This includes both first starts and retries/resumes.
+    #[bilrost(tag(6), encoding(fixed))]
+    pub(crate) last_attempt_at: Option<UniqueTimestamp>,
+    /// Number of entries currently in `inbox` stage.
+    #[bilrost(tag(7), encoding(fixed))]
+    pub(crate) num_inbox: u64,
+    /// Number of entries currently in `suspended` stage.
+    #[bilrost(tag(8), encoding(fixed))]
+    pub(crate) num_suspended: u64,
+    /// Number of entries currently in `paused` stage.
+    #[bilrost(tag(9), encoding(fixed))]
+    pub(crate) num_paused: u64,
+    /// Number of entries currently in `running` stage.
+    #[bilrost(tag(10), encoding(fixed))]
+    pub(crate) num_running: u64,
+    /// How many entries are in the `Finish` stage. When deleting entries from
+    /// the `Finished` stage, we should decrement this counter. The vqueue becomes
+    /// obsolete when it's completely empty (all counters are zero).
+    #[bilrost(tag(11), encoding(fixed))]
+    pub(crate) num_finished: u64,
+    /// Exponential moving average (EMA) of how long entries stay in `Inbox` before transitioning out of it.
+    #[bilrost(tag(12))]
+    pub(crate) avg_inbox_duration_ms: u64,
+    /// Exponential moving average (EMA) of how long entries stay in `Run` before transitioning out of it.
+    #[bilrost(tag(13))]
+    pub(crate) avg_run_duration_ms: u64,
+    /// Exponential moving average (EMA) of how long entries stay in `Suspended` before transitioning out of it.
+    #[bilrost(tag(14))]
+    pub(crate) avg_suspension_duration_ms: u64,
+    /// Exponential moving average (EMA) of end-to-end entry lifetime from first-runnable time to completion.
+    /// Note that this only tracks entries that were not killed/cancelled or failed/paused.
+    #[bilrost(tag(15))]
+    pub(crate) avg_end_to_end_duration_ms: u64,
+    /// Exponential moving average (EMA) of time the head item spent blocked on
+    /// user-defined concurrency rules before entering `Running`. Sampled on
+    /// every Inbox → Running transition (every run attempt, including retries).
+    #[bilrost(tag(16))]
+    pub(crate) avg_blocked_on_concurrency_rules_ms: u64,
+    /// Exponential moving average (EMA) of time the head item spent in
+    /// node-level invoker throttling before entering `Running`. Sampled on
+    /// every Inbox → Running transition (every run attempt, including retries).
+    #[bilrost(tag(17))]
+    pub(crate) avg_blocked_on_invoker_throttling_ms: u64,
 }
 
 impl VQueueStatistics {
+    fn new(created_at: UniqueTimestamp) -> Self {
+        Self {
+            created_at,
+            avg_queue_duration_ms: 0,
+            last_enqueued_at: None,
+            last_start_at: None,
+            last_finish_at: None,
+            last_attempt_at: None,
+            num_inbox: 0,
+            num_suspended: 0,
+            num_paused: 0,
+            num_running: 0,
+            num_finished: 0,
+            avg_inbox_duration_ms: 0,
+            avg_run_duration_ms: 0,
+            avg_suspension_duration_ms: 0,
+            avg_end_to_end_duration_ms: 0,
+            avg_blocked_on_concurrency_rules_ms: 0,
+            avg_blocked_on_invoker_throttling_ms: 0,
+        }
+    }
+
     fn update_avg_queue_duration(&mut self, latency_ms: u64) {
-        let new_avg: u64 = if self.avg_queue_duration_ms == 0 {
-            latency_ms
+        self.avg_queue_duration_ms = Self::ema(self.avg_queue_duration_ms, latency_ms);
+    }
+
+    fn update_avg_inbox_duration(&mut self, latency_ms: u64) {
+        self.avg_inbox_duration_ms = Self::ema(self.avg_inbox_duration_ms, latency_ms);
+    }
+
+    fn update_avg_run_duration(&mut self, latency_ms: u64) {
+        self.avg_run_duration_ms = Self::ema(self.avg_run_duration_ms, latency_ms);
+    }
+
+    fn update_avg_suspension_duration(&mut self, latency_ms: u64) {
+        self.avg_suspension_duration_ms = Self::ema(self.avg_suspension_duration_ms, latency_ms);
+    }
+
+    fn update_avg_end_to_end_duration(&mut self, latency_ms: u64) {
+        self.avg_end_to_end_duration_ms = Self::ema(self.avg_end_to_end_duration_ms, latency_ms);
+    }
+
+    fn update_avg_blocked_on_concurrency_rules(&mut self, latency_ms: u64) {
+        self.avg_blocked_on_concurrency_rules_ms =
+            Self::ema(self.avg_blocked_on_concurrency_rules_ms, latency_ms);
+    }
+
+    fn update_avg_blocked_on_invoker_throttling(&mut self, latency_ms: u64) {
+        self.avg_blocked_on_invoker_throttling_ms =
+            Self::ema(self.avg_blocked_on_invoker_throttling_ms, latency_ms);
+    }
+
+    fn ema(previous: u64, sample_ms: u64) -> u64 {
+        if previous == 0 {
+            sample_ms
         } else {
-            // exponential moving average
-            ((self.avg_queue_duration_ms as f64 * 0.95) + (latency_ms as f64 * 0.05)).ceil() as u64
-        };
-        self.avg_queue_duration_ms = u32::try_from(new_avg).unwrap_or(u32::MAX);
+            // Exponential moving average with alpha=0.05.
+            ((previous as f64 * 0.95) + (sample_ms as f64 * 0.05)).ceil() as u64
+        }
+    }
+
+    fn record_stage_exit(&mut self, stage: Stage, stage_dwell_ms: u64) {
+        match stage {
+            Stage::Unknown | Stage::Finished => {}
+            Stage::Inbox => self.update_avg_inbox_duration(stage_dwell_ms),
+            Stage::Running => self.update_avg_run_duration(stage_dwell_ms),
+            Stage::Suspended => self.update_avg_suspension_duration(stage_dwell_ms),
+            Stage::Paused => { /* tracking avg paused time is pointless */ }
+        }
+    }
+
+    pub const fn created_at(&self) -> UniqueTimestamp {
+        self.created_at
+    }
+
+    pub const fn avg_queue_duration_ms(&self) -> u64 {
+        self.avg_queue_duration_ms
+    }
+
+    pub const fn avg_inbox_duration_ms(&self) -> u64 {
+        self.avg_inbox_duration_ms
+    }
+
+    pub const fn avg_run_duration_ms(&self) -> u64 {
+        self.avg_run_duration_ms
+    }
+
+    pub const fn avg_suspension_duration_ms(&self) -> u64 {
+        self.avg_suspension_duration_ms
+    }
+
+    pub const fn avg_end_to_end_duration_ms(&self) -> u64 {
+        self.avg_end_to_end_duration_ms
+    }
+
+    pub const fn avg_blocked_on_concurrency_rules_ms(&self) -> u64 {
+        self.avg_blocked_on_concurrency_rules_ms
+    }
+
+    pub const fn avg_blocked_on_invoker_throttling_ms(&self) -> u64 {
+        self.avg_blocked_on_invoker_throttling_ms
+    }
+
+    pub const fn last_enqueued_at(&self) -> Option<UniqueTimestamp> {
+        self.last_enqueued_at
+    }
+
+    pub const fn last_start_at(&self) -> Option<UniqueTimestamp> {
+        self.last_start_at
+    }
+
+    pub const fn last_attempt_at(&self) -> Option<UniqueTimestamp> {
+        self.last_attempt_at
+    }
+
+    pub const fn last_finish_at(&self) -> Option<UniqueTimestamp> {
+        self.last_finish_at
+    }
+
+    pub const fn num_inbox(&self) -> u64 {
+        self.num_inbox
+    }
+
+    pub const fn num_paused(&self) -> u64 {
+        self.num_paused
+    }
+
+    pub const fn num_suspended(&self) -> u64 {
+        self.num_suspended
+    }
+
+    pub const fn num_running(&self) -> u64 {
+        self.num_running
+    }
+
+    pub const fn num_finished(&self) -> u64 {
+        self.num_finished
     }
 }
 
-#[derive(Debug, Default, Clone, bilrost::Message)]
+/// How vqueue metadata links to services
+#[derive(Debug, Clone, bilrost::Oneof, bilrost::Message)]
+pub enum VQueueLinkRef<'a> {
+    /// The vqueue is unlinked
+    #[bilrost(empty)]
+    None,
+    /// The vqueue is linked to a lock (service + key)
+    #[bilrost(tag(5))]
+    Lock(LockNameRef<'a>),
+    /// The vqueue is linked to a certain service
+    #[bilrost(tag(6))]
+    Service(&'a str),
+}
+
+/// How vqueue metadata links to services
+#[derive(Debug, Clone, bilrost::Oneof, bilrost::Message)]
+pub enum VQueueLink {
+    /// The vqueue is unlinked
+    #[bilrost(empty)]
+    None,
+    /// The vqueue is linked to a lock (service + key)
+    #[bilrost(tag(5))]
+    Lock(LockName),
+    /// The vqueue is linked to a certain service
+    #[bilrost(tag(6))]
+    Service(ServiceName),
+}
+
+/// Borrowing version of VQueueMeta.
+///
+/// NOTE: keep in-sync with [`VQueueMeta`]
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct VQueueMetaRef<'a> {
+    /// if true, the vqueue is paused, we don't pop entries from it until it's resumed.
+    #[bilrost(tag(1))]
+    pub queue_is_paused: bool,
+
+    #[bilrost(tag(2))]
+    pub stats: VQueueStatistics,
+    #[bilrost(tag(3))]
+    pub scope: Option<&'a str>,
+    #[bilrost(tag(4))]
+    pub limit_key: LimitKey<&'a str>,
+    #[bilrost(oneof(5, 6))]
+    pub link: VQueueLinkRef<'a>,
+}
+
+impl<'a> VQueueMetaRef<'a> {
+    /// A vqueue is considered active when it's of interest to the scheduler.
+    ///
+    /// The scheduler cares about vqueues that have entries that are already running or that are waiting
+    /// to run. With some special rules to consider when the queue is paused. When the vqueue is
+    /// paused, the scheduler will only be interested in its "running" entries and not in its
+    /// waiting entries. Therefore, it will remain to be "active" as long as it has running
+    /// entries. Once running entries are moved to waiting or completed, the vqueue is be
+    /// considered dormant until it's unpaused.
+    pub fn is_active(&self) -> bool {
+        self.stats.num_running > 0 || (self.stats.num_inbox > 0 && !self.queue_is_paused)
+    }
+
+    pub fn lock_name(&self) -> Option<&LockNameRef<'_>> {
+        match self.link {
+            VQueueLinkRef::Lock(ref lock_name) => Some(lock_name),
+            _ => None,
+        }
+    }
+
+    pub fn service_name(&self) -> Option<&str> {
+        match self.link {
+            VQueueLinkRef::Lock(ref lock_name) => Some(lock_name.service_name()),
+            VQueueLinkRef::Service(service) => Some(service),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, bilrost::Message)]
 pub struct VQueueMeta {
     /// if true, the vqueue is paused, we don't pop entries from it until it's resumed.
     #[bilrost(tag(1))]
-    is_paused: bool,
-    /// Total number of entries (ready + paused + running + suspended + scheduled), but it doesn't
-    /// include completed or failed entries. This is the length that is used to reject new invocations
-    /// being added to the vqueue. The capacity configuration will limit this value.
+    queue_is_paused: bool,
+
     #[bilrost(tag(2))]
-    pub(crate) length: u32,
-    /// Number of concurrency tokens being used
-    #[bilrost(tag(3))]
-    pub(crate) num_tokens_used: u32,
-    /// The number of entries waiting to be dequeued. The vector index implies the priority
-    #[bilrost(tag(4), encoding(packed))]
-    pub(crate) num_waiting: [u32; EffectivePriority::NUM_PRIORITIES],
-    #[bilrost(tag(5))]
-    pub(crate) num_running: u32,
-    /// The zero time point of the "starts" token bucket
-    #[bilrost(tag(6))]
-    pub(crate) start_tb_zero_time: f64,
-    #[bilrost(tag(7))]
     pub(crate) stats: VQueueStatistics,
+    #[bilrost(tag(3))]
+    pub(crate) scope: Option<Scope>,
+    #[bilrost(tag(4))]
+    pub(crate) limit_key: LimitKey<ReString>,
+    #[bilrost(oneof(5, 6))]
+    pub(crate) link: VQueueLink,
 }
 
 impl VQueueMeta {
-    pub fn tokens_used(&self) -> u32 {
-        self.num_tokens_used
+    pub fn new(
+        at: UniqueTimestamp,
+        scope: Option<Scope>,
+        limit_key: LimitKey<ReString>,
+        link: VQueueLink,
+    ) -> Self {
+        Self {
+            queue_is_paused: false,
+            stats: VQueueStatistics::new(at),
+            scope,
+            limit_key,
+            link,
+        }
     }
 
-    pub fn len(&self) -> u32 {
-        self.length
+    pub fn scope(&self) -> &Option<Scope> {
+        &self.scope
+    }
+
+    pub fn scope_ref(&self) -> &Option<Scope> {
+        &self.scope
+    }
+
+    pub fn lock_name(&self) -> Option<&LockName> {
+        match self.link {
+            VQueueLink::Lock(ref lock_name) => Some(lock_name),
+            _ => None,
+        }
+    }
+
+    pub fn service_name(&self) -> Option<&ServiceName> {
+        match self.link {
+            VQueueLink::Service(ref service_name) => Some(service_name),
+            VQueueLink::Lock(ref lock) => Some(lock.service_name()),
+            _ => None,
+        }
+    }
+
+    pub fn limit_key(&self) -> &LimitKey<ReString> {
+        &self.limit_key
+    }
+
+    /// Total number of entries (ready + paused + running + suspended + scheduled), but it doesn't
+    /// include completed or failed entries. This is the length that is used to reject new invocations
+    /// being added to the vqueue. The capacity configuration will limit this value.
+    pub fn len(&self) -> u64 {
+        self.stats.num_inbox
+            + self.stats.num_running
+            + self.stats.num_paused
+            + self.stats.num_suspended
     }
 
     pub fn is_empty(&self) -> bool {
-        self.length == 0
+        self.len() == 0
     }
 
-    pub fn total_waiting(&self) -> u32 {
-        self.num_waiting.iter().sum()
+    pub fn total_waiting(&self) -> u64 {
+        self.stats.num_inbox
     }
 
-    fn increment_running(&mut self) {
-        self.num_running += 1;
+    pub fn is_inbox_empty(&self) -> bool {
+        self.stats.num_inbox == 0
     }
 
-    fn decrement_running(&mut self) {
-        self.num_running -= 1;
+    fn decrement_stage(&mut self, stage: Stage) {
+        match stage {
+            Stage::Inbox => self.stats.num_inbox = self.stats.num_inbox.saturating_sub(1),
+            Stage::Suspended => {
+                self.stats.num_suspended = self.stats.num_suspended.saturating_sub(1)
+            }
+            Stage::Paused => self.stats.num_paused = self.stats.num_paused.saturating_sub(1),
+            Stage::Running => self.stats.num_running = self.stats.num_running.saturating_sub(1),
+            Stage::Finished => self.stats.num_finished = self.stats.num_finished.saturating_sub(1),
+            _ => {}
+        }
     }
 
     /// A vqueue is considered active when it's of interest to the scheduler.
@@ -106,216 +410,134 @@ impl VQueueMeta {
     /// entries. Once running entries are moved to waiting or completed, the vqueue is be
     /// considered dormant until it's unpaused.
     pub fn is_active(&self) -> bool {
-        self.num_running > 0 || (self.total_waiting() > 0 && !self.is_paused())
-    }
-
-    pub fn num_waiting(&self, priority: EffectivePriority) -> u32 {
-        self.num_waiting[priority as usize]
+        self.stats.num_running > 0 || (self.stats.num_inbox > 0 && !self.queue_is_paused)
     }
 
     pub fn num_running(&self) -> u32 {
-        self.num_running
+        self.stats
+            .num_running
+            .try_into()
+            .expect("cannot run more than u32::MAX items concurrently")
     }
 
     pub fn stats(&self) -> &VQueueStatistics {
         &self.stats
     }
 
-    pub fn last_enqueued_ts(&self) -> Option<MillisSinceEpoch> {
+    pub fn last_enqueued_ts(&self) -> Option<UniqueTimestamp> {
         self.stats.last_enqueued_at
     }
 
-    pub fn last_start_ts(&self) -> Option<MillisSinceEpoch> {
+    pub fn last_start_ts(&self) -> Option<UniqueTimestamp> {
         self.stats.last_start_at
     }
 
-    /// Used to rehydrate the run/start token bucket on schedulers
-    pub fn start_tb_zero_time(&self) -> f64 {
-        self.start_tb_zero_time
+    pub fn queue_is_paused(&self) -> bool {
+        self.queue_is_paused
     }
 
-    pub fn is_paused(&self) -> bool {
-        self.is_paused
-    }
-
-    fn add_to_waiting(&mut self, priority: EffectivePriority) {
-        self.num_waiting[priority as usize] += 1;
-    }
-
-    fn remove_from_waiting(&mut self, priority: EffectivePriority) {
-        self.num_waiting[priority as usize] -= 1;
-    }
-
-    fn acquire_token(&mut self) {
-        self.num_tokens_used += 1;
-    }
-
-    fn release_token(&mut self) {
-        self.num_tokens_used = self.num_tokens_used.saturating_sub(1);
-    }
-
-    pub fn apply_updates(&mut self, updates: &VQueueMetaUpdates) -> anyhow::Result<()> {
-        for update in updates.updates.iter() {
-            self.apply_update(update)?;
-        }
-        Ok(())
-    }
-
-    #[inline]
-    fn apply_update(&mut self, update: &Update) -> anyhow::Result<()> {
-        debug_assert!(self.length >= self.total_waiting());
+    pub fn apply_update(&mut self, update: &Update) {
         let now = update.ts;
+        let now_ms = now.to_unix_millis();
         // Note to future authors: This match needs to continue to work even when
         // processing old/deprecated/removed actions. Therefore, removed actions should
         // not be removed from the enum to avoid falling into the Unknown case.
         match update.action {
             Action::Unknown => {
-                anyhow::bail!("Unrecognized vqueue action: {update:?}")
+                panic!("Unrecognized vqueue action: {update:?}")
             }
-            Action::EnqueueNew { priority } => {
-                debug_assert!(priority.is_new());
-                self.length += 1;
-                self.add_to_waiting(priority);
-                self.stats.last_enqueued_at = Some(now.to_unix_millis());
+            Action::PauseVQueue {} => {
+                self.queue_is_paused = true;
             }
-            Action::StartAttempt {
-                visible_at,
-                priority,
-                updated_start_tb_zero_time: updated_run_token_bucket_zero_time,
+            Action::ResumeVQueue {} => {
+                self.queue_is_paused = false;
+            }
+            Action::RemoveEntry { stage } => {
+                self.decrement_stage(stage);
+            }
+            Action::Move {
+                prev_stage,
+                next_stage,
+                ref metrics,
             } => {
-                if priority.is_new() {
-                    self.stats.last_start_at = Some(now.to_unix_millis());
-                } else {
-                    self.stats.last_resume_at = Some(now.to_unix_millis());
+                if let Some(previous_stage) = prev_stage {
+                    let stage_dwell_ms = now.saturating_sub_ms(metrics.last_transition_at);
+                    self.stats.record_stage_exit(previous_stage, stage_dwell_ms);
+                    self.decrement_stage(previous_stage);
                 }
 
-                self.increment_running();
-                self.remove_from_waiting(priority);
-
-                if priority.is_new()
-                    && let VisibleAt::At(visible_since) = visible_at
-                {
-                    // Only measure queue latency for new items and only consider the item
-                    // queuing from the moment it became visible, not the creation ts.
-                    let latency_ms = now.to_unix_millis().saturating_sub_ms(visible_since);
-                    self.stats.update_avg_queue_duration(latency_ms);
-                }
-
-                // Update the run token bucket's zero time if it was supplied
-                if let Some(updated_run_token_bucket_zero_time) = updated_run_token_bucket_zero_time
-                {
-                    self.start_tb_zero_time = updated_run_token_bucket_zero_time;
-                }
-                if !priority.token_held() {
-                    self.acquire_token();
-                }
-            }
-            Action::Park {
-                should_release_concurrency_token,
-                priority,
-                previous_stage,
-            } => {
-                debug_assert!(self.length > 0);
-                match previous_stage {
-                    Stage::Unknown => {
-                        anyhow::bail!("Unknown stage for vqueue entry park action: {update:?}");
-                    }
+                match next_stage {
+                    Stage::Unknown => unreachable!(),
                     Stage::Inbox => {
-                        self.remove_from_waiting(priority);
+                        self.stats.num_inbox += 1;
+                        if prev_stage.is_none() {
+                            self.stats.last_enqueued_at = Some(now);
+                        }
                     }
-                    Stage::Run => {
-                        self.decrement_running();
-                    }
-                    Stage::Park => {
-                        // do nothing.
-                    }
-                }
+                    Stage::Running => {
+                        self.stats.num_running += 1;
+                        self.stats.last_attempt_at = Some(now);
 
-                if should_release_concurrency_token && priority.token_held() {
-                    // Release the token immediately on park if this entry doesn't require
-                    // holding while parked.
-                    self.release_token();
-                }
-            }
-            Action::WakeUp { priority } => {
-                debug_assert!(self.length > 0);
-                self.add_to_waiting(priority);
-            }
-            Action::YieldRunning => {
-                debug_assert!(self.length > 0);
-                self.decrement_running();
-                self.add_to_waiting(EffectivePriority::TokenHeld);
-            }
-            Action::Complete {
-                previous_stage,
-                priority,
-            } => {
-                debug_assert!(self.length > 0);
-                self.length -= 1;
-                self.stats.last_completion_at = Some(now.to_unix_millis());
-                match previous_stage {
-                    Stage::Unknown => {
-                        anyhow::bail!("Unknown stage for vqueue entry complete action: {update:?}")
-                    }
-                    Stage::Inbox => {
-                        self.remove_from_waiting(priority);
-                    }
-                    Stage::Run => {
-                        self.decrement_running();
-                    }
-                    Stage::Park => {
-                        // do nothing.
-                    }
-                }
+                        // EMAs for per-run-attempt blocking time. Sampled on
+                        // every Inbox → Running transition (including retries),
+                        // unlike `avg_queue_duration_ms` which only tracks the
+                        // first attempt.
+                        self.stats.update_avg_blocked_on_concurrency_rules(
+                            metrics.blocked_on_concurrency_rules_ms as u64,
+                        );
+                        self.stats.update_avg_blocked_on_invoker_throttling(
+                            metrics.blocked_on_invoker_throttling_ms as u64,
+                        );
 
-                if priority.token_held() {
-                    self.release_token();
+                        if !metrics.has_started {
+                            let first_wait_ms = now_ms.saturating_sub_ms(metrics.first_runnable_at);
+                            self.stats.update_avg_queue_duration(first_wait_ms);
+
+                            self.stats.last_start_at = Some(now);
+                        }
+                    }
+                    Stage::Paused => {
+                        self.stats.num_paused += 1;
+                    }
+                    Stage::Suspended => {
+                        self.stats.num_suspended += 1;
+                    }
+                    Stage::Finished => {
+                        self.stats.num_finished += 1;
+                        self.stats.last_finish_at = Some(now);
+                        if matches!(prev_stage, Some(Stage::Running)) {
+                            // Only track entries finishing normally.
+                            let end_to_end_ms = now_ms.saturating_sub_ms(metrics.first_runnable_at);
+                            self.stats.update_avg_end_to_end_duration(end_to_end_ms);
+                        }
+                    }
                 }
             }
         }
-        Ok(())
     }
 }
 
-/// A collection of differential updates to the vqueue meta data structure.
-///
-/// Those updates can be applied to the storage layer via a merge operator and at the same
-/// time they can be accepted by the vqueue's cache to keep them in sync.
-#[derive(Clone, Default, bilrost::Message)]
-pub struct VQueueMetaUpdates {
-    #[bilrost(1)]
-    pub updates: SmallVec<[Update; VQueueMetaUpdates::INLINED_UPDATES]>,
-}
-
-impl VQueueMetaUpdates {
-    pub const INLINED_UPDATES: usize = 1;
-
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            updates: SmallVec::with_capacity(capacity),
-        }
-    }
-
-    #[inline(always)]
-    pub fn push(&mut self, ts: UniqueTimestamp, action: Action) {
-        self.updates.push(Update { ts, action });
-    }
-
-    pub fn len(&self) -> usize {
-        self.updates.len()
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &Update> {
-        self.updates.iter()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.updates.is_empty()
-    }
-
-    pub fn extend(&mut self, other: Self) {
-        self.updates.extend(other.updates);
-    }
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct MoveMetrics {
+    /// Timestamp of the entry's previous stage transition.
+    #[bilrost(tag(1), encoding(fixed))]
+    pub last_transition_at: UniqueTimestamp,
+    /// Whether the entry has started at least once before this transition.
+    #[bilrost(tag(2))]
+    pub has_started: bool,
+    /// Earliest timestamp at which the entry can realistically start.
+    #[bilrost(tag(3), encoding(fixed))]
+    pub first_runnable_at: MillisSinceEpoch,
+    /// Milliseconds the head item spent blocked on user-defined concurrency
+    /// rules during this run attempt. Only populated on Inbox → Running moves;
+    /// zero for every other transition. Feeds `avg_blocked_on_concurrency_rules_ms`.
+    #[bilrost(tag(4), encoding(fixed))]
+    pub blocked_on_concurrency_rules_ms: u32,
+    /// Milliseconds the head item spent in node-level invoker throttling
+    /// during this run attempt. Only populated on Inbox → Running moves; zero
+    /// for every other transition. Feeds `avg_blocked_on_invoker_throttling_ms`.
+    #[bilrost(tag(5), encoding(fixed))]
+    pub blocked_on_invoker_throttling_ms: u32,
 }
 
 #[derive(Debug, Clone, Default, bilrost::Oneof, bilrost::Message)]
@@ -323,41 +545,382 @@ pub enum Action {
     #[default]
     #[bilrost(empty)]
     Unknown,
-    /// Entry is being enqueued for the first time
+    /// An item has moved from one stage to another
+    ///
+    /// if previous_stage is None, the item is new.
+    /// if new_stage is Finished, the item has completed.
     #[bilrost(tag(2), message)]
-    EnqueueNew { priority: EffectivePriority },
-    /// An entry from inbox stage is being moved to Run
+    Move {
+        #[bilrost(encoding(fixed))]
+        prev_stage: Option<Stage>,
+        #[bilrost(encoding(fixed))]
+        next_stage: Stage,
+        metrics: MoveMetrics,
+    },
     #[bilrost(tag(3), message)]
-    StartAttempt {
-        visible_at: VisibleAt,
-        priority: EffectivePriority,
-        updated_start_tb_zero_time: Option<f64>,
-    },
+    PauseVQueue {},
     #[bilrost(tag(4), message)]
-    Park {
-        priority: EffectivePriority,
-        should_release_concurrency_token: bool,
-        previous_stage: Stage,
-    },
-    // Wake up after pause or suspend.
-    #[bilrost(tag(5), message)]
-    WakeUp { priority: EffectivePriority },
-    // Item moved from running back to waiting
-    #[bilrost(tag(6), message)]
-    YieldRunning,
-    // Execution has ended (failed, succeeded, killed, etc.)
-    #[bilrost(tag(7), message)]
-    Complete {
-        // Must be the latest priority assigned to the entry (effective priority)
-        priority: EffectivePriority,
-        previous_stage: Stage,
+    ResumeVQueue {},
+    #[bilrost(tag(5))]
+    /// An item or have been removed from the (stage)
+    RemoveEntry {
+        #[bilrost(encoding(fixed))]
+        stage: Stage,
     },
 }
 
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct Update {
-    #[bilrost(tag(1))]
+    #[bilrost(tag(1), encoding(fixed))]
     pub(super) ts: UniqueTimestamp,
-    #[bilrost(oneof(2, 3, 4, 5, 6, 7))]
+    #[bilrost(oneof(2, 3, 4, 5))]
     pub(super) action: Action,
+}
+
+impl Update {
+    #[inline]
+    pub fn new(ts: UniqueTimestamp, action: Action) -> Self {
+        Self { ts, action }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use restate_util_string::RestateString;
+
+    use super::*;
+
+    const BASE_TS_MS: u64 = 1_744_000_000_000;
+
+    fn ts(unix_ms: u64) -> UniqueTimestamp {
+        UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::new(unix_ms))
+    }
+
+    fn metrics(
+        last_transition_at_ms: u64,
+        first_runnable_at_ms: u64,
+        has_started: bool,
+    ) -> MoveMetrics {
+        metrics_with_wait(
+            last_transition_at_ms,
+            first_runnable_at_ms,
+            has_started,
+            0,
+            0,
+        )
+    }
+
+    fn metrics_with_wait(
+        last_transition_at_ms: u64,
+        first_runnable_at_ms: u64,
+        has_started: bool,
+        blocked_on_concurrency_rules_ms: u32,
+        blocked_on_invoker_throttling_ms: u32,
+    ) -> MoveMetrics {
+        MoveMetrics {
+            last_transition_at: ts(last_transition_at_ms),
+            has_started,
+            blocked_on_concurrency_rules_ms,
+            blocked_on_invoker_throttling_ms,
+            first_runnable_at: MillisSinceEpoch::new(first_runnable_at_ms),
+        }
+    }
+
+    #[test]
+    fn avg_queue_duration_tracks_first_attempt_wait() {
+        let created_at = ts(BASE_TS_MS + 10_000);
+        let mut meta = VQueueMeta::new(created_at, None, LimitKey::None, VQueueLink::None);
+
+        // Enqueue: caller has already computed
+        // first_runnable_at = max(created_at, original_run_at).
+        meta.apply_update(&Update::new(
+            created_at,
+            Action::Move {
+                prev_stage: None,
+                next_stage: Stage::Inbox,
+                metrics: metrics(BASE_TS_MS + 10_000, BASE_TS_MS + 12_000, false),
+            },
+        ));
+
+        // First transition to Running: first-attempt wait is
+        // now(14_000) - first_runnable_at(12_000) = 2_000 ms.
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 14_000),
+            Action::Move {
+                prev_stage: Some(Stage::Inbox),
+                next_stage: Stage::Running,
+                metrics: metrics(BASE_TS_MS + 10_000, BASE_TS_MS + 12_000, false),
+            },
+        ));
+
+        assert_eq!(meta.stats.avg_queue_duration_ms, 2_000);
+        assert_eq!(meta.stats.last_start_at, Some(ts(BASE_TS_MS + 14_000)));
+        assert_eq!(meta.stats.last_attempt_at, Some(ts(BASE_TS_MS + 14_000)));
+
+        // A subsequent Running→Running transition (has_started = true) must
+        // not touch avg_queue_duration_ms or last_start_at — those only track
+        // the first attempt. last_attempt_at does advance.
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 15_000),
+            Action::Move {
+                prev_stage: Some(Stage::Running),
+                next_stage: Stage::Running,
+                metrics: metrics(BASE_TS_MS + 14_000, BASE_TS_MS + 12_000, true),
+            },
+        ));
+
+        assert_eq!(meta.stats.avg_queue_duration_ms, 2_000);
+        assert_eq!(meta.stats.last_start_at, Some(ts(BASE_TS_MS + 14_000)));
+        assert_eq!(meta.stats.last_attempt_at, Some(ts(BASE_TS_MS + 15_000)));
+    }
+
+    #[test]
+    fn blocking_emas_sample_every_run_attempt() {
+        // These two EMAs (`avg_blocked_on_concurrency_rules_ms`,
+        // `avg_blocked_on_invoker_throttling_ms`) are sampled on EVERY Inbox→Running
+        // transition, not just the first attempt like `avg_queue_duration_ms`.
+        // This test pins that distinction down.
+        let created_at = ts(BASE_TS_MS + 1_000);
+        let mut meta = VQueueMeta::new(created_at, None, LimitKey::None, VQueueLink::None);
+
+        // Enqueue.
+        meta.apply_update(&Update::new(
+            created_at,
+            Action::Move {
+                prev_stage: None,
+                next_stage: Stage::Inbox,
+                metrics: metrics(BASE_TS_MS + 1_000, BASE_TS_MS + 1_000, false),
+            },
+        ));
+
+        // First Inbox→Running: 1_000 ms on concurrency rules, 500 ms on global
+        // invoker throttling. First sample — EMA equals the sample.
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 2_000),
+            Action::Move {
+                prev_stage: Some(Stage::Inbox),
+                next_stage: Stage::Running,
+                metrics: metrics_with_wait(
+                    BASE_TS_MS + 1_000,
+                    BASE_TS_MS + 1_000,
+                    false,
+                    1_000,
+                    500,
+                ),
+            },
+        ));
+        assert_eq!(meta.stats.avg_blocked_on_concurrency_rules_ms, 1_000);
+        assert_eq!(meta.stats.avg_blocked_on_invoker_throttling_ms, 500);
+        assert_eq!(meta.stats.avg_queue_duration_ms, 1_000);
+
+        // Yield back Running→Inbox. Neither the new EMAs nor the old
+        // `avg_queue_duration_ms` should move — this is not a Running arm.
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 3_000),
+            Action::Move {
+                prev_stage: Some(Stage::Running),
+                next_stage: Stage::Inbox,
+                metrics: metrics(BASE_TS_MS + 2_000, BASE_TS_MS + 1_000, true),
+            },
+        ));
+        assert_eq!(meta.stats.avg_blocked_on_concurrency_rules_ms, 1_000);
+        assert_eq!(meta.stats.avg_blocked_on_invoker_throttling_ms, 500);
+
+        // Second Inbox→Running (a retry, `has_started = true`): 2_000 ms /
+        // 0 ms. The new EMAs MUST continue sampling even though has_started.
+        // With α = 0.05: 1000*0.95 + 2000*0.05 = 1050, 500*0.95 + 0*0.05 = 475.
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 4_000),
+            Action::Move {
+                prev_stage: Some(Stage::Inbox),
+                next_stage: Stage::Running,
+                metrics: metrics_with_wait(BASE_TS_MS + 3_000, BASE_TS_MS + 1_000, true, 2_000, 0),
+            },
+        ));
+        assert_eq!(meta.stats.avg_blocked_on_concurrency_rules_ms, 1_050);
+        assert_eq!(meta.stats.avg_blocked_on_invoker_throttling_ms, 475);
+
+        // `avg_queue_duration_ms` must NOT have moved on the retry — the
+        // first-attempt gate (`has_started = false`) is still the existing
+        // behavior for that EMA.
+        assert_eq!(meta.stats.avg_queue_duration_ms, 1_000);
+    }
+
+    #[test]
+    fn stage_emas_update_on_transitions() {
+        // Inbox→Running→Suspended→Inbox→Finished exercises every tracked
+        // stage-dwell EMA. Inbox gets two samples so the EMA blend path
+        // (not just the initial assignment) is covered.
+        let created_at = ts(BASE_TS_MS + 1_000);
+        let mut meta = VQueueMeta::new(created_at, None, LimitKey::None, VQueueLink::None);
+
+        meta.apply_update(&Update::new(
+            created_at,
+            Action::Move {
+                prev_stage: None,
+                next_stage: Stage::Inbox,
+                metrics: metrics(BASE_TS_MS + 1_000, BASE_TS_MS + 2_000, false),
+            },
+        ));
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 2_000),
+            Action::Move {
+                prev_stage: Some(Stage::Inbox),
+                next_stage: Stage::Running,
+                metrics: metrics(BASE_TS_MS + 1_000, BASE_TS_MS + 2_000, false),
+            },
+        ));
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 5_000),
+            Action::Move {
+                prev_stage: Some(Stage::Running),
+                next_stage: Stage::Suspended,
+                metrics: metrics(BASE_TS_MS + 2_000, BASE_TS_MS + 2_000, true),
+            },
+        ));
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 9_000),
+            Action::Move {
+                prev_stage: Some(Stage::Suspended),
+                next_stage: Stage::Inbox,
+                metrics: metrics(BASE_TS_MS + 5_000, BASE_TS_MS + 2_000, true),
+            },
+        ));
+        meta.apply_update(&Update::new(
+            ts(BASE_TS_MS + 15_000),
+            Action::Move {
+                prev_stage: Some(Stage::Inbox),
+                next_stage: Stage::Finished,
+                metrics: metrics(BASE_TS_MS + 9_000, BASE_TS_MS + 2_000, true),
+            },
+        ));
+
+        // Inbox: EMA(0, 1_000) = 1_000, then EMA(1_000, 6_000) = 1_250.
+        assert_eq!(meta.stats.avg_inbox_duration_ms, 1_250);
+        assert_eq!(meta.stats.avg_run_duration_ms, 3_000);
+        assert_eq!(meta.stats.avg_suspension_duration_ms, 4_000);
+
+        assert_eq!(meta.stats.num_inbox, 0);
+        assert_eq!(meta.stats.num_running, 0);
+        assert_eq!(meta.stats.num_suspended, 0);
+        assert_eq!(meta.stats.num_finished, 1);
+        assert_eq!(meta.stats.last_finish_at, Some(ts(BASE_TS_MS + 15_000)));
+    }
+
+    #[test]
+    fn end_to_end_updates_only_on_finish_from_running() {
+        // Finish-from-Running updates avg_end_to_end_duration_ms.
+        let created_at = ts(BASE_TS_MS);
+        let mut running_finish =
+            VQueueMeta::new(created_at, None, LimitKey::None, VQueueLink::None);
+        running_finish.apply_update(&Update::new(
+            created_at,
+            Action::Move {
+                prev_stage: None,
+                next_stage: Stage::Inbox,
+                metrics: metrics(BASE_TS_MS, BASE_TS_MS, false),
+            },
+        ));
+        running_finish.apply_update(&Update::new(
+            ts(BASE_TS_MS + 1_000),
+            Action::Move {
+                prev_stage: Some(Stage::Inbox),
+                next_stage: Stage::Running,
+                metrics: metrics(BASE_TS_MS, BASE_TS_MS, false),
+            },
+        ));
+        running_finish.apply_update(&Update::new(
+            ts(BASE_TS_MS + 5_000),
+            Action::Move {
+                prev_stage: Some(Stage::Running),
+                next_stage: Stage::Finished,
+                metrics: metrics(BASE_TS_MS + 1_000, BASE_TS_MS, true),
+            },
+        ));
+        // end_to_end = now_ms(5_000) - first_runnable_at(0) = 5_000.
+        assert_eq!(running_finish.stats.avg_end_to_end_duration_ms, 5_000);
+
+        // Finish from anywhere other than Running (e.g. cancel from Inbox)
+        // must leave avg_end_to_end_duration_ms untouched.
+        let mut inbox_finish = VQueueMeta::new(created_at, None, LimitKey::None, VQueueLink::None);
+        inbox_finish.apply_update(&Update::new(
+            created_at,
+            Action::Move {
+                prev_stage: None,
+                next_stage: Stage::Inbox,
+                metrics: metrics(BASE_TS_MS, BASE_TS_MS, false),
+            },
+        ));
+        inbox_finish.apply_update(&Update::new(
+            ts(BASE_TS_MS + 10_000),
+            Action::Move {
+                prev_stage: Some(Stage::Inbox),
+                next_stage: Stage::Finished,
+                metrics: metrics(BASE_TS_MS, BASE_TS_MS, false),
+            },
+        ));
+        assert_eq!(inbox_finish.stats.avg_end_to_end_duration_ms, 0);
+    }
+
+    #[test]
+    fn vqueue_meta_borrowed_decode_is_correct() {
+        use bilrost::{BorrowedMessage, Message};
+
+        let owned = VQueueMeta {
+            queue_is_paused: true,
+            stats: VQueueStatistics {
+                created_at: ts(BASE_TS_MS + 1),
+                avg_queue_duration_ms: 2,
+                last_enqueued_at: Some(ts(BASE_TS_MS + 3)),
+                last_start_at: Some(ts(BASE_TS_MS + 4)),
+                last_finish_at: Some(ts(BASE_TS_MS + 5)),
+                last_attempt_at: Some(ts(BASE_TS_MS + 6)),
+                num_inbox: 7,
+                num_paused: 8,
+                num_suspended: 800,
+                num_running: 9,
+                num_finished: 10,
+                avg_inbox_duration_ms: 11,
+                avg_run_duration_ms: 12,
+                avg_suspension_duration_ms: 13,
+                avg_end_to_end_duration_ms: 14,
+                avg_blocked_on_concurrency_rules_ms: 15,
+                avg_blocked_on_invoker_throttling_ms: 16,
+            },
+            scope: Some(Scope::try_from_static("scope-a").unwrap()),
+            limit_key: "tenant-1/user-1".parse::<LimitKey<ReString>>().unwrap(),
+            link: VQueueLink::Lock(LockName::parse("service-a/key-a").unwrap()),
+        };
+
+        let encoded = owned.encode_to_bytes();
+        let borrowed = VQueueMetaRef::decode_borrowed(&encoded).unwrap();
+
+        assert_eq!(borrowed.queue_is_paused, owned.queue_is_paused);
+
+        assert_eq!(borrowed.scope, Some("scope-a"));
+        assert_eq!(borrowed.limit_key.to_string(), "tenant-1/user-1");
+        assert_eq!(
+            borrowed.limit_key.level1().map(|value| value.as_str()),
+            Some("tenant-1")
+        );
+        assert_eq!(
+            borrowed.limit_key.level2().map(|value| value.as_str()),
+            Some("user-1")
+        );
+        let lock_name = borrowed.lock_name().expect("lock_name should exist");
+        assert_eq!(lock_name.service_name(), "service-a");
+        assert_eq!(lock_name.key(), "key-a");
+
+        let service_name = borrowed.service_name().expect("service_name should exist");
+        assert_eq!(service_name, "service-a");
+
+        // just a few sanity checks for stats. Those are owned anyway.
+        assert_eq!(borrowed.stats.created_at(), owned.stats.created_at());
+        assert_eq!(
+            borrowed.stats.avg_queue_duration_ms(),
+            owned.stats.avg_queue_duration_ms()
+        );
+        assert_eq!(borrowed.stats.num_inbox(), owned.stats.num_inbox());
+        assert_eq!(borrowed.is_active(), owned.is_active());
+    }
 }

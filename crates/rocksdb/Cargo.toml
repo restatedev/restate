@@ -16,9 +16,10 @@ restate-workspace-hack = { workspace = true }
 
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
-restate-serde-util = { workspace = true }
-restate-time-util = { workspace = true }
 restate-types = { workspace = true }
+restate-util-bytecount = { workspace = true, features = ["serde"] }
+restate-util-random = { workspace = true }
+restate-util-time = { workspace = true }
 
 anyhow = { workspace = true }
 bytes = { workspace = true }
@@ -44,3 +45,6 @@ tikv-jemalloc-sys = { workspace = true }
 [dev-dependencies]
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

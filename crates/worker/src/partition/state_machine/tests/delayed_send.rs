@@ -12,22 +12,26 @@ use super::*;
 
 use restate_storage_api::inbox_table::ReadInboxTable;
 use restate_types::invocation::SubmitNotificationSink;
+use restate_types::partitions::PartitionFeatureChange;
 use restate_types::time::MillisSinceEpoch;
 use std::time::{Duration, SystemTime};
 use test_log::test;
 
 #[restate_core::test]
 async fn send_with_delay() {
-    run_send_with_delay(SemanticRestateVersion::unknown()).await
+    run_send_with_delay(PersistedStateMachineFeatures::default()).await
 }
 
 #[restate_core::test]
 async fn send_with_delay_journal_v2_enabled() {
-    run_send_with_delay(RESTATE_VERSION_1_6_0.clone()).await
+    run_send_with_delay(PersistedStateMachineFeatures::from_iter([
+        PartitionFeatureChange::EnableJournalV2,
+    ]))
+    .await
 }
 
-async fn run_send_with_delay(min_restate_version: SemanticRestateVersion) {
-    let mut test_env = TestEnv::create_with_min_restate_version(min_restate_version).await;
+async fn run_send_with_delay(features: PersistedStateMachineFeatures) {
+    let mut test_env = TestEnv::create_with_features(features).await;
 
     let invocation_target = InvocationTarget::mock_service();
     let invocation_id = InvocationId::mock_random();
@@ -36,7 +40,7 @@ async fn run_send_with_delay(min_restate_version: SemanticRestateVersion) {
 
     let wake_up_time = MillisSinceEpoch::from(SystemTime::now() + Duration::from_secs(60));
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: None,
@@ -44,37 +48,36 @@ async fn run_send_with_delay(min_restate_version: SemanticRestateVersion) {
             // Doesn't matter the execution time here, just needs to be filled
             execution_time: Some(wake_up_time),
             ..ServiceInvocation::mock()
-        })))
+        }))
         .await;
     assert_that!(
         actions,
         all!(
             not(contains(matchers::actions::invoke_for_id(invocation_id))),
             contains(pat!(Action::RegisterTimer { .. })),
-            contains(eq(Action::IngressSubmitNotification {
-                request_id,
-                execution_time: Some(wake_up_time),
-                is_new_invocation: true
+            contains(pat!(Action::IngressSubmitNotification {
+                request_id: eq(request_id),
+                execution_time: some(eq(wake_up_time)),
+                is_new_invocation: eq(true)
             }))
         )
     );
 
     // Now fire the timer
     let actions = test_env
-        .apply(Command::Timer(TimerKeyValue::neo_invoke(
-            wake_up_time,
-            invocation_id,
-        )))
+        .apply(commands::TimerCommand::test_envelope(
+            TimerKeyValue::neo_invoke(wake_up_time, invocation_id),
+        ))
         .await;
 
     assert_that!(
         actions,
         all!(
             contains(matchers::actions::invoke_for_id(invocation_id)),
-            not(contains(eq(Action::IngressSubmitNotification {
-                request_id,
-                execution_time: Some(wake_up_time),
-                is_new_invocation: true,
+            not(contains(pat!(Action::IngressSubmitNotification {
+                request_id: eq(request_id),
+                execution_time: some(eq(wake_up_time)),
+                is_new_invocation: eq(true),
             })))
         )
     );
@@ -98,7 +101,7 @@ async fn send_with_delay_where_experimental_feature_journal_table_v2_is_enabled_
 
     let wake_up_time = MillisSinceEpoch::from(SystemTime::now() + Duration::from_secs(60));
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: None,
@@ -107,40 +110,41 @@ async fn send_with_delay_where_experimental_feature_journal_table_v2_is_enabled_
             // Doesn't matter the execution time here, just needs to be filled
             execution_time: Some(wake_up_time),
             ..ServiceInvocation::mock()
-        })))
+        }))
         .await;
     assert_that!(
         actions,
         all!(
             not(contains(matchers::actions::invoke_for_id(invocation_id))),
             contains(pat!(Action::RegisterTimer { .. })),
-            contains(eq(Action::IngressSubmitNotification {
-                request_id,
-                execution_time: Some(wake_up_time),
-                is_new_invocation: true
+            contains(pat!(Action::IngressSubmitNotification {
+                request_id: eq(request_id),
+                execution_time: some(eq(wake_up_time)),
+                is_new_invocation: eq(true)
             }))
         )
     );
 
     // Now let's update the features
-    test_env.set_min_restate_version(RESTATE_VERSION_1_6_0.clone());
+    test_env.set_enabled_features(PersistedStateMachineFeatures::from_iter([
+        PartitionFeatureChange::EnableJournalV2,
+    ]));
 
     // Now fire the timer
     let actions = test_env
-        .apply(Command::Timer(TimerKeyValue::neo_invoke(
-            wake_up_time,
-            invocation_id,
-        )))
+        .apply(commands::TimerCommand::test_envelope(
+            TimerKeyValue::neo_invoke(wake_up_time, invocation_id),
+        ))
         .await;
 
     assert_that!(
         actions,
         all!(
             contains(matchers::actions::invoke_for_id(invocation_id)),
-            not(contains(eq(Action::IngressSubmitNotification {
-                request_id,
-                execution_time: Some(wake_up_time),
-                is_new_invocation: true,
+            not(contains(pat!(Action::IngressSubmitNotification {
+                request_id: eq(request_id),
+                execution_time: some(eq(wake_up_time)),
+                is_new_invocation: eq(true),
             })))
         )
     );
@@ -171,7 +175,7 @@ async fn send_with_delay_to_locked_virtual_object() {
 
     let wake_up_time = MillisSinceEpoch::from(SystemTime::now() + Duration::from_secs(60));
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: None,
@@ -179,17 +183,17 @@ async fn send_with_delay_to_locked_virtual_object() {
             // Doesn't matter the execution time here, just needs to be filled
             execution_time: Some(wake_up_time),
             ..ServiceInvocation::mock()
-        })))
+        }))
         .await;
     assert_that!(
         actions,
         all!(
             not(contains(matchers::actions::invoke_for_id(invocation_id))),
             contains(pat!(Action::RegisterTimer { .. })),
-            contains(eq(Action::IngressSubmitNotification {
-                request_id,
-                execution_time: Some(wake_up_time),
-                is_new_invocation: true,
+            contains(pat!(Action::IngressSubmitNotification {
+                request_id: eq(request_id),
+                execution_time: some(eq(wake_up_time)),
+                is_new_invocation: eq(true),
             }))
         )
     );
@@ -202,23 +206,23 @@ async fn send_with_delay_to_locked_virtual_object() {
     )
     .unwrap();
     tx.commit().await.unwrap();
+    drop(tx);
 
     // Now fire the timer
     let actions = test_env
-        .apply(Command::Timer(TimerKeyValue::neo_invoke(
-            wake_up_time,
-            invocation_id,
-        )))
+        .apply(commands::TimerCommand::test_envelope(
+            TimerKeyValue::neo_invoke(wake_up_time, invocation_id),
+        ))
         .await;
 
     assert_that!(
         actions,
         all!(
             not(contains(matchers::actions::invoke_for_id(invocation_id))),
-            not(contains(eq(Action::IngressSubmitNotification {
-                request_id,
-                execution_time: Some(wake_up_time),
-                is_new_invocation: true,
+            not(contains(pat!(Action::IngressSubmitNotification {
+                request_id: eq(request_id),
+                execution_time: some(eq(wake_up_time)),
+                is_new_invocation: eq(true),
             })))
         )
     );
@@ -256,7 +260,7 @@ async fn send_with_delay_and_idempotency_key() {
     ));
 
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             idempotency_key: Some(idempotency_key.clone()),
@@ -268,17 +272,17 @@ async fn send_with_delay_and_idempotency_key() {
             execution_time,
             source: Source::Ingress(request_id_1),
             ..ServiceInvocation::mock()
-        })))
+        }))
         .await;
     assert_that!(
         actions,
         all!(
             not(contains(matchers::actions::invoke_for_id(invocation_id))),
             contains(pat!(Action::RegisterTimer { .. })),
-            contains(eq(Action::IngressSubmitNotification {
-                request_id: request_id_1,
-                execution_time,
-                is_new_invocation: true,
+            contains(pat!(Action::IngressSubmitNotification {
+                request_id: eq(request_id_1),
+                execution_time: eq(execution_time),
+                is_new_invocation: eq(true),
             }))
         )
     );
@@ -286,7 +290,7 @@ async fn send_with_delay_and_idempotency_key() {
     // Send another invocation which reattaches to the original one
     let request_id_2 = PartitionProcessorRpcRequestId::default();
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             idempotency_key: Some(idempotency_key),
@@ -298,16 +302,16 @@ async fn send_with_delay_and_idempotency_key() {
             execution_time: execution_time.map(|m| m + Duration::from_secs(10)),
             source: Source::Ingress(request_id_2),
             ..ServiceInvocation::mock()
-        })))
+        }))
         .await;
     assert_that!(
         actions,
         all!(
             not(contains(matchers::actions::invoke_for_id(invocation_id))),
-            contains(eq(Action::IngressSubmitNotification {
-                request_id: request_id_2,
-                execution_time,
-                is_new_invocation: false,
+            contains(pat!(Action::IngressSubmitNotification {
+                request_id: eq(request_id_2),
+                execution_time: eq(execution_time),
+                is_new_invocation: eq(false),
             }))
         )
     );

@@ -30,8 +30,9 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio_stream::StreamExt;
 use tracing::{debug, instrument, trace, warn};
 
-use restate_memory::{EstimatedMemorySize, MemoryLease, MemoryPool};
-use restate_types::SharedString;
+use restate_memory::{MemoryLease, MemoryPool};
+use restate_platform::memory::EstimatedMemorySize;
+use restate_platform::prelude::ReString;
 use restate_types::net::{Service, ServiceTag};
 
 use self::shard_map::Shards;
@@ -930,7 +931,7 @@ impl<S: Service> Buffered<S> {
     pub fn start<H>(
         self,
         kind: TaskKind,
-        task_name: impl Into<SharedString>,
+        task_name: impl Into<ReString>,
         handler: H,
     ) -> Result<TaskId, ShutdownError>
     where

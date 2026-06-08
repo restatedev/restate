@@ -8,13 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
-
 use bytes::Bytes;
 use futures::Stream;
 
 use restate_memory::{LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream};
-use restate_types::identifiers::{PartitionKey, ServiceId};
+use restate_types::identifiers::ServiceId;
+use restate_types::sharding::KeyRange;
 
 use crate::{BudgetedReadError, Result};
 
@@ -22,7 +21,7 @@ pub trait ReadStateTable {
     fn get_user_state(
         &mut self,
         service_id: &ServiceId,
-        state_key: impl AsRef<[u8]> + Send,
+        state_key: &Bytes,
     ) -> impl Future<Output = Result<Option<Bytes>>> + Send;
 
     /// Returns a lazy stream over all user states for the given service.
@@ -54,7 +53,7 @@ pub trait ScanStateTable {
         F: FnMut((ServiceId, Bytes, &[u8])) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
     >(
         &self,
-        range: RangeInclusive<PartitionKey>,
+        range: KeyRange,
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
@@ -63,15 +62,11 @@ pub trait WriteStateTable {
     fn put_user_state(
         &mut self,
         service_id: &ServiceId,
-        state_key: impl AsRef<[u8]> + Send,
+        state_key: &Bytes,
         state_value: impl AsRef<[u8]> + Send,
     ) -> Result<()>;
 
-    fn delete_user_state(
-        &mut self,
-        service_id: &ServiceId,
-        state_key: impl AsRef<[u8]> + Send,
-    ) -> Result<()>;
+    fn delete_user_state(&mut self, service_id: &ServiceId, state_key: &Bytes) -> Result<()>;
 
     fn delete_all_user_state(&mut self, service_id: &ServiceId) -> Result<()>;
 }

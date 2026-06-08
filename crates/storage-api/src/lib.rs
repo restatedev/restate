@@ -11,6 +11,7 @@
 use std::future::Future;
 
 use restate_memory::{NonZeroByteCount, OutOfMemory, OutOfMemoryKind};
+use restate_types::partitions::UnknownStorageVersion;
 
 /// Storage error
 #[derive(Debug, thiserror::Error)]
@@ -29,6 +30,8 @@ pub enum StorageError {
     SnapshotExport(anyhow::Error),
     #[error("precondition failed: {0}")]
     PreconditionFailed(anyhow::Error),
+    #[error(transparent)]
+    UnknownStorageVersion(#[from] UnknownStorageVersion),
 }
 
 pub type Result<T, E = StorageError> = std::result::Result<T, E>;
@@ -61,12 +64,12 @@ impl From<OutOfMemory> for BudgetedReadError {
 
 pub mod deduplication_table;
 pub mod fsm_table;
-pub mod idempotency_table;
 pub mod inbox_table;
 pub mod invocation_status_table;
 pub mod journal_events;
 pub mod journal_table;
 pub mod journal_table_v2;
+pub mod lock_table;
 pub mod outbox_table;
 pub mod promise_table;
 pub mod protobuf_types;
@@ -116,6 +119,7 @@ pub trait Transaction:
     + invocation_status_table::WriteInvocationStatusTable
     + service_status_table::ReadVirtualObjectStatusTable
     + service_status_table::WriteVirtualObjectStatusTable
+    + inbox_table::ReadInboxTable
     + inbox_table::WriteInboxTable
     + outbox_table::WriteOutboxTable
     + deduplication_table::WriteDeduplicationTable
@@ -125,13 +129,13 @@ pub trait Transaction:
     + journal_table_v2::ReadJournalTable
     + fsm_table::WriteFsmTable
     + timer_table::WriteTimerTable
-    + idempotency_table::IdempotencyTable
     + promise_table::ReadPromiseTable
     + promise_table::WritePromiseTable
     + journal_events::WriteJournalEventsTable
     + vqueue_table::ReadVQueueTable
     + vqueue_table::WriteVQueueTable
+    + lock_table::WriteLockTable
     + Send
 {
-    fn commit(self) -> impl Future<Output = Result<()>> + Send;
+    fn commit(&mut self) -> impl Future<Output = Result<()>> + Send;
 }

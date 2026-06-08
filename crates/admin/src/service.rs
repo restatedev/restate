@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::error_handling::HandleErrorLayer;
@@ -16,21 +17,25 @@ use restate_ingestion_client::IngestionClient;
 use restate_wal_protocol::Envelope;
 use tower::ServiceBuilder;
 use tower_http::classify::ServerErrorsFailureClass;
+use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{Span, debug, info, info_span};
 
 use restate_admin_rest_model::version::AdminApiVersion;
 use restate_core::network::{TransportConnect, net_util};
 use restate_core::{MetadataWriter, TaskCenter};
+use restate_limiter::rule_book::RuleBookObserver;
+use restate_metadata_store::MetadataStoreClient;
 use restate_service_client::HttpClient;
-use restate_service_protocol::discovery::ServiceDiscovery;
-use restate_time_util::DurationExt;
+use restate_service_protocol_v4::discovery::ServiceDiscovery;
+use restate_service_protocol_v4::serdes::SerdesClient;
 use restate_types::config::AdminOptions;
 use restate_types::invocation::client::InvocationClient;
 use restate_types::live::LiveLoad;
 use restate_types::net::address::AdminPort;
 use restate_types::net::listener::Listeners;
 use restate_types::schema::registry::SchemaRegistry;
+use restate_util_time::DurationExt;
 
 use crate::rest_api::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
 use crate::schema_registry_integration::{MetadataService, TelemetryClient};
@@ -44,10 +49,11 @@ pub struct AdminService<Metadata, Discovery, Telemetry, Invocations, Transport> 
     listeners: Listeners<AdminPort>,
     ingestion_client: IngestionClient<Transport, Envelope>,
     schema_registry: SchemaRegistry<Metadata, Discovery, Telemetry>,
+    serdes_client: SerdesClient,
     invocation_client: Invocations,
     query_context: Option<restate_storage_query_datafusion::context::QueryContext>,
-    #[cfg(feature = "metadata-api")]
-    metadata_writer: MetadataWriter,
+    metadata_client: MetadataStoreClient,
+    rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
 }
 
 impl<Invocations, Transport>
@@ -61,21 +67,24 @@ where
         metadata_writer: MetadataWriter,
         ingestion_client: IngestionClient<Transport, Envelope>,
         invocation_client: Invocations,
+        serdes_client: SerdesClient,
         service_discovery: ServiceDiscovery,
         telemetry_http_client: Option<HttpClient>,
     ) -> Self {
+        let metadata_client = metadata_writer.raw_metadata_store_client().clone();
         Self {
             listeners,
             ingestion_client,
-            #[cfg(feature = "metadata-api")]
-            metadata_writer: metadata_writer.clone(),
             schema_registry: SchemaRegistry::new(
                 MetadataService(metadata_writer),
                 service_discovery,
                 TelemetryClient(telemetry_http_client),
             ),
+            serdes_client,
             invocation_client,
             query_context: None,
+            metadata_client,
+            rule_book_observer: None,
         }
     }
 
@@ -89,6 +98,13 @@ where
         }
     }
 
+    pub fn with_rule_book_observer(self, observer: Arc<dyn RuleBookObserver>) -> Self {
+        Self {
+            rule_book_observer: Some(observer),
+            ..self
+        }
+    }
+
     pub async fn run(
         self,
         mut updateable_config: impl LiveLoad<Live = AdminOptions>,
@@ -97,17 +113,18 @@ where
 
         let rest_state = state::AdminServiceState::new(
             self.schema_registry,
+            self.serdes_client,
             self.invocation_client,
             self.ingestion_client,
+            self.metadata_client.clone(),
             self.query_context,
+            self.rule_book_observer,
         );
 
         let router = axum::Router::new();
 
         #[cfg(feature = "metadata-api")]
-        let router = router.merge(crate::metadata_api::router(
-            self.metadata_writer.raw_metadata_store_client(),
-        ));
+        let router = router.merge(crate::metadata_api::router(&self.metadata_client));
 
         // Add now the tracing layer, this makes sure we don't log ui requests
         let router = router.layer(
@@ -181,8 +198,13 @@ where
             )
             .nest(
                 "/v3",
-                with_api_version_middleware(router, AdminApiVersion::V3),
+                with_api_version_middleware(router.clone(), AdminApiVersion::V3),
             )
+            .nest(
+                "/v4",
+                with_api_version_middleware(router, AdminApiVersion::V4),
+            )
+            .layer(CompressionLayer::new())
             .layer(
                 ServiceBuilder::new()
                     .layer(HandleErrorLayer::new(|_| async {

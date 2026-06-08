@@ -18,8 +18,8 @@ use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::journal_table_v2::{
-    JournalEntryIndex, ReadJournalTable, ScanJournalTable, ScanJournalTableRange, StoredEntry,
-    WriteJournalTable,
+    JournalEntryIndex, NotificationEntryIndex, ReadJournalTable, ScanJournalTable,
+    ScanJournalTableRange, StoredEntry, WriteJournalTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{BudgetedReadError, Result, StorageError};
@@ -31,7 +31,7 @@ use restate_types::journal_v2::{CompletionId, EntryMetadata, NotificationId};
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 
 use crate::TableKind::Journal;
-use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
 use crate::owned_iter::OwnedIterator;
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, break_on_err};
 
@@ -149,7 +149,10 @@ fn put_journal_entry<S: StorageAccess>(
                 invocation_uuid: invocation_id.invocation_uuid(),
                 notification_id: notification.id(),
             },
-            &JournalEntryIndex(journal_index),
+            &NotificationEntryIndex {
+                entry_index: journal_index,
+                result_variant: notification.result_variant(),
+            },
         )?;
     } else if let RawEntry::Command(_) = &journal_entry.inner {
         for completion_id in related_completion_ids {
@@ -349,7 +352,7 @@ pub fn cleanup_orphaned_completion_id_index_entries(
     let mut cancelled = false;
 
     let scan_store = storage.clone();
-    let partition_key_range = scan_store.partition_key_range().clone();
+    let partition_key_range = scan_store.partition_key_range();
     let scan = TableScan::FullScanPartitionKeyRange::<JournalCompletionIdToCommandIndexKeyBuilder>(
         partition_key_range,
     );
@@ -419,7 +422,7 @@ fn has_journal_entries(
 fn get_notifications_index<S: StorageAccess>(
     storage: &mut S,
     invocation_id: InvocationId,
-) -> Result<HashMap<NotificationId, EntryIndex>> {
+) -> Result<HashMap<NotificationId, NotificationEntryIndex>> {
     let key = JournalNotificationIdToNotificationIndexKey::builder()
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid());
@@ -431,12 +434,12 @@ fn get_notifications_index<S: StorageAccess>(
         .map(|(mut key, mut value)| {
             let journal_key =
                 JournalNotificationIdToNotificationIndexKey::deserialize_from(&mut key)?;
-            let index = JournalEntryIndex::decode(&mut value)
+            let index = NotificationEntryIndex::decode(&mut value)
                 .map_err(|err| StorageError::Conversion(err.into()))?;
 
             let (_, _, notification_id) = journal_key.split();
 
-            Ok((notification_id, index.0))
+            Ok((notification_id, index))
         })
         .collect()
 }
@@ -523,7 +526,7 @@ impl ReadJournalTable for PartitionStore {
     async fn get_notifications_index(
         &mut self,
         invocation_id: InvocationId,
-    ) -> Result<HashMap<NotificationId, EntryIndex>> {
+    ) -> Result<HashMap<NotificationId, NotificationEntryIndex>> {
         get_notifications_index(self, invocation_id)
     }
 
@@ -655,7 +658,7 @@ impl ReadJournalTable for PartitionStoreTransaction<'_> {
     async fn get_notifications_index(
         &mut self,
         invocation_id: InvocationId,
-    ) -> Result<HashMap<NotificationId, EntryIndex>> {
+    ) -> Result<HashMap<NotificationId, NotificationEntryIndex>> {
         get_notifications_index(self, invocation_id)
     }
 
@@ -766,23 +769,23 @@ fn budgeted_journal_v2_stream<'a, DB: DBAccess + Send>(
 impl WriteJournalTable for PartitionStoreTransaction<'_> {
     fn put_journal_entry(
         &mut self,
-        invocation_id: InvocationId,
+        invocation_id: &InvocationId,
         index: u32,
         entry: &StoredRawEntry,
         related_completion_ids: &[CompletionId],
     ) -> Result<()> {
-        self.assert_partition_key(&invocation_id)?;
-        put_journal_entry(self, &invocation_id, index, entry, related_completion_ids)
+        self.assert_partition_key(invocation_id)?;
+        put_journal_entry(self, invocation_id, index, entry, related_completion_ids)
     }
 
     fn delete_journal(
         &mut self,
-        invocation_id: InvocationId,
+        invocation_id: &InvocationId,
         journal_length: EntryIndex,
     ) -> Result<()> {
-        self.assert_partition_key(&invocation_id)?;
+        self.assert_partition_key(invocation_id)?;
         let _x = RocksDbPerfGuard::new("delete-journal");
-        delete_journal(self, &invocation_id, journal_length)
+        delete_journal(self, invocation_id, journal_length)
     }
 }
 
@@ -791,7 +794,7 @@ mod tests {
 
     use super::write_journal_entry_key;
 
-    use crate::keys::TableKeyPrefix;
+    use crate::keys::EncodeTableKeyPrefix;
     use bytes::Bytes;
     use restate_types::identifiers::{InvocationId, InvocationUuid};
 

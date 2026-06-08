@@ -19,6 +19,7 @@ use restate_types::{
     SemanticRestateVersion,
     identifiers::{PartitionId, PartitionKey},
     partitions::Partition,
+    sharding::KeyRange,
 };
 
 use crate::PartitionStoreManager;
@@ -33,9 +34,12 @@ async fn barrier_fsm() -> googletest::Result<()> {
 
     let rocksdb = RocksDbManager::init();
 
-    let partition_store_manager = PartitionStoreManager::create().await?;
+    let partition_store_manager = PartitionStoreManager::create(true).await?;
 
-    let partition = Partition::new(PartitionId::MIN, PartitionKey::MIN..=PartitionKey::MAX);
+    let partition = Partition::new(
+        PartitionId::MIN,
+        KeyRange::new(PartitionKey::MIN, PartitionKey::MAX),
+    );
     let mut partition_store = partition_store_manager.open(&partition, None).await?;
 
     // we default to unknown if FSM doesn't have a min version, in that case, any "real" version
@@ -54,6 +58,7 @@ async fn barrier_fsm() -> googletest::Result<()> {
 
     // commit.
     txn.commit().await?;
+    drop(txn);
 
     // did it persist?
     let current_min = partition_store.get_min_restate_version().await?;

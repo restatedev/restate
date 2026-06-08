@@ -8,15 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::{KeyCodec, KeyKind, TableKey, TableKeyPrefix};
+use bytes::BytesMut;
+
+use restate_types::identifiers::{PartitionId, PartitionKey};
+use restate_types::sharding::KeyRange;
+
+use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, KeyEncode, KeyKind};
 use crate::scan::TableScan::{
     FullScanPartitionKeyRange, KeyRangeInclusiveInSinglePartition, SinglePartition,
     SinglePartitionKeyPrefix,
 };
 use crate::{PaddedPartitionId, ScanMode, TableKind};
-use bytes::BytesMut;
-use restate_types::identifiers::{PartitionId, PartitionKey};
-use std::ops::RangeInclusive;
 
 // Note: we take extra arguments like (PartitionId or PartitionKey) only to make sure that
 // call-sites know what they are opting to. Those values might not actually be used to perform the
@@ -27,7 +29,7 @@ pub enum TableScan<K> {
     SinglePartition(PartitionId),
     /// Scan an inclusive key-range potentially across partitions.
     /// Requires total seek order
-    FullScanPartitionKeyRange(RangeInclusive<PartitionKey>),
+    FullScanPartitionKeyRange(KeyRange),
     /// Scan within a single partition key
     SinglePartitionKeyPrefix(PartitionKey, K),
     /// Inclusive Key Range in a single partition.
@@ -41,15 +43,18 @@ pub(crate) enum PhysicalScan {
     RangeOpen(TableKind, KeyKind, BytesMut),
 }
 
-impl<K: TableKeyPrefix> From<TableScan<K>> for PhysicalScan {
-    fn from(scan: TableScan<K>) -> Self {
+impl PhysicalScan {
+    pub fn from<K: EncodeTableKeyPrefix>(scan: TableScan<K>, arena: &mut BytesMut) -> Self {
         match scan {
             SinglePartitionKeyPrefix(_partition_key, key) => {
-                PhysicalScan::Prefix(K::TABLE, K::KEY_KIND, key.serialize())
+                key.serialize_to(arena);
+                PhysicalScan::Prefix(K::TABLE, K::KEY_KIND, arena.split())
             }
             KeyRangeInclusiveInSinglePartition(_partition_id, start, end) => {
-                let start = start.serialize();
-                let mut end = end.serialize();
+                start.serialize_to(arena);
+                let start = arena.split();
+                end.serialize_to(arena);
+                let mut end = arena.split();
                 if try_increment(&mut end) {
                     PhysicalScan::RangeExclusive(
                         K::TABLE,
@@ -66,27 +71,26 @@ impl<K: TableKeyPrefix> From<TableScan<K>> for PhysicalScan {
             }
             SinglePartition(partition_id) => {
                 let partition_id = PaddedPartitionId::from(partition_id);
-                let mut prefix_start = BytesMut::with_capacity(
-                    partition_id.serialized_length() + KeyKind::SERIALIZED_LENGTH,
-                );
-                K::serialize_key_kind(&mut prefix_start);
-                partition_id.encode(&mut prefix_start);
+                arena.reserve(partition_id.serialized_length() + KeyKind::SERIALIZED_LENGTH);
+                K::serialize_key_kind(arena);
+                partition_id.encode(arena);
+                let prefix_start = arena.split();
                 PhysicalScan::Prefix(K::TABLE, K::KEY_KIND, prefix_start)
             }
             FullScanPartitionKeyRange(range) => {
-                let (start, end) = (range.start(), range.end());
-                let mut start_bytes =
-                    BytesMut::with_capacity(start.serialized_length() + KeyKind::SERIALIZED_LENGTH);
-                K::serialize_key_kind(&mut start_bytes);
-                start.encode(&mut start_bytes);
+                let start = range.start();
+                let end = range.end();
+                arena.reserve(start.serialized_length() + KeyKind::SERIALIZED_LENGTH);
+                K::serialize_key_kind(arena);
+                start.encode(arena);
+                let start_bytes = arena.split();
                 match end.checked_add(1) {
                     None => PhysicalScan::RangeOpen(K::TABLE, K::KEY_KIND, start_bytes),
                     Some(end) => {
-                        let mut end_bytes = BytesMut::with_capacity(
-                            end.serialized_length() + KeyKind::SERIALIZED_LENGTH,
-                        );
-                        K::serialize_key_kind(&mut end_bytes);
-                        end.encode(&mut end_bytes);
+                        arena.reserve(end.serialized_length() + KeyKind::SERIALIZED_LENGTH);
+                        K::serialize_key_kind(arena);
+                        end.encode(arena);
+                        let end_bytes = arena.split();
                         PhysicalScan::RangeExclusive(
                             K::TABLE,
                             K::KEY_KIND,
@@ -101,7 +105,14 @@ impl<K: TableKeyPrefix> From<TableScan<K>> for PhysicalScan {
     }
 }
 
-impl<K: TableKey> TableScan<K> {
+impl<K: EncodeTableKeyPrefix> From<TableScan<K>> for PhysicalScan {
+    fn from(scan: TableScan<K>) -> Self {
+        let mut arena = BytesMut::new();
+        PhysicalScan::from(scan, &mut arena)
+    }
+}
+
+impl<K: EncodeTableKey> TableScan<K> {
     pub fn table(&self) -> TableKind {
         K::TABLE
     }
@@ -156,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn test_simple_increment() {
+    fn simple_increment() {
         let mut bytes = BytesMut::new();
         for i in 0..1024 {
             bytes.clear();
@@ -208,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_stays_within_partition_bounds() {
+    fn scan_stays_within_partition_bounds() {
         verify_partition_covers_exactly(0);
         verify_partition_covers_exactly(255);
         verify_partition_covers_exactly(256);
@@ -219,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn test_binary_increment_suffix() {
+    fn binary_increment_suffix() {
         let mut bytes = BytesMut::new();
         bytes.put_u64(257);
         bytes.put_u64(u64::MAX);

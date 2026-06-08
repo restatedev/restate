@@ -51,7 +51,7 @@ async fn populate_data<T: WriteTimerTable>(txn: &mut T) {
     )
     .unwrap();
 
-    let service_invocation = mock_service_invocation(ServiceId::new("svc-2", "key-2"));
+    let service_invocation = mock_service_invocation(ServiceId::new(None, "svc-2", "key-2"));
     txn.put_timer(
         &TimerKey {
             kind: TimerKeyKind::Invoke {
@@ -169,6 +169,7 @@ pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     delete_the_first_timer(&mut txn).await;
 
     txn.commit().await.expect("should not fail");
+    drop(txn);
 
     let mut txn = rocksdb.transaction();
     verify_next_timer_after_deletion(&mut txn).await;

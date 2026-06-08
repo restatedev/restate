@@ -189,12 +189,12 @@ impl Handler {
 
                     match self {
                         Handler::Get => {
-                            for await message in Self::handle_get(start_message, input, replayed, incoming) {
+                            for await message in Self::handle_get(start_message, input, replayed) {
                                 yield message?
                             }
                         },
                         Handler::Add => {
-                            for await message in Self::handle_add(start_message, input, replayed, incoming) {
+                            for await message in Self::handle_add(start_message, input, replayed) {
                                 yield message?
                             }
                         },
@@ -202,6 +202,14 @@ impl Handler {
                 },
                 _ => {Err(FrameError::InvalidJournal)?; return},
             };
+
+            // drain incoming
+            while let Some(msg) = incoming.next().await {
+                if msg.is_err() {
+                    break;
+                }
+            }
+
         }
     }
 
@@ -209,18 +217,17 @@ impl Handler {
         start_message: StartMessage,
         _input: InputCommand,
         replayed: Vec<Message>,
-        _incoming: impl Stream<Item = Result<Message, FrameError>>,
     ) -> impl Stream<Item = Result<Message, FrameError>> {
         try_stream! {
             let counter = read_counter(&start_message.state_map);
             match replayed.len() {
                 0 => {
                     yield get_state(counter.clone());
-                    yield output(counter.unwrap_or("0".into()));
+                    yield output(counter.unwrap_or_else(|| "0".into()));
                     yield end();
                 },
                 1 => {
-                    yield output(counter.unwrap_or("0".into()));
+                    yield output(counter.unwrap_or_else(|| "0".into()));
                     yield end();
                 }
                 2=> {
@@ -235,7 +242,6 @@ impl Handler {
         start_message: StartMessage,
         input: InputCommand,
         replayed: Vec<Message>,
-        _incoming: impl Stream<Item = Result<Message, FrameError>>,
     ) -> impl Stream<Item = Result<Message, FrameError>> {
         try_stream! {
                 let counter = read_counter(&start_message.state_map);
@@ -330,9 +336,7 @@ fn set_state(value: Bytes) -> Message {
         prost::Message::encode_to_vec(&SetStateCommandMessage {
             name: String::new(),
             key: "counter".into(),
-            value: Some(proto::Value {
-                content: value.clone(),
-            }),
+            value: Some(proto::Value { content: value }),
         })
         .into(),
     )

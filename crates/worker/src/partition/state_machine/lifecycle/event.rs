@@ -8,48 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use restate_storage_api::invocation_status_table::{InvocationStatus, WriteInvocationStatusTable};
+use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_storage_api::journal_events::{EventView, WriteJournalEventsTable};
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_events::raw::RawEvent;
 
-pub struct OnInvokerEventCommand {
-    pub invocation_id: InvocationId,
-    pub invocation_status: InvocationStatus,
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
+
+pub struct ApplyEventCommand<'e> {
+    pub invocation_id: &'e InvocationId,
+    pub invocation_status: &'e InvocationStatus,
     pub event: RawEvent,
-}
-
-impl<'ctx, 's: 'ctx, S: WriteJournalEventsTable + WriteInvocationStatusTable>
-    CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>> for OnInvokerEventCommand
-{
-    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
-        let Self {
-            invocation_id,
-            mut invocation_status,
-            event,
-        } = self;
-        ApplyEventCommand {
-            invocation_id,
-            invocation_status: &mut invocation_status,
-            event,
-        }
-        .apply(ctx)
-        .await?;
-
-        // Store invocation status
-        ctx.storage
-            .put_invocation_status(&invocation_id, &invocation_status)
-            .map_err(Error::Storage)?;
-
-        Ok(())
-    }
-}
-
-pub(super) struct ApplyEventCommand<'e> {
-    pub(super) invocation_id: InvocationId,
-    pub(super) invocation_status: &'e InvocationStatus,
-    pub(super) event: RawEvent,
 }
 
 impl<'e, 'ctx: 'e, 's: 'ctx, S: WriteJournalEventsTable>
@@ -62,7 +31,7 @@ impl<'e, 'ctx: 'e, 's: 'ctx, S: WriteJournalEventsTable>
         };
 
         // To store the event, we need to give it a total order wrt journal.
-        let after_journal_entry_index = journal_metadata.length.checked_sub(1).unwrap_or_default();
+        let after_journal_entry_index = journal_metadata.length.saturating_sub(1);
 
         // Store event
         ctx.storage.put_journal_event(
@@ -84,10 +53,10 @@ mod tests {
     use crate::partition::state_machine::tests::{TestEnv, fixtures};
     use crate::partition::types::InvokerEffectKind;
     use googletest::prelude::*;
-    use restate_invoker_api::Effect;
     use restate_types::journal_events::raw::RawEvent;
     use restate_types::journal_events::{Event, TransientErrorEvent};
-    use restate_wal_protocol::Command;
+    use restate_wal_protocol::v2::{Command, commands};
+    use restate_worker_api::invoker::Effect;
 
     #[restate_core::test]
     async fn store_event() {
@@ -106,17 +75,17 @@ mod tests {
         };
 
         let _ = test_env
-            .apply(Command::InvokerEffect(Box::new(Effect {
+            .apply(commands::InvokerEffectCommand::test_envelope(Effect {
                 invocation_id,
                 kind: InvokerEffectKind::JournalEvent {
                     event: RawEvent::from(Event::TransientError(transient_error_event.clone()))
                         .clone(),
                 },
-            })))
+            }))
             .await;
 
         assert_that!(
-            test_env.read_journal_events(invocation_id).await,
+            test_env.read_journal_events(&invocation_id).await,
             elements_are![eq(Event::TransientError(transient_error_event.clone()))]
         );
 

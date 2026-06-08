@@ -15,7 +15,7 @@ use restate_types::config::Configuration;
 
 /// Min/max supported admin api versions by the server
 pub const MIN_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V2;
-pub const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V3;
+pub const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V4;
 
 /// Get version information
 ///
@@ -39,5 +39,6 @@ pub async fn version() -> Json<VersionInformation> {
                 .ingress
                 .advertised_address(tc.address_book())
         })),
+        features: Configuration::pinned().common.experimental.features(),
     })
 }

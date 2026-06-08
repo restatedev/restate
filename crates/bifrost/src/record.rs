@@ -171,13 +171,15 @@ impl<S: Copy> LogEntry<S> {
     pub fn try_decode_arc<T: StorageDecode + StorageEncode>(
         self,
     ) -> Option<Result<Arc<T>, StorageDecodeError>> {
-        self.into_record().map(|record| record.decode_arc())
+        self.into_record()
+            .map(|record| record.decode_arc().map_err(Into::into))
     }
 
     pub fn try_decode<T: StorageDecode + StorageEncode + Clone>(
         self,
     ) -> Option<Result<T, StorageDecodeError>> {
-        self.into_record().map(|record| record.decode())
+        self.into_record()
+            .map(|record| record.decode().map_err(Into::into))
     }
 
     #[cfg(any(test, feature = "test-util"))]

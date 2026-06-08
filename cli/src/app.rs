@@ -62,9 +62,18 @@ pub enum Command {
     /// Manages your service deployments
     #[clap(subcommand)]
     Deployments(deployments::Deployments),
+    /// Manage Kafka clusters
+    #[clap(subcommand)]
+    KafkaClusters(kafkaclusters::KafkaClusters),
+    /// Manage Kafka subscriptions
+    #[clap(subcommand)]
+    Subscriptions(subscriptions::Subscriptions),
     /// Manage active invocations
     #[clap(subcommand)]
     Invocations(invocations::Invocations),
+    /// Manage action concurrency-limit rules
+    #[clap(subcommand)]
+    Rules(rules::Rules),
     /// Runs SQL queries against the data fusion service
     Sql(sql::Sql),
     /// Download one of Restate's examples in this directory.

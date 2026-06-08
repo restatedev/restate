@@ -19,7 +19,7 @@ use comfy_table::{Cell, Color, Table};
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::{c_println, c_title};
 use restate_log_server::rocksdb_logstore::{DATA_CF, METADATA_CF};
-use restate_serde_util::ByteCount;
+use restate_util_bytecount::ByteCount;
 
 use crate::app::GlobalOpts;
 use crate::util::rocksdb::{DEFAULT_CF, resolve_log_store_path};

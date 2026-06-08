@@ -8,29 +8,40 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
+use std::sync::Arc;
 
+use bytes::{Buf, BufMut, Bytes};
+
+use restate_encoding::Arced;
+use restate_limiter::RuleBook;
 use restate_storage_api::fsm_table::{CurrentReplicaSetState, NextReplicaSetState};
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
-use restate_types::logs::{Keys, Lsn, SequenceNumber};
+use restate_types::identifiers::{LeaderEpoch, PartitionId};
+use restate_types::logs::{HasRecordKeys, Keys, Lsn, SequenceNumber};
 use restate_types::partitions::PartitionConfiguration;
 use restate_types::partitions::state::{MemberState, ReplicaSetState};
 use restate_types::replication::{NodeSet, ReplicationProperty};
 use restate_types::schema::Schema;
+use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
-use restate_types::{GenerationalNodeId, SemanticRestateVersion, Version, Versioned};
+use restate_types::{
+    GenerationalNodeId, SemanticRestateVersion, Version, Versioned, bilrost_storage_encode_decode,
+    flexbuffers_storage_encode_decode,
+};
 
 /// Announcing a new leader. This message can be written by any component to make the specified
 /// partition processor the leader.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct AnnounceLeader {
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message)]
+pub struct AnnounceLeaderCommand {
     /// Sender of the announce leader message.
     ///
     /// This became non-optional in v1.5. Noting that it has always been set in previous versions,
     /// it's safe to assume that it's always set.
+    #[bilrost(tag(1))]
     pub node_id: GenerationalNodeId,
+    #[bilrost(tag(2))]
     pub leader_epoch: LeaderEpoch,
-    pub partition_key_range: RangeInclusive<PartitionKey>,
+    #[bilrost(tag(3))]
+    pub partition_key_range: KeyRange,
 
     /// Associated epoch metadata version
     ///
@@ -39,25 +50,40 @@ pub struct AnnounceLeader {
     ///
     /// *Since v1.6*
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag(4))]
     pub epoch_version: Option<Version>,
     /// Current replica set configuration at the time of the announcement.
     /// This field is optional for backward compatibility with older versions.
     /// *Since v1.6*
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag(5))]
     pub current_config: Option<CurrentReplicaSetConfiguration>,
     /// Next replica set configuration.
     /// *Since v1.6*
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag(6))]
     pub next_config: Option<NextReplicaSetConfiguration>,
 }
 
+bilrost_storage_encode_decode!(AnnounceLeaderCommand);
+
+impl HasRecordKeys for AnnounceLeaderCommand {
+    fn record_keys(&self) -> Keys {
+        Keys::RangeInclusive(self.partition_key_range.start()..=self.partition_key_range.end())
+    }
+}
+
 #[serde_with::serde_as]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message)]
 pub struct CurrentReplicaSetConfiguration {
+    #[bilrost(tag = 1)]
     pub version: Version,
+    #[bilrost(tag = 2)]
     pub replica_set: NodeSet,
+    #[bilrost(tag = 3)]
     pub modified_at: MillisSinceEpoch,
     #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[bilrost(tag = 4)]
     pub replication: ReplicationProperty,
 }
 
@@ -86,9 +112,11 @@ impl CurrentReplicaSetConfiguration {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message)]
 pub struct NextReplicaSetConfiguration {
+    #[bilrost(tag(1))]
     pub version: Version,
+    #[bilrost(tag(2))]
     pub replica_set: NodeSet,
 }
 
@@ -137,13 +165,40 @@ fn new_replica_set_state(version: Version, node_set: &NodeSet) -> ReplicaSetStat
 /// Readers before v1.4.0 will crash when reading this command. For v1.4.0+, the barrier defines the
 /// minimum version of restate server that can progress after this command. It also updates the FSM
 /// in case command has been trimmed.
-#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message, serde::Serialize, serde::Deserialize)]
-pub struct VersionBarrier {
+///
+/// Starting with v1.7.0, the barrier may also carry a list of feature changes (see
+/// [`restate_types::partitions::features::PartitionFeatureChange`]). Each entry is a raw `u16` ID
+/// that the receiving binary maps back to a typed change; unknown IDs cause the partition to fail
+/// with a forward-compatibility error rather than silently dropping the change.
+#[derive(Debug, Clone, bilrost::Message, serde::Serialize, serde::Deserialize)]
+pub struct VersionBarrierCommand {
     /// The minimum version required (inclusive) to progress after this barrier.
+    /// Proposers must set this to at least
+    /// `max(current_min_version, max(change.min_required_version() for change in feature_changes))`.
+    #[bilrost(tag(1))]
     pub version: SemanticRestateVersion,
     /// A human-readable reason for why this barrier exists.
+    #[bilrost(tag(2))]
     pub human_reason: Option<String>,
+    #[bilrost(tag(3))]
     pub partition_key_range: Keys,
+    /// Ordered list of feature change IDs (see
+    /// [`restate_types::partitions::features::PartitionFeatureChange`]). Unknown IDs cause
+    /// `Error::UnknownFeatureFlags` on apply. Within a single barrier, later entries override
+    /// earlier ones for the same target feature.
+    ///
+    /// *Since v1.7.0*
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[bilrost(tag(4))]
+    pub feature_changes: Vec<u16>,
+}
+
+bilrost_storage_encode_decode!(VersionBarrierCommand);
+
+impl HasRecordKeys for VersionBarrierCommand {
+    fn record_keys(&self) -> Keys {
+        self.partition_key_range.clone()
+    }
 }
 
 /// Updates the `PARTITION_DURABILITY` FSM variable to the given value. Note that durability
@@ -153,21 +208,75 @@ pub struct VersionBarrier {
 /// NOTE: The durability point is monotonically increasing.
 ///
 /// Since v1.4.2.
-#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message, serde::Serialize, serde::Deserialize)]
-pub struct PartitionDurability {
+#[derive(Debug, Clone, bilrost::Message, serde::Serialize, serde::Deserialize)]
+pub struct UpdatePartitionDurabilityCommand {
+    #[bilrost(tag(1))]
     pub partition_id: PartitionId,
     /// The partition has applied this LSN durably to the replica-set and/or has been
     /// persisted in a snapshot in the snapshot repository.
+    #[bilrost(tag(2))]
     pub durable_point: Lsn,
     /// Timestamp which the durability point was updated
+    #[bilrost(tag(3))]
     pub modification_time: MillisSinceEpoch,
 }
+
+bilrost_storage_encode_decode!(UpdatePartitionDurabilityCommand);
 
 /// Consistently store schema across partition replicas.
 ///
 /// Since v1.6.0.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct UpsertSchema {
+pub struct UpsertSchemaCommand {
     pub partition_key_range: Keys,
     pub schema: Schema,
+}
+
+flexbuffers_storage_encode_decode!(UpsertSchemaCommand);
+
+impl HasRecordKeys for UpsertSchemaCommand {
+    fn record_keys(&self) -> Keys {
+        self.partition_key_range.clone()
+    }
+}
+
+/// Consistently distribute the cluster-global rule book across partition
+/// replicas. Each partition's leader observes a node-level cache of the
+/// rule book stored in the metadata store and proposes this command when
+/// it sees a higher version than the partition's in-memory state.
+/// Followers and the leader (replaying) apply it idempotently — no-op if
+/// the carried rule book's version is not greater than the current
+/// in-memory version.
+///
+/// `rule_book` is the bilrost-encoded [`restate_limiter::RuleBook`]. It
+/// is carried as opaque bytes (same precedent as
+/// [`crate::Command::VQSchedulerDecisions`]) so the wal-protocol crate
+/// doesn't need to drag full serde derive through every limiter type.
+/// The state machine decodes once on apply.
+///
+/// Since v1.7.0.
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct UpsertRuleBookCommand {
+    #[bilrost(tag(1), encoding(Arced))]
+    pub rule_book: Arc<RuleBook>,
+}
+
+bilrost_storage_encode_decode!(UpsertRuleBookCommand);
+
+impl UpsertRuleBookCommand {
+    pub fn bilrost_encode<B: BufMut>(&self, b: &mut B) -> Result<(), bilrost::EncodeError> {
+        bilrost::Message::encode(self, b)
+    }
+
+    pub fn encoded_len(&self) -> usize {
+        bilrost::Message::encoded_len(self)
+    }
+
+    pub fn bilrost_encode_to_bytes(&self) -> Bytes {
+        bilrost::Message::encode_to_bytes(self)
+    }
+
+    pub fn bilrost_decode<B: Buf>(buf: B) -> Result<Self, bilrost::DecodeError> {
+        bilrost::OwnedMessage::decode(buf)
+    }
 }

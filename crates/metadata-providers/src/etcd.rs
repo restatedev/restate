@@ -345,7 +345,7 @@ mod test {
 
     #[ignore]
     #[tokio::test]
-    async fn test_put_does_not_exist() {
+    async fn put_does_not_exist() {
         let opts = MetadataClientOptions::default();
         let client = EtcdMetadataStore::new(&TEST_ADDRESS, &opts).await.unwrap();
 
@@ -372,7 +372,7 @@ mod test {
 
     #[ignore]
     #[tokio::test]
-    async fn test_put_with_version() {
+    async fn put_with_version() {
         let opts = MetadataClientOptions::default();
         let client = EtcdMetadataStore::new(&TEST_ADDRESS, &opts).await.unwrap();
 
@@ -430,7 +430,7 @@ mod test {
 
     #[ignore]
     #[tokio::test]
-    async fn test_put_force() {
+    async fn put_force() {
         let opts = MetadataClientOptions::default();
         let client = EtcdMetadataStore::new(&TEST_ADDRESS, &opts).await.unwrap();
 
@@ -474,7 +474,7 @@ mod test {
 
     #[ignore]
     #[tokio::test]
-    async fn test_delete() {
+    async fn delete() {
         let opts = MetadataClientOptions::default();
         let client = EtcdMetadataStore::new(&TEST_ADDRESS, &opts).await.unwrap();
 

@@ -1,0 +1,186 @@
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
+use restate_platform::network::NetSerde;
+
+/// Identifying the partition
+#[derive(
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    derive_more::Deref,
+    derive_more::From,
+    derive_more::Into,
+    derive_more::Add,
+    derive_more::Display,
+    derive_more::Debug,
+    derive_more::FromStr,
+)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+#[repr(transparent)]
+#[debug("{}", _0)]
+pub struct PartitionId(u16);
+
+impl From<PartitionId> for u32 {
+    fn from(value: PartitionId) -> Self {
+        u32::from(value.0)
+    }
+}
+
+impl From<PartitionId> for u64 {
+    fn from(value: PartitionId) -> Self {
+        u64::from(value.0)
+    }
+}
+
+impl NetSerde for PartitionId {}
+
+impl PartitionId {
+    /// It's your responsibility to ensure the value is within the valid range.
+    pub const fn new_unchecked(v: u16) -> Self {
+        Self(v)
+    }
+
+    pub const MIN: Self = Self(u16::MIN);
+    // 65535 partitions.
+    pub const MAX: Self = Self(u16::MAX);
+
+    #[inline]
+    pub fn next(self) -> Self {
+        Self(std::cmp::min(*Self::MAX, self.0.saturating_add(1)))
+    }
+}
+
+#[cfg(feature = "bilrost")]
+mod bilrost_impl {
+    use super::PartitionId;
+
+    use bilrost::encoding::{DistinguishedProxiable, EmptyState, ForOverwrite, Proxiable};
+    use bilrost::{Canonicity, DecodeErrorKind};
+
+    impl Proxiable for PartitionId {
+        type Proxy = u16;
+
+        fn encode_proxy(&self) -> Self::Proxy {
+            self.0
+        }
+
+        fn decode_proxy(&mut self, proxy: Self::Proxy) -> Result<(), DecodeErrorKind> {
+            self.0 = proxy;
+            Ok(())
+        }
+    }
+
+    struct FixedPartitionIdTag;
+
+    impl Proxiable<FixedPartitionIdTag> for PartitionId {
+        type Proxy = u32;
+
+        fn encode_proxy(&self) -> Self::Proxy {
+            u32::from(self.0)
+        }
+
+        fn decode_proxy(&mut self, proxy: Self::Proxy) -> Result<(), DecodeErrorKind> {
+            self.0 = proxy
+                .try_into()
+                .map_err(|_| DecodeErrorKind::OutOfDomainValue)?;
+            Ok(())
+        }
+    }
+
+    impl DistinguishedProxiable<FixedPartitionIdTag> for PartitionId {
+        fn decode_proxy_distinguished(
+            &mut self,
+            proxy: Self::Proxy,
+        ) -> Result<Canonicity, DecodeErrorKind> {
+            <PartitionId as Proxiable<FixedPartitionIdTag>>::decode_proxy(self, proxy)?;
+            Ok(Canonicity::Canonical)
+        }
+    }
+
+    impl ForOverwrite<(), PartitionId> for () {
+        fn for_overwrite() -> PartitionId {
+            PartitionId(0)
+        }
+    }
+
+    impl EmptyState<(), PartitionId> for () {
+        fn empty() -> PartitionId {
+            PartitionId(0)
+        }
+
+        fn is_empty(val: &PartitionId) -> bool {
+            val.0 == 0
+        }
+
+        fn clear(val: &mut PartitionId) {
+            val.0 = 0;
+        }
+    }
+
+    bilrost::delegate_proxied_encoding!(
+        use encoding (bilrost::encoding::Varint)
+        to encode proxied type (PartitionId)
+        with general encodings
+    );
+
+    bilrost::delegate_proxied_encoding!(
+        use encoding (bilrost::encoding::Fixed)
+        to encode proxied type (PartitionId) using proxy tag (FixedPartitionIdTag)
+        with encoding (bilrost::encoding::Fixed)
+        including distinguished
+    );
+}
+
+#[cfg(all(test, feature = "bilrost"))]
+mod tests {
+    use bilrost::{Message, OwnedMessage};
+
+    use super::*;
+
+    #[test]
+    fn fixed_encoding_round_trips_partition_id() {
+        #[derive(Debug, PartialEq, bilrost::Message)]
+        struct EncodedPartitionId {
+            #[bilrost(tag(1), encoding(fixed))]
+            value: PartitionId,
+        }
+
+        let value = EncodedPartitionId {
+            value: PartitionId::MAX,
+        };
+        let encoded = value.encode_to_bytes();
+
+        assert_eq!(encoded.len(), 5);
+        assert_eq!(EncodedPartitionId::decode(encoded).unwrap(), value);
+    }
+
+    #[test]
+    fn general_encoding_keeps_partition_id_varint() {
+        #[derive(Debug, PartialEq, bilrost::Message)]
+        struct EncodedPartitionId {
+            #[bilrost(tag(1))]
+            value: PartitionId,
+        }
+
+        let value = EncodedPartitionId {
+            value: PartitionId::MAX,
+        };
+        let encoded = value.encode_to_bytes();
+
+        assert_eq!(encoded.as_ref(), &[0x04, 0xff, 0xfe, 0x02]);
+        assert_eq!(EncodedPartitionId::decode(encoded).unwrap(), value);
+    }
+}

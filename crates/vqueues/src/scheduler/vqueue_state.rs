@@ -8,72 +8,54 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::task::Poll;
+use std::task::{Poll, ready};
 use std::time::Duration;
 
-use gardal::LocalTokenBucket;
-use hashbrown::HashSet;
+use enum_map::{Enum, EnumMap};
 use metrics::counter;
 use tokio::time::Instant;
-use tracing::trace;
 
-use restate_futures_util::concurrency::{Concurrency, Permit};
-use restate_memory::{MemoryLease, PollMemoryPool};
-use restate_serde_util::NonZeroByteCount;
+use restate_clock::RoughTimestamp;
 use restate_storage_api::StorageError;
+use restate_storage_api::vqueue_table::EntryMetadata;
 use restate_storage_api::vqueue_table::metadata::VQueueMeta;
-use restate_storage_api::vqueue_table::{
-    EntryKind, VQueueEntry, VQueueStore, VisibleAt, WaitStats,
-};
-use restate_types::time::MillisSinceEpoch;
-use restate_types::vqueue::VQueueId;
+use restate_storage_api::vqueue_table::scheduler::YieldReason;
+use restate_storage_api::vqueue_table::{EntryKey, EntryValue, VQueueStore, stats::WaitStats};
+use restate_types::vqueues::{EntryId, VQueueId};
+use restate_worker_api::ResourceKind;
 
+use crate::cache::{self, VQueueHandle};
 use crate::metric_definitions::{
-    VQUEUE_GLOBAL_THROTTLE_WAIT_MS, VQUEUE_INVOKER_CAPACITY_WAIT_MS, VQUEUE_INVOKER_MEMORY_WAIT_MS,
-    VQUEUE_LOCAL_THROTTLE_WAIT_MS,
+    VQUEUE_CONCURRENCY_RULES_WAIT_MS, VQUEUE_DEPLOYMENT_CONCURRENCY_WAIT_MS,
+    VQUEUE_INVOKER_CONCURRENCY_WAIT_MS, VQUEUE_INVOKER_MEMORY_WAIT_MS,
+    VQUEUE_INVOKER_THROTTLING_WAIT_MS, VQUEUE_LOCK_WAIT_MS, VQUEUE_THROTTLING_RULES_WAIT_MS,
 };
-use crate::scheduler::Action;
 use crate::scheduler::queue::QueueItem;
-use crate::vqueue_config::VQueueConfig;
 
 use super::clock::SchedulerClock;
 use super::queue::Queue;
-use super::{Entry, GlobalTokenBucket, IsPaused, ThrottleScope, VQueueHandle};
+use super::resource_manager::{AcquireOutcome, PermitBuilder};
+use super::{ResourceManager, RunAction, UnconfirmedAssignments, YieldAction};
 
 const QUANTUM: i32 = 1;
 
-/// Resources reserved from global limiters for a single invocation.
-///
-/// Bundles a concurrency [`Permit`] and a [`MemoryLease`] so they travel
-/// together through the scheduler → leader handoff.
-pub struct ReservedResources {
-    pub permit: Permit,
-    pub memory_lease: MemoryLease,
-}
-
-pub(super) enum Pop<Item> {
-    DeficitExhausted,
-    Item {
-        action: Action,
-        /// Reserved resources for this item. `None` for actions that don't
-        /// require global resources (e.g. yield, state mutations).
-        resources: Option<ReservedResources>,
-        entry: Entry<Item>,
-        updated_zt: Option<f64>,
-    },
-    Throttle {
-        delay: Duration,
-        /// the reason for throttling
-        scope: ThrottleScope,
-    },
-    BlockedOnCapacity,
-    BlockedOnMemory,
+pub(super) enum Pop {
+    /// The queue needs to receive more credits to be driven.
+    NeedsCredit,
+    /// An action is ready to be executed.
+    Run(RunAction),
+    /// Yielding can place back an item from the run queue to inbox, or from inbox to inbox
+    /// but with a different run_at time.
+    Yield(YieldAction),
+    /// Queue needs to be moved out of the ready ring. The queue will be woken up
+    /// by the resource manager.
+    Blocked(ResourceKind),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, derive_more::IsVariant)]
 pub(super) enum Eligibility {
     Eligible,
-    EligibleAt(MillisSinceEpoch),
+    EligibleAt(RoughTimestamp),
     NotEligible,
 }
 
@@ -81,9 +63,8 @@ pub(super) enum Eligibility {
 pub(super) enum DetailedEligibility {
     EligibleRunning,
     EligibleInbox,
-    Scheduled(MillisSinceEpoch),
+    Scheduled(RoughTimestamp),
     Empty,
-    WaitingConcurrencyTokens,
 }
 
 impl DetailedEligibility {
@@ -94,368 +75,275 @@ impl DetailedEligibility {
                 Eligibility::Eligible
             }
             DetailedEligibility::Scheduled(ts) => Eligibility::EligibleAt(*ts),
-            DetailedEligibility::Empty | DetailedEligibility::WaitingConcurrencyTokens => {
-                Eligibility::NotEligible
-            }
+            DetailedEligibility::Empty => Eligibility::NotEligible,
+        }
+    }
+}
+
+/// Every distinct state the head item can be waiting in. A `Stats` instance is
+/// in at most one bucket at any moment; transitions are recorded on entry/exit
+/// via `Stats::set_wait`, and the elapsed time is the wait time attributed to
+/// that bucket.
+///
+/// `WaitBucket::for_resource` maps every `BlockedOn(ResourceKind)` outcome to a
+/// bucket. The match is exhaustive, so adding a new `ResourceKind` is a compile
+/// error until a bucket is assigned.
+///
+/// The throttling buckets (`ThrottlingRules`, `InvokerThrottling`) are entered
+/// through normal `BlockedOn(ResourceKind)` outcomes.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Enum)]
+#[repr(u8)]
+enum WaitBucket {
+    Lock,
+    ConcurrencyRules,
+    InvokerConcurrency,
+    InvokerMemory,
+    DeploymentConcurrency,
+    ThrottlingRules,
+    /// Node-level invoker throttling.
+    InvokerThrottling,
+}
+
+impl WaitBucket {
+    fn metric(self) -> &'static str {
+        match self {
+            WaitBucket::Lock => VQUEUE_LOCK_WAIT_MS,
+            WaitBucket::ConcurrencyRules => VQUEUE_CONCURRENCY_RULES_WAIT_MS,
+            WaitBucket::InvokerConcurrency => VQUEUE_INVOKER_CONCURRENCY_WAIT_MS,
+            WaitBucket::InvokerMemory => VQUEUE_INVOKER_MEMORY_WAIT_MS,
+            WaitBucket::DeploymentConcurrency => VQUEUE_DEPLOYMENT_CONCURRENCY_WAIT_MS,
+            WaitBucket::ThrottlingRules => VQUEUE_THROTTLING_RULES_WAIT_MS,
+            WaitBucket::InvokerThrottling => VQUEUE_INVOKER_THROTTLING_WAIT_MS,
+        }
+    }
+
+    /// Categorize a `BlockedOn(ResourceKind)` outcome into the wait bucket that
+    /// will accumulate the time spent blocked on it.
+    ///
+    /// The match is exhaustive on purpose: any new `ResourceKind` variant must
+    /// choose a bucket here, so accounting can never silently drop on the floor.
+    fn for_resource(r: &ResourceKind) -> Self {
+        match r {
+            ResourceKind::Lock { .. } => WaitBucket::Lock,
+            ResourceKind::LimitKeyConcurrency { .. } => WaitBucket::ConcurrencyRules,
+            ResourceKind::InvokerConcurrency => WaitBucket::InvokerConcurrency,
+            ResourceKind::InvokerMemory => WaitBucket::InvokerMemory,
+            ResourceKind::InvokerThrottling { .. } => WaitBucket::InvokerThrottling,
+            ResourceKind::DeploymentConcurrency => WaitBucket::DeploymentConcurrency,
         }
     }
 }
 
 #[derive(Debug, Default)]
 struct Stats {
-    last_blocked_on_global_capacity: Option<tokio::time::Instant>,
-    blocked_on_global_capacity_micros: u32,
-    last_blocked_on_invoker_memory: Option<tokio::time::Instant>,
-    blocked_on_invoker_memory_micros: u32,
-    local_start_throttling_micros: u32,
-    global_throttling_micros: u32,
+    /// At most one wait segment is open at any moment — the current blocking reason
+    /// (or `None` if not blocked). Making "at most one" a structural invariant is
+    /// what prevents the over-attribution bug where two timers run concurrently.
+    current: Option<(WaitBucket, Instant)>,
+    /// Micros accumulated per bucket. `usize` (≥ 64 bits on supported targets)
+    /// is large enough to hold arbitrarily long waits without overflow concerns.
+    accumulated_micros: EnumMap<WaitBucket, usize>,
 }
+
 impl Stats {
     fn reset(&mut self) {
-        self.last_blocked_on_global_capacity = None;
-        self.blocked_on_global_capacity_micros = 0;
-        self.last_blocked_on_invoker_memory = None;
-        self.blocked_on_invoker_memory_micros = 0;
-        self.local_start_throttling_micros = 0;
-        self.global_throttling_micros = 0;
+        // Flush any open segment to the cumulative metric counter before zeroing
+        // the accumulators. `reset` is called when the head changes (item removed,
+        // preempted, or a higher-priority item replaces it) — the in-memory
+        // `WaitStats` for the previous head is by design dropped on the floor,
+        // but the node-wide metric counters should still reflect the time we
+        // observed the item actually waiting, otherwise the counters systematically
+        // under-report whenever items don't make it all the way to `finalize()`.
+        self.set_wait(None);
+        *self = Self::default();
+    }
+
+    /// Transition the wait segment. Passing `None` means "no longer blocked".
+    /// Passing the *same* bucket as the currently-open segment is a no-op —
+    /// the segment keeps running.
+    fn set_wait(&mut self, next: Option<WaitBucket>) {
+        if self.current.map(|(b, _)| b) == next {
+            return;
+        }
+        let now = Instant::now();
+        if let Some((bucket, since)) = self.current {
+            self.accumulate(bucket, now.saturating_duration_since(since));
+        }
+        self.current = next.map(|b| (b, now));
+    }
+
+    fn accumulate(&mut self, bucket: WaitBucket, delay: Duration) {
+        counter!(bucket.metric()).increment(delay.as_millis() as u64);
+        let micros = usize::try_from(delay.as_micros()).unwrap_or(usize::MAX);
+        self.accumulated_micros[bucket] = self.accumulated_micros[bucket].saturating_add(micros);
+    }
+
+    fn build_wait_stats(&self, open_segment: Option<(WaitBucket, Duration)>) -> WaitStats {
+        let mut micros = self.accumulated_micros;
+        if let Some((bucket, delay)) = open_segment {
+            let extra = usize::try_from(delay.as_micros()).unwrap_or(usize::MAX);
+            micros[bucket] = micros[bucket].saturating_add(extra);
+        }
+        // Cast usize-micros to u32-ms, saturating so that very long waits clamp to
+        // ~49 days per bucket instead of silently wrapping.
+        let ms = |bucket| u32::try_from(micros[bucket] / 1000).unwrap_or(u32::MAX);
+        WaitStats {
+            blocked_on_lock_ms: ms(WaitBucket::Lock),
+            blocked_on_concurrency_rules_ms: ms(WaitBucket::ConcurrencyRules),
+            blocked_on_invoker_concurrency_ms: ms(WaitBucket::InvokerConcurrency),
+            blocked_on_invoker_memory_ms: ms(WaitBucket::InvokerMemory),
+            blocked_on_deployment_concurrency_ms: ms(WaitBucket::DeploymentConcurrency),
+            blocked_on_throttling_rules_ms: ms(WaitBucket::ThrottlingRules),
+            blocked_on_invoker_throttling_ms: ms(WaitBucket::InvokerThrottling),
+        }
     }
 
     fn finalize(&mut self) -> WaitStats {
-        // ensures that the last capacity/memory-blocked segment is accounted for
-        self.record_global_capacity_delay(false);
-        self.record_invoker_memory_delay(false);
-
-        let stats = WaitStats {
-            blocked_on_global_capacity_ms: self.blocked_on_global_capacity_micros / 1000,
-            vqueue_start_throttling_ms: self.local_start_throttling_micros / 1000,
-            global_throttling_ms: self.global_throttling_micros / 1000,
-            blocked_on_invoker_memory_ms: self.blocked_on_invoker_memory_micros / 1000,
-        };
+        self.set_wait(None);
+        let stats = self.build_wait_stats(None);
         self.reset();
-
         stats
     }
 
     pub fn snapshot(&self) -> WaitStats {
-        let blocked_on_global_capacity_micros =
-            if let Some(last) = self.last_blocked_on_global_capacity {
-                let delay = last.elapsed();
-                self.blocked_on_global_capacity_micros
-                    .saturating_add(delay.as_micros().try_into().unwrap_or(u32::MAX))
-            } else {
-                self.blocked_on_global_capacity_micros
-            };
-
-        let blocked_on_invoker_memory_micros =
-            if let Some(last) = self.last_blocked_on_invoker_memory {
-                let delay = last.elapsed();
-                self.blocked_on_invoker_memory_micros
-                    .saturating_add(delay.as_micros().try_into().unwrap_or(u32::MAX))
-            } else {
-                self.blocked_on_invoker_memory_micros
-            };
-
-        WaitStats {
-            blocked_on_global_capacity_ms: blocked_on_global_capacity_micros / 1000,
-            vqueue_start_throttling_ms: self.local_start_throttling_micros / 1000,
-            global_throttling_ms: self.global_throttling_micros / 1000,
-            blocked_on_invoker_memory_ms: blocked_on_invoker_memory_micros / 1000,
-        }
-    }
-}
-
-impl Stats {
-    fn record_start_throttling_delay(&mut self, delay: &Duration) {
-        self.record_global_capacity_delay(false);
-        counter!(VQUEUE_LOCAL_THROTTLE_WAIT_MS).increment(delay.as_millis() as u64);
-        self.local_start_throttling_micros = self
-            .local_start_throttling_micros
-            .saturating_add(delay.as_micros().try_into().unwrap_or(u32::MAX))
-    }
-
-    fn record_global_throttling_delay(&mut self, delay: &Duration) {
-        self.record_global_capacity_delay(false);
-        counter!(VQUEUE_GLOBAL_THROTTLE_WAIT_MS).increment(delay.as_millis() as u64);
-        self.global_throttling_micros = self
-            .global_throttling_micros
-            .saturating_add(delay.as_micros().try_into().unwrap_or(u32::MAX))
-    }
-
-    fn record_global_capacity_delay(&mut self, is_now_blocked: bool) {
-        let last = self.last_blocked_on_global_capacity.take();
-        self.last_blocked_on_global_capacity = if is_now_blocked {
-            Some(Instant::now())
-        } else {
-            None
-        };
-        if let Some(last) = last {
-            let delay = last.elapsed();
-            counter!(VQUEUE_INVOKER_CAPACITY_WAIT_MS).increment(delay.as_millis() as u64);
-            self.blocked_on_global_capacity_micros = self
-                .blocked_on_global_capacity_micros
-                .saturating_add(delay.as_micros().try_into().unwrap_or(u32::MAX))
-        }
-    }
-
-    fn record_invoker_memory_delay(&mut self, is_now_blocked: bool) {
-        let last = self.last_blocked_on_invoker_memory.take();
-        self.last_blocked_on_invoker_memory = if is_now_blocked {
-            Some(Instant::now())
-        } else {
-            None
-        };
-        if let Some(last) = last {
-            let delay = last.elapsed();
-            counter!(VQUEUE_INVOKER_MEMORY_WAIT_MS).increment(delay.as_millis() as u64);
-            self.blocked_on_invoker_memory_micros = self
-                .blocked_on_invoker_memory_micros
-                .saturating_add(delay.as_micros().try_into().unwrap_or(u32::MAX))
-        }
+        let open = self.current.map(|(b, since)| (b, since.elapsed()));
+        self.build_wait_stats(open)
     }
 }
 
 #[derive(derive_more::Debug)]
 pub struct VQueueState<S: VQueueStore> {
-    pub handle: VQueueHandle,
-    pub qid: VQueueId,
-    // contains hashes (unique_hash)
     deficit: i32,
     #[debug(skip)]
-    // Run token bucket is used to throttle the rate of "start" attempts of this
-    // vqueue.
-    start_tb: Option<LocalTokenBucket<SchedulerClock>>,
-    unconfirmed_assignments: HashSet<u64>,
+    unconfirmed_assignments: UnconfirmedAssignments,
     #[debug(skip)]
     queue: Queue<S>,
     head_stats: Stats,
+    #[debug(skip)]
+    current_permit: PermitBuilder,
 }
 
 impl<S: VQueueStore> VQueueState<S> {
-    pub fn new(
-        qid: VQueueId,
-        handle: VQueueHandle,
-        meta: &VQueueMeta,
-        config: &VQueueConfig,
-    ) -> Self {
-        let start_tb = config.start_rate_limit().map(|limit| {
-            LocalTokenBucket::with_zero_time(*limit, SchedulerClock, meta.start_tb_zero_time())
-        });
-
+    pub fn new(qid: &VQueueId, storage: &S, num_running: u32) -> Self {
+        let queue = Queue::new(num_running, storage, qid);
         Self {
-            qid,
-            handle,
-            start_tb,
-            unconfirmed_assignments: HashSet::new(),
-            queue: Queue::new(meta.num_running()),
             deficit: QUANTUM,
+            unconfirmed_assignments: UnconfirmedAssignments::new(),
+            queue,
             head_stats: Stats::default(),
+            current_permit: Default::default(),
         }
     }
 
-    pub fn new_empty(
-        qid: VQueueId,
-        handle: VQueueHandle,
-        meta: &VQueueMeta,
-        config: &VQueueConfig,
-    ) -> Self {
-        let start_tb = config.start_rate_limit().map(|limit| {
-            LocalTokenBucket::with_zero_time(*limit, SchedulerClock, meta.start_tb_zero_time())
-        });
+    pub fn new_empty() -> Self {
         Self {
-            qid,
-            handle,
-            start_tb,
-            unconfirmed_assignments: HashSet::new(),
+            unconfirmed_assignments: UnconfirmedAssignments::new(),
             queue: Queue::new_closed(),
             deficit: 0,
             head_stats: Stats::default(),
+            current_permit: Default::default(),
         }
     }
 
-    pub fn pop_unchecked(
+    pub fn try_pop(
         &mut self,
         cx: &mut std::task::Context<'_>,
-        storage: &S,
-        concurrency_limiter: &mut Concurrency,
-        memory_limiter: &mut PollMemoryPool,
-        initial_invocation_memory: NonZeroByteCount,
-        global_throttling: Option<&GlobalTokenBucket>,
-    ) -> Result<Pop<S::Item>, StorageError> {
-        let (inbox_head, is_running) = match self.queue.head() {
-            Some(QueueItem::Inbox(item)) => (item, false),
-            Some(QueueItem::Running(item)) => (item, true),
+        handle: VQueueHandle,
+        slot: &cache::Slot,
+        resources: &mut ResourceManager,
+    ) -> Result<Pop, StorageError> {
+        let (inbox_head_key, inbox_head_value, is_running) = match self.queue.head() {
+            Some(QueueItem::Inbox { key, value }) => (key, value, false),
+            Some(QueueItem::Running { key, value }) => (key, value, true),
             e @ Some(QueueItem::None) | e @ None => {
                 unreachable!(
-                    "cannot pop from empty queue or attempted to pop before polling {:?}/{e:?}",
-                    self.handle
+                    "cannot pop from empty queue or attempted to pop before polling {}/{e:?}",
+                    slot.vqueue_id()
                 )
             }
         };
 
-        let item_weight = inbox_head.weight().get() as i32;
+        let item_weight = inbox_head_value.weight().get() as i32;
         if self.deficit < item_weight {
             // give credit.
             self.deficit += QUANTUM;
-            return Ok(Pop::DeficitExhausted);
+            return Ok(Pop::NeedsCredit);
         } else {
             self.deficit -= item_weight;
         }
 
         if is_running {
-            let result = Pop::Item {
-                action: Action::Yield,
-                resources: None,
-                entry: Entry {
-                    item: inbox_head.clone(),
-                    stats: self.head_stats.finalize(),
-                },
-                updated_zt: None,
+            let action = YieldAction {
+                key: *inbox_head_key,
+                next_run_at: None,
+                reason: YieldReason::PartitionLeaderChange,
             };
-            self.queue
-                .advance(storage, &self.unconfirmed_assignments, &self.qid)?;
-            return Ok(result);
+            self.queue.try_advance()?;
+            return Ok(Pop::Yield(action));
         }
 
-        let has_tb_token = if inbox_head.priority().is_new()
-            && let Some(ref start_tb) = self.start_tb
-        {
-            // Checking for VQueue starts throttling
-            if let Err(rate_limited) = start_tb.try_consume_one() {
-                let delay = rate_limited.earliest_retry_after();
-                self.head_stats.record_start_throttling_delay(&delay);
-                trace!(
-                    "[vqueue] Need to throttle start from vqueue {:?} for {delay:?}",
-                    self.qid,
+        match resources.poll_acquire_permit(
+            cx,
+            handle,
+            slot.meta(),
+            inbox_head_key,
+            &inbox_head_value.metadata,
+            &mut self.current_permit,
+        ) {
+            AcquireOutcome::Acquired(resources) => {
+                self.unconfirmed_assignments.insert(
+                    *inbox_head_key,
+                    (resources, inbox_head_value.metadata.clone()),
                 );
-                return Ok(Pop::Throttle {
-                    delay,
-                    scope: ThrottleScope::VQueue,
-                });
-            }
-            true
-        } else {
-            // no throttling or the item has already been started before
-            false
-        };
 
-        let resources = match inbox_head.kind() {
-            EntryKind::Invocation => {
-                let Poll::Ready(permit) = concurrency_limiter.poll_acquire(cx) else {
-                    // Waker will be notified when capacity is available.
-                    // if we have start tokens, we should return them.
-                    if has_tb_token && let Some(ref start_tb) = self.start_tb {
-                        start_tb.add_tokens(1.0);
-                    }
-                    self.head_stats.record_global_capacity_delay(true);
-                    trace!("vqueue {:?} is blocked on global capacity", self.qid);
-                    return Ok(Pop::BlockedOnCapacity);
+                let action = RunAction {
+                    key: *inbox_head_key,
+                    wait_stats: self.head_stats.finalize(),
                 };
 
-                // Reserve memory from the invoker's pool. If unavailable,
-                // drop the concurrency permit (it will be re-acquired on the
-                // next poll) and signal blocked-on-memory.
-                let Poll::Ready(memory_lease) =
-                    memory_limiter.poll_reserve(cx, initial_invocation_memory.as_usize())
-                else {
-                    if has_tb_token && let Some(ref start_tb) = self.start_tb {
-                        start_tb.add_tokens(1.0);
-                    }
-                    // permit is dropped here, will be re-acquired next poll
-                    self.head_stats.record_invoker_memory_delay(true);
-                    trace!("vqueue {:?} is blocked on memory", self.qid);
-                    return Ok(Pop::BlockedOnMemory);
-                };
-                // Memory is available — finalize any prior memory wait timing.
-                self.head_stats.record_invoker_memory_delay(false);
-
-                Some(ReservedResources {
-                    permit,
-                    memory_lease,
-                })
+                self.queue.try_advance()?;
+                Ok(Pop::Run(action))
             }
-            EntryKind::StateMutation | EntryKind::Unknown => None,
-        };
-
-        if let Some(global_throttling) = global_throttling
-            && let Err(rate_limited) = global_throttling.try_consume_one()
-        {
-            let delay = rate_limited.earliest_retry_after();
-            self.head_stats.record_global_throttling_delay(&delay);
-
-            trace!(
-                "[global] Need to throttle start from vqueue {:?} for {delay:?}",
-                self.qid,
-            );
-            // return the start token to the vqueue if we have one.
-            if has_tb_token && let Some(ref start_tb) = self.start_tb {
-                start_tb.add_tokens(1.0);
+            AcquireOutcome::BlockedOn(resource) => {
+                // One call handles the full state transition: closes any previously
+                // open segment (for a different resource) and opens the new one.
+                self.head_stats
+                    .set_wait(Some(WaitBucket::for_resource(&resource)));
+                Ok(Pop::Blocked(resource))
             }
-            // NOTE: the concurrency limiter's permit and memory lease will be dropped here.
-            return Ok(Pop::Throttle {
-                delay,
-                scope: ThrottleScope::Global,
-            });
         }
-
-        self.unconfirmed_assignments
-            .insert(inbox_head.unique_hash());
-        let result = Pop::Item {
-            action: Action::MoveToRun,
-            resources,
-            entry: Entry {
-                item: inbox_head.clone(),
-                stats: self.head_stats.finalize(),
-            },
-            updated_zt: self
-                .start_tb
-                .as_ref()
-                .map(|start_tb| start_tb.get_zero_time()),
-        };
-
-        self.queue
-            .advance(storage, &self.unconfirmed_assignments, &self.qid)?;
-
-        Ok(result)
     }
 
-    pub fn is_dormant(&self, meta: &VQueueMeta, config: &VQueueConfig) -> bool {
+    pub fn is_dormant(&self, meta: &VQueueMeta) -> bool {
         // We hold on to the vqueue until we confirm/reject all pending assignments. If we didn't
         // do so, we risk revisiting/redequeuing the unconfirmed items if the vqueue popped back to life
         // (i.e., on enqueue). This is the reason why we check for `unconfirmed_assignments`
-        (self.queue.is_empty() || meta.total_waiting() == 0 || self.is_paused(meta, config).yes())
+        (self.queue.is_empty() || meta.is_inbox_empty() || meta.queue_is_paused())
             && self.unconfirmed_assignments.is_empty()
     }
 
     pub fn poll_eligibility(
         &mut self,
+        cx: &mut std::task::Context<'_>,
+        slot: &cache::Slot,
         storage: &S,
-        meta: &VQueueMeta,
-        config: &VQueueConfig,
-    ) -> Result<DetailedEligibility, StorageError> {
-        self.queue
-            .advance_if_needed(storage, &self.unconfirmed_assignments, &self.qid)?;
+    ) -> Poll<Result<Eligibility, StorageError>> {
+        ready!(self.queue.poll_advance_if_needed(
+            cx,
+            storage,
+            &self.unconfirmed_assignments,
+            slot.vqueue_id(),
+            self.num_waiting_inbox(slot.meta()) == 0,
+            false,
+        ))?;
 
-        Ok(self.check_eligibility(meta, config))
+        Poll::Ready(Ok(self.check_eligibility(slot.meta()).as_compact()))
     }
 
-    pub fn is_paused(&self, meta: &VQueueMeta, config: &VQueueConfig) -> IsPaused {
-        if meta.is_paused() {
-            IsPaused::Directly
-        } else if config.is_paused() {
-            IsPaused::ViaParent
-        } else {
-            IsPaused::No
-        }
-    }
-
-    pub fn check_eligibility(
-        &self,
-        meta: &VQueueMeta,
-        config: &VQueueConfig,
-    ) -> DetailedEligibility {
-        let inbox_head = match self.queue.head() {
-            Some(QueueItem::Running(_)) => return DetailedEligibility::EligibleRunning,
-            Some(QueueItem::Inbox(item)) => item,
+    pub fn check_eligibility(&self, meta: &VQueueMeta) -> DetailedEligibility {
+        let inbox_head_key = match self.queue.head() {
+            Some(QueueItem::Running { .. }) => return DetailedEligibility::EligibleRunning,
+            Some(QueueItem::Inbox { key, .. }) => key,
             Some(QueueItem::None) => return DetailedEligibility::Empty,
             None if self.queue.remaining_in_running_stage() > 0 => {
                 return DetailedEligibility::EligibleRunning;
@@ -465,40 +353,36 @@ impl<S: VQueueStore> VQueueState<S> {
         };
 
         // Only applies to inboxed items.
-        if let VisibleAt::At(ts) = inbox_head.visible_at()
-            && ts > SchedulerClock.now_millis()
-        {
-            return DetailedEligibility::Scheduled(ts);
+        if inbox_head_key.run_at() > SchedulerClock.now_millis() {
+            return DetailedEligibility::Scheduled(inbox_head_key.run_at());
         }
 
-        if inbox_head.is_token_held() || self.has_available_tokens(meta, config) {
-            DetailedEligibility::EligibleInbox
-        } else {
-            DetailedEligibility::WaitingConcurrencyTokens
-        }
+        DetailedEligibility::EligibleInbox
     }
 
-    pub fn notify_removed(&mut self, item_hash: u64) -> bool {
-        self.remove_from_unconfirmed_assignments(item_hash);
-        if self.queue.remove(item_hash) {
+    pub fn notify_removed(&mut self, key: &EntryKey) -> Option<PermitBuilder> {
+        if self.queue.remove(key) {
             self.head_stats.reset();
-            true
+            Some(self.current_permit.take())
         } else {
-            false
+            None
         }
     }
 
-    pub fn remove_from_unconfirmed_assignments(&mut self, item_hash: u64) -> bool {
-        self.unconfirmed_assignments.remove(&item_hash)
+    pub fn remove_from_unconfirmed_assignments(
+        &mut self,
+        key: &EntryKey,
+    ) -> Option<(PermitBuilder, EntryMetadata)> {
+        self.unconfirmed_assignments.remove(key)
     }
 
     /// Returns true if the head was changed
-    pub fn notify_enqueued(&mut self, item: &S::Item) -> bool {
-        if self.queue.enqueue(item) {
+    pub fn notify_enqueued(&mut self, key: &EntryKey, value: &EntryValue) -> Option<PermitBuilder> {
+        if self.queue.enqueue(key, value) {
             self.head_stats.reset();
-            true
+            Some(self.current_permit.take())
         } else {
-            false
+            None
         }
     }
 
@@ -506,23 +390,104 @@ impl<S: VQueueStore> VQueueState<S> {
         self.head_stats.snapshot()
     }
 
+    /// Returns the `EntryId` of the queue's current head if it has already been
+    /// advanced, without performing any storage IO.
+    ///
+    /// Returns `None` when the head has not yet been read (brand-new queue) or
+    /// the queue is known to be empty.
+    pub fn head_entry_id(&self) -> Option<EntryId> {
+        match self.queue.head()? {
+            QueueItem::Inbox { key, .. } | QueueItem::Running { key, .. } => Some(*key.entry_id()),
+            QueueItem::None => None,
+        }
+    }
+
     /// How many items left in the running stage
     pub fn num_remaining_in_running_stage(&self) -> u32 {
         self.queue.remaining_in_running_stage()
     }
 
-    pub fn num_waiting_inbox(&self, meta: &VQueueMeta) -> u32 {
+    /// Takes into account the number of unconfirmed assignments when calculating
+    /// the inbox length
+    pub fn num_waiting_inbox(&self, meta: &VQueueMeta) -> u64 {
         meta.total_waiting()
-            .saturating_sub(self.unconfirmed_assignments.len() as u32)
+            .saturating_sub(self.unconfirmed_assignments.len() as u64)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::{Stats, WaitBucket};
+
+    /// Regression test for the "two open wait segments overlap" bug.
+    ///
+    /// Before the single-current-segment redesign, transitioning from
+    /// `BlockedOn(Lock)` to `BlockedOn(LimitKeyConcurrency)` opened the
+    /// concurrency-rules timer without closing the lock one, so both timers ran
+    /// concurrently and the final `WaitStats` over-attributed time to both
+    /// buckets. Here the head waits 5 s on a lock, then 3 s on a concurrency
+    /// rule — the sum across buckets must be exactly 8 s, not more.
+    #[tokio::test(start_paused = true)]
+    async fn transition_between_wait_buckets_does_not_double_count() {
+        let mut s = Stats::default();
+
+        s.set_wait(Some(WaitBucket::Lock));
+        tokio::time::advance(Duration::from_secs(5)).await;
+
+        s.set_wait(Some(WaitBucket::ConcurrencyRules));
+        tokio::time::advance(Duration::from_secs(3)).await;
+
+        let stats = s.finalize();
+
+        assert_eq!(stats.blocked_on_lock_ms, 5_000);
+        assert_eq!(stats.blocked_on_concurrency_rules_ms, 3_000);
+        // Other buckets never opened — all zero.
+        assert_eq!(stats.blocked_on_invoker_concurrency_ms, 0);
+        assert_eq!(stats.blocked_on_invoker_memory_ms, 0);
+        assert_eq!(stats.blocked_on_deployment_concurrency_ms, 0);
+        assert_eq!(stats.blocked_on_throttling_rules_ms, 0);
+        assert_eq!(stats.blocked_on_invoker_throttling_ms, 0);
+
+        // finalize() must fully reset: a subsequent finalize is all-zero.
+        assert!(s.current.is_none());
+        let empty = s.finalize();
+        assert_eq!(empty.blocked_on_lock_ms, 0);
+        assert_eq!(empty.blocked_on_concurrency_rules_ms, 0);
     }
 
-    pub fn num_tokens_used(&self, meta: &VQueueMeta) -> u32 {
-        meta.tokens_used() + self.unconfirmed_assignments.len() as u32
+    /// `set_wait(Some(X))` called twice in a row with the same bucket must keep
+    /// the original segment running — not reset the start time — so the full
+    /// elapsed wait is attributed on close.
+    #[tokio::test(start_paused = true)]
+    async fn same_bucket_set_wait_is_idempotent() {
+        let mut s = Stats::default();
+        s.set_wait(Some(WaitBucket::Lock));
+        tokio::time::advance(Duration::from_secs(2)).await;
+        s.set_wait(Some(WaitBucket::Lock)); // no-op; segment must continue
+        tokio::time::advance(Duration::from_secs(2)).await;
+
+        let stats = s.finalize();
+        assert_eq!(stats.blocked_on_lock_ms, 4_000);
     }
 
-    fn has_available_tokens(&self, meta: &VQueueMeta, config: &VQueueConfig) -> bool {
-        config
-            .concurrency()
-            .is_none_or(|limit| self.num_tokens_used(meta) < limit.get())
+    /// `reset()` (called when the head is preempted or the item is removed)
+    /// must flush any open segment so the cumulative metric counter still
+    /// reflects the wait time, even though the per-item `WaitStats` is
+    /// discarded. We verify the flush by observing that a subsequent call to
+    /// `set_wait(None)` on the fresh `Stats` doesn't double-count the flushed
+    /// time, and that `current` is cleared.
+    #[tokio::test(start_paused = true)]
+    async fn reset_clears_open_segment() {
+        let mut s = Stats::default();
+        s.set_wait(Some(WaitBucket::Lock));
+        tokio::time::advance(Duration::from_secs(7)).await;
+        s.reset();
+
+        // After reset, there's no open segment and no accumulated per-bucket time.
+        assert!(s.current.is_none());
+        let stats = s.finalize();
+        assert_eq!(stats.blocked_on_lock_ms, 0);
     }
 }

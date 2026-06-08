@@ -11,24 +11,27 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::future::Future;
-use std::ops::RangeInclusive;
+use std::ops::RangeBounds;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll, ready};
 
+use bytes::BytesMut;
 use futures::future::OptionFuture;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt, stream};
+use itertools::Itertools;
 use metrics::counter;
 use tokio_stream::wrappers::{ReceiverStream, WatchStream};
-use tracing::{debug, trace};
+use tracing::{debug, error, trace};
 
 use restate_bifrost::CommitToken;
 use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{Metadata, MetadataKind, TaskCenter, TaskHandle, TaskId};
-use restate_futures_util::concurrency::Permit;
-use restate_memory::MemoryPool;
-use restate_partition_store::{PartitionDb, PartitionStore};
-use restate_storage_api::vqueue_table::EntryCard;
+use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
+use restate_limiter::RuleBook;
+use restate_partition_store::PartitionDb;
+use restate_storage_api::vqueue_table::scheduler::SchedulerDecisionsCommand;
 use restate_types::identifiers::{
     LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
@@ -39,21 +42,26 @@ use restate_types::net::ingest::IngestRecord;
 use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
-use restate_types::{RESTATE_VERSION_1_7_0, SemanticRestateVersion, Version, Versioned};
+use restate_types::sharding::KeyRange;
+use restate_types::{RESTATE_VERSION_1_7_0, SemanticRestateVersion, Version, Versioned, vqueues};
 use restate_vqueues::VQueueEvent;
-use restate_vqueues::{SchedulerService, VQueuesMeta, scheduler};
-use restate_wal_protocol::control::UpsertSchema;
-use restate_wal_protocol::vqueues::Assignment;
-use restate_wal_protocol::{Command, vqueues};
+use restate_vqueues::scheduler::Decisions;
+use restate_vqueues::{SchedulerService, VQueuesMeta};
+use restate_wal_protocol::Command;
+use restate_wal_protocol::control::UpsertSchemaCommand;
+use restate_wal_protocol::v1::UpsertRuleBookCommandWrapper;
+use restate_worker_api::invoker::InvokerHandle;
+use restate_worker_api::resources::ReservedResources;
+use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
 
 use crate::metric_definitions::{PARTITION_HANDLE_LEADER_ACTIONS, USAGE_LEADER_ACTION_COUNT};
 use crate::partition::cleaner::{CleanerEffect, CleanerHandle};
-use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::self_proposer::SelfProposer;
 use crate::partition::leadership::{ActionEffect, Error, InvokerStream, TimerService};
 use crate::partition::shuffle;
 use crate::partition::shuffle::HintSender;
 use crate::partition::state_machine::{Action, StateMachine};
+use crate::partition_processor_manager::LeaderQueryGuard;
 
 use super::durability_tracker::DurabilityTracker;
 
@@ -66,7 +74,7 @@ pub struct LeaderState {
     pub(crate) partition_id: PartitionId,
     pub leader_epoch: LeaderEpoch,
     // only needed for proposing TruncateOutbox to ourselves
-    partition_key_range: RangeInclusive<PartitionKey>,
+    partition_key_range: KeyRange,
 
     pub shuffle_hint_tx: HintSender,
     // It's illegal to await the shuffle task handle once it has
@@ -75,6 +83,8 @@ pub struct LeaderState {
     shuffle_task_handle: Option<TaskHandle<anyhow::Result<()>>>,
     pub timer_service: Pin<Box<TimerService>>,
     scheduler: SchedulerService<PartitionDb>,
+    invoker_handle: InvokerChannelServiceHandle,
+    invoker_task_handle: Option<TaskHandle<()>>,
     self_proposer: SelfProposer,
 
     awaiting_rpc_actions: HashMap<PartitionProcessorRpcRequestId, RpcReciprocal>,
@@ -83,9 +93,13 @@ pub struct LeaderState {
     invoker_stream: InvokerStream,
     shuffle_stream: ReceiverStream<shuffle::OutboxTruncation>,
     schema_stream: WatchStream<Version>,
+    rule_book_stream: WatchStream<Arc<RuleBook>>,
     cleaner_handle: CleanerHandle,
     trimmer_task_id: TaskId,
     durability_tracker: DurabilityTracker,
+    // Unregisters the leader-query registry entry on drop. Must live as long as
+    // the partition processor's select! is willing to serve scheduler queries.
+    _leader_query_guard: LeaderQueryGuard,
 }
 
 impl LeaderState {
@@ -93,17 +107,21 @@ impl LeaderState {
     pub fn new(
         partition_id: PartitionId,
         leader_epoch: LeaderEpoch,
-        partition_key_range: RangeInclusive<PartitionKey>,
+        partition_key_range: KeyRange,
         shuffle_task_handle: TaskHandle<anyhow::Result<()>>,
         cleaner_handle: CleanerHandle,
         trimmer_task_id: TaskId,
         shuffle_hint_tx: HintSender,
         timer_service: TimerService,
         scheduler: SchedulerService<PartitionDb>,
+        invoker_handle: InvokerChannelServiceHandle,
+        invoker_task_handle: TaskHandle<()>,
         self_proposer: SelfProposer,
         invoker_rx: InvokerStream,
         shuffle_rx: tokio::sync::mpsc::Receiver<shuffle::OutboxTruncation>,
         durability_tracker: DurabilityTracker,
+        leader_query_guard: LeaderQueryGuard,
+        rule_book_rx: tokio::sync::watch::Receiver<Arc<RuleBook>>,
     ) -> Self {
         LeaderState {
             partition_id,
@@ -116,15 +134,39 @@ impl LeaderState {
             schema_stream: Metadata::with_current(|m| {
                 WatchStream::new(m.watch(MetadataKind::Schema))
             }),
+            rule_book_stream: WatchStream::new(rule_book_rx),
             timer_service: Box::pin(timer_service),
             scheduler,
+            invoker_handle,
+            invoker_task_handle: Some(invoker_task_handle),
             self_proposer,
             awaiting_rpc_actions: Default::default(),
             awaiting_rpc_self_propose: Default::default(),
             invoker_stream: invoker_rx,
             shuffle_stream: ReceiverStream::new(shuffle_rx),
             durability_tracker,
+            _leader_query_guard: leader_query_guard,
         }
+    }
+
+    pub fn read_scheduler_status(
+        &self,
+        metas: VQueuesMeta<'_>,
+        keys: KeyRange,
+    ) -> Vec<SchedulerStatusEntry> {
+        self.scheduler
+            .iter_status(metas)
+            .into_iter()
+            .flatten()
+            .filter(|(qid, _)| keys.contains(&qid.partition_key()))
+            .collect()
+    }
+
+    pub fn read_user_limit_counters(&self, keys: KeyRange) -> Vec<UserLimitCounterEntry> {
+        // Stamp counters with a key inside this partition's range so DataFusion's
+        // partition-aware scan accepts the row. Use the range start — counters are
+        // partition-scoped, not per-item, so any key in range is fine.
+        self.scheduler.scan_user_limit_counters(keys.start())
     }
 
     /// Runs the leader specific task which is the awaiting of action effects and the monitoring
@@ -135,7 +177,7 @@ impl LeaderState {
     pub async fn run(
         &mut self,
         state_machine: &StateMachine,
-        vqueues: VQueuesMeta<'_>,
+        vqueue_metas: VQueuesMeta<'_>,
     ) -> Result<Vec<ActionEffect>, Error> {
         let timer_stream = std::pin::pin!(stream::unfold(
             &mut self.timer_service,
@@ -149,8 +191,13 @@ impl LeaderState {
         // if we have problems with latency
         let scheduler_stream =
             std::pin::pin!(stream::unfold(&mut self.scheduler, |scheduler| async {
-                let assignment = scheduler.schedule_next(vqueues).await;
-                Some((ActionEffect::Scheduler(assignment), scheduler))
+                match scheduler.schedule_next(vqueue_metas).await {
+                    Ok(decisions) => Some((ActionEffect::Scheduler(decisions), scheduler)),
+                    Err(e) => {
+                        error!("Fatal error when polling scheduler: {e}");
+                        None
+                    }
+                }
             }));
 
         let schema_stream = (&mut self.schema_stream).filter_map(|_| {
@@ -165,6 +212,15 @@ impl LeaderState {
                 Some(Metadata::with_current(|m| m.schema()))
                     .filter(|schema| schema.version() > current_version)
                     .map(|schema| ActionEffect::UpsertSchema(schema.clone())),
+            )
+        });
+
+        let rule_book_stream = (&mut self.rule_book_stream).filter_map(|book| {
+            // Only propose iff the cache holds a rule book that's
+            // newer than the partition's current in-memory book.
+            let current_version = state_machine.rule_book.version();
+            std::future::ready(
+                (book.version() > current_version).then(|| ActionEffect::UpsertRuleBook(book)),
             )
         });
 
@@ -186,11 +242,13 @@ impl LeaderState {
             cleaner_stream,
             awaiting_rpc_self_propose_stream,
             dur_tracker_stream,
-            schema_stream
+            schema_stream,
+            rule_book_stream
         );
         let mut all_streams = all_streams.ready_chunks(BATCH_READY_UP_TO);
 
         let shuffle_task_handle = self.shuffle_task_handle.as_mut().expect("is set");
+        let invoker_task_handle = self.invoker_task_handle.as_mut().expect("is set");
         tokio::select! {
             // watch the shuffle task in case it crashed
             result = shuffle_task_handle => {
@@ -204,6 +262,13 @@ impl LeaderState {
                     Err(shutdown_error) => Err(Error::Shutdown(shutdown_error))
                 }
             }
+            result = invoker_task_handle => {
+                self.invoker_task_handle.take();
+                match result {
+                    Ok(()) => Err(Error::task_terminated_unexpectedly("invoker")),
+                    Err(shutdown_error) => Err(Error::Shutdown(shutdown_error)),
+                }
+            }
             Some(action_effects) = all_streams.next() => {
                 Ok(action_effects)
             },
@@ -214,17 +279,20 @@ impl LeaderState {
     }
 
     /// Stops all leader relevant tasks.
-    pub async fn stop(
-        mut self,
-        invoker_handle: &mut impl restate_invoker_api::InvokerHandle<
-            InvokerStorageReader<PartitionStore>,
-        >,
-    ) {
+    pub async fn stop(mut self) {
         let shuffle_handle = match self.shuffle_task_handle {
             None => OptionFuture::from(None),
             Some(shuffle_handle) => {
                 shuffle_handle.cancel();
                 OptionFuture::from(Some(shuffle_handle))
+            }
+        };
+
+        let invoker_task_handle = match self.invoker_task_handle {
+            None => OptionFuture::from(None),
+            Some(invoker_task_handle) => {
+                invoker_task_handle.cancel();
+                OptionFuture::from(Some(invoker_task_handle))
             }
         };
 
@@ -240,14 +308,18 @@ impl LeaderState {
         // It's ok to not check the abort_result because either it succeeded or the invoker
         // is not running. If the invoker is not running, and we are not shutting down, then
         // we will fail the next time we try to invoke.
-        let _ = invoker_handle.abort_all_partition((self.partition_id, self.leader_epoch));
-        let (shuffle_result, cleaner_result) = tokio::join!(shuffle_handle, cleaner_handle);
+        let _ = self.invoker_handle.abort_all();
+        let (shuffle_result, cleaner_result, invoker_result) =
+            tokio::join!(shuffle_handle, cleaner_handle, invoker_task_handle);
 
         if let Some(shuffle_result) = shuffle_result {
             let _ = shuffle_result.expect("graceful termination of shuffle task");
         }
         if let Some(cleaner_result) = cleaner_result {
             cleaner_result.expect("graceful termination of cleaner task");
+        }
+        if let Some(invoker_result) = invoker_result {
+            let _ = invoker_result;
         }
 
         // Reply to all RPCs with not a leader
@@ -269,64 +341,60 @@ impl LeaderState {
         &mut self,
         action_effects: impl IntoIterator<Item = ActionEffect>,
     ) -> Result<(), Error> {
+        let mut arena = BytesMut::with_capacity(128 * 1024);
         for effect in action_effects {
             match effect {
                 ActionEffect::Scheduler(decisions) => {
-                    let decisions = decisions?;
-                    // `queues * 2` because we assume a worst case of two actions per queue
-                    // (yields/resume, and starts) each action generates its own command.
-                    let mut commands = Vec::with_capacity(decisions.num_queues() * 2);
-                    for (qid, decision) in decisions.into_iter() {
-                        let updated_token_bucket_zero_time = decision.updated_tb_zero_time();
-                        for (action, items) in decision.into_iter_per_action() {
-                            let mut assignment = Assignment::with_capacity(&qid, items.len());
-                            for entry in items.into_iter() {
-                                let (item, stats) = entry.split();
-                                assignment.push(item, stats);
-                            }
-                            match action {
-                                scheduler::Action::MoveToRun => {
-                                    let command = vqueues::VQWaitingToRunning {
-                                        assignment,
-                                        meta_updates: vqueues::MetaUpdates {
-                                            updated_token_bucket_zero_time,
-                                        },
-                                    }
-                                    .encode_to_bytes();
-                                    commands.push((
-                                        qid.partition_key,
-                                        Command::VQWaitingToRunning(command),
-                                    ));
-                                }
-                                scheduler::Action::Yield => {
-                                    let command =
-                                        vqueues::VQYieldRunning { assignment }.encode_to_bytes();
-                                    commands.push((
-                                        qid.partition_key,
-                                        Command::VQYieldRunning(command),
-                                    ));
-                                }
-                            }
-                        }
-                    }
+                    let Decisions {
+                        qids,
+                        num_run,
+                        num_yield,
+                    } = decisions;
+                    trace!(
+                        "Scheduler decided to run {num_run} entries and yield {num_yield} entries across {} vqueues",
+                        qids.len()
+                    );
 
+                    let commands: Vec<_> = qids
+                        .into_iter()
+                        .chunk_by(|(id, _)| id.partition_key())
+                        .into_iter()
+                        // one command per partition key
+                        .map(|(partition_key, group)| {
+                            let decisions = SchedulerDecisionsCommand {
+                                qids: group.collect(),
+                            };
+
+                            arena.reserve(decisions.encoded_len());
+                            // safe to unwrap because we reserved enough space
+                            decisions.bilrost_encode(&mut arena).unwrap();
+
+                            (
+                                partition_key,
+                                Command::VQSchedulerDecisions(arena.split().freeze()),
+                            )
+                            // an action goes into command, and resources are popped
+                        })
+                        // Unfortunately chunk_by cannot generate an ExactSizeIterator.
+                        // I'm hoping that this is a temporary measure until SelfProposer is redesigned.
+                        .collect();
                     self.self_proposer
-                        .propose_many(commands.into_iter())
+                        .self_propose_many(commands.into_iter())
                         .await?;
                 }
                 ActionEffect::PartitionMaintenance(partition_durability) => {
                     // based on configuration, whether to consider partition-local durability in
                     // the replica-set as a sufficient source of durability, or only snapshots.
                     self.self_proposer
-                        .propose(
-                            *self.partition_key_range.start(),
+                        .self_propose(
+                            self.partition_key_range.start(),
                             Command::UpdatePartitionDurability(partition_durability),
                         )
                         .await?;
                 }
                 ActionEffect::Invoker(invoker_effect) => {
                     self.self_proposer
-                        .propose(
+                        .self_propose(
                             invoker_effect.invocation_id.partition_key(),
                             Command::InvokerEffect(invoker_effect),
                         )
@@ -336,15 +404,15 @@ impl LeaderState {
                     // todo: Until we support partition splits we need to get rid of outboxes or introduce partition
                     //  specific destination messages that are identified by a partition_id
                     self.self_proposer
-                        .propose(
-                            *self.partition_key_range.start(),
+                        .self_propose(
+                            self.partition_key_range.start(),
                             Command::TruncateOutbox(outbox_truncation.index()),
                         )
                         .await?;
                 }
                 ActionEffect::Timer(timer) => {
                     self.self_proposer
-                        .propose(timer.invocation_id().partition_key(), Command::Timer(timer))
+                        .self_propose(timer.invocation_id().partition_key(), Command::Timer(timer))
                         .await?;
                 }
                 ActionEffect::Cleaner(effect) => {
@@ -366,7 +434,7 @@ impl LeaderState {
                     };
 
                     self.self_proposer
-                        .propose(invocation_id.partition_key(), cmd)
+                        .self_propose(invocation_id.partition_key(), cmd)
                         .await?;
                 }
                 ActionEffect::UpsertSchema(schema) => {
@@ -374,17 +442,33 @@ impl LeaderState {
                         .is_equal_or_newer_than(&RESTATE_VERSION_1_7_0)
                     {
                         self.self_proposer
-                            .propose(
-                                *self.partition_key_range.start(),
-                                Command::UpsertSchema(UpsertSchema {
+                            .self_propose(
+                                self.partition_key_range.start(),
+                                Command::UpsertSchema(UpsertSchemaCommand {
                                     partition_key_range: Keys::RangeInclusive(
-                                        self.partition_key_range.clone(),
+                                        self.partition_key_range.into(),
                                     ),
                                     schema,
                                 }),
                             )
                             .await?;
                     }
+                }
+                ActionEffect::UpsertRuleBook(rule_book) => {
+                    let cmd = restate_wal_protocol::control::UpsertRuleBookCommand { rule_book };
+                    arena.reserve(cmd.encoded_len());
+                    // safe to unwrap because we reserved enough space
+                    cmd.bilrost_encode(&mut arena).unwrap();
+
+                    self.self_proposer
+                        .self_propose(
+                            self.partition_key_range.start(),
+                            Command::UpsertRuleBook(UpsertRuleBookCommandWrapper {
+                                partition_key_range: self.partition_key_range,
+                                command: arena.split().freeze(),
+                            }),
+                        )
+                        .await?;
                 }
                 ActionEffect::AwaitingRpcSelfProposeDone => {
                     // Nothing to do here
@@ -416,7 +500,7 @@ impl LeaderState {
             }
             Entry::Vacant(v) => {
                 // In this case, no one proposed this command yet, let's try to propose it
-                if let Err(e) = self.self_proposer.propose(partition_key, cmd).await {
+                if let Err(e) = self.self_proposer.self_propose(partition_key, cmd).await {
                     reciprocal.send(Err(PartitionProcessorRpcError::Internal(e.to_string())));
                 } else {
                     v.insert(reciprocal);
@@ -425,7 +509,12 @@ impl LeaderState {
         }
     }
 
-    pub async fn self_propose_and_respond_asynchronously(
+    /// Append a command to Bifrost **without** dedup information and respond on Bifrost commit.
+    ///
+    /// Records appended this way are never filtered by the dedup mechanism during leadership
+    /// transitions, making this safe for fire-and-forget ingress commands (signals, invocation
+    /// responses).
+    pub async fn append_and_respond_asynchronously(
         &mut self,
         partition_key: PartitionKey,
         cmd: Command,
@@ -434,7 +523,7 @@ impl LeaderState {
     ) {
         match self
             .self_proposer
-            .propose_with_notification(partition_key, cmd)
+            .append_with_notification(partition_key, cmd)
             .await
         {
             Ok(commit_token) => {
@@ -449,7 +538,7 @@ impl LeaderState {
         }
     }
 
-    pub async fn propose_many_with_callback<F>(
+    pub async fn forward_many_with_callback<F>(
         &mut self,
         records: impl ExactSizeIterator<Item = IngestRecord>,
         callback: F,
@@ -458,7 +547,7 @@ impl LeaderState {
     {
         match self
             .self_proposer
-            .propose_many_with_notification(records)
+            .forward_many_with_notification(records)
             .await
         {
             Ok(commit_token) => {
@@ -471,10 +560,8 @@ impl LeaderState {
 
     pub fn handle_actions(
         &mut self,
-        invoker_tx: &mut impl restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
-        actions: impl Iterator<Item = Action>,
         vqueues: VQueuesMeta<'_>,
-        memory_pool: &MemoryPool,
+        actions: impl Iterator<Item = Action>,
     ) -> Result<(), Error> {
         for action in actions {
             let action_name = action.name();
@@ -489,26 +576,20 @@ impl LeaderState {
             )
             .increment(1);
 
-            self.handle_action(action, invoker_tx, vqueues, memory_pool)?;
+            self.handle_action(vqueues, action)?;
         }
 
         Ok(())
     }
 
-    fn handle_action(
-        &mut self,
-        action: Action,
-        invoker_tx: &mut impl restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
-        vqueues: VQueuesMeta<'_>,
-        memory_pool: &MemoryPool,
-    ) -> Result<(), Error> {
-        let partition_leader_epoch = (self.partition_id, self.leader_epoch);
+    fn handle_action(&mut self, metas: VQueuesMeta<'_>, action: Action) -> Result<(), Error> {
         match action {
             Action::Invoke {
                 invocation_id,
                 invocation_target,
-            } => invoker_tx
-                .invoke(partition_leader_epoch, invocation_id, invocation_target)
+            } => self
+                .invoker_handle
+                .invoke(invocation_id, invocation_target)
                 .map_err(Error::Invoker)?,
             Action::NewOutboxMessage {
                 seq_number,
@@ -526,18 +607,20 @@ impl LeaderState {
                 invocation_id,
                 command_index,
             } => {
-                invoker_tx
-                    .notify_stored_command_ack(partition_leader_epoch, invocation_id, command_index)
+                self.invoker_handle
+                    .notify_stored_command_ack(invocation_id, command_index)
                     .map_err(Error::Invoker)?;
             }
             Action::ForwardCompletion {
                 invocation_id,
                 entry_index,
-            } => invoker_tx
-                .notify_completion(partition_leader_epoch, invocation_id, entry_index)
+            } => self
+                .invoker_handle
+                .notify_completion(invocation_id, entry_index)
                 .map_err(Error::Invoker)?,
-            Action::AbortInvocation { invocation_id } => invoker_tx
-                .abort_invocation(partition_leader_epoch, invocation_id)
+            Action::AbortInvocation { invocation_id } => self
+                .invoker_handle
+                .abort_invocation(invocation_id)
                 .map_err(Error::Invoker)?,
             Action::IngressResponse {
                 request_id,
@@ -580,13 +663,8 @@ impl LeaderState {
                 entry_index,
                 notification_id,
             } => {
-                invoker_tx
-                    .notify_notification(
-                        partition_leader_epoch,
-                        invocation_id,
-                        entry_index,
-                        notification_id,
-                    )
+                self.invoker_handle
+                    .notify_notification(invocation_id, entry_index, notification_id)
                     .map_err(Error::Invoker)?;
             }
             Action::ForwardKillResponse {
@@ -650,49 +728,55 @@ impl LeaderState {
                 }
             }
             Action::VQEvent(inbox_event) => {
-                self.handle_vqueue_inbox_event(inbox_event, vqueues)?;
+                self.handle_vqueue_inbox_event(metas, inbox_event);
             }
             Action::VQInvoke {
-                qid,
-                item_hash,
-                invocation_id,
+                vq_handle,
+                key,
                 invocation_target,
+                idempotency_key,
             } => {
-                let (permit, memory_lease) = match self.scheduler.pop_resources(item_hash) {
-                    Some(resources) => (resources.permit, resources.memory_lease),
-                    None => {
-                        tracing::warn!(
-                            "Cannot find resources for item hash {item_hash} in scheduler. Will not respect the invoker limit for this invocation"
-                        );
-                        (Permit::new_empty(), memory_pool.empty_lease())
-                    }
-                };
-                invoker_tx
+                let slot = metas.get(vq_handle).expect("vqueue meta must be in cache");
+                // state mutations should not create Invoke actions. At least for now.
+                assert!(matches!(key.kind(), vqueues::EntryKind::Invocation));
+                let invocation_id = key
+                    .entry_id()
+                    .to_invocation_id(slot.partition_key())
+                    .unwrap();
+
+                let run_permit = self.scheduler.confirm_run_attempt(vq_handle, slot, &key).unwrap_or_else(|| {
+                    tracing::error!(
+                        vqueue = %slot.vqueue_id(),
+                        restate.invocation.id = %invocation_id,
+                        "Cannot find a permit for entry key {key:?} in scheduler. Will not respect the invoker limit for this invocation"
+                    );
+                    ReservedResources::new_empty()
+                });
+                self.invoker_handle
                     .vqueue_invoke(
-                        partition_leader_epoch,
-                        qid,
-                        permit,
+                        slot.vqueue_id().clone(),
+                        run_permit,
                         invocation_id,
                         invocation_target,
-                        memory_lease,
+                        slot.meta().limit_key().clone(),
+                        idempotency_key,
                     )
                     .map_err(Error::Invoker)?
+            }
+            Action::RulesUpdated(updates) => {
+                self.scheduler.on_rules_updated(updates);
             }
         }
 
         Ok(())
     }
 
-    fn handle_vqueue_inbox_event(
-        &mut self,
-        event: VQueueEvent<EntryCard>,
-        vqueues: VQueuesMeta<'_>,
-    ) -> Result<(), Error> {
-        self.scheduler
-            .on_inbox_event(vqueues, &event)
-            .map_err(Error::Storage)?;
+    pub fn invoker_handle(&mut self) -> &mut InvokerChannelServiceHandle {
+        &mut self.invoker_handle
+    }
 
-        Ok(())
+    fn handle_vqueue_inbox_event(&mut self, metas: VQueuesMeta<'_>, event: VQueueEvent) {
+        self.scheduler.on_inbox_event(metas, event);
     }
 }
 

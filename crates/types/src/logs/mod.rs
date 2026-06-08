@@ -28,7 +28,7 @@ mod tail;
 
 pub use loglet::*;
 pub use offset_watch::*;
-pub use record::{CustomRecordEncoding, Record};
+pub use record::{CustomRecordEncoding, Record, RecordDecodeError};
 pub use record_cache::RecordCache;
 pub use tail::*;
 
@@ -326,6 +326,18 @@ impl<T: StorageEncode> BodyWithKeys<T> {
 
     pub fn into_inner(self) -> T {
         self.inner
+    }
+
+    pub fn keys(&self) -> &Keys {
+        &self.keys
+    }
+
+    pub fn inner(&self) -> &T {
+        &self.inner
+    }
+
+    pub fn split(self) -> (Keys, T) {
+        (self.keys, self.inner)
     }
 }
 

@@ -11,7 +11,6 @@
 use std::ops::ControlFlow;
 
 use futures::Stream;
-use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::invocation_status_table::{
@@ -20,11 +19,14 @@ use restate_storage_api::invocation_status_table::{
     WriteInvocationStatusTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
+use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
+use restate_types::sharding::KeyRange;
+use restate_util_string::format_restring;
 
 use crate::TableScan::FullScanPartitionKeyRange;
-use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
 use crate::scan::TableScan;
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind, break_on_err};
 
@@ -89,12 +91,40 @@ fn delete_invocation_status<S: StorageAccess>(
     storage.delete_key(&create_invocation_status_key(invocation_id))
 }
 
+fn any_non_completed_invocation_in_range<S: StorageAccess>(
+    storage: &S,
+    range: KeyRange,
+) -> Result<bool> {
+    let mut iterator = storage.iterator_from(TableScan::FullScanPartitionKeyRange::<
+        InvocationStatusKey,
+    >(range))?;
+
+    while let Some((_, mut value)) = iterator.item() {
+        let lite = InvocationLite::decode(&mut value)?;
+        if !matches!(lite.status, InvocationStatusDiscriminants::Completed)
+            && !matches!(lite.status, InvocationStatusDiscriminants::Killed)
+        {
+            return Ok(true);
+        }
+        iterator.next();
+    }
+
+    if let Some(err) = iterator.status().err() {
+        return Err(StorageError::Generic(err.into()));
+    }
+
+    Ok(false)
+}
+
+// NOTE: This will only consider invoked invocations that have not been migrated to vqueues
 fn read_invoked_full_invocation_id(
     mut kv: (&[u8], &[u8]),
 ) -> Result<Option<InvokedInvocationStatusLite>> {
     let invocation_id = invocation_id_from_key_bytes(&mut kv.0)?;
     let invocation_status = InvocationLite::decode(&mut kv.1)?;
-    if let InvocationStatusDiscriminants::Invoked = invocation_status.status {
+    if invocation_status.vqueue_id.is_none()
+        && let InvocationStatusDiscriminants::Invoked = invocation_status.status
+    {
         Ok(Some(InvokedInvocationStatusLite {
             invocation_id,
             invocation_target: invocation_status.invocation_target,
@@ -112,16 +142,20 @@ impl ReadInvocationStatusTable for PartitionStore {
         self.assert_partition_key(invocation_id)?;
         get_invocation_status(self, invocation_id)
     }
+
+    async fn any_non_completed_invocation_in_range(&mut self, range: KeyRange) -> Result<bool> {
+        any_non_completed_invocation_in_range(self, range)
+    }
 }
 
 impl ScanInvocationStatusTable for PartitionStore {
-    fn scan_invoked_invocations(
+    fn scan_legacy_invoked_invocations(
         &self,
     ) -> Result<impl Stream<Item = Result<InvokedInvocationStatusLite>> + Send> {
         self.iterator_filter_map(
             "scan-all-invoked",
             Priority::High,
-            FullScanPartitionKeyRange::<InvocationStatusKey>(self.partition_key_range().clone()),
+            FullScanPartitionKeyRange::<InvocationStatusKey>(self.partition_key_range()),
             read_invoked_full_invocation_id,
         )
         .map_err(|_| StorageError::OperationalError)
@@ -168,7 +202,7 @@ impl ScanInvocationStatusTable for PartitionStore {
                             break_on_err(InvocationStatusKey::deserialize_from(&mut key))?;
 
                         if value.len() < std::mem::size_of::<u8>() {
-                            return ControlFlow::Break(Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::ReadingCodec(format!(
+                            return ControlFlow::Break(Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::ReadingCodec(format_restring!(
                                 "remaining bytes in buf '{}' < version bytes '{}'",
                                 value.len(),
                                 std::mem::size_of::<u8>()
@@ -221,14 +255,14 @@ impl ScanInvocationStatusTable for PartitionStore {
                 "df-filter-map-invocation-status",
                 Priority::Low,
                 TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(
-                    self.partition_key_range().clone(),
+                    self.partition_key_range(),
                 ),
                 {
                     move |(mut key, mut value)| {
                         let status_key = InvocationStatusKey::deserialize_from(&mut key)?;
 
                         if value.len() < std::mem::size_of::<u8>() {
-                            return Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::ReadingCodec(format!(
+                            return Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::ReadingCodec(format_restring!(
                                 "remaining bytes in buf '{}' < version bytes '{}'",
                                 value.len(),
                                 std::mem::size_of::<u8>()
@@ -269,6 +303,10 @@ impl ReadInvocationStatusTable for PartitionStoreTransaction<'_> {
         self.assert_partition_key(invocation_id)?;
         get_invocation_status(self, invocation_id)
     }
+
+    async fn any_non_completed_invocation_in_range(&mut self, range: KeyRange) -> Result<bool> {
+        any_non_completed_invocation_in_range(self, range)
+    }
 }
 
 impl WriteInvocationStatusTable for PartitionStoreTransaction<'_> {
@@ -289,7 +327,7 @@ impl WriteInvocationStatusTable for PartitionStoreTransaction<'_> {
 
 #[cfg(test)]
 mod tests {
-    use crate::keys::TableKeyPrefix;
+    use crate::keys::EncodeTableKeyPrefix;
 
     use super::*;
 

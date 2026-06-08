@@ -17,13 +17,10 @@ use std::time::Duration;
 use http::{HeaderName, HeaderValue};
 use tokio::task::JoinError;
 
-use restate_invoker_api::{InvocationErrorReport, InvocationReaderError};
 use restate_memory::OutOfMemoryKind;
-use restate_serde_util::NonZeroByteCount;
 use restate_service_client::ServiceClientError;
 use restate_service_protocol::message::{EncodingError, MessageType};
-use restate_time_util::FriendlyDuration;
-use restate_types::errors::{InvocationError, InvocationErrorCode, codes};
+use restate_types::errors::{IdDecodeError, InvocationError, InvocationErrorCode, codes};
 use restate_types::identifiers::DeploymentId;
 use restate_types::journal::raw::RawEntryCodecError;
 use restate_types::journal::{EntryIndex, EntryType};
@@ -33,6 +30,10 @@ use restate_types::service_protocol::{
     MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION, MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION,
     ServiceProtocolVersion,
 };
+use restate_util_bytecount::NonZeroByteCount;
+use restate_util_string::RestrictedValueError;
+use restate_util_time::FriendlyDuration;
+use restate_worker_api::invoker::{InvocationErrorReport, InvocationReaderError};
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 pub(crate) enum InvokerError {
@@ -96,6 +97,9 @@ pub(crate) enum InvokerError {
     #[error("got empty SuspensionMessage")]
     #[code(restate_errors::RT0012)]
     EmptySuspensionMessage,
+    #[error("got empty AwaitingOnMessage")]
+    #[code(restate_errors::RT0012)]
+    EmptyAwaitingOnMessage,
     #[error(
         "got bad SuspensionMessage, suspending on journal indexes {0:?}, but journal length is {1}"
     )]
@@ -208,10 +212,16 @@ pub(crate) struct InvocationMemoryExhausted {
 
 impl fmt::Display for InvocationMemoryExhausted {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let hint = match self.kind {
+            OutOfMemoryKind::PoolExhausted => "consider increasing 'worker.invoker.memory-limit'",
+            OutOfMemoryKind::UpperBoundExceeded => {
+                "consider increasing 'worker.invoker.per-invocation-memory-limit'"
+            }
+        };
         write!(
             f,
-            "memory budget exhausted ({}) while {}: needed {}",
-            self.kind, self.context, self.needed,
+            "memory budget exhausted ({}) while {}: needed {}; {}",
+            self.kind, self.context, self.needed, hint,
         )
     }
 }
@@ -304,6 +314,13 @@ impl InvokerError {
         }
     }
 
+    pub(crate) fn should_pause(&self) -> bool {
+        match self {
+            InvokerError::SdkV2(SdkInvocationErrorV2 { should_pause, .. }) => *should_pause,
+            _ => false,
+        }
+    }
+
     pub(crate) fn into_invocation_error(self) -> InvocationError {
         match self {
             InvokerError::Sdk(sdk_error) => *sdk_error.error,
@@ -379,6 +396,16 @@ pub(crate) enum CommandPreconditionError {
     #[error("the service {0} is exposed by the deprecated deployment {1}.")]
     #[code(restate_errors::RT0020)]
     DeploymentDeprecated(String, DeploymentId),
+    #[error("the provided limit_key is invalid")]
+    InvalidLimitKey,
+    #[error("limit_key was provided without a scope")]
+    LimitKeyWithoutScope,
+    #[error("scope is not supported for Virtual Object targets")]
+    ScopedVirtualObjectNotSupported,
+    #[error("invalid scope: {0}")]
+    InvalidScope(RestrictedValueError),
+    #[error("invalid invocation id {0}: {1}")]
+    InvalidInvocationId(String, IdDecodeError),
 }
 
 #[derive(Debug)]
@@ -479,6 +506,7 @@ pub(crate) struct SdkInvocationErrorV2 {
     pub(crate) related_command: Option<InvocationErrorRelatedCommandV2>,
     pub(crate) next_retry_interval_override: Option<Duration>,
     pub(crate) error: Box<InvocationError>,
+    pub(crate) should_pause: bool,
 }
 
 impl SdkInvocationErrorV2 {
@@ -487,6 +515,7 @@ impl SdkInvocationErrorV2 {
             related_command: None,
             next_retry_interval_override: None,
             error: Default::default(),
+            should_pause: false,
         }
     }
 }

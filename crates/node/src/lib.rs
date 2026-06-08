@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod cluster_marker;
 mod failure_detector;
 mod init;
 mod introspection;
@@ -19,6 +18,7 @@ mod roles;
 use std::time::Duration;
 
 use anyhow::Context;
+use enumset::EnumSet;
 use prost_dto::IntoProst;
 use std::sync::Arc;
 use tracing::{debug, info, trace, warn};
@@ -29,10 +29,11 @@ use restate_core::network::{
     GrpcConnector, MessageRouterBuilder, NetworkServerBuilder, Networking, Swimlane,
 };
 use restate_core::partitions::PartitionRouting;
-use restate_core::{Metadata, MetadataKind, MetadataWriter, TaskKind};
+use restate_core::{Metadata, MetadataKind, MetadataWriter, TaskKind, migrate_metadata};
 use restate_core::{MetadataBuilder, MetadataManager, TaskCenter, spawn_metadata_manager};
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_ingestion_client::{IngestionClient, SessionOptions};
+use restate_limiter::rule_book::RuleBookObserver;
 use restate_log_server::LogServerService;
 use restate_storage_query_datafusion::context::{NoTables, QueryContext};
 use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
@@ -47,6 +48,7 @@ use restate_metadata_server::{
 use restate_metadata_store::{ReadWriteError, WriteError, retry_on_retryable_error};
 use restate_partition_store::PartitionStoreManager;
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
+use restate_types::cluster_marker::{ClusterMarker, ClusterValidationError};
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::errors::IntoMaybeRetryable;
 use restate_types::health::NodeStatus;
@@ -56,7 +58,9 @@ use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfigurati
 use restate_types::logs::{self, RecordCache};
 use restate_types::metadata::{GlobalMetadata, Precondition};
 use restate_types::net::listener::AddressBook;
-use restate_types::nodes_config::{ClusterFingerprint, NodeConfig, NodesConfiguration, Role};
+use restate_types::nodes_config::{
+    ClusterFeature, ClusterFingerprint, NodeConfig, NodesConfiguration, Role,
+};
 use restate_types::partition_table::{PartitionReplication, PartitionTable, PartitionTableBuilder};
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::{
@@ -65,7 +69,6 @@ use restate_types::protobuf::common::{
 use restate_types::{GenerationalNodeId, RestateVersion, Version, Versioned};
 
 use self::failure_detector::FailureDetector;
-use crate::cluster_marker::ClusterValidationError;
 use crate::init::NodeInit;
 use crate::network_server::NetworkServer;
 use crate::roles::{AdminRole, IngressRole, WorkerRole};
@@ -171,8 +174,12 @@ impl Node {
         let tc = TaskCenter::current();
         debug_assert!(is_set, "Global metadata was already set");
 
-        let is_provisioned =
-            cluster_marker::validate_and_update_cluster_marker(config.common.cluster_name())?;
+        let marker = ClusterMarker::validate_or_create(
+            config.common.cluster_name(),
+            config.worker.use_multi_db_layout,
+        )?;
+
+        let is_provisioned = marker.provisioned();
 
         // If MetadataServerKind::Local and Role::MetadataServer are configured,
         // we use an in-memory client, ignoring the rest of the client config.
@@ -255,7 +262,8 @@ impl Node {
 
         let bifrost = bifrost_svc.handle();
 
-        let partition_store_manager = PartitionStoreManager::create().await?;
+        let partition_store_manager =
+            PartitionStoreManager::create(marker.uses_multi_db_layout()).await?;
 
         let log_server = if config.has_role(Role::LogServer) {
             Some(
@@ -299,6 +307,7 @@ impl Node {
                 PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
                 metadata.clone(),
             ),
+            metadata.clone(),
         );
 
         let worker_role = if config.has_role(Role::Worker) {
@@ -370,6 +379,10 @@ impl Node {
         };
 
         let admin_role = if config.has_role(Role::Admin) {
+            let local_rule_book_observer = worker_role.as_ref().map(|worker_role| {
+                Arc::new(worker_role.rule_book_cache_handle()) as Arc<dyn RuleBookObserver>
+            });
+
             Some(
                 AdminRole::create(
                     tc.health().admin_status(),
@@ -388,6 +401,7 @@ impl Node {
                     worker_role
                         .as_ref()
                         .map(|worker_role| worker_role.storage_query_context().clone()),
+                    local_rule_book_observer,
                 )
                 .await?,
             )
@@ -476,15 +490,22 @@ impl Node {
                     config.common.cluster_name()
                 );
             } else {
+                let mut default_features = ClusterFeature::default_features();
+                if config.common.disable_controlled_idempotent_sharding {
+                    default_features -= ClusterFeature::ControlledIdempotentSharding
+                }
+
                 TaskCenter::spawn(TaskKind::SystemBoot, "auto-provision-cluster", {
                     let cluster_configuration = ClusterConfiguration::from_configuration(&config);
                     let metadata_writer = metadata_writer.clone();
                     let common_opts = config.common.clone();
+
                     async move {
                         let response = provision_cluster_metadata(
                             &metadata_writer,
                             &common_opts,
                             &cluster_configuration,
+                            default_features,
                         )
                         .await;
 
@@ -526,6 +547,16 @@ impl Node {
         .await
             .context("Giving up trying to initialize the node. Make sure that it can reach the metadata store and don't forget to provision the cluster on a fresh start")?
             .context("Failed initializing the node")?;
+
+        if metadata
+            .nodes_config_ref()
+            .features()
+            .contains(ClusterFeature::ControlledIdempotentSharding)
+        {
+            restate_types::identifiers::enable_controlled_idempotent_sharding();
+        } else {
+            debug!("Feature `controlled-idempotent-sharding` is disabled");
+        }
 
         self.failure_detector
             .start(self.updateable_config.clone().map(|c| &c.common.gossip))?;
@@ -584,6 +615,8 @@ impl Node {
             &config,
         )
         .await?;
+
+        migrate_metadata(&metadata_writer).await?;
 
         // Start the DataFusion remote scanner server — serves scan RPCs from
         // the admin node for node-level and partition-level tables.
@@ -707,9 +740,10 @@ async fn provision_cluster_metadata(
     metadata_writer: &MetadataWriter,
     common_opts: &CommonOptions,
     cluster_configuration: &ClusterConfiguration,
+    features: EnumSet<ClusterFeature>,
 ) -> anyhow::Result<bool> {
     let (initial_nodes_configuration, initial_partition_table, initial_logs) =
-        generate_initial_metadata(common_opts, cluster_configuration);
+        generate_initial_metadata(common_opts, cluster_configuration, features);
 
     let result = retry_on_retryable_error(common_opts.network_error_retry_policy.clone(), || {
         metadata_writer
@@ -741,12 +775,16 @@ async fn provision_cluster_metadata(
     Ok(result)
 }
 
-fn create_initial_nodes_configuration(common_opts: &CommonOptions) -> NodesConfiguration {
+fn create_initial_nodes_configuration(
+    common_opts: &CommonOptions,
+    features: EnumSet<ClusterFeature>,
+) -> NodesConfiguration {
     let mut initial_nodes_configuration = NodesConfiguration::new(
         Version::MIN,
         common_opts.cluster_name().to_owned(),
         ClusterFingerprint::generate(),
     );
+    initial_nodes_configuration.set_features(features);
     let my_advertised_address =
         TaskCenter::with_current(|tc| common_opts.advertised_address(tc.address_book()));
 
@@ -770,6 +808,7 @@ fn create_initial_nodes_configuration(common_opts: &CommonOptions) -> NodesConfi
 fn generate_initial_metadata(
     common_opts: &CommonOptions,
     cluster_configuration: &ClusterConfiguration,
+    features: EnumSet<ClusterFeature>,
 ) -> (NodesConfiguration, PartitionTable, Logs) {
     let mut initial_partition_table_builder = PartitionTableBuilder::default();
     initial_partition_table_builder
@@ -783,7 +822,7 @@ fn generate_initial_metadata(
         cluster_configuration.bifrost_provider.clone(),
     ));
 
-    let initial_nodes_configuration = create_initial_nodes_configuration(common_opts);
+    let initial_nodes_configuration = create_initial_nodes_configuration(common_opts, features);
 
     (
         initial_nodes_configuration,

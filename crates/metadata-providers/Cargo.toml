@@ -76,3 +76,6 @@ tonic = { workspace = true, optional = true, features = ["codegen", "transport"]
 restate-core = { workspace = true, features = ["test-util"] }
 
 test-log = { workspace = true }
+
+[lints]
+workspace = true

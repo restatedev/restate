@@ -16,6 +16,7 @@ use chrono_humanize::Tense;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
 
+use itertools::Itertools;
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::{Styled, StyledTable};
 use restate_cli_util::ui::stylesheet::Style;
@@ -126,7 +127,11 @@ async fn render_handlers_status(
     svc: ServiceMetadata,
     svc_status: &ServiceStatus,
 ) -> Result<()> {
-    for (_, handler) in svc.handlers {
+    for handler in svc
+        .handlers
+        .values()
+        .sorted_unstable_by(|a, b| a.name.cmp(&b.name))
+    {
         let mut row = vec![];
         row.push(Cell::new(format!("  {}", &handler.name)));
         // Pending
@@ -218,7 +223,7 @@ async fn render_locked_keys(
     table.set_styled_header(vec!["", "QUEUE", "LOCKED-BY", "HANDLER", "NOTES"]);
     for (svc_name, locked_keys) in locked_keys {
         let mut keys: Vec<_> = locked_keys.into_iter().collect();
-        keys.sort_by(|(_, a), (_, b)| b.num_pending.cmp(&a.num_pending));
+        keys.sort_by_key(|(_, b)| std::cmp::Reverse(b.num_pending));
 
         let svc_title = format!("{} ({} active keys)", svc_name, keys.len());
         table.add_row(vec![

@@ -8,19 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::Handler;
+use std::borrow::Cow;
+use std::collections::HashMap;
 
-use crate::identifiers::ServiceRevision;
-use crate::invocation::{InvocationTargetType, ServiceType, WorkflowHandlerType};
-use crate::net::address::{AdvertisedAddress, HttpIngressPort, PeerNetAddress};
-use crate::schema::invocation_target::{InputValidationRule, OutputContentTypeRule};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
 use restate_utoipa::openapi::extensions::Extensions;
 use restate_utoipa::openapi::path::{Operation, Parameter, ParameterIn};
 use restate_utoipa::openapi::request_body::RequestBody;
 use restate_utoipa::openapi::*;
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
-use std::collections::HashMap;
+
+use super::Handler;
+use crate::identifiers::ServiceRevision;
+use crate::invocation::{InvocationTargetType, ServiceType, WorkflowHandlerType};
+use crate::net::address::{AdvertisedAddress, HttpIngressPort, PeerNetAddress};
+use crate::schema::invocation_target::{InputValidationRule, OutputContentTypeRule};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct ServiceOpenAPI {
@@ -41,10 +44,10 @@ impl ServiceOpenAPI {
     ) -> Self {
         let mut schemas_collector = Vec::new();
 
-        let root_path = if service_type.is_keyed() {
-            format!("/{service_name}/{{key}}/")
+        let service_path_segment = if service_type.is_keyed() {
+            Cow::Owned(format!("{service_name}/{{key}}"))
         } else {
-            format!("/{service_name}/")
+            Cow::Borrowed(service_name)
         };
 
         let mut call_parameters: Vec<RefOr<Parameter>> = vec![];
@@ -116,7 +119,10 @@ impl ServiceOpenAPI {
                         .build(),
                 )
                 .build();
-            rpc_paths = rpc_paths.path(format!("{root_path}{handler_name}"), call_item);
+            rpc_paths = rpc_paths.path(
+                format!("/restate/call/{service_path_segment}/{handler_name}"),
+                call_item,
+            );
 
             let send_item = PathItem::builder()
                 .operation(
@@ -144,7 +150,10 @@ impl ServiceOpenAPI {
                         .build(),
                 )
                 .build();
-            send_paths = send_paths.path(format!("{root_path}{handler_name}/send"), send_item);
+            send_paths = send_paths.path(
+                format!("/restate/send/{service_path_segment}/{handler_name}"),
+                send_item,
+            );
 
             if service_type == ServiceType::Workflow {
                 // We add attach/get output only for workflow run
@@ -157,8 +166,9 @@ impl ServiceOpenAPI {
                             Operation::builder()
                                 .summary(summary.clone())
                                 .operation_id(Some(format!("{operation_id}Attach")))
+                                .deprecated(Some(Deprecated::True))
                                 .description(Some(
-                                    handler_schemas
+                                    format!("Deprecated: use POST /restate/lookup with a workflow target to obtain an invocation id, then GET /restate/attach/{{invocationId}}. {}", handler_schemas
                                         .documentation
                                         .as_ref()
                                         .cloned()
@@ -166,7 +176,7 @@ impl ServiceOpenAPI {
                                             format!(
                                                 "Attach to the running instance of {service_name}/{handler_name} workflow and wait to finish"
                                             )
-                                        }),
+                                        })),
                                 ))
                                 .parameters(Some(attach_get_output_parameters.clone()))
                                 .tag(ATTACH_TAG_NAME.to_string())
@@ -188,8 +198,9 @@ impl ServiceOpenAPI {
                             Operation::builder()
                                 .summary(summary.clone())
                                 .operation_id(Some(format!("{operation_id}Output")))
+                                .deprecated(Some(Deprecated::True))
                                 .description(Some(
-                                    handler_schemas
+                                    format!("Deprecated: use POST /restate/lookup with a workflow target to obtain an invocation id, then GET /restate/output/{{invocationId}}. {}", handler_schemas
                                         .documentation
                                         .as_ref()
                                         .cloned()
@@ -197,7 +208,7 @@ impl ServiceOpenAPI {
                                             format!(
                                                 "Get output of the {service_name}/{handler_name} workflow"
                                             )
-                                        }),
+                                        })),
                                 ))
                                 .parameters(Some(attach_get_output_parameters.clone()))
                                 .tag(GET_OUTPUT_TAG_NAME.to_string())
@@ -222,8 +233,9 @@ impl ServiceOpenAPI {
                         Operation::builder()
                             .summary(summary.clone())
                             .operation_id(Some(format!("{operation_id}Attach")))
+                            .deprecated(Some(Deprecated::True))
                             .description(Some(
-                                handler_schemas
+                                format!("Deprecated: use POST /restate/lookup with idempotency information to obtain an invocation id, then GET /restate/attach/{{invocationId}}. {}", handler_schemas
                                     .documentation
                                     .as_ref()
                                     .cloned()
@@ -231,7 +243,7 @@ impl ServiceOpenAPI {
                                         format!(
                                             "Attach to a running instance of {service_name}/{handler_name} using the idempotency key and wait to finish"
                                         )
-                                    }),
+                                    })),
                             ))
                             .parameters(Some(attach_get_output_parameters.clone()))
                             .tag(ATTACH_TAG_NAME.to_string())
@@ -244,7 +256,7 @@ impl ServiceOpenAPI {
                     .build();
                 attach_paths = attach_paths.path(
                     format!(
-                        "/restate/invocation{root_path}{handler_name}/{{idempotencyKey}}/attach"
+                        "/restate/invocation/{service_path_segment}/{handler_name}/{{idempotencyKey}}/attach"
                     ),
                     attach_item,
                 );
@@ -255,8 +267,9 @@ impl ServiceOpenAPI {
                         Operation::builder()
                             .summary(summary.clone())
                             .operation_id(Some(format!("{operation_id}Output")))
+                            .deprecated(Some(Deprecated::True))
                             .description(Some(
-                                handler_schemas
+                                format!("Deprecated: use POST /restate/lookup with with idempotency information to obtain an invocation id, then GET /restate/output/{{invocationId}}. {}", handler_schemas
                                     .documentation
                                     .as_ref()
                                     .cloned()
@@ -264,7 +277,7 @@ impl ServiceOpenAPI {
                                         format!(
                                             "Get output of a running instance of {service_name}/{handler_name} using idempotency key"
                                         )
-                                    }),
+                                    })),
                             ))
                             .parameters(Some(attach_get_output_parameters.clone()))
                             .tag(GET_OUTPUT_TAG_NAME.to_string())
@@ -278,7 +291,7 @@ impl ServiceOpenAPI {
                     .build();
                 get_output_paths = get_output_paths.path(
                     format!(
-                        "/restate/invocation{root_path}{handler_name}/{{idempotencyKey}}/output"
+                        "/restate/invocation/{service_path_segment}/{handler_name}/{{idempotencyKey}}/output"
                     ),
                     output_item,
                 );

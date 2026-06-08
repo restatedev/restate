@@ -356,7 +356,7 @@ mod tests {
     use crate::{TaskCenter, TaskCenterBuilder};
 
     #[test]
-    fn test_nodes_config_updates() -> Result<()> {
+    fn nodes_config_updates() -> Result<()> {
         test_updates(
             create_mock_nodes_config(),
             MetadataKind::NodesConfiguration,
@@ -366,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn test_partition_table_updates() -> Result<()> {
+    fn partition_table_updates() -> Result<()> {
         test_updates(
             PartitionTable::with_equally_sized_partitions(Version::MIN, 42),
             MetadataKind::PartitionTable,
@@ -427,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn test_nodes_config_watchers() -> Result<()> {
+    fn nodes_config_watchers() -> Result<()> {
         test_watchers(
             create_mock_nodes_config(),
             MetadataKind::NodesConfiguration,
@@ -437,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn test_partition_table_watchers() -> Result<()> {
+    fn partition_table_watchers() -> Result<()> {
         test_watchers(
             PartitionTable::with_equally_sized_partitions(Version::MIN, 42),
             MetadataKind::PartitionTable,

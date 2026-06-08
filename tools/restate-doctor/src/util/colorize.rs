@@ -233,16 +233,19 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
                 });
             }
         }
-        KeyKind::VQueueInbox => {
-            // parent(4) + instance(4) + stage(1) + priority(1) + visible_at(8) + created_at(8) + kind(1) + id(16)
+        KeyKind::VQueueInboxStage
+        | KeyKind::VQueueRunningStage
+        | KeyKind::VQueueSuspendedStage
+        | KeyKind::VQueuePausedStage
+        | KeyKind::VQueueFinishedStage => {
+            // VQueueId tail (len(1) + digest(16)) + EntryKey(has_lock(1) + run_at(8) + seq(8) + kind(1) + id(16))
             let mut pos = 10;
             let fields = [
-                (4, "parent"),
-                (4, "instance"),
-                (1, "stage"),
-                (1, "priority"),
-                (8, "visible_at"),
-                (8, "created_at"),
+                (1, "qid_len"),
+                (16, "qid_digest"),
+                (1, "has_lock"),
+                (8, "run_at"),
+                (8, "seq"),
                 (1, "entry_kind"),
                 (16, "entry_id"),
             ];
@@ -260,7 +263,7 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
                 }
             }
         }
-        KeyKind::VQueueEntryState => {
+        KeyKind::VQueueEntryStatus => {
             // kind (1 byte) + id (16 bytes)
             if remaining >= 1 {
                 segments.push(Segment {
@@ -279,7 +282,7 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
                 });
             }
         }
-        KeyKind::VQueueItems => {
+        KeyKind::VQueueInput => {
             // parent(4) + instance(4) + kind(1) + id(16) + index(4)
             let mut pos = 10;
             let fields = [
@@ -312,6 +315,14 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
                 &["service_name", "service_key", "state_key"],
             );
         }
+        KeyKind::ScopedState => {
+            // scope (var) + service_name (var) + service_key (var) + state_key (var)
+            parse_variable_fields(
+                &key[10..],
+                &mut segments,
+                &["scope", "service_name", "service_key", "state_key"],
+            );
+        }
         KeyKind::ServiceStatus => {
             // service_name (var) + service_key (var)
             parse_variable_fields(&key[10..], &mut segments, &["service_name", "service_key"]);
@@ -337,6 +348,15 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
                 &["service_name", "service_key", "promise_key"],
             );
         }
+        KeyKind::ScopedPromise => {
+            // scope (var) + service_name (var) + service_key (var) + key (var)
+            parse_variable_fields(
+                &key[10..],
+                &mut segments,
+                &["scope", "service_name", "service_key", "promise_key"],
+            );
+        }
+        #[allow(deprecated)]
         KeyKind::Idempotency => {
             // service_name (var) + service_key (var) + service_handler (var) + idempotency_key (var)
             parse_variable_fields(
@@ -377,6 +397,98 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
             }
             if remaining > 16 {
                 parse_variable_fields(&key[26..], &mut segments, &["notification_id"]);
+            }
+        }
+        KeyKind::Lock => {
+            // Optional scope prefix ('s' or 'u'), then lock_name as "service_name/lock_key"
+            let scope_len_size = std::mem::size_of::<u32>();
+            let mut pos = 10;
+
+            // Scope kind marker
+            segments.push(Segment {
+                kind: KeySegment::FixedField,
+                start: pos,
+                len: 1,
+                label: "scope_kind",
+            });
+
+            let Some(&scope_kind) = key.get(pos) else {
+                return segments;
+            };
+            pos += 1;
+
+            if scope_kind == b's' {
+                // Scoped lock: 4-byte scope length + scope bytes
+                let len_bytes = key.len().saturating_sub(pos).min(scope_len_size);
+                if len_bytes > 0 {
+                    segments.push(Segment {
+                        kind: KeySegment::LengthPrefix,
+                        start: pos,
+                        len: len_bytes,
+                        label: "scope_len",
+                    });
+                }
+
+                if key.len() < pos + scope_len_size {
+                    return segments;
+                }
+
+                let Ok(scope_len_bytes) = key[pos..pos + scope_len_size].try_into() else {
+                    return segments;
+                };
+                let scope_len = u32::from_be_bytes(scope_len_bytes) as usize;
+                pos += scope_len_size;
+
+                let available_scope = key.len().saturating_sub(pos);
+                let scope_len = scope_len.min(available_scope);
+                if scope_len > 0 {
+                    segments.push(Segment {
+                        kind: KeySegment::VariableField,
+                        start: pos,
+                        len: scope_len,
+                        label: "scope",
+                    });
+                    pos += scope_len;
+                }
+            }
+
+            // Remaining bytes encode lock name: "service_name/lock_key"
+            if pos < key.len() {
+                let lock_name = &key[pos..];
+                if let Some(slash_pos) = lock_name.iter().position(|b| *b == b'/') {
+                    if slash_pos > 0 {
+                        segments.push(Segment {
+                            kind: KeySegment::VariableField,
+                            start: pos,
+                            len: slash_pos,
+                            label: "service_name",
+                        });
+                    }
+
+                    segments.push(Segment {
+                        kind: KeySegment::FixedField,
+                        start: pos + slash_pos,
+                        len: 1,
+                        label: "separator",
+                    });
+
+                    let key_start = pos + slash_pos + 1;
+                    if key_start < key.len() {
+                        segments.push(Segment {
+                            kind: KeySegment::VariableField,
+                            start: key_start,
+                            len: key.len() - key_start,
+                            label: "lock_key",
+                        });
+                    }
+                } else {
+                    segments.push(Segment {
+                        kind: KeySegment::VariableField,
+                        start: pos,
+                        len: key.len() - pos,
+                        label: "lock_name",
+                    });
+                }
             }
         }
     }
@@ -456,7 +568,7 @@ fn decode_varint(data: &[u8]) -> Option<(usize, usize)> {
 /// Each segment of the key is colored differently to help visualize
 /// the key structure:
 /// - Cyan: KeyKind prefix (2 bytes)
-/// - Yellow: Partition key/id (8 bytes)  
+/// - Yellow: Partition key/id (8 bytes)
 /// - Green: Fixed-size fields (uuids, indices, etc.)
 /// - Magenta: Variable-length field data
 /// - Grey: Length prefixes for variable fields
@@ -533,25 +645,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_decode_varint() {
+    fn decode_varint() {
         // Single byte values
-        assert_eq!(decode_varint(&[0x00]), Some((0, 1)));
-        assert_eq!(decode_varint(&[0x01]), Some((1, 1)));
-        assert_eq!(decode_varint(&[0x7f]), Some((127, 1)));
+        assert_eq!(super::decode_varint(&[0x00]), Some((0, 1)));
+        assert_eq!(super::decode_varint(&[0x01]), Some((1, 1)));
+        assert_eq!(super::decode_varint(&[0x7f]), Some((127, 1)));
 
         // Two byte values
-        assert_eq!(decode_varint(&[0x80, 0x01]), Some((128, 2)));
-        assert_eq!(decode_varint(&[0xff, 0x01]), Some((255, 2)));
+        assert_eq!(super::decode_varint(&[0x80, 0x01]), Some((128, 2)));
+        assert_eq!(super::decode_varint(&[0xff, 0x01]), Some((255, 2)));
 
         // Empty input
-        assert_eq!(decode_varint(&[]), None);
+        assert_eq!(super::decode_varint(&[]), None);
     }
 
     #[test]
-    fn test_hex_encode_plain() {
-        assert_eq!(hex_encode_plain(&[]), "");
-        assert_eq!(hex_encode_plain(&[0x00]), "00");
-        assert_eq!(hex_encode_plain(&[0xab, 0xcd]), "abcd");
-        assert_eq!(hex_encode_plain(&[0x73, 0x74]), "7374"); // "st" for State
+    fn hex_encode_plain() {
+        assert_eq!(super::hex_encode_plain(&[]), "");
+        assert_eq!(super::hex_encode_plain(&[0x00]), "00");
+        assert_eq!(super::hex_encode_plain(&[0xab, 0xcd]), "abcd");
+        assert_eq!(super::hex_encode_plain(&[0x73, 0x74]), "7374"); // "st" for State
+    }
+
+    #[test]
+    fn build_segments_for_lock_key() {
+        let mut key = Vec::new();
+        key.extend_from_slice(restate_partition_store::keys::KeyKind::Lock.as_bytes());
+        key.extend_from_slice(&1u64.to_be_bytes());
+        key.push(b's');
+        key.extend_from_slice(&(5u32).to_be_bytes());
+        key.extend_from_slice(b"scope");
+        key.extend_from_slice(b"service/my-lock");
+
+        let segments = build_segments(&key);
+        let labels: Vec<&str> = segments.iter().map(|s| s.label).collect();
+
+        assert!(labels.contains(&"scope_kind"));
+        assert!(labels.contains(&"scope_len"));
+        assert!(labels.contains(&"scope"));
+        assert!(labels.contains(&"service_name"));
+        assert!(labels.contains(&"lock_key"));
     }
 }

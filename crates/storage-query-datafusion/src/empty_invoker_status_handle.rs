@@ -8,11 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_invoker_api::{InvocationStatusReport, StatusHandle};
-use restate_types::identifiers::PartitionKey;
 use std::future::Future;
-use std::ops::RangeInclusive;
 use std::{future, iter};
+
+use restate_types::sharding::KeyRange;
+use restate_worker_api::invoker::{InvocationStatusReport, StatusHandle};
+use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
+
+use crate::context::PartitionLeaderStatusHandle;
 
 #[derive(Clone, Debug)]
 pub struct EmptyInvokerStatusHandle;
@@ -20,10 +23,29 @@ pub struct EmptyInvokerStatusHandle;
 impl StatusHandle for EmptyInvokerStatusHandle {
     type Iterator = iter::Empty<InvocationStatusReport>;
 
-    fn read_status(
+    fn read_status(&self, _keys: KeyRange) -> impl Future<Output = Self::Iterator> + Send {
+        future::ready(iter::empty())
+    }
+}
+
+impl PartitionLeaderStatusHandle for EmptyInvokerStatusHandle {
+    type SchedulerStatus = SchedulerStatusEntry;
+    type SchedulerStatusIterator = std::iter::Empty<Self::SchedulerStatus>;
+
+    type UserLimitCounter = UserLimitCounterEntry;
+    type UserLimitCounterIterator = std::iter::Empty<Self::UserLimitCounter>;
+
+    fn read_scheduler_status(
         &self,
-        _keys: RangeInclusive<PartitionKey>,
-    ) -> impl Future<Output = Self::Iterator> + Send {
+        _keys: KeyRange,
+    ) -> impl Future<Output = Self::SchedulerStatusIterator> + Send {
+        future::ready(iter::empty())
+    }
+
+    fn read_user_limit_counters(
+        &self,
+        _keys: KeyRange,
+    ) -> impl Future<Output = Self::UserLimitCounterIterator> + Send {
         future::ready(iter::empty())
     }
 }

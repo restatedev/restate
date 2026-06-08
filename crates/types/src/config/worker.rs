@@ -8,22 +8,26 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::{NonZeroU8, NonZeroU32, NonZeroU64, NonZeroUsize};
+use std::num::{NonZero, NonZeroU8, NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::time::Duration;
 
+use restate_serde_util::SerdeableHeaderHashMap;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tracing::warn;
 
-use restate_serde_util::{ByteCount, NonZeroByteCount};
-use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
+use restate_util_bytecount::{ByteCount, NonZeroByteCount};
+use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
 
 use super::{
     BackgroundWorkBudget, CommonOptions, DEFAULT_MESSAGE_SIZE_LIMIT, NetworkingOptions,
     ObjectStoreOptions, RocksDbOptions, RocksDbOptionsBuilder,
 };
-use crate::config::IngestionOptions;
+use crate::config::{
+    AwsLambdaOptions, DeprecatedAwsLambdaOptions, DeprecatedHttpOptions, HttpOptions,
+    IngestionOptions,
+};
 use crate::identifiers::PartitionId;
 use crate::net::connect_opts::MESSAGE_SIZE_OVERHEAD;
 use crate::rate::Rate;
@@ -32,6 +36,8 @@ use crate::retries::RetryPolicy;
 const MIN_ROCKSDB_MEMORY: NonZeroByteCount =
     NonZeroByteCount::new(NonZeroUsize::new(32 * 1024 * 1024).unwrap());
 
+const X_RESTATE_CLUSTER_NAME: http::HeaderName =
+    http::HeaderName::from_static("x-restate-cluster-name");
 /// # Worker options
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
@@ -113,12 +119,36 @@ pub struct WorkerOptions {
     ///
     /// Default is 256 MiB.
     pub data_service_memory_limit: NonZeroByteCount,
+
+    /// # Rule book poll interval
+    ///
+    /// How often each node's `RuleBookCache` polls the metadata store
+    /// for rule-book updates. The cache also receives push-style
+    /// notifications when partition processors apply
+    /// `Command::UpsertRuleBook` from Bifrost, so this poll interval
+    /// is mainly a fallback for cross-node propagation when no
+    /// partition leader has yet observed the change. Default: 30 s.
+    /// *Since v1.7.0*
+    pub rule_book_poll_interval: NonZeroFriendlyDuration,
+
+    /// Create a database per partition
+    ///
+    /// This asks the node to create a database per partition. Enabling this is only
+    /// effective for fresh empty nodes. If this was enabled on a node that already has
+    /// the single db layout, the node will continue to use the single db layout.
+    ///
+    /// It's possible in future versions (>=v1.8.0+) to include automatic migration
+    /// facility when enabling this option on a legacy node.
+    /// *Since v1.7.0*
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub use_multi_db_layout: bool,
 }
 
 impl WorkerOptions {
     /// set networking-derived values if they are not configured to reduce verbose configurations
-    pub fn set_derived_values(&mut self, opts: &NetworkingOptions) {
-        self.invoker.merge(opts);
+    pub fn set_derived_values(&mut self, common: &CommonOptions, opts: &NetworkingOptions) {
+        self.invoker.merge(common, opts);
     }
 
     pub fn internal_queue_length(&self) -> usize {
@@ -173,6 +203,8 @@ impl Default for WorkerOptions {
             data_service_memory_limit: NonZeroByteCount::new(
                 NonZeroUsize::new(256 * 1024 * 1024).unwrap(),
             ),
+            rule_book_poll_interval: NonZeroFriendlyDuration::from_secs_unchecked(30),
+            use_multi_db_layout: false,
         }
     }
 }
@@ -225,7 +257,7 @@ pub enum DurabilityMode {
     /// fetch the snapshot as usual.
     ///
     /// [requires snapshot repository]
-    /// [default] if snapshot repository configured
+    /// [default] if restate-server is in cluster mode.
     /// DurabilityPoint = Min(Max(ReplicaSetDurablePoints), SnapshotDurablePoint)
     Balanced,
 
@@ -236,7 +268,7 @@ pub enum DurabilityMode {
     ///
     /// default in standalone-mode with no snapshot repository configured
     ///
-    /// [default] if snapshot repository is not configured
+    /// [default] if restate-server is in single-node mode.
     /// DurabilityPoint = Min(ReplicaSetDurablePoints)
     // [Requires node-to-on-node sharing of ad-hoc snapshots] if used in cluster mode.
     ReplicaSetOnly,
@@ -321,7 +353,7 @@ pub struct InvokerOptions {
     /// Number of concurrent invocations that can be processed by the invoker.
     concurrent_invocations_limit: Option<NonZeroUsize>,
 
-    /// # Eager state size limit (since v1.6.3)
+    /// # Eager state size limit (since v1.7.0)
     ///
     /// Maximum total size (in bytes) of state entries to send eagerly in the StartMessage.
     /// When the total size of state entries exceeds this limit, only a partial state is sent
@@ -335,7 +367,7 @@ pub struct InvokerOptions {
     eager_state_size_limit: Option<ByteCount>,
 
     // -- Private config options (not exposed in the schema)
-    /// Deprecated since v1.6.3: Use `eager_state_size_limit` with a value of `0` instead.
+    /// Deprecated since v1.7.0: Use `eager_state_size_limit` with a value of `0` instead.
     /// When true, treated as `eager_state_size_limit = 0` (no eager state).
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
@@ -375,7 +407,7 @@ pub struct InvokerOptions {
     ///
     /// To effectively disable memory limiting, set this to a very large value.
     ///
-    /// Since v1.6.3
+    /// Since v1.7.0
     pub memory_limit: NonZeroByteCount,
 
     /// # Per-invocation memory limit
@@ -387,7 +419,7 @@ pub struct InvokerOptions {
     /// If unset, defaults to `message-size-limit`. If set, it will be clamped at
     /// the value of `message-size-limit`.
     ///
-    /// Since v1.6.3
+    /// Since v1.7.0
     #[serde(skip_serializing_if = "Option::is_none")]
     per_invocation_memory_limit: Option<ByteCount>,
 
@@ -400,8 +432,19 @@ pub struct InvokerOptions {
     /// round-trips to the global pool. Larger values reduce contention but limit
     /// maximum concurrency.
     ///
-    /// Since v1.6.3
+    /// Since v1.7.0
     pub per_invocation_initial_memory: NonZeroByteCount,
+
+    /// # Service client options
+    ///
+    /// Configures the HTTP/Lambda client the invoker uses to call service deployments.
+    /// Covers HTTP connection tuning (keep-alive, proxy, timeouts, HTTP/2 windows),
+    /// AWS Lambda settings, the optional request-identity signing key, and any
+    /// additional outbound headers applied to every invocation request.
+    ///
+    /// Since v1.7.0
+    #[serde(flatten)]
+    pub service_client: ServiceClientOptions,
 }
 
 impl InvokerOptions {
@@ -440,7 +483,7 @@ impl InvokerOptions {
         self.per_invocation_memory_limit
             .and_then(|v| NonZeroUsize::new(v.as_usize()))
             .map(NonZeroByteCount::new)
-            .unwrap_or(NonZeroByteCount::new(self.message_size_limit()))
+            .unwrap_or_else(|| NonZeroByteCount::new(self.message_size_limit()))
     }
 
     /// Resolved eager state size limit in bytes. After `merge()`, this is guaranteed
@@ -448,10 +491,31 @@ impl InvokerOptions {
     pub fn eager_state_size_limit(&self) -> usize {
         self.eager_state_size_limit
             .map(|v| v.as_usize())
-            .unwrap_or(self.message_size_limit().get())
+            .unwrap_or_else(|| self.message_size_limit().get())
     }
 
-    pub(crate) fn merge(&mut self, opts: &NetworkingOptions) {
+    pub(crate) fn merge(&mut self, common: &CommonOptions, opts: &NetworkingOptions) {
+        #[allow(deprecated)]
+        self.service_client
+            .apply_deprecated("worker.invoker", common.service_client.clone());
+
+        if self.service_client.additional_request_headers.is_none() {
+            let cluster_name_visible_ascii = common
+                .cluster_name()
+                .chars()
+                .filter(|c| *c >= ' ' && *c <= '~')
+                .collect::<String>();
+
+            self.service_client.additional_request_headers = Some(
+                std::collections::HashMap::from_iter([(
+                    X_RESTATE_CLUSTER_NAME,
+                    http::HeaderValue::from_str(&cluster_name_visible_ascii)
+                        .expect("a visible ascii string must be a valid header value"),
+                )])
+                .into(),
+            )
+        }
+
         self.message_size_limit = Some(
             self.message_size_limit
                 .map(|limit| limit.min(opts.message_size_limit))
@@ -462,7 +526,7 @@ impl InvokerOptions {
         self.per_invocation_memory_limit = Some(
             self.per_invocation_memory_limit
                 .map(|limit| limit.min(opts.message_size_limit.into()))
-                .unwrap_or(opts.message_size_limit.into()),
+                .unwrap_or_else(|| opts.message_size_limit.into()),
         );
 
         // Fuse deprecated disable_eager_state into eager_state_size_limit
@@ -483,7 +547,7 @@ impl InvokerOptions {
         // because that's the maximum amount of memory used for the outbound/inbound direction.
         self.eager_state_size_limit = Some(
             self.eager_state_size_limit
-                .unwrap_or(opts.message_size_limit.into()),
+                .unwrap_or_else(|| opts.message_size_limit.into()),
         )
         .map(|limit| {
             limit
@@ -510,12 +574,98 @@ impl Default for InvokerOptions {
             invocation_throttling: None,
             action_throttling: None,
             memory_limit: NonZeroByteCount::new(
-                NonZeroUsize::new(256 * 1024 * 1024).unwrap(), // 256 MiB
+                NonZeroUsize::new(1536 * 1024 * 1024).unwrap(), // 1.5 GiB
             ),
             per_invocation_memory_limit: None,
             per_invocation_initial_memory: DEFAULT_PER_INVOCATION_INITIAL_MEMORY,
+            service_client: ServiceClientOptions::default(),
         }
     }
+}
+
+/// # Service Client options
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "schemars",
+    schemars(rename = "ServiceClientOptions", default)
+)]
+#[builder(default)]
+#[derive(Default)]
+#[serde(rename_all = "kebab-case")]
+pub struct ServiceClientOptions {
+    #[serde(flatten)]
+    pub http: HttpOptions,
+    #[serde(flatten)]
+    pub lambda: AwsLambdaOptions,
+
+    /// # Request identity private key PEM file
+    ///
+    /// A path to a file, such as "/var/secrets/key.pem", which contains exactly one ed25519 private
+    /// key in PEM format. Such a file can be generated with `openssl genpkey -algorithm ed25519`.
+    /// If provided, this key will be used to attach JWTs to requests from this client which
+    /// SDKs may optionally verify, proving that the caller is a particular Restate instance.
+    ///
+    /// This file is currently only read on client creation, but this may change in future.
+    /// Parsed public keys will be logged at INFO level in the same format that SDKs expect.
+    pub request_identity_private_key_pem_file: Option<PathBuf>,
+
+    /// # Additional request headers
+    ///
+    /// Headers that should be applied to all outgoing requests (HTTP and Lambda).
+    /// Defaults to `x-restate-cluster-name: <cluster name>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub additional_request_headers: Option<SerdeableHeaderHashMap>,
+}
+
+impl ServiceClientOptions {
+    // todo: Remove in Restate v1.8
+    pub(crate) fn apply_deprecated(
+        &mut self,
+        new_base: &str,
+        deprecated: DeprecatedServiceClientOptions,
+    ) {
+        let DeprecatedServiceClientOptions {
+            http,
+            lambda,
+            request_identity_private_key_pem_file,
+            additional_request_headers,
+        } = deprecated;
+
+        self.http.apply_deprecated(new_base, http);
+        self.lambda.apply_deprecated(new_base, lambda);
+
+        super::apply_deprecated_field_optional(
+            &mut self.request_identity_private_key_pem_file,
+            request_identity_private_key_pem_file,
+            new_base,
+            "request-identity-private-key-pem-file",
+            None,
+        );
+        super::apply_deprecated_field_optional(
+            &mut self.additional_request_headers,
+            additional_request_headers,
+            new_base,
+            "additional-request-headers",
+            None,
+        );
+    }
+}
+
+/// Shadow of [`ServiceClientOptions`] for the deprecated `service-client` root location. Every
+/// leaf field is `Option<T>` so `None` means "user didn't set it" and `Some(_)` means "user set
+/// this value".
+// todo: Remove in Restate v1.8
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub(crate) struct DeprecatedServiceClientOptions {
+    #[serde(flatten)]
+    pub http: DeprecatedHttpOptions,
+    #[serde(flatten)]
+    pub lambda: DeprecatedAwsLambdaOptions,
+    pub request_identity_private_key_pem_file: Option<PathBuf>,
+    pub additional_request_headers: Option<SerdeableHeaderHashMap>,
 }
 
 /// # Storage options
@@ -793,9 +943,9 @@ pub struct SnapshotsOptions {
     /// A retry policy for dealing with retryable object store errors.
     pub object_store_retry_policy: RetryPolicy,
 
-    /// # Experimental: Snapshot retention count
+    /// # Snapshot retention count
     ///
-    /// EXPERIMENTAL (v1.6): Number of most recent snapshots to retain. Older snapshots will be
+    /// Number of most recent snapshots to retain. Older snapshots will be
     /// deleted automatically. Only snapshots created after this setting is enabled will
     /// be considered for pruning.
     ///
@@ -803,15 +953,12 @@ pub struct SnapshotsOptions {
     /// oldest retained snapshot. Therefore, retaining multiple snapshots will cause increased disk
     /// usage on log-server nodes.
     ///
-    /// WARNING: Enabling this feature upgrades the snapshot tracking format. Only enable if all
-    /// cluster nodes run a compatible version. Downgrading will forget the tracked snapshots and
-    /// revert to v1.5.x behavior.
+    /// Default: `1`
     ///
-    /// Default: `None` (feature is disabled, older snapshots will accumulate in repository)
-    // todo(v1.7): Drop the experimental prefix; make it non-optional with default value `1`
+    /// Since v1.7.0
     #[cfg_attr(feature = "schemars", schemars(skip))]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub experimental_num_retained: Option<NonZeroU8>,
+    #[serde(default = "default_num_retained")]
+    pub num_retained: NonZeroU8,
 
     /// # Export concurrency limit
     ///
@@ -827,6 +974,10 @@ pub struct SnapshotsOptions {
     pub enable_cleanup: bool,
 }
 
+fn default_num_retained() -> NonZero<u8> {
+    NonZeroU8::new(1).unwrap()
+}
+
 impl Default for SnapshotsOptions {
     fn default() -> Self {
         Self {
@@ -835,7 +986,7 @@ impl Default for SnapshotsOptions {
             snapshot_interval_num_records: None,
             object_store: Default::default(),
             object_store_retry_policy: Self::default_retry_policy(),
-            experimental_num_retained: None,
+            num_retained: default_num_retained(),
             export_concurrency_limit: None,
             #[cfg(any(test, feature = "test-util"))]
             enable_cleanup: true,
@@ -894,9 +1045,9 @@ impl From<ThrottlingOptions> for gardal::Limit {
         use gardal::Limit;
 
         let mut limit = match options.rate {
-            Rate::PerSecond(rate) => Limit::per_second(rate),
-            Rate::PerMinute(rate) => Limit::per_minute(rate),
-            Rate::PerHour(rate) => Limit::per_hour(rate),
+            Rate::Second(rate) => Limit::per_second(rate),
+            Rate::Minute(rate) => Limit::per_minute(rate),
+            Rate::Hour(rate) => Limit::per_hour(rate),
         };
 
         if let Some(capacity) = options.capacity {
@@ -910,7 +1061,7 @@ impl From<ThrottlingOptions> for gardal::Limit {
 mod serde_helpers {
     use std::num::NonZeroUsize;
 
-    use restate_serde_util::ByteCount;
+    use restate_util_bytecount::ByteCount;
 
     pub const fn default_compact_on_deletions_window() -> NonZeroUsize {
         // SAFETY: 1000 is non-zero
@@ -944,5 +1095,65 @@ mod serde_helpers {
 
     pub fn is_default_compact_on_deletions_min_sst_file_size(v: &ByteCount) -> bool {
         *v == default_compact_on_deletions_min_sst_file_size()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn apply_deprecated_precedence() {
+        let base = "worker.invoker";
+
+        // empty shadow: canonical is untouched.
+        let mut new = ServiceClientOptions::default();
+        new.lambda.aws_profile = Some("kept".to_owned());
+        new.apply_deprecated(base, DeprecatedServiceClientOptions::default());
+        assert_eq!(new.lambda.aws_profile.as_deref(), Some("kept"));
+
+        // deprecated-only: the value migrates from the old location into the new one
+        // (also exercises delegation into the flattened `lambda` child).
+        let mut new = ServiceClientOptions::default();
+        let deprecated = DeprecatedServiceClientOptions {
+            lambda: DeprecatedAwsLambdaOptions {
+                aws_profile: Some("old".to_owned()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        new.apply_deprecated(base, deprecated);
+        assert_eq!(new.lambda.aws_profile.as_deref(), Some("old"));
+
+        // both set: deprecated wins (preserves the user's prior effective behavior during the
+        // migration window; warning fires telling them to remove the deprecated key).
+        let mut new = ServiceClientOptions::default();
+        new.http.connect_timeout = NonZeroFriendlyDuration::from_secs_unchecked(7);
+        let deprecated = DeprecatedServiceClientOptions {
+            http: DeprecatedHttpOptions {
+                connect_timeout: Some(NonZeroFriendlyDuration::from_secs_unchecked(5)),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        new.apply_deprecated(base, deprecated);
+        assert_eq!(
+            new.http.connect_timeout,
+            NonZeroFriendlyDuration::from_secs_unchecked(5)
+        );
+
+        // an own field migrates through the same logic
+        let mut new = ServiceClientOptions::default();
+        let deprecated = DeprecatedServiceClientOptions {
+            request_identity_private_key_pem_file: Some("/key.pem".into()),
+            ..Default::default()
+        };
+        new.apply_deprecated(base, deprecated);
+        assert_eq!(
+            new.request_identity_private_key_pem_file.as_deref(),
+            Some(Path::new("/key.pem"))
+        );
     }
 }

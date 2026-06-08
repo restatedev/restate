@@ -8,9 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
 use std::pin::Pin;
-use std::task::{Context, Poll, ready};
+use std::sync::Arc;
+use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -25,13 +25,17 @@ use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::state_table::{ReadStateTable, ScanStateTable, WriteStateTable};
 use restate_storage_api::{BudgetedReadError, Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
+use restate_types::sharding::KeyRange;
+use restate_types::{Scope, ServiceName};
+use restate_util_string::ReString;
 
 use crate::TableKind::State;
-use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
 use crate::{
     PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
     TableScanIterationDecision, break_on_err,
 };
+use restate_types::partitions::StorageVersion;
 
 define_table_key!(
     State,
@@ -40,22 +44,42 @@ define_table_key!(
         partition_key: PartitionKey,
         service_name: ByteString,
         service_key: ByteString,
-        state_key: Bytes
+        state_key: Bytes,
+    )
+);
+
+define_table_key!(
+    State,
+    KeyKind::ScopedState,
+    ScopedStateKey(
+        partition_key: PartitionKey,
+        scope: Option<Scope>,
+        service_name: ServiceName,
+        service_key: ReString,
+        // unfortunately, journal v1 allowed to pass in Bytes as a state key :-(
+        // Can switch to a StringLike type once we remove support for journal v1.
+        state_key: Bytes,
     )
 );
 
 #[inline]
-fn write_state_entry_key(service_id: &ServiceId, state_key: impl AsRef<[u8]>) -> StateKey {
+fn write_state_entry_key(service_id: &ServiceId, state_key: &Bytes) -> StateKey {
     StateKey {
         partition_key: service_id.partition_key(),
         service_name: service_id.service_name.clone(),
         service_key: service_id.key.clone(),
-        state_key: state_key.as_ref().to_vec().into(),
+        state_key: state_key.clone(),
     }
 }
 
 #[inline]
 fn user_state_key_from_slice(mut key: &[u8]) -> Result<Bytes> {
+    // Determine key kind from the first 2 bytes to dispatch to the right deserializer
+    if key.len() >= 2
+        && KeyKind::from_bytes(key[..2].try_into().unwrap()) == Some(KeyKind::ScopedState)
+    {
+        return Ok(ScopedStateKey::deserialize_from(&mut key)?.state_key);
+    }
     Ok(StateKey::deserialize_from(&mut key)?.state_key)
 }
 
@@ -104,39 +128,115 @@ impl<DB: DBAccess> Iterator for StateEntryIter<'_, DB> {
     }
 }
 
+/// Returns `true` if the call should use the scoped state table — either because
+/// the partition store has migrated past
+/// [`StorageVersion::ScopedStateAndPromise`] (so scope = None entries also live
+/// in the scoped table) or because the [`ServiceId`] carries an explicit scope.
+#[inline]
+fn use_scoped_state(storage_version: StorageVersion, service_id: &ServiceId) -> bool {
+    storage_version.is_scope_migrated() || service_id.scope.is_some()
+}
+
 fn put_user_state<S: StorageAccess>(
     storage: &mut S,
+    storage_version: StorageVersion,
     service_id: &ServiceId,
-    state_key: impl AsRef<[u8]>,
+    state_key: &Bytes,
     state_value: impl AsRef<[u8]>,
 ) -> Result<()> {
-    let key = write_state_entry_key(service_id, state_key);
-    storage.put_kv_raw(key, state_value.as_ref())
+    if use_scoped_state(storage_version, service_id) {
+        //todo(tillrohrmann) remove once ServiceId carries the right types
+        let service_name = ServiceName::new(service_id.service_name.as_ref());
+        let service_key = ReString::new(&service_id.key);
+        let partition_key = service_id.partition_key();
+
+        let key = ScopedStateKeyRef::builder()
+            .partition_key(&partition_key)
+            .scope(&service_id.scope)
+            .service_name(&service_name)
+            .service_key(&service_key)
+            .state_key(state_key)
+            .into_complete()
+            .expect("key to be complete");
+
+        storage.put_kv_raw(key, state_value.as_ref())
+    } else {
+        let key = write_state_entry_key(service_id, state_key);
+        storage.put_kv_raw(key, state_value.as_ref())
+    }
 }
 
 fn delete_user_state<S: StorageAccess>(
     storage: &mut S,
+    storage_version: StorageVersion,
     service_id: &ServiceId,
-    state_key: impl AsRef<[u8]>,
+    state_key: &Bytes,
 ) -> Result<()> {
-    let key = write_state_entry_key(service_id, state_key);
-    storage.delete_key(&key)
+    if use_scoped_state(storage_version, service_id) {
+        //todo(tillrohrmann) remove once ServiceId carries the right types
+        let service_name = ServiceName::new(service_id.service_name.as_ref());
+        let service_key = ReString::new(&service_id.key);
+        let partition_key = service_id.partition_key();
+
+        let key = ScopedStateKeyRef::builder()
+            .partition_key(&partition_key)
+            .scope(&service_id.scope)
+            .service_name(&service_name)
+            .service_key(&service_key)
+            .state_key(state_key)
+            .into_complete()
+            .expect("key to be complete");
+
+        storage.delete_key(&key)
+    } else {
+        let key = write_state_entry_key(service_id, state_key);
+        storage.delete_key(&key)
+    }
 }
 
-fn delete_all_user_state<S: StorageAccess>(storage: &mut S, service_id: &ServiceId) -> Result<()> {
-    let prefix_key = StateKey::builder()
-        .partition_key(service_id.partition_key())
-        .service_name(service_id.service_name.clone())
-        .service_key(service_id.key.clone());
+fn delete_all_user_state<S: StorageAccess>(
+    storage: &mut S,
+    storage_version: StorageVersion,
+    service_id: &ServiceId,
+) -> Result<()> {
+    if use_scoped_state(storage_version, service_id) {
+        //todo(tillrohrmann) remove once ServiceId carries the right types
+        let service_name = ServiceName::new(service_id.service_name.as_ref());
+        let service_key = ReString::new(&service_id.key);
+        let partition_key = service_id.partition_key();
 
-    let keys = storage.for_each_key_value_in_place(
-        TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), prefix_key),
-        |k, _| TableScanIterationDecision::Emit(Ok(Bytes::copy_from_slice(k))),
-    )?;
+        let prefix_key = ScopedStateKeyRef::builder()
+            .partition_key(&partition_key)
+            .scope(&service_id.scope)
+            .service_name(&service_name)
+            .service_key(&service_key);
 
-    for k in keys {
-        let key = k?;
-        storage.delete_cf(State, &key)?;
+        // Right now the WBWI does not support range deletions :-(
+        // That's why we need to iterate over the individual state entries.
+        let keys = storage.for_each_key_value_in_place(
+            TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), prefix_key),
+            |k, _| TableScanIterationDecision::Emit(Ok(Bytes::copy_from_slice(k))),
+        )?;
+
+        for k in keys {
+            let key = k?;
+            storage.delete_cf(State, &key)?;
+        }
+    } else {
+        let prefix_key = StateKey::builder()
+            .partition_key(service_id.partition_key())
+            .service_name(service_id.service_name.clone())
+            .service_key(service_id.key.clone());
+
+        let keys = storage.for_each_key_value_in_place(
+            TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), prefix_key),
+            |k, _| TableScanIterationDecision::Emit(Ok(Bytes::copy_from_slice(k))),
+        )?;
+
+        for k in keys {
+            let key = k?;
+            storage.delete_cf(State, &key)?;
+        }
     }
 
     Ok(())
@@ -144,40 +244,79 @@ fn delete_all_user_state<S: StorageAccess>(storage: &mut S, service_id: &Service
 
 fn get_user_state<S: StorageAccess>(
     storage: &mut S,
+    storage_version: StorageVersion,
     service_id: &ServiceId,
-    state_key: impl AsRef<[u8]>,
+    state_key: &Bytes,
 ) -> Result<Option<Bytes>> {
     let _x = RocksDbPerfGuard::new("get-user-state");
-    let key = write_state_entry_key(service_id, state_key);
-    storage.get_kv_raw(key, move |_k, v| Ok(v.map(Bytes::copy_from_slice)))
+    if use_scoped_state(storage_version, service_id) {
+        //todo(tillrohrmann) remove once ServiceId carries the right types
+        let service_name = ServiceName::new(service_id.service_name.as_ref());
+        let service_key = ReString::new(&service_id.key);
+        let partition_key = service_id.partition_key();
+
+        let key = ScopedStateKeyRef::builder()
+            .partition_key(&partition_key)
+            .scope(&service_id.scope)
+            .service_name(&service_name)
+            .service_key(&service_key)
+            .state_key(state_key)
+            .into_complete()
+            .expect("key to be complete");
+
+        storage.get_kv_raw(key, move |_k, v| Ok(v.map(Bytes::copy_from_slice)))
+    } else {
+        let key = write_state_entry_key(service_id, state_key);
+        storage.get_kv_raw(key, move |_k, v| Ok(v.map(Bytes::copy_from_slice)))
+    }
 }
 
 fn get_all_user_states_for_service<'a, S: StorageAccess>(
     storage: &'a S,
+    storage_version: StorageVersion,
     service_id: &ServiceId,
 ) -> Result<StateEntryIter<'a, S::DBAccess<'a>>> {
     let _x = RocksDbPerfGuard::new("get-all-user-state-iter-setup");
-    let key = StateKey::builder()
-        .partition_key(service_id.partition_key())
-        .service_name(service_id.service_name.clone())
-        .service_key(service_id.key.clone());
 
-    let iter = storage.iterator_from(TableScan::SinglePartitionKeyPrefix(
-        service_id.partition_key(),
-        key,
-    ))?;
+    if use_scoped_state(storage_version, service_id) {
+        //todo(tillrohrmann) remove once ServiceId carries the right types
+        let service_name = ServiceName::new(service_id.service_name.as_ref());
+        let service_key = ReString::new(&service_id.key);
+        let partition_key = service_id.partition_key();
 
-    Ok(StateEntryIter::new(iter))
+        let key = ScopedStateKeyRef::builder()
+            .partition_key(&partition_key)
+            .scope(&service_id.scope)
+            .service_name(&service_name)
+            .service_key(&service_key);
+
+        let iter = storage.iterator_from(TableScan::SinglePartitionKeyPrefix(
+            service_id.partition_key(),
+            key,
+        ))?;
+        Ok(StateEntryIter::new(iter))
+    } else {
+        let key = StateKey::builder()
+            .partition_key(service_id.partition_key())
+            .service_name(service_id.service_name.clone())
+            .service_key(service_id.key.clone());
+
+        let iter = storage.iterator_from(TableScan::SinglePartitionKeyPrefix(
+            service_id.partition_key(),
+            key,
+        ))?;
+        Ok(StateEntryIter::new(iter))
+    }
 }
 
 impl ReadStateTable for PartitionStore {
     async fn get_user_state(
         &mut self,
         service_id: &ServiceId,
-        state_key: impl AsRef<[u8]>,
+        state_key: &Bytes,
     ) -> Result<Option<Bytes>> {
         self.assert_partition_key(service_id)?;
-        get_user_state(self, service_id, state_key)
+        get_user_state(self, self.storage_version(), service_id, state_key)
     }
 
     fn get_all_user_states_for_service<'a>(
@@ -186,7 +325,9 @@ impl ReadStateTable for PartitionStore {
     ) -> Result<impl Stream<Item = Result<(Bytes, Bytes)>> + Send + 'a> {
         self.assert_partition_key(service_id)?;
         Ok(stream::iter(get_all_user_states_for_service(
-            self, service_id,
+            self,
+            self.storage_version(),
+            service_id,
         )?))
     }
 
@@ -201,7 +342,7 @@ impl ReadStateTable for PartitionStore {
         + 'a,
     > {
         self.assert_partition_key(service_id)?;
-        let iter = get_all_user_states_for_service(self, service_id)?;
+        let iter = get_all_user_states_for_service(self, self.storage_version(), service_id)?;
         Ok(budgeted_state_stream(iter, budget))
     }
 }
@@ -211,23 +352,64 @@ impl ScanStateTable for PartitionStore {
         F: FnMut((ServiceId, Bytes, &[u8])) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
     >(
         &self,
-        range: RangeInclusive<PartitionKey>,
-        mut f: F,
+        range: KeyRange,
+        f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send> {
-        self.iterator_for_each(
-            "df-user-state",
-            Priority::Low,
-            TableScan::FullScanPartitionKeyRange::<StateKey>(range),
-            move |(mut key, value)| {
-                let row_key = break_on_err(StateKey::deserialize_from(&mut key))?;
-                let (partition_key, service_name, service_key, state_key) = row_key.split();
+        // Share callback between two sequential scans via Arc<Mutex<>>
+        // (needed because iterator_for_each requires 'static closures).
+        // No contention: scans are awaited sequentially.
+        let f = Arc::new(parking_lot::Mutex::new(f));
 
-                let service_id = ServiceId::from_parts(partition_key, service_name, service_key);
+        // Only scan the legacy unscoped table while we may still hold data there.
+        // After migration the range was deleted, so the scoped scan covers everything.
+        let unscoped = if self.storage_version().is_scope_migrated() {
+            None
+        } else {
+            let f_unscoped = Arc::clone(&f);
+            Some(
+                self.iterator_for_each(
+                    "df-user-state",
+                    Priority::Low,
+                    TableScan::FullScanPartitionKeyRange::<StateKey>(range),
+                    move |(mut key, value)| {
+                        let row_key = break_on_err(StateKey::deserialize_from(&mut key))?;
+                        let (partition_key, service_name, service_key, state_key) = row_key.split();
+                        let service_id =
+                            ServiceId::from_parts(partition_key, service_name, service_key);
+                        f_unscoped.lock()((service_id, state_key, value)).map_break(Ok)
+                    },
+                )
+                .map_err(|_| StorageError::OperationalError)?,
+            )
+        };
 
-                f((service_id, state_key, value)).map_break(Ok)
-            },
-        )
-        .map_err(|_| StorageError::OperationalError)
+        let f_scoped = f;
+        let scoped = self
+            .iterator_for_each(
+                "df-user-state-scoped",
+                Priority::Low,
+                TableScan::FullScanPartitionKeyRange::<ScopedStateKey>(range),
+                move |(mut key, value)| {
+                    let row_key = break_on_err(ScopedStateKey::deserialize_from(&mut key))?;
+                    let (_partition_key, scope, service_name, service_key, state_key) =
+                        row_key.split();
+                    let service_id = ServiceId::new(
+                        scope,
+                        ByteString::from(service_name.as_str()),
+                        ByteString::from(service_key.as_str()),
+                    );
+                    f_scoped.lock()((service_id, state_key, value)).map_break(Ok)
+                },
+            )
+            .map_err(|_| StorageError::OperationalError)?;
+
+        Ok(async move {
+            if let Some(unscoped) = unscoped {
+                unscoped.await?;
+            }
+            scoped.await?;
+            Ok(())
+        })
     }
 }
 
@@ -235,10 +417,10 @@ impl ReadStateTable for PartitionStoreTransaction<'_> {
     async fn get_user_state(
         &mut self,
         service_id: &ServiceId,
-        state_key: impl AsRef<[u8]> + Send,
+        state_key: &Bytes,
     ) -> Result<Option<Bytes>> {
         self.assert_partition_key(service_id)?;
-        get_user_state(self, service_id, state_key)
+        get_user_state(self, self.storage_version(), service_id, state_key)
     }
 
     fn get_all_user_states_for_service<'a>(
@@ -247,7 +429,9 @@ impl ReadStateTable for PartitionStoreTransaction<'_> {
     ) -> Result<impl Stream<Item = Result<(Bytes, Bytes)>> + Send + 'a> {
         self.assert_partition_key(service_id)?;
         Ok(stream::iter(get_all_user_states_for_service(
-            self, service_id,
+            self,
+            self.storage_version(),
+            service_id,
         )?))
     }
 
@@ -262,7 +446,7 @@ impl ReadStateTable for PartitionStoreTransaction<'_> {
         + 'a,
     > {
         self.assert_partition_key(service_id)?;
-        let iter = get_all_user_states_for_service(self, service_id)?;
+        let iter = get_all_user_states_for_service(self, self.storage_version(), service_id)?;
         Ok(budgeted_state_stream(iter, budget))
     }
 }
@@ -271,25 +455,27 @@ impl WriteStateTable for PartitionStoreTransaction<'_> {
     fn put_user_state(
         &mut self,
         service_id: &ServiceId,
-        state_key: impl AsRef<[u8]>,
+        state_key: &Bytes,
         state_value: impl AsRef<[u8]>,
     ) -> Result<()> {
         self.assert_partition_key(service_id)?;
-        put_user_state(self, service_id, state_key, state_value)
+        put_user_state(
+            self,
+            self.storage_version(),
+            service_id,
+            state_key,
+            state_value,
+        )
     }
 
-    fn delete_user_state(
-        &mut self,
-        service_id: &ServiceId,
-        state_key: impl AsRef<[u8]>,
-    ) -> Result<()> {
+    fn delete_user_state(&mut self, service_id: &ServiceId, state_key: &Bytes) -> Result<()> {
         self.assert_partition_key(service_id)?;
-        delete_user_state(self, service_id, state_key)
+        delete_user_state(self, self.storage_version(), service_id, state_key)
     }
 
     fn delete_all_user_state(&mut self, service_id: &ServiceId) -> Result<()> {
         self.assert_partition_key(service_id)?;
-        delete_all_user_state(self, service_id)
+        delete_all_user_state(self, self.storage_version(), service_id)
     }
 }
 
@@ -386,30 +572,46 @@ impl<DB: DBAccess + Send> Stream for BudgetedStateStream<'_, DB> {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
         loop {
-            // If we're waiting for a notification, poll it first.
-            if let Some(notified) = this.notified.as_mut().as_pin_mut() {
-                ready!(notified.poll(cx));
-                this.notified.set(None);
-                // Notification fired — retry the reserve below.
-            }
-
             // If we have a pending deficit from a previous failed try_reserve,
             // attempt to resolve it.
             if *this.pending_deficit > 0 {
                 let deficit = *this.pending_deficit;
+
+                // Ensure a notification future exists BEFORE checking
+                // availability. `notify_waiters()` only wakes futures that
+                // have already been polled (registered as waiters), so we
+                // must create + poll the future before `try_reserve` to
+                // avoid losing concurrent return-memory notifications.
+                if this.notified.as_mut().as_pin_mut().is_none() {
+                    this.notified.set(Some(this.budget.availability_notified()));
+                }
+
                 if let Some(extra) = this.budget.try_reserve(deficit) {
                     this.lease.merge(extra);
                     *this.pending_deficit = 0;
+                    this.notified.set(None);
                     // Fall through to try_produce_next below.
-                } else if let Err(oom) = this.budget.check_out_of_memory(deficit, *this.pinned) {
+                } else if let Err(oom) = this
+                    .budget
+                    .check_out_of_memory(deficit, *this.pinned + this.lease.size())
+                {
                     *this.pending_deficit = 0;
+                    this.notified.set(None);
                     return Poll::Ready(Some(Err(oom.into())));
                 } else {
-                    // Transient failure — register for notification and wait.
-                    this.notified.set(Some(this.budget.availability_notified()));
-                    // Poll the newly created notification future to register waker.
-                    let _ = this.notified.as_mut().as_pin_mut().unwrap().poll(cx);
-                    return Poll::Pending;
+                    // Transient failure — poll the notification to register
+                    // the waker or consume a pending notification.
+                    match this.notified.as_mut().as_pin_mut().unwrap().poll(cx) {
+                        Poll::Ready(()) => {
+                            // Notification consumed — clear and retry.
+                            this.notified.set(None);
+                            continue;
+                        }
+                        Poll::Pending => {
+                            // Waker registered — wait for memory.
+                            return Poll::Pending;
+                        }
+                    }
                 }
             }
 
@@ -461,7 +663,7 @@ fn decode_user_state_key_value(k: &[u8], v: &[u8]) -> Result<(Bytes, Bytes)> {
 
 #[cfg(test)]
 mod tests {
-    use crate::keys::TableKeyPrefix;
+    use crate::keys::EncodeTableKeyPrefix;
     use crate::state_table::{user_state_key_from_slice, write_state_entry_key};
     use bytes::{Bytes, BytesMut};
     use restate_types::identifiers::ServiceId;

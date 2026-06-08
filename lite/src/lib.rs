@@ -170,7 +170,7 @@ impl Restate {
 
         common_builder
             .roles(Role::Worker | Role::HttpIngress | Role::MetadataServer | Role::Admin)
-            .rocksdb_total_memory_size(restate_serde_util::NonZeroByteCount::from(
+            .rocksdb_total_memory_size(restate_util_bytecount::NonZeroByteCount::from(
                 opts.memory_budget,
             ))
             .node_name(Some("embedded".to_owned()))
@@ -201,9 +201,13 @@ impl Restate {
 
         // apply config cascading propagation
         config.common.set_derived_values(&config.networking)?;
-        config.ingress.set_derived_values(&config.common);
+        config
+            .ingress
+            .set_derived_values(&config.common, &config.networking);
         config.admin.set_derived_values(&config.common);
-        config.worker.set_derived_values(&config.networking);
+        config
+            .worker
+            .set_derived_values(&config.common, &config.networking);
         let config = config.apply_cascading_values();
         config.validate()?;
 

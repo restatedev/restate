@@ -17,12 +17,12 @@ use tracing::{debug, instrument, trace};
 
 use restate_core::ShutdownError;
 use restate_core::network::{NetworkSender, Networking, RpcError, Swimlane, TransportConnect};
-use restate_time_util::DurationExt;
 use restate_types::PlainNodeId;
 use restate_types::config::Configuration;
 use restate_types::logs::TailOffsetWatch;
 use restate_types::net::RpcRequest;
 use restate_types::net::log_server::{LogServerMessage, LogServerResponse};
+use restate_util_time::DurationExt;
 
 use crate::providers::replicated_loglet::LATENCY_TRACKER;
 

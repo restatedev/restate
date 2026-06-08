@@ -8,12 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use hashbrown::HashMap;
 use metrics::{Gauge, gauge};
-use parking_lot::RwLock;
 use tracing::warn;
 
-use restate_serde_util::NonZeroByteCount;
+use restate_platform::hash::HashMap;
+use restate_platform::sync::RwLock;
+use restate_util_bytecount::NonZeroByteCount;
 
 use crate::MemoryPool;
 use crate::metric_definitions::{POOL_CAPACITY, POOL_USAGE};

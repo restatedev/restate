@@ -126,7 +126,7 @@ fn main() {
 
     let config_loader = config_loader_builder
         .load_env(true)
-        .path(config_path.clone())
+        .path(config_path)
         .cli_override(cli_args.opts_overrides.clone())
         .metadata_migration_mode(cli_args.metadata_migration_mode)
         .build()
@@ -238,6 +238,7 @@ fn main() {
             } else {
                 "[default]".to_owned()
             };
+
             info!(
                 node_name = Configuration::pinned().node_name(),
                 config_source = %config_source,
@@ -258,7 +259,7 @@ fn main() {
             config_loader.start();
 
             // Initialize telemetry
-            let telemetry = telemetry::Telemetry::create(&Configuration::pinned().common);
+            let telemetry = telemetry::Telemetry::create(&Configuration::pinned());
             telemetry.start();
 
             let node = Node::create(Configuration::live(), prometheus, address_book).await;

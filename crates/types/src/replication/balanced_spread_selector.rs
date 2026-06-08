@@ -761,7 +761,7 @@ mod tests {
                 eq(true)
             );
             leaders.insert(nodeset.first().unwrap());
-            combined.extend(nodeset.into_iter());
+            combined.extend(nodeset);
         }
         // check how many leaders, we should see diversity
         assert_that!(leaders.len(), eq(9));
@@ -1068,7 +1068,7 @@ mod tests {
         ));
 
         // Now, regenerating...
-        let options = SelectorOptions::new(partition_id).with_preferred_nodes(nodeset1.clone());
+        let options = SelectorOptions::new(partition_id).with_preferred_nodes(nodeset1);
         let nodeset2 = BalancedSpreadSelector::select(
             &nodes_config,
             &replication,

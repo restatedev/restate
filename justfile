@@ -1,16 +1,16 @@
+set positional-arguments := true
+
 export RUST_BACKTRACE := env_var_or_default("RUST_BACKTRACE", "short")
 export DOCKER_PROGRESS := env_var_or_default('DOCKER_PROGRESS', 'auto')
 export RESTATE_TEST_PORTS_POOL := "/tmp/restate_tests_ports_pool"
 
 dev_tools_image := "ghcr.io/restatedev/dev-tools:latest"
 
-# Docker image name & tag.
+# Docker image name & tag. The backtick falls back to "unknown" when git fails,
+# so evaluation doesn't crash inside the docker build context where the
+# worktree's `.git` pointer references a non-existent host path.
 docker_repo := "localhost/restatedev/restate"
-docker_tag := if path_exists(justfile_directory() / ".git") == "true" {
-        `git rev-parse --abbrev-ref HEAD | sed 's|/|.|g'` + "." + `git rev-parse --short HEAD`
-    } else {
-        "unknown"
-    }
+docker_tag := `if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo "$(git rev-parse --abbrev-ref HEAD | sed 's|/|.|g').$(git rev-parse --short HEAD)"; else echo unknown; fi`
 docker_image := docker_repo + ":" + docker_tag
 
 features := ""
@@ -122,26 +122,26 @@ chef-prepare:
 
 # Compile dependencies
 chef-cook *flags: (_target-installed target)
-    cargo chef cook --recipe-path recipe.json {{ _target-option }} {{ _features }} {{ flags }}
+    cargo chef cook --recipe-path recipe.json {{ _target-option }} {{ _features }} "$@"
 
 build *flags: (_target-installed target)
-    cargo build {{ _target-option }} {{ _features }} {{ flags }}
+    cargo build {{ _target-option }} {{ _features }} "$@"
 
 build-tools *flags: (_target-installed target)
-    cd {{justfile_directory()}}/tools/xtask; cargo build {{ _target-option }} {{ _features }} {{ flags }}
-    cd {{justfile_directory()}}/tools/service-protocol-wireshark-dissector; cargo build {{ _target-option }} {{ _features }} {{ flags }}
+    cd {{justfile_directory()}}/tools/xtask; cargo build {{ _target-option }} {{ _features }} "$@"
+    cd {{justfile_directory()}}/tools/service-protocol-wireshark-dissector; cargo build {{ _target-option }} {{ _features }} "$@"
 
 # Might be able to use cross-rs at some point but for now it could not handle a container image that
 # has a rust toolchain installed. Alternatively, we can create a separate cross-rs builder image.
 cross-build *flags:
     #!/usr/bin/env bash
     if [[ {{ target }} =~ "linux" ]]; then
-      docker run --rm -it -v `pwd`:/restate:Z -w /restate {{ dev_tools_image }} just _resolved_target={{ target }} features={{ features }} build {{ flags }}
+      docker run --rm -it -v `pwd`:/restate:Z -w /restate {{ dev_tools_image }} just _resolved_target={{ target }} features={{ features }} build "$@"
     elif [[ {{ target }} =~ "darwin" ]]; then
       if [[ {{ os() }} != "macos" ]]; then
         echo "Cannot built macos target on non-macos host";
       else
-        just _resolved_target={{ target }} features={{ features }} build {{ flags }};
+        just _resolved_target={{ target }} features={{ features }} build "$@";
       fi
     else
       echo "Unsupported target: {{ target }}";
@@ -151,7 +151,7 @@ print-target:
     @echo {{ _resolved_target }}
 
 run *flags: (_target-installed target)
-    cargo run {{ _target-option }} {{ flags }}
+    cargo run {{ _target-option }} "$@"
 
 test: (_target-installed target)
     # remove possible old test ports
@@ -159,7 +159,7 @@ test: (_target-installed target)
     cargo nextest run {{ _target-option }} {{ _test_features }}
 
 test-package package *flags:
-    cargo nextest run {{ _test_features }} --no-capture --package {{ package }} {{ flags }}
+    shift && cargo nextest run {{ _test_features }} --no-capture --package {{ package }} "$@"
 
 doctest:
     cargo test --doc
@@ -197,10 +197,10 @@ check-deny:
     fi
 
 flamegraph *flags:
-    cargo flamegraph {{ _flamegraph_options }} {{ flags }}
+    cargo flamegraph {{ _flamegraph_options }} "$@"
 
 udeps *flags:
-    RUSTC_BOOTSTRAP=1 cargo udeps --all-features --all-targets {{ flags }}
+    RUSTC_BOOTSTRAP=1 cargo udeps --all-features --all-targets "$@"
 
 _target-installed target:
     #!/usr/bin/env bash

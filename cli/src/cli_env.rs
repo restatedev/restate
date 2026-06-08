@@ -336,7 +336,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_config_home_order() -> Result<()> {
+    fn config_home_order() -> Result<()> {
         let mut os_env = OsEnv::default();
         let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default())?;
 
@@ -369,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn test_base_url_override() -> Result<()> {
+    fn base_url_override() -> Result<()> {
         // By default, we use the const value defined in this file.
         let mut os_env = OsEnv::default();
         // avoid using any files from the test runner
@@ -445,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bearer_token_applied() {
+    fn bearer_token_applied() {
         let mut os_env = OsEnv::default();
         // avoid using any files from the test runner
         os_env.insert(CLI_CONFIG_HOME_ENV, "/dev/null".into());

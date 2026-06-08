@@ -24,25 +24,25 @@ static INBOX_ENTRIES: LazyLock<Vec<SequenceNumberInboxEntry>> = LazyLock::new(||
         SequenceNumberInboxEntry::new(
             7,
             InboxEntry::Invocation(
-                ServiceId::new("svc-1", "key-1"),
+                ServiceId::new(None, "svc-1", "key-1"),
                 InvocationId::mock_random(),
             ),
         ),
         SequenceNumberInboxEntry::new(
             8,
-            InboxEntry::StateMutation(mock_state_mutation(ServiceId::new("svc-1", "key-1"))),
+            InboxEntry::StateMutation(mock_state_mutation(ServiceId::new(None, "svc-1", "key-1"))),
         ),
         SequenceNumberInboxEntry::new(
             9,
             InboxEntry::Invocation(
-                ServiceId::new("svc-2", "key-1"),
+                ServiceId::new(None, "svc-2", "key-1"),
                 InvocationId::mock_random(),
             ),
         ),
         SequenceNumberInboxEntry::new(
             10,
             InboxEntry::Invocation(
-                ServiceId::new("svc-1", "key-1"),
+                ServiceId::new(None, "svc-1", "key-1"),
                 InvocationId::mock_random(),
             ),
         ),
@@ -99,6 +99,7 @@ pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     delete_entry(&mut txn);
 
     txn.commit().await.expect("should not fail");
+    drop(txn);
 
     let mut txn = rocksdb.transaction();
     peek_after_delete(&mut txn).await;

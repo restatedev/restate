@@ -258,7 +258,7 @@ impl<T: StorageEncode> Appender<T> {
                         }
                     }
                 }
-                Err(AppendError::Other(err)) => return Err(Error::LogletError(err)),
+                Err(AppendError::Other(err)) => return Err(Error::Loglet(err)),
                 Err(AppendError::Shutdown(err)) => return Err(Error::Shutdown(err)),
             }
         }

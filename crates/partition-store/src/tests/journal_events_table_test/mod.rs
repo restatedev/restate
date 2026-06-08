@@ -23,7 +23,7 @@ const MOCK_INVOCATION_ID_1: InvocationId =
     InvocationId::from_parts(1, InvocationUuid::from_u128(12345678900001));
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_event() {
+async fn event() {
     let mut rocksdb = storage_test_environment().await;
 
     let mut txn = rocksdb.transaction();
@@ -41,26 +41,28 @@ async fn test_event() {
     let event_view = EventView::new(MillisSinceEpoch::now(), 0, event);
 
     // Populate
-    txn.put_journal_event(MOCK_INVOCATION_ID_1, event_view.clone(), 0)
+    txn.put_journal_event(&MOCK_INVOCATION_ID_1, event_view.clone(), 0)
         .unwrap();
 
     // Get all events
-    let mut journal_events = txn.get_journal_events(MOCK_INVOCATION_ID_1).unwrap();
+    let mut journal_events = txn.get_journal_events(&MOCK_INVOCATION_ID_1).unwrap();
     assert_eq!(journal_events.next().await.unwrap().unwrap(), event_view);
 
     assert!(journal_events.next().await.is_none());
     drop(journal_events);
 
     txn.commit().await.expect("should not fail");
+    drop(txn);
 
     // Verify we can remove events
 
     let mut txn = rocksdb.transaction();
-    txn.delete_journal_events(MOCK_INVOCATION_ID_1).unwrap();
+    txn.delete_journal_events(&MOCK_INVOCATION_ID_1).unwrap();
     txn.commit().await.expect("should not fail");
+    drop(txn);
 
     // Should be empty
-    let mut journal_events = rocksdb.get_journal_events(MOCK_INVOCATION_ID_1).unwrap();
+    let mut journal_events = rocksdb.get_journal_events(&MOCK_INVOCATION_ID_1).unwrap();
     assert!(journal_events.next().await.is_none());
     drop(journal_events);
 

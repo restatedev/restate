@@ -16,9 +16,9 @@ local p_service_protocol = Proto("restate_service_protocol", "Restate Service En
 
 -- Define the fields
 local f_ty = ProtoField.uint16("restate_service_protocol.message_type", "Message Type", base.HEX)
-local f_requires_ack = ProtoField.bool("restate_service_protocol.requires_ack", "REQUIRES_ACK", base.NONE, {
-    "Requires ack",
-    "Doesn't require ack"
+local f_requires_ack = ProtoField.bool("restate_service_protocol.requested_ack", "REQUESTED_ACK", base.NONE, {
+    "Requested ack",
+    "Ack not requested"
 })
 local f_len = ProtoField.uint16("restate_service_protocol.length", "Length", base.DEC)
 local f_message = ProtoField.string("restate_service_protocol.message", "Message", base.UNICODE)
@@ -85,3 +85,5 @@ media_types:add("application/vnd.restate.invocation.v5", p_service_protocol)
 streaming_media_types:add("application/vnd.restate.invocation.v5", p_service_protocol)
 media_types:add("application/vnd.restate.invocation.v6", p_service_protocol)
 streaming_media_types:add("application/vnd.restate.invocation.v6", p_service_protocol)
+media_types:add("application/vnd.restate.invocation.v7", p_service_protocol)
+streaming_media_types:add("application/vnd.restate.invocation.v7", p_service_protocol)

@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use restate_serde_util::{ByteCount, NonZeroByteCount};
+use restate_util_bytecount::{ByteCount, NonZeroByteCount};
 use tracing::warn;
 
 use super::{BackgroundWorkBudget, CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};

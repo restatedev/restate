@@ -20,13 +20,13 @@ use restate_types::invocation::InvocationMutationResponseSink;
 use restate_types::invocation::client::PurgeInvocationResponse;
 use tracing::trace;
 
-pub struct OnPurgeJournalCommand {
-    pub invocation_id: InvocationId,
+pub struct OnPurgeJournalCommand<'a> {
+    pub invocation_id: &'a InvocationId,
     pub response_sink: Option<InvocationMutationResponseSink>,
 }
 
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
-    for OnPurgeJournalCommand
+    for OnPurgeJournalCommand<'_>
 where
     S: WriteJournalTable
         + ReadInvocationStatusTable
@@ -39,7 +39,7 @@ where
             invocation_id,
             response_sink,
         } = self;
-        match ctx.get_invocation_status(&invocation_id).await? {
+        match ctx.get_invocation_status(invocation_id).await? {
             InvocationStatus::Completed(mut completed) => {
                 let pinned_service_protocol_version = completed
                     .pinned_deployment
@@ -62,7 +62,7 @@ where
 
                 // Update invocation status
                 ctx.storage.put_invocation_status(
-                    &invocation_id,
+                    invocation_id,
                     &InvocationStatus::Completed(completed),
                 )?;
                 ctx.reply_to_purge_journal(response_sink, PurgeInvocationResponse::Ok);
@@ -111,7 +111,7 @@ mod tests {
     };
     use restate_types::journal_v2::{CommandType, OutputCommand, OutputResult};
     use restate_types::service_protocol::ServiceProtocolVersion;
-    use restate_wal_protocol::Command;
+    use restate_wal_protocol::v2::{Command, commands};
     use std::time::Duration;
 
     #[restate_core::test]
@@ -129,7 +129,7 @@ mod tests {
         // Create and complete a fresh invocation
         let actions = test_env
             .apply_multiple([
-                Command::Invoke(Box::new(ServiceInvocation {
+                commands::InvokeCommand::test_envelope(ServiceInvocation {
                     invocation_id,
                     invocation_target: invocation_target.clone(),
                     response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
@@ -137,7 +137,7 @@ mod tests {
                     completion_retention_duration: completion_retention,
                     journal_retention_duration: journal_retention,
                     ..ServiceInvocation::mock()
-                })),
+                }),
                 pinned_deployment(invocation_id, ServiceProtocolVersion::V5),
                 invoker_entry_effect(
                     invocation_id,
@@ -186,22 +186,24 @@ mod tests {
 
         // Now let's purge the journal
         test_env
-            .apply(Command::PurgeJournal(PurgeInvocationRequest {
-                invocation_id,
-                response_sink: None,
-            }))
+            .apply(commands::PurgeJournalCommand::test_envelope(
+                PurgeInvocationRequest {
+                    invocation_id,
+                    response_sink: None,
+                },
+            ))
             .await;
 
         // At this point we should still be able to de-duplicate the invocation
         let request_id = PartitionProcessorRpcRequestId::default();
         let actions = test_env
-            .apply(Command::Invoke(Box::new(ServiceInvocation {
+            .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
                 invocation_id,
                 invocation_target: invocation_target.clone(),
                 response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
                 idempotency_key: Some(idempotency_key),
                 ..ServiceInvocation::mock()
-            })))
+            }))
             .await;
         assert_that!(
             actions,
@@ -230,10 +232,12 @@ mod tests {
 
         // Now purge completely
         test_env
-            .apply(Command::PurgeInvocation(PurgeInvocationRequest {
-                invocation_id,
-                response_sink: None,
-            }))
+            .apply(commands::PurgeInvocationCommand::test_envelope(
+                PurgeInvocationRequest {
+                    invocation_id,
+                    response_sink: None,
+                },
+            ))
             .await;
 
         // Nothing should be left

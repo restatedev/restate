@@ -13,22 +13,31 @@
 //! This module provides utilities to decode values stored in the partition-store
 //! using the appropriate decoder for each table type.
 
+use bilrost::OwnedMessage;
+
+use restate_limiter::RuleBook;
 use restate_partition_store::fsm_table::PartitionStateMachineKey;
-use restate_partition_store::keys::{KeyKind, TableKey};
+use restate_partition_store::keys::{DecodeTableKey, KeyKind};
+use restate_partition_store::vqueue_table::{EntryStatusKey, InputPayloadKey, StatusHeaderRaw};
 use restate_storage_api::deduplication_table::DedupSequenceNumber;
-use restate_storage_api::fsm_table::{PartitionDurability, SequenceNumber};
-use restate_storage_api::idempotency_table::IdempotencyMetadata;
+use restate_storage_api::fsm_table::{CachedEpochMetadata, PartitionDurability, SequenceNumber};
 use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_storage_api::journal_table::JournalEntry as JournalEntryV1;
 use restate_storage_api::journal_table_v2::StoredEntry;
+use restate_storage_api::lock_table::LockState;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::promise_table::Promise;
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::service_status_table::VirtualObjectStatus;
 use restate_storage_api::timer_table::Timer;
+use restate_storage_api::vqueue_table::EntryValue;
+use restate_storage_api::vqueue_table::metadata::VQueueMeta;
 use restate_types::SemanticRestateVersion;
-use restate_types::storage::StorageCodecKind;
+use restate_types::partitions::features::PersistedStateMachineFeatures;
+use restate_types::state_mut::ExternalStateMutation;
+use restate_types::storage::{StorageCodec, StorageCodecKind, StorageDecode};
+use restate_types::vqueues::EntryKind;
 
 /// FSM variable IDs (from partition-store/src/fsm_table/mod.rs)
 mod fsm_variable {
@@ -39,6 +48,14 @@ mod fsm_variable {
     pub const PARTITION_DURABILITY: u64 = 4;
     pub const STORAGE_VERSION: u64 = 5;
     pub const SERVICES_SCHEMA_METADATA: u64 = 6;
+    /// *Since v1.6*
+    pub const PARTITION_CONFIG_STATE: u64 = 7;
+    /// *Since v1.7.0*
+    pub const JC_ORPHAN_CLEANUP_DONE: u64 = 8;
+    /// *Since v1.7.0*
+    pub const RULE_BOOK: u64 = 9;
+    /// *Since v1.7.0*
+    pub const STATE_MACHINE_FEATURES: u64 = 10;
 }
 
 /// Result of decoding a value, including codec metadata
@@ -138,10 +155,10 @@ pub fn decode_value(key_kind: KeyKind, key: &[u8], value: &[u8]) -> DecodedValue
 
     match key_kind {
         // Raw bytes - user state, no decoding
-        KeyKind::State => DecodedValue::raw_bytes(value.len()),
+        KeyKind::State | KeyKind::ScopedState => DecodedValue::raw_bytes(value.len()),
 
-        // Key-only tables (VQueue inbox/active have empty values)
-        KeyKind::VQueueActive | KeyKind::VQueueInbox => {
+        // Key-only tables (VQueue active have empty values)
+        KeyKind::VQueueActive => {
             if value.is_empty() {
                 DecodedValue::empty()
             } else {
@@ -150,18 +167,21 @@ pub fn decode_value(key_kind: KeyKind, key: &[u8], value: &[u8]) -> DecodedValue
         }
 
         // Bilrost-encoded (no StorageCodec wrapper)
-        KeyKind::VQueueMeta | KeyKind::VQueueEntryState | KeyKind::VQueueItems => {
-            DecodedValue::decoded(
-                None,
-                value.len(),
-                format!("<bilrost {} bytes>", value.len()),
-            )
-        }
+        KeyKind::VQueueMeta => decode_bilrost::<VQueueMeta>(value),
+        KeyKind::Lock => decode_bilrost::<LockState>(value),
+        KeyKind::VQueueEntryStatus => decode_vqueue_entry_status(value, key),
+        KeyKind::VQueueInput => decode_vqueue_item(value, key),
+        KeyKind::VQueueInboxStage
+        | KeyKind::VQueueRunningStage
+        | KeyKind::VQueueSuspendedStage
+        | KeyKind::VQueuePausedStage
+        | KeyKind::VQueueFinishedStage => decode_bilrost::<EntryValue>(value),
 
         // Protobuf-encoded with StorageCodec
         KeyKind::Deduplication => decode_protobuf::<DedupSequenceNumber>(value),
-        KeyKind::Idempotency => decode_protobuf::<IdempotencyMetadata>(value),
         KeyKind::Inbox => decode_protobuf::<InboxEntry>(value),
+        #[allow(deprecated)]
+        KeyKind::Idempotency => decode_with_codec_info(value),
         #[allow(deprecated)]
         KeyKind::InvocationStatus | KeyKind::InvocationStatusV1 => {
             decode_protobuf::<InvocationStatus>(value)
@@ -180,11 +200,131 @@ pub fn decode_value(key_kind: KeyKind, key: &[u8], value: &[u8]) -> DecodedValue
         KeyKind::Outbox => decode_protobuf::<OutboxMessage>(value),
         KeyKind::ServiceStatus => decode_protobuf::<VirtualObjectStatus>(value),
         KeyKind::Timers => decode_protobuf::<Timer>(value),
-        KeyKind::Promise => decode_protobuf::<Promise>(value),
+        KeyKind::Promise | KeyKind::ScopedPromise => decode_protobuf::<Promise>(value),
 
         // FSM table - decode based on state_id from key
         KeyKind::Fsm => decode_fsm_value(key, value),
     }
+}
+
+/// Decode a bilrost value without a codec prefix
+fn decode_bilrost<T>(value: &[u8]) -> DecodedValue
+where
+    T: OwnedMessage + std::fmt::Debug,
+{
+    if value.is_empty() {
+        return DecodedValue::empty();
+    }
+
+    let mut buf = value;
+    match T::decode(&mut buf) {
+        Ok(v) => DecodedValue::decoded(None, value.len(), format!("{v:?}")),
+        Err(e) => DecodedValue::error(None, value.len(), format!("{e}")),
+    }
+}
+
+fn decode_vqueue_entry_status(value: &[u8], key: &[u8]) -> DecodedValue {
+    let key_kind = {
+        let mut cursor = key;
+        EntryStatusKey::deserialize_from(&mut cursor)
+            .ok()
+            .map(|k| k.id.kind())
+    };
+
+    let mut buf = value;
+    let header = match StatusHeaderRaw::decode_length_delimited(&mut buf) {
+        Ok(header) => header,
+        Err(e) => {
+            return DecodedValue::error(
+                None,
+                value.len(),
+                format!("failed to decode EntryStatus header: {e}"),
+            );
+        }
+    };
+
+    let trailing_bytes = if buf.is_empty() {
+        String::new()
+    } else {
+        format!(", trailing_bytes={}", buf.len())
+    };
+
+    DecodedValue::decoded(
+        None,
+        value.len(),
+        format!("EntryStatus {{ header: {header:?}, kind: {key_kind:?}{trailing_bytes} }}"),
+    )
+}
+
+fn decode_vqueue_item(value: &[u8], key: &[u8]) -> DecodedValue {
+    let key_kind = {
+        let mut cursor = key;
+        InputPayloadKey::deserialize_from(&mut cursor)
+            .ok()
+            .map(|k| k.id.kind())
+    };
+
+    match key_kind {
+        Some(EntryKind::Unknown) => DecodedValue::raw_bytes(value.len()),
+        Some(EntryKind::StateMutation) => decode_bilrost::<ExternalStateMutation>(value),
+        Some(EntryKind::Invocation) | None => {
+            if value.is_empty() {
+                DecodedValue::empty()
+            } else {
+                DecodedValue::decoded(
+                    None,
+                    value.len(),
+                    format!("<bilrost {} bytes>", value.len()),
+                )
+            }
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn decoded_content_to_string(decoded: DecodedValue) -> String {
+    match decoded.content {
+        DecodedContent::Decoded(s) => s,
+        DecodedContent::RawBytes => format!("<{} bytes of raw data>", decoded.payload_size),
+        DecodedContent::Empty => "<empty>".to_string(),
+        DecodedContent::Error(e) => format!("<decode error: {e}>"),
+    }
+}
+
+#[allow(dead_code)]
+fn take_length_delimited_payload<'a>(input: &mut &'a [u8]) -> Option<&'a [u8]> {
+    let (len, len_varint_size) = decode_varint(input)?;
+    let total_needed = len_varint_size.checked_add(len)?;
+    if input.len() < total_needed {
+        return None;
+    }
+
+    let payload_start = len_varint_size;
+    let payload_end = payload_start + len;
+    let payload = &input[payload_start..payload_end];
+    *input = &input[payload_end..];
+    Some(payload)
+}
+
+#[allow(dead_code)]
+fn decode_varint(data: &[u8]) -> Option<(usize, usize)> {
+    let mut result: usize = 0;
+    let mut shift = 0;
+
+    for (i, &byte) in data.iter().enumerate() {
+        if i >= 10 {
+            return None;
+        }
+
+        result |= ((byte & 0x7f) as usize) << shift;
+        if byte & 0x80 == 0 {
+            return Some((result, i + 1));
+        }
+
+        shift += 7;
+    }
+
+    None
 }
 
 /// Decode a protobuf value using PartitionStoreProtobufValue trait
@@ -296,6 +436,16 @@ fn decode_fsm_value(key: &[u8], value: &[u8]) -> DecodedValue {
             let len = u32::from_le_bytes(payload[..4].try_into().unwrap()) as usize;
             DecodedValue::decoded(codec, payload_size, format!("Schema({len} bytes)"))
         }
+        fsm_variable::PARTITION_CONFIG_STATE => {
+            decode_fsm_storage_codec::<CachedEpochMetadata>(value, codec, payload_size)
+        }
+        fsm_variable::JC_ORPHAN_CLEANUP_DONE => {
+            decode_fsm_sequence_number(value, codec, payload_size, "JcOrphanCleanupDone")
+        }
+        fsm_variable::RULE_BOOK => decode_fsm_storage_codec::<RuleBook>(value, codec, payload_size),
+        fsm_variable::STATE_MACHINE_FEATURES => {
+            decode_fsm_storage_codec::<PersistedStateMachineFeatures>(value, codec, payload_size)
+        }
         unknown => DecodedValue::decoded(
             codec,
             payload_size,
@@ -314,6 +464,22 @@ fn decode_fsm_sequence_number(
     let mut buf = value;
     match SequenceNumber::decode(&mut buf) {
         Ok(v) => DecodedValue::decoded(codec, payload_size, format!("{label}({})", v.0)),
+        Err(e) => DecodedValue::error(codec, payload_size, format!("{e}")),
+    }
+}
+
+/// Decode a `StorageCodec`-wrapped FSM value (codec byte + payload, e.g. bilrost).
+fn decode_fsm_storage_codec<T>(
+    value: &[u8],
+    codec: Option<StorageCodecKind>,
+    payload_size: usize,
+) -> DecodedValue
+where
+    T: StorageDecode + std::fmt::Debug,
+{
+    let mut buf = value;
+    match StorageCodec::decode::<T, _>(&mut buf) {
+        Ok(v) => DecodedValue::decoded(codec, payload_size, format!("{v:?}")),
         Err(e) => DecodedValue::error(codec, payload_size, format!("{e}")),
     }
 }
@@ -388,5 +554,67 @@ fn decode_fsm_value_generic(value: &[u8]) -> DecodedValue {
             payload_size,
             format!("<{} bytes>", payload_size),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::BytesMut;
+
+    use restate_partition_store::PaddedPartitionId;
+    use restate_partition_store::fsm_table::PartitionStateMachineKey;
+    use restate_partition_store::keys::EncodeTableKeyPrefix;
+    use restate_types::storage::StorageCodec;
+
+    use super::*;
+
+    fn fsm_key(state_id: u64) -> BytesMut {
+        PartitionStateMachineKey {
+            partition_id: PaddedPartitionId::from(restate_types::identifiers::PartitionId::MIN),
+            state_id,
+        }
+        .serialize()
+    }
+
+    /// The newer FSM variables (>= v1.6) must decode through their dedicated arms
+    /// rather than falling through to the `<unknown state_id>` branch.
+    #[test]
+    fn decodes_new_fsm_variables() {
+        // StorageCodec(Bilrost)-wrapped value
+        let mut buf = BytesMut::new();
+        StorageCodec::encode(&PersistedStateMachineFeatures::default(), &mut buf).unwrap();
+        let decoded = decode_value(
+            KeyKind::Fsm,
+            &fsm_key(fsm_variable::STATE_MACHINE_FEATURES),
+            &buf,
+        );
+        assert_eq!(decoded.codec, Some(StorageCodecKind::Bilrost));
+        assert!(
+            matches!(decoded.content, DecodedContent::Decoded(_)),
+            "state-machine features should decode, got: {decoded}"
+        );
+
+        // Protobuf-wrapped SequenceNumber flag
+        let value = {
+            use restate_storage_api::protobuf_types::ProtobufStorageWrapper;
+            let mut buf = BytesMut::new();
+            StorageCodec::encode(
+                &ProtobufStorageWrapper(restate_storage_api::protobuf_types::v1::SequenceNumber {
+                    sequence_number: 1,
+                }),
+                &mut buf,
+            )
+            .unwrap();
+            buf
+        };
+        let decoded = decode_value(
+            KeyKind::Fsm,
+            &fsm_key(fsm_variable::JC_ORPHAN_CLEANUP_DONE),
+            &value,
+        );
+        assert!(
+            matches!(&decoded.content, DecodedContent::Decoded(s) if s.contains("JcOrphanCleanupDone(1)")),
+            "jc-orphan-cleanup flag should decode, got: {decoded}"
+        );
     }
 }

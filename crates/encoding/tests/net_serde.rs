@@ -8,10 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
-
 use restate_encoding::NetSerde;
-use static_assertions::assert_impl_all;
+use restate_platform::hash::HashMap;
+use restate_platform::network::NetSerde;
 
 #[allow(dead_code)]
 #[derive(NetSerde)]
@@ -30,4 +29,7 @@ struct NotSendable;
 #[derive(NetSerde)]
 struct Inner(HashMap<u64, String>);
 
-assert_impl_all!(SomeMessage: NetSerde);
+const _: fn() = || {
+    fn assert_impl_all<T: ?Sized + NetSerde>() {}
+    assert_impl_all::<SomeMessage>();
+};

@@ -12,12 +12,12 @@
 
 use anyhow::{Result, bail};
 use cling::prelude::*;
+use comfy_table::Table;
 use rocksdb::{IteratorMode, ReadOptions};
 use strum::VariantArray;
 
 use restate_partition_store::deduplication_table::DeduplicationKey;
 use restate_partition_store::fsm_table::PartitionStateMachineKey;
-use restate_partition_store::idempotency_table::IdempotencyKey;
 use restate_partition_store::inbox_table::InboxKey;
 use restate_partition_store::invocation_status_table::InvocationStatusKey;
 use restate_partition_store::journal_events::JournalEventKey;
@@ -25,26 +25,26 @@ use restate_partition_store::journal_table::JournalKey as JournalKeyV1;
 use restate_partition_store::journal_table_v2::{
     JournalCompletionIdToCommandIndexKey, JournalKey, JournalNotificationIdToNotificationIndexKey,
 };
-use restate_partition_store::keys::{KeyKind, TableKey};
+use restate_partition_store::keys::{DecodeTableKey, KeyKind};
+use restate_partition_store::locks_table::LockKey;
 use restate_partition_store::outbox_table::OutboxKey;
-use restate_partition_store::promise_table::PromiseKey;
+use restate_partition_store::promise_table::{PromiseKey, ScopedPromiseKey};
 use restate_partition_store::service_status_table::ServiceStatusKey;
-use restate_partition_store::state_table::StateKey;
+use restate_partition_store::state_table::{ScopedStateKey, StateKey};
 use restate_partition_store::timer_table::TimersKey;
 use restate_partition_store::vqueue_table::{
-    ActiveKey, EntryStateKey, InboxKey as VQueueInboxKey, ItemsKey, MetaKey,
+    ActiveKey, EntryStatusKey, InboxKey as VQueueInboxKey, InputPayloadKey, MetaKey,
 };
 
-use comfy_table::Table;
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::{c_println, c_title};
-use restate_serde_util::ByteCount;
+use restate_util_bytecount::ByteCount;
 
 use crate::app::GlobalOpts;
 use crate::util::colorize::{color_legend, colorize_key_hex};
 use crate::util::decode_value::decode_value;
 use crate::util::hex_encode;
-use crate::util::rocksdb::{open_db, resolve_partition_store_path};
+use crate::util::rocksdb::{open_partition_store_db, resolve_partition_store_path};
 
 use super::PartitionStoreOpts;
 
@@ -239,7 +239,7 @@ pub async fn run_scan(
     }: &Scan,
 ) -> Result<()> {
     let path = resolve_partition_store_path(global_opts.data_dir.as_deref(), opts.path.as_deref())?;
-    let db_info = open_db(&path, opts.open_mode(), global_opts.limit_open_files)?;
+    let db_info = open_partition_store_db(&path, opts.open_mode(), global_opts.limit_open_files)?;
 
     // Parse table filter if provided
     let table_filter = table.as_ref().map(|t| parse_table_filter(t)).transpose()?;
@@ -367,9 +367,8 @@ fn decode_key(key: &[u8]) -> (String, Option<String>, Option<KeyKind>) {
         KeyKind::Fsm => PartitionStateMachineKey::deserialize_from(&mut cursor)
             .ok()
             .map(|k| format!("{k:?}")),
-        KeyKind::Idempotency => IdempotencyKey::deserialize_from(&mut cursor)
-            .ok()
-            .map(|k| format!("{k:?}")),
+        #[allow(deprecated)]
+        KeyKind::Idempotency => Some("<deprecated idempotency key>".to_string()),
         KeyKind::Inbox => InboxKey::deserialize_from(&mut cursor)
             .ok()
             .map(|k| format!("{k:?}")),
@@ -411,28 +410,64 @@ fn decode_key(key: &[u8]) -> (String, Option<String>, Option<KeyKind>) {
         KeyKind::State => StateKey::deserialize_from(&mut cursor)
             .ok()
             .map(|k| format!("{k:?}")),
+        KeyKind::ScopedState => ScopedStateKey::deserialize_from(&mut cursor)
+            .ok()
+            .map(|k| format!("{k:?}")),
         KeyKind::Timers => TimersKey::deserialize_from(&mut cursor)
             .ok()
             .map(|k| format!("{k:?}")),
         KeyKind::Promise => PromiseKey::deserialize_from(&mut cursor)
             .ok()
             .map(|k| format!("{k:?}")),
+        KeyKind::ScopedPromise => ScopedPromiseKey::deserialize_from(&mut cursor)
+            .ok()
+            .map(|k| format!("{k:?}")),
         KeyKind::VQueueActive => ActiveKey::deserialize_from(&mut cursor)
             .ok()
             .map(|k| format!("{k:?}")),
-        KeyKind::VQueueInbox => VQueueInboxKey::deserialize_from(&mut cursor)
-            .ok()
-            .map(|k| format!("{k:?}")),
+        KeyKind::VQueueInboxStage
+        | KeyKind::VQueueRunningStage
+        | KeyKind::VQueueSuspendedStage
+        | KeyKind::VQueuePausedStage
+        | KeyKind::VQueueFinishedStage => decode_vqueue_stage_key(key, key_kind),
         KeyKind::VQueueMeta => MetaKey::deserialize_from(&mut cursor)
             .ok()
             .map(|k| format!("{k:?}")),
-        KeyKind::VQueueEntryState => EntryStateKey::deserialize_from(&mut cursor)
+        KeyKind::VQueueEntryStatus => EntryStatusKey::deserialize_from(&mut cursor)
             .ok()
             .map(|k| format!("{k:?}")),
-        KeyKind::VQueueItems => ItemsKey::deserialize_from(&mut cursor)
+        KeyKind::VQueueInput => InputPayloadKey::deserialize_from(&mut cursor)
+            .ok()
+            .map(|k| format!("{k:?}")),
+        KeyKind::Lock => LockKey::deserialize_from(&mut cursor)
             .ok()
             .map(|k| format!("{k:?}")),
     };
 
     (kind_name, decoded, Some(key_kind))
+}
+
+fn decode_vqueue_stage_key(key: &[u8], key_kind: KeyKind) -> Option<String> {
+    let stage = match key_kind {
+        KeyKind::VQueueInboxStage => "Inbox",
+        KeyKind::VQueueRunningStage => "Running",
+        KeyKind::VQueueSuspendedStage => "Suspended",
+        KeyKind::VQueuePausedStage => "Paused",
+        KeyKind::VQueueFinishedStage => "Finished",
+        _ => return None,
+    };
+
+    if key.len() < KeyKind::SERIALIZED_LENGTH {
+        return None;
+    }
+
+    // All vqueue stage keys share the same binary layout after the 2-byte key-kind prefix.
+    // Rebase to the Inbox key kind so we can decode with a single key struct.
+    let mut normalized = key.to_vec();
+    normalized[..KeyKind::SERIALIZED_LENGTH].copy_from_slice(KeyKind::VQueueInboxStage.as_bytes());
+    let mut cursor = normalized.as_slice();
+
+    VQueueInboxKey::deserialize_from(&mut cursor)
+        .ok()
+        .map(|k| format!("stage={stage}, {k:?}"))
 }
