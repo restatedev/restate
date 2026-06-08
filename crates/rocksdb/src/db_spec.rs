@@ -65,6 +65,10 @@ impl CfName {
     pub fn new(name: &str) -> Self {
         Self(name.into())
     }
+
+    pub const fn from_static(name: &'static str) -> Self {
+        Self(ReString::from_static(name))
+    }
 }
 
 impl From<&str> for CfName {
