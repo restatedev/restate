@@ -18,6 +18,11 @@ pub const STORAGE_BG_TASK_WAIT_DURATION: &str =
 pub const STORAGE_BG_TASK_RUN_DURATION: &str =
     "restate.rocksdb_manager.bg_task_run_duration.seconds";
 
+pub const FLUSH_COMPLETED: &str = "restate.rocksdb.flush_completed.total";
+pub const MEMTABLE_SEALED: &str = "restate.rocksdb.memtable_sealed.total";
+pub const COMPACTION_COMPLETED: &str = "restate.rocksdb.compaction_completed.total";
+pub const COMPACTION_DURATION: &str = "restate.rocksdb.compaction_duration.seconds";
+
 // Perf guard metrics
 pub const BLOCK_READ_BYTES: &str = "restate.rocksdb.perf.block_read_bytes.total";
 pub const BLOCK_READ_DURATION: &str = "restate.rocksdb.perf.block_read_duration.seconds";
@@ -136,5 +141,29 @@ pub fn describe_metrics() {
         FIND_NEXT_USER_ENTRY,
         Unit::Seconds,
         "Total time spent on iterating internal entries to find the next user entry"
+    );
+
+    describe_counter!(
+        FLUSH_COMPLETED,
+        Unit::Count,
+        "Number of flush jobs completed"
+    );
+
+    describe_counter!(
+        COMPACTION_COMPLETED,
+        Unit::Count,
+        "Number of compaction jobs completed"
+    );
+
+    describe_histogram!(
+        COMPACTION_DURATION,
+        Unit::Seconds,
+        "Time spent in compaction jobs"
+    );
+
+    describe_counter!(
+        MEMTABLE_SEALED,
+        Unit::Count,
+        "Number of memtables sealed"
     );
 }

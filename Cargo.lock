@@ -7658,6 +7658,7 @@ version = "1.7.0-rc.2"
 dependencies = [
  "bytes",
  "dashmap",
+ "derive_builder",
  "futures",
  "googletest",
  "pin-project",
@@ -8832,8 +8833,8 @@ dependencies = [
 
 [[package]]
 name = "restate-web-ui"
-version = "1.0.3"
-source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v1.0.3#647a7e2b669926105c0b56c43d0ba26cea505df2"
+version = "1.0.4"
+source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v1.0.4#77d2b38d58df4ede66b1a453833f7fec030ef46f"
 dependencies = [
  "anyhow",
  "include_dir",

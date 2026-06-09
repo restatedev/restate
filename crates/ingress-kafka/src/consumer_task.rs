@@ -44,14 +44,6 @@ use crate::Error;
 use crate::builder::EnvelopeBuilder;
 use crate::metric_definitions::{KAFKA_INGRESS_CONSUMER_LAG, KAFKA_INGRESS_REQUESTS};
 
-impl From<IngestionError> for Error {
-    fn from(value: IngestionError) -> Self {
-        match value {
-            IngestionError::Closed(reason) => Self::IngestionClosed(reason.into()),
-            IngestionError::PartitionTableError(err) => Self::PartitionTableError(err),
-        }
-    }
-}
 type MessageConsumer<T> = StreamConsumer<RebalanceContext<T>>;
 
 #[derive(Clone)]
@@ -510,7 +502,7 @@ where
                 biased;
                 Some(committed) = Self::head_committed(&mut inflight) => {
                     _ = inflight.pop_front().expect("to exist");
-                    let offset = committed.map_err(|_| Error::IngestionClosed("commit cancelled".into()))?;
+                    let offset = committed.map_err(|_| Error::IngestionError(IngestionError::Closed("commit cancelled")))?;
 
                     ingress_request_counter.increment(1);
                     trace!(

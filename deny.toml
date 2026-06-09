@@ -9,6 +9,8 @@ ignore = [
     { id = "RUSTSEC-2024-0437", reason = "protobuf-rs stackoverflow in deep nested messages, not fixed yet" },
     { id = "RUSTSEC-2025-0057", reason = "fxhash is not maintained anymore, currently used only by raft-rs" },
     { id = "RUSTSEC-2025-0141", reason = "bincode is no longer maintained, it's only used by restate-queue which will soon be removed" },
+    # package proc-macro-error2 is pulled by `raft` -> `getset` -> `proc-macro-error2`
+    { id = "RUSTSEC-2026-0173", reason = "The author of `proc-macro-error2` has [confirmed](https://github.com/GnomedDev/proc-macro-error-2/issues/17#issuecomment-4643215473) that the crate is no longer maintained and recommends that users migrate away from it" },
 ]
 
 
@@ -112,9 +114,7 @@ unknown-registry = "deny"
 # in the allow list is encountered
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = [
-    "https://github.com/apache/arrow-rs.git",
-]
+allow-git = ["https://github.com/apache/arrow-rs.git"]
 
 [sources.allow-org]
 # 1 or more github.com organizations to allow git sources for
