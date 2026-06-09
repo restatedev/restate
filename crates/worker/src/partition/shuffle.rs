@@ -426,7 +426,7 @@ mod ingestion_client_tests {
     use assert2::let_assert;
     use futures::StreamExt;
     use restate_core::partitions::PartitionRouting;
-    use restate_ingestion_client::IngestionClient;
+    use restate_ingestion_client::{IngestionClient, SessionOptions};
     use restate_types::net::RpcRequest;
     use restate_types::net::ingest::{ReceivedIngestRequest, ResponseStatus};
     use restate_types::net::partition_processor::PartitionLeaderService;
@@ -652,7 +652,7 @@ mod ingestion_client_tests {
             env.metadata.updateable_partition_table(),
             PartitionRouting::new(partition_replica_set_states, TaskCenter::current()),
             NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
-            None,
+            SessionOptions::default(),
         );
 
         let (truncation_tx, _truncation_rx) = mpsc::channel(1);

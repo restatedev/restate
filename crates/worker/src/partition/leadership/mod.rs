@@ -844,6 +844,7 @@ impl<T> LeadershipState<T> {
     /// Forward externally-created records to this partition.
     pub async fn forward_many_with_callback<F>(
         &mut self,
+        target_leader_epoch: LeaderEpoch,
         records: impl ExactSizeIterator<Item = IngestRecord>,
         callback: F,
     ) where
@@ -854,6 +855,15 @@ impl<T> LeadershipState<T> {
                 PartitionProcessorRpcError::NotLeader(self.partition.partition_id),
             )),
             State::Leader(leader_state) => {
+                // Defensive check. Make sure that the target epoch
+                // matches the leader state epoch
+                if target_leader_epoch != leader_state.leader_epoch {
+                    callback(Err(PartitionProcessorRpcError::NotLeader(
+                        self.partition.partition_id,
+                    )));
+                    return;
+                }
+
                 leader_state
                     .forward_many_with_callback(records, callback)
                     .await;
@@ -861,6 +871,7 @@ impl<T> LeadershipState<T> {
         }
     }
 }
+
 #[derive(Debug, derive_more::From)]
 struct TimerReader(PartitionStore);
 
@@ -915,7 +926,7 @@ mod tests {
     use restate_bifrost::Bifrost;
     use restate_core::partitions::PartitionRouting;
     use restate_core::{TaskCenter, TestCoreEnv};
-    use restate_ingestion_client::IngestionClient;
+    use restate_ingestion_client::{IngestionClient, SessionOptions};
     use restate_limiter::RuleBook;
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
@@ -971,7 +982,7 @@ mod tests {
             env.metadata.updateable_partition_table(),
             PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
             NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
-            None,
+            SessionOptions::default(),
         );
 
         let (leader_query_tx, _leader_query_rx) = restate_worker_api::channel();
