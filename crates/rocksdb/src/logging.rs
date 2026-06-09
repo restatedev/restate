@@ -8,103 +8,127 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use metrics::{Counter, Histogram, counter, histogram};
 use rocksdb::event_listener::{
     CompactionJobInfo, DBBackgroundErrorReason, DBCompactionReason, DBFlushReason,
     DBWriteStallCondition, EventListener, FlushJobInfo, MemTableInfo, MutableStatus,
     WriteStallInfo,
 };
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, enabled, error, trace, warn};
 
 use restate_util_bytecount::ByteCount;
+use restate_util_string::ReString;
 use restate_util_time::FriendlyDuration;
 
-use crate::DbName;
+use crate::metric_definitions::{
+    COMPACTION_COMPLETED, COMPACTION_DURATION, FLUSH_COMPLETED, MEMTABLE_SEALED,
+};
 
 /// Event listener for logging key RocksDB events and recording metrics.
 ///
 /// The listener is registered with every rocksdb database opened through
 /// the [`RocksDbManager`].
 pub(crate) struct LoggingEventListener {
-    db_name: DbName,
+    db_name: ReString,
+    compaction_duration: Histogram,
+    memtable_sealed: Counter,
 }
 
 impl LoggingEventListener {
-    pub fn new(db_name: DbName) -> Self {
-        Self { db_name }
+    pub fn new(db_name: impl Into<ReString>) -> Self {
+        let db_name = db_name.into();
+        let compaction_duration = histogram!(COMPACTION_DURATION, "db" => db_name.clone());
+        let memtable_sealed = counter!(MEMTABLE_SEALED, "db" => db_name.clone());
+
+        Self {
+            db_name,
+            compaction_duration,
+            memtable_sealed,
+        }
     }
 }
 
 impl EventListener for LoggingEventListener {
     fn on_flush_begin(&self, i: &FlushJobInfo) {
-        let cf_name = i.cf_name().unwrap_or_default();
-        let cf_name = String::from_utf8_lossy(&cf_name);
-        let trigger = i.flush_reason().as_friendly_reason();
-        let smallest_seqno = i.smallest_seqno();
-        let largest_seqno = i.largest_seqno();
+        if enabled!(tracing::Level::TRACE) {
+            let cf_name = i.cf_name().unwrap_or_default();
+            let cf_name = String::from_utf8_lossy(&cf_name);
+            let trigger = i.flush_reason().as_friendly_reason();
+            let smallest_seqno = i.smallest_seqno();
+            let largest_seqno = i.largest_seqno();
 
-        let impact = if i.triggered_writes_slowdown() {
-            "write-slowdown"
-        } else if i.triggered_writes_stop() {
-            "write-stop"
-        } else {
-            "normal"
-        };
+            let impact = if i.triggered_writes_slowdown() {
+                "write-slowdown"
+            } else if i.triggered_writes_stop() {
+                "write-stop"
+            } else {
+                "normal"
+            };
 
-        trace!(
-            db = %self.db_name,
-            cf = %cf_name,
-            "Flush started. flush-trigger: {trigger}, impact: {impact}, smallest_seqno: {smallest_seqno}, largest_seqno: {largest_seqno}"
-        );
+            trace!(
+                db = %self.db_name,
+                cf = %cf_name,
+                "Flush started. flush-trigger: {trigger}, impact: {impact}, smallest_seqno: {smallest_seqno}, largest_seqno: {largest_seqno}"
+            );
+        }
     }
 
     fn on_flush_completed(&self, i: &FlushJobInfo) {
-        let cf_name = i.cf_name().unwrap_or_default();
-        let cf_name = String::from_utf8_lossy(&cf_name);
         let trigger = i.flush_reason().as_friendly_reason();
 
-        let impact = if i.triggered_writes_slowdown() {
-            // If true, then rocksdb is currently slowing-down all writes to prevent
-            // creating too many Level 0 files as compaction seems not able to
-            // catch up the write request speed.  This indicates that there are
-            // too many files in Level 0.
-            "write-slowdown"
-        } else if i.triggered_writes_stop() {
-            // If true, then rocksdb is currently blocking any writes to prevent
-            // creating more L0 files.  This indicates that there are too many
-            // files in level 0.  Compactions should try to compact L0 files down
-            // to lower levels as soon as possible.
-            "write-stop"
-        } else {
-            "normal"
-        };
+        if enabled!(tracing::Level::DEBUG) {
+            let cf_name = i.cf_name().unwrap_or_default();
+            let cf_name = String::from_utf8_lossy(&cf_name);
 
-        debug!(
-            db = %self.db_name,
-            cf = %cf_name,
-            "Flush completed. flush-trigger: {trigger}, impact: {impact}"
-        );
+            let impact = if i.triggered_writes_slowdown() {
+                // If true, then rocksdb is currently slowing-down all writes to prevent
+                // creating too many Level 0 files as compaction seems not able to
+                // catch up the write request speed.  This indicates that there are
+                // too many files in Level 0.
+                "write-slowdown"
+            } else if i.triggered_writes_stop() {
+                // If true, then rocksdb is currently blocking any writes to prevent
+                // creating more L0 files.  This indicates that there are too many
+                // files in level 0.  Compactions should try to compact L0 files down
+                // to lower levels as soon as possible.
+                "write-stop"
+            } else {
+                "normal"
+            };
+
+            debug!(
+                db = %self.db_name,
+                cf = %cf_name,
+                "Flush completed. flush-trigger: {trigger}, impact: {impact}"
+            );
+        }
+
+        counter!(FLUSH_COMPLETED, "db" => self.db_name.clone(), "trigger" => trigger).increment(1);
     }
 
     fn on_compaction_begin(&self, i: &CompactionJobInfo) {
-        let cf_name = i.cf_name().unwrap_or_default();
-        let cf_name = String::from_utf8_lossy(&cf_name);
-        let trigger = i.compaction_reason().as_friendly_reason();
+        if enabled!(tracing::Level::DEBUG) {
+            let cf_name = i.cf_name().unwrap_or_default();
+            let cf_name = String::from_utf8_lossy(&cf_name);
+            let trigger = i.compaction_reason().as_friendly_reason();
 
-        let input_files = i.input_file_count();
-        let input_level = i.base_input_level();
-        let input_bytes = i.total_input_bytes();
+            let input_files = i.input_file_count();
+            let input_level = i.base_input_level();
+            let input_bytes = i.total_input_bytes();
 
-        let output_level = i.output_level();
+            let output_level = i.output_level();
 
-        debug!(
-            db = %self.db_name,
-            cf = %cf_name,
-            "Compaction started. [L{input_level}]->[L{output_level}] compaction-trigger: {trigger}, input_bytes: {}, input_files: {input_files}",
-            ByteCount::from(input_bytes),
-        );
+            debug!(
+                db = %self.db_name,
+                cf = %cf_name,
+                "Compaction started. [L{input_level}]->[L{output_level}] compaction-trigger: {trigger}, input_bytes: {}, input_files: {input_files}",
+                ByteCount::from(input_bytes),
+            );
+        }
     }
 
     fn on_compaction_completed(&self, i: &CompactionJobInfo) {
+        let elapsed = FriendlyDuration::from_micros(i.elapsed_micros());
         let cf_name = i.cf_name().unwrap_or_default();
         let cf_name = String::from_utf8_lossy(&cf_name);
         let trigger = i.compaction_reason().as_friendly_reason();
@@ -132,11 +156,15 @@ impl EventListener for LoggingEventListener {
                     input_bytes: {}, output_bytes: {}, \
                     input_files: {input_files}, output_files: {output_files}, \
                     input_records: {input_records}, output_records: {output_records}",
-                FriendlyDuration::from_micros(i.elapsed_micros()),
+                elapsed,
                 ByteCount::from(input_bytes),
                 ByteCount::from(output_bytes),
             );
         } else {
+            counter!(COMPACTION_COMPLETED, "db" => self.db_name.clone(), "trigger" => trigger)
+                .increment(1);
+            self.compaction_duration.record(elapsed.to_std());
+
             // if compaction completed without making any material impact, it's a trivial
             // compaction and we don't want to bother logging about it on info level.
             let tag = if input_files == output_files || input_records == output_records {
@@ -153,7 +181,7 @@ impl EventListener for LoggingEventListener {
                     input_bytes: {}, output_bytes: {}, \
                     input_files: {input_files}, output_files: {output_files}, \
                     input_records: {input_records}, output_records: {output_records}",
-                FriendlyDuration::from_micros(i.elapsed_micros()),
+                elapsed,
                 ByteCount::from(input_bytes),
                 ByteCount::from(output_bytes),
             );
@@ -199,6 +227,7 @@ impl EventListener for LoggingEventListener {
             i.first_seqno(),
             i.earliest_seqno(),
         );
+        self.memtable_sealed.increment(1);
     }
 
     fn on_background_error(&self, reason: DBBackgroundErrorReason, status: MutableStatus) {
