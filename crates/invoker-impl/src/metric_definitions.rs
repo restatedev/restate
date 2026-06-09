@@ -87,7 +87,15 @@ impl ServiceMetrics {
         Self {
             partition_id,
             service_name,
-            deployment_id: "unknown",
+            deployment_id: "",
+        }
+    }
+
+    fn effective_deployment_id(&self) -> &'static str {
+        if self.deployment_id.is_empty() {
+            "unknown"
+        } else {
+            self.deployment_id
         }
     }
 
@@ -95,7 +103,7 @@ impl ServiceMetrics {
         gauge!(name,
             "partition_id" => self.partition_id,
             "service_name" => self.service_name,
-            "deployment_id" => self.deployment_id,
+            "deployment_id" => self.effective_deployment_id(),
         )
     }
 
@@ -103,7 +111,7 @@ impl ServiceMetrics {
         counter!(name,
             "partition_id" => self.partition_id,
             "service_name" => self.service_name,
-            "deployment_id" => self.deployment_id,
+            "deployment_id" => self.effective_deployment_id(),
         )
     }
 
@@ -111,7 +119,7 @@ impl ServiceMetrics {
         histogram!(name,
             "partition_id" => self.partition_id,
             "service_name" => self.service_name,
-            "deployment_id" => self.deployment_id,
+            "deployment_id" => self.effective_deployment_id(),
         )
     }
 
@@ -120,7 +128,7 @@ impl ServiceMetrics {
         counter!(INVOKER_HTTP_RESPONSES,
             "partition_id" => self.partition_id,
             "service_name" => self.service_name,
-            "deployment_id" => self.deployment_id,
+            "deployment_id" => self.effective_deployment_id(),
             "status_code" => code,
         )
     }

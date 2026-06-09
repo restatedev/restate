@@ -50,6 +50,8 @@ pub(super) struct InvokerConcurrencyQuota {
 
 impl InvokerConcurrencyQuota {
     pub(super) fn new(invoker_id: impl Into<InvokerId>, quota: Option<NonZeroUsize>) -> Self {
+        // "invoker_id" is the legacy label name; "partition_id" is the new standard.
+        // Both carry the same value. Keep "invoker_id" until existing dashboards are migrated.
         let partition_id_str = ID_LOOKUP.get(invoker_id.into());
 
         let inner = match quota {
