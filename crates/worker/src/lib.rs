@@ -28,6 +28,7 @@ use std::sync::Arc;
 use codederror::CodedError;
 use restate_core::network::Swimlane;
 use restate_ingestion_client::SessionOptions;
+use restate_types::net::connect_opts::GrpcConnectionOptions;
 use restate_wal_protocol::Envelope;
 use tracing::info;
 
@@ -156,11 +157,13 @@ where
                 .shuffle
                 .inflight_memory_budget
                 .as_non_zero_usize(),
-            Some(SessionOptions {
-                batch_size: config.worker.shuffle.request_batch_size.as_usize(),
-                connection_retry_policy: config.worker.shuffle.connection_retry_policy.clone(),
-                swimlane: Swimlane::BifrostData,
-            }),
+            SessionOptions::builder()
+                .batch_size(config.worker.shuffle.request_batch_size.as_non_zero_usize())
+                .connection_retry_policy(config.worker.shuffle.connection_retry_policy.clone())
+                .record_size_limit(config.networking.message_size_limit())
+                .swimlane(Swimlane::IngressData)
+                .build()
+                .expect("Ingestion session options to build"),
         );
 
         let metadata_store_client = metadata_writer.raw_metadata_store_client().clone();

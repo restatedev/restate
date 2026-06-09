@@ -30,6 +30,10 @@ impl<F, S: Stream> ChunksSize<F, S>
 where
     F: Fn(&S::Item) -> usize,
 {
+    pub fn new(stream: S, max_size: usize, size_fn: F) -> Self {
+        Self::with_buffered(stream, max_size, size_fn, Vec::default())
+    }
+
     /// Creates a chunker, pre-seeding the accumulation buffer with `buffered` items so they lead the
     /// next emitted chunk. Pass an empty `Vec` to start fresh. Seeding is used to carry a previously
     /// over-pulled item across a recreated `ChunksSize` (e.g. after a reconnect) without losing it or

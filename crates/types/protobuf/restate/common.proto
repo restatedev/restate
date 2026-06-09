@@ -22,6 +22,14 @@ enum ProtocolVersion {
   // Release in v1.6. Support custom `Record`
   // encoding that uses Bytes instead of PolyBytes
   V3 = 3;
+
+  // Release in v1.7
+  // Ingress client can differentiate v1.6 PPs 
+  // from v1.7 PPs to choose which ingestion mode 
+  // to use. For v1.6 only single inflight batch
+  // is allowed. In v1.7 multiple inflight batches
+  // are allowed.
+  V4 = 4;
 }
 
 message NodeId {
