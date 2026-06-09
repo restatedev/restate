@@ -161,6 +161,10 @@ impl EventListener for LoggingEventListener {
                 ByteCount::from(output_bytes),
             );
         } else {
+            counter!(COMPACTION_COMPLETED, "db" => self.db_name.clone(), "trigger" => trigger)
+                .increment(1);
+            self.compaction_duration.record(elapsed.to_std());
+
             // if compaction completed without making any material impact, it's a trivial
             // compaction and we don't want to bother logging about it on info level.
             let tag = if input_files == output_files || input_records == output_records {
