@@ -152,32 +152,38 @@ where
 
 #[derive(Debug, Deserialize)]
 #[serde(
-    tag = "type",
+    tag = "target",
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
 pub(crate) enum InvocationTargetRequest {
     Workflow {
-        name: ReString,
-        key: ReString,
         #[serde(default)]
         scope: Option<ReString>,
+        workflow_name: ReString,
+        workflow_key: ReString,
     },
-    Idempotency {
+    IdempotentInvocation {
+        #[serde(default)]
+        scope: Option<ReString>,
         service: ReString,
         #[serde(default)]
-        service_key: Option<ReString>,
+        key: Option<ReString>,
         handler: ReString,
         idempotency_key: ReString,
-        #[serde(default)]
-        scope: Option<ReString>,
+    },
+    Invocation {
+        invocation_id: ReString,
     },
 }
 
 impl InvocationTargetRequest {
     pub(crate) fn into_invocation_query(self) -> Result<InvocationQuery, HandlerError> {
         let scope_value = match self {
-            Self::Workflow { ref scope, .. } | Self::Idempotency { ref scope, .. } => scope.clone(),
+            Self::Workflow { ref scope, .. } | Self::IdempotentInvocation { ref scope, .. } => {
+                scope.clone()
+            }
+            Self::Invocation { .. } => None,
         };
 
         // Unfortunately, we cannot first check the existence of the service/handler or workflow
@@ -192,24 +198,33 @@ impl InvocationTargetRequest {
         };
 
         Ok(match self {
-            Self::Workflow { name, key, .. } => InvocationQuery::Workflow(ServiceId::new(
+            Self::Workflow {
+                workflow_name,
+                workflow_key,
+                ..
+            } => InvocationQuery::Workflow(ServiceId::new(
                 scope,
-                ByteString::from(name.as_str()),
-                ByteString::from(key.as_str()),
+                ByteString::from(workflow_name.as_str()),
+                ByteString::from(workflow_key.as_str()),
             )),
-            Self::Idempotency {
+            Self::IdempotentInvocation {
                 service,
-                service_key,
+                key,
                 handler,
                 idempotency_key,
                 ..
             } => InvocationQuery::IdempotencyId(IdempotencyId::new(
                 ByteString::from(service.as_str()),
-                service_key.map(|s| ByteString::from(s.as_str())),
+                key.map(|s| ByteString::from(s.as_str())),
                 ByteString::from(handler.as_str()),
                 ByteString::from(idempotency_key.as_str()),
                 scope,
             )),
+            Self::Invocation { invocation_id } => InvocationQuery::Invocation(
+                invocation_id
+                    .parse()
+                    .map_err(|e| HandlerError::BadInvocationId(invocation_id.to_string(), e))?,
+            ),
         })
     }
 }

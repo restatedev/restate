@@ -1328,7 +1328,7 @@ async fn output_with_id_path() {
 #[traced_test]
 async fn lookup_idempotency_unkeyed_returns_deterministic_id() {
     let body = serde_json::json!({
-        "type": "idempotency",
+        "target": "idempotentInvocation",
         "service": "greeter.Greeter",
         "handler": "greet",
         "idempotencyKey": "K1"
@@ -1360,10 +1360,39 @@ async fn lookup_idempotency_unkeyed_returns_deterministic_id() {
 
 #[restate_core::test]
 #[traced_test]
+async fn lookup_by_invocation_id_echoes_id() {
+    let invocation_id = InvocationId::mock_random();
+    let body = serde_json::json!({
+        "target": "invocation",
+        "invocationId": invocation_id.to_string(),
+    });
+    let req = hyper::Request::builder()
+        .uri("http://localhost/restate/lookup")
+        .method(Method::POST)
+        .header("content-type", "application/json")
+        .body(Full::new(Bytes::from(serde_json::to_vec(&body).unwrap())))
+        .unwrap();
+
+    let response = handle(req, MockRequestDispatcher::default()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LookupReply {
+        invocation_id: InvocationId,
+    }
+    let lookup_reply: LookupReply = serde_json::from_slice(&response_bytes).unwrap();
+
+    assert_eq!(lookup_reply.invocation_id, invocation_id);
+}
+
+#[restate_core::test]
+#[traced_test]
 async fn attach_by_target_with_idempotency() {
     let invocation_id = InvocationId::mock_random();
     let body = serde_json::json!({
-        "type": "idempotency",
+        "target": "idempotentInvocation",
         "service": "greeter.Greeter",
         "handler": "greet",
         "idempotencyKey": "K1"
@@ -1418,9 +1447,9 @@ async fn attach_by_target_with_idempotency() {
 async fn output_by_target_with_workflow() {
     let invocation_id = InvocationId::mock_random();
     let body = serde_json::json!({
-        "type": "workflow",
-        "name": "MyWorkflow",
-        "key": "wf-1"
+        "target": "workflow",
+        "workflowName": "MyWorkflow",
+        "workflowKey": "wf-1"
     });
     let req = hyper::Request::builder()
         .uri("http://localhost/restate/output")
