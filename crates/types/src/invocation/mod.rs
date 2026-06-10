@@ -152,12 +152,15 @@ pub enum Short<'a> {
     UnKeyed { name: &'a str, handler: &'a str },
 }
 
+// Note: Don't annotate fields with `#[serde(skip_serializing_if = ...)]`. The invoker spills this
+// type to disk via the `SegmentQueue` which serializes it with bincode, a non-self-describing
+// format that fails to deserialize values with skipped fields.
+// See https://github.com/restatedev/restate/issues/4910.
 #[derive(Eq, Hash, PartialEq, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum InvocationTarget {
     Service {
         name: ByteString,
         handler: ByteString,
-        #[serde(skip_serializing_if = "Option::is_none")]
         scope: Option<Scope>,
     },
     VirtualObject {
@@ -165,7 +168,6 @@ pub enum InvocationTarget {
         key: ByteString,
         handler: ByteString,
         handler_ty: VirtualObjectHandlerType,
-        #[serde(skip_serializing_if = "Option::is_none")]
         scope: Option<Scope>,
     },
     Workflow {
@@ -173,7 +175,6 @@ pub enum InvocationTarget {
         key: ByteString,
         handler: ByteString,
         handler_ty: WorkflowHandlerType,
-        #[serde(skip_serializing_if = "Option::is_none")]
         scope: Option<Scope>,
     },
 }
