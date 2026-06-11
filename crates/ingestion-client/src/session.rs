@@ -644,7 +644,7 @@ where
                         Ok(response) => {
                             // Handle any other response code as a connection loss
                             // and retry all inflight batches.
-                            debug!("Ingestion response from {}: {:?}", connection.peer(), response);
+                            warn!("Ingestion response error status from {}: {:?}", connection.peer(), response);
                             break;
                         }
                         Err(err) => {
@@ -653,7 +653,7 @@ where
                             // special case for load shedding we could
                             // throttle the stream a little bit then
                             // speed up over a period of time.
-                            debug!("Ingestion error from {}: {}", connection.peer(),  err);
+                            warn!("Ingestion RPC error from {}: {}", connection.peer(),  err);
                             break;
                         }
                     }
