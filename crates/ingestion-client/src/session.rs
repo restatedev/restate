@@ -15,7 +15,7 @@ use futures::{FutureExt, StreamExt, future::OptionFuture, ready};
 use tokio::sync::{OwnedSemaphorePermit, mpsc, oneshot};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, instrument, trace, warn};
+use tracing::{debug, info, instrument, trace, warn};
 
 use restate_core::{
     TaskCenter, TaskKind,
@@ -395,11 +395,11 @@ where
     }
 
     #[instrument(
-        level="debug",
+        level="info",
         skip_all,
         name="connected",
         fields(
-            mode="sequential", 
+            mode="sequential",
             partition=%self.partition,
             leader_epoch=%self.target_leader_epoch,
         )
@@ -412,6 +412,11 @@ where
             let records = Arc::clone(&batch.records);
 
             let Some(permit) = connection.reserve().await else {
+                warn!(
+                    carry_over_batches = self.carry_over.len(),
+                    "Connection to {} closed while replaying ingest batches; will reconnect and replay",
+                    connection.peer()
+                );
                 return;
             };
 
@@ -445,6 +450,11 @@ where
                     // defensive coding, but also allows us to switch
                     // to sequential mode for protocol version >= V4
                     // if needed.
+                    info!(
+                        new_leader_epoch = %last_seen_leadership_state.current_leader_epoch,
+                        carry_over_batches = self.carry_over.len(),
+                        "Ingestion batch rejected by leadership change; will reconnect and replay"
+                    );
                     self.target_leader_epoch
                         .note_leadership_state(&last_seen_leadership_state);
 
@@ -488,6 +498,10 @@ where
             let records = Arc::clone(&batch.records);
 
             let Some(permit) = connection.reserve().await else {
+                warn!(
+                    "Connection to {} closed while sending ingest batch; will reconnect and replay",
+                    connection.peer()
+                );
                 self.carry_over.push_back(batch);
                 break;
             };
@@ -516,6 +530,10 @@ where
                     // defensive coding, but also allows us to switch
                     // to sequential mode for protocol version >= V4
                     // if needed.
+                    info!(
+                        new_leader_epoch = %last_seen_leadership_state.current_leader_epoch,
+                        "Ingestion batch rejected by leadership change; will reconnect and replay"
+                    );
                     self.target_leader_epoch
                         .note_leadership_state(&last_seen_leadership_state);
 
@@ -561,11 +579,11 @@ where
     }
 
     #[instrument(
-        level="debug",
+        level="info",
         skip_all,
         name="connected",
         fields(
-            mode="pipelining", 
+            mode="pipelining",
             partition=%self.partition,
             leader_epoch=%self.target_leader_epoch,
         )
@@ -607,6 +625,11 @@ where
                     let batch = inflight.push_back_mut((batch, None));
 
                     let Some(permit) = connection.reserve().await else {
+                        warn!(
+                            inflight_batches = inflight.len(),
+                            "Connection to {} closed while sending ingest batch; carrying over in-flight batches",
+                            connection.peer()
+                        );
                         break;
                     };
 
@@ -632,6 +655,11 @@ where
                             last_seen_leadership_state,
                             ..
                         })=> {
+                            info!(
+                                new_leader_epoch = %last_seen_leadership_state.current_leader_epoch,
+                                inflight_batches = inflight.len(),
+                                "Ingestion pipeline rejected by leadership change; carrying over in-flight batches"
+                            );
                             self.target_leader_epoch
                                 .note_leadership_state(&last_seen_leadership_state);
 
@@ -673,17 +701,23 @@ where
 
     /// Re-sends all inflight batches after a connection is restored.
     async fn replay(&mut self, connection: &Connection) -> Result<InflightQueue, ConnectionClosed> {
-        debug!(
-            partition = %self.partition,
-            batches = self.carry_over.len(),
-            records = self.carry_over.iter().map(|i| i.len()).sum::<usize>(),
-            "Replaying inflight records after connection was restored"
-        );
+        if !self.carry_over.is_empty() {
+            info!(
+                batches = self.carry_over.len(),
+                records = self.carry_over.iter().map(|i| i.len()).sum::<usize>(),
+                "Replaying inflight records after connection was restored"
+            );
+        }
 
         let mut inflight = InflightQueue::new();
 
         while let Some(batch) = self.carry_over.front() {
             let Some(permit) = connection.reserve().await else {
+                warn!(
+                    batches_sent = inflight.len(),
+                    "Connection to {} closed while replaying ingest batches; restoring carry-over",
+                    connection.peer()
+                );
                 // restore the carry over back to original state.
                 // maintaining the original order.
                 // todo(azmy): Avoid resending All the batches by trying to drain
