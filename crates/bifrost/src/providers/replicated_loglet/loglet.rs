@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use restate_util_time::DurationExt;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 use tracing::{debug, instrument, trace};
@@ -404,7 +405,7 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         // Ensure that only one seal operation is in progress at a time.
         let start = Instant::now();
         let _guard = self.seal_in_progress.lock().await;
-        trace!("seal() lock acquired after {:?}", start.elapsed());
+        trace!("seal() lock acquired after {}", start.elapsed().friendly());
 
         if self.known_global_tail.get().is_sealed() {
             return Ok(());
@@ -426,8 +427,8 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         //   not be up-to-date at the time we sealed. We want that to happen by find_tail() after
         //   it consults the sequencer, or by running a full find-tail algorithm directly on log
         //   servers.
-        debug!(loglet_id=%self.my_params.loglet_id, "seal() has completed successfully in {:?}",
-            start.elapsed());
+        debug!(loglet_id=%self.my_params.loglet_id, "seal() has completed successfully in {}",
+            start.elapsed().friendly());
         Ok(())
     }
 }

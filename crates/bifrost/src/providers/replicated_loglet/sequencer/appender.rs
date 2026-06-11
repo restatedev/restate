@@ -248,8 +248,8 @@ impl<T: TransportConnect> SequencerAppender<T> {
 
                 trace!(
                     wave = %self.current_wave,
-                    "Append succeeded in {:?}, status {}",
-                    start.elapsed(),
+                    "Append succeeded in {}, status {}",
+                    start.elapsed().friendly(),
                     self.nodeset_status
                 );
             }

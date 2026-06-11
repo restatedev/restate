@@ -20,6 +20,8 @@ use rocksdb::{CompactOptions, ExportImportFilesMetaData};
 use tokio::time::Instant;
 use tracing::{debug, info, trace, warn};
 
+use restate_util_time::DurationExt;
+
 use crate::DbSpec;
 use crate::RawRocksDb;
 use crate::RocksError;
@@ -239,9 +241,9 @@ impl RocksAccess {
             } else {
                 info!(
                     db = %self.name(),
-                    "{} column families flushed in {:?}",
+                    "{} column families flushed in {}",
                     cfs_to_flush.len(),
-                    start.elapsed(),
+                    start.elapsed().friendly(),
                 );
             }
         }
