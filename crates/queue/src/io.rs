@@ -16,7 +16,11 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWrit
 
 const ENCODE_ERR_MSG: &str = "Failure during encoding a (transient) queue segment to disk. This is an unrecoverable failure at this point.";
 
+const OPEN_ERR_MSG: &str = "Failure during opening a (transient) queue segment file. This is an unrecoverable failure at this point.";
+
 const READ_ERR_MSG: &str = "Failure during reading a (transient) queue segment from disk. This is an unrecoverable failure at this point.";
+
+const DECODE_ERR_MSG: &str = "Failure during decoding an element of a (transient) queue segment. This indicates data corruption or an incompatible serialization format (e.g. optional fields skipped during serialization). This is an unrecoverable failure at this point.";
 
 const DELETE_ERR_MSG: &str = "Failure during the removal of a segment queue file. This is an unrecoverable failure at this point.";
 
@@ -25,7 +29,7 @@ pub(crate) async fn consume_segment_infallible<T: DeserializeOwned + Send + 'sta
     segment_id: u64,
 ) -> VecDeque<T> {
     base_bath.push(format!("{segment_id}.segment"));
-    let f = tokio::fs::File::open(&base_bath).await.expect(READ_ERR_MSG);
+    let f = tokio::fs::File::open(&base_bath).await.expect(OPEN_ERR_MSG);
     let mut reader = BufReader::with_capacity(1024 * 1024, f);
 
     //
@@ -55,7 +59,7 @@ pub(crate) async fn consume_segment_infallible<T: DeserializeOwned + Send + 'sta
                 &buffer[0..frame_len],
                 bincode::config::standard().with_variable_int_encoding(),
             )
-            .expect(READ_ERR_MSG);
+            .expect(DECODE_ERR_MSG);
             reader.consume(frame_len);
             values.push_back(value);
         } else {
@@ -78,7 +82,7 @@ pub(crate) async fn consume_segment_infallible<T: DeserializeOwned + Send + 'sta
                 &frame[0..frame_len],
                 bincode::config::standard().with_variable_int_encoding(),
             )
-            .expect(READ_ERR_MSG);
+            .expect(DECODE_ERR_MSG);
             values.push_back(value);
         };
     }
