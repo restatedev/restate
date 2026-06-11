@@ -40,6 +40,14 @@ use crate::chunks_size::ChunksSize;
 #[cfg(any(test, feature = "test-util"))]
 const DEFAULT_MAX_RECORD_SIZE: usize = 32 * 1024 * 1024; // 32MiB
 
+// todo: Drop once we redesign pipelining.
+// Pipelining is currently unsafe: an RPC error (e.g. SortCodeNotFound) can
+// drop a batch while later batches in the pipeline are still accepted,
+// leaving a gap in the sequence. Fixing this requires either explicit
+// session management (open, stream, close) or native stream support in our
+// network fabric. Until then, we force sequential mode.
+const FORCE_SEQUENTIAL_MODE: bool = true;
+
 type InflightQueue = VecDeque<(IngestionBatch, Option<ReplyRx<IngestResponse>>)>;
 
 /// Error returned when attempting to use a session that has already been closed.
@@ -177,13 +185,6 @@ pub struct SessionOptions {
     /// Connection swimlane
     #[cfg_attr(any(test, feature = "test-util"), builder(default=Swimlane::General))]
     pub(crate) swimlane: Swimlane,
-    /// Force sequential mode. In sequential
-    /// mode, a max of a single batch can be
-    /// in-flight.
-    ///
-    /// Default: false
-    #[builder(default)]
-    pub(crate) sequential_mode: bool,
 }
 
 impl SessionOptions {
@@ -207,7 +208,6 @@ impl Default for SessionOptions {
                 None,
                 Some(Duration::from_secs(1)),
             ),
-            sequential_mode: false,
         }
     }
 }
@@ -379,8 +379,7 @@ where
         match result {
             Ok(connection) => {
                 debug!("Connection established to node {}", node_id);
-                if connection.protocol_version() <= ProtocolVersion::V3 || self.opts.sequential_mode
-                {
+                if connection.protocol_version() <= ProtocolVersion::V3 || FORCE_SEQUENTIAL_MODE {
                     Some(SessionState::ConnectedSequentialMode { connection })
                 } else {
                     Some(SessionState::ConnectedPipeliningMode { connection })
@@ -457,7 +456,7 @@ where
                 Ok(response) => {
                     // Handle any other response code as a connection loss
                     // and retry all inflight batches.
-                    warn!(
+                    debug!(
                         "Ingestion response error status from {}: {:?}",
                         connection.peer(),
                         response
@@ -471,7 +470,7 @@ where
                     // special case for load shedding we could
                     // throttle the stream a little bit then
                     // speed up over a period of time.
-                    warn!("Ingestion RPC error from {}: {}", connection.peer(), err);
+                    debug!("Ingestion RPC error from {}: {}", connection.peer(), err);
                     return;
                 }
             }
@@ -530,7 +529,7 @@ where
                 Ok(response) => {
                     // Handle any other response code as a connection loss
                     // and retry all inflight batches.
-                    warn!(
+                    debug!(
                         "Ingestion response error status from {}: {:?}",
                         connection.peer(),
                         response
@@ -544,7 +543,7 @@ where
                     // special case for load shedding we could
                     // throttle the stream a little bit then
                     // speed up over a period of time.
-                    warn!("Ingestion RPC error from {}: {}", connection.peer(), err);
+                    debug!("Ingestion RPC error from {}: {}", connection.peer(), err);
                     self.carry_over.push_back(batch);
                     break;
                 }

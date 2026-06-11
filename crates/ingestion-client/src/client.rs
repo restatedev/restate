@@ -497,6 +497,7 @@ mod test {
     // documented in `connected_pipelining`. This pins that a second batch reaches the wire before
     // the head batch is acknowledged, and that every batch carries the leader epoch.
     #[test(restate_core::test(start_paused = true))]
+    #[ignore = "Pipelining is disabled"]
     async fn pipelines_multiple_unacked_batches() {
         let mut buf = BytesMut::new();
         let (mut incoming, mut client) = init_env(1024).await;
@@ -543,6 +544,7 @@ mod test {
     // retry), so out-of-order appends that the dedup high-water-mark would silently drop cannot
     // happen.
     #[test(restate_core::test(start_paused = true))]
+    #[ignore = "Pipelining is disabled"]
     async fn leadership_change_replays_inflight_in_order() {
         // Cap fits exactly one record, so r0 and r1 form two separate batches.
         let mut buf = BytesMut::new();
