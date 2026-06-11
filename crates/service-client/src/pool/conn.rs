@@ -32,8 +32,8 @@ use tower::Service;
 use tracing::{debug, trace};
 
 use restate_types::errors::GenericError;
-use restate_types::retries::with_jitter;
 use restate_types::time::MillisSinceEpoch;
+use restate_util_time::DurationExt;
 
 use super::Error;
 use crate::pool::conn::concurrency::{Concurrency, Permit, PermitFuture};
@@ -496,9 +496,9 @@ where
         mut ping_pong: h2::PingPong,
         config: ConnectionConfig,
     ) -> Result<Never, Error> {
-        let interval = config.keep_alive_interval.map(|interval| {
-            with_jitter(interval, config.keep_alive_interval_jitter.clamp(0.0, 1.0))
-        });
+        let interval = config
+            .keep_alive_interval
+            .map(|interval| interval.add_jitter(config.keep_alive_interval_jitter.clamp(0.0, 1.0)));
 
         let interval = match interval {
             None => {

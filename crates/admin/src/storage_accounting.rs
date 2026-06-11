@@ -21,7 +21,7 @@ use tracing::{debug, info};
 
 use restate_core::cancellation_watcher;
 use restate_storage_query_datafusion::context::QueryContext;
-use restate_types::retries::with_jitter;
+use restate_util_time::DurationExt;
 
 use crate::metric_definitions::{
     USAGE_STATE_SIZE_ACCOUNTING_QUERY_DURATION_SECONDS, USAGE_STATE_STORAGE_BYTE_SECONDS,
@@ -51,7 +51,7 @@ impl StorageAccountingTask {
     pub async fn run(mut self) -> anyhow::Result<()> {
         describe_metrics();
 
-        let effective_interval = with_jitter(self.update_interval, 0.1);
+        let effective_interval = self.update_interval.add_jitter(0.1);
         let start_at = tokio::time::Instant::now() + effective_interval;
         let mut update_interval = tokio::time::interval_at(start_at, effective_interval);
         update_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);

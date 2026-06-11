@@ -8377,6 +8377,7 @@ dependencies = [
  "pprof",
  "restate-service-client",
  "restate-types",
+ "restate-util-time",
  "restate-workspace-hack",
  "ring",
  "rustls",
@@ -8752,6 +8753,7 @@ name = "restate-util-time"
 version = "1.7.0-rc.3"
 dependencies = [
  "jiff",
+ "rand 0.9.4",
  "restate-workspace-hack",
  "schemars 1.2.1",
  "serde",

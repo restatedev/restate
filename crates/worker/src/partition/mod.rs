@@ -76,7 +76,7 @@ use restate_types::net::partition_processor::{
 use restate_types::net::{RpcRequest, ingest};
 use restate_types::partitions::PartitionFeatureChange;
 use restate_types::partitions::state::PartitionReplicaSetStates;
-use restate_types::retries::{RetryPolicy, with_jitter};
+use restate_types::retries::RetryPolicy;
 use restate_types::schema::Schema;
 use restate_types::storage::StorageDecodeError;
 use restate_types::time::{MillisSinceEpoch, NanosSinceEpoch};
@@ -589,7 +589,7 @@ where
 
         // avoid synchronized timers.
         let mut status_update_timer =
-            tokio::time::interval(with_jitter(Duration::from_millis(500), 0.5));
+            tokio::time::interval(Duration::from_millis(500).add_jitter(0.5));
         status_update_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         let mut vqueues = VQueuesMetaCache::create(
