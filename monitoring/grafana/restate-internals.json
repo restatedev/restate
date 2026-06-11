@@ -731,8 +731,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "avg by (node_name) (restate_ingress_request_duration_seconds{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=\"0.5\"})",
-          "legendFormat": "{{node_name}} P50",
+          "expr": "avg by (node_name, rpc_type) (restate_ingress_request_duration_seconds{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=\"0.5\"})",
+          "legendFormat": "{{node_name}} {{rpc_type}} P50",
           "refId": "A"
         },
         {
@@ -740,12 +740,12 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "avg by (node_name) (restate_ingress_request_duration_seconds{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=\"0.99\"})",
-          "legendFormat": "{{node_name}} P99",
+          "expr": "avg by (node_name, rpc_type) (restate_ingress_request_duration_seconds{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=\"0.99\"})",
+          "legendFormat": "{{node_name}} {{rpc_type}} P99",
           "refId": "B"
         }
       ],
-      "title": "HTTP Latency by Node",
+      "title": "HTTP Latency by Node and Type",
       "type": "timeseries"
     },
     {
