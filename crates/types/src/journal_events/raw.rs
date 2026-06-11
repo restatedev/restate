@@ -80,6 +80,7 @@ fn decode(ty: EventType, value: Bytes) -> Result<Event, EventDecodingError> {
         EventType::Suspended => Ok(Event::Suspended(
             pb::SuspendedEvent::decode(value)?.try_into()?,
         )),
+        EventType::Killed => Ok(Event::Killed(pb::KilledEvent::decode(value)?.try_into()?)),
         EventType::Unknown => Ok(Event::Unknown),
     }
 }
@@ -97,6 +98,10 @@ fn encode(event: Event) -> RawEvent {
         Event::Suspended(e) => RawEvent::new(
             EventType::Suspended,
             pb::SuspendedEvent::from(e).encode_to_vec().into(),
+        ),
+        Event::Killed(e) => RawEvent::new(
+            EventType::Killed,
+            pb::KilledEvent::from(e).encode_to_vec().into(),
         ),
         Event::Unknown => RawEvent::unknown(),
     }
@@ -313,6 +318,24 @@ mod pb {
             }
 
             f
+        }
+    }
+
+    impl From<event::KilledEvent> for KilledEvent {
+        fn from(event::KilledEvent { last_failure }: event::KilledEvent) -> Self {
+            KilledEvent {
+                last_failure: last_failure.map(Into::into),
+            }
+        }
+    }
+
+    impl TryFrom<KilledEvent> for event::KilledEvent {
+        type Error = anyhow::Error;
+
+        fn try_from(KilledEvent { last_failure }: KilledEvent) -> Result<Self, Self::Error> {
+            Ok(event::KilledEvent {
+                last_failure: last_failure.map(|f| f.try_into()).transpose()?,
+            })
         }
     }
 
