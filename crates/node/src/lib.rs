@@ -301,7 +301,6 @@ impl Node {
                 .record_size_limit(config.ingress.request_size_limit())
                 .connection_retry_policy(config.ingress.ingestion.connection_retry_policy.clone())
                 .swimlane(Swimlane::IngressData)
-                .sequential_mode(config.ingress.ingestion.sequential_mode)
                 .build()
                 .expect("Ingestion session options to build"),
         );
