@@ -11,6 +11,8 @@
 mod chunks_size;
 mod client;
 mod session;
+#[cfg(test)]
+mod stress_test;
 
 pub use client::{IngestFuture, IngestionClient, IngestionError};
 pub use session::{
