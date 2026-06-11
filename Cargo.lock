@@ -9035,6 +9035,8 @@ dependencies = [
  "regex-syntax",
  "reqwest 0.12.28",
  "ring",
+ "rust-librocksdb-sys",
+ "rust-rocksdb",
  "rustix",
  "rustls",
  "rustls-pki-types",
@@ -9223,6 +9225,7 @@ dependencies = [
  "libc",
  "libz-sys",
  "lz4-sys",
+ "pkg-config",
  "tikv-jemalloc-sys",
  "zstd-sys",
 ]
