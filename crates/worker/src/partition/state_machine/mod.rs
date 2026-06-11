@@ -3028,8 +3028,18 @@ impl<S> StateMachineApplyContext<'_, S> {
                 return Ok(());
             };
 
-            if let ResponseResult::Failure(_) = &response_result {
-                end_status = vqueue_table::Status::Failed;
+            if let ResponseResult::Failure(e) = &response_result {
+                if e.code() == restate_types::errors::codes::ABORTED {
+                    // special handling for cancel/kill. Definitely not ideal, but the current
+                    // design leaves me with no other options. In practice, to distinguish between
+                    // cancel and kill, the flavor will be used (in vqueues) to make the distinction.
+                    //
+                    // Kill is always passed in `flavor` but cancel must be deduced from the aborted
+                    // code.
+                    end_status = vqueue_table::Status::Cancelled;
+                } else {
+                    end_status = vqueue_table::Status::Failed;
+                }
             }
 
             // Send responses out
