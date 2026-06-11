@@ -18,7 +18,9 @@ mod tests {
     use super::*;
 
     use futures::{FutureExt, StreamExt};
+    use restate_types::Scope;
     use restate_types::identifiers::InvocationId;
+    use restate_types::invocation::InvocationTarget;
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -55,6 +57,37 @@ mod tests {
         assert!(queue.next().await.is_some());
         assert!(queue.next().await.is_some());
         assert!(queue.next().await.is_some());
+
+        assert!(queue.is_empty());
+        assert_eq!(queue.next().now_or_never(), None);
+    }
+
+    /// Regression test for <https://github.com/restatedev/restate/issues/4910>: spilling
+    /// [`InvocationTarget`] to disk panicked because its optional scope field was skipped during
+    /// serialization, which bincode cannot handle.
+    #[tokio::test]
+    async fn serde_invocation_target() {
+        let temp_dir = tempdir().unwrap();
+        let mut queue = SegmentQueue::new(temp_dir.path(), 1);
+
+        let targets = vec![
+            InvocationTarget::mock_service(),
+            InvocationTarget::mock_virtual_object(),
+            InvocationTarget::mock_workflow(),
+            InvocationTarget::scoped_service(
+                "MyService",
+                "myHandler",
+                Scope::try_non_interned("my-scope").unwrap(),
+            ),
+        ];
+
+        for target in &targets {
+            queue.enqueue(target.clone()).await;
+        }
+
+        for target in targets {
+            assert_eq!(queue.next().await, Some(target));
+        }
 
         assert!(queue.is_empty());
         assert_eq!(queue.next().now_or_never(), None);
