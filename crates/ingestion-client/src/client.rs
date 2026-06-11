@@ -497,6 +497,7 @@ mod test {
     // documented in `connected_pipelining`. This pins that a second batch reaches the wire before
     // the head batch is acknowledged, and that every batch carries the leader epoch.
     #[test(restate_core::test(start_paused = true))]
+    #[ignore = "Pipelining is disabled"]
     async fn pipelines_multiple_unacked_batches() {
         let mut buf = BytesMut::new();
         let (mut incoming, mut client) = init_env(1024).await;
