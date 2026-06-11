@@ -162,7 +162,6 @@ where
                 .connection_retry_policy(config.worker.shuffle.connection_retry_policy.clone())
                 .record_size_limit(config.networking.message_size_limit())
                 .swimlane(Swimlane::IngressData)
-                .sequential_mode(config.worker.shuffle.sequential_mode)
                 .build()
                 .expect("Ingestion session options to build"),
         );

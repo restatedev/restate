@@ -199,7 +199,6 @@ impl Default for WorkerOptions {
                 request_batch_size: NonZeroByteCount::new(
                     NonZeroUsize::new(50 * 1024).expect("non zero"),
                 ),
-                sequential_mode: false,
             },
             data_service_memory_limit: NonZeroByteCount::new(
                 NonZeroUsize::new(256 * 1024 * 1024).unwrap(),
