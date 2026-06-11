@@ -2281,6 +2281,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         self.end_invocation(
             invocation_id,
             metadata,
+            Some(TerminationFlavor::Kill),
             Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
         )
         .await?;
@@ -2318,6 +2319,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         self.end_invocation(
             invocation_id,
             metadata,
+            Some(TerminationFlavor::Kill),
             Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
         )
         .await?;
@@ -2855,6 +2857,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                         .into_invocation_metadata()
                         .expect("Must be present if status is invoked"),
                     None,
+                    None,
                 )
                 .await?;
             }
@@ -2864,6 +2867,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     invocation_status
                         .into_invocation_metadata()
                         .expect("Must be present if status is invoked"),
+                    None,
                     Some(ResponseResult::Failure(e)),
                 )
                 .await?;
@@ -2959,10 +2963,14 @@ impl<S> StateMachineApplyContext<'_, S> {
     }
 
     /// TODO(slinkydeveloper) move this to lifecycle command
+    ///
+    /// `flavor` lets us know how the invocation ended. If `flavor` is `None`,
+    /// then we determine the termination status based on the `response_result_override`.
     async fn end_invocation(
         &mut self,
         invocation_id: InvocationId,
         invocation_metadata: InFlightInvocationMetadata,
+        flavor: Option<TerminationFlavor>,
         // If given, this will override any Output Entry available in the journal table
         response_result_override: Option<ResponseResult>,
     ) -> Result<(), Error>
@@ -3020,8 +3028,18 @@ impl<S> StateMachineApplyContext<'_, S> {
                 return Ok(());
             };
 
-            if let ResponseResult::Failure(_) = &response_result {
-                end_status = vqueue_table::Status::Failed;
+            if let ResponseResult::Failure(e) = &response_result {
+                if e.code() == restate_types::errors::codes::ABORTED {
+                    // special handling for cancel/kill. Definitely not ideal, but the current
+                    // design leaves me with no other options. In practice, to distinguish between
+                    // cancel and kill, the flavor will be used (in vqueues) to make the distinction.
+                    //
+                    // Kill is always passed in `flavor` but cancel must be deduced from the aborted
+                    // code.
+                    end_status = vqueue_table::Status::Cancelled;
+                } else {
+                    end_status = vqueue_table::Status::Failed;
+                }
             }
 
             // Send responses out
@@ -3096,6 +3114,13 @@ impl<S> StateMachineApplyContext<'_, S> {
             };
             let record_unique_ts =
                 UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
+
+            // Make sure we report cancel/killed correctly.
+            end_status = match flavor {
+                Some(TerminationFlavor::Cancel) => vqueue_table::Status::Cancelled,
+                Some(TerminationFlavor::Kill) => vqueue_table::Status::Killed,
+                None => end_status,
+            };
 
             VQueue::get(
                 &vqueue_id,
