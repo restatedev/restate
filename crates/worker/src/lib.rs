@@ -179,6 +179,7 @@ where
             SnapshotRepository::new_from_config(
                 snapshots_options,
                 config.worker.storage.snapshots_staging_dir(),
+                metadata_store_client.clone(),
             )
             .await
             .map_err(BuildError::SnapshotRepository)?,
