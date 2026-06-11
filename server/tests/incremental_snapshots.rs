@@ -42,6 +42,8 @@ use restate_types::protobuf::cluster::node_state::State;
 use restate_types::replication::ReplicationProperty;
 use restate_types::retries::RetryPolicy;
 
+const TEST_LOG_FILTER: &str = "warn,restate=debug";
+
 #[restate_core::test(flavor = "multi_thread", worker_threads = 4)]
 async fn incremental_snapshot_cleanup() -> googletest::Result<()> {
     const RETAIN_SNAPSHOTS: usize = 5;
@@ -54,7 +56,7 @@ async fn incremental_snapshot_cleanup() -> googletest::Result<()> {
     let mut base_config = Configuration::new_unix_sockets();
     base_config.common.default_num_partitions = 1.try_into()?;
     base_config.bifrost.default_provider = Replicated;
-    base_config.common.log_filter = "warn,restate=debug".to_owned();
+    base_config.common.log_filter = TEST_LOG_FILTER.to_owned();
     base_config.common.log_format = LogFormat::Compact;
     base_config.common.log_disable_ansi_codes = true;
 
@@ -437,7 +439,7 @@ async fn sequential_snapshots() -> googletest::Result<()> {
     let mut base_config = Configuration::new_unix_sockets();
     base_config.common.default_num_partitions = 1.try_into()?;
     base_config.bifrost.default_provider = Replicated;
-    base_config.common.log_filter = "warn,restate=debug".to_owned();
+    base_config.common.log_filter = TEST_LOG_FILTER.to_owned();
     base_config.common.log_format = LogFormat::Compact;
     base_config.common.log_disable_ansi_codes = true;
 
@@ -666,7 +668,7 @@ async fn concurrent_snapshot_requests() -> googletest::Result<()> {
     let mut base_config = Configuration::new_unix_sockets();
     base_config.common.default_num_partitions = 1.try_into()?;
     base_config.bifrost.default_provider = Replicated;
-    base_config.common.log_filter = "warn,restate=debug".to_owned();
+    base_config.common.log_filter = TEST_LOG_FILTER.to_owned();
     base_config.common.log_format = LogFormat::Compact;
     base_config.common.log_disable_ansi_codes = true;
 
