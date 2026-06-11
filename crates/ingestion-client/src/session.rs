@@ -456,7 +456,7 @@ where
                 Ok(response) => {
                     // Handle any other response code as a connection loss
                     // and retry all inflight batches.
-                    warn!(
+                    debug!(
                         "Ingestion response error status from {}: {:?}",
                         connection.peer(),
                         response
@@ -470,7 +470,7 @@ where
                     // special case for load shedding we could
                     // throttle the stream a little bit then
                     // speed up over a period of time.
-                    warn!("Ingestion RPC error from {}: {}", connection.peer(), err);
+                    debug!("Ingestion RPC error from {}: {}", connection.peer(), err);
                     return;
                 }
             }
@@ -529,7 +529,7 @@ where
                 Ok(response) => {
                     // Handle any other response code as a connection loss
                     // and retry all inflight batches.
-                    warn!(
+                    debug!(
                         "Ingestion response error status from {}: {:?}",
                         connection.peer(),
                         response
@@ -543,7 +543,7 @@ where
                     // special case for load shedding we could
                     // throttle the stream a little bit then
                     // speed up over a period of time.
-                    warn!("Ingestion RPC error from {}: {}", connection.peer(), err);
+                    debug!("Ingestion RPC error from {}: {}", connection.peer(), err);
                     self.carry_over.push_back(batch);
                     break;
                 }
