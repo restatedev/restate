@@ -177,6 +177,13 @@ pub struct SessionOptions {
     /// Connection swimlane
     #[cfg_attr(any(test, feature = "test-util"), builder(default=Swimlane::General))]
     pub(crate) swimlane: Swimlane,
+    /// Force sequential mode. In sequential
+    /// mode, a max of a single batch can be
+    /// in-flight.
+    ///
+    /// Default: false
+    #[builder(default)]
+    pub(crate) sequential_mode: bool,
 }
 
 impl SessionOptions {
@@ -200,6 +207,7 @@ impl Default for SessionOptions {
                 None,
                 Some(Duration::from_secs(1)),
             ),
+            sequential_mode: false,
         }
     }
 }
@@ -371,7 +379,8 @@ where
         match result {
             Ok(connection) => {
                 debug!("Connection established to node {}", node_id);
-                if connection.protocol_version() <= ProtocolVersion::V3 {
+                if connection.protocol_version() <= ProtocolVersion::V3 || self.opts.sequential_mode
+                {
                     Some(SessionState::ConnectedSequentialMode { connection })
                 } else {
                     Some(SessionState::ConnectedPipeliningMode { connection })

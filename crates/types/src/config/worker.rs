@@ -191,14 +191,15 @@ impl Default for WorkerOptions {
                     NonZeroUsize::new(10 * 1024 * 1024).expect("non zero"),
                 ), // 10 MiB
                 connection_retry_policy: RetryPolicy::exponential(
-                    Duration::from_millis(10),
+                    Duration::from_millis(250),
                     2.0,
                     None,
-                    Some(Duration::from_secs(1)),
+                    Some(Duration::from_secs(3)),
                 ),
                 request_batch_size: NonZeroByteCount::new(
                     NonZeroUsize::new(50 * 1024).expect("non zero"),
                 ),
+                sequential_mode: false,
             },
             data_service_memory_limit: NonZeroByteCount::new(
                 NonZeroUsize::new(256 * 1024 * 1024).unwrap(),
