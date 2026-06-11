@@ -8332,6 +8332,7 @@ dependencies = [
  "restate-workspace-hack",
  "rlimit",
  "rustls",
+ "serde",
  "serde_json",
  "tempfile",
  "test-log",
