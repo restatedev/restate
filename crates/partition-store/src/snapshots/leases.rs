@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -54,6 +54,15 @@ pub const LEASE_SAFETY_MARGIN: Duration = Duration::from_mins(1);
 /// expiry to ensure smooth operations, but ideally long enough that most operations complete before
 /// we have to renew.
 pub const LEASE_RENEWAL_INTERVAL: Duration = Duration::from_mins(2);
+
+/// Outcome of `SnapshotLeaseGuard::start_renewal_task`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenewalTaskStart {
+    /// A new renewal task was spawned by this call.
+    Started,
+    /// A renewal task was already running for this guard; no new task was spawned.
+    AlreadyRunning,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum LeaseError {
@@ -114,15 +123,23 @@ impl SnapshotLeaseValue {
         }
     }
 
-    fn expired(holder: GenerationalNodeId, lease_id: Ulid) -> Self {
+    /// Constructs a marker value used by the Drop path to release a lease via a
+    /// versioned CAS. The caller must pass the version they expect the metadata
+    /// store slot to currently hold; the resulting record will carry
+    /// `version.next()` once `put` returns Ok.
+    fn expired(holder: GenerationalNodeId, lease_id: Ulid, current_version: Version) -> Self {
         Self {
             holder,
             lease_id,
             expires_at: MillisSinceEpoch::UNIX_EPOCH,
-            version: Version::MIN,
+            version: current_version.next(),
         }
     }
 
+    /// Returns true at and after `expires_at`. Used by acquirers to decide
+    /// whether an existing slot is up for takeover. The current holder's
+    /// `is_valid` returns false `LEASE_SAFETY_MARGIN` earlier so that operations
+    /// drain before any other node can take over.
     fn is_expired(&self, clock: &impl Clock) -> bool {
         clock.recent() >= self.expires_at
     }
@@ -242,12 +259,13 @@ impl<C: Clock + Clone + Send + Sync + 'static> SnapshotLeaseGuard<C> {
 
     /// Start a background task that renews the lease at a fixed renewal interval.
     /// The task holds a weak reference to the lease and stops when the guard is dropped.
-    /// The guard ensures that at most one renewal task is spawned.
-    pub fn start_renewal_task(self: &Arc<Self>) -> Result<(), ShutdownError> {
+    /// The guard ensures that at most one renewal task is spawned per guard. Subsequent calls
+    /// after the first successful start return `Ok(RenewalTaskStart::AlreadyRunning)`.
+    pub fn start_renewal_task(self: &Arc<Self>) -> Result<RenewalTaskStart, ShutdownError> {
         match self.as_ref() {
             Self::Lease(g) => g.start_renewal_task(Arc::downgrade(self)),
             #[cfg(any(test, feature = "test-util"))]
-            Self::NoOp(_) => Ok(()),
+            Self::NoOp(_) => Ok(RenewalTaskStart::Started),
         }
     }
 
@@ -297,7 +315,6 @@ mod inner {
         expires_at: AtomicU64,
         metadata_store_client: MetadataStoreClient,
         version: Mutex<Version>,
-        released: AtomicBool,
         renewal_task: Mutex<Option<TaskHandle<()>>>,
         pub(super) lease_lost: CancellationToken,
         clock: C,
@@ -318,7 +335,6 @@ mod inner {
                 expires_at: AtomicU64::new(lease.expires_at.as_u64()),
                 metadata_store_client,
                 version: Mutex::new(version),
-                released: AtomicBool::new(false),
                 renewal_task: Mutex::new(None),
                 lease_lost: CancellationToken::new(),
                 clock,
@@ -329,10 +345,25 @@ mod inner {
             MillisSinceEpoch::new(self.expires_at.load(Ordering::Acquire))
         }
 
+        /// Returns true while the current time is strictly before
+        /// `expires_at - LEASE_SAFETY_MARGIN` - i.e. the lease holder still has
+        /// useful work time before they must stop and let the lease expire.
+        ///
+        /// Acquirers, by contrast, use [`SnapshotLeaseValue::is_expired`] which
+        /// triggers takeover only at the true `expires_at`. The
+        /// `LEASE_SAFETY_MARGIN` gap between the two predicates is intentional:
+        /// it gives the current holder time to drain its operation while
+        /// preventing a different node from believing the lease is up for grabs.
         pub(super) fn is_valid(&self) -> bool {
             self.clock.recent() + LEASE_SAFETY_MARGIN < self.expires_at()
         }
 
+        #[instrument(
+            level = "debug",
+            skip_all,
+            fields(partition_id = %self.partition_id, lease_id = %self.lease_id),
+            err,
+        )]
         pub(super) async fn renew(&self) -> Result<(), LeaseError> {
             if self.lease_lost.is_cancelled() {
                 debug!(
@@ -388,14 +419,19 @@ mod inner {
         pub(super) fn start_renewal_task(
             &self,
             guard: Weak<SnapshotLeaseGuard<C>>,
-        ) -> Result<(), ShutdownError> {
+        ) -> Result<RenewalTaskStart, ShutdownError> {
             let mut renewal_task = self.renewal_task.lock();
             if renewal_task.is_some() {
-                return Ok(());
+                return Ok(RenewalTaskStart::AlreadyRunning);
             }
 
             let lease_lost = self.lease_lost.clone();
             let partition_id = self.partition_id;
+
+            let retry_policy: RetryPolicy = Configuration::pinned()
+                .common
+                .network_error_retry_policy
+                .clone();
 
             let handle = TaskCenter::current().spawn_unmanaged_child(
                 TaskKind::Disposable,
@@ -411,7 +447,19 @@ mod inner {
                                 };
                                 match guard.as_ref() {
                                     SnapshotLeaseGuard::Lease(g) => {
-                                        if let Err(e) = g.renew().await {
+                                        // Retry transient metadata-store errors while the lease
+                                        // is still valid. A single network blip should not cost
+                                        // us the lease - acquire uses the same policy.
+                                        let result = retry_policy
+                                            .clone()
+                                            .retry_if(
+                                                || async { g.renew().await },
+                                                |e: &LeaseError| {
+                                                    e.retryable() && g.is_valid()
+                                                },
+                                            )
+                                            .await;
+                                        if let Err(e) = result {
                                             warn!(%partition_id, error = %e, "Lease renewal failed");
                                             g.lease_lost.cancel();
                                             break;
@@ -426,61 +474,61 @@ mod inner {
                 },
             )?;
             *renewal_task = Some(handle);
-            Ok(())
+            Ok(RenewalTaskStart::Started)
         }
 
         fn spawn_release_task(&mut self) {
-            if !self.released.swap(true, Ordering::AcqRel) {
-                let client = self.metadata_store_client.clone();
-                let partition_id = self.partition_id;
-                let version = *self.version.lock();
-                let lease_id = self.lease_id;
-                let holder = self.holder;
+            let client = self.metadata_store_client.clone();
+            let partition_id = self.partition_id;
+            let version = *self.version.lock();
+            let lease_id = self.lease_id;
+            let holder = self.holder;
 
-                if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                    handle.spawn(async move {
-                        let key = lease_key(partition_id);
-                        let expired = SnapshotLeaseValue::expired(holder, lease_id)
-                            .with_version(version.next());
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    let key = lease_key(partition_id);
+                    let expired = SnapshotLeaseValue::expired(holder, lease_id, version);
 
-                        match client
-                            .put(key, &expired, Precondition::MatchesVersion(version))
-                            .await
-                        {
-                            Ok(()) => {
-                                debug!(%partition_id, "Lease released via Drop");
-                            }
-                            Err(WriteError::FailedPrecondition(_)) => {
-                                debug!(
-                                    %partition_id,
-                                    "Lease release via Drop failed: version mismatch (lease was likely taken over)"
-                                );
-                            }
-                            Err(err) => {
-                                warn!(
-                                    %partition_id,
-                                    %err,
-                                    "Lease release via Drop failed"
-                                );
-                            }
+                    match client
+                        .put(key, &expired, Precondition::MatchesVersion(version))
+                        .await
+                    {
+                        Ok(()) => {
+                            debug!(%partition_id, %lease_id, "Lease released via Drop");
                         }
-                    });
-                    debug!(
-                        partition_id = %partition_id,
-                        "Snapshot lease dropped, spawned async release"
-                    );
-                } else {
-                    warn!(
-                        partition_id = %partition_id,
-                        "Snapshot lease dropped without release - no runtime available"
-                    );
-                }
+                        Err(WriteError::FailedPrecondition(_)) => {
+                            debug!(
+                                %partition_id,
+                                %lease_id,
+                                %holder,
+                                "Lease release via Drop failed: version mismatch (lease was likely taken over)"
+                            );
+                        }
+                        Err(err) => {
+                            warn!(
+                                %partition_id,
+                                %lease_id,
+                                %holder,
+                                %err,
+                                "Lease release via Drop failed"
+                            );
+                        }
+                    }
+                });
+                debug!(
+                    partition_id = %partition_id,
+                    "Snapshot lease dropped, spawned async release"
+                );
+            } else {
+                warn!(
+                    partition_id = %partition_id,
+                    "Snapshot lease dropped without release - no runtime available"
+                );
             }
         }
 
         #[cfg(test)]
         pub(super) fn test_mark_released(&self) {
-            self.released.store(true, Ordering::Release);
             self.lease_lost.cancel();
         }
 
@@ -932,8 +980,16 @@ mod tests {
 
         assert!(guard.is_valid());
 
-        guard.start_renewal_task().expect("starts renewal task");
-        guard.start_renewal_task().expect("no-op");
+        assert_eq!(
+            guard.start_renewal_task().expect("starts renewal task"),
+            RenewalTaskStart::Started,
+        );
+        assert_eq!(
+            guard
+                .start_renewal_task()
+                .expect("second call must succeed"),
+            RenewalTaskStart::AlreadyRunning,
+        );
 
         let initial_deadline = guard.operation_deadline();
 
@@ -1051,7 +1107,10 @@ mod tests {
                 .await
                 .expect("acquire should succeed"),
         );
-        guard.start_renewal_task().expect("should start renewal");
+        assert_eq!(
+            guard.start_renewal_task().expect("should start renewal"),
+            RenewalTaskStart::Started,
+        );
         let initial_deadline = guard.operation_deadline();
 
         // the mock work future sleeps slightly longer than the renewal interval
@@ -1095,6 +1154,50 @@ mod tests {
             .await;
 
         assert_eq!(result, None, "Work should be aborted at deadline");
+    }
+
+    /// If the lease is lost mid-operation (renewal failure, takeover by another node, etc.),
+    /// `run_under_lease` must abort the in-flight work and return `None` instead of letting
+    /// it finish under an invalid lease.
+    #[restate_core::test(start_paused = true)]
+    async fn run_under_lease_aborts_when_lease_lost_mid_operation() {
+        let env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let clock = TokioClock::new();
+        let manager = SnapshotLeaseManager::new_with_clock(
+            env.metadata_store_client.clone(),
+            GenerationalNodeId::new(1, 1),
+            clock,
+        );
+
+        let guard = Arc::new(
+            manager
+                .acquire(PartitionId::MIN)
+                .await
+                .expect("acquire should succeed"),
+        );
+
+        let lease_lost = guard.lease_lost();
+        let cancel_guard = guard.clone();
+
+        // Cancel the lease shortly into the work, simulating renewal-task failure.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            cancel_guard.test_mark_released();
+        });
+
+        let result = guard
+            .run_under_lease(async {
+                // Work that would otherwise complete well within the lease duration.
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                42
+            })
+            .await;
+
+        assert!(lease_lost.is_cancelled());
+        assert_eq!(
+            result, None,
+            "Work must be aborted once the lease is signalled lost"
+        );
     }
 
     /// Handy for paused tokio tests, this clock reflects `tokio::time::advance()` calls eliminating
