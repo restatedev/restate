@@ -543,6 +543,7 @@ mod test {
     // retry), so out-of-order appends that the dedup high-water-mark would silently drop cannot
     // happen.
     #[test(restate_core::test(start_paused = true))]
+    #[ignore = "Pipelining is disabled"]
     async fn leadership_change_replays_inflight_in_order() {
         // Cap fits exactly one record, so r0 and r1 form two separate batches.
         let mut buf = BytesMut::new();
