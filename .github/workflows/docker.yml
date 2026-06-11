@@ -98,9 +98,32 @@ jobs:
         with:
           tool: cargo-hakari
 
+      # This step has hung intermittently in CI for 28-70 min with no cargo output,
+      # so the stalled phase is unknown. The timeout caps how long a future stall
+      # can hold the runner; the verbose env and pre-kill snapshot exist so the
+      # next hang leaves enough trace to target a real fix.
       - name: Disable hakari
         if: ${{ hashFiles('.config/hakari.toml') != '' }}
-        run: cargo hakari disable
+        timeout-minutes: 5
+        env:
+          CARGO_TERM_VERBOSE: "true"
+          CARGO_HTTP_DEBUG: "true"
+          CARGO_LOG: "cargo::core::package=info,cargo::ops::registry=info,cargo::sources::registry=info,cargo::sources::git=info,cargo::util::network=info"
+        run: |
+          (
+            sleep 270
+            echo "::group::diagnostic snapshot at 4m30s (cargo still running)"
+            echo "--- process tree (pid/ppid/elapsed/state/wait-channel/cmd) ---"
+            ps -eo pid,ppid,etime,stat,wchan:25,args 2>/dev/null \
+              | awk 'NR==1 || /cargo|hakari|[g]it/'
+            echo "--- open TCP sockets for cargo/git ---"
+            (ss -tnp 2>/dev/null || netstat -tnp 2>/dev/null) \
+              | awk 'NR<=2 || /cargo|hakari|[g]it/'
+            echo "::endgroup::"
+          ) &
+          watchdog=$!
+          trap 'kill "$watchdog" 2>/dev/null; wait "$watchdog" 2>/dev/null || true' EXIT
+          cargo hakari disable
 
       # this is needed to be able to load and push a multiplatform image in one step
       - name: Set up Docker containerd snapshotter
