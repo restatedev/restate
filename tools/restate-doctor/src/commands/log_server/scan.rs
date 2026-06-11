@@ -56,6 +56,12 @@ pub struct Scan {
     #[arg(long, default_value = "0")]
     pub from_offset: u32,
 
+    /// Only show records created at or after this RFC3339 timestamp
+    /// (e.g. 2026-06-10T12:00:00Z). Applies while scanning, so combine with
+    /// --loglet-id/--log-id to avoid full-store scans.
+    #[arg(long)]
+    pub from_time: Option<jiff::Timestamp>,
+
     /// Maximum number of records to display
     #[arg(long, short = 'n', default_value = "20")]
     pub limit: usize,
@@ -93,6 +99,7 @@ pub async fn run_scan(global_opts: &GlobalOpts, cmd: &Scan) -> Result<()> {
     };
 
     let from_offset = LogletOffset::new(cmd.from_offset);
+    let from_time_nanos: Option<i128> = cmd.from_time.map(|ts| ts.as_nanosecond());
     let mut records = Vec::new();
     let mut skipped = 0;
 
@@ -168,6 +175,17 @@ pub async fn run_scan(global_opts: &GlobalOpts, cmd: &Scan) -> Result<()> {
             }
         }
 
+        // Time filter: skip records created before --from-time. Records whose
+        // header fails to decode are kept so the decode error is surfaced.
+        if let Some(threshold) = from_time_nanos
+            && let Ok(decoder) = DataRecordDecoder::new(value_bytes)
+            && let Ok(created_at) = decoder.created_at()
+            && (created_at.as_u64() as i128) < threshold
+        {
+            iter.next();
+            continue;
+        }
+
         // Pagination: skip
         if skipped < cmd.skip {
             skipped += 1;
@@ -203,6 +221,9 @@ pub async fn run_scan(global_opts: &GlobalOpts, cmd: &Scan) -> Result<()> {
             LogletFilter::All => "all loglets".to_string(),
         },
     );
+    if let Some(from_time) = cmd.from_time {
+        summary.add_kv_row("From time:", from_time.to_string());
+    }
     if truncated {
         summary.add_kv_row(
             "Records:",
