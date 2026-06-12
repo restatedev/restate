@@ -1246,20 +1246,6 @@ pub struct IngestionOptions {
     ///
     /// Defaults to 50 KiB.
     pub request_batch_size: NonZeroByteCount,
-
-    /// # Force Sequential Ingestion Mode
-    ///
-    /// By default, the ingestion client pipelines batches, keeping multiple
-    /// uncommitted batches in flight at once for higher throughput. When this
-    /// is enabled, the client instead runs in sequential mode: it sends one
-    /// batch and waits for it to be committed before sending the next, so at
-    /// most a single uncommitted batch is in flight at any time.
-    ///
-    /// Note that sequential mode is always used when talking to nodes running
-    /// protocol version V3 or older, regardless of this setting.
-    ///
-    /// Default: false
-    pub sequential_mode: bool,
 }
 
 impl Default for IngestionOptions {
@@ -1277,7 +1263,6 @@ impl Default for IngestionOptions {
             request_batch_size: NonZeroByteCount::new(
                 NonZeroUsize::new(50 * 1024).expect("non zero"),
             ),
-            sequential_mode: false,
         }
     }
 }
