@@ -25,7 +25,7 @@ pub use crate::protobuf::common::ProtocolVersion;
 pub use crate::protobuf::common::ServiceTag;
 
 pub const MIN_SUPPORTED_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V2;
-pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V4;
+pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V3;
 
 pub trait Service: Send + Unpin + 'static {
     const TAG: ServiceTag;
