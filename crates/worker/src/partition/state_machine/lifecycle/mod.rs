@@ -16,6 +16,7 @@ mod notify_get_invocation_output_response;
 mod notify_invocation_response;
 mod notify_signal;
 mod notify_sleep_completion;
+mod pause_invocation_rpc;
 mod paused;
 mod pinned_deployment;
 mod purge;
@@ -34,6 +35,7 @@ pub(super) use notify_get_invocation_output_response::OnNotifyGetInvocationOutpu
 pub(super) use notify_invocation_response::OnNotifyInvocationResponse;
 pub(super) use notify_signal::OnNotifySignalCommand;
 pub(super) use notify_sleep_completion::OnNotifySleepCompletionCommand;
+pub(super) use pause_invocation_rpc::OnInvocationPauseRpcRequest;
 pub(super) use paused::OnPausedCommand;
 pub(super) use pinned_deployment::OnPinnedDeploymentCommand;
 pub(super) use purge::OnPurgeCommand;

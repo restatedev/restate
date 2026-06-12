@@ -23,8 +23,9 @@ use restate_types::{
 use super::sealed::Sealed;
 use super::{Command, CommandKind};
 pub use crate::control::UpsertRuleBookCommand;
+pub use crate::invocation::PauseInvocationRpcRequest;
 use crate::timer;
-// Re-epxort vqueues commands
+// Re-export vqueues commands
 pub use crate::vqueues::{VQueuesPauseCommand, VQueuesResumeCommand};
 
 pub use crate::control::{
@@ -466,4 +467,9 @@ command! {
 command! {
     @kind=CommandKind::VQueuesResume,
     @command=VQueuesResumeCommand
+}
+
+command! {
+    @kind=CommandKind::PauseInvocationRpcRequest,
+    @command=PauseInvocationRpcRequest
 }
