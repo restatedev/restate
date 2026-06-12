@@ -59,6 +59,7 @@ pub struct HyperServerIngress<Schemas, Dispatcher> {
     // Parameters to build the layers
     schemas: Live<Schemas>,
     dispatcher: Dispatcher,
+    agent_audit: bool,
 
     health: HealthStatus<IngressStatus>,
 }
@@ -83,6 +84,7 @@ where
             ingress_options.http2_max_concurrent_streams(),
             schemas,
             dispatcher,
+            ingress_options.agent_audit,
             health,
         )
     }
@@ -100,10 +102,10 @@ where
         http2_max_concurrent_streams: Option<NonZeroU32>,
         schemas: Live<Schemas>,
         dispatcher: Dispatcher,
+        agent_audit: bool,
         health: HealthStatus<IngressStatus>,
     ) -> Self {
         health.update(IngressStatus::StartingUp);
-
         Self {
             listeners,
             concurrency_limit,
@@ -111,6 +113,7 @@ where
             http2_max_concurrent_streams,
             schemas,
             dispatcher,
+            agent_audit,
             health,
         }
     }
@@ -129,11 +132,13 @@ where
             http2_max_concurrent_streams,
             schemas,
             dispatcher,
+            agent_audit,
             health,
         } = self;
 
         // Prepare the handler
         let service = ServiceBuilder::new()
+            .layer(layers::audit_header_stripper::AuditHeaderStripperLayer::new(agent_audit))
             .layer(
                 TraceLayer::new_for_http()
                     .make_span_with(|request: &Request<_>| {
@@ -434,6 +439,7 @@ mod tests {
             None,
             Live::from_value(mock_schemas()),
             Arc::new(mock_request_dispatcher),
+            false,
             health.ingress_status(),
         );
         TaskCenter::spawn(TaskKind::SystemService, "ingress", ingress.run()).unwrap();
