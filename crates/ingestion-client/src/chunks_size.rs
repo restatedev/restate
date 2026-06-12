@@ -30,6 +30,7 @@ impl<F, S: Stream> ChunksSize<F, S>
 where
     F: Fn(&S::Item) -> usize,
 {
+    #[allow(dead_code)]
     pub fn new(stream: S, max_size: usize, size_fn: F) -> Self {
         Self::with_buffered(stream, max_size, size_fn, Vec::default())
     }
