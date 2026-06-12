@@ -159,6 +159,15 @@ pub(crate) enum InvokeType {
     Send,
 }
 
+impl InvokeType {
+    pub(crate) const fn as_static_str(&self) -> &'static str {
+        match self {
+            InvokeType::Call => "call",
+            InvokeType::Send => "send",
+        }
+    }
+}
+
 pub(crate) struct ServiceRequestType {
     pub(crate) name: ServiceName,
     pub(crate) handler: String,

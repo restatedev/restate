@@ -204,6 +204,7 @@ where
         .with_scope(scope);
 
         let invocation_id = InvocationId::generate(&invocation_target, idempotency_key.as_deref());
+        let invoke_ty_str = invoke_ty.as_static_str();
 
         let result = async move {
             let ingress_span_context =
@@ -299,6 +300,7 @@ where
         histogram!(
             INGRESS_REQUEST_DURATION,
             "rpc.service" => service_name.to_string(),
+            "rpc.type" => invoke_ty_str,
         )
         .record(start_time.elapsed());
 
@@ -306,6 +308,7 @@ where
             INGRESS_REQUESTS,
             "status" => REQUEST_COMPLETED,
             "rpc.service" => service_name.to_string(),
+            "rpc.type" => invoke_ty_str,
         )
         .increment(1);
         result

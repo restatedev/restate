@@ -16,7 +16,8 @@ use restate_types::identifiers::{EntryIndex, InvocationId, PartitionProcessorRpc
 use restate_types::invocation::InvocationTarget;
 use restate_types::invocation::client::{
     CancelInvocationResponse, InvocationOutputResponse, KillInvocationResponse,
-    PurgeInvocationResponse, RestartAsNewInvocationResponse, ResumeInvocationResponse,
+    PauseInvocationResponse, PurgeInvocationResponse, RestartAsNewInvocationResponse,
+    ResumeInvocationResponse,
 };
 use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::message::MessageIndex;
@@ -104,6 +105,10 @@ pub enum Action {
     ForwardRestartAsNewInvocationResponse {
         request_id: PartitionProcessorRpcRequestId,
         response: RestartAsNewInvocationResponse,
+    },
+    ForwardPauseInvocationResponse {
+        request_id: PartitionProcessorRpcRequestId,
+        response: PauseInvocationResponse,
     },
     /// Forward a batch of rule-book diff entries to the leader's
     /// `UserLimiter` via the resource-manager mpsc. Emitted by
