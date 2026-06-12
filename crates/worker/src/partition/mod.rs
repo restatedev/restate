@@ -1112,7 +1112,7 @@ where
 
         if !self.is_targeted_to_me(&record.keys) {
             self.status.num_skipped_records += 1;
-            warn!(
+            debug!(
                 "Ignore message which is not targeted to me Partition Range: {:?} Key: {:?}, Header: {:?}",
                 self.key_filter,
                 record.keys,
@@ -1127,7 +1127,7 @@ where
         // deduplicate if deduplication information has been provided
         if let Some(dedup_information) = dedup_information {
             if Self::is_outdated_or_duplicate(&dedup_information, transaction).await? {
-                warn!(
+                debug!(
                     "Ignoring outdated or duplicate message: {:?}",
                     record.envelope.header()
                 );

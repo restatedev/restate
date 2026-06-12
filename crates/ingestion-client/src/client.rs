@@ -492,11 +492,156 @@ mod test {
         );
     }
 
-    // Pipelining is restored (#4879): on a V4 connection the session keeps multiple batches in
-    // flight at once. Ordering no longer relies on an at-most-one-in-flight cap — see the invariant
-    // documented in `connected_pipelining`. This pins that a second batch reaches the wire before
-    // the head batch is acknowledged, and that every batch carries the leader epoch.
+    // Sequential mode is the only mode the session runs today (see `connected_sequential_mode`):
+    // it keeps at most one batch in flight, sending the next batch only after the head is acked.
+    // This pins that invariant — the tail batch must not reach the wire while the head is unacked —
+    // and that every batch carries the leader epoch. It is the dual of the (ignored)
+    // `pipelines_multiple_unacked_batches`.
     #[test(restate_core::test(start_paused = true))]
+    async fn sequential_mode_one_batch_in_flight() {
+        let mut buf = BytesMut::new();
+        // Cap fits exactly one record, so r0 and r1 form two separate batches.
+        let one_record = InputRecord::from_str("r0")
+            .into_record(&mut buf)
+            .estimate_size();
+        let (mut incoming, mut client) = init_env(one_record).await;
+
+        // Queue both records before the session forms a batch: `ingest().await` does not yield to
+        // the session task, so both are in the channel when the chunker first runs.
+        let c0 = client.ingest(0, InputRecord::from_str("r0")).await.unwrap();
+        let c1 = client.ingest(0, InputRecord::from_str("r1")).await.unwrap();
+
+        // Only the head batch B1=[r0] reaches the wire; r1 is held back by the chunker.
+        let head = must_next(&mut incoming).await;
+        let (head_rx, head_body) = head.split();
+        assert_that!(
+            head_body.records,
+            all!(
+                len(eq(1)),
+                contains(eq(InputRecord::from_str("r0").into_record(&mut buf)))
+            )
+        );
+        assert_eq!(head_body.target_leader_epoch, Some(LeaderEpoch::INITIAL));
+
+        // While the head is unacked, the tail must not be sent. Advance time to let the session
+        // settle, then assert nothing else is on the wire.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(
+            incoming.next().now_or_never().is_none(),
+            "tail batch must not be sent before the head is acked"
+        );
+
+        // Ack the head; only now does the tail batch B2=[r1] reach the wire.
+        head_rx.send(ResponseStatus::Ack.into());
+        c0.await.expect("r0 commits");
+
+        let tail = must_next(&mut incoming).await;
+        let (tail_rx, tail_body) = tail.split();
+        assert_that!(
+            tail_body.records,
+            all!(
+                len(eq(1)),
+                contains(eq(InputRecord::from_str("r1").into_record(&mut buf)))
+            )
+        );
+        assert_eq!(tail_body.target_leader_epoch, Some(LeaderEpoch::INITIAL));
+
+        tail_rx.send(ResponseStatus::Ack.into());
+        c1.await.expect("r1 commits");
+    }
+
+    // Regression coverage for #4810 under sequential mode (the mode in force today): a leadership
+    // transition must not reorder or drop records. The head batch is rejected with
+    // `NotLeaderWithEpoch`; the session carries it over together with the record the chunker
+    // over-pulled, then replays both — in produced order — against the new epoch, still one batch
+    // at a time. Nothing is failed/cancelled (the Kafka ingress and shuffle have no cheap retry),
+    // so out-of-order appends the dedup high-water-mark would silently drop cannot happen. This is
+    // the sequential dual of the (ignored) `leadership_change_replays_inflight_in_order`.
+    #[test(restate_core::test(start_paused = true))]
+    async fn sequential_mode_leadership_change_replays_in_order() {
+        // Cap fits exactly one record, so r0 and r1 form two separate batches.
+        let mut buf = BytesMut::new();
+        let one_record = InputRecord::from_str("r0")
+            .into_record(&mut buf)
+            .estimate_size();
+        let (mut incoming, mut client, states, my_node_id) = init_env_with_states(one_record).await;
+
+        let c0 = client.ingest(0, InputRecord::from_str("r0")).await.unwrap();
+        let c1 = client.ingest(0, InputRecord::from_str("r1")).await.unwrap();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        // Sequential mode: only the head batch B1=[r0] is on the wire; r1 is held by the chunker.
+        let b1 = must_next(&mut incoming).await;
+        let (b1_rx, b1_body) = b1.split();
+        assert_that!(
+            b1_body.records,
+            all!(
+                len(eq(1)),
+                contains(eq(InputRecord::from_str("r0").into_record(&mut buf)))
+            )
+        );
+        assert_eq!(b1_body.target_leader_epoch, Some(LeaderEpoch::INITIAL));
+
+        // No second batch is in flight while the head is unacked.
+        assert!(
+            incoming.next().now_or_never().is_none(),
+            "tail batch must not be in flight under sequential mode"
+        );
+
+        // A new leader wins the election. Make routing observe the new epoch so the session can
+        // reconnect, then reject the head with the new epoch.
+        let new_epoch = LeaderEpoch::INITIAL.next();
+        let leadership_state = LeadershipState {
+            current_leader: my_node_id,
+            current_leader_epoch: new_epoch,
+        };
+        states.note_observed_leader(PartitionId::from(0), leadership_state);
+
+        b1_rx.send(
+            ResponseStatus::NotLeaderWithEpoch {
+                of: 0.into(),
+                last_seen_leadership_state: leadership_state,
+            }
+            .into(),
+        );
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        // Replay re-sends B1=[r0] then B2=[r1] in produced order at the new epoch — and still one
+        // at a time, so B2 only appears after B1 is acked.
+        let b1 = must_next(&mut incoming).await;
+        let (b1_rx, b1_body) = b1.split();
+        assert_that!(
+            b1_body.records,
+            all!(
+                len(eq(1)),
+                contains(eq(InputRecord::from_str("r0").into_record(&mut buf)))
+            )
+        );
+        assert_eq!(b1_body.target_leader_epoch, Some(new_epoch));
+        b1_rx.send(ResponseStatus::Ack.into());
+
+        let b2 = must_next(&mut incoming).await;
+        let (b2_rx, b2_body) = b2.split();
+        assert_that!(
+            b2_body.records,
+            all!(
+                len(eq(1)),
+                contains(eq(InputRecord::from_str("r1").into_record(&mut buf)))
+            )
+        );
+        assert_eq!(b2_body.target_leader_epoch, Some(new_epoch));
+        b2_rx.send(ResponseStatus::Ack.into());
+
+        // Nothing was failed/cancelled: both records eventually commit, in order.
+        c0.await.expect("r0 commits");
+        c1.await.expect("r1 commits");
+    }
+
+    // Pipelining is NOT implemented today — the session runs in sequential mode (see the
+    // `sequential_mode_*` tests above). This test is kept (ignored) because pipelining is expected
+    // to be re-introduced
+    #[test(restate_core::test(start_paused = true))]
+    #[ignore = "Pipelining is not implemented (expected to return, see #4879)"]
     async fn pipelines_multiple_unacked_batches() {
         let mut buf = BytesMut::new();
         let (mut incoming, mut client) = init_env(1024).await;
@@ -536,13 +681,8 @@ mod test {
         c1.await.expect("r1 commits");
     }
 
-    // Regression test for #4810 under restored pipelining (#4879): a leadership transition must not
-    // reorder records. With two batches in flight, a `NotLeaderWithEpoch` on the head causes the
-    // session to carry over *all* in-flight batches and replay them — in produced order — against
-    // the new epoch. Nothing is failed/cancelled (the Kafka ingress and shuffle have no cheap
-    // retry), so out-of-order appends that the dedup high-water-mark would silently drop cannot
-    // happen.
     #[test(restate_core::test(start_paused = true))]
+    #[ignore = "Pipelining is not implemented (expected to return, see #4879)"]
     async fn leadership_change_replays_inflight_in_order() {
         // Cap fits exactly one record, so r0 and r1 form two separate batches.
         let mut buf = BytesMut::new();
@@ -629,8 +769,4 @@ mod test {
         c0.await.expect("r0 commits");
         c1.await.expect("r1 commits");
     }
-
-    // Note: the ≤V3 sequential fallback (`connected_sequential_mode`) cannot be exercised here
-    // because the in-process test connection always negotiates `CURRENT_PROTOCOL_VERSION` (V4). Its
-    // carry-over/remainder handling mirrors the pipelining path covered above.
 }
