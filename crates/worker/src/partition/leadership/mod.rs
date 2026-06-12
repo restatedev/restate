@@ -844,7 +844,6 @@ impl<T> LeadershipState<T> {
     /// Forward externally-created records to this partition.
     pub async fn forward_many_with_callback<F>(
         &mut self,
-        target_leader_epoch: LeaderEpoch,
         records: impl ExactSizeIterator<Item = IngestRecord>,
         callback: F,
     ) where
@@ -855,15 +854,6 @@ impl<T> LeadershipState<T> {
                 PartitionProcessorRpcError::NotLeader(self.partition.partition_id),
             )),
             State::Leader(leader_state) => {
-                // Defensive check. Make sure that the target epoch
-                // matches the leader state epoch
-                if target_leader_epoch != leader_state.leader_epoch {
-                    callback(Err(PartitionProcessorRpcError::NotLeader(
-                        self.partition.partition_id,
-                    )));
-                    return;
-                }
-
                 leader_state
                     .forward_many_with_callback(records, callback)
                     .await;
