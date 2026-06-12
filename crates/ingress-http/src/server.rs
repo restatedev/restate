@@ -18,6 +18,7 @@ use http::{Request, Response};
 use hyper::body::Incoming;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
+use metrics::counter;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::either::Either;
 use tower::{ServiceBuilder, ServiceExt};
@@ -28,6 +29,7 @@ use tower_http::normalize_path::NormalizePathLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{Span, debug, info, info_span, instrument};
 
+use restate_core::network::hyper_error_status;
 use restate_core::{TaskCenter, TaskKind, cancellation_watcher};
 use restate_types::config::IngressOptions;
 use restate_types::errors::GenericError;
@@ -42,6 +44,7 @@ use restate_util_time::DurationExt;
 
 use super::*;
 use crate::handler::Handler;
+use crate::metric_definitions::{HTTP_CONNECTION_CREATED, HTTP_CONNECTION_DROPPED};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum IngressServerError {
@@ -260,6 +263,10 @@ where
             + 'static,
     {
         let connect_info = ConnectInfo::new(remote_peer);
+
+        info!("Connection opened, peer: {:?}", connect_info.address());
+        counter!(HTTP_CONNECTION_CREATED).increment(1);
+
         let io = TokioIo::new(stream);
         let handler = hyper_util::service::TowerToHyperService::new(handler.map_request(
             move |mut req: Request<Incoming>| {
@@ -272,6 +279,8 @@ where
         TaskCenter::spawn(TaskKind::Ingress, "ingress", async move {
             let shutdown = cancellation_watcher();
             let mut auto_connection = auto::Builder::new(TaskCenterExecutor);
+            auto_connection.http2().adaptive_window(true);
+
             if let Some(max_concurrent_streams) = http2_max_concurrent_streams {
                 auto_connection
                     .http2()
@@ -281,13 +290,19 @@ where
 
             tokio::select! {
                 res = serve_connection_fut => {
-                    if let Err(err) = res {
-                        if let Some(hyper_error) = err.downcast_ref::<hyper::Error>() {
-                            if hyper_error.is_incomplete_message() {
-                                debug!("Connection closed before request completed");
+                    match res {
+                        Ok(()) => {
+                            counter!(HTTP_CONNECTION_DROPPED, "status" => "success").increment(1);
+                        },
+                        Err(err) => {
+                            if let Some(hyper_error) = err.downcast_ref::<hyper::Error>() {
+                                let status = hyper_error_status(hyper_error);
+                                counter!(HTTP_CONNECTION_DROPPED, "status" => status).increment(1);
+                                debug!("Connection dropped: status={status}, err={hyper_error:?}");
+                            } else {
+                                counter!(HTTP_CONNECTION_DROPPED, "status" => "server-error").increment(1);
+                                debug!("Error when serving the connection: {:?}", err);
                             }
-                        } else {
-                            debug!("Error when serving the connection: {:?}", err);
                         }
                     }
                 }
