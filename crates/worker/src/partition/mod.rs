@@ -703,13 +703,13 @@ where
                         if let Some(announce_leader) = maybe_announce_leader {
                             // update partition store with latest epoch metadata
                             if let Some(current_config) = &announce_leader.current_config {
-                                let announced = CachedEpochMetadata {
-                                    version: announce_leader.epoch_version.unwrap(),
-                                    leader_node_id: announce_leader.node_id,
-                                    leader_epoch: announce_leader.leader_epoch,
-                                    current: current_config.to_current_replica_set_state(),
-                                    next: announce_leader.next_config.as_ref().map(|v| v.to_next_replica_set_state()),
-                                };
+                                    let announced = CachedEpochMetadata {
+                                        version: announce_leader.epoch_version.unwrap(),
+                                        leader_node_id: announce_leader.node_id,
+                                        leader_epoch: announce_leader.leader_epoch,
+                                        current: current_config.to_current_replica_set_state(),
+                                        next: announce_leader.next_config.as_ref().map(|v| v.to_next_replica_set_state()),
+                                    };
 
                                 if self.cached_epoch_metadata.as_ref().is_none_or(|c| c.version < announced.version) {
                                     transaction.put_partition_config_state(&announced)?;
@@ -1112,7 +1112,7 @@ where
 
         if !self.is_targeted_to_me(&record.keys) {
             self.status.num_skipped_records += 1;
-            warn!(
+            debug!(
                 "Ignore message which is not targeted to me Partition Range: {:?} Key: {:?}, Header: {:?}",
                 self.key_filter,
                 record.keys,
@@ -1127,7 +1127,7 @@ where
         // deduplicate if deduplication information has been provided
         if let Some(dedup_information) = dedup_information {
             if Self::is_outdated_or_duplicate(&dedup_information, transaction).await? {
-                warn!(
+                debug!(
                     "Ignoring outdated or duplicate message: {:?}",
                     record.envelope.header()
                 );
