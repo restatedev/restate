@@ -12,6 +12,9 @@
 /// the metrics' sink.
 use metrics::{Unit, describe_counter, describe_histogram};
 
+pub const HTTP_CONNECTION_CREATED: &str = "restate.ingress.http.connection_created.total";
+pub const HTTP_CONNECTION_DROPPED: &str = "restate.ingress.http.connection_dropped.total";
+
 pub const INGRESS_REQUESTS: &str = "restate.ingress.requests.total";
 // values of label `status` in INGRESS_REQUEST
 pub const REQUEST_ADMITTED: &str = "admitted";
@@ -30,5 +33,17 @@ pub(crate) fn describe_metrics() {
         INGRESS_REQUEST_DURATION,
         Unit::Seconds,
         "Total latency of Ingress request processing in seconds"
+    );
+
+    describe_counter!(
+        HTTP_CONNECTION_CREATED,
+        Unit::Count,
+        "Number of ingress incoming connections created"
+    );
+
+    describe_counter!(
+        HTTP_CONNECTION_DROPPED,
+        Unit::Count,
+        "Number of ingress incoming connections dropped"
     );
 }
