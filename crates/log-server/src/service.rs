@@ -10,27 +10,32 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use anyhow::Context;
+use metrics::gauge;
+use tokio::time::MissedTickBehavior;
 use tracing::{debug, instrument, warn};
 
 use restate_core::network::tonic_service_filter::{StatusInRange, TonicServiceFilter};
 use restate_core::network::{MessageRouterBuilder, NetworkServerBuilder};
-use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
+use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind, cancellation_watcher};
 use restate_metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};
-use restate_types::GenerationalNodeId;
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
+use restate_types::logs::metadata::{Logs, ProviderKind};
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::{NodesConfiguration, StorageState};
 use restate_types::protobuf::common::LogServerStatus;
+use restate_types::replicated_loglet::ReplicatedLogletParams;
+use restate_types::{GenerationalNodeId, PlainNodeId, Version, Versioned};
 
 use crate::error::LogServerBuildError;
 use crate::grpc_svc_handler::LogServerSvcHandler;
 use crate::logstore::LogStore;
 use crate::metadata::{ActiveWorkerMap, LogStoreMarker, LogletStateMap};
-use crate::metric_definitions::describe_metrics;
+use crate::metric_definitions::{LOG_SERVER_NODESET_MEMBERSHIPS, describe_metrics};
 use crate::network::RequestPump;
 use crate::rocksdb_logstore::{RocksDbLogStore, RocksDbLogStoreBuilder};
 
@@ -41,6 +46,23 @@ pub struct LogServerService {
     state_map: LogletStateMap,
     log_store: RocksDbLogStore,
     active_worker_map: ActiveWorkerMap,
+}
+
+const NODESET_MEMBERSHIP_METRIC_INTERVAL: Duration = Duration::from_secs(10);
+
+#[derive(Debug)]
+struct NodesetMembershipCache {
+    logs_version: Version,
+    memberships: usize,
+}
+
+impl Default for NodesetMembershipCache {
+    fn default() -> Self {
+        Self {
+            logs_version: Version::INVALID,
+            memberships: 0,
+        }
+    }
 }
 
 impl LogServerService {
@@ -135,7 +157,79 @@ impl LogServerService {
             ),
         )?;
 
+        let _ = TaskCenter::spawn(
+            TaskKind::LogServerRole,
+            "log-server-nodeset-membership-metrics",
+            Self::run_nodeset_membership_metrics(metadata),
+        )?;
+
         Ok(())
+    }
+
+    async fn run_nodeset_membership_metrics(metadata: Metadata) -> anyhow::Result<()> {
+        let mut interval = tokio::time::interval(NODESET_MEMBERSHIP_METRIC_INTERVAL);
+        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut shutdown = std::pin::pin!(cancellation_watcher());
+        let mut cache = NodesetMembershipCache::default();
+
+        loop {
+            tokio::select! {
+                _ = &mut shutdown => {
+                    gauge!(LOG_SERVER_NODESET_MEMBERSHIPS).set(0.0);
+                    break;
+                }
+                _ = interval.tick() => {
+                    Self::publish_nodeset_membership_metrics(&metadata, &mut cache);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn publish_nodeset_membership_metrics(metadata: &Metadata, cache: &mut NodesetMembershipCache) {
+        let my_node_id = metadata.my_node_id().as_plain();
+        let logs = metadata.logs_ref();
+        let logs_version = logs.version();
+
+        if cache.logs_version != logs_version {
+            cache.memberships = Self::count_nodeset_memberships(&logs, my_node_id);
+            cache.logs_version = logs_version;
+        }
+
+        gauge!(LOG_SERVER_NODESET_MEMBERSHIPS).set(cache.memberships as f64);
+    }
+
+    fn count_nodeset_memberships(logs: &Logs, my_node_id: PlainNodeId) -> usize {
+        let mut nodeset_memberships = 0;
+
+        for (log_id, chain) in logs.iter() {
+            let tail = chain.tail();
+            if tail.config.kind != ProviderKind::Replicated {
+                continue;
+            }
+
+            let params = match ReplicatedLogletParams::deserialize_from(
+                tail.config.params.as_bytes(),
+            ) {
+                Ok(params) => params,
+                Err(err) => {
+                    warn!(
+                        %log_id,
+                        segment_index = %tail.index(),
+                        %err,
+                        "Ignoring replicated loglet with invalid params while computing nodeset membership metric"
+                    );
+                    continue;
+                }
+            };
+
+            if params.nodeset.contains(my_node_id) {
+                nodeset_memberships += 1;
+            }
+        }
+
+        nodeset_memberships
     }
 
     #[instrument(skip_all)]
