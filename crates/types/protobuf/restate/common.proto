@@ -22,23 +22,15 @@ enum ProtocolVersion {
   // Release in v1.6. Support custom `Record`
   // encoding that uses Bytes instead of PolyBytes
   V3 = 3;
-
-  // Release in v1.7
-  // Ingress client can differentiate v1.6 PPs 
-  // from v1.7 PPs to choose which ingestion mode 
-  // to use. For v1.6 only single inflight batch
-  // is allowed. In v1.7 multiple inflight batches
-  // are allowed.
-  V4 = 4;
 }
 
 message NodeId {
-  uint32 id = 1;
+  uint32          id         = 1;
   optional uint32 generation = 2;
 }
 
 message GenerationalNodeId {
-  uint32 id = 1;
+  uint32 id         = 1;
   uint32 generation = 2;
 }
 
@@ -65,7 +57,7 @@ enum ServiceTag {
   SEQUENCER_META_SERVICE = 45;
   // Partition Processor
   PARTITION_MANAGER_SERVICE = 54;
-  PARTITION_LEADER_SERVICE = 55;
+  PARTITION_LEADER_SERVICE  = 55;
 
   // Failure detector
   GOSSIP_SERVICE = 62;
@@ -90,58 +82,58 @@ enum NodeStatus {
 }
 
 enum NodeRpcStatus {
-  NodeRpcStatus_UNKNOWN = 0;
-  NodeRpcStatus_READY = 1;
+  NodeRpcStatus_UNKNOWN     = 0;
+  NodeRpcStatus_READY       = 1;
   NodeRpcStatus_STARTING_UP = 2;
-  NodeRpcStatus_STOPPING = 3;
+  NodeRpcStatus_STOPPING    = 3;
 }
 
 enum WorkerStatus {
-  WorkerStatus_UNKNOWN = 0;
-  WorkerStatus_READY = 1;
+  WorkerStatus_UNKNOWN     = 0;
+  WorkerStatus_READY       = 1;
   WorkerStatus_STARTING_UP = 2;
 }
 
 enum AdminStatus {
-  AdminStatus_UNKNOWN = 0;
-  AdminStatus_READY = 1;
+  AdminStatus_UNKNOWN     = 0;
+  AdminStatus_READY       = 1;
   AdminStatus_STARTING_UP = 2;
 }
 
 enum LogServerStatus {
-  LogServerStatus_UNKNOWN = 0;
-  LogServerStatus_READY = 1;
+  LogServerStatus_UNKNOWN     = 0;
+  LogServerStatus_READY       = 1;
   LogServerStatus_STARTING_UP = 2;
-  LogServerStatus_FAILSAFE = 3;
-  LogServerStatus_STOPPING = 4;
+  LogServerStatus_FAILSAFE    = 3;
+  LogServerStatus_STOPPING    = 4;
 }
 
 enum MetadataServerStatus {
-  MetadataServerStatus_UNKNOWN = 0;
-  MetadataServerStatus_STARTING_UP = 1;
+  MetadataServerStatus_UNKNOWN               = 0;
+  MetadataServerStatus_STARTING_UP           = 1;
   MetadataServerStatus_AWAITING_PROVISIONING = 2;
-  MetadataServerStatus_MEMBER = 3;
-  MetadataServerStatus_STANDBY = 4;
+  MetadataServerStatus_MEMBER                = 3;
+  MetadataServerStatus_STANDBY               = 4;
 }
 
 enum IngressStatus {
-  IngressStatus_UNKNOWN = 0;
-  IngressStatus_READY = 1;
+  IngressStatus_UNKNOWN     = 0;
+  IngressStatus_READY       = 1;
   IngressStatus_STARTING_UP = 2;
 }
 
 enum MetadataKind {
   MetadataKind_UNKNOWN = 0;
-  NODES_CONFIGURATION = 1;
-  SCHEMA = 2;
-  PARTITION_TABLE = 3;
-  LOGS = 4;
+  NODES_CONFIGURATION  = 1;
+  SCHEMA               = 2;
+  PARTITION_TABLE      = 3;
+  LOGS                 = 4;
 }
 
 enum DatabaseKind {
-  DATABASE_KIND_UNSPECIFIED = 0;
+  DATABASE_KIND_UNSPECIFIED     = 0;
   DATABASE_KIND_PARTITION_STORE = 2;
-  DATABASE_KIND_LOG_SERVER = 3;
+  DATABASE_KIND_LOG_SERVER      = 3;
   DATABASE_KIND_METADATA_SERVER = 4;
-  DATABASE_KIND_LOCAL_LOGLET = 5;
+  DATABASE_KIND_LOCAL_LOGLET    = 5;
 }
