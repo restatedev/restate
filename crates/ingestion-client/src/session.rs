@@ -44,7 +44,7 @@ pub struct SessionClosed;
 pub struct CancelledError;
 
 /// Future that is resolved to the commit result
-/// A [`CommitError::Cancelled`] might be returned
+/// A [`CancelledError`] might be returned
 /// if [`IngestionClient`] is closed while record is in
 /// flight. This does not guarantee that the record
 /// was not processed or committed.
@@ -113,7 +113,7 @@ impl RecordCommitResolver {
 
     /// explicitly cancel the RecordCommit
     /// If resolver is dropped, the RecordCommit
-    /// will resolve to [`CommitError::Cancelled`]
+    /// will resolve to [`CancelledError`]
     #[allow(dead_code)]
     pub fn cancelled(self) {
         let _ = self.tx.send(Err(CancelledError));
@@ -150,7 +150,7 @@ pub struct SessionOptions {
     pub(crate) batch_size: NonZeroUsize,
     /// Connection retry policy
     /// Retry policy must be infinite (retries forever)
-    /// If not, the retry will fallback to 2 seconds intervals
+    /// If not, the retry will fallback to 3 seconds intervals
     #[builder(default=RetryPolicy::exponential(
         Duration::from_millis(250),
         2.0,
@@ -303,7 +303,7 @@ where
                             None => {
                                 // retry
                                 // this assumes that retry policy is infinite. If it's not it falls back
-                                // to a fixed 2 seconds sleep between retries
+                                // to a fixed 3 seconds sleep between retries
                                 tokio::time::sleep(retry.next().unwrap_or(Duration::from_secs(3)))
                                     .await;
                             }
