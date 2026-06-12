@@ -702,7 +702,10 @@ where
 
                         if let Some(announce_leader) = maybe_announce_leader {
                             // update partition store with latest epoch metadata
-                            if let Some(current_config) = &announce_leader.current_config {
+                            if let Some(current_config) = &announce_leader.current_config
+                                && self.cached_epoch_metadata.as_ref().
+                                        is_none_or(|c| c.version < announce_leader.epoch_version.unwrap()) {
+
                                 let announced = CachedEpochMetadata {
                                     version: announce_leader.epoch_version.unwrap(),
                                     leader_node_id: announce_leader.node_id,
@@ -711,10 +714,8 @@ where
                                     next: announce_leader.next_config.as_ref().map(|v| v.to_next_replica_set_state()),
                                 };
 
-                                if self.cached_epoch_metadata.as_ref().is_none_or(|c| c.version < announced.version) {
-                                    transaction.put_partition_config_state(&announced)?;
-                                    self.cached_epoch_metadata = Some(announced);
-                                }
+                                transaction.put_partition_config_state(&announced)?;
+                                self.cached_epoch_metadata = Some(announced);
                             };
 
                             // commit all changes so far, this is important so that the actuators see all changes
@@ -962,70 +963,15 @@ where
     async fn on_pp_ingest_request(&mut self, msg: Incoming<Rpc<ReceivedIngestRequest>>) {
         let (reciprocal, request) = msg.split();
 
-        // todo(azmy): Once target_leader_epoch becomes mandatory, we need to remove
-        // this hack.
-        let Some(target_leader_epoch) = request.target_leader_epoch else {
-            // Old clients don't send a target leader epoch, so we
-            // reject these writes to avoid data loss. When such a
-            // client pipelines requests, a leadership change could
-            // cause one request to be rejected while later requests
-            // in the pipeline are accepted, silently dropping data.
-            // See #4879 for details.
-            let _ = TaskCenter::spawn_child(TaskKind::Disposable, "reject-ingestion", async move {
-                // clients will try immediately
-                // so we need to put some back pressure here
-                // by delaying the response so they don't
-                // retry immediately
-                tokio::time::sleep(Duration::from_secs(1)).await;
-
-                // Older clients (if enabled) will print this error message as debug
-                // message so it might be a good idea to print this here also as a warn
-                // to make sure it's visible during a rolling upgrade.
-                warn!(
-                    "Rejecting ingestion requests from old ingestion \
-                    clients to prevent data loss. Please upgrade to v1.7 \
-                    or disable the experimental ingestion feature(s) \
-                    `experimental_*_batch_ingestion`"
-                );
-
-                reciprocal.send(
-                    ResponseStatus::Internal {
-                        msg: "Rejecting ingestion requests from old ingestion \
-                                clients to prevent data loss. Please upgrade to v1.7 \
-                                or disable the experimental ingestion feature(s) \
-                                `experimental_*_batch_ingestion`"
-                            .into(),
-                    }
-                    .into(),
-                );
-                Ok(())
-            });
-
-            return;
-        };
-
-        let replica_set_states = self.replica_set_states.clone();
         self.leadership_state
             .forward_many_with_callback(
-                target_leader_epoch,
                 request.records.into_iter(),
                 move |result: Result<(), PartitionProcessorRpcError>| match result {
                     Ok(_) => reciprocal.send(ResponseStatus::Ack.into()),
                     Err(err) => match err {
                         PartitionProcessorRpcError::NotLeader(id)
                         | PartitionProcessorRpcError::LostLeadership(id) => {
-                            // get and return the most up to date view of the
-                            // leader state.
-                            let leadership_state =
-                                replica_set_states.membership_state(id).current_leader();
-
-                            reciprocal.send(
-                                ResponseStatus::NotLeaderWithEpoch {
-                                    of: id,
-                                    last_seen_leadership_state: leadership_state,
-                                }
-                                .into(),
-                            )
+                            reciprocal.send(ResponseStatus::NotLeader { of: id }.into())
                         }
                         PartitionProcessorRpcError::Internal(msg) => {
                             reciprocal.send(ResponseStatus::Internal { msg }.into())
@@ -1112,7 +1058,7 @@ where
 
         if !self.is_targeted_to_me(&record.keys) {
             self.status.num_skipped_records += 1;
-            warn!(
+            debug!(
                 "Ignore message which is not targeted to me Partition Range: {:?} Key: {:?}, Header: {:?}",
                 self.key_filter,
                 record.keys,
@@ -1127,7 +1073,7 @@ where
         // deduplicate if deduplication information has been provided
         if let Some(dedup_information) = dedup_information {
             if Self::is_outdated_or_duplicate(&dedup_information, transaction).await? {
-                warn!(
+                debug!(
                     "Ignoring outdated or duplicate message: {:?}",
                     record.envelope.header()
                 );
