@@ -1,0 +1,269 @@
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
+use tracing::debug;
+
+use restate_clock::UniqueTimestamp;
+use restate_types::invocation::client::PauseInvocationResponse;
+use restate_storage_api::invocation_status_table::{
+    InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
+};
+use restate_storage_api::journal_events::WriteJournalEventsTable;
+use restate_storage_api::lock_table::WriteLockTable;
+use restate_storage_api::vqueue_table::{self, EntryStatusHeader, ReadVQueueTable, WriteVQueueTable};
+use restate_types::identifiers::{
+    InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey as _,
+};
+use restate_types::vqueues::EntryId;
+use restate_vqueues::VQueue;
+
+use crate::debug_if_leader;
+use crate::partition::state_machine::lifecycle::event::ApplyEventCommand;
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
+
+pub struct OnInvocationPauseRpcRequest<'a> {
+    pub invocation_id: &'a InvocationId,
+    pub request_id: PartitionProcessorRpcRequestId,
+}
+
+impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
+    for OnInvocationPauseRpcRequest<'_>
+where
+    S: ReadInvocationStatusTable
+        + WriteInvocationStatusTable
+        + WriteJournalEventsTable
+        + WriteVQueueTable
+        + WriteLockTable
+        + ReadVQueueTable,
+{
+    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
+        let Self {
+            invocation_id,
+            request_id,
+        } = self;
+
+            let at = UniqueTimestamp::from_unix_millis_unchecked(ctx.record_created_at);
+
+            let entry_id = EntryId::from(invocation_id);
+            let Some(header) = ctx
+                .storage
+                .get_vqueue_entry_status(invocation_id.partition_key(), &entry_id)
+                .await?
+            else {
+                // This is equivalent to InvocationStatus::Free.
+                debug!(
+                    "Trying to pause invocation {invocation_id} which does not exist as a vqueue entry, will ignore."
+                );
+                ctx.reply_to_pause_invocation(self.request_id,PauseInvocationResponse::NotFound);
+                return Ok(());
+            };
+
+            match header.stage() {
+                vqueue_table::Stage::Paused => {
+                    ctx.reply_to_pause_invocation(self.request_id,PauseInvocationResponse::AlreadyPaused);
+                    return Ok(())
+                }
+                vqueue_table::Stage::Finished => {
+                debug!(
+                    "Trying to pause invocation {invocation_id} which already finished."
+                );
+                    ctx.reply_to_pause_invocation(self.request_id,PauseInvocationResponse::NotFound);
+                    return Ok(());
+                }
+                _ => {}
+            };
+
+            VQueue::get(
+                header.vqueue_id(),
+                ctx.storage,
+                ctx.vqueues_cache,
+                ctx.is_leader.then_some(ctx.action_collector),
+            )
+            .await?
+            .expect("pausing in a non-existent vqueue")
+            .pause_entry(at, &header);
+
+
+
+        let invoked_meta = match ctx.get_invocation_status(invocation_id).await? {
+            InvocationStatus::Suspended { metadata: meta,.. },
+            InvocationStatus::Invoked(meta) => meta,
+            InvocationStatus::Suspended { .. }
+            | InvocationStatus::Paused(_)
+            | InvocationStatus::Scheduled(_)
+            | InvocationStatus::Inboxed(_)
+            | InvocationStatus::Completed(_)
+            | InvocationStatus::Free => {
+                // Nothing to do in these cases, pause gets processed only if the invocation was Invoked.
+                return Ok(());
+            }
+        };
+
+        // Invoker paused the invocation, let's record the event, then set the status to paused
+        debug_if_leader!(ctx.is_leader, "Paused the invocation");
+
+        if invoked_meta.vqueue_id.is_some() {
+            // todo: use the new status
+            let entry_id = EntryId::from(invocation_id);
+            let Some(header) = ctx
+                .storage
+                .get_vqueue_entry_status(invocation_id.partition_key(), &entry_id)
+                .await?
+            else {
+                // This is equivalent to InvocationStatus::Free.
+                debug!(
+                    "Trying to pause invocation {invocation_id} which does not exist as a vqueue entry, will ignore."
+                );
+                return Ok(());
+            };
+
+            let at = UniqueTimestamp::from_unix_millis_unchecked(ctx.record_created_at);
+            VQueue::get(
+                header.vqueue_id(),
+                ctx.storage,
+                ctx.vqueues_cache,
+                ctx.is_leader.then_some(ctx.action_collector),
+            )
+            .await?
+            .expect("pausing in a non-existent vqueue")
+            .pause_entry(at, &header);
+        }
+
+        let mut invocation_status = InvocationStatus::Paused(invoked_meta);
+
+        ApplyEventCommand {
+            invocation_id,
+            invocation_status: &invocation_status,
+            event: paused_event,
+        }
+        .apply(ctx)
+        .await?;
+
+        // Update timestamps
+        if let Some(timestamps) = invocation_status.get_timestamps_mut() {
+            timestamps.update(ctx.record_created_at);
+        }
+
+        ctx.storage
+            .put_invocation_status(self.invocation_id, &invocation_status)?;
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use googletest::prelude::*;
+
+    use restate_storage_api::invocation_status_table::{
+        InFlightInvocationMetadata, InvocationStatusDiscriminants, ReadInvocationStatusTable,
+    };
+    use restate_types::journal_events::{Event, PausedEvent, TransientErrorEvent};
+    use restate_wal_protocol::v2::{Command, commands};
+
+    use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
+    use crate::partition::types::InvokerEffectKind;
+
+    #[restate_core::test]
+    async fn paused_with_pinned_deployment() {
+        let mut test_env = TestEnv::create().await;
+        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+        fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
+
+        let paused_event = Event::from(PausedEvent {
+            last_failure: Some(TransientErrorEvent {
+                error_code: 501u16.into(),
+                error_message: "my bad".to_string(),
+                error_stacktrace: Some("something something".to_string()),
+                restate_doc_error_code: Some("RT0001".to_string()),
+                related_command_index: None,
+                related_command_name: Some("my command".to_string()),
+                related_command_type: None,
+            }),
+        });
+
+        // Check we just pause
+        let _ = test_env
+            .apply(commands::InvokerEffectCommand::test_envelope(
+                restate_worker_api::invoker::Effect {
+                    invocation_id,
+                    kind: InvokerEffectKind::Paused {
+                        paused_event: paused_event.clone().into(),
+                    },
+                },
+            ))
+            .await;
+        assert_that!(
+            test_env
+                .storage
+                .get_invocation_status(&invocation_id)
+                .await
+                .unwrap(),
+            all!(
+                matchers::storage::is_variant(InvocationStatusDiscriminants::Paused),
+                matchers::storage::in_flight_metadata(field!(
+                    InFlightInvocationMetadata.pinned_deployment,
+                    some(anything())
+                ))
+            )
+        );
+        assert_that!(
+            test_env.read_journal_events(&invocation_id).await,
+            elements_are![eq(paused_event)]
+        );
+
+        test_env.shutdown().await;
+    }
+
+    #[restate_core::test]
+    async fn paused_when_deployment_version_not_set_yet() {
+        let mut test_env = TestEnv::create().await;
+        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+
+        let paused_event = Event::from(PausedEvent {
+            last_failure: Some(TransientErrorEvent {
+                error_code: 501u16.into(),
+                error_message: "my bad".to_string(),
+                error_stacktrace: Some("something something".to_string()),
+                restate_doc_error_code: Some("RT0001".to_string()),
+                related_command_index: None,
+                related_command_name: Some("my command".to_string()),
+                related_command_type: None,
+            }),
+        })
+        .into();
+
+        // Check we just pause
+        let _ = test_env
+            .apply(commands::InvokerEffectCommand::test_envelope(
+                restate_worker_api::invoker::Effect {
+                    invocation_id,
+                    kind: InvokerEffectKind::Paused { paused_event },
+                },
+            ))
+            .await;
+        assert_that!(
+            test_env
+                .storage
+                .get_invocation_status(&invocation_id)
+                .await
+                .unwrap(),
+            all!(
+                matchers::storage::is_variant(InvocationStatusDiscriminants::Paused),
+                matchers::storage::in_flight_metadata(field!(
+                    InFlightInvocationMetadata.pinned_deployment,
+                    none()
+                ))
+            )
+        );
+
+        test_env.shutdown().await;
+    }
+}

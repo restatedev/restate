@@ -78,7 +78,7 @@ use restate_types::identifiers::{
 };
 use restate_types::invocation::client::{
     CancelInvocationResponse, InvocationOutputResponse, KillInvocationResponse,
-    PurgeInvocationResponse, ResumeInvocationResponse,
+    PauseInvocationResponse, PurgeInvocationResponse, ResumeInvocationResponse,
 };
 use restate_types::invocation::{
     AttachInvocationRequest, IngressInvocationResponseSink, InvocationInput,
@@ -777,6 +777,19 @@ impl<S> StateMachineApplyContext<'_, S> {
                     update_pinned_deployment_id: resume_invocation_request
                         .update_pinned_deployment_id,
                     response_sink: resume_invocation_request.response_sink,
+                }
+                .apply(self)
+                .await?;
+                Ok(())
+            }
+            CommandKind::PauseInvocationRpcRequest => {
+                let request = envelope
+                    .into_typed::<commands::PauseInvocationRpcRequest>()
+                    .into_inner()?;
+
+                lifecycle::OnInvocationPauseRpcRequest {
+                    invocation_id: &request.invocation_id,
+                    request_id: &request.request_id,
                 }
                 .apply(self)
                 .await?;
@@ -4584,6 +4597,25 @@ impl<S> StateMachineApplyContext<'_, S> {
             completion_expiry_time,
             response,
         });
+    }
+
+    fn reply_to_pause_invocation(
+        &mut self,
+        request_id: PartitionProcessorRpcRequestId,
+        response: PauseInvocationResponse,
+    ) {
+        debug_if_leader!(
+            self.is_leader,
+            "Send pause invocation response to request id '{:?}': {:?}",
+            request_id,
+            response
+        );
+
+        self.action_collector
+            .push(Action::ForwardPauseInvocationResponse {
+                request_id,
+                response,
+            });
     }
 
     fn reply_to_cancel(

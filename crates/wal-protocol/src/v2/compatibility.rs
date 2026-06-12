@@ -155,6 +155,12 @@ impl TryFrom<v1::Envelope> for v2::Envelope<Raw> {
                 dedup,
                 payload,
             ),
+            v1::Command::PauseInvocationRpcRequest(payload) => Envelope::from_bytes_unchecked(
+                v2::CommandKind::PauseInvocationRpcRequest,
+                StorageCodecKind::Bilrost,
+                dedup,
+                payload,
+            ),
         };
 
         Ok(envelope)
