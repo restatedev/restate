@@ -12,7 +12,9 @@ use std::num::NonZeroU32;
 
 use rocksdb::{BlockBasedOptions, Cache, WriteBufferManager};
 
-use restate_types::config::{RocksDbLogLevel, RocksDbOptions, StatisticsLevel};
+use restate_types::config::{
+    RocksDbL0L1Compression, RocksDbLogLevel, RocksDbOptions, StatisticsLevel,
+};
 
 use crate::logging::LoggingEventListener;
 use crate::{DbName, OpenMode, RocksAccess};
@@ -195,6 +197,20 @@ pub fn convert_log_level(input: RocksDbLogLevel) -> rocksdb::LogLevel {
         RocksDbLogLevel::Header => LogLevel::Header,
         RocksDbLogLevel::Info => LogLevel::Info,
         RocksDbLogLevel::Warn => LogLevel::Warn,
+    }
+}
+
+pub fn l0_l1_compression_type(opts: &RocksDbOptions) -> rocksdb::DBCompressionType {
+    convert_l0_l1_compression(opts.rocksdb_l0_l1_compression())
+}
+
+fn convert_l0_l1_compression(input: RocksDbL0L1Compression) -> rocksdb::DBCompressionType {
+    use rocksdb::DBCompressionType;
+    match input {
+        RocksDbL0L1Compression::NoCompression => DBCompressionType::None,
+        RocksDbL0L1Compression::Snappy => DBCompressionType::Snappy,
+        RocksDbL0L1Compression::Lz4 => DBCompressionType::Lz4,
+        RocksDbL0L1Compression::Zstd => DBCompressionType::Zstd,
     }
 }
 

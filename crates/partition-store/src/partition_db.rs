@@ -660,11 +660,7 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
         // As much as we can to increase the chances to observe a deletion.
         //
         cf_options.set_num_levels(7);
-        let l0_l1 = if config.rocksdb.rocksdb_disable_l0_l1_compression() {
-            rocksdb::DBCompressionType::None
-        } else {
-            rocksdb::DBCompressionType::Zstd
-        };
+        let l0_l1 = restate_rocksdb::configuration::l0_l1_compression_type(&config.rocksdb);
         let levels = restate_rocksdb::configuration::build_compression_per_level(
             7,
             l0_l1,

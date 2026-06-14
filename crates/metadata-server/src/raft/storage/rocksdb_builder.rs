@@ -153,14 +153,8 @@ fn cf_data_options(
     cf_options.set_compaction_style(rocksdb::DBCompactionStyle::Level);
     cf_options.set_num_levels(7);
 
-    let l0_l1 = if metadata_server_config
-        .rocksdb
-        .rocksdb_disable_l0_l1_compression()
-    {
-        rocksdb::DBCompressionType::None
-    } else {
-        rocksdb::DBCompressionType::Zstd
-    };
+    let l0_l1 =
+        restate_rocksdb::configuration::l0_l1_compression_type(&metadata_server_config.rocksdb);
     let levels = restate_rocksdb::configuration::build_compression_per_level(
         7,
         l0_l1,
@@ -205,14 +199,8 @@ fn cf_metadata_options(
     // Set compactions per level
     //
     cf_options.set_num_levels(3);
-    let l0_l1 = if metadata_server_config
-        .rocksdb
-        .rocksdb_disable_l0_l1_compression()
-    {
-        rocksdb::DBCompressionType::None
-    } else {
-        rocksdb::DBCompressionType::Zstd
-    };
+    let l0_l1 =
+        restate_rocksdb::configuration::l0_l1_compression_type(&metadata_server_config.rocksdb);
     let levels = restate_rocksdb::configuration::build_compression_per_level(
         3,
         l0_l1,
