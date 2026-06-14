@@ -20,6 +20,7 @@ use futures::{Stream, StreamExt};
 use gardal::futures::StreamExt as GardalStreamExt;
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
+use metrics::counter;
 use opentelemetry::KeyValue;
 use opentelemetry::trace::{Span, SpanContext, Status, TraceFlags};
 use prost::Message as ProstMessage;
@@ -57,7 +58,7 @@ use restate_types::limit_key::LimitKey;
 use restate_types::schema::deployment::{Deployment, DeploymentType, ProtocolType};
 use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
 use restate_types::service_protocol::ServiceProtocolVersion;
-use restate_util_string::{ReString, RestateString, RestrictedValue};
+use restate_util_string::{ReString, RestateString, RestrictedValue, ToReString};
 use restate_worker_api::invoker::JournalMetadata;
 use restate_worker_api::invoker::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
@@ -72,6 +73,9 @@ use crate::invocation_task::{
     ResponseStream, TerminalLoopState, X_RESTATE_SERVER, collect_eager_state,
     invocation_id_to_header_value, leased_frame, new_invoker_body, retry_after,
     service_protocol_version_to_header_value,
+};
+use crate::metric_definitions::{
+    INVOKER_HTTP_CLIENT_REQUESTS, INVOKER_HTTP_RECEIVED_BYTES, INVOKER_HTTP_SENT_BYTES,
 };
 use crate::{Notification, shortcircuit};
 
@@ -797,9 +801,11 @@ where
         trace!(restate.protocol.message = ?msg, "Sending message");
         let buf = self.encoder.encode(msg);
 
+        let len = buf.len();
         if http_stream_tx.send(Ok(leased_frame(buf, lease))).is_err() {
             return Err(InvokerError::UnexpectedClosedRequestStream);
         };
+        counter!(INVOKER_HTTP_SENT_BYTES).increment(len as u64);
         Ok(())
     }
 
@@ -812,10 +818,12 @@ where
     ) -> Result<(), InvokerError> {
         trace!(restate.protocol.message = ?ty, "Sending message");
         let buf = self.encoder.encode_raw(ty, buf);
+        let len = buf.len();
 
         if http_stream_tx.send(Ok(leased_frame(buf, lease))).is_err() {
             return Err(InvokerError::UnexpectedClosedRequestStream);
         };
+        counter!(INVOKER_HTTP_SENT_BYTES).increment(len as u64);
         Ok(())
     }
 
@@ -826,6 +834,8 @@ where
         // if service is running behind a gateway, the service can be down
         // but we still get a response code from the gateway itself. In that
         // case we still need to return the proper error
+        counter!(INVOKER_HTTP_CLIENT_REQUESTS, "status_code" => parts.status.as_str().to_restring())
+            .increment(1);
         if GATEWAY_ERRORS_CODES.contains(&parts.status) {
             return Err(InvokerError::ServiceUnavailable(parts.status));
         }
@@ -1712,6 +1722,7 @@ where
                             return Poll::Ready(Some(Ok(DecoderStreamItem::Parts(parts))));
                         }
                         ResponseChunk::Data(buf) => {
+                            counter!(INVOKER_HTTP_RECEIVED_BYTES).increment(buf.len() as u64);
                             this.decoder.push(buf);
                         }
                     },
