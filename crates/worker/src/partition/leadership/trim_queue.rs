@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use tokio::time::{Instant, MissedTickBehavior};
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, instrument, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::{ShutdownError, TaskCenter, TaskId, cancellation_token};
@@ -109,7 +109,7 @@ impl LogTrimmer {
             );
             false
         } else {
-            info!(
+            debug!(
                 "Trimmed log {} to {:?}. This Lsn was reported durable at {}",
                 self.log_id,
                 durability.durable_point,
