@@ -380,6 +380,13 @@ impl MemoryLease {
             size: 0,
         }
     }
+
+    /// Leak leased memory. It's up to the caller to make
+    /// sure the leaked memory is returned to the pool.
+    #[inline]
+    pub(crate) fn forget(&mut self) {
+        self.size = 0;
+    }
 }
 
 impl Drop for MemoryLease {
