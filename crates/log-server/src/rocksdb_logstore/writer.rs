@@ -496,7 +496,7 @@ impl LogStoreWriter<'_> {
             write_opts.disable_wal(false);
             write_opts.set_sync(true);
         } else {
-            write_opts.disable_wal(opts.rocksdb.rocksdb_disable_wal());
+            write_opts.disable_wal(opts.rocksdb_disable_wal());
             write_opts.set_sync(!opts.rocksdb_disable_wal_fsync());
         }
 

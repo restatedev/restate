@@ -18,8 +18,7 @@ use restate_util_bytecount::NonZeroByteCount;
 use restate_util_time::NonZeroFriendlyDuration;
 
 use super::{
-    BackgroundWorkBudget, CommonOptions, Configuration, RocksDbOptions, RocksDbOptionsBuilder,
-    StructWithDefaults,
+    BackgroundWorkBudget, CommonOptions, Configuration, RocksDbOptions, StructWithDefaults,
 };
 
 const MIN_ROCKSDB_MEMORY: NonZeroByteCount =
@@ -137,25 +136,16 @@ impl MetadataServerOptions {
     pub fn request_queue_length(&self) -> usize {
         self.request_queue_length.get()
     }
-
-    fn rocksdb_defaults() -> RocksDbOptionsBuilder {
-        let mut builder = RocksDbOptionsBuilder::default();
-        builder.rocksdb_disable_wal(Some(false));
-        builder
-    }
 }
 
 impl Default for MetadataServerOptions {
     fn default() -> Self {
-        let rocksdb = Self::rocksdb_defaults()
-            .build()
-            .expect("valid RocksDbOptions");
         Self {
             request_queue_length: NonZeroUsize::new(32).unwrap(),
             // set by apply_common in runtime
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.01,
-            rocksdb,
+            rocksdb: RocksDbOptions::default(),
             raft_options: RaftOptions::default(),
             auto_join: true,
             rocksdb_max_background_flushes: None,
@@ -231,7 +221,7 @@ impl<'de> DeserializeAs<'de, MetadataServerOptions>
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{Configuration, MetadataServerOptions};
+    use crate::config::{Configuration, MetadataServerOptions, RocksDbOptionsBuilder};
     use crate::config_loader::ConfigLoaderBuilder;
     use std::fs;
     use std::num::NonZeroUsize;
@@ -283,7 +273,7 @@ mod tests {
             .disable_apply_cascading_values(true)
             .build()?;
         let configuration = config_loader.load_once()?;
-        let mut rocksdb_defaults = MetadataServerOptions::rocksdb_defaults();
+        let mut rocksdb_defaults = RocksDbOptionsBuilder::default();
         rocksdb_defaults.rocksdb_disable_direct_io_for_reads(Some(false));
         let rocksdb = rocksdb_defaults.build().expect("should build");
 
