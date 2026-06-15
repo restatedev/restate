@@ -17,7 +17,7 @@ use serde_with::serde_as;
 use restate_util_bytecount::{ByteCount, NonZeroByteCount};
 use tracing::warn;
 
-use super::{BackgroundWorkBudget, CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
+use super::{BackgroundWorkBudget, CommonOptions, RocksDbOptions};
 
 const MIN_ROCKSDB_MEMORY: NonZeroByteCount =
     NonZeroByteCount::new(NonZeroUsize::new(32 * 1024 * 1024).unwrap());
@@ -204,6 +204,12 @@ impl LogServerOptions {
             .unwrap_or(NonZeroU32::new(2).unwrap())
     }
 
+    pub fn rocksdb_disable_wal(&self) -> bool {
+        // We'll add an option when we support other durability modes that can provide
+        // reasonable guarantees without relying purely on automatic flushes.
+        false
+    }
+
     pub fn rocksdb_disable_wal_fsync(&self) -> bool {
         self.rocksdb_disable_wal_fsync
     }
@@ -276,13 +282,9 @@ impl LogServerOptions {
 
 impl Default for LogServerOptions {
     fn default() -> Self {
-        let rocksdb = RocksDbOptionsBuilder::default()
-            .rocksdb_disable_wal(Some(false))
-            .build()
-            .unwrap();
         Self {
             read_only: false,
-            rocksdb,
+            rocksdb: RocksDbOptions::default(),
             // set by apply_common in runtime
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.5,
