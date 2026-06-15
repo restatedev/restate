@@ -45,7 +45,7 @@ enum ServiceProtocolVersion {
   // * IdempotentRequestTarget.scope
   // * StartMessage.scope, StartMessage.limit_key and StartMessage.idempotency_key
   // * Semantic changes to Run proposal response, introduced ProposeRunCompletionAckMessage
-  // * ErrorMessage.should_pause
+  // * ErrorMessage.behavior
   V7 = 7;
 }
 
