@@ -492,12 +492,14 @@ impl LogStoreWriter<'_> {
             .record(write_batch.size_in_bytes() as f64);
 
         let mut write_opts = rocksdb::WriteOptions::new();
-        if batch.sync_write_is_required {
-            write_opts.disable_wal(false);
-            write_opts.set_sync(true);
-        } else {
-            write_opts.disable_wal(opts.rocksdb.rocksdb_disable_wal());
-            write_opts.set_sync(!opts.rocksdb_disable_wal_fsync());
+        if !opts.rocksdb_disable_wal() {
+            if batch.sync_write_is_required {
+                write_opts.disable_wal(false);
+                write_opts.set_sync(true);
+            } else {
+                write_opts.disable_wal(false);
+                write_opts.set_sync(!opts.rocksdb_disable_wal_fsync());
+            }
         }
 
         // hint to rocksdb to insert the memtable position hint for the batch, our writes per batch

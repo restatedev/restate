@@ -17,7 +17,7 @@ use serde_with::serde_as;
 use restate_util_bytecount::{ByteCount, NonZeroByteCount};
 use tracing::warn;
 
-use super::{BackgroundWorkBudget, CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
+use super::{BackgroundWorkBudget, CommonOptions, RocksDbOptions};
 
 const MIN_ROCKSDB_MEMORY: NonZeroByteCount =
     NonZeroByteCount::new(NonZeroUsize::new(32 * 1024 * 1024).unwrap());
@@ -160,9 +160,18 @@ pub struct LogServerOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub write_batch_commit_count: Option<NonZeroUsize>,
 
+    /// Disable WAL for the log-server
+    ///
+    /// [DANGEROUS] Not recommended for production use.
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    rocksdb_disable_wal: bool,
+
     /// Starts in read-only mode
     ///
     /// This is useful for testing, debugging, and development.
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub read_only: bool,
 }
 
@@ -202,6 +211,10 @@ impl LogServerOptions {
     pub fn rocksdb_max_background_compactions(&self) -> NonZeroU32 {
         self.rocksdb_max_background_compactions
             .unwrap_or(NonZeroU32::new(2).unwrap())
+    }
+
+    pub fn rocksdb_disable_wal(&self) -> bool {
+        self.rocksdb_disable_wal
     }
 
     pub fn rocksdb_disable_wal_fsync(&self) -> bool {
@@ -276,17 +289,14 @@ impl LogServerOptions {
 
 impl Default for LogServerOptions {
     fn default() -> Self {
-        let rocksdb = RocksDbOptionsBuilder::default()
-            .rocksdb_disable_wal(Some(false))
-            .build()
-            .unwrap();
         Self {
             read_only: false,
-            rocksdb,
+            rocksdb: RocksDbOptions::default(),
             // set by apply_common in runtime
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.5,
             rocksdb_max_sub_compactions: 0,
+            rocksdb_disable_wal: false,
             rocksdb_max_wal_size: ByteCount::ZERO,
             rocksdb_disable_wal_fsync: false,
             always_commit_in_background: false,

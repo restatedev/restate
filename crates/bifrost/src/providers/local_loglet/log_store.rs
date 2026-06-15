@@ -155,6 +155,10 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
             local_loglet_config.rocksdb_max_background_compactions(),
         );
 
+        if !local_loglet_config.rocksdb_disable_wal() {
+            // RocksDB does not support recycling wal log files if wal is disabled when writing
+            db_options.set_recycle_log_file_num(4);
+        }
         // local loglet customizations
 
         // Enable atomic flushes.
