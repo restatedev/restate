@@ -66,7 +66,8 @@ use restate_worker_api::invoker::invocation_reader::{
 };
 
 use crate::error::{
-    CommandPreconditionError, InvocationErrorRelatedCommandV2, InvokerError, SdkInvocationErrorV2,
+    CommandPreconditionError, InvocationErrorRelatedCommandV2, InvokerError,
+    RequestedErrorBehavior, SdkInvocationErrorV2,
 };
 use crate::invocation_task::{
     InvocationTask, InvocationTaskOutputInner, InvokerBodySender, InvokerBodyType, ResponseChunk,
@@ -1459,6 +1460,15 @@ where
     }
 
     fn handle_error_message(&mut self, error: proto::ErrorMessage) -> TerminalLoopState<()> {
+        let requested_error_behavior = match proto::ErrorBehavior::try_from(error.behavior)
+            .unwrap_or(proto::ErrorBehavior::Retry)
+        {
+            proto::ErrorBehavior::Retry => {
+                RequestedErrorBehavior::retry(error.next_retry_delay.map(Duration::from_millis))
+            }
+            proto::ErrorBehavior::Pause => RequestedErrorBehavior::Pause,
+            proto::ErrorBehavior::Fail => RequestedErrorBehavior::Fail,
+        };
         TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2 {
             related_command: Some(InvocationErrorRelatedCommandV2 {
                 related_command_index: error.related_command_index,
@@ -1472,8 +1482,7 @@ where
                     .related_command_index
                     .is_some_and(|entry_idx| entry_idx < self.command_index),
             }),
-            next_retry_interval_override: error.next_retry_delay.map(Duration::from_millis),
-            should_pause: error.should_pause,
+            requested_error_behavior,
             error: InvocationError::from(error).into(),
         }))
     }

@@ -1498,8 +1498,7 @@ where
         // We need to capture the duration for logging and status updates.
         let result = ism.handle_task_error(
             error.is_transient(),
-            error.next_retry_interval_override(),
-            error.should_pause(),
+            error.requested_error_behavior(),
             error.should_bump_start_message_retry_count_since_last_stored_entry(),
             |duration| self.retry_timers.insert(invocation_id, duration),
         );
@@ -1723,7 +1722,7 @@ where
                     }))
                     .await;
             }
-            OnTaskError::Kill => {
+            OnTaskError::Fail => {
                 counter!(INVOKER_INVOCATION_TASKS,
                     "status" => TASK_OP_FAILED,
                     "transient" => "false",
@@ -1902,7 +1901,9 @@ mod tests {
     use restate_util_time::FriendlyDuration;
     use restate_worker_api::invoker::InvokerHandle;
 
-    use crate::error::{InvocationMemoryExhausted, InvokerError, SdkInvocationErrorV2};
+    use crate::error::{
+        InvocationMemoryExhausted, InvokerError, RequestedErrorBehavior, SdkInvocationErrorV2,
+    };
     use crate::quota::{ConcurrencySlot, InvokerConcurrencyQuota};
     use crate::test_util::EmptyStorageReader;
 
@@ -2583,8 +2584,9 @@ mod tests {
         // First transient error (A) -> should propose a TransientError event
         let error_a = InvokerError::SdkV2(SdkInvocationErrorV2 {
             related_command: None,
-            next_retry_interval_override: Some(Duration::from_millis(1)),
-            should_pause: false,
+            requested_error_behavior: RequestedErrorBehavior::RetryWithIntervalOverride(
+                Duration::from_millis(1),
+            ),
             error: InvocationError::new(codes::INTERNAL, "boom").into(),
         });
         service_inner
@@ -2608,8 +2610,9 @@ mod tests {
         // Same transient error (A again) -> should NOT propose a new event
         let error_a_same = InvokerError::SdkV2(SdkInvocationErrorV2 {
             related_command: None,
-            next_retry_interval_override: Some(Duration::from_millis(1)),
-            should_pause: false,
+            requested_error_behavior: RequestedErrorBehavior::RetryWithIntervalOverride(
+                Duration::from_millis(1),
+            ),
             error: InvocationError::new(codes::INTERNAL, "boom").into(),
         });
         service_inner
@@ -2626,8 +2629,9 @@ mod tests {
         // Different transient error (B: different message) -> should propose a new event
         let error_b = InvokerError::SdkV2(SdkInvocationErrorV2 {
             related_command: None,
-            next_retry_interval_override: Some(Duration::from_millis(1)),
-            should_pause: false,
+            requested_error_behavior: RequestedErrorBehavior::RetryWithIntervalOverride(
+                Duration::from_millis(1),
+            ),
             error: InvocationError::new(codes::INTERNAL, "boom-2").into(),
         });
         service_inner
@@ -2686,11 +2690,10 @@ mod tests {
             false, // has_changed = false -> directly selects protocol without emitting effect
         );
 
-        // Transient error with should_pause
+        // Transient error requesting a pause
         let error_a = InvokerError::SdkV2(SdkInvocationErrorV2 {
             related_command: None,
-            next_retry_interval_override: Some(Duration::from_millis(1)),
-            should_pause: true,
+            requested_error_behavior: RequestedErrorBehavior::Pause,
             error: InvocationError::new(codes::INTERNAL, "boom").into(),
         });
         service_inner
@@ -2705,6 +2708,66 @@ mod tests {
                 kind: pat!(EffectKind::Paused {
                     paused_event: predicate(|e: &RawEvent| e.ty() == EventType::Paused)
                 })
+            })
+        );
+    }
+
+    #[test(restate_core::test(start_paused = true))]
+    async fn error_message_should_fail() {
+        // Enable proposing events and keep timers short for the test
+        let invoker_options = InvokerOptionsBuilder::default()
+            .inactivity_timeout(FriendlyDuration::ZERO)
+            .abort_timeout(FriendlyDuration::ZERO)
+            .disable_eager_state(false)
+            .build()
+            .unwrap();
+
+        let invocation_id = InvocationId::mock_random();
+
+        // Mock service. The retry policy would allow retries and on-max-attempts would pause,
+        // but the SDK-requested Fail behavior takes precedence over both.
+        let (_, _status_tx, mut effects_rx, mut service_inner) = ServiceInner::mock(
+            (),
+            MockSchemas(
+                Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(3))),
+                Some(OnMaxAttempts::Pause),
+            ),
+            None,
+            EmptyStorageReader,
+        );
+
+        // Start invocation epoch 0
+        let budget = service_inner.test_budget();
+        service_inner.handle_invoke(
+            &invoker_options,
+            invocation_id,
+            InvocationTarget::mock_virtual_object(),
+            budget,
+        );
+
+        // Select protocol V4 to allow proposing events
+        service_inner.handle_pinned_deployment(
+            invocation_id,
+            PinnedDeployment::new(DeploymentId::new(), ServiceProtocolVersion::V4),
+            false, // has_changed = false -> directly selects protocol without emitting effect
+        );
+
+        // Transient error requesting to fail without retrying
+        let error_a = InvokerError::SdkV2(SdkInvocationErrorV2 {
+            related_command: None,
+            requested_error_behavior: RequestedErrorBehavior::Fail,
+            error: InvocationError::new(codes::INTERNAL, "boom").into(),
+        });
+        service_inner
+            .handle_invocation_task_failed(invocation_id, error_a, service_inner.test_budget())
+            .await;
+        assert_that!(
+            *effects_rx.try_recv().expect("expected a Failed effect"),
+            pat!(Effect {
+                invocation_id: eq(invocation_id),
+                kind: pat!(EffectKind::Failed(predicate(|e: &InvocationError| e
+                    .code()
+                    == codes::INTERNAL)))
             })
         );
     }
