@@ -956,7 +956,6 @@ pub struct SnapshotsOptions {
     /// Default: `1`
     ///
     /// Since v1.7.0
-    #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(default = "default_num_retained")]
     pub num_retained: NonZeroU8,
 
