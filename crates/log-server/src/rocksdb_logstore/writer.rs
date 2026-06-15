@@ -22,7 +22,7 @@ use tracing::{debug, error, trace};
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_token};
 use restate_rocksdb::{IoMode, Priority, RocksDb, RocksError};
 use restate_types::GenerationalNodeId;
-use restate_types::config::{Configuration, LogServerOptions};
+use restate_types::config::{Configuration, LogServerOptions, LogStoreMemoryConfig};
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{Payloads, Status};
 

@@ -20,7 +20,7 @@ use restate_rocksdb::configuration::create_empty_db_options;
 use restate_rocksdb::{
     CfExactPattern, CfName, DbName, DbSpecBuilder, OpenMode, RocksDb, RocksDbManager,
 };
-use restate_types::config::{Configuration, LogServerOptions};
+use restate_types::config::{Configuration, LogServerOptions, LogStoreMemoryConfig};
 use restate_types::health::HealthStatus;
 use restate_types::protobuf::common::{DatabaseKind, LogServerStatus};
 use restate_util_bytecount::ByteCount;
