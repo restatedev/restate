@@ -76,25 +76,25 @@ impl EventListener for LoggingEventListener {
     fn on_flush_completed(&self, i: &FlushJobInfo) {
         let trigger = i.flush_reason().as_friendly_reason();
 
+        let impact = if i.triggered_writes_slowdown() {
+            // If true, then rocksdb is currently slowing-down all writes to prevent
+            // creating too many Level 0 files as compaction seems not able to
+            // catch up the write request speed.  This indicates that there are
+            // too many files in Level 0.
+            "write-slowdown"
+        } else if i.triggered_writes_stop() {
+            // If true, then rocksdb is currently blocking any writes to prevent
+            // creating more L0 files.  This indicates that there are too many
+            // files in level 0.  Compactions should try to compact L0 files down
+            // to lower levels as soon as possible.
+            "write-stop"
+        } else {
+            "normal"
+        };
+
         if enabled!(tracing::Level::DEBUG) {
             let cf_name = i.cf_name().unwrap_or_default();
             let cf_name = String::from_utf8_lossy(&cf_name);
-
-            let impact = if i.triggered_writes_slowdown() {
-                // If true, then rocksdb is currently slowing-down all writes to prevent
-                // creating too many Level 0 files as compaction seems not able to
-                // catch up the write request speed.  This indicates that there are
-                // too many files in Level 0.
-                "write-slowdown"
-            } else if i.triggered_writes_stop() {
-                // If true, then rocksdb is currently blocking any writes to prevent
-                // creating more L0 files.  This indicates that there are too many
-                // files in level 0.  Compactions should try to compact L0 files down
-                // to lower levels as soon as possible.
-                "write-stop"
-            } else {
-                "normal"
-            };
 
             debug!(
                 db = %self.db_name,
@@ -103,7 +103,13 @@ impl EventListener for LoggingEventListener {
             );
         }
 
-        counter!(FLUSH_COMPLETED, "db" => self.db_name.clone(), "trigger" => trigger).increment(1);
+        counter!(
+            FLUSH_COMPLETED,
+            "db" => self.db_name.clone(),
+            "trigger" => trigger,
+            "impact" => impact
+        )
+        .increment(1);
     }
 
     fn on_compaction_begin(&self, i: &CompactionJobInfo) {

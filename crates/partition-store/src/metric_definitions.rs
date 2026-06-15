@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use metrics::{Unit, describe_counter, describe_histogram};
+use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
 
 pub(crate) const SNAPSHOT_UPLOAD_SUCCESS: &str = "restate.partition_store.snapshots.upload.total";
 pub(crate) const SNAPSHOT_UPLOAD_FAILED: &str =
@@ -19,6 +19,9 @@ pub(crate) const SNAPSHOT_DOWNLOAD_DURATION: &str =
     "restate.partition_store.snapshots.download.duration.seconds";
 pub(crate) const SNAPSHOT_DOWNLOAD_FAILED: &str =
     "restate.partition_store.snapshots.download.failed.total";
+pub(crate) const PARTITION_MEMTABLE_BUDGET: &str = "restate.partition_store.memtable_budget.bytes";
+pub(crate) const NUM_OPEN_PARTITIONS: &str = "restate.partition_store.num_open";
+pub(crate) const RECLAIM_FLUSH: &str = "restate.partition_store.reclaim_flush.total";
 
 pub(crate) fn describe_metrics() {
     describe_counter!(
@@ -49,5 +52,23 @@ pub(crate) fn describe_metrics() {
         SNAPSHOT_DOWNLOAD_FAILED,
         Unit::Count,
         "Number of failed partition snapshot download operations"
+    );
+
+    describe_gauge!(
+        PARTITION_MEMTABLE_BUDGET,
+        Unit::Bytes,
+        "The current memtable budget for a single partition on this node"
+    );
+
+    describe_gauge!(
+        NUM_OPEN_PARTITIONS,
+        Unit::Count,
+        "The number of open partition stores on this node"
+    );
+
+    describe_counter!(
+        RECLAIM_FLUSH,
+        Unit::Count,
+        "How many flushes were triggered by the partition store memory reclaimer"
     );
 }
