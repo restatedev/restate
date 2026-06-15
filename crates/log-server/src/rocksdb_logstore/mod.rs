@@ -14,6 +14,7 @@ mod error;
 pub mod keys;
 #[cfg(not(feature = "expose-internals"))]
 mod keys;
+mod memory;
 #[cfg(feature = "expose-internals")]
 pub mod metadata_merge;
 #[cfg(not(feature = "expose-internals"))]

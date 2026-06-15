@@ -13,9 +13,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-
-use restate_util_bytecount::{ByteCount, NonZeroByteCount};
 use tracing::warn;
+
+use restate_util_bytecount::NonZeroByteCount;
 
 use super::{BackgroundWorkBudget, CommonOptions, RocksDbOptions};
 
@@ -58,22 +58,6 @@ pub struct LogServerOptions {
     ///
     /// Default is 0 which maps to floor(number of CPU cores / 2)
     rocksdb_max_sub_compactions: u32,
-
-    /// The size limit of all WAL files
-    ///
-    /// Use this to limit the size of WAL files. If the size of all WAL files exceeds this limit,
-    /// the oldest WAL file will be deleted and if needed, memtable flush will be triggered.
-    ///
-    /// Note: RocksDB internally counts the uncompressed bytes to determine the WAL size, and since the
-    /// WAL may be compressed, the actual size on disk might be significantly smaller than this value (~1/4
-    /// depending on the compression ratio). For instance, if this is set to "1 MiB", then rocksdb
-    /// might decide to flush if the total WAL (on disk) reached ~260 KiB (compressed).
-    ///
-    /// Default is `0` which translates into 6 times the memory allocated for memtables for this
-    /// database.
-    #[serde(skip_serializing_if = "is_zero")]
-    #[serde(default)]
-    rocksdb_max_wal_size: ByteCount<true>,
 
     /// Whether to perform commits in background IO thread pools eagerly or not
     #[cfg_attr(feature = "schemars", schemars(skip))]
@@ -121,16 +105,6 @@ pub struct LogServerOptions {
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub rocksdb_disable_blob_compression: bool,
 
-    /// # Max background flushes
-    ///
-    /// Maximum number of concurrent flush operations for this database. Flushes are
-    /// latency-critical (they unblock writes) and are allocated equally across databases.
-    ///
-    /// If unset, defaults are computed based on CPU count and active node roles.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "schemars", schemars(skip))]
-    rocksdb_max_background_flushes: Option<NonZeroU32>,
-
     /// # Max background compactions
     ///
     /// Maximum number of concurrent compaction operations for this database.
@@ -146,9 +120,10 @@ pub struct LogServerOptions {
     /// available for memtables of the log-server.
     ///
     /// If `write-batch-commit-count` is set, the write batch will be limited to whichever
-    /// of the two is reached first.
+    /// of the two is reached first. The value is clamped to the size of a single memtable
+    /// which is derived from rocksdb-memory-budget.
     #[serde(skip_serializing_if = "Option::is_none")]
-    write_batch_commit_bytes: Option<NonZeroByteCount>,
+    pub write_batch_commit_bytes: Option<NonZeroByteCount>,
 
     /// # Write Batch (count)
     ///
@@ -160,6 +135,19 @@ pub struct LogServerOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub write_batch_commit_count: Option<NonZeroUsize>,
 
+    /// Custom Path for WAL files
+    ///
+    /// If unset, the default data directory is used for WAL files. If set, the path
+    /// must point to a directory that exists and is writable. The directory will be
+    /// used to store WAL files.
+    ///
+    /// The recommendation is to use low-latency NVMe SSD for the WAL directory with
+    /// sufficient IOPS capacity and bandwidth to your sustained workload. The `fdatasync`
+    /// latency of the storage device is a significant factor in the WAL performance if
+    /// `rocksdb-disable-wal-fsync` is set to `false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rocksdb_wal_dir: Option<PathBuf>,
+
     /// Disable WAL for the log-server
     ///
     /// [DANGEROUS] Not recommended for production use.
@@ -167,22 +155,42 @@ pub struct LogServerOptions {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     rocksdb_disable_wal: bool,
 
+    /// # Clamps target size for sst files
+    ///
+    /// The target size for sst files. Restate uses this value to internally determine
+    /// the number of memtables to keep in memory and how much to merge before flushing.
+    ///
+    /// The valus is automatically santized to 32 MiB if set to a smaller value.
+    ///
+    /// [default] is 128 MiB
+    pub rocksdb_max_file_size: NonZeroByteCount,
+
+    /// Disable RocksDB paranoid checks
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rocksdb_disable_paranoid_checks: bool,
+
     /// Starts in read-only mode
     ///
     /// This is useful for testing, debugging, and development.
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub read_only: bool,
-}
 
-fn is_zero(value: &ByteCount<true>) -> bool {
-    *value == ByteCount::ZERO
+    /// [DANGEROUS] Starts in in-memory
+    /// This is useful for testing, and development.
+    ///
+    // todo consider gating
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_memory: bool,
 }
 
 impl LogServerOptions {
     pub fn apply_common(&mut self, common: &CommonOptions) {
         self.rocksdb.apply_common(&common.rocksdb);
         if self.rocksdb_memory_budget.is_none() {
+            // todo: consider changing to a much smaller value (derived from the memtable sizes)
             self.rocksdb_memory_budget = Some(
                 NonZeroByteCount::try_from(
                     ((common.rocksdb_total_memtables_size().as_u64() as f64
@@ -195,17 +203,12 @@ impl LogServerOptions {
     }
 
     pub fn apply_background_work_budget(&mut self, budget: &BackgroundWorkBudget) {
-        if self.rocksdb_max_background_flushes.is_none() {
-            self.rocksdb_max_background_flushes = Some(budget.max_background_flushes);
-        }
+        // for log-server, we only need the budget for compactions, not flushes
+        // since flushes are internally capped. This is due to the nature of
+        // this database (number of column families).
         if self.rocksdb_max_background_compactions.is_none() {
             self.rocksdb_max_background_compactions = Some(budget.max_background_compactions);
         }
-    }
-
-    pub fn rocksdb_max_background_flushes(&self) -> NonZeroU32 {
-        self.rocksdb_max_background_flushes
-            .unwrap_or(NonZeroU32::new(2).unwrap())
     }
 
     pub fn rocksdb_max_background_compactions(&self) -> NonZeroU32 {
@@ -221,42 +224,12 @@ impl LogServerOptions {
         self.rocksdb_disable_wal_fsync
     }
 
-    pub fn rocksdb_max_wal_size(&self) -> NonZeroByteCount {
-        NonZeroByteCount::try_from(if self.rocksdb_max_wal_size == ByteCount::ZERO {
-            6 * self.rocksdb_memory_budget().as_u64()
-        } else {
-            self.rocksdb_max_wal_size.as_u64()
-        })
-        .unwrap()
-    }
-
     pub fn rocksdb_max_sub_compactions(&self) -> u32 {
         if self.rocksdb_max_sub_compactions == 0 {
-            let parallelism: NonZeroU32 = std::thread::available_parallelism()
-                .unwrap_or(NonZeroUsize::new(2).unwrap())
-                .try_into()
-                .expect("number of cpu cores fits in u32");
-
-            // floor(number of CPU cores / 2)
-            parallelism.get() / 2
+            1
         } else {
             self.rocksdb_max_sub_compactions
         }
-    }
-
-    pub fn write_batch_bytes(&self) -> NonZeroByteCount {
-        // The assumption here is that most of the bytes will go into
-        // the data column family.
-        //
-        // todo(asoli): replace 4 with a shared const (or config). We divide by 4
-        // to cap the batch size to a single memtable's worth of data at most
-        // (as we allow total of 4 memtables for the data CF).
-        self.write_batch_commit_bytes.unwrap_or_else(|| {
-            // we divide by 4 to get the size of a single memtable, then by 4
-            // to put an upper bound over the ballooning per individual memtables to 25%
-            // over its budget.
-            self.rocksdb_data_memtables_budget().div_ceil(8)
-        })
     }
 
     pub fn rocksdb_memory_budget(&self) -> NonZeroByteCount {
@@ -285,6 +258,12 @@ impl LogServerOptions {
     pub fn data_dir(&self) -> PathBuf {
         super::data_dir("log-store")
     }
+
+    pub fn wal_dir(&self) -> PathBuf {
+        self.rocksdb_wal_dir
+            .clone()
+            .unwrap_or_else(|| self.data_dir())
+    }
 }
 
 impl Default for LogServerOptions {
@@ -292,23 +271,27 @@ impl Default for LogServerOptions {
         Self {
             read_only: false,
             rocksdb: RocksDbOptions::default(),
+            in_memory: false,
             // set by apply_common in runtime
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.5,
             rocksdb_max_sub_compactions: 0,
+            rocksdb_wal_dir: None,
             rocksdb_disable_wal: false,
-            rocksdb_max_wal_size: ByteCount::ZERO,
             rocksdb_disable_wal_fsync: false,
+            rocksdb_disable_paranoid_checks: false,
             always_commit_in_background: false,
             #[allow(deprecated)]
             incoming_network_queue_length: None,
             rocksdb_enable_blob_separation: false,
             rocksdb_blob_min_size: None,
             rocksdb_disable_blob_compression: false,
-            rocksdb_max_background_flushes: None,
             rocksdb_max_background_compactions: None,
             write_batch_commit_bytes: None,
             write_batch_commit_count: None,
+            rocksdb_max_file_size: NonZeroByteCount::new(
+                NonZeroUsize::new(128 * 1024 * 1024).unwrap(),
+            ),
         }
     }
 }
