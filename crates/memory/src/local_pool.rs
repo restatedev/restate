@@ -435,8 +435,8 @@ impl Drop for LocalMemoryPool {
             // individually by orphaned LocalMemoryLease drops (which detect the dead bit).
             // Note: we cannot use `shrink()` here because that returns bytes to the
             // pool immediately — we need to withhold them.
-            let withheld = self.local_capacity.split(in_flight);
-            std::mem::forget(withheld);
+            let mut withheld = self.local_capacity.split(in_flight);
+            withheld.forget();
         }
 
         // self.local_capacity drops here, returning (capacity - in_flight) to the pool.
@@ -464,14 +464,14 @@ impl LocalMemoryLease {
     /// Both leases must originate from the same [`LocalMemoryPool`] (debug-asserted).
     /// After the merge, `other` is consumed without decrementing in-flight — the
     /// combined in-flight is now tracked by `self` alone.
-    pub fn merge(&mut self, other: LocalMemoryLease) {
+    pub fn merge(&mut self, mut other: LocalMemoryLease) {
         debug_assert!(
             Arc::ptr_eq(&self.shared, &other.shared),
             "cannot merge leases from different budgets"
         );
         self.size += other.size;
-        // Prevent `other`'s Drop from decrementing in-flight.
-        std::mem::forget(other);
+        // forget the `other` memory
+        other.size = 0;
     }
 
     /// Splits off `amount` bytes into a new lease.
