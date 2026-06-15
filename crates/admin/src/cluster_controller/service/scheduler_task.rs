@@ -12,8 +12,10 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use futures::future::OptionFuture;
+use restate_types::Versioned;
+use restate_types::partitions::state::PartitionReplicaSetStates;
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 
 use restate_core::network::TransportConnect;
 use restate_core::{
@@ -32,11 +34,13 @@ use restate_types::partitions::PartitionTable;
 
 use crate::cluster_controller::cluster_state_refresher::ClusterStateWatcher;
 use crate::cluster_controller::service::scheduler::{self, Scheduler};
+use crate::cluster_controller::service::scheduler_task::version_tracker::PartitionConfigVersionTracker;
 
 pub struct SchedulerTask<T> {
     cluster_state_watcher: ClusterStateWatcher,
     metadata_client: MetadataStoreClient,
     scheduler: Scheduler<T>,
+    replica_set_states: PartitionReplicaSetStates,
     sync_epoch_metadata_rx: mpsc::Receiver<Vec<PartitionId>>,
 }
 
@@ -47,12 +51,14 @@ where
     pub fn new(
         cluster_state_watcher: ClusterStateWatcher,
         scheduler: Scheduler<T>,
+        replica_set_states: PartitionReplicaSetStates,
         metadata_client: MetadataStoreClient,
         sync_epoch_metadata_rx: mpsc::Receiver<Vec<PartitionId>>,
     ) -> Self {
         Self {
             cluster_state_watcher,
             scheduler,
+            replica_set_states,
             metadata_client,
             sync_epoch_metadata_rx,
         }
@@ -73,6 +79,9 @@ where
 
         let cs = TaskCenter::with_current(|tc| tc.cluster_state().clone());
         let mut cs_changed = std::pin::pin!(cs.changed());
+
+        let mut partition_config_version_tracker =
+            PartitionConfigVersionTracker::new(self.replica_set_states.clone());
 
         let mut fetch_epoch_metadata_task = Some(self.spawn_fetch_epoch_metadata_task(Vec::new())?);
 
@@ -110,10 +119,12 @@ where
                     self.on_cluster_state_change(&cs, &legacy_cluster_state, nodes_config.live_load(), partition_table.live_load()).await
                 }
                 Some(epoch_metadata) = OptionFuture::from(fetch_epoch_metadata_task.as_mut()) => {
+                    trace!("applying new epoch metadata fetched from the metadata store");
                     match epoch_metadata {
                         Ok(epoch_metadata) => {
                             for (partition_id, epoch_metadata) in epoch_metadata {
                                 let (_, _, current, next, leadership_policy) = epoch_metadata.into_inner();
+                                partition_config_version_tracker.note_observed_version(partition_id, current.version(), next.as_ref().map(|n| n.version()));
                                 self.scheduler.update_partition_configuration(partition_id, current, next, leadership_policy);
                             }
 
@@ -143,6 +154,13 @@ where
                     }
                 }
                 _ = next_fetch_interval.tick() => {
+                    trace!("triggering an epoch metadata fetch as part of the periodic refreshes");
+                    if fetch_epoch_metadata_task.is_none() {
+                        fetch_epoch_metadata_task = Some(self.spawn_fetch_epoch_metadata_task(Vec::new())?);
+                    }
+                }
+                _ = partition_config_version_tracker.changed() => {
+                    trace!("epoch metadata version change detected, triggering an epoch metadata fetch");
                     if fetch_epoch_metadata_task.is_none() {
                         fetch_epoch_metadata_task = Some(self.spawn_fetch_epoch_metadata_task(Vec::new())?);
                     }
@@ -244,5 +262,94 @@ impl FetchEpochMetadataTask {
         }
 
         latest_epoch_metadata
+    }
+}
+
+mod version_tracker {
+    use std::collections::HashMap;
+    use std::collections::hash_map::Entry;
+
+    use restate_types::identifiers::PartitionId;
+    use restate_types::{Version, partitions::state::PartitionReplicaSetStates};
+
+    /// Keeps tracks of the partition config version (current and next) observed in the replica set states struct
+    /// and the ones fetched already by the scheduler task. This allows the scheduler loop to detect whenever a
+    /// higher version that it hasn't yet fetched is available, reducing the staleness of the epoch metadata.
+    pub(super) struct PartitionConfigVersionTracker {
+        replica_set_states: PartitionReplicaSetStates,
+        observed_current_versions: HashMap<PartitionId, Version>,
+        observed_next_versions: HashMap<PartitionId, Version>,
+    }
+
+    impl PartitionConfigVersionTracker {
+        pub(super) fn new(replica_set_states: PartitionReplicaSetStates) -> Self {
+            Self {
+                replica_set_states,
+                observed_current_versions: HashMap::default(),
+                observed_next_versions: HashMap::default(),
+            }
+        }
+
+        /// Returns a future that will resolve whenever a newer version than what we've previously seen is observed in the replica set states.
+        ///
+        /// Under the hood, this subscribes to all changes to replica set states and only fires whenever there's a version change, effectively
+        /// unsubscribing from durable lsn change notifications, etc
+        pub(super) async fn changed(&mut self) {
+            let replica_set_states = self.replica_set_states.clone();
+            loop {
+                let changed_future = replica_set_states.changed();
+                if self.update_if_changed() {
+                    break;
+                }
+                changed_future.await;
+            }
+        }
+
+        /// Updates the observed version of the given partition id.
+        pub(super) fn note_observed_version(
+            &mut self,
+            partition_id: PartitionId,
+            current_version: Version,
+            next_version: Option<Version>,
+        ) -> bool {
+            Self::update_version_if_newer(
+                &mut self.observed_current_versions,
+                partition_id,
+                current_version,
+            ) | Self::update_version_if_newer(
+                &mut self.observed_next_versions,
+                partition_id,
+                next_version.unwrap_or(Version::INVALID),
+            )
+        }
+
+        fn update_version_if_newer(
+            map: &mut HashMap<PartitionId, Version>,
+            partition_id: PartitionId,
+            version: Version,
+        ) -> bool {
+            match map.entry(partition_id) {
+                Entry::Occupied(mut occupied_entry) => {
+                    if occupied_entry.get() < &version {
+                        *occupied_entry.get_mut() = version;
+                        true
+                    } else {
+                        false
+                    }
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(version);
+                    true
+                }
+            }
+        }
+
+        fn update_if_changed(&mut self) -> bool {
+            let mut changed = false;
+            for p in self.replica_set_states.partition_versions() {
+                changed |= self.note_observed_version(p.id, p.current, p.next);
+            }
+            changed
+        }
     }
 }

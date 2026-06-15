@@ -230,6 +230,22 @@ impl PartitionReplicaSetStates {
             .map(|entry| (*entry.key(), entry.value().clone()))
     }
 
+    /// A lightweight accessor to the partition versions to avoid the clone introduced by the `iter` method.
+    pub fn partition_versions(&self) -> Vec<PartitionReplicaSetVersion> {
+        self.inner
+            .partitions
+            .iter()
+            .map(|entry| {
+                let (id, state) = (*entry.key(), entry.value());
+                PartitionReplicaSetVersion {
+                    id,
+                    current: state.observed_current_membership.version,
+                    next: state.observed_next_membership.as_ref().map(|s| s.version),
+                }
+            })
+            .collect()
+    }
+
     /// Future to monitor changes to the partition replica set states.
     ///
     /// If you don't want to miss any changes, it's advised to create this future first, read the
@@ -465,4 +481,11 @@ impl Merge for ReplicaSetState {
 pub struct MemberState {
     pub node_id: PlainNodeId,
     pub durable_lsn: Lsn,
+}
+
+#[derive(Debug, Clone)]
+pub struct PartitionReplicaSetVersion {
+    pub id: PartitionId,
+    pub current: Version,
+    pub next: Option<Version>,
 }
