@@ -20,6 +20,7 @@ use futures::{Stream, StreamExt};
 use gardal::futures::StreamExt as GardalStreamExt;
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
+use metrics::{Counter, counter};
 use opentelemetry::KeyValue;
 use opentelemetry::trace::{Span, SpanContext, Status, TraceFlags};
 use prost::Message as ProstMessage;
@@ -57,7 +58,7 @@ use restate_types::limit_key::LimitKey;
 use restate_types::schema::deployment::{Deployment, DeploymentType, ProtocolType};
 use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
 use restate_types::service_protocol::ServiceProtocolVersion;
-use restate_util_string::{ReString, RestateString, RestrictedValue};
+use restate_util_string::{ReString, RestateString, RestrictedValue, ToReString};
 use restate_worker_api::invoker::JournalMetadata;
 use restate_worker_api::invoker::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
@@ -72,6 +73,9 @@ use crate::invocation_task::{
     ResponseStream, TerminalLoopState, X_RESTATE_SERVER, collect_eager_state,
     invocation_id_to_header_value, leased_frame, new_invoker_body, retry_after,
     service_protocol_version_to_header_value,
+};
+use crate::metric_definitions::{
+    INVOKER_CLIENT_REQUESTS, INVOKER_RECEIVED_BYTES, INVOKER_SENT_BYTES,
 };
 use crate::{Notification, shortcircuit};
 
@@ -97,6 +101,8 @@ pub struct ServiceProtocolRunner<'a, EE, Schemas> {
 
     // task state
     command_index: CommandIndex,
+
+    deployment_type_str: &'static str,
 }
 
 impl<'a, EE, Schemas> ServiceProtocolRunner<'a, EE, Schemas>
@@ -106,6 +112,7 @@ where
     pub fn new(
         invocation_task: &'a mut InvocationTask<EE, Schemas>,
         service_protocol_version: ServiceProtocolVersion,
+        deployment_type: &DeploymentType,
     ) -> Self {
         let encoder = Encoder::new(service_protocol_version);
 
@@ -114,6 +121,7 @@ where
             service_protocol_version,
             encoder,
             command_index: 0,
+            deployment_type_str: deployment_type.as_static_str(),
         }
     }
 
@@ -178,6 +186,7 @@ where
         );
 
         let deployment_id = deployment.id;
+        let deployment_type_str = deployment.ty.as_static_str();
         // Prepare the request
         let (http_stream_tx, request) = Self::prepare_request(
             path,
@@ -197,6 +206,7 @@ where
                 self.service_protocol_version,
                 self.invocation_task.message_size_warning,
                 self.invocation_task.message_size_limit,
+                deployment_type_str,
             )
             .throttle(self.invocation_task.action_token_bucket.take())
         );
@@ -797,9 +807,11 @@ where
         trace!(restate.protocol.message = ?msg, "Sending message");
         let buf = self.encoder.encode(msg);
 
+        let len = buf.len();
         if http_stream_tx.send(Ok(leased_frame(buf, lease))).is_err() {
             return Err(InvokerError::UnexpectedClosedRequestStream);
         };
+        counter!(INVOKER_SENT_BYTES, "type" => self.deployment_type_str).increment(len as u64);
         Ok(())
     }
 
@@ -812,10 +824,12 @@ where
     ) -> Result<(), InvokerError> {
         trace!(restate.protocol.message = ?ty, "Sending message");
         let buf = self.encoder.encode_raw(ty, buf);
+        let len = buf.len();
 
         if http_stream_tx.send(Ok(leased_frame(buf, lease))).is_err() {
             return Err(InvokerError::UnexpectedClosedRequestStream);
         };
+        counter!(INVOKER_SENT_BYTES, "type" => self.deployment_type_str).increment(len as u64);
         Ok(())
     }
 
@@ -826,6 +840,10 @@ where
         // if service is running behind a gateway, the service can be down
         // but we still get a response code from the gateway itself. In that
         // case we still need to return the proper error
+        counter!(INVOKER_CLIENT_REQUESTS,
+            "type" => self.deployment_type_str,
+            "status_code" => parts.status.as_str().to_restring())
+        .increment(1);
         if GATEWAY_ERRORS_CODES.contains(&parts.status) {
             return Err(InvokerError::ServiceUnavailable(parts.status));
         }
@@ -1668,6 +1686,7 @@ pin_project_lite::pin_project! {
         #[pin]
         inner: S,
         decoder: Decoder,
+        rx_counter: Counter,
     }
 }
 
@@ -1677,6 +1696,7 @@ impl<S> DecoderStream<S> {
         service_protocol_version: ServiceProtocolVersion,
         message_size_warning: NonZeroUsize,
         message_size_limit: NonZeroUsize,
+        deployment_type_str: &'static str,
     ) -> Self {
         Self {
             inner,
@@ -1685,6 +1705,7 @@ impl<S> DecoderStream<S> {
                 message_size_warning,
                 message_size_limit,
             ),
+            rx_counter: counter!(INVOKER_RECEIVED_BYTES, "type" => deployment_type_str),
         }
     }
 
@@ -1712,6 +1733,7 @@ where
                             return Poll::Ready(Some(Ok(DecoderStreamItem::Parts(parts))));
                         }
                         ResponseChunk::Data(buf) => {
+                            this.rx_counter.increment(buf.len() as u64);
                             this.decoder.push(buf);
                         }
                     },

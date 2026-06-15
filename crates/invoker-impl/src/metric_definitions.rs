@@ -18,6 +18,10 @@ pub const INVOKER_CONCURRENCY_LIMIT: &str = "restate.invoker.concurrency_limit";
 pub const INVOKER_TASK_DURATION: &str = "restate.invoker.task_duration.seconds";
 pub const INVOKER_EAGER_STATE_TRUNCATED: &str = "restate.invoker.eager_state_truncated.total";
 
+pub const INVOKER_SENT_BYTES: &str = "restate.invoker.sent.bytes.total";
+pub const INVOKER_RECEIVED_BYTES: &str = "restate.invoker.received.bytes.total";
+pub const INVOKER_CLIENT_REQUESTS: &str = "restate.invoker.client_requests.total";
+
 pub const TASK_OP_STARTED: &str = "started";
 pub const TASK_OP_SUSPENDED: &str = "suspended";
 pub const TASK_OP_FAILED: &str = "failed";
@@ -64,5 +68,23 @@ pub(crate) fn describe_metrics() {
         INVOKER_EAGER_STATE_TRUNCATED,
         Unit::Count,
         "Number of invocations where eager state was truncated due to size limit"
+    );
+
+    describe_counter!(
+        INVOKER_SENT_BYTES,
+        Unit::Bytes,
+        "Total bytes sent to deployments by the invoker"
+    );
+
+    describe_counter!(
+        INVOKER_RECEIVED_BYTES,
+        Unit::Bytes,
+        "Total bytes invoker has received from deployments"
+    );
+
+    describe_counter!(
+        INVOKER_CLIENT_REQUESTS,
+        Unit::Count,
+        "Requests sent to deployments and their status codes"
     );
 }

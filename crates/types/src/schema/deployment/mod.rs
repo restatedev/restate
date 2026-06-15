@@ -210,6 +210,20 @@ impl DeploymentType {
             DeploymentType::Lambda { .. } => ProtocolType::RequestResponse,
         }
     }
+
+    pub const fn as_static_str(&self) -> &'static str {
+        match self {
+            DeploymentType::Http {
+                protocol_type: ProtocolType::BidiStream,
+                ..
+            } => "Http/bidi-stream",
+            DeploymentType::Http {
+                protocol_type: ProtocolType::RequestResponse,
+                ..
+            } => "Http/request-response",
+            DeploymentType::Lambda { .. } => "Lambda",
+        }
+    }
 }
 
 pub trait DeploymentResolver {

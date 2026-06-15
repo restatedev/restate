@@ -592,6 +592,7 @@ where
             let service_protocol_runner = service_protocol_runner_v4::ServiceProtocolRunner::new(
                 self,
                 chosen_service_protocol_version,
+                &deployment.ty,
             );
             service_protocol_runner
                 .run(
