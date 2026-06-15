@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,7 +21,8 @@ use restate_core::network::{
     BackPressureMode, Buffered, MessageRouterBuilder, Networking, TransportConnect,
 };
 use restate_core::{Metadata, TaskCenter, TaskCenterFutureExt, TaskKind, my_node_id};
-use restate_types::config::Configuration;
+use restate_memory::NonZeroByteCount;
+use restate_types::config::{Configuration, LogStoreMemoryConfig};
 use restate_types::logs::metadata::{
     Chain, LogletParams, ProviderConfiguration, ProviderKind, SegmentIndex,
 };
@@ -60,9 +62,13 @@ impl<T: TransportConnect> Factory<T> {
                 // NOTE: This is a shared pool with log-server store data path
                 "log-server-data",
                 || {
-                    Configuration::pinned()
-                        .log_server
-                        .rocksdb_data_memtables_budget()
+                    NonZeroByteCount::new(
+                        NonZeroUsize::new(
+                            LogStoreMemoryConfig::calculate(&Configuration::pinned().log_server)
+                                .write_buffer_size(),
+                        )
+                        .expect("write buffer must be non-zero"),
+                    )
                 },
             )
         });

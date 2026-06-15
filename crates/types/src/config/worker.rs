@@ -802,6 +802,16 @@ pub struct StorageOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "schemars", schemars(skip))]
     rocksdb_max_background_compactions: Option<NonZeroU32>,
+
+    /// # Clamps target size for sst files
+    ///
+    /// The target size for sst files. Restate uses this value to internally determine
+    /// the number of memtables to keep in memory and how much to merge before flushing.
+    ///
+    /// The valus is automatically santized to 16 MiB if set to a smaller value.
+    ///
+    /// [default] is 64 MiB
+    pub rocksdb_max_file_size: NonZeroByteCount,
 }
 
 impl StorageOptions {
@@ -830,12 +840,12 @@ impl StorageOptions {
 
     pub fn rocksdb_max_background_flushes(&self) -> NonZeroU32 {
         self.rocksdb_max_background_flushes
-            .unwrap_or(NonZeroU32::new(2).unwrap())
+            .unwrap_or(NonZeroU32::new(1).unwrap())
     }
 
     pub fn rocksdb_max_background_compactions(&self) -> NonZeroU32 {
         self.rocksdb_max_background_compactions
-            .unwrap_or(NonZeroU32::new(2).unwrap())
+            .unwrap_or(NonZeroU32::new(1).unwrap())
     }
 
     pub fn rocksdb_memory_budget(&self) -> NonZeroByteCount {
@@ -876,6 +886,9 @@ impl Default for StorageOptions {
             rocksdb_disable_auto_memory_reclaimer: false,
             rocksdb_max_background_flushes: None,
             rocksdb_max_background_compactions: None,
+            rocksdb_max_file_size: NonZeroByteCount::new(
+                NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
+            ),
         }
     }
 }
