@@ -38,12 +38,12 @@ use crate::live::Pinned;
 use crate::metadata::GlobalMetadata;
 use crate::net::address::{AdvertisedAddress, HttpIngressPort};
 use crate::net::metadata::{MetadataContainer, MetadataKind};
-use crate::retries::{RetryIter, RetryPolicy};
+use crate::retries::RetryPolicy;
 use crate::schema::deployment::{DeploymentResolver, DeploymentType, ProtocolType};
 use crate::schema::info::SchemaInfo;
 use crate::schema::invocation_target::{
     DeploymentStatus, InputRules, InvocationAttemptOptions, InvocationTargetMetadata,
-    InvocationTargetResolver, OnMaxAttempts, OutputRules,
+    InvocationTargetResolver, OnMaxAttempts, OnStatusCodeRule, OutputRules, ResolvedRetryPolicy,
 };
 use crate::schema::kafka::{
     DUPLICATED_KAFKA_CLUSTER_INFO_MESSAGE, KafkaCluster, KafkaClusterResolver,
@@ -378,6 +378,8 @@ struct ServiceRevision {
     retry_policy_max_interval: Option<Duration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     retry_policy_on_max_attempts: Option<OnMaxAttempts>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retry_policy_on_status_code: Option<Vec<OnStatusCodeRule>>,
 
     /// This is a cache for the computed value of ServiceOpenAPI
     #[serde(skip)]
@@ -588,6 +590,8 @@ struct Handler {
     retry_policy_max_interval: Option<Duration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     retry_policy_on_max_attempts: Option<OnMaxAttempts>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retry_policy_on_status_code: Option<Vec<OnStatusCodeRule>>,
 }
 
 impl MapAsVecItem for Handler {
@@ -663,6 +667,7 @@ impl Handler {
                 max_attempts: self.retry_policy_max_attempts,
                 max_interval: self.retry_policy_max_interval,
                 on_max_attempts: self.retry_policy_on_max_attempts,
+                on_status_code: self.retry_policy_on_status_code.clone(),
             },
             info,
         }
@@ -881,7 +886,7 @@ impl InvocationTargetResolver for Schema {
         deployment_id: Option<&DeploymentId>,
         service_name: impl AsRef<str>,
         handler_name: impl AsRef<str>,
-    ) -> (RetryIter<'static>, OnMaxAttempts) {
+    ) -> ResolvedRetryPolicy {
         let configuration = Configuration::pinned();
         let mut retry_policy = configuration.resolve_default_retry_policy();
 
@@ -894,29 +899,20 @@ impl InvocationTargetResolver for Schema {
                 .get(service_name.as_ref())
                 .map(|a| &a.service_revision)
         }) else {
-            return (
-                retry_policy.as_retry_policy().into_iter(),
-                retry_policy.on_max_attempts,
-            );
+            return retry_policy.into_resolved();
         };
 
         retry_policy.merge_with_service_revision_overrides(service_revision);
 
         let Some(handler) = service_revision.handlers.get(handler_name.as_ref()) else {
-            return (
-                retry_policy.as_retry_policy().into_iter(),
-                retry_policy.on_max_attempts,
-            );
+            return retry_policy.into_resolved();
         };
 
         retry_policy.merge_with_handler_overrides(handler);
 
         retry_policy.max_attempts = configuration.clamp_max_attempts(retry_policy.max_attempts);
 
-        (
-            retry_policy.as_retry_policy().into_iter(),
-            retry_policy.on_max_attempts,
-        )
+        retry_policy.into_resolved()
     }
 }
 
@@ -1238,6 +1234,9 @@ impl ComputedRetryPolicy {
         if let Some(on_max_attempts) = service_revision.retry_policy_on_max_attempts {
             self.on_max_attempts = on_max_attempts;
         }
+        if let Some(on_status_code) = &service_revision.retry_policy_on_status_code {
+            self.on_status_code.clone_from(on_status_code);
+        }
     }
 
     fn merge_with_handler_overrides(&mut self, handler: &Handler) {
@@ -1256,6 +1255,9 @@ impl ComputedRetryPolicy {
         if let Some(on_max_attempts) = handler.retry_policy_on_max_attempts {
             self.on_max_attempts = on_max_attempts;
         }
+        if let Some(on_status_code) = &handler.retry_policy_on_status_code {
+            self.on_status_code.clone_from(on_status_code);
+        }
     }
 
     pub(super) fn as_retry_policy(&self) -> RetryPolicy {
@@ -1270,6 +1272,14 @@ impl ComputedRetryPolicy {
                 .max_attempts
                 .map(|n| NonZeroUsize::new(n.get() - 1).expect("max_attempts > 1")),
             max_interval: self.max_interval,
+        }
+    }
+
+    fn into_resolved(self) -> ResolvedRetryPolicy {
+        ResolvedRetryPolicy {
+            retry_iter: self.as_retry_policy().into_iter(),
+            on_max_attempts: self.on_max_attempts,
+            on_status_code: self.on_status_code,
         }
     }
 }
@@ -1293,6 +1303,8 @@ impl Configuration {
                 crate::config::OnMaxAttempts::Pause => OnMaxAttempts::Pause,
                 crate::config::OnMaxAttempts::Kill => OnMaxAttempts::Kill,
             },
+            // on_status_code is only configurable via the deployment manifest (service/handler level).
+            on_status_code: Vec::new(),
         }
     }
 }

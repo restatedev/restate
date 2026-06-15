@@ -62,7 +62,15 @@ pub trait InvocationTargetResolver {
         deployment_id: Option<&DeploymentId>,
         service_name: impl AsRef<str>,
         handler_name: impl AsRef<str>,
-    ) -> (RetryIter<'static>, OnMaxAttempts);
+    ) -> ResolvedRetryPolicy;
+}
+
+#[derive(Debug)]
+pub struct ResolvedRetryPolicy {
+    pub retry_iter: RetryIter<'static>,
+    pub on_max_attempts: OnMaxAttempts,
+    /// Status-code rules, in declared order. The first matching rule wins.
+    pub on_status_code: Vec<OnStatusCodeRule>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -73,6 +81,35 @@ pub enum OnMaxAttempts {
     Pause,
     /// Kill the invocation when max attempts are reached.
     Kill,
+}
+
+/// # On status code action
+///
+/// Action to take when an invocation fails with a status code matching a [`OnStatusCodeRule`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
+pub enum OnStatusCodeAction {
+    /// Pause the invocation.
+    Pause,
+    /// Kill the invocation.
+    Kill,
+}
+
+/// # On status code rule
+///
+/// When an invocation fails with `status_code`, apply `action` immediately instead of the usual retry policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
+pub struct OnStatusCodeRule {
+    /// # Status code
+    ///
+    /// The status code, returned by the handler, this rule matches against.
+    pub status_code: u16,
+
+    /// # Action
+    ///
+    /// Action to take when this rule matches.
+    pub action: OnStatusCodeAction,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -574,13 +611,14 @@ pub mod test_util {
             _: Option<&DeploymentId>,
             _: impl AsRef<str>,
             _: impl AsRef<str>,
-        ) -> (RetryIter<'static>, OnMaxAttempts) {
+        ) -> ResolvedRetryPolicy {
             let retry_policy = ServiceRetryPolicyMetadata::default();
 
-            (
-                retry_policy.as_retry_policy().into_iter(),
-                retry_policy.on_max_attempts,
-            )
+            ResolvedRetryPolicy {
+                retry_iter: retry_policy.as_retry_policy().into_iter(),
+                on_max_attempts: retry_policy.on_max_attempts,
+                on_status_code: retry_policy.on_status_code,
+            }
         }
     }
 

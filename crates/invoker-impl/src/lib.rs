@@ -59,7 +59,7 @@ use restate_types::journal_v2::{
 };
 use restate_types::live::{Live, LiveLoad};
 use restate_types::schema::deployment::DeploymentResolver;
-use restate_types::schema::invocation_target::InvocationTargetResolver;
+use restate_types::schema::invocation_target::{InvocationTargetResolver, ResolvedRetryPolicy};
 use restate_types::sharding::KeyRange;
 use restate_util_time::DurationExt;
 use restate_worker_api::invoker::capacity::TokenBucket;
@@ -641,12 +641,15 @@ where
         )
     )]
     fn handle_vqueue_invoke(&mut self, options: &InvokerOptions, mut command: VQueueInvokeCommand) {
-        let (mut retry_iter, on_max_attempts) =
-            self.schemas.live_load().resolve_invocation_retry_policy(
-                None,
-                command.invocation_target.service_name(),
-                command.invocation_target.handler_name(),
-            );
+        let ResolvedRetryPolicy {
+            mut retry_iter,
+            on_max_attempts,
+            on_status_code,
+        } = self.schemas.live_load().resolve_invocation_retry_policy(
+            None,
+            command.invocation_target.service_name(),
+            command.invocation_target.handler_name(),
+        );
 
         // Adjust the retry_iter so it picks up the next retry period given the number of retry
         // attempts we have already done prior to the creation of this task.
@@ -674,6 +677,7 @@ where
                 command.idempotency_key,
                 retry_iter,
                 on_max_attempts,
+                on_status_code,
                 concurrency_slot,
             ),
             budget,
@@ -697,12 +701,15 @@ where
         invocation_target: InvocationTarget,
         budget: LocalMemoryPool,
     ) {
-        let (retry_iter, on_max_attempts) =
-            self.schemas.live_load().resolve_invocation_retry_policy(
-                None,
-                invocation_target.service_name(),
-                invocation_target.handler_name(),
-            );
+        let ResolvedRetryPolicy {
+            retry_iter,
+            on_max_attempts,
+            on_status_code,
+        } = self.schemas.live_load().resolve_invocation_retry_policy(
+            None,
+            invocation_target.service_name(),
+            invocation_target.handler_name(),
+        );
 
         let storage_reader = self.invocation_state_machine_manager.storage_reader();
         let concurrency_slot = self.quota.acquire_slot();
@@ -719,6 +726,7 @@ where
                 None,
                 retry_iter,
                 on_max_attempts,
+                on_status_code,
                 concurrency_slot,
             ),
             budget,
@@ -1500,6 +1508,7 @@ where
             error.is_transient(),
             error.next_retry_interval_override(),
             error.should_pause(),
+            error.sdk_status_code(),
             error.should_bump_start_message_retry_count_since_last_stored_entry(),
             |duration| self.retry_timers.insert(invocation_id, duration),
         );
@@ -1890,10 +1899,10 @@ mod tests {
     use restate_types::journal_events::EventType;
     use restate_types::journal_v2::{Command, Encoder, Entry, OutputCommand, OutputResult};
     use restate_types::live::Constant;
-    use restate_types::retries::{RetryIter, RetryPolicy};
+    use restate_types::retries::RetryPolicy;
     use restate_types::schema::deployment::Deployment;
     use restate_types::schema::invocation_target::{
-        InvocationAttemptOptions, InvocationTargetMetadata, OnMaxAttempts,
+        InvocationAttemptOptions, InvocationTargetMetadata, OnMaxAttempts, ResolvedRetryPolicy,
     };
     use restate_types::schema::service::ServiceMetadata;
     use restate_types::service_protocol::ServiceProtocolVersion;
@@ -2136,16 +2145,18 @@ mod tests {
             _: Option<&DeploymentId>,
             _: impl AsRef<str>,
             _: impl AsRef<str>,
-        ) -> (RetryIter<'static>, OnMaxAttempts) {
-            (
-                self.0
+        ) -> ResolvedRetryPolicy {
+            ResolvedRetryPolicy {
+                retry_iter: self
+                    .0
                     .clone()
                     .unwrap_or_else(|| {
                         RetryPolicy::exponential(Duration::from_millis(100), 2.0, None, None)
                     })
                     .into_iter(),
-                self.1.unwrap_or(OnMaxAttempts::Kill),
-            )
+                on_max_attempts: self.1.unwrap_or(OnMaxAttempts::Kill),
+                on_status_code: Vec::new(),
+            }
         }
     }
 
@@ -2432,6 +2443,7 @@ mod tests {
             None,
             RetryPolicy::fixed_delay(Duration::from_millis(100), None).into_iter(),
             OnMaxAttempts::Kill,
+            Vec::new(),
             ConcurrencySlot::empty(),
         );
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -2844,13 +2856,18 @@ mod tests {
                 deployment_id: Option<&DeploymentId>,
                 _service_name: impl AsRef<str>,
                 _handler_name: impl AsRef<str>,
-            ) -> (RetryIter<'static>, OnMaxAttempts) {
+            ) -> ResolvedRetryPolicy {
                 // Both cases max attempts = 2, but OnMaxAttempts switches
                 let iter = RetryPolicy::fixed_delay(std::time::Duration::from_millis(1), Some(2))
                     .into_iter();
-                match deployment_id {
-                    None => (iter, OnMaxAttempts::Pause),
-                    Some(_) => (iter, OnMaxAttempts::Kill),
+                let on_max_attempts = match deployment_id {
+                    None => OnMaxAttempts::Pause,
+                    Some(_) => OnMaxAttempts::Kill,
+                };
+                ResolvedRetryPolicy {
+                    retry_iter: iter,
+                    on_max_attempts,
+                    on_status_code: Vec::new(),
                 }
             }
         }

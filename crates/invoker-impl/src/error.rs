@@ -321,6 +321,15 @@ impl InvokerError {
         }
     }
 
+    /// The status code carried by an error the handler/SDK explicitly returned.
+    pub(crate) fn sdk_status_code(&self) -> Option<InvocationErrorCode> {
+        match self {
+            InvokerError::Sdk(SdkInvocationError { error, .. }) => Some(error.code()),
+            InvokerError::SdkV2(SdkInvocationErrorV2 { error, .. }) => Some(error.code()),
+            _ => None,
+        }
+    }
+
     pub(crate) fn into_invocation_error(self) -> InvocationError {
         match self {
             InvokerError::Sdk(sdk_error) => *sdk_error.error,

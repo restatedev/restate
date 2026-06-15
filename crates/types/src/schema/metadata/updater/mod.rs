@@ -24,8 +24,8 @@ use crate::invocation::{
 use crate::schema::Redaction;
 use crate::schema::deployment::DeploymentType;
 use crate::schema::invocation_target::{
-    BadInputContentType, InputRules, InputValidationRule, OnMaxAttempts, OutputContentTypeRule,
-    OutputRules,
+    BadInputContentType, InputRules, InputValidationRule, OnMaxAttempts, OnStatusCodeAction,
+    OnStatusCodeRule, OutputContentTypeRule, OutputRules,
 };
 use crate::schema::kafka::{KafkaClusterName, KafkaClusterResolver};
 use crate::schema::registry::{DeploymentConnectionParameters, DiscoveryResponse};
@@ -36,6 +36,7 @@ use bilrost::encoding::Collection;
 use http::{HeaderValue, Uri};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::hash_map::Entry;
 use std::error::Error;
 use std::num::NonZeroUsize;
@@ -43,6 +44,47 @@ use std::ops::{Deref, Not, RangeInclusive};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
+
+impl From<endpoint_manifest::RetryPolicyOnStatusCodeAction> for OnStatusCodeAction {
+    fn from(value: endpoint_manifest::RetryPolicyOnStatusCodeAction) -> Self {
+        match value {
+            endpoint_manifest::RetryPolicyOnStatusCodeAction::Pause => Self::Pause,
+            endpoint_manifest::RetryPolicyOnStatusCodeAction::Kill => Self::Kill,
+        }
+    }
+}
+
+impl TryFrom<endpoint_manifest::RetryPolicyOnStatusCodeRule> for OnStatusCodeRule {
+    // Status codes are u16; a manifest value outside that range is rejected.
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(
+        value: endpoint_manifest::RetryPolicyOnStatusCodeRule,
+    ) -> Result<Self, Self::Error> {
+        Ok(Self {
+            status_code: u16::try_from(value.status_code)?,
+            action: value.action.into(),
+        })
+    }
+}
+
+/// Rejects on_status_code rules that target the same status code more than once.
+/// `resource_name` is the service or handler the rules belong to.
+fn ensure_unique_status_codes(
+    resource_name: &str,
+    rules: &[OnStatusCodeRule],
+) -> Result<(), ServiceError> {
+    let mut seen = HashSet::with_capacity(rules.len());
+    for rule in rules {
+        if !seen.insert(rule.status_code) {
+            return Err(ServiceError::DuplicateOnStatusCode(
+                resource_name.to_owned(),
+                rule.status_code,
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// Whether to allow breaking schema changes between the existing service revision and the new service revision.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -147,6 +189,12 @@ pub(in crate::schema) enum ServiceError {
     #[error("modifying retention time for service type {0} is unsupported")]
     #[code(unknown)]
     CannotModifyRetentionTime(ServiceType),
+    #[error("'{0}' defines the on_status_code retry rule for status code {1} more than once")]
+    #[code(unknown)]
+    DuplicateOnStatusCode(String, u16),
+    #[error("an on_status_code retry rule has a status code out of the valid range 0..=65535: {0}")]
+    #[code(unknown)]
+    OnStatusCodeOutOfRange(#[from] std::num::TryFromIntError),
 }
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
@@ -602,6 +650,25 @@ impl SchemaUpdater {
             }),
             retry_policy_on_max_attempts
         );
+        // Resolved manually because the macro moves the value out of the previous revision,
+        // which doesn't work for the non-Copy Vec. An empty manifest array means "not set".
+        let retry_policy_on_status_code = if service.retry_policy_on_status_code.is_empty() {
+            if service_level_settings_behavior.preserve() {
+                previous_service_revision
+                    .and_then(|old_svc| old_svc.retry_policy_on_status_code.clone())
+            } else {
+                None
+            }
+        } else {
+            let rules = service
+                .retry_policy_on_status_code
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<Vec<OnStatusCodeRule>, _>>()
+                .map_err(ServiceError::from)?;
+            ensure_unique_status_codes(service_name, &rules)?;
+            Some(rules)
+        };
 
         let handlers = service
             .handlers
@@ -633,6 +700,7 @@ impl SchemaUpdater {
             retry_policy_max_attempts,
             retry_policy_max_interval,
             retry_policy_on_max_attempts,
+            retry_policy_on_status_code,
             service_openapi_cache: Default::default(),
         })
     }
@@ -1264,6 +1332,19 @@ impl Handler {
             endpoint_manifest::RetryPolicyOnMaxAttempts::Pause => OnMaxAttempts::Pause,
             endpoint_manifest::RetryPolicyOnMaxAttempts::Kill => OnMaxAttempts::Kill,
         });
+        // An empty manifest array means "not set" (inherit the service-level rules).
+        let retry_policy_on_status_code = if handler.retry_policy_on_status_code.is_empty() {
+            None
+        } else {
+            let rules = handler
+                .retry_policy_on_status_code
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<Vec<OnStatusCodeRule>, _>>()
+                .map_err(ServiceError::from)?;
+            ensure_unique_status_codes(handler.name.as_str(), &rules)?;
+            Some(rules)
+        };
 
         if !is_service_public && handler.ingress_private == Some(false) {
             return Err(ServiceError::BadHandlerVisibility {
@@ -1303,6 +1384,7 @@ impl Handler {
             enable_lazy_state: handler.enable_lazy_state,
             public: handler.ingress_private.map(bool::not),
             retry_policy_on_max_attempts,
+            retry_policy_on_status_code,
         })
     }
 

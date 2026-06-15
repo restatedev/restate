@@ -3,7 +3,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "title": "Endpoint",
-  "description": "Restate endpoint manifest v3",
+  "description": "Restate endpoint manifest v5",
   "properties": {
     "protocolMode": {
       "title": "ProtocolMode",
@@ -207,6 +207,35 @@
                   ],
                   "description": "Retry policy behavior on max attempts."
                 },
+                "retryPolicyOnStatusCode": {
+                  "title": "RetryPolicyOnStatusCode",
+                  "type": "array",
+                  "description": "Retry policy rules matched against the status code the invocation fails with. The first matching rule wins and its action is applied immediately; if no rule matches, the usual retry policy applies.",
+                  "items": {
+                    "title": "RetryPolicyOnStatusCodeRule",
+                    "type": "object",
+                    "properties": {
+                      "statusCode": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Status code, returned by the handler, this rule matches against."
+                      },
+                      "action": {
+                        "title": "RetryPolicyOnStatusCodeAction",
+                        "enum": [
+                          "PAUSE",
+                          "KILL"
+                        ],
+                        "description": "Action to take when this rule matches."
+                      }
+                    },
+                    "required": [
+                      "statusCode",
+                      "action"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
                 "metadata": {
                   "type": "object",
                   "description": "Custom metadata of this handler definition. This metadata is shown on the Admin API when querying the service/handler definition.",
@@ -275,6 +304,35 @@
               "KILL"
             ],
             "description": "Retry policy behavior on max attempts."
+          },
+          "retryPolicyOnStatusCode": {
+            "title": "RetryPolicyOnStatusCode",
+            "type": "array",
+            "description": "Retry policy rules matched against the status code the invocation fails with. The first matching rule wins and its action is applied immediately; if no rule matches, the usual retry policy applies.",
+            "items": {
+              "title": "RetryPolicyOnStatusCodeRule",
+              "type": "object",
+              "properties": {
+                "statusCode": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Status code, returned by the handler, this rule matches against."
+                },
+                "action": {
+                  "title": "RetryPolicyOnStatusCodeAction",
+                  "enum": [
+                    "PAUSE",
+                    "KILL"
+                  ],
+                  "description": "Action to take when this rule matches."
+                }
+              },
+              "required": [
+                "statusCode",
+                "action"
+              ],
+              "additionalProperties": false
+            }
           },
           "metadata": {
             "type": "object",

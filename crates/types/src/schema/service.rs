@@ -25,7 +25,9 @@ use crate::invocation::{
 use crate::net::address::AdvertisedAddress;
 use crate::net::address::HttpIngressPort;
 use crate::schema::info::SchemaInfo;
-use crate::schema::invocation_target::{DEFAULT_IDEMPOTENCY_RETENTION, OnMaxAttempts};
+use crate::schema::invocation_target::{
+    DEFAULT_IDEMPOTENCY_RETENTION, OnMaxAttempts, OnStatusCodeRule,
+};
 
 /// This API returns service metadata, as shown in the Admin API.
 ///
@@ -246,6 +248,15 @@ pub struct ServiceRetryPolicyMetadata {
     /// Behavior when max attempts are reached.
     #[serde(default)]
     pub on_max_attempts: OnMaxAttempts,
+
+    /// # On status code
+    ///
+    /// Rules applied when the invocation fails with a specific status code.
+    ///
+    /// The first matching rule wins, taking its action (pause/kill) immediately.
+    /// If no rule matches, the usual retry policy applies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_status_code: Vec<OnStatusCodeRule>,
 }
 
 impl Default for ServiceRetryPolicyMetadata {
@@ -256,6 +267,7 @@ impl Default for ServiceRetryPolicyMetadata {
             max_attempts: None,
             max_interval: None,
             on_max_attempts: Default::default(),
+            on_status_code: Vec::new(),
         }
     }
 }
@@ -492,6 +504,17 @@ pub struct HandlerRetryPolicyMetadata {
     /// Behavior when max attempts are reached.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_max_attempts: Option<OnMaxAttempts>,
+
+    /// # On status code
+    ///
+    /// Rules applied when the invocation fails with a specific status code.
+    ///
+    /// The first matching rule wins, taking its action (pause/kill) immediately.
+    /// If no rule matches, the usual retry policy applies.
+    ///
+    /// When set, this overrides all the service-level rules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_status_code: Option<Vec<OnStatusCodeRule>>,
 }
 
 #[cfg(feature = "test-util")]

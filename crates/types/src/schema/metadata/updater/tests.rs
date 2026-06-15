@@ -50,6 +50,7 @@ fn greeter_service_greet_handler() -> endpoint_manifest::Handler {
         enable_lazy_state: None,
         ingress_private: None,
         retry_policy_on_max_attempts: None,
+        retry_policy_on_status_code: Vec::new(),
     }
 }
 
@@ -73,6 +74,7 @@ fn greeter_workflow_greet_handler() -> endpoint_manifest::Handler {
         enable_lazy_state: None,
         ingress_private: None,
         retry_policy_on_max_attempts: None,
+        retry_policy_on_status_code: Vec::new(),
     }
 }
 
@@ -94,6 +96,7 @@ fn greeter_service() -> endpoint_manifest::Service {
         metadata: Default::default(),
         enable_lazy_state: None,
         retry_policy_on_max_attempts: None,
+        retry_policy_on_status_code: Vec::new(),
     }
 }
 
@@ -127,6 +130,7 @@ fn greeter_virtual_object() -> endpoint_manifest::Service {
             enable_lazy_state: None,
             ingress_private: None,
             retry_policy_on_max_attempts: None,
+            retry_policy_on_status_code: Vec::new(),
         }],
         idempotency_retention: None,
         inactivity_timeout: None,
@@ -134,6 +138,7 @@ fn greeter_virtual_object() -> endpoint_manifest::Service {
         metadata: Default::default(),
         enable_lazy_state: None,
         retry_policy_on_max_attempts: None,
+        retry_policy_on_status_code: Vec::new(),
     }
 }
 
@@ -155,6 +160,7 @@ fn greeter_workflow() -> endpoint_manifest::Service {
         metadata: Default::default(),
         enable_lazy_state: None,
         retry_policy_on_max_attempts: None,
+        retry_policy_on_status_code: Vec::new(),
     }
 }
 
@@ -188,6 +194,7 @@ fn another_greeter_service() -> endpoint_manifest::Service {
             enable_lazy_state: None,
             ingress_private: None,
             retry_policy_on_max_attempts: None,
+            retry_policy_on_status_code: Vec::new(),
         }],
         idempotency_retention: None,
         inactivity_timeout: None,
@@ -195,6 +202,7 @@ fn another_greeter_service() -> endpoint_manifest::Service {
         metadata: Default::default(),
         enable_lazy_state: None,
         retry_policy_on_max_attempts: None,
+        retry_policy_on_status_code: Vec::new(),
     }
 }
 
@@ -1047,6 +1055,7 @@ fn update_latest_deployment_add_handler() {
             enable_lazy_state: None,
             ingress_private: None,
             retry_policy_on_max_attempts: None,
+            retry_policy_on_status_code: Vec::new(),
         });
 
     updater
@@ -1121,6 +1130,7 @@ fn update_draining_deployment_add_handler() {
             enable_lazy_state: None,
             ingress_private: None,
             retry_policy_on_max_attempts: None,
+            retry_policy_on_status_code: Vec::new(),
         });
 
     updater
@@ -2230,6 +2240,98 @@ mod endpoint_manifest_options_propagation {
                 .iter()
                 .any(|info| info.message().contains("inactivity_timeout")
                     && info.message().contains("Request/Response")),
+            eq(true)
+        );
+    }
+
+    /// Registers a service with a service-level on_status_code rule (409 => Kill) and a greet
+    /// handler that overrides it (500 => Pause).
+    fn discover_service_with_on_status_code_rules() -> (Schema, DeploymentId) {
+        let mut updater = SchemaUpdater::new(Schema::default());
+        let deployment_id = updater
+            .add_deployment(add_deployment_request(vec![endpoint_manifest::Service {
+                retry_policy_on_status_code: vec![endpoint_manifest::RetryPolicyOnStatusCodeRule {
+                    status_code: 409,
+                    action: endpoint_manifest::RetryPolicyOnStatusCodeAction::Kill,
+                }],
+                handlers: vec![endpoint_manifest::Handler {
+                    retry_policy_on_status_code: vec![
+                        endpoint_manifest::RetryPolicyOnStatusCodeRule {
+                            status_code: 500,
+                            action: endpoint_manifest::RetryPolicyOnStatusCodeAction::Pause,
+                        },
+                    ],
+                    ..greeter_service_greet_handler()
+                }],
+                ..greeter_service()
+            }]))
+            .unwrap()
+            .1;
+        (updater.into_inner(), deployment_id)
+    }
+
+    #[test]
+    fn handler_level_on_status_code_overrides_service_level() {
+        let (schema, deployment_id) = discover_service_with_on_status_code_rules();
+
+        assert_that!(
+            schema
+                .resolve_invocation_retry_policy(
+                    Some(&deployment_id),
+                    GREETER_SERVICE_NAME,
+                    GREET_HANDLER_NAME,
+                )
+                .on_status_code,
+            eq(vec![OnStatusCodeRule {
+                status_code: 500,
+                action: OnStatusCodeAction::Pause,
+            }])
+        );
+    }
+
+    #[test]
+    fn handler_without_override_inherits_service_level_on_status_code() {
+        let (schema, deployment_id) = discover_service_with_on_status_code_rules();
+
+        assert_that!(
+            schema
+                .resolve_invocation_retry_policy(
+                    Some(&deployment_id),
+                    GREETER_SERVICE_NAME,
+                    "non_existent_handler",
+                )
+                .on_status_code,
+            eq(vec![OnStatusCodeRule {
+                status_code: 409,
+                action: OnStatusCodeAction::Kill,
+            }])
+        );
+    }
+
+    #[test]
+    fn on_status_code_rejects_duplicate_status_codes() {
+        let mut updater = SchemaUpdater::new(Schema::default());
+
+        let result =
+            updater.add_deployment(add_deployment_request(vec![endpoint_manifest::Service {
+                retry_policy_on_status_code: vec![
+                    endpoint_manifest::RetryPolicyOnStatusCodeRule {
+                        status_code: 500,
+                        action: endpoint_manifest::RetryPolicyOnStatusCodeAction::Pause,
+                    },
+                    endpoint_manifest::RetryPolicyOnStatusCodeRule {
+                        status_code: 500,
+                        action: endpoint_manifest::RetryPolicyOnStatusCodeAction::Kill,
+                    },
+                ],
+                ..greeter_service()
+            }]));
+
+        assert_that!(
+            matches!(
+                result.unwrap_err(),
+                SchemaError::Service(ServiceError::DuplicateOnStatusCode(_, 500))
+            ),
             eq(true)
         );
     }

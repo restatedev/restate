@@ -532,6 +532,7 @@ mod conversions {
                             retry_policy_max_attempts: None,
                             retry_policy_max_interval: None,
                             retry_policy_on_max_attempts: None,
+                            retry_policy_on_status_code: None,
                         };
                         v2_handlers.insert(handler_name, handler);
                     }
@@ -556,6 +557,7 @@ mod conversions {
                         retry_policy_max_attempts: None,
                         retry_policy_max_interval: None,
                         retry_policy_on_max_attempts: None,
+                        retry_policy_on_status_code: None,
                         service_openapi_cache: Arc::new(Default::default()),
                     };
 
@@ -872,6 +874,7 @@ mod conversions {
                                     retry_policy_max_attempts: None,
                                     retry_policy_max_interval: None,
                                     retry_policy_on_max_attempts: None,
+                                    retry_policy_on_status_code: None,
                                     service_openapi_cache: Arc::new(Default::default()),
                                     handlers: HashMap::from([(
                                         "greet".to_owned(),
@@ -894,6 +897,7 @@ mod conversions {
                                             retry_policy_max_attempts: None,
                                             retry_policy_max_interval: None,
                                             retry_policy_on_max_attempts: None,
+                                            retry_policy_on_status_code: None,
                                         },
                                     )]),
                                 }),
@@ -918,6 +922,7 @@ mod conversions {
                                     retry_policy_max_attempts: None,
                                     retry_policy_max_interval: None,
                                     retry_policy_on_max_attempts: None,
+                                    retry_policy_on_status_code: None,
                                     service_openapi_cache: Arc::new(Default::default()),
                                     handlers: HashMap::from([
                                         (
@@ -943,6 +948,7 @@ mod conversions {
                                                 retry_policy_max_attempts: None,
                                                 retry_policy_max_interval: None,
                                                 retry_policy_on_max_attempts: None,
+                                                retry_policy_on_status_code: None,
                                             },
                                         ),
                                         (
@@ -968,6 +974,7 @@ mod conversions {
                                                 retry_policy_max_attempts: None,
                                                 retry_policy_max_interval: None,
                                                 retry_policy_on_max_attempts: None,
+                                                retry_policy_on_status_code: None,
                                             },
                                         ),
                                     ]),
@@ -1009,6 +1016,7 @@ mod conversions {
                                 retry_policy_max_attempts: None,
                                 retry_policy_max_interval: None,
                                 retry_policy_on_max_attempts: None,
+                                retry_policy_on_status_code: None,
                                 service_openapi_cache: Arc::new(Default::default()),
                                 handlers: HashMap::from([(
                                     "greet".to_owned(),
@@ -1031,6 +1039,7 @@ mod conversions {
                                         retry_policy_max_attempts: None,
                                         retry_policy_max_interval: None,
                                         retry_policy_on_max_attempts: None,
+                                        retry_policy_on_status_code: None,
                                     },
                                 )]),
                             }),

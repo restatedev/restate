@@ -25,4 +25,6 @@ enum ServiceDiscoveryProtocolVersion {
   V3 = 3;
   // add lambda compression
   V4 = 4;
+  // add retry policy on_status_code (pause/kill on specific handler status codes)
+  V5 = 5;
 }

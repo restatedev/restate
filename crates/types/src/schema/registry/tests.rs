@@ -38,6 +38,7 @@ fn greeter_service_greet_handler() -> endpoint_manifest::Handler {
         enable_lazy_state: None,
         ingress_private: None,
         retry_policy_on_max_attempts: None,
+        retry_policy_on_status_code: Vec::new(),
     }
 }
 
@@ -59,6 +60,7 @@ fn greeter_service() -> endpoint_manifest::Service {
         metadata: Default::default(),
         enable_lazy_state: None,
         retry_policy_on_max_attempts: None,
+        retry_policy_on_status_code: Vec::new(),
     }
 }
 

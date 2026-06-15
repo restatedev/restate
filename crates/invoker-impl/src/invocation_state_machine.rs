@@ -15,9 +15,12 @@ use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 
 use restate_memory::LocalMemoryPool;
+use restate_types::errors::InvocationErrorCode;
 use restate_types::identifiers::EntryIndex;
 use restate_types::retries;
-use restate_types::schema::invocation_target::OnMaxAttempts;
+use restate_types::schema::invocation_target::{
+    OnMaxAttempts, OnStatusCodeAction, OnStatusCodeRule, ResolvedRetryPolicy,
+};
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::vqueues::VQueueId;
 use restate_worker_api::resources::ReservedResources;
@@ -213,6 +216,18 @@ struct RetryPolicyState {
     selected_from_deployment_id: Option<DeploymentId>,
     retry_iter: retries::RetryIter<'static>,
     on_max_attempts: OnMaxAttempts,
+    /// The first matching rule wins.
+    on_status_code: Vec<OnStatusCodeRule>,
+}
+
+impl RetryPolicyState {
+    /// Returns the action to apply if `status_code` matches a rule, otherwise `None`.
+    fn match_status_code(&self, status_code: InvocationErrorCode) -> Option<OnStatusCodeAction> {
+        self.on_status_code
+            .iter()
+            .find(|rule| rule.status_code == u16::from(status_code))
+            .map(|rule| rule.action)
+    }
 }
 
 impl<K: TimerKey> InvocationStateMachine<K> {
@@ -225,6 +240,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         idempotency_key: Option<ReString>,
         retry_iter: retries::RetryIter<'static>,
         on_max_attempts: OnMaxAttempts,
+        on_status_code: Vec<OnStatusCodeRule>,
         concurrency_slot: ConcurrencySlot,
     ) -> InvocationStateMachine<K> {
         let start_message_retry_count_since_last_stored_command =
@@ -242,6 +258,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
                 selected_from_deployment_id: None,
                 retry_iter,
                 on_max_attempts,
+                on_status_code,
             },
             start_message_retry_count_since_last_stored_command,
             requested_pause: false,
@@ -296,7 +313,11 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             return;
         }
 
-        let (mut retry_iter, on_max_attempts) = target_resolver.resolve_invocation_retry_policy(
+        let ResolvedRetryPolicy {
+            mut retry_iter,
+            on_max_attempts,
+            on_status_code,
+        } = target_resolver.resolve_invocation_retry_policy(
             Some(&selected_deployment_id),
             self.invocation_target.service_name(),
             self.invocation_target.handler_name(),
@@ -308,6 +329,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             selected_from_deployment_id: Some(selected_deployment_id),
             retry_iter,
             on_max_attempts,
+            on_status_code,
         }
     }
 
@@ -546,6 +568,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         error_is_transient: bool,
         next_retry_interval_override: Option<Duration>,
         should_pause: bool,
+        sdk_status_code: Option<InvocationErrorCode>,
         should_bump_start_message_retry_count_since_last_stored_command: bool,
         register_timer: impl FnOnce(Duration) -> K,
     ) -> OnTaskError {
@@ -579,6 +602,17 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         if self.requested_pause || should_pause {
             // Shortcircuit to pause, as this is what the user asked for
             return OnTaskError::Pause;
+        }
+
+        // If the SDK error carries a status code matching one of the on_status_code rules,
+        // apply its action immediately, overriding the usual retry policy.
+        if let Some(status_code) = sdk_status_code
+            && let Some(action) = self.retry_policy_state.match_status_code(status_code)
+        {
+            return match action {
+                OnStatusCodeAction::Pause => OnTaskError::Pause,
+                OnStatusCodeAction::Kill => OnTaskError::Kill,
+            };
         }
 
         if error_is_transient
@@ -741,8 +775,84 @@ mod tests {
             None,
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
             OnMaxAttempts::Kill,
+            Vec::new(),
             ConcurrencySlot::empty(),
         )
+    }
+
+    #[test]
+    fn on_status_code_kills_on_matching_code() {
+        let mut ism = create_test_invocation_state_machine();
+        ism.retry_policy_state.on_status_code = vec![OnStatusCodeRule {
+            status_code: 409,
+            action: OnStatusCodeAction::Kill,
+        }];
+
+        // A matching status code applies its action immediately, even though retries remain.
+        let_assert!(
+            OnTaskError::Kill = ism.handle_task_error(
+                true,
+                None,
+                false,
+                Some(InvocationErrorCode::new(409)),
+                true,
+                |_| 0
+            )
+        );
+    }
+
+    #[test]
+    fn on_status_code_pauses_on_matching_code() {
+        let mut ism = create_test_invocation_state_machine();
+        ism.retry_policy_state.on_status_code = vec![OnStatusCodeRule {
+            status_code: 500,
+            action: OnStatusCodeAction::Pause,
+        }];
+
+        let_assert!(
+            OnTaskError::Pause = ism.handle_task_error(
+                true,
+                None,
+                false,
+                Some(InvocationErrorCode::new(500)),
+                true,
+                |_| 0
+            )
+        );
+    }
+
+    #[test]
+    fn on_status_code_non_matching_code_falls_through_to_retry() {
+        let mut ism = create_test_invocation_state_machine();
+        ism.retry_policy_state.on_status_code = vec![OnStatusCodeRule {
+            status_code: 409,
+            action: OnStatusCodeAction::Kill,
+        }];
+
+        let_assert!(
+            OnTaskError::Retrying(_) = ism.handle_task_error(
+                true,
+                None,
+                false,
+                Some(InvocationErrorCode::new(404)),
+                true,
+                |_| 0
+            )
+        );
+    }
+
+    #[test]
+    fn on_status_code_ignored_for_internal_errors() {
+        let mut ism = create_test_invocation_state_machine();
+        ism.retry_policy_state.on_status_code = vec![OnStatusCodeRule {
+            status_code: 409,
+            action: OnStatusCodeAction::Kill,
+        }];
+
+        // Internal errors carry no SDK status code, so the rules never apply.
+        let_assert!(
+            OnTaskError::Retrying(_) = ism.handle_task_error(true, None, false, None, true, |_| 0)
+        );
     }
 
     #[test]
@@ -751,7 +861,7 @@ mod tests {
 
         let_assert!(
             OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, false, true, |_| 0)
+                invocation_state_machine.handle_task_error(true, None, false, None, true, |_| 0)
         );
         check!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 
@@ -760,7 +870,7 @@ mod tests {
         // We stay in `WaitingForRetry`
         let_assert!(
             OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, false, true, |_| 1)
+                invocation_state_machine.handle_task_error(true, None, false, None, true, |_| 1)
         );
         check!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
     }
@@ -896,7 +1006,7 @@ mod tests {
         // Notify error
         let_assert!(
             OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, false, true, |_| 0)
+                invocation_state_machine.handle_task_error(true, None, false, None, true, |_| 0)
         );
         assert_eq!(
             invocation_state_machine.start_message_retry_count_since_last_stored_command,
@@ -912,7 +1022,7 @@ mod tests {
         // Get error again
         let_assert!(
             OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, false, true, |_| 1)
+                invocation_state_machine.handle_task_error(true, None, false, None, true, |_| 1)
         );
         assert_eq!(
             invocation_state_machine.start_message_retry_count_since_last_stored_command,
@@ -950,7 +1060,7 @@ mod tests {
         invocation_state_machine.notify_new_command(1, false);
         let_assert!(
             OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, false, true, |_| 0)
+                invocation_state_machine.handle_task_error(true, None, false, None, true, |_| 0)
         );
 
         // PP sends ack for command 1
@@ -988,7 +1098,7 @@ mod tests {
         );
         let_assert!(
             OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, false, true, |_| 0)
+                invocation_state_machine.handle_task_error(true, None, false, None, true, |_| 0)
         );
 
         // Waiting notifications acks and retry timer fired
@@ -1026,7 +1136,7 @@ mod tests {
         // Put the ISM in WaitingRetry state with timer key 0
         let_assert!(
             OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, false, true, |_| 0)
+                invocation_state_machine.handle_task_error(true, None, false, None, true, |_| 0)
         );
         check!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 

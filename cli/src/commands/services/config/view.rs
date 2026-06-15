@@ -188,6 +188,12 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
             .map(|d| d.friendly().to_string())
             .unwrap_or_else(|| "<UNSET>".to_string()),
     );
+    if !service.retry_policy.on_status_code.is_empty() {
+        table.add_kv_row(
+            "  On status code:",
+            format_on_status_code(&service.retry_policy.on_status_code),
+        );
+    }
     c_println!("{table}");
     c_tip!("{}", RETRY_POLICY);
     c_println!();
@@ -263,6 +269,10 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
                     table.add_kv_row("    Max interval:", max_interval.friendly());
                 }
 
+                if let Some(on_status_code) = &handler.retry_policy.on_status_code {
+                    table.add_kv_row("    On status code:", format_on_status_code(on_status_code));
+                }
+
                 c_println!("{table}");
             }
 
@@ -281,4 +291,15 @@ fn is_retry_policy_empty(
         && retry_policy.max_attempts.is_none()
         && retry_policy.max_interval.is_none()
         && retry_policy.on_max_attempts.is_none()
+        && retry_policy.on_status_code.is_none()
+}
+
+fn format_on_status_code(
+    rules: &[restate_types::schema::invocation_target::OnStatusCodeRule],
+) -> String {
+    rules
+        .iter()
+        .map(|rule| format!("{} => {:?}", rule.status_code, rule.action))
+        .collect::<Vec<_>>()
+        .join(", ")
 }

@@ -117,11 +117,10 @@ mod mocks {
         InvocationQuery, InvocationTargetType, ServiceType, VirtualObjectHandlerType,
     };
     use restate_types::net::address::{AdvertisedAddress, HttpIngressPort};
-    use restate_types::retries::RetryIter;
     use restate_types::schema::invocation_target::test_util::MockInvocationTargetResolver;
     use restate_types::schema::invocation_target::{
         DEFAULT_IDEMPOTENCY_RETENTION, InvocationAttemptOptions, InvocationTargetMetadata,
-        InvocationTargetResolver, OnMaxAttempts,
+        InvocationTargetResolver, ResolvedRetryPolicy,
     };
     use restate_types::schema::service::test_util::MockServiceMetadataResolver;
     use restate_types::schema::service::{
@@ -266,7 +265,7 @@ mod mocks {
             deployment_id: Option<&DeploymentId>,
             service_name: impl AsRef<str>,
             handler_name: impl AsRef<str>,
-        ) -> (RetryIter<'static>, OnMaxAttempts) {
+        ) -> ResolvedRetryPolicy {
             self.1
                 .resolve_invocation_retry_policy(deployment_id, service_name, handler_name)
         }
