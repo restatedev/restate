@@ -243,6 +243,7 @@ fn main() {
                 node_name = Configuration::pinned().node_name(),
                 config_source = %config_source,
                 base_dir = %restate_types::config::node_filepath("").display(),
+                cpus = % Configuration::num_cpus(),
                 "Starting Restate Server {}",
                 build_info::build_info()
             );

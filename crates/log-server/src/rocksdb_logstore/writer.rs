@@ -33,6 +33,7 @@ use super::{DATA_CF, METADATA_CF};
 use crate::logstore::{LogStoreState, WriteDisableReason};
 use crate::metadata::LogletState;
 use crate::metric_definitions::LOG_SERVER_WRITE_BATCH_SIZE_BYTES;
+use crate::rocksdb_logstore::memory::LogStoreMemoryConfig;
 use crate::tasks::{
     SealStorageTask, StoreStorageTask, SyncGlobalTailStorageTask, TrimStorageTask, WriteStorageTask,
 };
@@ -193,6 +194,26 @@ impl LogStoreWriterBuilder {
                 let cancel = cancellation_token();
                 let mut draining = false;
 
+                // Yes, this doesn't react to live config changes. When/if we use live-config
+                // reloading in production, we can consider moving this inside the loop after
+                // measuring perf impact.
+                let batch_bytes_limit = {
+                    let opts = &config.live_load().log_server;
+                    let memory_config = LogStoreMemoryConfig::calculate(opts);
+                    // let's decide on the absolute maximum batch size we'd like to accept
+                    let upper_bound = memory_config.write_buffer_size();
+
+                    if let Some(user_limits) = opts.write_batch_commit_bytes {
+                        // sanitize the user-provided limit to the write buffer size
+                        user_limits.as_usize().min(upper_bound)
+                    } else {
+                        // we come up with a reasonable default. That's 10% of the write buffer size
+                        // to put an upper bound over the ballooning per individual memtables to 10%
+                        // over its budget.
+                        memory_config.write_buffer_size().div_ceil(10)
+                    }
+                };
+
                 loop {
                     tokio::select! {
                         biased;
@@ -212,7 +233,7 @@ impl LogStoreWriterBuilder {
 
                     let config = &config.live_load().log_server;
                     // Opportunistically drain normal-pri commands.
-                    while batch.size_in_bytes() < config.write_batch_bytes().as_usize()
+                    while batch.size_in_bytes() < batch_bytes_limit
                         && config
                             .write_batch_commit_count
                             .is_none_or(|c| batch.len() < c.get())
