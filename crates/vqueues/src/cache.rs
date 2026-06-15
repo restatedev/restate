@@ -237,7 +237,7 @@ impl VQueuesMetaCache {
         if self.slab.len() >= self.target_capacity {
             let evicted = self.compact();
             if evicted == 0 {
-                tracing::info!(
+                tracing::trace!(
                     "vqueue cache at {} entries with no inactive queues to evict; cache will grow past target_capacity={}",
                     self.slab.len(),
                     self.target_capacity,
