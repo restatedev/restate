@@ -18,6 +18,7 @@
 //! rather than blocking the sender. This prevents memory ballooning when downstream
 //! processing (e.g., RocksDB writes) is stalling.
 use std::collections::hash_map;
+use std::num::NonZeroUsize;
 
 use ahash::HashMap;
 use anyhow::Context;
@@ -30,7 +31,8 @@ use restate_core::network::{
     Verdict,
 };
 use restate_core::{TaskCenter, cancellation_token};
-use restate_types::config::Configuration;
+use restate_memory::NonZeroByteCount;
+use restate_types::config::{Configuration, LogStoreMemoryConfig};
 use restate_types::health::HealthStatus;
 use restate_types::logs::LogletId;
 use restate_types::net::log_server::*;
@@ -56,9 +58,13 @@ impl RequestPump {
         // rather than queuing which could cause unbounded memory growth.
         let data_pool = TaskCenter::with_current(|tc| {
             tc.memory_controller().create_pool("log-server-data", || {
-                Configuration::pinned()
-                    .log_server
-                    .rocksdb_data_memtables_budget()
+                NonZeroByteCount::new(
+                    NonZeroUsize::new(
+                        LogStoreMemoryConfig::calculate(&Configuration::pinned().log_server)
+                            .write_buffer_size(),
+                    )
+                    .expect("write buffer must be non-zero"),
+                )
             })
         });
 

@@ -64,6 +64,8 @@ fn prepare_cf_options(
         // rocksdb will create a new cache, wasting ~32MB RSS per db.
         let mut cf_options = create_default_cf_options(Some(write_buffer_manager));
         cf_options.set_write_buffer_manager(write_buffer_manager);
+        cf_options.set_level_zero_slowdown_writes_trigger(1 << 30);
+        cf_options.set_level_zero_stop_writes_trigger(1 << 30);
 
         let mut block_opts = BlockBasedOptions::default();
         block_opts.set_block_cache(global_cache);
