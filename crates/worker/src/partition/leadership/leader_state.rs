@@ -545,6 +545,53 @@ impl LeaderState {
         }
     }
 
+    /// Like [`Self::handle_rpc_proposal_command`], but for the PauseInvocation command: after the
+    /// pause command is appended it clears `invocation_id`'s in-memory fencing token so a
+    /// straggler effect from the attempt being paused is dropped at write time.
+    ///
+    /// BRITTLE: the `fencing_tokens.remove` is a pre-apply, in-memory state mutation, and it must
+    /// run **only on the `Ok` arm, strictly after the append succeeds**. A failed `self_propose`
+    /// only replies an error -- the leader keeps running, it does not step down -- so clearing
+    /// before the append (or on failure) would strand the invocation: its effects would be
+    /// dropped at write time with no pause in the committed log. After a successful append the
+    /// pause's LSN is fixed, and because the leader self-proposes from a single task, every later
+    /// invoker-effect self-propose observes the cleared map and is fenced.
+    pub async fn propose_pause_and_fence(
+        &mut self,
+        request_id: PartitionProcessorRpcRequestId,
+        reciprocal: Reciprocal<
+            Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
+        >,
+        invocation_id: InvocationId,
+        cmd: Command,
+    ) {
+        match self.awaiting_rpc_actions.entry(request_id) {
+            Entry::Occupied(mut o) => {
+                // Retry of an already-proposed pause: replace the reciprocal and fail the old one.
+                // The original successful propose already cleared the token; don't disturb a newer
+                // attempt's token from here.
+                let old_reciprocal = o.insert(reciprocal);
+                trace!(%request_id, "Replacing rpc with newer request");
+                old_reciprocal.send(Err(PartitionProcessorRpcError::Internal(
+                    "retried".to_string(),
+                )));
+            }
+            Entry::Vacant(v) => {
+                if let Err(e) = self
+                    .self_proposer
+                    .self_propose(invocation_id.partition_key(), cmd)
+                    .await
+                {
+                    reciprocal.send(Err(PartitionProcessorRpcError::Internal(e.to_string())));
+                } else {
+                    v.insert(reciprocal);
+                    // Clear ONLY here -- after the append succeeded. See the method doc.
+                    self.fencing_tokens.remove(&invocation_id);
+                }
+            }
+        }
+    }
+
     /// Append a command to Bifrost **without** dedup information and respond on Bifrost commit.
     ///
     /// Records appended this way are never filtered by the dedup mechanism during leadership

@@ -827,6 +827,30 @@ impl<T> LeadershipState<T> {
         }
     }
 
+    pub async fn propose_pause_and_fence(
+        &mut self,
+        request_id: PartitionProcessorRpcRequestId,
+        reciprocal: Reciprocal<
+            Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
+        >,
+        invocation_id: InvocationId,
+        cmd: Command,
+    ) {
+        match &mut self.state {
+            State::Follower | State::Candidate { .. } => {
+                // Just fail the rpc
+                reciprocal.send(Err(PartitionProcessorRpcError::NotLeader(
+                    self.partition.partition_id,
+                )))
+            }
+            State::Leader(leader_state) => {
+                leader_state
+                    .propose_pause_and_fence(request_id, reciprocal, invocation_id, cmd)
+                    .await;
+            }
+        }
+    }
+
     /// Append a command to Bifrost without dedup information, responding on Bifrost commit.
     pub async fn append_and_respond_asynchronously(
         &mut self,

@@ -12,12 +12,14 @@ use super::*;
 use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_types::identifiers::InvocationId;
 use restate_types::net::partition_processor::PauseInvocationRpcResponse;
+use restate_wal_protocol::invocation::PauseInvocationCommand;
 
-pub(super) struct Request {
+pub(super) struct PauseRequest {
+    pub(super) request_id: PartitionProcessorRpcRequestId,
     pub(super) invocation_id: InvocationId,
 }
 
-impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
+impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<PauseRequest>
     for RpcContext<'a, TActuator, TSchemas, TStorage>
 where
     TStorage: ReadInvocationStatusTable,
@@ -27,7 +29,10 @@ where
 
     async fn handle(
         self,
-        Request { invocation_id }: Request,
+        PauseRequest {
+            request_id,
+            invocation_id,
+        }: PauseRequest,
         replier: Replier<Self::Output>,
     ) -> Result<(), Self::Error> {
         // Reading from a non-leader partition processor can return stale results
@@ -40,30 +45,64 @@ where
             return Ok(());
         }
 
-        // -- Figure out the invocation status
-        match self.storage.get_invocation_status(&invocation_id).await {
-            Ok(InvocationStatus::Invoked(_)) => {
-                // Let's poke the invoker to retry now, if possible
-                self.proposer.notify_invoker_to_pause(invocation_id);
-                replier.send(PauseInvocationRpcResponse::Accepted);
-            }
-            Ok(
-                InvocationStatus::Completed(_)
-                | InvocationStatus::Scheduled(_)
-                | InvocationStatus::Inboxed(_),
-            ) => {
-                replier.send(PauseInvocationRpcResponse::NotRunning);
-            }
-            Ok(InvocationStatus::Paused(_) | InvocationStatus::Suspended { .. }) => {
-                replier.send(PauseInvocationRpcResponse::AlreadyPaused);
-            }
-            Ok(InvocationStatus::Free) => {
-                replier.send(PauseInvocationRpcResponse::NotFound);
-            }
+        let status = match self.storage.get_invocation_status(&invocation_id).await {
+            Ok(status) => status,
             Err(storage_error) => {
                 replier.send_result(Err(PartitionProcessorRpcError::Internal(
                     storage_error.to_string(),
                 )));
+                return Ok(());
+            }
+        };
+
+        // The persisted PauseInvocation WAL command (kind 25) is only emitted for invocations that
+        // are on VQueues: a `vqueue_id` implies the partition enabled VQueues (gated by a version
+        // barrier), so every replica is new enough to decode the command. It is also exactly where
+        // the persisted pause is needed -- VQueues lets the partition processor drive the lifecycle,
+        // so the invoker no longer solely owns the invocation. Non-VQueue invocations remain
+        // invoker-owned, so the legacy best-effort invoker-poke path below is correct for them.
+        let on_vqueues = status
+            .get_invocation_metadata()
+            .is_some_and(|metadata| metadata.vqueue_id.is_some());
+
+        if on_vqueues {
+            // The apply path (OnManualPauseCommand) classifies the (possibly changed) status and
+            // replies via Action::ForwardPauseInvocationResponse. propose_pause_and_fence clears
+            // the leader's in-memory fencing token (after appending the command) so that any
+            // straggler effect from the attempt we are pausing is dropped at write time.
+            self.proposer
+                .propose_pause_and_fence(
+                    invocation_id,
+                    Command::PauseInvocation(
+                        PauseInvocationCommand {
+                            invocation_id,
+                            request_id: Some(request_id),
+                        }
+                        .bilrost_encode_to_bytes(),
+                    ),
+                    request_id,
+                    replier,
+                )
+                .await;
+            return Ok(());
+        }
+
+        // -- Legacy path for invoker-owned (non-VQueue) invocations: best-effort invoker poke.
+        match status {
+            InvocationStatus::Invoked(_) => {
+                self.proposer.notify_invoker_to_pause(invocation_id);
+                replier.send(PauseInvocationRpcResponse::Accepted);
+            }
+            InvocationStatus::Completed(_)
+            | InvocationStatus::Scheduled(_)
+            | InvocationStatus::Inboxed(_) => {
+                replier.send(PauseInvocationRpcResponse::NotRunning);
+            }
+            InvocationStatus::Paused(_) | InvocationStatus::Suspended { .. } => {
+                replier.send(PauseInvocationRpcResponse::AlreadyPaused);
+            }
+            InvocationStatus::Free => {
+                replier.send(PauseInvocationRpcResponse::NotFound);
             }
         };
 
@@ -76,8 +115,32 @@ mod tests {
     use super::*;
 
     use crate::partition::rpc::MockActuator;
+    use futures::FutureExt;
     use restate_core::network::Reciprocal;
+    use restate_storage_api::invocation_status_table::InFlightInvocationMetadata;
+    use restate_types::identifiers::WithPartitionKey;
+    use std::future::ready;
     use test_log::test;
+
+    struct MockStorage {
+        status: InvocationStatus,
+    }
+
+    impl ReadInvocationStatusTable for MockStorage {
+        fn get_invocation_status(
+            &mut self,
+            _: &InvocationId,
+        ) -> impl Future<Output = restate_storage_api::Result<InvocationStatus>> + Send {
+            ready(Ok(self.status.clone()))
+        }
+
+        fn any_non_completed_invocation_in_range(
+            &mut self,
+            _: restate_types::sharding::KeyRange,
+        ) -> impl Future<Output = restate_storage_api::Result<bool>> + Send {
+            ready(Ok(false))
+        }
+    }
 
     #[test(restate_core::test)]
     async fn reply_not_leader_when_not_leader() {
@@ -116,7 +179,10 @@ mod tests {
         let (tx, rx) = Reciprocal::mock();
         RpcHandler::handle(
             RpcContext::new(&mut proposer, &(), &mut storage),
-            Request { invocation_id },
+            PauseRequest {
+                request_id: Default::default(),
+                invocation_id,
+            },
             Replier::new(tx),
         )
         .await
@@ -126,5 +192,87 @@ mod tests {
             rx.recv().await,
             Err(PartitionProcessorRpcError::NotLeader(_))
         ));
+    }
+
+    /// A non-VQueue (invoker-owned) invocation uses the legacy invoker-poke path and is not
+    /// proposed as a WAL command.
+    #[test(restate_core::test)]
+    async fn non_vqueue_invocation_uses_legacy_invoker_poke() {
+        let invocation_id = InvocationId::mock_random();
+
+        let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
+        proposer
+            .expect_notify_invoker_to_pause()
+            .return_once_st(move |got_invocation_id| {
+                assert_eq!(got_invocation_id, invocation_id);
+            });
+
+        let mut storage = MockStorage {
+            // mock() has no vqueue_id.
+            status: InvocationStatus::Invoked(InFlightInvocationMetadata::mock()),
+        };
+
+        let (tx, rx) = Reciprocal::mock();
+        RpcHandler::handle(
+            RpcContext::new(&mut proposer, &(), &mut storage),
+            PauseRequest {
+                request_id: Default::default(),
+                invocation_id,
+            },
+            Replier::new(tx),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            PartitionProcessorRpcResponse::PauseInvocation(PauseInvocationRpcResponse::Accepted)
+        );
+    }
+
+    /// A VQueue invocation is paused by proposing the persisted PauseInvocation command.
+    #[test(restate_core::test)]
+    async fn vqueue_invocation_proposes_pause_command() {
+        let invocation_id = InvocationId::mock_random();
+
+        let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
+        proposer
+            .expect_propose_pause_and_fence::<PauseInvocationRpcResponse>()
+            .return_once_st(move |got_invocation_id, cmd, request_id, replier| {
+                assert_eq!(got_invocation_id, invocation_id);
+                let Command::PauseInvocation(bytes) = cmd else {
+                    panic!("expected a PauseInvocation command");
+                };
+                let pause = PauseInvocationCommand::bilrost_decode(bytes).unwrap();
+                assert_eq!(pause.invocation_id, invocation_id);
+                assert_eq!(pause.request_id, Some(request_id));
+                replier.send(PauseInvocationRpcResponse::Accepted);
+                ready(()).boxed()
+            });
+
+        let mut storage = MockStorage {
+            status: InvocationStatus::Invoked(InFlightInvocationMetadata::mock_with_vqueue(
+                invocation_id.partition_key(),
+            )),
+        };
+
+        let (tx, rx) = Reciprocal::mock();
+        RpcHandler::handle(
+            RpcContext::new(&mut proposer, &(), &mut storage),
+            PauseRequest {
+                request_id: Default::default(),
+                invocation_id,
+            },
+            Replier::new(tx),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            PartitionProcessorRpcResponse::PauseInvocation(PauseInvocationRpcResponse::Accepted)
+        );
     }
 }
