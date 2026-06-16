@@ -9,9 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use super::*;
-use restate_storage_api::invocation_status_table::{
-    InFlightInvocationMetadata, InvocationStatus, ReadInvocationStatusTable,
-};
+use crate::partition::state_machine::resolve_pinned_deployment;
+use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::invocation::client::PatchDeploymentId;
 use restate_types::invocation::{
@@ -30,6 +29,7 @@ impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
     for RpcContext<'a, TActuator, TSchemas, TStorage>
 where
     TActuator: Actuator,
+    // Needed for the non-VQueue path, which resolves the deployment here (see `handle`).
     TSchemas: DeploymentResolver,
     TStorage: ReadInvocationStatusTable,
 {
@@ -57,80 +57,92 @@ where
 
         // -- Figure out the invocation status
         match self.storage.get_invocation_status(&invocation_id).await {
-            Ok(InvocationStatus::Invoked(_)) => {
-                if !matches!(update_deployment_id, PatchDeploymentId::KeepPinned) {
-                    replier.send(ResumeInvocationRpcResponse::CannotPatchDeploymentId);
-                    return Ok(());
-                }
-
-                // Let's poke the invoker to retry now, if possible
-                self.proposer.notify_invoker_to_retry_now(invocation_id);
-                replier.send(ResumeInvocationRpcResponse::Ok);
-            }
-            Ok(InvocationStatus::Suspended {
-                metadata:
-                    InFlightInvocationMetadata {
-                        invocation_target,
-                        pinned_deployment,
-                        ..
-                    },
-                ..
-            })
-            | Ok(InvocationStatus::Paused(InFlightInvocationMetadata {
-                invocation_target,
-                pinned_deployment,
-                ..
-            })) => {
-                // Let's look at the deployment id here, and see if we need to do some changes
-                let update_pinned_deployment_id = match (update_deployment_id, pinned_deployment) {
-                    (PatchDeploymentId::KeepPinned, _) | (PatchDeploymentId::PinToLatest, None) => {
-                        // If the request is to keep pinned, no change will be applied.
-                        None
-                    }
-                    (_, None) => {
-                        // No deployment is even pinned, return back the error
+            Ok(InvocationStatus::Invoked(metadata)) => {
+                if metadata.vqueue_id.is_some() {
+                    // VQueue-owned: the invoker no longer solely drives the lifecycle. Propose the
+                    // persisted command, forwarding the *unresolved* deployment patch -- it is
+                    // resolved and validated (and the entry rescheduled) in the apply path
+                    // (`OnManualResumeCommand`), which classifies the possibly-changed status. There
+                    // is no running attempt to fence, so use the plain proposal path -- unlike
+                    // pause's `propose_pause_and_fence`. Writing the new `update_deployment_id` field
+                    // is safe here: vqueues being enabled implies a cluster min version >= 1.7.0.
+                    self.proposer
+                        .handle_rpc_proposal_command(
+                            invocation_id.partition_key(),
+                            Command::ResumeInvocation(ResumeInvocationRequest {
+                                invocation_id,
+                                update_deployment_id: Some(update_deployment_id),
+                                update_pinned_deployment_id: None,
+                                run_at: None,
+                                response_sink: Some(InvocationMutationResponseSink::Ingress(
+                                    IngressInvocationResponseSink { request_id },
+                                )),
+                            }),
+                            request_id,
+                            replier,
+                        )
+                        .await;
+                } else {
+                    // Legacy invoker-owned path: there is a live attempt, so the pinned deployment
+                    // cannot be patched. Poke the invoker to retry now, if possible.
+                    if !matches!(update_deployment_id, PatchDeploymentId::KeepPinned) {
                         replier.send(ResumeInvocationRpcResponse::CannotPatchDeploymentId);
                         return Ok(());
                     }
-                    (resume_invocation_deployment_id, Some(pinned_deployment)) => {
-                        let Some(deployment) = (match resume_invocation_deployment_id {
-                            PatchDeploymentId::PinToLatest => {
-                                self.schemas.resolve_latest_deployment_for_service(
-                                    invocation_target.service_name(),
-                                )
-                            }
-                            PatchDeploymentId::PinTo { id } => self.schemas.get_deployment(&id),
-                            PatchDeploymentId::KeepPinned => {
-                                unreachable!()
-                            }
-                        }) else {
-                            replier.send(ResumeInvocationRpcResponse::DeploymentNotFound);
-                            return Ok(());
-                        };
+                    self.proposer.notify_invoker_to_retry_now(invocation_id);
+                    replier.send(ResumeInvocationRpcResponse::Ok);
+                }
+            }
+            Ok(InvocationStatus::Suspended { metadata, .. })
+            | Ok(InvocationStatus::Paused(metadata)) => {
+                if metadata.vqueue_id.is_some() {
+                    // VQueue path: forward the unresolved patch; the apply path resolves it against
+                    // the status as of the command's log position. Safe to write the new
+                    // `update_deployment_id` field -- vqueues imply a cluster min version >= 1.7.0.
+                    self.proposer
+                        .handle_rpc_proposal_command(
+                            invocation_id.partition_key(),
+                            Command::ResumeInvocation(ResumeInvocationRequest {
+                                invocation_id,
+                                update_deployment_id: Some(update_deployment_id),
+                                update_pinned_deployment_id: None,
+                                run_at: None,
+                                response_sink: Some(InvocationMutationResponseSink::Ingress(
+                                    IngressInvocationResponseSink { request_id },
+                                )),
+                            }),
+                            request_id,
+                            replier,
+                        )
+                        .await;
+                    return Ok(());
+                }
 
-                        if !deployment
-                            .supported_protocol_versions
-                            .contains(&(pinned_deployment.service_protocol_version as i32))
-                        {
-                            replier.send(ResumeInvocationRpcResponse::IncompatibleDeploymentId {
-                                pinned_protocol_version: pinned_deployment.service_protocol_version
-                                    as i32,
-                                deployment_id: deployment.id,
-                                supported_protocol_versions: deployment.supported_protocol_versions,
-                            });
-                            return Ok(());
-                        }
-                        Some(deployment.id)
+                // Non-VQueue path: a pre-1.7.0 node may still apply this command and does not know
+                // `update_deployment_id`, so we resolve here -- reusing the apply path's resolver --
+                // and propose the already-resolved `update_pinned_deployment_id` (the field older
+                // nodes understand).
+                let update_pinned_deployment_id = match resolve_pinned_deployment(
+                    Some(&update_deployment_id),
+                    None,
+                    &metadata,
+                    Some(self.schemas),
+                ) {
+                    Ok(resolved) => resolved,
+                    Err(response) => {
+                        replier.send(response.into());
+                        return Ok(());
                     }
                 };
 
-                // We need to propose the message, PP will deal with invoking this back
                 self.proposer
                     .handle_rpc_proposal_command(
                         invocation_id.partition_key(),
                         Command::ResumeInvocation(ResumeInvocationRequest {
                             invocation_id,
+                            update_deployment_id: None,
                             update_pinned_deployment_id,
+                            run_at: None,
                             response_sink: Some(InvocationMutationResponseSink::Ingress(
                                 IngressInvocationResponseSink { request_id },
                             )),
@@ -220,6 +232,54 @@ mod tests {
         let mut storage = MockStorage {
             expected_invocation_id: invocation_id,
             status: InvocationStatus::Invoked(InFlightInvocationMetadata::mock()),
+        };
+
+        let (tx, rx) = Reciprocal::mock();
+        RpcHandler::handle(
+            RpcContext::new(&mut proposer, &(), &mut storage),
+            Request {
+                request_id: Default::default(),
+                invocation_id,
+                update_deployment_id: Default::default(),
+            },
+            Replier::new(tx),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            PartitionProcessorRpcResponse::ResumeInvocation(ResumeInvocationRpcResponse::Ok)
+        );
+    }
+
+    /// A VQueue Invoked invocation is resumed by proposing the persisted ResumeInvocation command
+    /// (so the apply path can pull a backing-off attempt forward), not by poking the invoker.
+    #[test(restate_core::test)]
+    async fn vqueue_invoked_proposes_resume_command() {
+        let invocation_id = InvocationId::mock_random();
+
+        let mut proposer = MockActuator::new();
+        proposer.expect_is_leader().return_const(true);
+        // The invoker must NOT be poked for a VQueue invocation.
+        proposer.expect_notify_invoker_to_retry_now().never();
+        proposer
+            .expect_handle_rpc_proposal_command::<ResumeInvocationRpcResponse>()
+            .return_once_st(move |_, cmd, _request_id, replier| {
+                // The command shape (response_sink, deployment patching) is covered by
+                // `propose_resume_command_on_paused_and_suspended`; here we only care that the
+                // Invoked+VQueue path proposes ResumeInvocation rather than poking the invoker.
+                let_assert!(Command::ResumeInvocation(request) = cmd);
+                assert_eq!(request.invocation_id, invocation_id);
+                replier.send(ResumeInvocationRpcResponse::Ok);
+                ready(()).boxed()
+            });
+
+        let mut storage = MockStorage {
+            expected_invocation_id: invocation_id,
+            status: InvocationStatus::Invoked(InFlightInvocationMetadata::mock_with_vqueue(
+                invocation_id.partition_key(),
+            )),
         };
 
         let (tx, rx) = Reciprocal::mock();
@@ -481,89 +541,45 @@ mod tests {
         .await
         .unwrap();
 
-        assert_that!(
+        // Non-VQueue path resolves the deployment in the RPC and rejects the incompatible pin
+        // synchronously (no command proposed).
+        assert_eq!(
             rx.recv().await.unwrap(),
-            eq(PartitionProcessorRpcResponse::ResumeInvocation(
+            PartitionProcessorRpcResponse::ResumeInvocation(
                 ResumeInvocationRpcResponse::IncompatibleDeploymentId {
                     pinned_protocol_version: i32::from(pinned_version),
                     deployment_id: expected_deployment_id,
                     supported_protocol_versions: 1..=4,
                 }
-            ))
+            )
         );
     }
 
-    #[rstest]
-    #[restate_core::test]
-    async fn override_compatible_pinned_deployment_proposes_command(
-        #[values(true, false)] pin_to_specific: bool,
-        #[values(true, false)] suspended: bool,
-    ) {
+    /// A legacy invoker-owned (non-VQueue) Invoked invocation has a live attempt, so its pinned
+    /// deployment cannot be patched: the RPC rejects synchronously without poking the invoker.
+    #[test(restate_core::test)]
+    async fn legacy_invoked_rejects_deployment_patch() {
         let invocation_id = InvocationId::mock_random();
-        let invocation_target = InvocationTarget::mock_service();
-        let pinned_version = ServiceProtocolVersion::V4;
-
-        // Candidate deployment supports V4 -> Should be compatible
-        let mut dep = Deployment::mock();
-        dep.supported_protocol_versions = 1..=4;
-        let expected_deployment_id = dep.id;
-
-        let mut schemas = MockDeploymentMetadataRegistry::default();
-        schemas.mock_deployment(dep.clone());
-        if !pin_to_specific {
-            schemas.mock_latest_service(invocation_target.service_name(), dep.id);
-        }
 
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
+        proposer.expect_notify_invoker_to_retry_now().never();
         proposer
             .expect_handle_rpc_proposal_command::<ResumeInvocationRpcResponse>()
-            .return_once_st(move |_, cmd, request_id, replier| {
-                assert_that!(
-                    cmd,
-                    pat!(Command::ResumeInvocation(pat!(ResumeInvocationRequest {
-                        invocation_id: eq(invocation_id),
-                        update_pinned_deployment_id: some(eq(expected_deployment_id)),
-                        response_sink: some(eq(InvocationMutationResponseSink::Ingress(
-                            IngressInvocationResponseSink { request_id }
-                        )))
-                    })))
-                );
-                replier.send(ResumeInvocationRpcResponse::Ok);
-                ready(()).boxed()
-            });
+            .never();
 
-        let metadata = InFlightInvocationMetadata {
-            invocation_target,
-            pinned_deployment: Some(PinnedDeployment::new(DeploymentId::new(), pinned_version)),
-            ..InFlightInvocationMetadata::mock()
-        };
         let mut storage = MockStorage {
             expected_invocation_id: invocation_id,
-            status: if suspended {
-                InvocationStatus::Suspended {
-                    metadata,
-                    awaiting_on: UnresolvedFuture::empty(),
-                }
-            } else {
-                InvocationStatus::Paused(metadata)
-            },
+            status: InvocationStatus::Invoked(InFlightInvocationMetadata::mock()),
         };
 
         let (tx, rx) = Reciprocal::mock();
-        let update_deployment_id = if pin_to_specific {
-            PatchDeploymentId::PinTo {
-                id: expected_deployment_id,
-            }
-        } else {
-            PatchDeploymentId::PinToLatest
-        };
         RpcHandler::handle(
-            RpcContext::new(&mut proposer, &schemas, &mut storage),
+            RpcContext::new(&mut proposer, &(), &mut storage),
             Request {
                 request_id: Default::default(),
                 invocation_id,
-                update_deployment_id,
+                update_deployment_id: PatchDeploymentId::PinToLatest,
             },
             Replier::new(tx),
         )
@@ -572,7 +588,9 @@ mod tests {
 
         assert_eq!(
             rx.recv().await.unwrap(),
-            PartitionProcessorRpcResponse::ResumeInvocation(ResumeInvocationRpcResponse::Ok)
+            PartitionProcessorRpcResponse::ResumeInvocation(
+                ResumeInvocationRpcResponse::CannotPatchDeploymentId
+            )
         );
     }
 

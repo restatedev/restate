@@ -14,6 +14,8 @@ mod lifecycle;
 mod utils;
 
 pub use actions::{Action, ActionCollector};
+// Re-exported so the resume RPC handler can resolve deployments the same way the apply path does.
+pub(crate) use lifecycle::resolve_pinned_deployment;
 
 use std::collections::HashSet;
 use std::fmt;
@@ -30,6 +32,7 @@ use futures::{StreamExt, TryStreamExt};
 use metrics::{counter, histogram};
 use tracing::{Instrument, debug, error, info, trace, warn};
 
+use restate_clock::RoughTimestamp;
 use restate_limiter::LimitKey;
 use restate_limiter::RuleBook;
 
@@ -71,11 +74,11 @@ use restate_types::errors::{
     KILLED_INVOCATION_ERROR, NOT_FOUND_INVOCATION_ERROR, NOT_READY_INVOCATION_ERROR,
     WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
-use restate_types::identifiers::WithPartitionKey;
 use restate_types::identifiers::{
     AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId,
     PartitionProcessorRpcRequestId, ServiceId, StateMutationId,
 };
+use restate_types::identifiers::{DeploymentId, WithPartitionKey};
 use restate_types::invocation::client::{
     CancelInvocationResponse, InvocationOutputResponse, KillInvocationResponse,
     PauseInvocationResponse, PurgeInvocationResponse, ResumeInvocationResponse,
@@ -774,8 +777,10 @@ impl<S> StateMachineApplyContext<'_, S> {
 
                 lifecycle::OnManualResumeCommand {
                     invocation_id: resume_invocation_request.invocation_id,
+                    update_deployment_id: resume_invocation_request.update_deployment_id,
                     update_pinned_deployment_id: resume_invocation_request
                         .update_pinned_deployment_id,
+                    run_at: resume_invocation_request.run_at,
                     response_sink: resume_invocation_request.response_sink,
                 }
                 .apply(self)
@@ -3257,6 +3262,19 @@ impl<S> StateMachineApplyContext<'_, S> {
                     return Ok(());
                 }
 
+                if entry_key != state_header.entry_key() {
+                    // Stale decision: the entry was rescheduled (re-keyed) after the scheduler
+                    // proposed this run. A fresh decision for the new key will run it. See the
+                    // matching guard in `run_invocation` for the full rationale.
+                    debug!(
+                        vqueue = %qid,
+                        "Ignoring a stale decision to run {mutation_id}: it was rescheduled (decision run_at {} != current {})",
+                        entry_key.run_at(),
+                        state_header.entry_key().run_at(),
+                    );
+                    return Ok(());
+                }
+
                 let Some(state_mutation) = self
                     .storage
                     .get_vqueue_input_payload::<ExternalStateMutation>(
@@ -3357,6 +3375,24 @@ impl<S> StateMachineApplyContext<'_, S> {
                 "Ignoring the scheduler's decision to run {invocation_id} because the entry has
                 already moved to {} stage!",
                 header.stage(),
+            );
+            return Ok(());
+        }
+
+        if entry_key != header.entry_key() {
+            // The decision can be stale: the entry may have been rescheduled (resume /
+            // pause+resume / explicit reschedule) after the scheduler proposed this decision,
+            // which re-keys it (a new run_at) while keeping it in `Inbox`, so the stage check
+            // above does not catch it. A reschedule emits a fresh decision for the new key, so we
+            // honor this one only if it still matches the stored key and let the fresh decision
+            // run the entry otherwise. This holds for both directions: a future reschedule must
+            // not run now, and an earlier reschedule runs via its fresh decision (avoiding a
+            // double dispatch). No state transition / stats update happens on skip.
+            debug!(
+                vqueue = %qid,
+                "Ignoring a stale decision to run {invocation_id}: it was rescheduled (decision run_at {} != current {})",
+                entry_key.run_at(),
+                header.entry_key().run_at(),
             );
             return Ok(());
         }
@@ -5512,6 +5548,67 @@ impl<S> StateMachineApplyContext<'_, S> {
         };
 
         Ok(())
+    }
+
+    /// Reschedules a waiting VQueue invocation to a new `run_at` so the scheduler re-evaluates its
+    /// eligibility (e.g. to pull a backing-off attempt forward past its retry backoff).
+    ///
+    /// `run_at` is decided by the command (`None` here): when absent we default to the entry's
+    /// `created_at`, which is always `<= now` (so the entry becomes immediately eligible) and
+    /// restores its original priority position rather than demoting it behind already-ready entries.
+    /// A caller may pass an explicit `run_at` in the past to raise priority or in the future to
+    /// delay.
+    ///
+    /// Optionally set a deployment id as the pinned deployment in the entry's metadata.
+    ///
+    /// Returns whether the entry was in a *waiting* stage (`Inbox`/`Suspended`/`Paused`) and thus
+    /// actually reschedulable. A running (or otherwise non-waiting) entry is left untouched by
+    /// [`VQueue::reschedule`] and returns `false`, so the caller can avoid changes that are unsafe
+    /// while an attempt is in flight (e.g. repinning the deployment).
+    // [vqueues only]
+    async fn vqueue_reschedule_invocation(
+        &mut self,
+        invocation_id: &InvocationId,
+        run_at: Option<RoughTimestamp>,
+        pinned_deployment: Option<DeploymentId>,
+    ) -> Result<bool, Error>
+    where
+        S: WriteVQueueTable + WriteLockTable + ReadVQueueTable,
+    {
+        let entry_id = EntryId::from(invocation_id);
+        let Some(header) = self
+            .storage
+            .get_vqueue_entry_status(invocation_id.partition_key(), &entry_id)
+            .await?
+        else {
+            // todo resolve once we decided on the actual migration strategy
+            panic!(
+                "Trying to reschedule invocation {invocation_id} which does not exist as a vqueue entry. Have you forgotten to migrate from the old inbox to vqueues?"
+            );
+        };
+
+        // Default to the entry's `created_at`: always eligible and at its original priority.
+        let run_at = run_at.unwrap_or_else(|| RoughTimestamp::from(header.stats().created_at));
+
+        // Only waiting entries can be rescheduled; a running/terminal entry is a no-op below.
+        let is_waiting = matches!(
+            header.stage(),
+            Stage::Inbox | Stage::Suspended | Stage::Paused
+        );
+
+        let qid = header.vqueue_id();
+        let mut vqueue = VQueue::get(
+            qid,
+            self.storage,
+            self.vqueues_cache,
+            self.is_leader.then_some(self.action_collector),
+        )
+        .await?
+        .expect("rescheduling in a non-existent vqueue");
+
+        vqueue.reschedule(&header, run_at, pinned_deployment);
+
+        Ok(is_waiting)
     }
 
     async fn vqueue_enqueue_state_mutation(
