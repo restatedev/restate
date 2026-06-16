@@ -59,7 +59,6 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
         let mut db_options = restate_rocksdb::configuration::create_default_db_options(
             env,
             db_name,
-            true, /* create_db_if_missing */
             write_buffer_manager,
             limiter,
         );
@@ -214,7 +213,7 @@ fn cf_metadata_options(
     {
         rocksdb::DBCompressionType::None
     } else {
-        rocksdb::DBCompressionType::Zstd
+        rocksdb::DBCompressionType::Lz4
     };
     let levels = restate_rocksdb::configuration::build_compression_per_level(
         3,
