@@ -185,10 +185,14 @@ message ErrorMessage {
   ErrorBehavior behavior = 9;
 }
 
-// What to do in case of an ErrorMessage
+// What to do in case of an ErrorMessage.
 enum ErrorBehavior {
   // Retry this invocation.
-  // In that case, next_retry_delay will be used if set, otherwise the runtime will follow the currently used retry policy.
+  //
+  // When retrying, next_retry_delay will be used if set, otherwise the runtime will follow the currently used retry policy.
+  //
+  // We use 0 for this so that unset `behavior` field is interpreter as RETRY,
+  // which matches the default behavior in previous service protocols.
   RETRY = 0;
   // Pause the invocation.
   PAUSE = 1;
