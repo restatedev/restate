@@ -126,7 +126,7 @@ pub struct RocksDbOptions {
 
     /// # Disable L0/L1 SST compression
     ///
-    /// When false (the default), L0 and L1 SST files are compressed with Zstd.
+    /// When false (the default), L0 and L1 SST files are compressed with Lz4.
     /// Higher levels (L2+) always use Zstd regardless of this setting.
     /// Set to true to disable compression for L0/L1, which can improve write
     /// throughput at the cost of higher disk usage since these files are

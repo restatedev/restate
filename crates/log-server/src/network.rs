@@ -58,7 +58,7 @@ impl RequestPump {
             tc.memory_controller().create_pool("log-server-data", || {
                 Configuration::pinned()
                     .log_server
-                    .rocksdb_data_memtables_budget()
+                    .data_service_memory_size()
             })
         });
 
