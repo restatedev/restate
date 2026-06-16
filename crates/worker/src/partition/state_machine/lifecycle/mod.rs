@@ -36,7 +36,7 @@ pub(super) use notify_get_invocation_output_response::OnNotifyGetInvocationOutpu
 pub(super) use notify_invocation_response::OnNotifyInvocationResponse;
 pub(super) use notify_signal::OnNotifySignalCommand;
 pub(super) use notify_sleep_completion::OnNotifySleepCompletionCommand;
-pub(super) use paused::OnPausedCommand;
+pub(super) use paused::{OnPausedCommand, pause_invocation};
 pub(super) use pinned_deployment::OnPinnedDeploymentCommand;
 pub(super) use purge::OnPurgeCommand;
 pub(super) use purge_journal::OnPurgeJournalCommand;

@@ -20,7 +20,7 @@ use restate_types::invocation::client::PauseInvocationResponse;
 use restate_types::journal_events::raw::RawEvent;
 use restate_types::journal_events::{Event, PausedEvent};
 
-use crate::partition::state_machine::lifecycle::OnPausedCommand;
+use crate::partition::state_machine::lifecycle::pause_invocation;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 /// Applies a user-requested pause that was proposed to the log as a
@@ -52,13 +52,14 @@ where
         } = self;
 
         let response = match ctx.get_invocation_status(&invocation_id).await? {
-            InvocationStatus::Invoked(_) => {
+            InvocationStatus::Invoked(metadata) => {
                 // A user-requested pause carries no failure, so synthesize an empty PausedEvent.
-                OnPausedCommand {
-                    invocation_id: &invocation_id,
-                    paused_event: RawEvent::from(Event::Paused(PausedEvent { last_failure: None })),
-                }
-                .apply(ctx)
+                pause_invocation(
+                    ctx,
+                    &invocation_id,
+                    metadata,
+                    RawEvent::from(Event::Paused(PausedEvent { last_failure: None })),
+                )
                 .await?;
 
                 // Unlike the invoker-initiated pause, the invoker may still be running this

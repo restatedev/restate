@@ -12,7 +12,8 @@ use tracing::debug;
 
 use restate_clock::UniqueTimestamp;
 use restate_storage_api::invocation_status_table::{
-    InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
+    InFlightInvocationMetadata, InvocationStatus, ReadInvocationStatusTable,
+    WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::lock_table::WriteLockTable;
@@ -42,8 +43,6 @@ where
         + ReadVQueueTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
-        // todo(asoli): This is overly conservative. With vqueues, it should be possible to pause a
-        // scheduled or suspended invocations.
         let OnPausedCommand {
             invocation_id,
             paused_event,
@@ -56,61 +55,84 @@ where
             | InvocationStatus::Inboxed(_)
             | InvocationStatus::Completed(_)
             | InvocationStatus::Free => {
-                // Nothing to do in these cases, pause gets processed only if the invocation was Invoked.
+                // Nothing to do in these cases, the invoker-driven pause is only processed if the
+                // invocation was Invoked.
                 return Ok(());
             }
         };
 
-        // Invoker paused the invocation, let's record the event, then set the status to paused
-        debug_if_leader!(ctx.is_leader, "Paused the invocation");
-
-        if invoked_meta.vqueue_id.is_some() {
-            // todo: use the new status
-            let entry_id = EntryId::from(invocation_id);
-            let Some(header) = ctx
-                .storage
-                .get_vqueue_entry_status(invocation_id.partition_key(), &entry_id)
-                .await?
-            else {
-                // This is equivalent to InvocationStatus::Free.
-                debug!(
-                    "Trying to pause invocation {invocation_id} which does not exist as a vqueue entry, will ignore."
-                );
-                return Ok(());
-            };
-
-            let at = UniqueTimestamp::from_unix_millis_unchecked(ctx.record_created_at);
-            VQueue::get(
-                header.vqueue_id(),
-                ctx.storage,
-                ctx.vqueues_cache,
-                ctx.is_leader.then_some(ctx.action_collector),
-            )
-            .await?
-            .expect("pausing in a non-existent vqueue")
-            .pause_entry(at, &header);
-        }
-
-        let mut invocation_status = InvocationStatus::Paused(invoked_meta);
-
-        ApplyEventCommand {
-            invocation_id,
-            invocation_status: &invocation_status,
-            event: paused_event,
-        }
-        .apply(ctx)
-        .await?;
-
-        // Update timestamps
-        if let Some(timestamps) = invocation_status.get_timestamps_mut() {
-            timestamps.update(ctx.record_created_at);
-        }
-
-        ctx.storage
-            .put_invocation_status(self.invocation_id, &invocation_status)?;
-
-        Ok(())
+        // The invoker drove this pause, so it has already stopped working on the invocation; no
+        // abort is needed (unlike the manual/persisted pause, see `OnManualPauseCommand`).
+        pause_invocation(ctx, invocation_id, invoked_meta, paused_event).await
     }
+}
+
+/// Performs the pause transition for an in-flight invocation: parks the VQueue entry (if any),
+/// records the paused event in the journal, and stores [`InvocationStatus::Paused`].
+///
+/// Shared by the invoker-initiated pause ([`OnPausedCommand`]) and the manual/persisted pause
+/// ([`super::OnManualPauseCommand`]). It does **not** abort the invoker — callers that drive the
+/// pause externally (the manual path) are responsible for that.
+pub(crate) async fn pause_invocation<'ctx, 's: 'ctx, S>(
+    ctx: &'ctx mut StateMachineApplyContext<'s, S>,
+    invocation_id: &InvocationId,
+    metadata: InFlightInvocationMetadata,
+    paused_event: RawEvent,
+) -> Result<(), Error>
+where
+    S: WriteInvocationStatusTable
+        + WriteJournalEventsTable
+        + WriteVQueueTable
+        + WriteLockTable
+        + ReadVQueueTable,
+{
+    debug_if_leader!(ctx.is_leader, "Paused the invocation");
+
+    if metadata.vqueue_id.is_some() {
+        let entry_id = EntryId::from(invocation_id);
+        let Some(header) = ctx
+            .storage
+            .get_vqueue_entry_status(invocation_id.partition_key(), &entry_id)
+            .await?
+        else {
+            // This is equivalent to InvocationStatus::Free.
+            debug!(
+                "Trying to pause invocation {invocation_id} which does not exist as a vqueue entry, will ignore."
+            );
+            return Ok(());
+        };
+
+        let at = UniqueTimestamp::from_unix_millis_unchecked(ctx.record_created_at);
+        VQueue::get(
+            header.vqueue_id(),
+            ctx.storage,
+            ctx.vqueues_cache,
+            ctx.is_leader.then_some(ctx.action_collector),
+        )
+        .await?
+        .expect("pausing in a non-existent vqueue")
+        .pause_entry(at, &header);
+    }
+
+    let mut invocation_status = InvocationStatus::Paused(metadata);
+
+    ApplyEventCommand {
+        invocation_id,
+        invocation_status: &invocation_status,
+        event: paused_event,
+    }
+    .apply(ctx)
+    .await?;
+
+    // Update timestamps
+    if let Some(timestamps) = invocation_status.get_timestamps_mut() {
+        timestamps.update(ctx.record_created_at);
+    }
+
+    ctx.storage
+        .put_invocation_status(invocation_id, &invocation_status)?;
+
+    Ok(())
 }
 
 #[cfg(test)]
