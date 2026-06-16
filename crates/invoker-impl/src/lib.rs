@@ -1859,6 +1859,26 @@ where
         mut ism: InvocationStateMachine,
         budget: LocalMemoryPool,
     ) {
+        // If an in-flight state machine for this invocation already exists, abort it before
+        // starting the new task. This happens when a fresh Invoke/VQInvoke races a previous
+        // attempt that hasn't been removed yet (e.g. its abort is still in flight). Without this,
+        // `register_invocation` would silently overwrite the old ISM, leaking its task — which
+        // would keep running and could still emit now-stale effects. (No-op on the retry path,
+        // which removes the ISM before re-starting it.)
+        if let Some((_, _, mut old_ism)) = self
+            .invocation_state_machine_manager
+            .remove_invocation(&invocation_id)
+        {
+            if let Some(timer_key) = old_ism.take_retry_timer_key() {
+                self.retry_timers.try_remove(&timer_key);
+            }
+            trace!(
+                restate.invocation.id = %invocation_id,
+                "Aborting previous in-flight state machine before starting a new attempt"
+            );
+            old_ism.abort();
+        }
+
         // Start the InvocationTask
         let (completions_tx, completions_rx) = mpsc::unbounded_channel();
         let abort_handle = self.invocation_task_runner.start_invocation_task(
