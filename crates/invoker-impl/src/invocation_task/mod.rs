@@ -37,7 +37,7 @@ use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClient
 use restate_types::LimitKey;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::InvocationId;
-use restate_types::invocation::InvocationTarget;
+use restate_types::invocation::{FencingToken, InvocationTarget};
 use restate_types::journal::EntryIndex;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal_v2::raw::RawNotification;
@@ -156,6 +156,7 @@ where
 
 pub(super) struct InvocationTaskOutput {
     pub(super) invocation_id: InvocationId,
+    pub(super) fencing_token: FencingToken,
     pub(super) inner: InvocationTaskOutputInner,
 }
 
@@ -260,6 +261,7 @@ pub(super) struct InvocationTask<EE, DMR> {
 
     // Connection params
     invocation_id: InvocationId,
+    fencing_token: FencingToken,
     invocation_target: InvocationTarget,
     limit_key: LimitKey<ReString>,
     idempotency_key: Option<ReString>,
@@ -344,6 +346,7 @@ where
     pub fn new(
         client: ServiceClient,
         invocation_id: InvocationId,
+        fencing_token: FencingToken,
         invocation_target: InvocationTarget,
         default_inactivity_timeout: Duration,
         default_abort_timeout: Duration,
@@ -363,6 +366,7 @@ where
         Self {
             client,
             invocation_id,
+            fencing_token,
             invocation_target,
             inactivity_timeout: default_inactivity_timeout,
             abort_timeout: default_abort_timeout,
@@ -613,6 +617,7 @@ impl<EE, Schemas> InvocationTask<EE, Schemas> {
     pub(crate) fn send_invoker_tx(&self, invocation_task_output_inner: InvocationTaskOutputInner) {
         let _ = self.invoker_tx.send(InvocationTaskOutput {
             invocation_id: self.invocation_id,
+            fencing_token: self.fencing_token,
             inner: invocation_task_output_inner,
         });
     }

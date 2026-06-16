@@ -35,6 +35,7 @@ use restate_invoker_impl::{
 };
 use restate_limiter::RuleBook;
 use restate_partition_store::PartitionStore;
+use restate_platform::hash::HashMap;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::StorageError;
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
@@ -48,8 +49,9 @@ use restate_timer::TokioClock;
 use restate_types::cluster::cluster_state::RunMode;
 use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
-use restate_types::identifiers::{LeaderEpoch, PartitionId};
+use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionId};
 use restate_types::identifiers::{PartitionKey, PartitionProcessorRpcRequestId};
+use restate_types::invocation::FencingToken;
 use restate_types::live::LiveLoadExt;
 use restate_types::logs::Keys;
 use restate_types::message::MessageIndex;
@@ -70,8 +72,8 @@ use restate_wal_protocol::control::{
 };
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::{Command, Envelope};
+use restate_worker_api::invoker::InvokerHandle;
 use restate_worker_api::invoker::capacity::InvokerCapacity;
-use restate_worker_api::invoker::{Effect, InvokerHandle};
 use restate_worker_api::{
     LeaderQueryCommand, LeaderQueryRequest, LeaderQueryResponse, LeaderQuerySender,
 };
@@ -146,7 +148,7 @@ pub(crate) enum TaskTermination {
 #[derive(Debug)]
 pub(crate) enum ActionEffect {
     Scheduler(scheduler::Decisions),
-    Invoker(Box<Effect>),
+    Invoker(InvokerEffect),
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerKeyValue),
     Cleaner(cleaner::CleanerEffect),
@@ -494,7 +496,8 @@ where
                 scheduler_service.on_rules_updated(initial_diff);
             }
 
-            Self::resume_invoked_invocations(&mut invoker_handle, partition_store).await?;
+            let (fencing_tokens, next_fencing_token) =
+                Self::resume_invoked_invocations(&mut invoker_handle, partition_store).await?;
 
             let timer_service = TimerService::new(
                 TokioClock,
@@ -634,6 +637,8 @@ where
                 invoker_task_guard.into_handle(),
                 self_proposer,
                 invoker_rx,
+                fencing_tokens,
+                next_fencing_token,
                 shuffle_rx,
                 durability_tracker,
                 leader_query_guard,
@@ -649,7 +654,7 @@ where
     async fn resume_invoked_invocations(
         invoker_handle: &mut InvokerChannelServiceHandle,
         partition_store: &mut PartitionStore,
-    ) -> Result<(), Error> {
+    ) -> Result<(HashMap<InvocationId, FencingToken>, FencingToken), Error> {
         // todo(asoli): If we are asked to migrate to vqueues (or vqueues are enabled).
         // we must migrate all invoked invocations here (through a wal command).
         // (blocker to v1.7.0)
@@ -661,24 +666,32 @@ where
         );
 
         let start = tokio::time::Instant::now();
-        let mut count = 0;
+        // Seed a fresh fencing token per resumed invocation so the leader accepts its effects and
+        // can later fence stragglers from a re-invoke. On a fresh term there are no in-flight
+        // stragglers yet, so the starting tokens only need to be distinct from the ones
+        // `LeaderState::mint_fencing_token` will mint later, which continues from
+        // `next_fencing_token`.
+        let mut fencing_tokens = HashMap::default();
+        let mut next_fencing_token: FencingToken = 0;
         while let Some(invoked_invocation) = invoked_invocations.next().await {
             let InvokedInvocationStatusLite {
                 invocation_id,
                 invocation_target,
             } = invoked_invocation?;
+            let fencing_token = next_fencing_token;
+            next_fencing_token = next_fencing_token.wrapping_add(1);
+            fencing_tokens.insert(invocation_id, fencing_token);
             invoker_handle
-                .invoke(invocation_id, invocation_target)
+                .invoke(invocation_id, fencing_token, invocation_target)
                 .map_err(Error::Invoker)?;
-            count += 1;
         }
         debug!(
             "Leader partition resumed {} invocations in {:?}",
-            count,
+            fencing_tokens.len(),
             start.elapsed(),
         );
 
-        Ok(())
+        Ok((fencing_tokens, next_fencing_token))
     }
 
     async fn become_follower(&mut self) {

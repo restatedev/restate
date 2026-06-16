@@ -33,10 +33,11 @@ use restate_limiter::RuleBook;
 use restate_partition_store::PartitionDb;
 use restate_storage_api::vqueue_table::scheduler::SchedulerDecisionsCommand;
 use restate_types::identifiers::{
-    LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
+    InvocationId, LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId,
+    WithPartitionKey,
 };
-use restate_types::invocation::PurgeInvocationRequest;
 use restate_types::invocation::client::{InvocationOutput, SubmittedInvocationNotification};
+use restate_types::invocation::{FencingToken, PurgeInvocationRequest};
 use restate_types::logs::Keys;
 use restate_types::net::ingest::IngestRecord;
 use restate_types::net::partition_processor::{
@@ -90,6 +91,17 @@ pub struct LeaderState {
     awaiting_rpc_actions: HashMap<PartitionProcessorRpcRequestId, RpcReciprocal>,
     awaiting_rpc_self_propose: FuturesUnordered<SelfAppendFuture>,
 
+    /// Leader-local fencing tokens for in-flight invoker attempts (see [`FencingToken`]).
+    ///
+    /// Maps an in-flight invocation to the token handed to its current invoker task. Invoker
+    /// effects whose token does not match (or is absent) are dropped *before* being self-proposed,
+    /// fencing stragglers from a previous attempt. Entries are added on (re)invoke, removed when
+    /// the attempt ends (abort / terminal effect) or is fenced (pause / scheduler re-drive
+    /// propose), and the whole map is discarded on leadership loss (rebuilt on the next term).
+    fencing_tokens: restate_platform::hash::HashMap<InvocationId, FencingToken>,
+    /// Monotonic source of fresh fencing tokens; wraps (see [`FencingToken`]).
+    next_fencing_token: FencingToken,
+
     invoker_stream: InvokerStream,
     shuffle_stream: ReceiverStream<shuffle::OutboxTruncation>,
     schema_stream: WatchStream<Version>,
@@ -118,6 +130,10 @@ impl LeaderState {
         invoker_task_handle: TaskHandle<()>,
         self_proposer: SelfProposer,
         invoker_rx: InvokerStream,
+        // Fencing tokens seeded for the invocations resumed on becoming leader, and the next
+        // token to mint. See `fencing_tokens` / `mint_fencing_token`.
+        fencing_tokens: restate_platform::hash::HashMap<InvocationId, FencingToken>,
+        next_fencing_token: FencingToken,
         shuffle_rx: tokio::sync::mpsc::Receiver<shuffle::OutboxTruncation>,
         durability_tracker: DurabilityTracker,
         leader_query_guard: LeaderQueryGuard,
@@ -142,6 +158,8 @@ impl LeaderState {
             self_proposer,
             awaiting_rpc_actions: Default::default(),
             awaiting_rpc_self_propose: Default::default(),
+            fencing_tokens,
+            next_fencing_token,
             invoker_stream: invoker_rx,
             shuffle_stream: ReceiverStream::new(shuffle_rx),
             durability_tracker,
@@ -392,13 +410,31 @@ impl LeaderState {
                         )
                         .await?;
                 }
-                ActionEffect::Invoker(invoker_effect) => {
-                    self.self_proposer
-                        .self_propose(
-                            invoker_effect.invocation_id.partition_key(),
-                            Command::InvokerEffect(invoker_effect),
-                        )
-                        .await?;
+                ActionEffect::Invoker(fenced) => {
+                    let invocation_id = fenced.effect.invocation_id;
+                    // Fence stale effects at write time: only self-propose if the effect carries
+                    // the token of the invocation's *current* attempt. A mismatch (or a missing
+                    // entry) means the effect is a straggler from a previous attempt that has
+                    // since been re-invoked / paused / aborted, so it must not be written -- this
+                    // is what stops it from being applied to a newer attempt.
+                    if self.fencing_tokens.get(&invocation_id) == Some(&fenced.fencing_token) {
+                        // A terminal effect ends this attempt: stop accepting its token (GC). A
+                        // later re-invoke mints a fresh one.
+                        if fenced.effect.kind.is_terminal() {
+                            self.fencing_tokens.remove(&invocation_id);
+                        }
+                        self.self_proposer
+                            .self_propose(
+                                invocation_id.partition_key(),
+                                Command::InvokerEffect(fenced.effect),
+                            )
+                            .await?;
+                    } else {
+                        debug!(
+                            restate.invocation.id = %invocation_id,
+                            "Dropping stale invoker effect at write time (fencing token mismatch)"
+                        );
+                    }
                 }
                 ActionEffect::Shuffle(outbox_truncation) => {
                     // todo: Until we support partition splits we need to get rid of outboxes or introduce partition
@@ -582,15 +618,27 @@ impl LeaderState {
         Ok(())
     }
 
+    /// Mints a fresh fencing token for a (re)invoke and records it as the accepted token for
+    /// `invocation_id`, overwriting any previous one. Once recorded, straggler effects from the
+    /// previous attempt (carrying the old token) are dropped by [`Self::fence_invoker_effect`].
+    fn mint_fencing_token(&mut self, invocation_id: InvocationId) -> FencingToken {
+        let token = self.next_fencing_token;
+        self.next_fencing_token = self.next_fencing_token.wrapping_add(1);
+        self.fencing_tokens.insert(invocation_id, token);
+        token
+    }
+
     fn handle_action(&mut self, metas: VQueuesMeta<'_>, action: Action) -> Result<(), Error> {
         match action {
             Action::Invoke {
                 invocation_id,
                 invocation_target,
-            } => self
-                .invoker_handle
-                .invoke(invocation_id, invocation_target)
-                .map_err(Error::Invoker)?,
+            } => {
+                let fencing_token = self.mint_fencing_token(invocation_id);
+                self.invoker_handle
+                    .invoke(invocation_id, fencing_token, invocation_target)
+                    .map_err(Error::Invoker)?;
+            }
             Action::NewOutboxMessage {
                 seq_number,
                 message,
@@ -618,10 +666,14 @@ impl LeaderState {
                 .invoker_handle
                 .notify_completion(invocation_id, entry_index)
                 .map_err(Error::Invoker)?,
-            Action::AbortInvocation { invocation_id } => self
-                .invoker_handle
-                .abort_invocation(invocation_id)
-                .map_err(Error::Invoker)?,
+            Action::AbortInvocation { invocation_id } => {
+                // The attempt is ending; drop its fencing token so any straggler effect is dropped
+                // at write time (a later re-invoke mints a fresh token).
+                self.fencing_tokens.remove(&invocation_id);
+                self.invoker_handle
+                    .abort_invocation(invocation_id)
+                    .map_err(Error::Invoker)?;
+            }
             Action::IngressResponse {
                 request_id,
                 invocation_id,
@@ -752,11 +804,13 @@ impl LeaderState {
                     );
                     ReservedResources::new_empty()
                 });
+                let fencing_token = self.mint_fencing_token(invocation_id);
                 self.invoker_handle
                     .vqueue_invoke(
                         slot.vqueue_id().clone(),
                         run_permit,
                         invocation_id,
+                        fencing_token,
                         invocation_target,
                         slot.meta().limit_key().clone(),
                         idempotency_key,
