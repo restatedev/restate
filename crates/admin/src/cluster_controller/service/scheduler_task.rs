@@ -12,8 +12,6 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use futures::future::OptionFuture;
-use restate_types::Versioned;
-use restate_types::partitions::state::PartitionReplicaSetStates;
 use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
 
@@ -31,10 +29,10 @@ use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partitions::PartitionTable;
+use restate_types::partitions::state::PartitionReplicaSetStates;
 
 use crate::cluster_controller::cluster_state_refresher::ClusterStateWatcher;
 use crate::cluster_controller::service::scheduler::{self, Scheduler};
-use crate::cluster_controller::service::scheduler_task::version_tracker::PartitionConfigVersionTracker;
 
 pub struct SchedulerTask<T> {
     cluster_state_watcher: ClusterStateWatcher,
@@ -80,12 +78,15 @@ where
         let cs = TaskCenter::with_current(|tc| tc.cluster_state().clone());
         let mut cs_changed = std::pin::pin!(cs.changed());
 
-        let mut partition_config_version_tracker =
-            PartitionConfigVersionTracker::new(self.replica_set_states.clone());
+        let replica_set_states = self.replica_set_states.clone();
+        let mut observed_membersip_changed =
+            std::pin::pin!(replica_set_states.membership_changed());
 
         let mut fetch_epoch_metadata_task = Some(self.spawn_fetch_epoch_metadata_task(Vec::new())?);
 
         let mut next_fetch_interval = tokio::time::interval(Duration::from_secs(30));
+        // We've just scheduled a fetch, let's consume the initial tick from the interval (which ticks immediately).
+        next_fetch_interval.tick().await;
 
         loop {
             tokio::select! {
@@ -124,7 +125,6 @@ where
                         Ok(epoch_metadata) => {
                             for (partition_id, epoch_metadata) in epoch_metadata {
                                 let (_, _, current, next, leadership_policy) = epoch_metadata.into_inner();
-                                partition_config_version_tracker.note_observed_version(partition_id, current.version(), next.as_ref().map(|n| n.version()));
                                 self.scheduler.update_partition_configuration(partition_id, current, next, leadership_policy);
                             }
 
@@ -158,11 +158,12 @@ where
                     trace!("triggering an epoch metadata fetch as part of the periodic refreshes");
                     fetch_epoch_metadata_task = Some(self.spawn_fetch_epoch_metadata_task(Vec::new())?);
                 }
-                // If there's an ongoing epoch metadata refresh already ongoing, no need to poll the version tracker
-                // as it won't be able to schedule another refresh anyways.
-                _ = partition_config_version_tracker.changed(), if fetch_epoch_metadata_task.is_none() => {
-                    partition_config_version_tracker.ack();
-                    let stale_epoch_metadata = self.scheduler.detect_stale_partition_epoch_metadata();
+                _ = &mut observed_membersip_changed, if fetch_epoch_metadata_task.is_none() => {
+                    // we observed membership changed, but the scheduler might be already aware of it if, for
+                    // example, it's the one that triggered it. So let's notify it about the change and only
+                    // trigger a refresh if it reports back that it's not aware of it.
+                    observed_membersip_changed.set(replica_set_states.membership_changed());
+                    let stale_epoch_metadata = self.scheduler.detect_stale_epoch_metadata();
                     if !stale_epoch_metadata.is_empty() {
                         trace!("the scheduler detected some partitions ({:?}) with stale epoch metadata, triggering an epoch metadata fetch for those partitions", stale_epoch_metadata);
                         fetch_epoch_metadata_task = Some(self.spawn_fetch_epoch_metadata_task(stale_epoch_metadata)?);
@@ -265,251 +266,5 @@ impl FetchEpochMetadataTask {
         }
 
         latest_epoch_metadata
-    }
-}
-
-mod version_tracker {
-    use std::collections::HashMap;
-    use std::collections::hash_map::Entry;
-
-    use restate_types::identifiers::PartitionId;
-    use restate_types::{Version, partitions::state::PartitionReplicaSetStates};
-
-    /// Keeps tracks of the partition config version (current and next) observed in the replica set states struct
-    /// and the ones fetched already by the scheduler task. This allows the scheduler loop to detect whenever a
-    /// higher version that it hasn't yet fetched is available, reducing the staleness of the epoch metadata.
-    pub(super) struct PartitionConfigVersionTracker {
-        replica_set_states: PartitionReplicaSetStates,
-        observed_current_versions: HashMap<PartitionId, Version>,
-        observed_next_versions: HashMap<PartitionId, Version>,
-        acked: bool,
-    }
-
-    impl PartitionConfigVersionTracker {
-        pub(super) fn new(replica_set_states: PartitionReplicaSetStates) -> Self {
-            Self {
-                replica_set_states,
-                observed_current_versions: HashMap::default(),
-                observed_next_versions: HashMap::default(),
-                acked: true,
-            }
-        }
-
-        /// Returns a future that will resolve whenever a newer version than what we've previously seen is observed in the replica set states.
-        ///
-        /// Under the hood, this subscribes to all changes to replica set states and only fires whenever there's a version change, effectively
-        /// unsubscribing from durable lsn change notifications, etc
-        pub(super) async fn changed(&mut self) {
-            let replica_set_states = self.replica_set_states.clone();
-            // There's already a pending change that wasn't acked, let's fullfill the future immediately.
-            if !self.acked {
-                return;
-            }
-            loop {
-                let changed_future = replica_set_states.changed();
-                if self.update_if_changed() {
-                    self.acked = false;
-                    break;
-                }
-                changed_future.await;
-            }
-        }
-
-        pub(super) fn ack(&mut self) {
-            self.acked = true;
-        }
-
-        /// Updates the observed version of the given partition id.
-        pub(super) fn note_observed_version(
-            &mut self,
-            partition_id: PartitionId,
-            current_version: Version,
-            next_version: Option<Version>,
-        ) -> bool {
-            Self::update_version_if_newer(
-                &mut self.observed_current_versions,
-                partition_id,
-                current_version,
-            ) | Self::update_version_if_newer(
-                &mut self.observed_next_versions,
-                partition_id,
-                next_version.unwrap_or(Version::INVALID),
-            )
-        }
-
-        fn update_version_if_newer(
-            map: &mut HashMap<PartitionId, Version>,
-            partition_id: PartitionId,
-            version: Version,
-        ) -> bool {
-            match map.entry(partition_id) {
-                Entry::Occupied(mut occupied_entry) => {
-                    if occupied_entry.get() < &version {
-                        *occupied_entry.get_mut() = version;
-                        true
-                    } else {
-                        false
-                    }
-                }
-                Entry::Vacant(entry) => {
-                    entry.insert(version);
-                    true
-                }
-            }
-        }
-
-        fn update_if_changed(&mut self) -> bool {
-            let mut changed = false;
-            for p in self.replica_set_states.partition_versions() {
-                changed |= self.note_observed_version(p.id, p.current, p.next);
-            }
-            changed
-        }
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        use futures::FutureExt;
-        use restate_types::{
-            GenerationalNodeId, PlainNodeId,
-            identifiers::LeaderEpoch,
-            logs::Lsn,
-            partitions::state::{LeadershipState, PartitionReplicaSetStates, ReplicaSetState},
-        };
-
-        #[test]
-        fn partition_version_tracker() {
-            let partition_replica_set_states: PartitionReplicaSetStates = Default::default();
-            let mut tracker =
-                PartitionConfigVersionTracker::new(partition_replica_set_states.clone());
-
-            // After init, tracker shouldn't have any changes pending.
-            assert!(tracker.changed().now_or_never().is_none());
-
-            // A new version observed for a partition should trigger a notification.
-            {
-                partition_replica_set_states.note_observed_membership(
-                    PartitionId::from(0),
-                    LeadershipState {
-                        current_leader_epoch: LeaderEpoch::from(0),
-                        current_leader: GenerationalNodeId::from(0),
-                    },
-                    &ReplicaSetState {
-                        version: Version::from(1),
-                        members: Default::default(),
-                    },
-                    &None,
-                );
-
-                assert!(tracker.changed().now_or_never().is_some());
-            }
-
-            // Without acknowledging the change, the tracker should fullfill the changed future with every poll.
-            assert!(tracker.changed().now_or_never().is_some());
-            assert!(tracker.changed().now_or_never().is_some());
-
-            // Acknowledge the change.
-            tracker.ack();
-            assert!(tracker.changed().now_or_never().is_none());
-
-            // Observing a "next" version for a partition should trigger a notification.
-            {
-                partition_replica_set_states.note_observed_membership(
-                    PartitionId::from(0),
-                    LeadershipState {
-                        current_leader_epoch: LeaderEpoch::from(0),
-                        current_leader: GenerationalNodeId::from(0),
-                    },
-                    &ReplicaSetState {
-                        version: Version::from(1),
-                        members: Default::default(),
-                    },
-                    &Some(ReplicaSetState {
-                        version: Version::from(2),
-                        members: Default::default(),
-                    }),
-                );
-
-                assert!(tracker.changed().now_or_never().is_some());
-                tracker.ack();
-            }
-
-            // Observing a higher version for a partition should trigger a notification.
-            {
-                partition_replica_set_states.note_observed_membership(
-                    PartitionId::from(0),
-                    LeadershipState {
-                        current_leader_epoch: LeaderEpoch::from(0),
-                        current_leader: GenerationalNodeId::from(0),
-                    },
-                    &ReplicaSetState {
-                        version: Version::from(3),
-                        members: Default::default(),
-                    },
-                    &None,
-                );
-
-                assert!(tracker.changed().now_or_never().is_some());
-                tracker.ack();
-                assert!(tracker.changed().now_or_never().is_none());
-            }
-
-            // Observing a new partition should trigger a notification.
-            {
-                partition_replica_set_states.note_observed_membership(
-                    PartitionId::from(5),
-                    LeadershipState {
-                        current_leader_epoch: LeaderEpoch::from(0),
-                        current_leader: GenerationalNodeId::from(0),
-                    },
-                    &ReplicaSetState {
-                        version: Version::from(1),
-                        members: Default::default(),
-                    },
-                    &None,
-                );
-
-                assert!(tracker.changed().now_or_never().is_some());
-                tracker.ack();
-                assert!(tracker.changed().now_or_never().is_none());
-            }
-
-            // Manually noting the change to the tracker after obsering a change shouldn't trigger a notification.
-            {
-                partition_replica_set_states.note_observed_membership(
-                    PartitionId::from(0),
-                    LeadershipState {
-                        current_leader_epoch: LeaderEpoch::from(0),
-                        current_leader: GenerationalNodeId::from(0),
-                    },
-                    &ReplicaSetState {
-                        version: Version::from(10),
-                        members: Default::default(),
-                    },
-                    &None,
-                );
-                tracker.note_observed_version(PartitionId::from(0), Version::from(10), None);
-
-                assert!(tracker.changed().now_or_never().is_none());
-            }
-
-            // Leadership changes & durable lsn changes shouldn't trigger a notification.
-            {
-                partition_replica_set_states.note_observed_leader(
-                    PartitionId::from(0),
-                    LeadershipState {
-                        current_leader_epoch: LeaderEpoch::from(10),
-                        current_leader: GenerationalNodeId::from(2),
-                    },
-                );
-                partition_replica_set_states.note_durable_lsn(
-                    PartitionId::from(0),
-                    PlainNodeId::from(2),
-                    Lsn::from(120),
-                );
-                assert!(tracker.changed().now_or_never().is_none());
-            }
-        }
     }
 }

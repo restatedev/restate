@@ -34,6 +34,8 @@ pub struct PartitionReplicaSetStates {
 struct Inner {
     partitions: DashMap<PartitionId, MembershipState>,
     global_notify: Notify,
+    // Fires only for partition membership changes
+    membership_notify: Notify,
 }
 
 impl PartitionReplicaSetStates {
@@ -97,6 +99,7 @@ impl PartitionReplicaSetStates {
 
         if modified {
             self.inner.global_notify.notify_waiters();
+            self.inner.membership_notify.notify_waiters();
         }
     }
 
@@ -231,16 +234,16 @@ impl PartitionReplicaSetStates {
     }
 
     /// A lightweight accessor to the partition versions to avoid the clone introduced by the `iter` method.
-    pub fn partition_versions(&self) -> Vec<PartitionReplicaSetVersion> {
+    pub fn partition_versions(&self) -> Vec<ObservedPartitionReplicaSetVersion> {
         self.inner
             .partitions
             .iter()
             .map(|entry| {
                 let (id, state) = (*entry.key(), entry.value());
-                PartitionReplicaSetVersion {
-                    id,
-                    current: state.observed_current_membership.version,
-                    next: state.observed_next_membership.as_ref().map(|s| s.version),
+                ObservedPartitionReplicaSetVersion {
+                    partition_id: id,
+                    current_version: state.observed_current_membership.version,
+                    next_version: state.observed_next_membership.as_ref().map(|s| s.version),
                 }
             })
             .collect()
@@ -252,6 +255,14 @@ impl PartitionReplicaSetStates {
     /// partition replica set states, then await this future for updates.
     pub fn changed(&self) -> Notified<'_> {
         self.inner.global_notify.notified()
+    }
+
+    /// Future to monitor changes to the partition membership changes only.
+    ///
+    /// If you don't want to miss any changes, it's advised to create this future first, read the
+    /// partition replica set states, then await this future for updates.
+    pub fn membership_changed(&self) -> Notified<'_> {
+        self.inner.membership_notify.notified()
     }
 }
 
@@ -484,8 +495,8 @@ pub struct MemberState {
 }
 
 #[derive(Debug, Clone)]
-pub struct PartitionReplicaSetVersion {
-    pub id: PartitionId,
-    pub current: Version,
-    pub next: Option<Version>,
+pub struct ObservedPartitionReplicaSetVersion {
+    pub partition_id: PartitionId,
+    pub current_version: Version,
+    pub next_version: Option<Version>,
 }

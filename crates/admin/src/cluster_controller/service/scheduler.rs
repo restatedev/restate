@@ -32,7 +32,9 @@ use restate_types::net::partition_processor_manager::{
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, WorkerState};
 use restate_types::partition_table::PartitionTable;
 use restate_types::partitions::leadership_policy::{LeaderAffinity, LeadershipPolicy};
-use restate_types::partitions::state::{PartitionReplicaSetStates, ReplicaSetState};
+use restate_types::partitions::state::{
+    ObservedPartitionReplicaSetVersion, PartitionReplicaSetStates, ReplicaSetState,
+};
 use restate_types::partitions::{PartitionConfiguration, worker_candidate_filter};
 use restate_types::replication::balanced_spread_selector::{
     BalancedSpreadSelector, SelectorOptions,
@@ -882,35 +884,40 @@ impl<T: TransportConnect> Scheduler<T> {
 
     /// Compares the stored epoch metadata for each partitions with the values we observed elsewhere in the system (or through gossip).
     /// Returns the partition ids for which we think the epoch metadata might be stale.
-    pub(crate) fn detect_stale_partition_epoch_metadata(&self) -> Vec<PartitionId> {
+    pub(crate) fn detect_stale_epoch_metadata(&self) -> Vec<PartitionId> {
+        fn is_stale(
+            partition_state: &PartitionState,
+            observed_version: &ObservedPartitionReplicaSetVersion,
+        ) -> bool {
+            if partition_state.current.version() < observed_version.current_version {
+                return true;
+            }
+
+            match (partition_state.next.as_ref(), observed_version.next_version) {
+                (None, None) => false,
+                // We have recorded a next replica set, but the observed state doesn't have one. Did someone abort our next version?
+                (Some(_our_next), None) => true,
+                // There's a next version observed, that we're not aware of it yet. Let's report the epoch metadata as stale.
+                (None, Some(_their_next)) => true,
+                (Some(our_next), Some(their_next)) => our_next.version() < their_next,
+            }
+        }
+
         self.replica_set_states
             .partition_versions()
             .into_iter()
             .filter_map(|observed_version| {
-                let partition_id = observed_version.id;
+                let partition_id = observed_version.partition_id;
                 self.partitions
                     .get(&partition_id)
                     .map(|partition_state| {
-                        if partition_state.current.version() < observed_version.current {
+                        if is_stale(partition_state, &observed_version) {
                             Some(partition_id)
                         } else {
-                            match (partition_state.next.as_ref(), observed_version.next) {
-                                (None, None) => None,
-                                // We have recorded a next replica set, but the observed state doesn't have one. Did someone abort our next version?
-                                (Some(_our_next), None) => Some(partition_id),
-                                // There's a next version observed, that we're not aware of it yet. Let's report the epoch metadata as stale.
-                                (None, Some(_their_next)) => Some(partition_id),
-                                (Some(our_next), Some(their_next)) => {
-                                    if our_next.version() < their_next {
-                                        Some(partition_id)
-                                    } else {
-                                        None
-                                    }
-                                }
-                            }
+                            None
                         }
                     })
-                    // We haven't observed this partition before, so consider it stale.
+                    // We haven't seen this partition before, so consider it stale.
                     .unwrap_or(Some(partition_id))
             })
             .collect()
