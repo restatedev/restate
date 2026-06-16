@@ -43,11 +43,6 @@ pub trait DbConfigurator {
                 .set_statistics_level(convert_statistics_level(config.rocksdb_statistics_level()));
         }
 
-        // no need to retain 1000 log files by default.
-        if !config.rocksdb_disable_wal() {
-            // RocksDB does not support recycling wal log files if wal is disabled when writing
-            db_options.set_recycle_log_file_num(4);
-        }
         db_options.set_compaction_readahead_size(config.rocksdb_compaction_readahead_size().get());
 
         // Use Direct I/O for reads, do not use OS page cache to cache compressed blocks.

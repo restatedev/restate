@@ -68,6 +68,9 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
         // amend default options from rocksdb_manager
         self.apply_db_opts_from_config(&mut db_options, &metadata_server_config.rocksdb);
 
+        // Recycle wal files
+        db_options.set_recycle_log_file_num(4);
+
         restate_rocksdb::configuration::set_background_work_budget(
             &mut db_options,
             metadata_server_config.rocksdb_max_background_flushes(),

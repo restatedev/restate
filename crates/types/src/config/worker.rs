@@ -22,7 +22,7 @@ use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
 
 use super::{
     BackgroundWorkBudget, CommonOptions, DEFAULT_MESSAGE_SIZE_LIMIT, NetworkingOptions,
-    ObjectStoreOptions, RocksDbOptions, RocksDbOptionsBuilder,
+    ObjectStoreOptions, RocksDbOptions,
 };
 use crate::config::{
     AwsLambdaOptions, DeprecatedAwsLambdaOptions, DeprecatedHttpOptions, HttpOptions,
@@ -859,14 +859,9 @@ impl StorageOptions {
 
 impl Default for StorageOptions {
     fn default() -> Self {
-        let rocksdb = RocksDbOptionsBuilder::default()
-            .rocksdb_disable_wal(Some(true))
-            .build()
-            .expect("valid RocksDbOptions");
-
         #[allow(deprecated)]
         StorageOptions {
-            rocksdb,
+            rocksdb: RocksDbOptions::default(),
             // set by apply_common in runtime
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.49,

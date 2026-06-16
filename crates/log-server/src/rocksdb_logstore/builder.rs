@@ -114,6 +114,11 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
             log_server_config.rocksdb_max_background_compactions(),
         );
 
+        if !log_server_config.rocksdb_disable_wal() {
+            // RocksDB does not support recycling wal log files if wal is disabled when writing
+            db_options.set_recycle_log_file_num(4);
+        }
+
         // log-server specific customizations
 
         // This is Rocksdb's default, it's added here for clarity.

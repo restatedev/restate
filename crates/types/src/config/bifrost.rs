@@ -25,9 +25,7 @@ use crate::net::connect_opts::MESSAGE_SIZE_OVERHEAD;
 use crate::retries::RetryPolicy;
 
 use super::networking::DEFAULT_MESSAGE_SIZE_LIMIT;
-use super::{
-    BackgroundWorkBudget, CommonOptions, NetworkingOptions, RocksDbOptions, RocksDbOptionsBuilder,
-};
+use super::{BackgroundWorkBudget, CommonOptions, NetworkingOptions, RocksDbOptions};
 
 /// # Bifrost options
 #[serde_as]
@@ -195,6 +193,12 @@ pub struct LocalLogletOptions {
     /// (See `rocksdb-total-memtables-ratio` in common).
     rocksdb_memory_ratio: f32,
 
+    /// # Disable WAL
+    ///
+    /// Dangerous option, use with caution.
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    rocksdb_disable_wal: bool,
+
     /// Disable fsync of WAL on every batch
     rocksdb_disable_wal_fsync: bool,
 
@@ -257,6 +261,10 @@ impl LocalLogletOptions {
         }
     }
 
+    pub fn rocksdb_disable_wal(&self) -> bool {
+        self.rocksdb_disable_wal
+    }
+
     pub fn rocksdb_max_background_flushes(&self) -> NonZeroU32 {
         self.rocksdb_max_background_flushes
             .unwrap_or(NonZeroU32::new(1).unwrap())
@@ -288,12 +296,8 @@ impl LocalLogletOptions {
 
 impl Default for LocalLogletOptions {
     fn default() -> Self {
-        let rocksdb = RocksDbOptionsBuilder::default()
-            .rocksdb_disable_wal(Some(false))
-            .build()
-            .unwrap();
         Self {
-            rocksdb,
+            rocksdb: RocksDbOptions::default(),
             // set by apply_common in runtime
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.5,
@@ -303,6 +307,7 @@ impl Default for LocalLogletOptions {
             always_commit_in_background: false,
             rocksdb_max_background_flushes: None,
             rocksdb_max_background_compactions: None,
+            rocksdb_disable_wal: false,
         }
     }
 }
