@@ -85,7 +85,12 @@ where
         let mut fetch_epoch_metadata_task = Some(self.spawn_fetch_epoch_metadata_task(Vec::new())?);
 
         let mut next_fetch_interval = tokio::time::interval(Duration::from_secs(30));
-        // We've just scheduled a fetch, let's consume the initial tick from the interval (which ticks immediately).
+        // If we don't drain the ticks for long (e.g. not polling it because of the guard), there's a risk that we
+        // might accumulate a lot of them. The default behavior will burst through them causing back-to-back fetches
+        // until the interval is drained, which might overwhelm the metadata store. Let's change the default behavior
+        // to schedule the next tick from the moment we've consumed the previous one.
+        next_fetch_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // We've just scheduled a fetch, let's consume the initial tick from the interval which ticks immediately.
         next_fetch_interval.tick().await;
 
         loop {
@@ -153,7 +158,7 @@ where
                         }
                     }
                 }
-                // Trigger the periodic full epoch metadata fetch if there's no epoch metadata fetch is already in flight.
+                // Trigger the periodic full epoch metadata fetch if there's no epoch metadata fetch that is already in flight.
                 _ = next_fetch_interval.tick(), if fetch_epoch_metadata_task.is_none() => {
                     trace!("triggering an epoch metadata fetch as part of the periodic refreshes");
                     fetch_epoch_metadata_task = Some(self.spawn_fetch_epoch_metadata_task(Vec::new())?);

@@ -93,12 +93,14 @@ impl PartitionReplicaSetStates {
                     observed_current_membership: current_membership.clone(),
                     observed_next_membership: next_membership.clone(),
                 });
-                true
+                MembershipMergeResult::all_changed()
             }
         };
 
-        if modified {
+        if modified.changed() {
             self.inner.global_notify.notify_waiters();
+        }
+        if modified.membership_changed {
             self.inner.membership_notify.notify_waiters();
         }
     }
@@ -319,14 +321,34 @@ impl Default for MembershipState {
     }
 }
 
+#[derive(Debug, Default)]
+struct MembershipMergeResult {
+    leadership_changed: bool,
+    membership_changed: bool,
+    durable_lsn_changed: bool,
+}
+
+impl MembershipMergeResult {
+    fn changed(&self) -> bool {
+        self.leadership_changed || self.membership_changed || self.durable_lsn_changed
+    }
+    fn all_changed() -> Self {
+        Self {
+            leadership_changed: true,
+            membership_changed: true,
+            durable_lsn_changed: true,
+        }
+    }
+}
+
 impl MembershipState {
     fn merge(
         &mut self,
         incoming_leadership_state: LeadershipState,
         incoming_current_membership: &ReplicaSetState,
         incoming_next_membership: &Option<ReplicaSetState>,
-    ) -> bool {
-        let mut modified = false;
+    ) -> MembershipMergeResult {
+        let mut result = MembershipMergeResult::default();
         match incoming_current_membership
             .version
             .cmp(&self.observed_current_membership.version)
@@ -335,7 +357,8 @@ impl MembershipState {
             std::cmp::Ordering::Greater => {
                 // todo: try to use previous durable lsns if the two replica-sets intersect
                 self.observed_current_membership = incoming_current_membership.clone();
-                modified = true;
+                result.membership_changed = true;
+                result.durable_lsn_changed = true;
                 if self
                     .observed_next_membership
                     .as_ref()
@@ -349,31 +372,33 @@ impl MembershipState {
             }
             std::cmp::Ordering::Equal => {
                 // merge member's durable lsns
-                modified = self
+                result.durable_lsn_changed = self
                     .observed_current_membership
                     .merge(incoming_current_membership.clone());
             }
             std::cmp::Ordering::Less => { /* ignore it */ }
         }
 
-        modified |= self
+        result.leadership_changed |= self
             .current_leader
             .send_if_modified(|l| l.merge(incoming_leadership_state));
 
         // dealing with next membership configuration
         let Some(incoming_next_membership) = incoming_next_membership else {
-            return modified;
+            return result;
         };
 
         // incoming has next but it older/equal to our own current
         if incoming_next_membership.version <= self.observed_current_membership.version {
             // ignore it, their next is lower that our current's
-            return modified;
+            return result;
         }
 
         let Some(my_next_membership) = &mut self.observed_next_membership else {
             self.observed_next_membership = Some(incoming_next_membership.clone());
-            return true;
+            result.membership_changed = true;
+            result.durable_lsn_changed = true;
+            return result;
         };
 
         match incoming_next_membership
@@ -382,15 +407,18 @@ impl MembershipState {
         {
             std::cmp::Ordering::Greater => {
                 *my_next_membership = incoming_next_membership.clone();
-                modified = true;
+                result.membership_changed = true;
+                result.durable_lsn_changed = true;
             }
             std::cmp::Ordering::Equal => {
-                modified = my_next_membership.merge(incoming_next_membership.clone());
+                // merge member's durable lsns
+                result.durable_lsn_changed =
+                    my_next_membership.merge(incoming_next_membership.clone());
             }
             std::cmp::Ordering::Less => { /* ignore it */ }
         }
 
-        modified
+        result
     }
 
     /// Returns true if the given node_id is part of the current or next membership.
