@@ -14,7 +14,7 @@ use std::sync::{Arc, Weak};
 use ahash::HashMap;
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
 use tokio::sync::Mutex as AsyncMutex;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, info, instrument};
 
 use restate_rocksdb::{CfPrefixPattern, DbSpecBuilder, RocksDb, RocksDbManager, RocksError};
 use restate_storage_api::fsm_table::ReadFsmTable;
@@ -255,35 +255,27 @@ impl PartitionStoreManager {
         // target-lsn target higher than our local state (probably due to seeing a log trim-gap).
         // **
 
-        // Attempt to get the latest available snapshot from the snapshot repository:
-        let snapshot = self
+        // Attempt to get a suitable snapshot from the repository:
+        let snapshot_result = self
             .snapshots
-            .download_latest_snapshot(partition.partition_id)
-            .await
-            .map_err(OpenError::Snapshot)?;
+            .download_snapshot(partition.partition_id, target_lsn)
+            .await;
 
-        match (snapshot, target_lsn) {
-            (None, None) => {
-                debug!("No snapshot found for partition, creating new partition store");
-                let db = cell.provision(&mut state_guard, rocksdb.clone()).await?;
-                Ok(PartitionStore::from(db))
-            }
-
-            (Some(snapshot), None) => {
+        match (snapshot_result, target_lsn) {
+            (Ok(Some(snapshot)), None) => {
+                // Found a snapshot when we didn't require one - import it
                 info!("Found partition snapshot, restoring it");
                 let db = cell
                     .import_cf(&mut state_guard, snapshot, rocksdb.clone())
                     .await?;
-
                 Ok(PartitionStore::from(db))
             }
 
-            // Good snapshot
-            (Some(snapshot), Some(fast_forward_lsn))
-                if snapshot.min_applied_lsn >= fast_forward_lsn =>
-            {
+            (Ok(Some(snapshot)), Some(fast_forward_lsn)) => {
+                // Got a snapshot that meets the target LSN requirement (filtered by candidate LSN
+                // and re-verified against the downloaded metadata in `download_snapshot`).
                 info!(
-                    latest_snapshot_lsn = %snapshot.min_applied_lsn,
+                    snapshot_lsn = %snapshot.min_applied_lsn,
                     %fast_forward_lsn,
                     "Found snapshot with LSN >= target LSN, dropping local partition store state",
                 );
@@ -293,22 +285,31 @@ impl PartitionStoreManager {
                     .await?;
                 Ok(PartitionStore::from(db))
             }
+
+            (Ok(None), None) => {
+                debug!("No snapshot found for partition, creating new partition store");
+                let db = cell.provision(&mut state_guard, rocksdb.clone()).await?;
+                Ok(PartitionStore::from(db))
+            }
+
+            (Err(err), None) => {
+                // A snapshot may well exist but we failed to fetch it (transient repository error,
+                // or every retained candidate failed to download). Do NOT provision an empty store
+                // and silently discard data; fail the open so the processor retries later.
+                Err(OpenError::Snapshot(err))
+            }
+
+            // We required a snapshot (fast-forward target) but have none suitable: either none was
+            // found at/above the target LSN (`Ok(None)`) or all candidates failed (`Err`).
             (maybe_snapshot, Some(fast_forward_lsn)) => {
-                // Play it safe and keep the partition store intact; we can't do much else at this
-                // point. We'll likely halt again as soon as the processor starts up.
                 let recovery_guide_msg = "The partition's log is trimmed to a point from which this processor can not resume. \
                 Visit https://docs.restate.dev/operate/clusters#handling-missing-snapshots \
                 to learn more about how to recover this processor.";
 
-                if let Some(snapshot) = maybe_snapshot {
-                    warn!(
-                        latest_snapshot_lsn = %snapshot.min_applied_lsn,
-                        %fast_forward_lsn,
-                        "The latest available snapshot is from an LSN before the target LSN! {}",
-                        recovery_guide_msg,
-                    );
-                    Err(OpenError::SnapshotUnsuitable)
-                } else if !self.snapshots.is_repository_configured() {
+                metrics::counter!(crate::metric_definitions::SNAPSHOT_FAST_FORWARD_FAILED)
+                    .increment(1);
+
+                if !self.snapshots.is_repository_configured() {
                     error!(
                         %fast_forward_lsn,
                         "A log trim gap was encountered, but no snapshot repository is configured! {}",
@@ -316,11 +317,19 @@ impl PartitionStoreManager {
                     );
                     Err(OpenError::SnapshotRepositoryRequired)
                 } else {
-                    error!(
-                        %fast_forward_lsn,
-                        "A log trim gap was encountered, but no snapshot is available for this partition! {}",
-                        recovery_guide_msg,
-                    );
+                    match maybe_snapshot {
+                        Err(err) => error!(
+                            %fast_forward_lsn,
+                            %err,
+                            "A log trim gap was encountered, but no suitable snapshot is available for this partition! {}",
+                            recovery_guide_msg,
+                        ),
+                        Ok(_) => error!(
+                            %fast_forward_lsn,
+                            "A log trim gap was encountered, but no suitable snapshot is available for this partition! {}",
+                            recovery_guide_msg,
+                        ),
+                    }
                     Err(OpenError::SnapshotRequired)
                 }
             }
