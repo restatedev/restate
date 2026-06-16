@@ -4280,6 +4280,10 @@ impl<S> StateMachineApplyContext<'_, S> {
         )
     }
 
+    /// Legacy journal-v1 completion handling. It deliberately has no `Paused` arm (a completion
+    /// for a paused invocation falls into the catch-all "no longer running" branch): pausing is a
+    /// journal-v2 feature, and the v2 path (`ApplyNotificationCommand`) is authoritative for
+    /// store-don't-resume-while-paused. This whole v1 path is dead code to be removed with v1.8.
     async fn handle_completion(
         &mut self,
         invocation_id: InvocationId,
