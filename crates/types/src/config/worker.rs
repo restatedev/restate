@@ -592,7 +592,6 @@ impl Default for InvokerOptions {
     schemars(rename = "ServiceClientOptions", default)
 )]
 #[builder(default)]
-#[derive(Default)]
 #[serde(rename_all = "kebab-case")]
 pub struct ServiceClientOptions {
     #[serde(flatten)]
@@ -611,12 +610,40 @@ pub struct ServiceClientOptions {
     /// Parsed public keys will be logged at INFO level in the same format that SDKs expect.
     pub request_identity_private_key_pem_file: Option<PathBuf>,
 
+    /// # Request identity expiration leeway
+    ///
+    /// The validity window of the JWTs attached to outgoing requests when a request identity key is
+    /// configured. The token's `exp` (expiry) is set to `now + leeway` and its `nbf` (not-before) to
+    /// `now - leeway`, so this value bounds both how long a token remains valid and how much clock
+    /// skew between this client and the receiving SDK is tolerated.
+    ///
+    /// The minimum expiration leeway is 1s and lower values will be automatically clamped.
+    /// Default: 60s.
+    ///
+    /// Since v1.7.0
+    request_identity_expiration: NonZeroFriendlyDuration,
+
     /// # Additional request headers
     ///
     /// Headers that should be applied to all outgoing requests (HTTP and Lambda).
     /// Defaults to `x-restate-cluster-name: <cluster name>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub additional_request_headers: Option<SerdeableHeaderHashMap>,
+}
+
+const DEFAULT_REQUEST_IDENTITY_EXPIRATION: NonZeroFriendlyDuration =
+    NonZeroFriendlyDuration::new_unchecked(Duration::from_secs(60));
+
+impl Default for ServiceClientOptions {
+    fn default() -> Self {
+        Self {
+            http: HttpOptions::default(),
+            lambda: AwsLambdaOptions::default(),
+            request_identity_private_key_pem_file: None,
+            request_identity_expiration: DEFAULT_REQUEST_IDENTITY_EXPIRATION,
+            additional_request_headers: None,
+        }
+    }
 }
 
 impl ServiceClientOptions {
@@ -650,6 +677,11 @@ impl ServiceClientOptions {
             "additional-request-headers",
             None,
         );
+    }
+
+    pub fn request_identity_expiration(&self) -> NonZeroFriendlyDuration {
+        self.request_identity_expiration
+            .max(NonZeroFriendlyDuration::from_secs_unchecked(1))
     }
 }
 
