@@ -153,16 +153,19 @@ where
                         }
                     }
                 }
-                _ = next_fetch_interval.tick() => {
+                // Trigger the periodic full epoch metadata fetch if there's no epoch metadata fetch is already in flight.
+                _ = next_fetch_interval.tick(), if fetch_epoch_metadata_task.is_none() => {
                     trace!("triggering an epoch metadata fetch as part of the periodic refreshes");
-                    if fetch_epoch_metadata_task.is_none() {
-                        fetch_epoch_metadata_task = Some(self.spawn_fetch_epoch_metadata_task(Vec::new())?);
-                    }
+                    fetch_epoch_metadata_task = Some(self.spawn_fetch_epoch_metadata_task(Vec::new())?);
                 }
-                _ = partition_config_version_tracker.changed() => {
-                    trace!("epoch metadata version change detected, triggering an epoch metadata fetch");
-                    if fetch_epoch_metadata_task.is_none() {
-                        fetch_epoch_metadata_task = Some(self.spawn_fetch_epoch_metadata_task(Vec::new())?);
+                // If there's an ongoing epoch metadata refresh already ongoing, no need to poll the version tracker
+                // as it won't be able to schedule another refresh anyways.
+                _ = partition_config_version_tracker.changed(), if fetch_epoch_metadata_task.is_none() => {
+                    partition_config_version_tracker.ack();
+                    let stale_epoch_metadata = self.scheduler.detect_stale_partition_epoch_metadata();
+                    if !stale_epoch_metadata.is_empty() {
+                        trace!("the scheduler detected some partitions ({:?}) with stale epoch metadata, triggering an epoch metadata fetch for those partitions", stale_epoch_metadata);
+                        fetch_epoch_metadata_task = Some(self.spawn_fetch_epoch_metadata_task(stale_epoch_metadata)?);
                     }
                 }
             }
@@ -279,6 +282,7 @@ mod version_tracker {
         replica_set_states: PartitionReplicaSetStates,
         observed_current_versions: HashMap<PartitionId, Version>,
         observed_next_versions: HashMap<PartitionId, Version>,
+        acked: bool,
     }
 
     impl PartitionConfigVersionTracker {
@@ -287,6 +291,7 @@ mod version_tracker {
                 replica_set_states,
                 observed_current_versions: HashMap::default(),
                 observed_next_versions: HashMap::default(),
+                acked: false,
             }
         }
 
@@ -296,13 +301,22 @@ mod version_tracker {
         /// unsubscribing from durable lsn change notifications, etc
         pub(super) async fn changed(&mut self) {
             let replica_set_states = self.replica_set_states.clone();
+            // There's already a pending change that wasn't acked, let's fullfill the future immediately.
+            if !self.acked {
+                return;
+            }
             loop {
                 let changed_future = replica_set_states.changed();
                 if self.update_if_changed() {
+                    self.acked = false;
                     break;
                 }
                 changed_future.await;
             }
+        }
+
+        pub(super) fn ack(&mut self) {
+            self.acked = true;
         }
 
         /// Updates the observed version of the given partition id.

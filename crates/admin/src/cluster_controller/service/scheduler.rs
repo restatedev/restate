@@ -879,6 +879,42 @@ impl<T: TransportConnect> Scheduler<T> {
 
         Ok(())
     }
+
+    /// Compares the stored epoch metadata for each partitions with the values we observed elsewhere in the system (or through gossip).
+    /// Returns the partition ids for which we think the epoch metadata might be stale.
+    pub(crate) fn detect_stale_partition_epoch_metadata(&self) -> Vec<PartitionId> {
+        self.replica_set_states
+            .partition_versions()
+            .into_iter()
+            .filter_map(|observed_version| {
+                let partition_id = observed_version.id;
+                self.partitions
+                    .get(&partition_id)
+                    .map(|partition_state| {
+                        if partition_state.current.version() < observed_version.current {
+                            Some(partition_id)
+                        } else {
+                            match (partition_state.next.as_ref(), observed_version.next) {
+                                (None, None) => None,
+                                // We have recorded a next replica set, but the observed state doesn't have one. Did someone abort our next version?
+                                (Some(_our_next), None) => Some(partition_id),
+                                // There's a next version observed, that we're not aware of it yet. Let's report the epoch metadata as stale.
+                                (None, Some(_their_next)) => Some(partition_id),
+                                (Some(our_next), Some(their_next)) => {
+                                    if our_next.version() < their_next {
+                                        Some(partition_id)
+                                    } else {
+                                        None
+                                    }
+                                }
+                            }
+                        }
+                    })
+                    // We haven't observed this partition before, so consider it stale.
+                    .unwrap_or(Some(partition_id))
+            })
+            .collect()
+    }
 }
 
 /// Returns `true` if the given node matches the leader affinity expression.
