@@ -163,6 +163,7 @@ impl PartitionStoreManager {
         let configurator = RocksConfigurator::<AllDataCf>::new(
             self.memory_controller.memory_budget.clone(),
             Arc::clone(&self.state),
+            self.use_multi_db_layout,
         );
 
         let db_spec = DbSpecBuilder::new(

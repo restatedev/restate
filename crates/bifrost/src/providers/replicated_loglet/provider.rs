@@ -60,9 +60,10 @@ impl<T: TransportConnect> Factory<T> {
                 // NOTE: This is a shared pool with log-server store data path
                 "log-server-data",
                 || {
-                    Configuration::pinned()
+                    let config = Configuration::pinned();
+                    config
                         .log_server
-                        .rocksdb_data_memtables_budget()
+                        .data_service_memory_size(config.networking.message_size_limit)
                 },
             )
         });

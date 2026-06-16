@@ -211,8 +211,10 @@ impl LogStoreWriterBuilder {
                     }
 
                     let config = &config.live_load().log_server;
+                    let batch_bytes_limit = config.write_batch_commit_bytes();
+
                     // Opportunistically drain normal-pri commands.
-                    while batch.size_in_bytes() < config.write_batch_bytes().as_usize()
+                    while batch.size_in_bytes() < batch_bytes_limit
                         && config
                             .write_batch_commit_count
                             .is_none_or(|c| batch.len() < c.get())

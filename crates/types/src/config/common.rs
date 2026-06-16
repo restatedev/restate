@@ -386,6 +386,14 @@ pub struct CommonOptions {
     /// device (use block size of 64k, direct IO, and iodepth of 32 across 4 jobs to get a
     /// reasonable estimate).
     ///
+    /// For instance, consider the output of the following command:
+    ///
+    /// ```text
+    /// fio --name=c --directory=/restate-data --rw=write --bs=1m --size=8g --numjobs=4 --direct=1 --group_reporting
+    /// ...
+    ///   WRITE: bw=601MiB/s (630MB/s), 601MiB/s-601MiB/s (630MB/s-630MB/s), io=32.0GiB (34.4GB), run=54560-54560msec
+    /// ```
+    ///
     /// The default value assumes a fast NVMe with bandwidth of 7GiB (per second).
     pub rocksdb_max_write_rate_per_second: NonZeroByteCount,
 
@@ -408,16 +416,19 @@ pub struct CommonOptions {
 
     /// # Rocksdb Low Priority Background Threads
     ///
-    /// The number of threads to reserve to lower priority Rocksdb background tasks. Defaults to the number of
-    /// cores on the machine.
+    /// The number of threads to reserve to lower priority Rocksdb background tasks.
+    ///
+    /// Defaults to the remaining CPU cores not used by high-priority rocksdb threads
     #[serde(skip_serializing_if = "Option::is_none")]
-    rocksdb_bg_threads: Option<NonZeroU32>,
+    rocksdb_low_priority_threads: Option<NonZeroU32>,
 
     /// # Rocksdb High Priority Background Threads
     ///
     /// The number of threads to reserve to high priority Rocksdb background tasks.
+    ///
+    /// Defaults to 1/4 of the number of CPU cores.
     #[serde(skip_serializing_if = "Option::is_none")]
-    rocksdb_high_priority_bg_threads: Option<NonZeroU32>,
+    rocksdb_high_priority_threads: Option<NonZeroU32>,
 
     /// # Rocksdb performance statistics level
     ///
@@ -763,21 +774,21 @@ impl CommonOptions {
     }
 
     pub fn rocksdb_high_priority_bg_threads(&self) -> NonZeroU32 {
-        // This controls the number of concurrent flushes we can do to rocksdb. Since
-        // the background threads are shared across all databases, we want to make sure
-        // we have enough threads to perform flushes concurrently (in a modern nvme this
-        // is usually the best).
-        let user_specified_threads = self.rocksdb_high_priority_bg_threads.unwrap_or(*CPU_COUNT);
-
-        // The very least is that we we want to have a thread available per database + 1 thread for
-        // background purges.
-        user_specified_threads.max(NonZeroU32::new(4).unwrap())
+        // Give 1/4 of the CPUs to flushes unless the user specifies a value.
+        self.rocksdb_high_priority_threads
+            .unwrap_or_else(|| CPU_COUNT.div_ceil(NonZeroU32::new(4).unwrap()))
     }
 
     pub fn rocksdb_low_priority_bg_threads(&self) -> NonZeroU32 {
-        // Gives us 1/2 the core count unless the user wants to override it.
-        self.rocksdb_bg_threads
-            .unwrap_or_else(|| CPU_COUNT.div_ceil(NonZeroU32::new(2).unwrap()))
+        self.rocksdb_low_priority_threads.unwrap_or_else(|| {
+            // how many cpu threads are assigned for high-priority background tasks?
+            let remaining = CPU_COUNT
+                .get()
+                .saturating_sub(self.rocksdb_high_priority_bg_threads().get())
+                .max(1);
+            // Safe because of max(1) above.
+            NonZeroU32::new(remaining).unwrap()
+        })
     }
 
     /// set derived values if they are not configured to reduce verbose configurations
@@ -840,8 +851,8 @@ impl Default for CommonOptions {
                 .unwrap(),
             rocksdb_total_memory_size: NonZeroByteCount::try_from(2 * 1024 * 1024 * 1024).unwrap(), // 2GiB
             rocksdb_total_memtables_ratio: 0.85, // (85% of rocksdb-total-memory-size)
-            rocksdb_bg_threads: None,
-            rocksdb_high_priority_bg_threads: None,
+            rocksdb_low_priority_threads: None,
+            rocksdb_high_priority_threads: None,
             rocksdb_perf_level: PerfStatsLevel::EnableCount,
             rocksdb: Default::default(),
             metadata_update_interval: NonZeroFriendlyDuration::from_secs_unchecked(10),

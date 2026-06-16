@@ -80,14 +80,12 @@ impl RocksDbManager {
             false,
             cache.clone(),
         );
-        // Setup the shared rocksdb environment
+        // Setup the default shared rocksdb environment. These are just the initial pool sizes;
+        // rocksdb grows them on demand at db-open to fit each database's max_background_flushes
+        // (high-priority) and max_background_compactions (low-priority), never shrinking below.
         let mut env = rocksdb::Env::new().expect("rocksdb env is created");
-        env.set_low_priority_background_threads(opts.rocksdb_low_priority_bg_threads().get() as i32);
-        env.set_high_priority_background_threads(
-            opts.rocksdb_high_priority_bg_threads().get() as i32
-        );
-        // Cap the bottom-most compaction to leave room for flushes/compactions that
-        // unblock write stalls.
+        env.set_high_priority_background_threads(2);
+        env.set_low_priority_background_threads(1);
         env.set_bottom_priority_background_threads(1);
 
         // Setup the global write rate limiter
