@@ -2691,13 +2691,13 @@ mod tests {
         );
 
         // Transient error requesting a pause
-        let error_a = InvokerError::SdkV2(SdkInvocationErrorV2 {
+        let error = InvokerError::SdkV2(SdkInvocationErrorV2 {
             related_command: None,
             requested_error_behavior: RequestedErrorBehavior::Pause,
             error: InvocationError::new(codes::INTERNAL, "boom").into(),
         });
         service_inner
-            .handle_invocation_task_failed(invocation_id, error_a, service_inner.test_budget())
+            .handle_invocation_task_failed(invocation_id, error, service_inner.test_budget())
             .await;
         assert_that!(
             *effects_rx
@@ -2753,13 +2753,13 @@ mod tests {
         );
 
         // Transient error requesting to fail without retrying
-        let error_a = InvokerError::SdkV2(SdkInvocationErrorV2 {
+        let error = InvokerError::SdkV2(SdkInvocationErrorV2 {
             related_command: None,
             requested_error_behavior: RequestedErrorBehavior::Fail,
             error: InvocationError::new(codes::INTERNAL, "boom").into(),
         });
         service_inner
-            .handle_invocation_task_failed(invocation_id, error_a, service_inner.test_budget())
+            .handle_invocation_task_failed(invocation_id, error, service_inner.test_budget())
             .await;
         assert_that!(
             *effects_rx.try_recv().expect("expected a Failed effect"),

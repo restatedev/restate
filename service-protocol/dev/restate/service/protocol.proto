@@ -45,7 +45,7 @@ enum ServiceProtocolVersion {
   // * IdempotentRequestTarget.scope
   // * StartMessage.scope, StartMessage.limit_key and StartMessage.idempotency_key
   // * Semantic changes to Run proposal response, introduced ProposeRunCompletionAckMessage
-  // * ErrorMessage.behavior
+  // * ErrorMessage.behavior to customize retry behavior
   V7 = 7;
 }
 
@@ -177,6 +177,8 @@ message ErrorMessage {
 
   // Delay before executing the next retry, specified as duration in milliseconds.
   // If provided, it will override the default retry policy used by Restate's invoker ONLY for the next retry attempt.
+  //
+  // This field is relevant only if behavior = RETRY.
   optional uint64 next_retry_delay = 8;
 
   // What to do in case of an ErrorMessage

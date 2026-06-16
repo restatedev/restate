@@ -752,28 +752,36 @@ mod tests {
     fn handle_error_when_waiting_for_retry() {
         let mut invocation_state_machine = create_test_invocation_state_machine();
 
-        let_assert!(
-            OnTaskError::Retrying(_) = invocation_state_machine.handle_task_error(
+        assert_that!(
+            invocation_state_machine.handle_task_error(
                 true,
                 RequestedErrorBehavior::Retry,
                 true,
                 |_| 0
-            )
+            ),
+            pat!(OnTaskError::Retrying(_))
         );
-        check!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
+        assert_that!(
+            invocation_state_machine.invocation_state,
+            pat!(AttemptState::WaitingRetry { .. })
+        );
 
         invocation_state_machine.notify_retry_timer_fired(0);
 
         // We stay in `WaitingForRetry`
-        let_assert!(
-            OnTaskError::Retrying(_) = invocation_state_machine.handle_task_error(
+        assert_that!(
+            invocation_state_machine.handle_task_error(
                 true,
                 RequestedErrorBehavior::Retry,
                 true,
                 |_| 1
-            )
+            ),
+            pat!(OnTaskError::Retrying(_))
         );
-        check!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
+        assert_that!(
+            invocation_state_machine.invocation_state,
+            pat!(AttemptState::WaitingRetry { .. })
+        );
     }
 
     #[test]
@@ -782,13 +790,14 @@ mod tests {
 
         // Even though the error is transient and the retry policy allows more retries,
         // the SDK-requested Pause behavior takes precedence.
-        let_assert!(
-            OnTaskError::Pause = invocation_state_machine.handle_task_error(
+        assert_that!(
+            invocation_state_machine.handle_task_error(
                 true,
                 RequestedErrorBehavior::Pause,
                 true,
                 |_| 0
-            )
+            ),
+            pat!(OnTaskError::Pause)
         );
     }
 
@@ -798,13 +807,14 @@ mod tests {
 
         // Even though the error is transient and the retry policy allows more retries,
         // the SDK-requested Fail behavior takes precedence and fails without retrying.
-        let_assert!(
-            OnTaskError::Fail = invocation_state_machine.handle_task_error(
+        assert_that!(
+            invocation_state_machine.handle_task_error(
                 true,
                 RequestedErrorBehavior::Fail,
                 true,
                 |_| 0
-            )
+            ),
+            pat!(OnTaskError::Fail)
         );
     }
 
