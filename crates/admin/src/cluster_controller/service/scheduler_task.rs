@@ -79,7 +79,7 @@ where
         let mut cs_changed = std::pin::pin!(cs.changed());
 
         let replica_set_states = self.replica_set_states.clone();
-        let mut observed_membersip_changed =
+        let mut observed_membership_changed =
             std::pin::pin!(replica_set_states.membership_changed());
 
         let mut fetch_epoch_metadata_task = Some(self.spawn_fetch_epoch_metadata_task(Vec::new())?);
@@ -163,11 +163,11 @@ where
                     trace!("triggering an epoch metadata fetch as part of the periodic refreshes");
                     fetch_epoch_metadata_task = Some(self.spawn_fetch_epoch_metadata_task(Vec::new())?);
                 }
-                _ = &mut observed_membersip_changed, if fetch_epoch_metadata_task.is_none() => {
+                _ = &mut observed_membership_changed, if fetch_epoch_metadata_task.is_none() => {
+                    observed_membership_changed.set(replica_set_states.membership_changed());
                     // we observed membership changed, but the scheduler might be already aware of it if, for
                     // example, it's the one that triggered it. So let's notify it about the change and only
                     // trigger a refresh if it reports back that it's not aware of it.
-                    observed_membersip_changed.set(replica_set_states.membership_changed());
                     let stale_epoch_metadata = self.scheduler.detect_stale_epoch_metadata();
                     if !stale_epoch_metadata.is_empty() {
                         trace!("the scheduler detected some partitions ({:?}) with stale epoch metadata, triggering an epoch metadata fetch for those partitions", stale_epoch_metadata);
