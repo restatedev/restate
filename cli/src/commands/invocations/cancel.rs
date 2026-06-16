@@ -39,6 +39,7 @@ pub struct Cancel {
     /// * `workflowName`
     /// * `workflowName/key`
     /// * `workflowName/key/handler`
+    #[clap(verbatim_doc_comment)]
     pub(super) query: String,
     /// Ungracefully kill the invocation and its children
     #[clap(long)]

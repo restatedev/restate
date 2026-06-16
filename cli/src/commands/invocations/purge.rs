@@ -37,6 +37,7 @@ pub struct Purge {
     /// * `workflowName`
     /// * `workflowName/key`
     /// * `workflowName/key/handler`
+    #[clap(verbatim_doc_comment)]
     query: String,
     /// Limit the number of fetched invocations
     #[clap(long, default_value_t = DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT)]
