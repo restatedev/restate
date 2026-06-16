@@ -10,6 +10,7 @@
 
 mod cancel;
 mod event;
+mod manual_pause;
 mod manual_resume;
 mod migrate_journal_table;
 mod notify_get_invocation_output_response;
@@ -28,6 +29,7 @@ mod yield_invocation;
 
 pub(super) use cancel::OnCancelCommand;
 pub(super) use event::ApplyEventCommand;
+pub(super) use manual_pause::OnManualPauseCommand;
 pub(super) use manual_resume::OnManualResumeCommand;
 pub(super) use migrate_journal_table::VerifyOrMigrateJournalTableToV2Command;
 pub(super) use notify_get_invocation_output_response::OnNotifyGetInvocationOutputResponse;

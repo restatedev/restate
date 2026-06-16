@@ -78,7 +78,7 @@ use restate_types::identifiers::{
 };
 use restate_types::invocation::client::{
     CancelInvocationResponse, InvocationOutputResponse, KillInvocationResponse,
-    PurgeInvocationResponse, ResumeInvocationResponse,
+    PauseInvocationResponse, PurgeInvocationResponse, ResumeInvocationResponse,
 };
 use restate_types::invocation::{
     AttachInvocationRequest, IngressInvocationResponseSink, InvocationInput,
@@ -777,6 +777,22 @@ impl<S> StateMachineApplyContext<'_, S> {
                     update_pinned_deployment_id: resume_invocation_request
                         .update_pinned_deployment_id,
                     response_sink: resume_invocation_request.response_sink,
+                }
+                .apply(self)
+                .await?;
+                Ok(())
+            }
+            CommandKind::PauseInvocation => {
+                let pause = envelope
+                    .into_typed::<commands::PauseInvocationCommand>()
+                    .into_inner()?;
+
+                lifecycle::OnManualPauseCommand {
+                    invocation_id: pause.invocation_id,
+                    response_sink: pause
+                        .request_id
+                        .map(|request_id| IngressInvocationResponseSink { request_id })
+                        .map(InvocationMutationResponseSink::Ingress),
                 }
                 .apply(self)
                 .await?;
@@ -4699,6 +4715,30 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         self.action_collector
             .push(Action::ForwardResumeInvocationResponse {
+                request_id,
+                response,
+            });
+    }
+
+    fn reply_to_pause_invocation(
+        &mut self,
+        response_sink: Option<InvocationMutationResponseSink>,
+        response: PauseInvocationResponse,
+    ) {
+        if response_sink.is_none() {
+            return;
+        }
+        let InvocationMutationResponseSink::Ingress(IngressInvocationResponseSink { request_id }) =
+            response_sink.unwrap();
+        debug_if_leader!(
+            self.is_leader,
+            "Send pause response to request id '{:?}': {:?}",
+            request_id,
+            response
+        );
+
+        self.action_collector
+            .push(Action::ForwardPauseInvocationResponse {
                 request_id,
                 response,
             });

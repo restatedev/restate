@@ -309,6 +309,11 @@ pub enum CommandKind {
     /// payload is bilrost encoded [`vqueues::VQueuesResume`]
     /// *Since v1.7.0
     VQueuesResume = 24,
+
+    /// Pause an invocation (manual pause RPC).
+    /// payload is bilrost encoded [`invocation::PauseInvocationCommand`]
+    /// *Since v1.7.0
+    PauseInvocation = 25,
 }
 
 mod bilrost_encoding {

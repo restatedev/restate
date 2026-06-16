@@ -25,6 +25,7 @@ use super::{Command, CommandKind};
 pub use crate::control::UpsertRuleBookCommand;
 use crate::timer;
 // Re-epxort vqueues commands
+pub use crate::invocation::PauseInvocationCommand;
 pub use crate::vqueues::{VQueuesPauseCommand, VQueuesResumeCommand};
 
 pub use crate::control::{
@@ -406,6 +407,11 @@ command! {
 command! {
     @kind=CommandKind::ResumeInvocation,
     @command=ResumeInvocationCommand
+}
+
+command! {
+    @kind=CommandKind::PauseInvocation,
+    @command=PauseInvocationCommand
 }
 
 command! {

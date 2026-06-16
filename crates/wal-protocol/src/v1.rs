@@ -165,6 +165,11 @@ pub enum Command {
     AttachInvocation(AttachInvocationRequest),
     /// Resume an invocation
     ResumeInvocation(ResumeInvocationRequest),
+    /// Pause an invocation
+    /// payload is bilrost encoded [`invocation::PauseInvocationCommand`]
+    ///
+    /// Introduced in v1.7.0 to support pausing invocations regardless of invoker ISM presence.
+    PauseInvocation(#[debug(skip)] Bytes),
     /// Restart as new invocation from prefix
     RestartAsNewInvocation(RestartAsNewInvocationRequest),
 
@@ -252,6 +257,7 @@ impl HasRecordKeys for Envelope {
             Command::ProxyThrough(_) => Keys::Single(self.partition_key()),
             Command::AttachInvocation(_) => Keys::Single(self.partition_key()),
             Command::ResumeInvocation(req) => Keys::Single(req.invocation_id.partition_key()),
+            Command::PauseInvocation(_) => Keys::Single(self.partition_key()),
             Command::RestartAsNewInvocation(req) => Keys::Single(req.invocation_id.partition_key()),
             // todo: Handle journal entries that request cross-partition invocations
             Command::InvokerEffect(effect) => Keys::Single(effect.invocation_id.partition_key()),

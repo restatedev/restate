@@ -106,6 +106,12 @@ impl TryFrom<v1::Envelope> for v2::Envelope<Raw> {
             v1::Command::ResumeInvocation(payload) => {
                 Envelope::new(dedup, commands::ResumeInvocationCommand::from(payload)).into_raw()
             }
+            v1::Command::PauseInvocation(payload) => Envelope::from_bytes_unchecked(
+                v2::CommandKind::PauseInvocation,
+                StorageCodecKind::Bilrost,
+                dedup,
+                payload,
+            ),
             v1::Command::ScheduleTimer(payload) => {
                 Envelope::new(dedup, commands::ScheduleTimerCommand::from(payload)).into_raw()
             }
