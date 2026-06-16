@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod durability_tracker;
+mod fencing;
 mod leader_state;
 mod self_proposer;
 pub mod trim_queue;
@@ -34,7 +35,6 @@ use restate_invoker_impl::{
     InvokerHandle as InvokerChannelServiceHandle, Service as InvokerService,
 };
 use restate_partition_store::PartitionStore;
-use restate_platform::hash::HashMap;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::StorageError;
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
@@ -48,8 +48,7 @@ use restate_types::GenerationalNodeId;
 use restate_types::cluster::cluster_state::RunMode;
 use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
-use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionId};
-use restate_types::invocation::FencingToken;
+use restate_types::identifiers::{LeaderEpoch, PartitionId};
 use restate_types::live::LiveLoadExt;
 use restate_types::logs::Keys;
 use restate_types::message::MessageIndex;
@@ -77,6 +76,7 @@ use restate_worker_api::{
 };
 
 use self::durability_tracker::DurabilityTracker;
+use self::fencing::FencingTokens;
 use self::trim_queue::{HasTrimQueue, LogTrimmer};
 use crate::invoker_integration::EntryEnricher;
 use crate::partition::LeadershipInfo;
@@ -692,16 +692,15 @@ where
                 scheduler_service.on_rules_updated(initial_diff);
             }
 
-            let (fencing_tokens, next_fencing_token) =
-                if processor.fsm().features().is_vqueues_enabled() {
-                    // VQueues migration is atomic. Either all invocations have a vqueue id, or none of them do.
-                    // As such, if the partition has the feature enabled, it means that we no longer have any "Invoked"
-                    // invocation without a vqueue id. So the `resume_invoked_invocations` scan below would have skipped all
-                    // invocations anyways.
-                    (HashMap::default(), 0)
-                } else {
-                    Self::resume_invoked_invocations(&mut invoker_handle, partition_store).await?
-                };
+            let fencing_tokens = if processor.fsm().features().is_vqueues_enabled() {
+                // VQueues migration is atomic. Either all invocations have a vqueue id, or none of them do.
+                // As such, if the partition has the feature enabled, it means that we no longer have any "Invoked"
+                // invocation without a vqueue id. So the `resume_invoked_invocations` scan below would have skipped all
+                // invocations anyways.
+                FencingTokens::default()
+            } else {
+                Self::resume_invoked_invocations(&mut invoker_handle, partition_store).await?
+            };
 
             let timer_service = TimerService::new(
                 TokioClock,
@@ -792,7 +791,6 @@ where
                 self_proposer,
                 invoker_rx,
                 fencing_tokens,
-                next_fencing_token,
                 shuffle_rx,
                 durability_tracker,
                 leader_query_guard,
@@ -811,7 +809,7 @@ where
     async fn resume_invoked_invocations(
         invoker_handle: &mut InvokerChannelServiceHandle,
         partition_store: &mut PartitionStore,
-    ) -> Result<(HashMap<InvocationId, FencingToken>, FencingToken), Error> {
+    ) -> Result<FencingTokens, Error> {
         let mut invoked_invocations = std::pin::pin!(
             partition_store
                 .scan_legacy_invoked_invocations()
@@ -821,30 +819,28 @@ where
         let start = tokio::time::Instant::now();
         // Seed a fresh fencing token per resumed invocation so the leader accepts its effects and
         // can later fence stragglers from a re-invoke. On a fresh term there are no in-flight
-        // stragglers yet, so the starting tokens only need to be distinct from the ones
-        // `LeaderState::mint_fencing_token` will mint later, which continues from
-        // `next_fencing_token`.
-        let mut fencing_tokens = HashMap::default();
-        let mut next_fencing_token: FencingToken = 0;
+        // stragglers yet, so the starting tokens only need to be distinct from the ones minted
+        // later, which they are (the counter keeps advancing).
+        let mut fencing_tokens = FencingTokens::default();
+        let mut count = 0usize;
         while let Some(invoked_invocation) = invoked_invocations.next().await {
             let InvokedInvocationStatusLite {
                 invocation_id,
                 invocation_target,
             } = invoked_invocation?;
-            let fencing_token = next_fencing_token;
-            next_fencing_token = next_fencing_token.wrapping_add(1);
-            fencing_tokens.insert(invocation_id, fencing_token);
+            let fencing_token = fencing_tokens.mint(invocation_id);
             invoker_handle
                 .invoke(invocation_id, fencing_token, invocation_target)
                 .map_err(Error::Invoker)?;
+            count += 1;
         }
         debug!(
             "Leader partition resumed {} invocations in {:?}",
-            fencing_tokens.len(),
+            count,
             start.elapsed(),
         );
 
-        Ok((fencing_tokens, next_fencing_token))
+        Ok(fencing_tokens)
     }
 
     async fn become_follower(&mut self) {
@@ -1050,6 +1046,16 @@ mod tests {
     use crate::partition_processor_manager::PartitionLeaderHandlesRegistry;
     use crate::rule_book_cache::RuleBookCacheHandle;
 
+    use restate_core::network::Reciprocal;
+    use restate_types::deployment::PinnedDeployment;
+    use restate_types::identifiers::{DeploymentId, InvocationId, PartitionProcessorRpcRequestId};
+    use restate_types::invocation::FencingToken;
+    use restate_types::service_protocol::ServiceProtocolVersion;
+    use restate_wal_protocol::invocation::PauseInvocationCommand;
+    use restate_worker_api::invoker::{Effect, EffectKind, FencedEffect};
+
+    use crate::partition::types::InvokerEffect;
+
     const PARTITION_ID: PartitionId = PartitionId::MIN;
     const NODE_ID: GenerationalNodeId = GenerationalNodeId::new(0, 0);
     const PARTITION_KEY_RANGE: KeyRange = KeyRange::FULL;
@@ -1168,5 +1174,187 @@ mod tests {
             .await;
         RocksDbManager::get().shutdown().await;
         Ok(())
+    }
+
+    /// Pausing a vqueue invocation fences invoker activity: after the leader appends the pause
+    /// command and clears the fencing token, effects carrying the paused attempt's token are
+    /// dropped at write time while the resumed attempt's effects are accepted.
+    #[test(restate_core::test)]
+    async fn pause_fences_stale_invoker_effects() -> googletest::Result<()> {
+        let env = TestCoreEnv::create_with_single_node(0, 0).await;
+
+        RocksDbManager::init();
+        let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
+        let replica_set_states = PartitionReplicaSetStates::default();
+        let partition_store_manager = PartitionStoreManager::create(true).await?;
+        let ingress = IngestionClient::new(
+            env.networking.clone(),
+            env.metadata.updateable_partition_table(),
+            PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
+            NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
+            SessionOptions::default(),
+        );
+        let mut node_ctx = NodeContext::new(
+            NODE_ID,
+            Configuration::live(),
+            replica_set_states,
+            RuleBookCacheHandle::detached(),
+            bifrost.clone(),
+            InvokerCapacity::new_unlimited(),
+            PartitionLeaderHandlesRegistry::default(),
+        );
+
+        let mut partition_store = partition_store_manager.open(&PARTITION, None).await?;
+        let mut ctx = ProcessorRawContext::new(
+            Arc::new(PARTITION),
+            PersistedFeatures {
+                journal_v2: true,
+                vqueues: true,
+                unique_random_seeds: true,
+            },
+        );
+        let (leader_query_tx, _leader_query_rx) = restate_worker_api::channel();
+        let mut state = LeadershipState::new(PARTITION_ID, ingress, leader_query_tx);
+
+        let leader_epoch = LeaderEpoch::from(1);
+        let leadership_info = LeadershipInfo {
+            version: Version::MIN,
+            leader_epoch,
+            current_config: PartitionConfiguration::default().into(),
+            next_config: None,
+        };
+        state
+            .run_for_leader(&mut ctx, &node_ctx, Box::new(leadership_info))
+            .await?;
+
+        // The first record is the AnnounceLeader the candidate proposed; decode it to drive
+        // on_announce_leader, then keep reading from the same stream to observe later appends.
+        let mut reader = bifrost
+            .create_reader(PARTITION_ID.into(), KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)
+            .expect("valid reader");
+        let announce_leader = {
+            let record = reader.next().await.unwrap()?;
+            let_assert!(
+                Command::AnnounceLeader(announce_leader) =
+                    record.try_decode::<Envelope>().unwrap()?.command
+            );
+            announce_leader
+        };
+
+        state
+            .on_announce_leader(
+                &mut node_ctx,
+                &mut ctx,
+                &mut partition_store,
+                announce_leader.leader_epoch,
+            )
+            .await?;
+
+        let State::Leader(leader_state) = &mut state.state else {
+            panic!("expected to be leader");
+        };
+
+        let invocation_id = InvocationId::mock_random();
+        // Four distinguishable effects so we can assert exactly which were appended.
+        let dep_attempt1 = DeploymentId::from_parts(1, 1);
+        let dep_paused = DeploymentId::from_parts(1, 2);
+        let dep_resume_stale = DeploymentId::from_parts(1, 3);
+        let dep_attempt2 = DeploymentId::from_parts(1, 4);
+
+        // Attempt 1: its effect carries the current token, so it is accepted and appended.
+        let t1 = leader_state.fencing_tokens_mut().mint(invocation_id);
+        leader_state.handle_invoker_effect(pinned_deployment_effect(
+            invocation_id,
+            t1,
+            dep_attempt1,
+        ))?;
+
+        // Pause: append the PauseInvocation command and clear the token (after the append).
+        let request_id = PartitionProcessorRpcRequestId::new();
+        let (reciprocal, _rx) = Reciprocal::mock();
+        let pause_cmd = Command::PauseInvocation(
+            PauseInvocationCommand {
+                invocation_id,
+                request_id: Some(request_id),
+            }
+            .bilrost_encode_to_bytes(),
+        );
+        leader_state.propose_pause_and_fence(request_id, reciprocal, invocation_id, pause_cmd);
+        // The pause cleared the token, so attempt 1's token is no longer accepted.
+        assert!(
+            !leader_state
+                .fencing_tokens_mut()
+                .accepts(&invocation_id, t1)
+        );
+
+        // A straggler from attempt 1 arriving after the pause is dropped (token cleared).
+        leader_state.handle_invoker_effect(pinned_deployment_effect(
+            invocation_id,
+            t1,
+            dep_paused,
+        ))?;
+
+        // Attempt 2 (resume): attempt 1's token is still fenced; attempt 2's effect is accepted.
+        let t2 = leader_state.fencing_tokens_mut().mint(invocation_id);
+        assert_ne!(t1, t2);
+        leader_state.handle_invoker_effect(pinned_deployment_effect(
+            invocation_id,
+            t1,
+            dep_resume_stale,
+        ))?;
+        leader_state.handle_invoker_effect(pinned_deployment_effect(
+            invocation_id,
+            t2,
+            dep_attempt2,
+        ))?;
+
+        // The committed log after AnnounceLeader must be exactly: InvokerEffect(attempt1),
+        // PauseInvocation, InvokerEffect(attempt2) -- the two stale stragglers were fenced.
+        let mut invoker_effect_deployments = Vec::new();
+        let mut saw_pause = false;
+        for _ in 0..3 {
+            let record = reader.next().await.unwrap()?;
+            match record.try_decode::<Envelope>().unwrap()?.command {
+                Command::InvokerEffect(effect) => {
+                    assert_eq!(effect.invocation_id, invocation_id);
+                    let EffectKind::PinnedDeployment(pinned) = effect.kind else {
+                        panic!("expected only PinnedDeployment effect kinds")
+                    };
+                    invoker_effect_deployments.push(pinned.deployment_id);
+                }
+                Command::PauseInvocation(_) => saw_pause = true,
+                other => panic!("unexpected command appended: {other:?}"),
+            }
+        }
+        assert!(saw_pause, "the pause command should have been appended");
+        assert_eq!(
+            invoker_effect_deployments,
+            vec![dep_attempt1, dep_attempt2],
+            "only the accepted attempts' effects should be appended; stale stragglers must be fenced",
+        );
+
+        state.step_down().await;
+        TaskCenter::current()
+            .shutdown_node("test_completed", 0)
+            .await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
+    }
+
+    fn pinned_deployment_effect(
+        invocation_id: InvocationId,
+        fencing_token: FencingToken,
+        deployment_id: DeploymentId,
+    ) -> InvokerEffect {
+        FencedEffect {
+            fencing_token,
+            effect: Box::new(Effect {
+                invocation_id,
+                kind: EffectKind::PinnedDeployment(PinnedDeployment::new(
+                    deployment_id,
+                    ServiceProtocolVersion::V4,
+                )),
+            }),
+        }
     }
 }

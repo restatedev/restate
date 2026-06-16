@@ -37,8 +37,8 @@ use restate_types::identifiers::{
     InvocationId, LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId,
     WithPartitionKey,
 };
+use restate_types::invocation::PurgeInvocationRequest;
 use restate_types::invocation::client::{InvocationOutput, SubmittedInvocationNotification};
-use restate_types::invocation::{FencingToken, PurgeInvocationRequest};
 use restate_types::logs::Keys;
 use restate_types::net::ingest::{IngestRecord, ResponseStatus};
 use restate_types::net::partition_processor::{
@@ -61,6 +61,7 @@ use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
 
 use crate::metric_definitions::{PARTITION_HANDLE_LEADER_ACTIONS, USAGE_LEADER_ACTION_COUNT};
 use crate::partition::cleaner::{CleanerEffect, CleanerHandle};
+use crate::partition::leadership::fencing::FencingTokens;
 use crate::partition::leadership::self_proposer::SelfProposer;
 use crate::partition::leadership::{
     Error, InvokerStream, LeaderEvent, NetworkServiceEvent, RpcReciprocal, TimerService,
@@ -99,16 +100,10 @@ pub struct LeaderState {
     awaiting_rpc_actions: HashMap<PartitionProcessorRpcRequestId, RpcReciprocal>,
     awaiting_rpc_self_propose: FuturesUnordered<SelfAppendFuture>,
 
-    /// Leader-local fencing tokens for in-flight invoker attempts (see [`FencingToken`]).
-    ///
-    /// Maps an in-flight invocation to the token handed to its current invoker task. Invoker
-    /// effects whose token does not match (or is absent) are dropped *before* being self-proposed,
-    /// fencing stragglers from a previous attempt. Entries are added on (re)invoke, removed when
-    /// the attempt ends (abort / terminal effect) or is fenced (pause / scheduler re-drive
-    /// propose), and the whole map is discarded on leadership loss (rebuilt on the next term).
-    fencing_tokens: restate_platform::hash::HashMap<InvocationId, FencingToken>,
-    /// Monotonic source of fresh fencing tokens; wraps (see [`FencingToken`]).
-    next_fencing_token: FencingToken,
+    /// Leader-local fencing tokens for in-flight invoker attempts. Used to drop stale invoker
+    /// effects (from a previous attempt) before they are self-proposed. Discarded on leadership
+    /// loss and rebuilt on the next term. See [`FencingTokens`].
+    fencing_tokens: FencingTokens,
 
     invoker_stream: InvokerStream,
     shuffle_stream: WatchStream<Option<shuffle::OutboxTruncation>>,
@@ -141,10 +136,8 @@ impl LeaderState {
         invoker_task_handle: TaskHandle<()>,
         self_proposer: SelfProposer,
         invoker_rx: InvokerStream,
-        // Fencing tokens seeded for the invocations resumed on becoming leader, and the next
-        // token to mint. See `fencing_tokens` / `mint_fencing_token`.
-        fencing_tokens: restate_platform::hash::HashMap<InvocationId, FencingToken>,
-        next_fencing_token: FencingToken,
+        // Fencing tokens seeded for the invocations resumed on becoming leader. See `fencing_tokens`.
+        fencing_tokens: FencingTokens,
         shuffle_rx: tokio::sync::watch::Receiver<Option<shuffle::OutboxTruncation>>,
         durability_tracker: DurabilityTracker,
         leader_query_guard: LeaderQueryGuard,
@@ -173,7 +166,6 @@ impl LeaderState {
             awaiting_rpc_actions: Default::default(),
             awaiting_rpc_self_propose: Default::default(),
             fencing_tokens,
-            next_fencing_token,
             invoker_stream: invoker_rx,
             shuffle_stream: WatchStream::new(shuffle_rx),
             durability_tracker,
@@ -182,6 +174,45 @@ impl LeaderState {
             _leader_query_guard: leader_query_guard,
             encoding_arena: BytesMut::with_capacity(128 * 1024),
         }
+    }
+
+    /// Test-only access to the fencing-token map, so tests in the parent module can mint/inspect
+    /// tokens while driving the real invoker-effect and pause-proposal paths.
+    #[cfg(test)]
+    pub(crate) fn fencing_tokens_mut(&mut self) -> &mut FencingTokens {
+        &mut self.fencing_tokens
+    }
+
+    #[cfg(test)]
+    pub(crate) fn handle_invoker_effect(&mut self, effect: InvokerEffect) -> Result<(), Error> {
+        let mut state = LeaderEventHandlerState {
+            partition_key_range: self.partition_key_range,
+            self_proposer: &mut self.self_proposer,
+            awaiting_rpc_actions: &mut self.awaiting_rpc_actions,
+            awaiting_rpc_self_propose: &mut self.awaiting_rpc_self_propose,
+            fencing_tokens: &mut self.fencing_tokens,
+            arena: &mut self.encoding_arena,
+        };
+        effect.handle(&mut state)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn propose_pause_and_fence(
+        &mut self,
+        request_id: PartitionProcessorRpcRequestId,
+        reciprocal: RpcReciprocal,
+        invocation_id: InvocationId,
+        cmd: Command,
+    ) {
+        let mut state = LeaderEventHandlerState {
+            partition_key_range: self.partition_key_range,
+            self_proposer: &mut self.self_proposer,
+            awaiting_rpc_actions: &mut self.awaiting_rpc_actions,
+            awaiting_rpc_self_propose: &mut self.awaiting_rpc_self_propose,
+            fencing_tokens: &mut self.fencing_tokens,
+            arena: &mut self.encoding_arena,
+        };
+        state.propose_pause_and_fence(request_id, reciprocal, invocation_id, cmd);
     }
 
     pub fn read_scheduler_status(
@@ -437,7 +468,7 @@ struct LeaderEventHandlerState<'a> {
     self_proposer: &'a mut SelfProposer,
     awaiting_rpc_actions: &'a mut HashMap<PartitionProcessorRpcRequestId, RpcReciprocal>,
     awaiting_rpc_self_propose: &'a mut FuturesUnordered<SelfAppendFuture>,
-    fencing_tokens: &'a mut restate_platform::hash::HashMap<InvocationId, FencingToken>,
+    fencing_tokens: &'a mut FencingTokens,
     arena: &'a mut BytesMut,
 }
 
@@ -497,7 +528,7 @@ impl LeaderEventHandlerState<'_> {
     /// pause command is appended it clears `invocation_id`'s in-memory fencing token so a
     /// straggler effect from the attempt being paused is dropped at write time.
     ///
-    /// BRITTLE: the `fencing_tokens.remove` is a pre-apply, in-memory state mutation, and it must
+    /// BRITTLE: clearing the fencing token is a pre-apply, in-memory state mutation, and it must
     /// run **only on the `Ok` arm, strictly after the append succeeds**. A failed `self_propose`
     /// only replies an error -- the leader keeps running, it does not step down -- so clearing
     /// before the append (or on failure) would strand the invocation: its effects would be
@@ -533,7 +564,7 @@ impl LeaderEventHandlerState<'_> {
                 } else {
                     v.insert(reciprocal);
                     // Clear ONLY here -- after the append succeeded. See the method doc.
-                    self.fencing_tokens.remove(&invocation_id);
+                    self.fencing_tokens.clear(&invocation_id);
                 }
             }
         }
@@ -665,11 +696,14 @@ impl LeaderEventHandler for InvokerEffect {
         // entry) means the effect is a straggler from a previous attempt that has
         // since been re-invoked / paused / aborted, so it must not be written -- this
         // is what stops it from being applied to a newer attempt.
-        if state.fencing_tokens.get(&invocation_id) == Some(&self.fencing_token) {
+        if state
+            .fencing_tokens
+            .accepts(&invocation_id, self.fencing_token)
+        {
             // A terminal effect ends this attempt: stop accepting its token (GC). A
             // later re-invoke mints a fresh one.
             if self.effect.kind.is_terminal() {
-                state.fencing_tokens.remove(&invocation_id);
+                state.fencing_tokens.clear(&invocation_id);
             }
             state.self_proposer.self_propose(
                 invocation_id.partition_key(),
@@ -823,16 +857,6 @@ impl LeaderState {
         Ok(())
     }
 
-    /// Mints a fresh fencing token for a (re)invoke and records it as the accepted token for
-    /// `invocation_id`, overwriting any previous one. Once recorded, straggler effects from the
-    /// previous attempt (carrying the old token) are dropped by [`Self::fence_invoker_effect`].
-    fn mint_fencing_token(&mut self, invocation_id: InvocationId) -> FencingToken {
-        let token = self.next_fencing_token;
-        self.next_fencing_token = self.next_fencing_token.wrapping_add(1);
-        self.fencing_tokens.insert(invocation_id, token);
-        token
-    }
-
     fn handle_action(
         &mut self,
         processor: &(impl Processor + HasVQueues),
@@ -843,7 +867,7 @@ impl LeaderState {
                 invocation_id,
                 invocation_target,
             } => {
-                let fencing_token = self.mint_fencing_token(invocation_id);
+                let fencing_token = self.fencing_tokens.mint(invocation_id);
                 self.invoker_handle
                     .invoke(invocation_id, fencing_token, invocation_target)
                     .map_err(Error::Invoker)?;
@@ -878,7 +902,7 @@ impl LeaderState {
             Action::AbortInvocation { invocation_id } => {
                 // The attempt is ending; drop its fencing token so any straggler effect is dropped
                 // at write time (a later re-invoke mints a fresh token).
-                self.fencing_tokens.remove(&invocation_id);
+                self.fencing_tokens.clear(&invocation_id);
                 self.invoker_handle
                     .abort_invocation(invocation_id)
                     .map_err(Error::Invoker)?;
@@ -1024,7 +1048,7 @@ impl LeaderState {
                     );
                     ReservedResources::new_empty()
                 });
-                let fencing_token = self.mint_fencing_token(invocation_id);
+                let fencing_token = self.fencing_tokens.mint(invocation_id);
                 self.invoker_handle
                     .vqueue_invoke(
                         slot.vqueue_id().clone(),
