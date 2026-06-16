@@ -291,7 +291,7 @@ mod version_tracker {
                 replica_set_states,
                 observed_current_versions: HashMap::default(),
                 observed_next_versions: HashMap::default(),
-                acked: false,
+                acked: true,
             }
         }
 
@@ -364,6 +364,152 @@ mod version_tracker {
                 changed |= self.note_observed_version(p.id, p.current, p.next);
             }
             changed
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use futures::FutureExt;
+        use restate_types::{
+            GenerationalNodeId, PlainNodeId,
+            identifiers::LeaderEpoch,
+            logs::Lsn,
+            partitions::state::{LeadershipState, PartitionReplicaSetStates, ReplicaSetState},
+        };
+
+        #[test]
+        fn partition_version_tracker() {
+            let partition_replica_set_states: PartitionReplicaSetStates = Default::default();
+            let mut tracker =
+                PartitionConfigVersionTracker::new(partition_replica_set_states.clone());
+
+            // After init, tracker shouldn't have any changes pending.
+            assert!(tracker.changed().now_or_never().is_none());
+
+            // A new version observed for a partition should trigger a notification.
+            {
+                partition_replica_set_states.note_observed_membership(
+                    PartitionId::from(0),
+                    LeadershipState {
+                        current_leader_epoch: LeaderEpoch::from(0),
+                        current_leader: GenerationalNodeId::from(0),
+                    },
+                    &ReplicaSetState {
+                        version: Version::from(1),
+                        members: Default::default(),
+                    },
+                    &None,
+                );
+
+                assert!(tracker.changed().now_or_never().is_some());
+            }
+
+            // Without acknowledging the change, the tracker should fullfill the changed future with every poll.
+            assert!(tracker.changed().now_or_never().is_some());
+            assert!(tracker.changed().now_or_never().is_some());
+
+            // Acknowledge the change.
+            tracker.ack();
+            assert!(tracker.changed().now_or_never().is_none());
+
+            // Observing a "next" version for a partition should trigger a notification.
+            {
+                partition_replica_set_states.note_observed_membership(
+                    PartitionId::from(0),
+                    LeadershipState {
+                        current_leader_epoch: LeaderEpoch::from(0),
+                        current_leader: GenerationalNodeId::from(0),
+                    },
+                    &ReplicaSetState {
+                        version: Version::from(1),
+                        members: Default::default(),
+                    },
+                    &Some(ReplicaSetState {
+                        version: Version::from(2),
+                        members: Default::default(),
+                    }),
+                );
+
+                assert!(tracker.changed().now_or_never().is_some());
+                tracker.ack();
+            }
+
+            // Observing a higher version for a partition should trigger a notification.
+            {
+                partition_replica_set_states.note_observed_membership(
+                    PartitionId::from(0),
+                    LeadershipState {
+                        current_leader_epoch: LeaderEpoch::from(0),
+                        current_leader: GenerationalNodeId::from(0),
+                    },
+                    &ReplicaSetState {
+                        version: Version::from(3),
+                        members: Default::default(),
+                    },
+                    &None,
+                );
+
+                assert!(tracker.changed().now_or_never().is_some());
+                tracker.ack();
+                assert!(tracker.changed().now_or_never().is_none());
+            }
+
+            // Observing a new partition should trigger a notification.
+            {
+                partition_replica_set_states.note_observed_membership(
+                    PartitionId::from(5),
+                    LeadershipState {
+                        current_leader_epoch: LeaderEpoch::from(0),
+                        current_leader: GenerationalNodeId::from(0),
+                    },
+                    &ReplicaSetState {
+                        version: Version::from(1),
+                        members: Default::default(),
+                    },
+                    &None,
+                );
+
+                assert!(tracker.changed().now_or_never().is_some());
+                tracker.ack();
+                assert!(tracker.changed().now_or_never().is_none());
+            }
+
+            // Manually noting the change to the tracker after obsering a change shouldn't trigger a notification.
+            {
+                partition_replica_set_states.note_observed_membership(
+                    PartitionId::from(0),
+                    LeadershipState {
+                        current_leader_epoch: LeaderEpoch::from(0),
+                        current_leader: GenerationalNodeId::from(0),
+                    },
+                    &ReplicaSetState {
+                        version: Version::from(10),
+                        members: Default::default(),
+                    },
+                    &None,
+                );
+                tracker.note_observed_version(PartitionId::from(0), Version::from(10), None);
+
+                assert!(tracker.changed().now_or_never().is_none());
+            }
+
+            // Leadership changes & durable lsn changes shouldn't trigger a notification.
+            {
+                partition_replica_set_states.note_observed_leader(
+                    PartitionId::from(0),
+                    LeadershipState {
+                        current_leader_epoch: LeaderEpoch::from(10),
+                        current_leader: GenerationalNodeId::from(2),
+                    },
+                );
+                partition_replica_set_states.note_durable_lsn(
+                    PartitionId::from(0),
+                    PlainNodeId::from(2),
+                    Lsn::from(120),
+                );
+                assert!(tracker.changed().now_or_never().is_none());
+            }
         }
     }
 }
