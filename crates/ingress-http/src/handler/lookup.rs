@@ -20,8 +20,8 @@ use super::{APPLICATION_JSON, Handler, HandlerError, InvocationTargetRequest};
 #[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(rename_all = "camelCase")]
-struct LookupResponse {
-    invocation_id: InvocationId,
+pub(super) struct LookupResponse {
+    pub(super) invocation_id: InvocationId,
 }
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {

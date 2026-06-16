@@ -24,6 +24,14 @@ use tower::{ServiceBuilder, ServiceExt};
 use tower_http::limit::{RequestBodyLimitLayer, ResponseBody as LimitResponseBody};
 use tracing_test::traced_test;
 
+use super::ConnectInfo;
+use super::Handler;
+use super::health::HealthResponse;
+use super::lookup::LookupResponse;
+use super::mocks::*;
+use super::service_handler::*;
+use crate::MockRequestDispatcher;
+use crate::handler::responses::X_RESTATE_ID;
 use restate_core::TestCoreEnv;
 use restate_test_util::{assert, assert_eq};
 use restate_types::config::{Configuration, set_current_config};
@@ -42,14 +50,6 @@ use restate_types::schema::invocation_target::{
     InputContentType, InputRules, InputValidationRule, InvocationTargetMetadata,
     OutputContentTypeRule, OutputRules,
 };
-
-use super::ConnectInfo;
-use super::Handler;
-use super::health::HealthResponse;
-use super::mocks::*;
-use super::service_handler::*;
-use crate::MockRequestDispatcher;
-use crate::handler::responses::X_RESTATE_ID;
 
 #[restate_core::test]
 #[traced_test]
@@ -1344,18 +1344,13 @@ async fn lookup_idempotency_unkeyed_returns_deterministic_id() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let response_bytes = response.into_body().collect().await.unwrap().to_bytes();
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct LookupReply {
-        invocation_id: InvocationId,
-    }
-    let lookup_reply: LookupReply = serde_json::from_slice(&response_bytes).unwrap();
+    let lookup_response: LookupResponse = serde_json::from_slice(&response_bytes).unwrap();
 
     let expected = InvocationId::generate(
         &InvocationTarget::service("greeter.Greeter", "greet"),
         Some("K1"),
     );
-    assert_eq!(lookup_reply.invocation_id, expected);
+    assert_eq!(lookup_response.invocation_id, expected);
 }
 
 #[restate_core::test]
@@ -1377,14 +1372,9 @@ async fn lookup_by_invocation_id_echoes_id() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let response_bytes = response.into_body().collect().await.unwrap().to_bytes();
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct LookupReply {
-        invocation_id: InvocationId,
-    }
-    let lookup_reply: LookupReply = serde_json::from_slice(&response_bytes).unwrap();
+    let lookup_response: LookupResponse = serde_json::from_slice(&response_bytes).unwrap();
 
-    assert_eq!(lookup_reply.invocation_id, invocation_id);
+    assert_eq!(lookup_response.invocation_id, invocation_id);
 }
 
 #[restate_core::test]
