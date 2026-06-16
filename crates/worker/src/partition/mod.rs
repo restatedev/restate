@@ -698,7 +698,8 @@ where
                             &mut transaction,
                             &mut action_collector,
                             &mut vqueues,
-                        ).await?;
+                        )
+                        .await?;
 
                         if let Some(announce_leader) = maybe_announce_leader {
                             // update partition store with latest epoch metadata
@@ -748,7 +749,8 @@ where
                                 &self.state_machine.rule_book,
                                 &self.state_machine,
                                 &self.state_machine.min_restate_version,
-                            ).await?;
+                            )
+                            .await?;
 
                             Span::current().record("is_leader", is_leader);
 
