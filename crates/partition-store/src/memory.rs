@@ -13,6 +13,7 @@ use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
 use ahash::{HashMap, HashMapExt};
+use metrics::{counter, gauge};
 use tracing::{info, trace, warn};
 
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
@@ -20,9 +21,10 @@ use restate_types::config::Configuration;
 use restate_types::identifiers::PartitionId;
 use restate_util_bytecount::ByteCount;
 
+use crate::metric_definitions::{NUM_OPEN_PARTITIONS, PARTITION_MEMTABLE_BUDGET, RECLAIM_FLUSH};
 use crate::{PartitionDb, SharedState};
 
-const INITIAL_NUM_PARTITIONS: usize = 4;
+const INITIAL_NUM_PARTITIONS: usize = 24;
 const DEBUG_MEMORY_REPORTING: bool = false;
 
 pub(crate) struct MemoryBudget {
@@ -222,6 +224,8 @@ async fn rebalance_memory(
                 report_memory_usage(&collected, total_budget);
             }
             memory_budget.set_per_partition_budget(new_partition_budget);
+            gauge!(PARTITION_MEMTABLE_BUDGET).set(new_partition_budget as f64);
+            gauge!(NUM_OPEN_PARTITIONS).set(collected.num_open_partitions as f64);
 
             info!(
                 "Rebalancing the memory budget over {} open partitions. Budget per partition changed from {} -> {}. \
@@ -292,6 +296,7 @@ async fn rebalance_memory(
                 ByteCount::from(usage.total_bytes),
                 ByteCount::from(current_per_partition_budget),
             );
+            counter!(RECLAIM_FLUSH).increment(1);
             partition_db.flush_memtables(true).await?;
         }
     }
