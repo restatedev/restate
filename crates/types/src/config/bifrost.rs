@@ -343,7 +343,8 @@ pub struct ReplicatedLogletOptions {
     /// Adaptive timeout for LogServer Store Messages
     ///
     /// This configures the adaptive timeout range for Store operations from this node to log servers.
-    /// The timeout range is also used to determine the appropriate retry delay between retry attempts.
+    ///
+    /// Since v1.7.0
     pub store_timeout: BackoffInterval,
 
     /// Sequencer inactivity timeout
