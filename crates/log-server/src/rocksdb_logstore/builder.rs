@@ -309,6 +309,13 @@ impl restate_rocksdb::configuration::CfConfigurator for RocksCfConfigurator {
             cf_metadata_options(&mut cf_options, &block_options, config);
         }
 
+        // Avoid pushing back on compaction delays, sacrifice storage and do not hinder
+        // writes and flushes.
+        cf_options.set_soft_pending_compaction_bytes_limit(512 * 1024 * 1024 * 1024);
+        // Do not push back on compaction delays, sacrifice storage and do not hinder
+        // writes and flushes.
+        cf_options.set_hard_pending_compaction_bytes_limit(2 * 1024 * 1024 * 1024 * 1024);
+
         cf_options
     }
 }

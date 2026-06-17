@@ -26,6 +26,7 @@ use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceState};
 pub use opentelemetry::trace::TraceId;
 use serde_with::{DisplayFromStr, FromInto, serde_as};
 
+use restate_clock::RoughTimestamp;
 use restate_memory::ByteCount;
 use restate_util_string::ReString;
 
@@ -35,6 +36,7 @@ use crate::identifiers::{
     DeploymentId, EntryIndex, IdempotencyId, InvocationId, PartitionKey,
     PartitionProcessorRpcRequestId, ServiceId, SubscriptionId, WithInvocationId, WithPartitionKey,
 };
+use crate::invocation::client::PatchDeploymentId;
 use crate::journal_v2::{CompletionId, GetInvocationOutputResult, Signal};
 use crate::limit_key::LimitKey;
 use crate::time::MillisSinceEpoch;
@@ -1112,8 +1114,30 @@ impl WithInvocationId for PurgeInvocationRequest {
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ResumeInvocationRequest {
     pub invocation_id: InvocationId,
+    /// The unresolved deployment patch to apply on resume, resolved and validated by the apply path
+    /// (`OnManualResumeCommand`) against the invocation status as of the command's log position.
+    ///
+    /// Only written on the VQueue path, where vqueues being enabled implies a cluster
+    /// `min_restate_version >= 1.7.0` (so every node understands this field). The non-VQueue path
+    /// keeps writing the already-resolved [`Self::update_pinned_deployment_id`] for compatibility
+    /// with pre-1.7.0 nodes. `None` therefore means "use `update_pinned_deployment_id` instead".
+    ///
+    /// Since *v1.7.0*
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_deployment_id: Option<PatchDeploymentId>,
+    /// Already-resolved deployment id. Written by the non-VQueue path (and by pre-1.7.0 nodes); the
+    /// apply path honors it directly when present. New VQueue-path writes leave this `None` and use
+    /// [`Self::update_deployment_id`] instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_pinned_deployment_id: Option<DeploymentId>,
+    /// When the rescheduled VQueue entry should run. `None` defaults to the entry's `created_at`
+    /// (its original priority position). A value in the past raises priority; the future delays it.
+    /// Uses [`RoughTimestamp`] (second precision) to match the VQueue scheduler's `run_at` key; a
+    /// finer-grained timestamp would only be truncated.
+    ///
+    /// Since *v1.7.0*
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_at: Option<RoughTimestamp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_sink: Option<InvocationMutationResponseSink>,
 }
@@ -1487,8 +1511,15 @@ impl WithInvocationId for NotifySignalRequest {
     }
 }
 
-/// The invocation epoch represents the restarts count of the invocation, as seen from the Partition processor.
-pub type InvocationEpoch = u32;
+/// Identifies an invoker-task generation, used to fence stale invoker effects.
+///
+/// This is a leader-local, in-memory value: the partition processor's leader keeps a
+/// `fencing_tokens` map, hands the current token to the invoker on (re)invoke, and the invoker
+/// echoes it on every effect. The leader drops effects whose token no longer matches *before*
+/// self-proposing them. It is intentionally **not** persisted and not written to Bifrost -- it is
+/// not part of the invocation lifecycle. Wraps around (a stale straggler never survives 2^32
+/// intervening invokes).
+pub type FencingToken = u32;
 
 mod serde_hacks {
     //! Module where we hide all the hacks to make back-compat working!

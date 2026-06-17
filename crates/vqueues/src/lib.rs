@@ -39,11 +39,11 @@ use restate_storage_api::vqueue_table::{
 use restate_storage_api::{StorageError, lock_table};
 use restate_types::ServiceName;
 use restate_types::clock::UniqueTimestamp;
-use restate_types::identifiers::PartitionKey;
+use restate_types::identifiers::{DeploymentId, PartitionKey};
 use restate_types::invocation::InvocationTarget;
 use restate_types::vqueues::{EntryId, Seq, VQueueId};
 use restate_types::{LockName, Scope};
-use restate_util_string::ReString;
+use restate_util_string::{ReString, ToReString};
 use restate_worker_api::invoker::YieldReason;
 
 // Token bucket used for throttling over all vqueues
@@ -511,6 +511,132 @@ where
                 key: modified_key,
                 value,
             });
+            collector.push(A::from(event));
+        }
+    }
+
+    /// Reschedules a waiting entry to a new `run_at`, leaving its stage, [`Status`] and statistics
+    /// untouched. Only the entry key (its `run_at`) changes.
+    ///
+    /// `run_at` may be set in the past (`< now`): the entry becomes immediately eligible *and*
+    /// jumps ahead of entries with a larger `run_at` (the [`EntryKey`] ordering is by `run_at`),
+    /// so this doubles as a priority signal.
+    ///
+    /// Rescheduling makes sense for an entry that is *waiting* with a `run_at`:
+    /// - `Inbox`: changes scheduling eligibility right away. Emits the inbox reconciliation pair
+    ///   (`RemovedFromInbox` + `EnqueuedToInbox`) so the scheduler drops the stale key and
+    ///   re-evaluates eligibility at the new `run_at`.
+    /// - `Suspended` / `Paused`: changes the `run_at` the entry will carry once it is woken back
+    ///   into the inbox (see [`Self::wake_up`]). The scheduler does not track parked entries, so no
+    ///   event is emitted.
+    ///
+    /// This is *not* a stage transition: the entry stays in its current stage, so (unlike
+    /// [`Self::yield_entry`]) the vqueue's aggregate metadata (stage counts, active flag, dwell-time
+    /// EMAs) and the entry's stats are left untouched.
+    ///
+    /// It is a no-op (with a debug log) for any other stage (`Running`, where the entry is
+    /// executing, and the terminal stages) and a no-op if `run_at` already equals the entry's
+    /// current `run_at`.
+    ///
+    /// One can optionally provide a deployment to which the entry is pinned (updating it's metadata
+    /// accordingly).
+    pub fn reschedule(
+        &mut self,
+        header: &impl EntryStatusHeader,
+        run_at: RoughTimestamp,
+        pinned_deployment: Option<DeploymentId>,
+    ) {
+        let stage = header.stage();
+        if !matches!(stage, Stage::Inbox | Stage::Suspended | Stage::Paused) {
+            // Running entries are executing and terminal entries are done: there is nothing to
+            // reschedule. Be lenient and ignore rather than crash the caller.
+            debug!(
+                entry = %header.display_entry_id(),
+                qid = %header.vqueue_id(),
+                "Skipping reschedule of entry in stage {stage}",
+            );
+            return;
+        }
+
+        let vqueue_id = header.vqueue_id();
+        assert_eq!(
+            vqueue_id,
+            self.cache.get_mut(self.handle).unwrap().vqueue_id()
+        );
+
+        // Nothing to do if the entry is already scheduled at the requested time.
+        if header.entry_key().run_at() == run_at {
+            return;
+        }
+
+        // Delete the entry at its old key, then re-insert it at the new key in the *same* stage.
+        self.storage
+            .delete_vqueue_inbox(vqueue_id, stage, header.entry_key());
+
+        let modified_key = header.entry_key().set_run_at(Some(run_at));
+        let mut metadata = header.metadata().clone();
+        let stats = header.stats().clone();
+
+        if let Some(deployment_id) = pinned_deployment {
+            metadata.deployment = Some(deployment_id.to_restring());
+        }
+
+        debug!(
+            entry = %header.display_entry_id(),
+            qid = %header.vqueue_id(),
+            "{0}->{0}, status: {1} (reschedule)",
+            stage,
+            header.status(),
+        );
+
+        // Update the entry state to track the new entry key
+        self.storage.put_vqueue_entry_status(
+            vqueue_id,
+            stage,
+            &modified_key,
+            &metadata,
+            stats.clone(),
+            header.status(),
+        );
+
+        let value = EntryValue {
+            stats,
+            status: header.status(),
+            metadata,
+        };
+
+        // Re-insert the entry into its stage at the new key
+        self.storage
+            .put_vqueue_inbox(vqueue_id, stage, &modified_key, &value);
+
+        // Only inbox entries live in the scheduler's ring, so only they need reconciliation events;
+        // parked (Suspended/Paused) entries are not tracked by the scheduler.
+        if matches!(stage, Stage::Inbox)
+            && let Some(collector) = self.action_collector.as_deref_mut()
+        {
+            let mut event = VQueueEvent::new(self.handle);
+
+            // Confirm the removal of the stale key so the scheduler drops the old (future) wake-up,
+            // then enqueue the re-keyed entry.
+            //
+            // Important: Rescheduling an inbox entry can lead to a race with a decision that was
+            // proposed but not yet applied. Delaying the inbox entry might invalidate a run
+            // decision as the entry is not yet eligible for running. We need to be careful about
+            // applying the SchedulerActions and filter actions out that no longer apply. Currently,
+            // we do this by comparing the EntryKey and assume that a change constitutes an
+            // invalidation of the action.
+            //
+            // TODO(perf): the scheduler processes `RemovedFromInbox` before `EnqueuedToInbox`, so if
+            //  this entry is the vqueue's only inbox entry the queue momentarily looks dormant
+            //  between the two and may be evicted from / re-added to the scheduler's ring. A dedicated
+            //  re-key event (carrying both keys) would let the scheduler update the key in place and
+            //  avoid that transient flip.
+            event.push(EventDetails::RemovedFromInbox(*header.entry_key()));
+            event.push(EventDetails::EnqueuedToInbox {
+                key: modified_key,
+                value,
+            });
+
             collector.push(A::from(event));
         }
     }

@@ -100,6 +100,7 @@ impl ServiceClient {
             Arc::new(ArcSwapOption::from_pointee(
                 request_identity::v1::SigningKey::from_pem_file(
                     request_identity_private_key_pem_file,
+                    options.request_identity_expiration().to_std(),
                 )?,
             ))
         } else {

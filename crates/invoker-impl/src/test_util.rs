@@ -17,7 +17,7 @@ use restate_memory::{IgnorePinnableMemoryStream, LocalMemoryLease, LocalMemoryPo
 use restate_types::LimitKey;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{EntryIndex, InvocationId, InvocationUuid, ServiceId};
-use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
+use restate_types::invocation::{FencingToken, InvocationTarget, ServiceInvocationSpanContext};
 use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
 };
@@ -133,6 +133,7 @@ impl InvokerHandle for MockInvokerHandle {
     fn invoke(
         &mut self,
         _invocation_id: InvocationId,
+        _fencing_token: FencingToken,
         _invocation_target: InvocationTarget,
     ) -> Result<(), NotRunningError> {
         Ok(())
@@ -143,6 +144,7 @@ impl InvokerHandle for MockInvokerHandle {
         _qid: VQueueId,
         _permit: ReservedResources,
         _invocation_id: InvocationId,
+        _fencing_token: FencingToken,
         _invocation_target: InvocationTarget,
         _limit_key: LimitKey<ReString>,
         _idempotency_key: Option<ReString>,

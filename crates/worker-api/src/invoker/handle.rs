@@ -12,7 +12,7 @@ use crate::resources::ReservedResources;
 use restate_errors::NotRunningError;
 use restate_types::LimitKey;
 use restate_types::identifiers::{EntryIndex, InvocationId};
-use restate_types::invocation::InvocationTarget;
+use restate_types::invocation::{FencingToken, InvocationTarget};
 use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::vqueues::VQueueId;
 use restate_util_string::ReString;
@@ -21,19 +21,24 @@ pub trait InvokerHandle {
     fn invoke(
         &mut self,
         invocation_id: InvocationId,
+        fencing_token: FencingToken,
         invocation_target: InvocationTarget,
     ) -> Result<(), NotRunningError>;
 
+    #[allow(clippy::too_many_arguments)]
     fn vqueue_invoke(
         &mut self,
         qid: VQueueId,
         permit: ReservedResources,
         invocation_id: InvocationId,
+        fencing_token: FencingToken,
         invocation_target: InvocationTarget,
         limit_key: LimitKey<ReString>,
         idempotency_key: Option<ReString>,
     ) -> Result<(), NotRunningError>;
 
+    // The `notify_*` forwards below don't carry a `fencing_token` as the invoke calls establish
+    // the current fencing token which is used to stamp all outgoing invoker effects.
     fn notify_completion(
         &mut self,
         invocation_id: InvocationId,
@@ -59,6 +64,10 @@ pub trait InvokerHandle {
 
     fn abort_all(&mut self) -> Result<(), NotRunningError>;
 
-    /// *Note*: When aborting an invocation, and restarting it, the `invocation_epoch` MUST be bumped.
+    /// Aborts the running task for `invocation_id`.
+    ///
+    /// Stale effects from a previous attempt are fenced at write time by the leader's in-memory
+    /// fencing-token map: it is used to terminate an invocation, pause it, or clean up an orphaned
+    /// task.
     fn abort_invocation(&mut self, invocation_id: InvocationId) -> Result<(), NotRunningError>;
 }

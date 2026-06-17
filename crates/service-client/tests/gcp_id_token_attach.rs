@@ -39,7 +39,7 @@ use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use restate_service_client::{Endpoint, Method as ClientMethod, Parts, ServiceClient};
-use restate_types::config::{HttpOptions, ServiceClientOptions};
+use restate_types::config::ServiceClientOptions;
 use restate_types::deployment::{GoogleIdTokenAuth, HttpAuth};
 use tokio::net::TcpListener;
 
@@ -126,10 +126,7 @@ async fn upstream_recorder() -> (SocketAddr, RecordedHeaders) {
 
 fn build_service_client() -> ServiceClient {
     ServiceClient::from_options(
-        &ServiceClientOptions {
-            http: HttpOptions::default(),
-            ..Default::default()
-        },
+        &ServiceClientOptions::default(),
         restate_service_client::AssumeRoleCacheMode::Unbounded,
     )
     .expect("ServiceClient construction")

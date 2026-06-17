@@ -15,6 +15,7 @@ use restate_storage_api::vqueue_table::scheduler::YieldReason;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::InvocationId;
+use restate_types::invocation::FencingToken;
 use restate_types::journal::EntryIndex;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal_events::raw::RawEvent;
@@ -27,13 +28,19 @@ use restate_types::storage::StoredRawEntry;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Effect {
     pub invocation_id: InvocationId,
-    // removed in v1.6
-    // #[cfg_attr(
-    //     feature = "serde",
-    //     serde(default, skip_serializing_if = "num_traits::Zero::is_zero")
-    // )]
-    // pub invocation_epoch: InvocationEpoch,
     pub kind: EffectKind,
+}
+
+/// An [`Effect`] tagged with the fencing token of the invoker-task generation that produced it.
+///
+/// The fencing token is a leader-local, in-memory fence: the partition processor checks it
+/// against its in-memory `fencing_tokens` map *before self-proposing* the wrapped effect, then
+/// strips it. Only the inner [`Effect`] is ever written to Bifrost, so the token never reaches
+/// the log -- it is deliberately kept out of the invocation lifecycle / storage format.
+#[derive(Debug)]
+pub struct FencedEffect {
+    pub fencing_token: FencingToken,
+    pub effect: Box<Effect>,
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +113,28 @@ impl EffectKind {
         Self::JournalEntryV2RawEntry {
             command_index_to_ack,
             raw_entry: raw_entry.into(),
+        }
+    }
+
+    /// Returns `true` if this effect ends the current invoker-task generation, i.e. after emitting
+    /// it the task will not produce any further effects for this attempt (it suspended, paused,
+    /// yielded, completed, or failed). The partition processor uses this to release the attempt's
+    /// fencing token. Non-terminal effects (deployment pin, journal entries/events) keep the
+    /// attempt running.
+    pub fn is_terminal(&self) -> bool {
+        match self {
+            Self::Suspended { .. }
+            | Self::SuspendedV2 { .. }
+            | Self::SuspendedV3 { .. }
+            | Self::Paused { .. }
+            | Self::Yield { .. }
+            | Self::End
+            | Self::Failed(_) => true,
+            Self::PinnedDeployment(_)
+            | Self::JournalEntry { .. }
+            | Self::JournalEntryV2 { .. }
+            | Self::JournalEvent { .. }
+            | Self::JournalEntryV2RawEntry { .. } => false,
         }
     }
 }

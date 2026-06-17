@@ -258,13 +258,6 @@ impl LogServerOptions {
         })
     }
 
-    pub fn rocksdb_data_memtables_budget(&self) -> NonZeroByteCount {
-        // The entire memory budget goes to the data CF. The metadata CF's write_buffer_size
-        // matches the data CF to avoid independently triggering atomic flushes, but its
-        // actual memory consumption is negligible (a few KB of real data per flush).
-        self.rocksdb_memory_budget()
-    }
-
     /// Minimum value size for blob separation. Defaults to 512 KiB.
     pub fn rocksdb_blob_min_size(&self) -> NonZeroByteCount {
         self.rocksdb_blob_min_size.unwrap_or(NonZeroByteCount::new(
@@ -299,15 +292,12 @@ impl LogServerOptions {
 
     /// Memory budget for the data service admission-control pool.
     ///
-    /// Derived from a single write buffer, but clamped to at least `min_size` (the maximum
+    /// Derived from a memory available for write buffers, but clamped to at least `min_size` (the maximum
     /// accepted record/message size). Otherwise a low-memory configuration could size the pool
     /// below the largest valid append and reject it with `CapacityExceeded` before the writer
     /// ever sees it (see `BackPressureMode::Lossy`).
     pub fn data_service_memory_size(&self, min_size: NonZeroByteCount) -> NonZeroByteCount {
-        NonZeroByteCount::new(
-            NonZeroUsize::new(self.write_buffer_size()).expect("write buffer must be non-zero"),
-        )
-        .max(min_size)
+        self.rocksdb_memory_budget().max(min_size)
     }
 
     pub fn write_buffer_size(&self) -> usize {

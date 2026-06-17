@@ -438,7 +438,9 @@ mod tests {
     use restate_storage_api::Transaction;
     use restate_storage_api::vqueue_table::scheduler::SchedulerAction;
     use restate_storage_api::vqueue_table::stats::WaitStats;
-    use restate_storage_api::vqueue_table::{EntryKey, EntryMetadata, ReadVQueueTable};
+    use restate_storage_api::vqueue_table::{
+        EntryKey, EntryMetadata, EntryStatusHeader, ReadVQueueTable, Stage,
+    };
     use restate_types::ServiceName;
     use restate_types::clock::UniqueTimestamp;
     use restate_types::identifiers::{PartitionId, PartitionKey};
@@ -562,6 +564,80 @@ mod tests {
         .expect("vqueue should be created");
 
         vqueue.run_entry(at, &header, WaitStats::default())
+    }
+
+    async fn reschedule(
+        txn: &mut PartitionStoreTransaction<'_>,
+        cache: &mut VQueuesMetaCache,
+        qid: &VQueueId,
+        entry_id: &EntryId,
+        run_at: RoughTimestamp,
+        action_collector: Option<&mut Vec<VQueueEvent>>,
+    ) {
+        let at = UniqueTimestamp::try_from(1_300u64).unwrap();
+        let header = txn
+            .get_vqueue_entry_status(qid.partition_key(), entry_id)
+            .await
+            .expect("entry state header lookup should succeed")
+            .expect("entry state header should exist");
+
+        let mut vqueue = VQueue::get_or_create_vqueue(
+            at,
+            qid,
+            txn,
+            cache,
+            action_collector,
+            &ServiceName::new("test"),
+            &None,
+            &LimitKey::None,
+            &None,
+        )
+        .await
+        .expect("vqueue should be created");
+
+        vqueue.reschedule(&header, run_at, None);
+    }
+
+    /// Parks a running entry into the Suspended stage.
+    async fn suspend(
+        txn: &mut PartitionStoreTransaction<'_>,
+        cache: &mut VQueuesMetaCache,
+        qid: &VQueueId,
+        entry_id: &EntryId,
+    ) {
+        let at = UniqueTimestamp::try_from(1_250u64).unwrap();
+        let header = txn
+            .get_vqueue_entry_status(qid.partition_key(), entry_id)
+            .await
+            .expect("entry state header lookup should succeed")
+            .expect("entry state header should exist");
+
+        let mut vqueue = VQueue::get_or_create_vqueue(
+            at,
+            qid,
+            txn,
+            cache,
+            None::<&mut Vec<VQueueEvent>>,
+            &ServiceName::new("test"),
+            &None,
+            &LimitKey::None,
+            &None,
+        )
+        .await
+        .expect("vqueue should be created");
+
+        vqueue.suspend_entry(at, &header);
+    }
+
+    async fn read_header(
+        txn: &PartitionStoreTransaction<'_>,
+        qid: &VQueueId,
+        entry_id: &EntryId,
+    ) -> impl EntryStatusHeader + 'static {
+        txn.get_vqueue_entry_status(qid.partition_key(), entry_id)
+            .await
+            .expect("entry state header lookup should succeed")
+            .expect("entry state header should exist")
     }
 
     async fn create_resource_manager_with_throttling(
@@ -721,6 +797,122 @@ mod tests {
         assert_eq!(keys.len(), 1);
         assert_eq!(keys[0], overdue_key);
         assert_ne!(keys[0], future_key);
+    }
+
+    /// `reschedule` re-keys an entry's `run_at` for the waiting stages and is a no-op otherwise:
+    /// - Inbox: pulls the entry forward (and emits the reconciliation pair); no-op if unchanged.
+    /// - Suspended: re-keys in place without notifying the scheduler (parked entries aren't tracked).
+    /// - Running: nothing to reschedule.
+    /// In every case the entry's `Status` and stats are preserved.
+    #[restate_core::test]
+    async fn reschedule_moves_run_at_only_for_waiting_stages() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+        let qid = test_qid(2_200);
+        let now = MillisSinceEpoch::now().as_u64();
+        let now_rough = RoughTimestamp::from_unix_millis_clamped(MillisSinceEpoch::new(now));
+        // A distinct, far-future run_at so every reschedule is an actual move.
+        let future = MillisSinceEpoch::new(now.saturating_add(600_000));
+
+        let mut txn = rocksdb.transaction();
+        let mut events: Vec<VQueueEvent> = Vec::new();
+
+        // -- Inbox: a waiting entry is pulled forward to `now`, emitting the reconciliation pair
+        //    (`RemovedFromInbox` of the old key + `EnqueuedToInbox` at the new key).
+        let inbox = *enqueue_entry_with_run_at(&mut txn, &mut cache, &qid, 1, future, None)
+            .await
+            .entry_id();
+        let inbox_status = read_header(&txn, &qid, &inbox).await.status();
+
+        reschedule(
+            &mut txn,
+            &mut cache,
+            &qid,
+            &inbox,
+            now_rough,
+            Some(&mut events),
+        )
+        .await;
+        let header = read_header(&txn, &qid, &inbox).await;
+        assert_eq!(header.entry_key().run_at(), now_rough);
+        assert_eq!(header.stage(), Stage::Inbox);
+        assert_eq!(header.status(), inbox_status); // status untouched
+        assert_eq!(header.stats().num_yields, 0); // not counted as a yield
+        assert_eq!(events.len(), 1);
+        match &events[0].updates[..] {
+            [
+                EventDetails::RemovedFromInbox(old_key),
+                EventDetails::EnqueuedToInbox { key: new_key, .. },
+            ] => {
+                assert_ne!(old_key.run_at(), now_rough);
+                assert_eq!(new_key.run_at(), now_rough);
+            }
+            other => panic!("expected a RemovedFromInbox + EnqueuedToInbox pair, got {other:?}"),
+        }
+
+        // Re-keying to the same run_at is a no-op: nothing emitted, nothing changed.
+        events.clear();
+        reschedule(
+            &mut txn,
+            &mut cache,
+            &qid,
+            &inbox,
+            now_rough,
+            Some(&mut events),
+        )
+        .await;
+        assert!(events.is_empty());
+        assert_eq!(
+            read_header(&txn, &qid, &inbox).await.entry_key().run_at(),
+            now_rough
+        );
+
+        // -- Suspended: re-keyed in place, no scheduler event.
+        let suspended = *enqueue_entry_with_run_at(&mut txn, &mut cache, &qid, 2, future, None)
+            .await
+            .entry_id();
+        suspend(&mut txn, &mut cache, &qid, &suspended).await;
+        let suspended_status = read_header(&txn, &qid, &suspended).await.status();
+
+        events.clear();
+        reschedule(
+            &mut txn,
+            &mut cache,
+            &qid,
+            &suspended,
+            now_rough,
+            Some(&mut events),
+        )
+        .await;
+        let header = read_header(&txn, &qid, &suspended).await;
+        assert_eq!(header.entry_key().run_at(), now_rough);
+        assert_eq!(header.stage(), Stage::Suspended);
+        assert_eq!(header.status(), suspended_status);
+        assert!(events.is_empty());
+
+        // -- Running: nothing to reschedule, the entry is left untouched.
+        let running_key = {
+            let key = enqueue_entry_with_run_at(&mut txn, &mut cache, &qid, 3, future, None).await;
+            move_to_running(&mut txn, &mut cache, &qid, &key, None).await
+        };
+        let running = *running_key.entry_id();
+
+        events.clear();
+        reschedule(
+            &mut txn,
+            &mut cache,
+            &qid,
+            &running,
+            now_rough,
+            Some(&mut events),
+        )
+        .await;
+        let header = read_header(&txn, &qid, &running).await;
+        assert_eq!(header.stage(), Stage::Running);
+        assert_eq!(header.entry_key().run_at(), running_key.run_at());
+        assert!(events.is_empty());
+
+        txn.commit().await.expect("commit should succeed");
     }
 
     #[restate_core::test]

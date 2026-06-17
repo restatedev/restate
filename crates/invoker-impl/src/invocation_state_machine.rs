@@ -16,6 +16,7 @@ use tokio::task::AbortHandle;
 
 use restate_memory::LocalMemoryPool;
 use restate_types::identifiers::EntryIndex;
+use restate_types::invocation::FencingToken;
 use restate_types::retries;
 use restate_types::schema::invocation_target::OnMaxAttempts;
 use restate_types::service_protocol::ServiceProtocolVersion;
@@ -46,6 +47,10 @@ pub(super) struct InvocationStateMachine<K: TimerKey = tokio_util::time::delay_q
     #[allow(dead_code)]
     #[debug(skip)]
     pub(super) _permit: ReservedResources,
+    /// The invoker-task generation this state machine represents. Stamped onto
+    /// every effect this ISM emits so the partition processor can fence stale
+    /// effects from a previous attempt.
+    pub(super) fencing_token: FencingToken,
     pub(super) invocation_target: InvocationTarget,
     pub(super) limit_key: LimitKey<ReString>,
     pub(super) idempotency_key: Option<ReString>,
@@ -221,6 +226,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
     pub(super) fn create(
         qid: Option<VQueueId>,
         permit: ReservedResources,
+        fencing_token: FencingToken,
         invocation_target: InvocationTarget,
         limit_key: LimitKey<ReString>,
         idempotency_key: Option<ReString>,
@@ -234,6 +240,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         Self {
             qid,
             _permit: permit,
+            fencing_token,
             invocation_target,
             limit_key,
             idempotency_key,
@@ -739,6 +746,7 @@ mod tests {
         InvocationStateMachine::create(
             None,
             ReservedResources::new_empty(),
+            0,
             InvocationTarget::mock_virtual_object(),
             LimitKey::None,
             None,

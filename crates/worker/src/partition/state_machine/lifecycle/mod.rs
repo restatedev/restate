@@ -10,6 +10,7 @@
 
 mod cancel;
 mod event;
+mod manual_pause;
 mod manual_resume;
 mod migrate_journal_table;
 mod notify_get_invocation_output_response;
@@ -28,13 +29,15 @@ mod yield_invocation;
 
 pub(super) use cancel::OnCancelCommand;
 pub(super) use event::ApplyEventCommand;
+pub(super) use manual_pause::OnManualPauseCommand;
 pub(super) use manual_resume::OnManualResumeCommand;
+pub(crate) use manual_resume::resolve_pinned_deployment;
 pub(super) use migrate_journal_table::VerifyOrMigrateJournalTableToV2Command;
 pub(super) use notify_get_invocation_output_response::OnNotifyGetInvocationOutputResponse;
 pub(super) use notify_invocation_response::OnNotifyInvocationResponse;
 pub(super) use notify_signal::OnNotifySignalCommand;
 pub(super) use notify_sleep_completion::OnNotifySleepCompletionCommand;
-pub(super) use paused::OnPausedCommand;
+pub(super) use paused::{OnPausedCommand, pause_invocation};
 pub(super) use pinned_deployment::OnPinnedDeploymentCommand;
 pub(super) use purge::OnPurgeCommand;
 pub(super) use purge_journal::OnPurgeJournalCommand;
