@@ -209,13 +209,8 @@ impl LeaderState {
         // if we have problems with latency
         let scheduler_stream =
             std::pin::pin!(stream::unfold(&mut self.scheduler, |scheduler| async {
-                match scheduler.schedule_next(vqueue_metas).await {
-                    Ok(decisions) => Some((ActionEffect::Scheduler(decisions), scheduler)),
-                    Err(e) => {
-                        error!("Fatal error when polling scheduler: {e}");
-                        None
-                    }
-                }
+                let result = scheduler.schedule_next(vqueue_metas).await;
+                Some((ActionEffect::Scheduler(result), scheduler))
             }));
 
         let schema_stream = (&mut self.schema_stream).filter_map(|_| {
@@ -363,6 +358,10 @@ impl LeaderState {
         for effect in action_effects {
             match effect {
                 ActionEffect::Scheduler(decisions) => {
+                    let decisions = decisions.inspect_err(|err| {
+                        error!("Fatal error when polling scheduler: {err}");
+                    })?;
+
                     let Decisions {
                         qids,
                         num_run,
