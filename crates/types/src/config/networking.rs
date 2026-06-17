@@ -123,7 +123,7 @@ fn is_default_fabric_memory_limit(value: &NonZeroByteCount) -> bool {
 
 impl NetworkingOptions {
     pub fn stream_window_size(&self) -> u32 {
-        // santize to 500MiB if set higher
+        // sanitize to 500MiB if set higher
         let stream_window_size = self.data_stream_window_size.as_u64().min(500 * 1024 * 1024); // Sanitize to 500MiB if set higher.
 
         u32::try_from(stream_window_size).expect("window size too big")

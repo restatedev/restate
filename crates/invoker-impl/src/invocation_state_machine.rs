@@ -16,12 +16,14 @@ use tokio::task::AbortHandle;
 
 use restate_memory::LocalMemoryPool;
 use restate_types::identifiers::EntryIndex;
+use restate_types::invocation::FencingToken;
 use restate_types::retries;
 use restate_types::schema::invocation_target::OnMaxAttempts;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::vqueues::VQueueId;
 use restate_worker_api::resources::ReservedResources;
 
+use crate::error::RequestedErrorBehavior;
 use crate::quota::ConcurrencySlot;
 
 use super::*;
@@ -45,6 +47,10 @@ pub(super) struct InvocationStateMachine<K: TimerKey = tokio_util::time::delay_q
     #[allow(dead_code)]
     #[debug(skip)]
     pub(super) _permit: ReservedResources,
+    /// The invoker-task generation this state machine represents. Stamped onto
+    /// every effect this ISM emits so the partition processor can fence stale
+    /// effects from a previous attempt.
+    pub(super) fencing_token: FencingToken,
     pub(super) invocation_target: InvocationTarget,
     pub(super) limit_key: LimitKey<ReString>,
     pub(super) idempotency_key: Option<ReString>,
@@ -220,6 +226,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
     pub(super) fn create(
         qid: Option<VQueueId>,
         permit: ReservedResources,
+        fencing_token: FencingToken,
         invocation_target: InvocationTarget,
         limit_key: LimitKey<ReString>,
         idempotency_key: Option<ReString>,
@@ -233,6 +240,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         Self {
             qid,
             _permit: permit,
+            fencing_token,
             invocation_target,
             limit_key,
             idempotency_key,
@@ -544,8 +552,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
     pub(super) fn handle_task_error(
         &mut self,
         error_is_transient: bool,
-        next_retry_interval_override: Option<Duration>,
-        should_pause: bool,
+        requested_error_behavior: RequestedErrorBehavior,
         should_bump_start_message_retry_count_since_last_stored_command: bool,
         register_timer: impl FnOnce(Duration) -> K,
     ) -> OnTaskError {
@@ -576,10 +583,13 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             }
         };
 
-        if self.requested_pause || should_pause {
-            // Shortcircuit to pause, as this is what the user asked for
-            return OnTaskError::Pause;
-        }
+        // The SDK can request a specific behavior, which takes precedence over the retry policy.
+        let next_retry_interval_override = match requested_error_behavior {
+            RequestedErrorBehavior::Pause => return OnTaskError::Pause,
+            RequestedErrorBehavior::Fail => return OnTaskError::Fail,
+            RequestedErrorBehavior::Retry => None,
+            RequestedErrorBehavior::RetryWithIntervalOverride(interval) => Some(interval),
+        };
 
         if error_is_transient
             && let Some(next_timer) =
@@ -618,7 +628,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         } else {
             match self.retry_policy_state.on_max_attempts {
                 OnMaxAttempts::Pause => OnTaskError::Pause,
-                OnMaxAttempts::Kill => OnTaskError::Kill,
+                OnMaxAttempts::Kill => OnTaskError::Fail,
             }
         }
     }
@@ -704,7 +714,7 @@ pub(super) enum OnTaskError {
     },
     Retrying(Duration),
     Pause,
-    Kill,
+    Fail,
 }
 
 pub(super) struct AttemptDeploymentId(Option<DeploymentId>);
@@ -736,6 +746,7 @@ mod tests {
         InvocationStateMachine::create(
             None,
             ReservedResources::new_empty(),
+            0,
             InvocationTarget::mock_virtual_object(),
             LimitKey::None,
             None,
@@ -749,20 +760,70 @@ mod tests {
     fn handle_error_when_waiting_for_retry() {
         let mut invocation_state_machine = create_test_invocation_state_machine();
 
-        let_assert!(
-            OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, false, true, |_| 0)
+        assert_that!(
+            invocation_state_machine.handle_task_error(
+                true,
+                RequestedErrorBehavior::Retry,
+                true,
+                |_| 0
+            ),
+            pat!(OnTaskError::Retrying(_))
         );
-        check!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
+        assert_that!(
+            invocation_state_machine.invocation_state,
+            pat!(AttemptState::WaitingRetry { .. })
+        );
 
         invocation_state_machine.notify_retry_timer_fired(0);
 
         // We stay in `WaitingForRetry`
-        let_assert!(
-            OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, false, true, |_| 1)
+        assert_that!(
+            invocation_state_machine.handle_task_error(
+                true,
+                RequestedErrorBehavior::Retry,
+                true,
+                |_| 1
+            ),
+            pat!(OnTaskError::Retrying(_))
         );
-        check!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
+        assert_that!(
+            invocation_state_machine.invocation_state,
+            pat!(AttemptState::WaitingRetry { .. })
+        );
+    }
+
+    #[test]
+    fn handle_error_with_pause_behavior_pauses() {
+        let mut invocation_state_machine = create_test_invocation_state_machine();
+
+        // Even though the error is transient and the retry policy allows more retries,
+        // the SDK-requested Pause behavior takes precedence.
+        assert_that!(
+            invocation_state_machine.handle_task_error(
+                true,
+                RequestedErrorBehavior::Pause,
+                true,
+                |_| 0
+            ),
+            pat!(OnTaskError::Pause)
+        );
+    }
+
+    #[test]
+    fn handle_error_with_fail_behavior_kills() {
+        let mut invocation_state_machine = create_test_invocation_state_machine();
+
+        // Even though the error is transient and the retry policy allows more retries,
+        // the SDK-requested Fail behavior takes precedence and fails without retrying.
+        assert_that!(
+            invocation_state_machine.handle_task_error(
+                true,
+                RequestedErrorBehavior::Fail,
+                true,
+                |_| 0
+            ),
+            pat!(OnTaskError::Fail)
+        );
     }
 
     #[test(tokio::test)]
@@ -895,8 +956,12 @@ mod tests {
 
         // Notify error
         let_assert!(
-            OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, false, true, |_| 0)
+            OnTaskError::Retrying(_) = invocation_state_machine.handle_task_error(
+                true,
+                RequestedErrorBehavior::Retry,
+                true,
+                |_| 0
+            )
         );
         assert_eq!(
             invocation_state_machine.start_message_retry_count_since_last_stored_command,
@@ -911,8 +976,12 @@ mod tests {
 
         // Get error again
         let_assert!(
-            OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, false, true, |_| 1)
+            OnTaskError::Retrying(_) = invocation_state_machine.handle_task_error(
+                true,
+                RequestedErrorBehavior::Retry,
+                true,
+                |_| 1
+            )
         );
         assert_eq!(
             invocation_state_machine.start_message_retry_count_since_last_stored_command,
@@ -949,8 +1018,12 @@ mod tests {
         // Invoker generates entry 1
         invocation_state_machine.notify_new_command(1, false);
         let_assert!(
-            OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, false, true, |_| 0)
+            OnTaskError::Retrying(_) = invocation_state_machine.handle_task_error(
+                true,
+                RequestedErrorBehavior::Retry,
+                true,
+                |_| 0
+            )
         );
 
         // PP sends ack for command 1
@@ -987,8 +1060,12 @@ mod tests {
             false,
         );
         let_assert!(
-            OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, false, true, |_| 0)
+            OnTaskError::Retrying(_) = invocation_state_machine.handle_task_error(
+                true,
+                RequestedErrorBehavior::Retry,
+                true,
+                |_| 0
+            )
         );
 
         // Waiting notifications acks and retry timer fired
@@ -1025,8 +1102,12 @@ mod tests {
 
         // Put the ISM in WaitingRetry state with timer key 0
         let_assert!(
-            OnTaskError::Retrying(_) =
-                invocation_state_machine.handle_task_error(true, None, false, true, |_| 0)
+            OnTaskError::Retrying(_) = invocation_state_machine.handle_task_error(
+                true,
+                RequestedErrorBehavior::Retry,
+                true,
+                |_| 0
+            )
         );
         check!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 

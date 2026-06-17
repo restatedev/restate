@@ -43,11 +43,6 @@ pub trait DbConfigurator {
                 .set_statistics_level(convert_statistics_level(config.rocksdb_statistics_level()));
         }
 
-        // no need to retain 1000 log files by default.
-        if !config.rocksdb_disable_wal() {
-            // RocksDB does not support recycling wal log files if wal is disabled when writing
-            db_options.set_recycle_log_file_num(4);
-        }
         db_options.set_compaction_readahead_size(config.rocksdb_compaction_readahead_size().get());
 
         // Use Direct I/O for reads, do not use OS page cache to cache compressed blocks.
@@ -66,19 +61,22 @@ pub trait DbConfigurator {
     fn note_config_update(&self, _db: &RocksAccess) {}
 }
 
+pub fn create_empty_db_options(db_name: DbName) -> rocksdb::Options {
+    let mut db_options = rocksdb::Options::default();
+    db_options.add_event_listener(LoggingEventListener::new(db_name));
+    db_options
+}
+
 pub fn create_default_db_options(
     env: &rocksdb::Env,
     db_name: &DbName,
-    create_db_if_missing: bool,
     write_buffer_manager: &rocksdb::WriteBufferManager,
     limiter: &rocksdb::RateLimiter,
 ) -> rocksdb::Options {
     let mut db_options = rocksdb::Options::default();
     db_options.set_env(env);
     db_options.set_shared_ratelimiter(limiter);
-    if create_db_if_missing {
-        db_options.create_if_missing(true);
-    }
+    db_options.create_if_missing(true);
     db_options.create_missing_column_families(true);
     // write buffer is controlled by write buffer manager
     db_options.set_write_buffer_manager(write_buffer_manager);

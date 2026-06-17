@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 use restate_errors::NotRunningError;
 use restate_types::LimitKey;
 use restate_types::identifiers::{EntryIndex, InvocationId};
-use restate_types::invocation::InvocationTarget;
+use restate_types::invocation::{FencingToken, InvocationTarget};
 use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::VQueueId;
@@ -25,6 +25,7 @@ use restate_worker_api::resources::ReservedResources;
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct InvokeCommand {
     pub(super) invocation_id: InvocationId,
+    pub(super) fencing_token: FencingToken,
     pub(super) invocation_target: InvocationTarget,
 }
 
@@ -34,6 +35,7 @@ pub(crate) struct VQueueInvokeCommand {
     #[debug(skip)]
     pub(super) permit: ReservedResources,
     pub(super) invocation_id: InvocationId,
+    pub(super) fencing_token: FencingToken,
     pub(super) invocation_target: InvocationTarget,
     pub(super) limit_key: LimitKey<ReString>,
     pub(super) idempotency_key: Option<ReString>,
@@ -59,7 +61,7 @@ pub(crate) enum InputCommand {
         command_index: CommandIndex,
     },
 
-    /// Abort specific invocation id
+    /// Abort specific invocation id (the current attempt, unconditionally).
     Abort {
         invocation_id: InvocationId,
     },
@@ -89,11 +91,13 @@ impl restate_worker_api::invoker::InvokerHandle for InvokerHandle {
     fn invoke(
         &mut self,
         invocation_id: InvocationId,
+        fencing_token: FencingToken,
         invocation_target: InvocationTarget,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::Invoke(Box::new(InvokeCommand {
                 invocation_id,
+                fencing_token,
                 invocation_target,
             })))
             .map_err(|_| NotRunningError)
@@ -104,6 +108,7 @@ impl restate_worker_api::invoker::InvokerHandle for InvokerHandle {
         qid: VQueueId,
         permit: ReservedResources,
         invocation_id: InvocationId,
+        fencing_token: FencingToken,
         invocation_target: InvocationTarget,
         limit_key: LimitKey<ReString>,
         idempotency_key: Option<ReString>,
@@ -113,6 +118,7 @@ impl restate_worker_api::invoker::InvokerHandle for InvokerHandle {
                 qid,
                 permit,
                 invocation_id,
+                fencing_token,
                 invocation_target,
                 limit_key,
                 idempotency_key,

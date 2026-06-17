@@ -22,7 +22,7 @@ use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
 
 use super::{
     BackgroundWorkBudget, CommonOptions, DEFAULT_MESSAGE_SIZE_LIMIT, NetworkingOptions,
-    ObjectStoreOptions, RocksDbOptions, RocksDbOptionsBuilder,
+    ObjectStoreOptions, RocksDbOptions,
 };
 use crate::config::{
     AwsLambdaOptions, DeprecatedAwsLambdaOptions, DeprecatedHttpOptions, HttpOptions,
@@ -592,7 +592,6 @@ impl Default for InvokerOptions {
     schemars(rename = "ServiceClientOptions", default)
 )]
 #[builder(default)]
-#[derive(Default)]
 #[serde(rename_all = "kebab-case")]
 pub struct ServiceClientOptions {
     #[serde(flatten)]
@@ -611,12 +610,40 @@ pub struct ServiceClientOptions {
     /// Parsed public keys will be logged at INFO level in the same format that SDKs expect.
     pub request_identity_private_key_pem_file: Option<PathBuf>,
 
+    /// # Request identity expiration leeway
+    ///
+    /// The validity window of the JWTs attached to outgoing requests when a request identity key is
+    /// configured. The token's `exp` (expiry) is set to `now + leeway` and its `nbf` (not-before) to
+    /// `now - leeway`, so this value bounds both how long a token remains valid and how much clock
+    /// skew between this client and the receiving SDK is tolerated.
+    ///
+    /// The minimum expiration leeway is 1s and lower values will be automatically clamped.
+    /// Default: 60s.
+    ///
+    /// Since v1.7.0
+    request_identity_expiration: NonZeroFriendlyDuration,
+
     /// # Additional request headers
     ///
     /// Headers that should be applied to all outgoing requests (HTTP and Lambda).
     /// Defaults to `x-restate-cluster-name: <cluster name>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub additional_request_headers: Option<SerdeableHeaderHashMap>,
+}
+
+const DEFAULT_REQUEST_IDENTITY_EXPIRATION: NonZeroFriendlyDuration =
+    NonZeroFriendlyDuration::new_unchecked(Duration::from_secs(60));
+
+impl Default for ServiceClientOptions {
+    fn default() -> Self {
+        Self {
+            http: HttpOptions::default(),
+            lambda: AwsLambdaOptions::default(),
+            request_identity_private_key_pem_file: None,
+            request_identity_expiration: DEFAULT_REQUEST_IDENTITY_EXPIRATION,
+            additional_request_headers: None,
+        }
+    }
 }
 
 impl ServiceClientOptions {
@@ -650,6 +677,11 @@ impl ServiceClientOptions {
             "additional-request-headers",
             None,
         );
+    }
+
+    pub fn request_identity_expiration(&self) -> NonZeroFriendlyDuration {
+        self.request_identity_expiration
+            .max(NonZeroFriendlyDuration::from_secs_unchecked(1))
     }
 }
 
@@ -802,6 +834,18 @@ pub struct StorageOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "schemars", schemars(skip))]
     rocksdb_max_background_compactions: Option<NonZeroU32>,
+
+    /// # Clamps target size for sst files
+    ///
+    /// The target size for sst files. Restate uses this value to internally determine
+    /// the number of memtables to keep in memory and how much to merge before flushing.
+    ///
+    /// The value is automatically sanitized to 16 MiB if set to a smaller value.
+    ///
+    /// [default] is 64 MiB
+    ///
+    /// Since v1.7.0
+    pub rocksdb_max_file_size: NonZeroByteCount,
 }
 
 impl StorageOptions {
@@ -830,12 +874,12 @@ impl StorageOptions {
 
     pub fn rocksdb_max_background_flushes(&self) -> NonZeroU32 {
         self.rocksdb_max_background_flushes
-            .unwrap_or(NonZeroU32::new(2).unwrap())
+            .unwrap_or(NonZeroU32::new(1).unwrap())
     }
 
     pub fn rocksdb_max_background_compactions(&self) -> NonZeroU32 {
         self.rocksdb_max_background_compactions
-            .unwrap_or(NonZeroU32::new(2).unwrap())
+            .unwrap_or(NonZeroU32::new(1).unwrap())
     }
 
     pub fn rocksdb_memory_budget(&self) -> NonZeroByteCount {
@@ -859,14 +903,9 @@ impl StorageOptions {
 
 impl Default for StorageOptions {
     fn default() -> Self {
-        let rocksdb = RocksDbOptionsBuilder::default()
-            .rocksdb_disable_wal(Some(true))
-            .build()
-            .expect("valid RocksDbOptions");
-
         #[allow(deprecated)]
         StorageOptions {
-            rocksdb,
+            rocksdb: RocksDbOptions::default(),
             // set by apply_common in runtime
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.49,
@@ -881,6 +920,9 @@ impl Default for StorageOptions {
             rocksdb_disable_auto_memory_reclaimer: false,
             rocksdb_max_background_flushes: None,
             rocksdb_max_background_compactions: None,
+            rocksdb_max_file_size: NonZeroByteCount::new(
+                NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
+            ),
         }
     }
 }

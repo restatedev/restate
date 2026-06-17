@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::marker::PhantomData;
+use std::num::NonZeroU32;
 use std::ops::DerefMut;
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,12 +35,12 @@ use restate_util_bytecount::ByteCount;
 
 use crate::durable_lsn_tracking::{AppliedLsnCollectorFactory, DurableLsnEventListener};
 use crate::keys::KeyKind;
-use crate::memory::MemoryBudget;
+use crate::memory::{MemoryBudget, PartitionDbMemoryConfig};
 use crate::scan::PhysicalScan;
 use crate::snapshots::LocalPartitionSnapshot;
 use crate::{DB_PREFIX_LENGTH, ScanMode, TableKind};
 
-use restate_util_string::ReString;
+use restate_util_string::{ReString, ToReString};
 
 #[derive(Clone)]
 pub struct PartitionDb {
@@ -129,22 +130,26 @@ impl PartitionDb {
         &self.durable_lsn
     }
 
-    pub(crate) fn update_memory_budget(&self, memory_budget: usize) {
+    pub(crate) async fn update_memory_budget(&self, memory_budget: usize) {
         // impacts only this partition's column-families
-        for cf in self.cf_names() {
-            let rocksdb = self.rocksdb.clone();
+        let cf_names = self.cf_names();
+        let rocksdb = self.rocksdb.clone();
 
-            // NOTE: Updating rocksdb's options is a blocking operations and may take a few
-            // tens of milliseconds on each column family. We need to perform this operation
-            // on non-blocking threads to avoid stalling the tokio runtime (starving failure
-            // detector, etc.).
-            tokio::task::spawn_blocking(move || {
-                let max_bytes_for_level_base = memory_budget;
-                let single_memtable_budget = memory_budget / 4;
-                let target_file_size_base = memory_budget / 8;
-                let max_bytes_for_level_base_str = max_bytes_for_level_base.to_string();
-                let single_memtable_budget_str = single_memtable_budget.to_string();
-                let target_file_size_base_str = target_file_size_base.to_string();
+        // NOTE: Updating rocksdb's options is a blocking operations and may take a few
+        // tens of milliseconds on each column family. We need to perform this operation
+        // on non-blocking threads to avoid stalling the tokio runtime (starving failure
+        // detector, etc.).
+        let _ = tokio::task::spawn_blocking(move || {
+            let opts = &Configuration::pinned().worker.storage;
+            let mem_config = PartitionDbMemoryConfig::calculate(memory_budget, opts);
+            for cf in cf_names {
+                let max_bytes_for_level_base_str =
+                    mem_config.max_bytes_for_level_base().to_restring();
+                let write_buffer_size_str = mem_config.write_buffer_size().to_restring();
+                let max_write_buffer_number_str =
+                    mem_config.max_write_buffer_number().to_restring();
+                let target_file_size_base_str = mem_config.target_file_size_base().to_restring();
+                let max_compaction_bytes = mem_config.max_compaction_bytes().to_restring();
 
                 debug!(
                     "Updating memory budget for {}/{} to {}",
@@ -156,9 +161,11 @@ impl PartitionDb {
                 if let Err(err) = rocksdb.inner().set_options_cf(
                     &cf,
                     &[
-                        ("write_buffer_size", &single_memtable_budget_str),
+                        ("write_buffer_size", &write_buffer_size_str),
                         ("target_file_size_base", &target_file_size_base_str),
+                        ("max_write_buffer_number", &max_write_buffer_number_str),
                         ("max_bytes_for_level_base", &max_bytes_for_level_base_str),
+                        ("max_compaction_bytes", &max_compaction_bytes),
                     ],
                 ) {
                     warn!(
@@ -166,8 +173,9 @@ impl PartitionDb {
                         rocksdb.name(),
                     );
                 }
-            });
-        }
+            }
+        })
+        .await;
     }
 
     #[track_caller]
@@ -550,6 +558,7 @@ impl State {
 pub struct RocksConfigurator<T> {
     memory_budget: Arc<MemoryBudget>,
     shared_state: Arc<crate::SharedState>,
+    use_multi_db_layout: bool,
     _marker: PhantomData<T>,
 }
 
@@ -558,16 +567,22 @@ impl<T> Clone for RocksConfigurator<T> {
         Self {
             memory_budget: self.memory_budget.clone(),
             shared_state: self.shared_state.clone(),
+            use_multi_db_layout: self.use_multi_db_layout,
             _marker: PhantomData,
         }
     }
 }
 
 impl<T> RocksConfigurator<T> {
-    pub fn new(memory_budget: Arc<MemoryBudget>, psm_state: Arc<crate::SharedState>) -> Self {
+    pub fn new(
+        memory_budget: Arc<MemoryBudget>,
+        psm_state: Arc<crate::SharedState>,
+        use_multi_db_layout: bool,
+    ) -> Self {
         Self {
             memory_budget,
             shared_state: psm_state,
+            use_multi_db_layout,
             _marker: PhantomData,
         }
     }
@@ -587,7 +602,6 @@ impl DbConfigurator for RocksConfigurator<AllDataCf> {
         let mut db_options = restate_rocksdb::configuration::create_default_db_options(
             env,
             db_name,
-            true, /* create_db_if_missing */
             write_buffer_manager,
             limiter,
         );
@@ -595,11 +609,20 @@ impl DbConfigurator for RocksConfigurator<AllDataCf> {
         let storage_config = &Configuration::pinned().worker.storage;
         self.apply_db_opts_from_config(&mut db_options, &storage_config.rocksdb);
 
-        restate_rocksdb::configuration::set_background_work_budget(
-            &mut db_options,
-            storage_config.rocksdb_max_background_flushes(),
-            storage_config.rocksdb_max_background_compactions(),
-        );
+        if self.use_multi_db_layout {
+            // In multi-db layout we don't want every database to grown the thread pool
+            restate_rocksdb::configuration::set_background_work_budget(
+                &mut db_options,
+                NonZeroU32::MIN,
+                NonZeroU32::MIN,
+            );
+        } else {
+            restate_rocksdb::configuration::set_background_work_budget(
+                &mut db_options,
+                storage_config.rocksdb_max_background_flushes(),
+                storage_config.rocksdb_max_background_compactions(),
+            );
+        }
 
         let event_listener = DurableLsnEventListener::new(&self.shared_state);
         db_options.add_event_listener(event_listener);
@@ -656,14 +679,11 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
         ));
         cf_options.set_memtable_prefix_bloom_ratio(0.2);
         cf_options.set_memtable_whole_key_filtering(true);
-        // Most of the changes are highly temporal, we try to delay flushing
-        // As much as we can to increase the chances to observe a deletion.
-        //
         cf_options.set_num_levels(7);
         let l0_l1 = if config.rocksdb.rocksdb_disable_l0_l1_compression() {
             rocksdb::DBCompressionType::None
         } else {
-            rocksdb::DBCompressionType::Zstd
+            rocksdb::DBCompressionType::Lz4
         };
         let levels = restate_rocksdb::configuration::build_compression_per_level(
             7,
@@ -676,25 +696,31 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
         cf_options.add_table_properties_collector_factory(AppliedLsnCollectorFactory);
 
         // -- Initial Memory Configuration --
-        let memtables_budget = self.memory_budget.current_per_partition_budget();
+        let mem_config = PartitionDbMemoryConfig::calculate(
+            self.memory_budget.current_per_partition_budget(),
+            config,
+        );
         tracing::debug!(
             "Configured {db_name}/{cf_name} with memtable budget={}",
-            ByteCount::from(memtables_budget)
+            ByteCount::from(mem_config.memory_budget())
         );
-        // We set the budget to allow 1 mutable + 3 immutable.
-        cf_options.set_write_buffer_size(memtables_budget / 4);
+        cf_options.set_write_buffer_size(mem_config.write_buffer_size());
 
-        // merge 2 memtables when flushing to L0
-        cf_options.set_min_write_buffer_number_to_merge(2);
-        cf_options.set_max_write_buffer_number(4);
-        // start flushing L0->L1 as soon as possible. each file on level0 is
-        // (memtable_memory_budget / 2). This will flush level 0 when it's bigger than
-        // memtable_memory_budget.
-        cf_options.set_level_zero_file_num_compaction_trigger(2);
-        // doesn't really matter much, but we don't want to create too many files
-        cf_options.set_target_file_size_base(memtables_budget as u64 / 8);
-        // make Level1 size equal to Level0 size, so that L0->L1 compactions are fast
-        cf_options.set_max_bytes_for_level_base(memtables_budget as u64);
+        // Do not slow down on l0 number of files writes even if it hurts read
+        // amplification.
+        cf_options.set_level_zero_slowdown_writes_trigger(1 << 30);
+        cf_options.set_level_zero_stop_writes_trigger(1 << 30);
+
+        cf_options.set_min_write_buffer_number_to_merge(
+            mem_config.min_write_buffer_number_to_merge() as i32,
+        );
+        cf_options.set_max_write_buffer_number(mem_config.max_write_buffer_number() as i32);
+        cf_options.set_level_zero_file_num_compaction_trigger(
+            mem_config.level_zero_file_num_compaction_trigger() as i32,
+        );
+        cf_options.set_target_file_size_base(mem_config.target_file_size_base() as u64);
+        cf_options.set_max_bytes_for_level_base(mem_config.max_bytes_for_level_base() as u64);
+        cf_options.set_max_compaction_bytes(mem_config.max_compaction_bytes() as u64);
 
         cf_options
     }

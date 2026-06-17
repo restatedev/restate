@@ -141,10 +141,10 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
         let mut db_options = restate_rocksdb::configuration::create_default_db_options(
             env,
             db_name,
-            true, /* create_db_if_missing */
             write_buffer_manager,
             limiter,
         );
+
         let local_loglet_config = &Configuration::pinned().bifrost.local;
         // amend default options from rocksdb_manager
         self.apply_db_opts_from_config(&mut db_options, &local_loglet_config.rocksdb);
@@ -155,6 +155,10 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
             local_loglet_config.rocksdb_max_background_compactions(),
         );
 
+        if !local_loglet_config.rocksdb_disable_wal() {
+            // RocksDB does not support recycling wal log files if wal is disabled when writing
+            db_options.set_recycle_log_file_num(4);
+        }
         // local loglet customizations
 
         // Enable atomic flushes.

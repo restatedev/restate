@@ -13,7 +13,7 @@ use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::{InvocationResponse, JournalCompletionTarget, ResponseResult};
 use restate_wal_protocol::Command;
 
-pub(crate) type InvokerEffect = Box<restate_worker_api::invoker::Effect>;
+pub(crate) type InvokerEffect = restate_worker_api::invoker::FencedEffect;
 pub(crate) type InvokerEffectKind = restate_worker_api::invoker::EffectKind;
 
 // Extension methods to the OutboxMessage type

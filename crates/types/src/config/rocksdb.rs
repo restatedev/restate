@@ -39,14 +39,6 @@ pub struct RocksDbOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     rocksdb_disable_direct_io_for_flush_and_compactions: Option<bool>,
 
-    /// # Disable WAL
-    ///
-    /// The default depends on the different rocksdb use-cases at Restate.
-    ///
-    /// Supports hot-reloading (Partial / Bifrost only)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    rocksdb_disable_wal: Option<bool>,
-
     /// Disable rocksdb statistics collection
     ///
     /// Default: False (statistics enabled)
@@ -134,7 +126,7 @@ pub struct RocksDbOptions {
 
     /// # Disable L0/L1 SST compression
     ///
-    /// When false (the default), L0 and L1 SST files are compressed with Zstd.
+    /// When false (the default), L0 and L1 SST files are compressed with Lz4.
     /// Higher levels (L2+) always use Zstd regardless of this setting.
     /// Set to true to disable compression for L0/L1, which can improve write
     /// throughput at the cost of higher disk usage since these files are
@@ -174,9 +166,6 @@ impl RocksDbOptions {
             self.rocksdb_disable_direct_io_for_flush_and_compactions =
                 Some(common.rocksdb_disable_direct_io_for_flush_and_compaction());
         }
-        if self.rocksdb_disable_wal.is_none() {
-            self.rocksdb_disable_wal = Some(common.rocksdb_disable_wal());
-        }
         if self.rocksdb_disable_statistics.is_none() {
             self.rocksdb_disable_statistics = Some(common.rocksdb_disable_statistics());
         }
@@ -212,10 +201,6 @@ impl RocksDbOptions {
             self.rocksdb_disable_l0_l1_compression =
                 Some(common.rocksdb_disable_l0_l1_compression());
         }
-    }
-
-    pub fn rocksdb_disable_wal(&self) -> bool {
-        self.rocksdb_disable_wal.unwrap_or(false)
     }
 
     pub fn rocksdb_disable_direct_io_for_reads(&self) -> bool {

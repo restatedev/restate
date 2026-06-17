@@ -1487,8 +1487,15 @@ impl WithInvocationId for NotifySignalRequest {
     }
 }
 
-/// The invocation epoch represents the restarts count of the invocation, as seen from the Partition processor.
-pub type InvocationEpoch = u32;
+/// Identifies an invoker-task generation, used to fence stale invoker effects.
+///
+/// This is a leader-local, in-memory value: the partition processor's leader keeps a
+/// `fencing_tokens` map, hands the current token to the invoker on (re)invoke, and the invoker
+/// echoes it on every effect. The leader drops effects whose token no longer matches *before*
+/// self-proposing them. It is intentionally **not** persisted and not written to Bifrost -- it is
+/// not part of the invocation lifecycle. Wraps around (a stale straggler never survives 2^32
+/// intervening invokes).
+pub type FencingToken = u32;
 
 mod serde_hacks {
     //! Module where we hide all the hacks to make back-compat working!

@@ -211,8 +211,10 @@ impl LogStoreWriterBuilder {
                     }
 
                     let config = &config.live_load().log_server;
+                    let batch_bytes_limit = config.write_batch_commit_bytes();
+
                     // Opportunistically drain normal-pri commands.
-                    while batch.size_in_bytes() < config.write_batch_bytes().as_usize()
+                    while batch.size_in_bytes() < batch_bytes_limit
                         && config
                             .write_batch_commit_count
                             .is_none_or(|c| batch.len() < c.get())
@@ -492,12 +494,15 @@ impl LogStoreWriter<'_> {
             .record(write_batch.size_in_bytes() as f64);
 
         let mut write_opts = rocksdb::WriteOptions::new();
-        if batch.sync_write_is_required {
-            write_opts.disable_wal(false);
-            write_opts.set_sync(true);
+        if opts.rocksdb_disable_wal() {
+            write_opts.disable_wal(true);
         } else {
-            write_opts.disable_wal(opts.rocksdb.rocksdb_disable_wal());
-            write_opts.set_sync(!opts.rocksdb_disable_wal_fsync());
+            write_opts.disable_wal(false);
+            if batch.sync_write_is_required {
+                write_opts.set_sync(true);
+            } else {
+                write_opts.set_sync(!opts.rocksdb_disable_wal_fsync());
+            }
         }
 
         // hint to rocksdb to insert the memtable position hint for the batch, our writes per batch

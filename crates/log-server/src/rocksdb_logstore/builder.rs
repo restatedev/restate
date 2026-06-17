@@ -8,12 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use rocksdb::{BlockBasedOptions, Cache, SliceTransform};
 use tracing::{info, warn};
 
 use restate_core::ShutdownError;
+use restate_platform::prelude::ToReString;
+use restate_rocksdb::configuration::create_empty_db_options;
 use restate_rocksdb::{
     CfExactPattern, CfName, DbName, DbSpecBuilder, OpenMode, RocksDb, RocksDbManager,
 };
@@ -41,14 +44,15 @@ impl RocksDbLogStoreBuilder {
         let db_manager = RocksDbManager::get();
         let cfs = vec![CfName::new(DATA_CF), CfName::new(METADATA_CF)];
 
+        let opts = &Configuration::pinned().log_server;
         let db_spec = DbSpecBuilder::new(
             db_name,
             kind,
-            Configuration::pinned().log_server.data_dir(),
-            RocksConfigurator,
+            opts.data_dir(),
+            RocksDbConfigurator::new(opts)?,
         )
-        .add_cf_pattern(CfExactPattern::new(DATA_CF), RocksConfigurator)
-        .add_cf_pattern(CfExactPattern::new(METADATA_CF), RocksConfigurator)
+        .add_cf_pattern(CfExactPattern::new(DATA_CF), RocksCfConfigurator)
+        .add_cf_pattern(CfExactPattern::new(METADATA_CF), RocksCfConfigurator)
         // not very important but it's to reduce the number of merges by flushing.
         // it's also a small cf so it should be quick.
         .add_to_flush_on_shutdown(CfExactPattern::new(METADATA_CF))
@@ -78,9 +82,29 @@ impl RocksDbLogStoreBuilder {
     }
 }
 
-struct RocksConfigurator;
+struct RocksCfConfigurator;
 
-impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
+struct RocksDbConfigurator {
+    env: rocksdb::Env,
+}
+
+impl RocksDbConfigurator {
+    fn new(opts: &LogServerOptions) -> Result<Self, RocksDbLogStoreError> {
+        // dedicated env for log-server
+        let env = if opts.in_memory {
+            rocksdb::Env::mem_env()?
+        } else {
+            let mut env = rocksdb::Env::new()?;
+            env.set_high_priority_background_threads(1);
+            env.set_low_priority_background_threads(1);
+            env.set_bottom_priority_background_threads(1);
+            env
+        };
+        Ok(Self { env })
+    }
+}
+
+impl restate_rocksdb::configuration::DbConfigurator for RocksDbConfigurator {
     fn get_db_open_mode(&self) -> OpenMode {
         if Configuration::pinned().log_server.read_only {
             OpenMode::ReadOnly
@@ -92,30 +116,69 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
     fn get_db_options(
         &self,
         db_name: &DbName,
-        env: &rocksdb::Env,
+        _env: &rocksdb::Env,
         write_buffer_manager: &rocksdb::WriteBufferManager,
         limiter: &rocksdb::RateLimiter,
     ) -> rocksdb::Options {
-        let mut db_options = restate_rocksdb::configuration::create_default_db_options(
-            env,
-            db_name,
-            true, /* create_db_if_missing */
-            write_buffer_manager,
-            limiter,
-        );
         // load config from the input configuration
         let log_server_config = &Configuration::pinned().log_server;
+
+        let mut db_options = create_empty_db_options(db_name.clone());
         // amend default options from rocksdb_manager
         self.apply_db_opts_from_config(&mut db_options, &log_server_config.rocksdb);
 
+        db_options.set_wal_dir(log_server_config.wal_dir());
+        // dedicated environment for log-server to avoid queueing behind flush/compactions
+        // of partition store.
+        db_options.set_env(&self.env);
+        db_options.set_shared_ratelimiter(limiter);
+        db_options.create_if_missing(true);
+        db_options.create_missing_column_families(true);
+        // Avoid pushing back on compaction delays, sacrifice storage and do not hinder
+        // writes and flushes.
+        db_options.set_soft_pending_compaction_bytes_limit(512 * 1024 * 1024 * 1024);
+        // Do not push back on compaction delays, sacrifice storage and do not hinder
+        // writes and flushes.
+        db_options.set_hard_pending_compaction_bytes_limit(2 * 1024 * 1024 * 1024 * 1024);
+        // todo(asoli): Consider detaching from the write buffer manager since we have
+        // good grip over memory budgets for log-server but we are keeping it because it
+        // makes it easy to observe total rocksdb memory usage in metrics.
+        //
+        // write buffer is controlled by write buffer manager
+        db_options.set_write_buffer_manager(write_buffer_manager);
+        db_options.set_avoid_unnecessary_blocking_io(true);
+        // Let rocksdb decide for level sizes.
+        db_options.set_level_compaction_dynamic_level_bytes(true);
+        //
+        // [Not important setting, consider removing], allows to shard compressed
+        // block cache to up to 64 shards in memory.
+        db_options.set_table_cache_num_shard_bits(6);
+
+        // Speed up database open, useful for large databases and slow disk.
+        db_options.set_skip_stats_update_on_db_open(true);
+        // Log Server database is critical for correctness.
+        db_options.set_paranoid_checks(!log_server_config.rocksdb_disable_paranoid_checks);
+
+        // Disable WAL archiving.
+        // the following two options has to be both 0 to disable WAL log archive.
+        db_options.set_wal_size_limit_mb(0);
+        db_options.set_wal_ttl_seconds(0);
+
         restate_rocksdb::configuration::set_background_work_budget(
             &mut db_options,
-            log_server_config.rocksdb_max_background_flushes(),
+            // dedicated flush thread for log-server
+            NonZeroU32::new(2).unwrap(),
             log_server_config.rocksdb_max_background_compactions(),
         );
 
-        // log-server specific customizations
+        if !log_server_config.rocksdb_disable_wal() {
+            // RocksDB does not support recycling wal log files if wal is disabled when writing
+            db_options
+                .set_recycle_log_file_num(log_server_config.max_write_buffer_number() as usize);
+        }
 
+        // log-server specific customizations
+        //
         // This is Rocksdb's default, it's added here for clarity.
         //
         // Rationale: If WAL tail is corrupted, it's likely that it has failed during write, that said,
@@ -130,7 +193,7 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
         // most reads are sequential
         db_options.set_advise_random_on_open(false);
 
-        db_options.set_max_total_wal_size(log_server_config.rocksdb_max_wal_size().as_u64());
+        db_options.set_max_total_wal_size(log_server_config.max_wal_total_size() as u64);
 
         // Flush both CFs atomically. This ensures the metadata CF (trim points, seals)
         // and the data CF are always consistent on disk without requiring WAL replay to
@@ -146,15 +209,11 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
     }
 
     fn note_config_update(&self, db: &restate_rocksdb::RocksAccess) {
-        let data_budget = {
-            let config = &Configuration::pinned().log_server;
-            config.rocksdb_data_memtables_budget()
-        };
-
-        update_data_cf_budget(db, data_budget.as_usize());
+        let config = &Configuration::pinned().log_server;
+        update_data_cf_budget(db, config);
         // Keep metadata CF write_buffer_size in sync so it never triggers a flush on
         // its own (atomic_flush means any CF triggering a flush drags all CFs along).
-        update_metadata_cf_write_buffer_size(db, data_budget.as_usize());
+        update_metadata_cf_write_buffer_size(db, config.write_buffer_size());
 
         // If current memtable usage exceeds the new budget, trigger a flush so that
         // memory is reclaimed promptly. With atomic_flush, flushing the data CF will
@@ -164,11 +223,11 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
             .unwrap()
             .unwrap_or_default() as usize;
 
-        let will_flush = total_data_usage > data_budget.as_usize();
+        let will_flush = total_data_usage > config.rocksdb_memory_budget().as_usize();
         info!(
             "Updating log-server data CF memory budget. usage:{}/{}, will_flush: {}",
             ByteCount::from(total_data_usage),
-            data_budget,
+            config.rocksdb_memory_budget(),
             will_flush
         );
         if will_flush {
@@ -183,25 +242,21 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
 }
 
 /// Dynamically updates the data CF sizing options to match the new memory budget.
-///
-/// Must stay in sync with the initial values set by [`cf_data_options`]:
-///   - `write_buffer_size = budget / 4`
-///   - `target_file_size_base = budget / 8`
-///   - `max_bytes_for_level_base = budget * 2` (= trigger × write_buffer_size = 8 × budget/4)
-///
-/// `level0_file_num_compaction_trigger` (8) is a constant that doesn't depend on the
-/// budget — the ratio `8 × (budget/4) = 2 × budget` holds for any budget value.
-fn update_data_cf_budget(db: &restate_rocksdb::RocksAccess, memory_budget: usize) {
-    let write_buffer_size = (memory_budget / 4).to_string();
-    let target_file_size_base = (memory_budget / 8).to_string();
-    let max_bytes_for_level_base = (memory_budget * 2).to_string();
+fn update_data_cf_budget(db: &restate_rocksdb::RocksAccess, opts: &LogServerOptions) {
+    let max_bytes_for_level_base_str = opts.max_bytes_for_level_base().to_restring();
+    let write_buffer_size_str = opts.write_buffer_size().to_restring();
+    let max_write_buffer_number_str = opts.max_write_buffer_number().to_restring();
+    let target_file_size_base_str = opts.target_file_size_base().to_restring();
+    let max_compaction_bytes = opts.max_compaction_bytes().to_restring();
 
     if let Err(err) = db.set_options_cf(
         DATA_CF,
         &[
-            ("write_buffer_size", &write_buffer_size),
-            ("target_file_size_base", &target_file_size_base),
-            ("max_bytes_for_level_base", &max_bytes_for_level_base),
+            ("write_buffer_size", &write_buffer_size_str),
+            ("target_file_size_base", &target_file_size_base_str),
+            ("max_write_buffer_number", &max_write_buffer_number_str),
+            ("max_bytes_for_level_base", &max_bytes_for_level_base_str),
+            ("max_compaction_bytes", &max_compaction_bytes),
         ],
     ) {
         warn!(
@@ -213,8 +268,11 @@ fn update_data_cf_budget(db: &restate_rocksdb::RocksAccess, memory_budget: usize
 
 /// Keeps the metadata CF write_buffer_size in sync with the data CF so that
 /// the metadata CF never independently triggers a flush under atomic_flush.
-fn update_metadata_cf_write_buffer_size(db: &restate_rocksdb::RocksAccess, data_budget: usize) {
-    let write_buffer_size = (data_budget / 4).to_string();
+fn update_metadata_cf_write_buffer_size(
+    db: &restate_rocksdb::RocksAccess,
+    write_buffer_size: usize,
+) {
+    let write_buffer_size = write_buffer_size.to_string();
     if let Err(err) = db.set_options_cf(METADATA_CF, &[("write_buffer_size", &write_buffer_size)]) {
         warn!(
             "Failed to update metadata CF write_buffer_size for {}/{METADATA_CF}: {err}",
@@ -223,7 +281,7 @@ fn update_metadata_cf_write_buffer_size(db: &restate_rocksdb::RocksAccess, data_
     }
 }
 
-impl restate_rocksdb::configuration::CfConfigurator for RocksConfigurator {
+impl restate_rocksdb::configuration::CfConfigurator for RocksCfConfigurator {
     fn get_cf_options(
         &self,
         _db_name: &DbName,
@@ -275,20 +333,28 @@ fn cf_data_options(
 ) {
     opts.set_block_based_table_factory(block_options);
 
-    let memtables_budget = log_server_config.rocksdb_data_memtables_budget().as_usize();
+    // Do not slow down on l0 number of files writes even if it hurts read
+    // amplification.
+    opts.set_level_zero_slowdown_writes_trigger(1 << 30);
+    opts.set_level_zero_stop_writes_trigger(1 << 30);
 
-    set_memory_related_opts(opts, memtables_budget);
     // With atomic_flush enabled, min_write_buffer_number_to_merge is forced to 1 by
-    // RocksDB. Each flush produces one L0 file of ~(budget / 4).
-    //
-    // We intentionally delay L0→L1 compaction (trigger=8) to give trimming a chance to
-    // reclaim data before compaction runs. Reads are rare thanks to the RecordCache, so
-    // higher L0 read amplification is acceptable. At trigger=8, L0 accumulates up to
-    // ~2×budget before compaction, with comfortable headroom to the default slowdown (20)
-    // and stop (36) triggers.
-    opts.set_level_zero_file_num_compaction_trigger(8);
-    // L1 target = trigger × write_buffer_size = 8 × (budget/4) = 2 × budget.
-    opts.set_max_bytes_for_level_base(memtables_budget as u64 * 2);
+    // RocksDB. Each flush produces one L0 file of ~(write_buffer_size). However, we
+    // set it here explicitly to unify where we define this value.
+    opts.set_min_write_buffer_number_to_merge(
+        log_server_config.min_write_buffer_number_to_merge() as i32
+    );
+
+    opts.set_write_buffer_size(log_server_config.write_buffer_size());
+    opts.set_max_write_buffer_number(log_server_config.max_write_buffer_number() as i32);
+    opts.set_target_file_size_base(log_server_config.target_file_size_base() as u64);
+    opts.set_max_compaction_bytes(log_server_config.max_compaction_bytes() as u64);
+    opts.set_max_bytes_for_level_base(log_server_config.max_bytes_for_level_base() as u64);
+
+    opts.set_level_zero_file_num_compaction_trigger(
+        log_server_config.level_zero_file_num_compaction_trigger() as i32,
+    );
+
     opts.set_compaction_style(rocksdb::DBCompactionStyle::Level);
     opts.set_num_levels(7);
 
@@ -298,7 +364,7 @@ fn cf_data_options(
     {
         rocksdb::DBCompressionType::None
     } else {
-        rocksdb::DBCompressionType::Zstd
+        rocksdb::DBCompressionType::Lz4
     };
     let levels = restate_rocksdb::configuration::build_compression_per_level(
         7,
@@ -327,10 +393,7 @@ fn cf_data_options(
 
         // Blob GC: relocate live blobs during compaction to reclaim space after trimming.
         opts.set_enable_blob_gc(true);
-        // All blob files are eligible for GC. Data is append-only so blob GC is purely
-        // about cleanup after DeleteRange trimming — there's no benefit to limiting
-        // eligibility to the oldest fraction.
-        opts.set_blob_gc_age_cutoff(1.0);
+        opts.set_blob_gc_age_cutoff(0.25);
         // Trigger forced compactions when >=50% of data in eligible blob files is garbage.
         // Without this (default 1.0 = disabled), SSTs referencing trimmed blob data may
         // not be picked for compaction naturally, delaying disk space reclamation.
@@ -347,18 +410,6 @@ fn cf_data_options(
     }
 }
 
-/// Sets common memtable and SST sizing for the data column family.
-///
-/// With 4 write buffers (1 mutable + 3 immutable), each memtable is `budget / 4`.
-/// The caller must separately set `level_zero_file_num_compaction_trigger` and
-/// `max_bytes_for_level_base` to satisfy the invariant:
-///   `trigger × write_buffer_size ≈ max_bytes_for_level_base`
-fn set_memory_related_opts(opts: &mut rocksdb::Options, memtables_budget: usize) {
-    opts.set_write_buffer_size(memtables_budget / 4);
-    opts.set_max_write_buffer_number(4);
-    opts.set_target_file_size_base(memtables_budget as u64 / 8);
-}
-
 fn cf_metadata_options(
     opts: &mut rocksdb::Options,
     block_options: &BlockBasedOptions,
@@ -369,16 +420,20 @@ fn cf_metadata_options(
     // The metadata CF uses the data CF's write_buffer_size so it never independently
     // triggers a flush (with atomic_flush, any CF triggering drags all CFs along).
     // Metadata writes are tiny (~20 bytes per op), so actual memory use is negligible.
-    let data_memtables_budget = log_server_config.rocksdb_data_memtables_budget().as_usize();
-    opts.set_write_buffer_size(data_memtables_budget / 4);
-    opts.set_max_write_buffer_number(4);
+    opts.set_write_buffer_size(log_server_config.write_buffer_size());
+    opts.set_max_write_buffer_number(log_server_config.max_write_buffer_number() as i32);
+
+    // Do not slow down on l0 number of files writes even if it hurts read
+    // amplification.
+    opts.set_level_zero_slowdown_writes_trigger(1 << 30);
+    opts.set_level_zero_stop_writes_trigger(1 << 30);
 
     // The metadata CF holds a handful of small keys per loglet (trim point, sequencer,
     // seal). Total data is typically a few hundred KB even with thousands of loglets —
     // SST files will never approach the default target_file_size_base or level limits,
     // so we leave those at RocksDB defaults. Compact eagerly to keep L0 clean for point
     // lookups (e.g. load_loglet_state).
-    opts.set_level_zero_file_num_compaction_trigger(2);
+    opts.set_level_zero_file_num_compaction_trigger(4);
     opts.set_num_levels(3);
     // The metadata CF is tiny — disable compression entirely to avoid unnecessary CPU
     // overhead on flushes and point lookups. The disk savings are negligible.

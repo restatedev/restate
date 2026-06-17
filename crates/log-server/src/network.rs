@@ -56,9 +56,10 @@ impl RequestPump {
         // rather than queuing which could cause unbounded memory growth.
         let data_pool = TaskCenter::with_current(|tc| {
             tc.memory_controller().create_pool("log-server-data", || {
-                Configuration::pinned()
+                let config = Configuration::pinned();
+                config
                     .log_server
-                    .rocksdb_data_memtables_budget()
+                    .data_service_memory_size(config.networking.message_size_limit)
             })
         });
 

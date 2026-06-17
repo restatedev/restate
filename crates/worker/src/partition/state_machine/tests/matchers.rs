@@ -120,6 +120,12 @@ pub mod actions {
         })
     }
 
+    pub fn abort_for_id(invocation_id: InvocationId) -> impl Matcher<ActualT = Action> {
+        pat!(Action::AbortInvocation {
+            invocation_id: eq(invocation_id)
+        })
+    }
+
     pub fn invoke_for_id_and_target(
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,

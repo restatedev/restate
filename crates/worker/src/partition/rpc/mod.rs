@@ -51,6 +51,17 @@ pub(super) trait Actuator {
         replier: Replier<O>,
     ) -> impl Future<Output = ()>;
 
+    /// Like [`Self::handle_rpc_proposal_command`], but for the PauseInvocation command: once the
+    /// command is appended, it clears `invocation_id`'s in-memory fencing token so a straggler
+    /// effect from the attempt being paused is dropped at write time.
+    fn propose_pause_and_fence<O: 'static>(
+        &mut self,
+        invocation_id: InvocationId,
+        cmd: Command,
+        request_id: PartitionProcessorRpcRequestId,
+        replier: Replier<O>,
+    ) -> impl Future<Output = ()>;
+
     /// Appends a command to Bifrost **without** dedup information, responding on Bifrost commit.
     ///
     /// Records appended this way are never filtered by the dedup mechanism during leadership
@@ -111,6 +122,17 @@ where
             cmd,
         )
         .await
+    }
+
+    async fn propose_pause_and_fence<O>(
+        &mut self,
+        invocation_id: InvocationId,
+        cmd: Command,
+        request_id: PartitionProcessorRpcRequestId,
+        replier: Replier<O>,
+    ) {
+        LeadershipState::propose_pause_and_fence(self, request_id, replier.0, invocation_id, cmd)
+            .await
     }
 
     fn notify_invoker_to_retry_now(&mut self, invocation_id: InvocationId) {
@@ -332,8 +354,14 @@ where
                 .await
             }
             PartitionProcessorRpcRequestInner::PauseInvocation { invocation_id } => {
-                self.handle(pause_invocation::Request { invocation_id }, replier.map())
-                    .await
+                self.handle(
+                    pause_invocation::PauseRequest {
+                        request_id,
+                        invocation_id,
+                    },
+                    replier.map(),
+                )
+                .await
             }
         }
     }
