@@ -145,18 +145,19 @@ impl<T: TransportConnect> SequencerAppender<T> {
 
         // this loop retries forever or until the task is cancelled
         let final_state = loop {
-            let store_backoff = self
-                .configuration
-                .live_load()
-                .bifrost
-                .replicated_loglet
-                .rpc_timeout;
+            let (store_backoff, delay_config) = {
+                let opts = &self.configuration.live_load().bifrost.replicated_loglet;
 
-            let delay_config = AdaptiveTimeout::new(TimeoutConfig {
-                backoff: store_backoff,
-                quantile: 0.90,     // base timeout on P90
-                safety_factor: 1.0, // do not overshoot the delay between waves
-            });
+                (
+                    opts.store_timeout,
+                    AdaptiveTimeout::new(TimeoutConfig {
+                        backoff: opts.rpc_timeout,
+                        quantile: 0.90,     // base timeout on P90
+                        safety_factor: 1.0, // do not overshoot the delay between waves
+                    }),
+                )
+            };
+
             state = match state {
                 // termination conditions
                 State::Done | State::Cancelled | State::Sealed | State::WriteUnavailable => {

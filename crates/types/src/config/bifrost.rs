@@ -340,6 +340,12 @@ pub struct ReplicatedLogletOptions {
     /// The timeout range is also used to determine the appropriate retry delay between retry attempts.
     pub rpc_timeout: BackoffInterval,
 
+    /// Adaptive timeout for LogServer Store Messages
+    ///
+    /// This configures the adaptive timeout range for Store operations from this node to log servers.
+    /// The timeout range is also used to determine the appropriate retry delay between retry attempts.
+    pub store_timeout: BackoffInterval,
+
     /// Sequencer inactivity timeout
     ///
     /// The sequencer is allowed to consider itself quiescent if it did not commit records for this period of time.
@@ -426,6 +432,10 @@ impl Default for ReplicatedLogletOptions {
             sequencer_retry_policy: None,
             rpc_timeout: BackoffInterval {
                 min_ms: NonZeroU32::new(250).unwrap(),
+                max_ms: NonZeroU32::new(60_000).unwrap(),
+            },
+            store_timeout: BackoffInterval {
+                min_ms: NonZeroU32::new(2000).unwrap(),
                 max_ms: NonZeroU32::new(60_000).unwrap(),
             },
             sequencer_inactivity_timeout: NonZeroFriendlyDuration::from_secs_unchecked(15),
