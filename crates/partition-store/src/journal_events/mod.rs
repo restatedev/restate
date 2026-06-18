@@ -11,7 +11,7 @@
 use futures::Stream;
 use futures_util::stream;
 
-use restate_rocksdb::{Priority, RocksDbPerfGuard};
+use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
 use restate_storage_api::journal_events::{
     EventView, ReadJournalEventsTable, ScanJournalEventsTable, ScanJournalEventsTableRange,
     WriteJournalEventsTable,
@@ -101,7 +101,7 @@ fn get_journal_events<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
 ) -> Result<Vec<Result<EventView>>> {
-    let _x = RocksDbPerfGuard::new("get-journal-events");
+    let _x = RocksDbReadPerfGuard::new("get-journal-events");
     let key = JournalEventKey::builder()
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid());
@@ -140,7 +140,7 @@ fn delete_journal_events<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
 ) -> Result<()> {
-    let _x = RocksDbPerfGuard::new("delete-journal-events");
+    let _x = RocksDbReadPerfGuard::new("delete-journal-events");
 
     let prefix_key = JournalEventKey::builder()
         .partition_key(invocation_id.partition_key())
