@@ -169,9 +169,7 @@ impl ResourceManager {
         for resource in permit.resources {
             match resource {
                 UserPermitKind::LimitKeyConcurrency(scope, limit_key) => {
-                    let woken = self
-                        .user_limiter
-                        .release_action_concurrency(&scope, &limit_key);
+                    let woken = self.user_limiter.release_concurrency(&scope, &limit_key);
                     eligible.wake_up_queues(woken);
                 }
             }
@@ -302,9 +300,8 @@ impl ResourceManager {
                     for resource in resources {
                         match resource {
                             UserPermitKind::LimitKeyConcurrency(scope, limit_key) => {
-                                let woken = self
-                                    .user_limiter
-                                    .release_action_concurrency(&scope, &limit_key);
+                                let woken =
+                                    self.user_limiter.release_concurrency(&scope, &limit_key);
                                 eligible.wake_up_queues(woken);
                             }
                         }

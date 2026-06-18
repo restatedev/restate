@@ -37,19 +37,19 @@ use crate::RulePattern;
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[non_exhaustive]
 pub struct UserLimits {
-    /// Maximum concurrent invocations. `None` means unlimited.
+    /// Maximum concurrent running invocations. `None` means unlimited.
     #[cfg_attr(feature = "bilrost", bilrost(tag(1)))]
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     #[cfg_attr(feature = "schema", schema(value_type = Option<u32>, minimum = 1))]
-    pub action_concurrency: Option<NonZeroU32>,
+    pub concurrency: Option<NonZeroU32>,
 }
 
 impl UserLimits {
-    pub fn new(action_concurrency: Option<NonZeroU32>) -> Self {
-        Self { action_concurrency }
+    pub fn new(concurrency: Option<NonZeroU32>) -> Self {
+        Self { concurrency }
     }
 }
 

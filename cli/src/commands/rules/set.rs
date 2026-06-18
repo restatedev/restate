@@ -28,7 +28,7 @@ pub struct Set {
     /// Rule pattern, e.g. `*`, `scope1/*`, `scope1/foo/bar`
     pattern: String,
 
-    /// Maximum concurrent actions (>= 1). On a new rule, omitting this means
+    /// Maximum concurrent running invocations (>= 1). On a new rule, omitting this means
     /// unlimited; on an existing rule it leaves the current limit unchanged.
     #[clap(long, conflicts_with = "unlimited")]
     concurrency: Option<NonZeroU32>,

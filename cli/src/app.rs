@@ -71,7 +71,7 @@ pub enum Command {
     /// Manage active invocations
     #[clap(subcommand)]
     Invocations(invocations::Invocations),
-    /// Manage action concurrency-limit rules
+    /// Manage concurrency-limit rules
     #[clap(subcommand)]
     Rules(rules::Rules),
     /// Runs SQL queries against the data fusion service
