@@ -11,7 +11,7 @@
 use futures::Stream;
 use futures_util::stream;
 
-use restate_rocksdb::RocksDbPerfGuard;
+use restate_rocksdb::RocksDbReadPerfGuard;
 use restate_storage_api::Result;
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::timer_table::{
@@ -161,7 +161,7 @@ fn next_timers_greater_than<S: StorageAccess>(
     exclusive_start: Option<&TimerKey>,
     limit: usize,
 ) -> Result<Vec<Result<(TimerKey, Timer)>>> {
-    let _x = RocksDbPerfGuard::new("get-next-timers");
+    let _x = RocksDbReadPerfGuard::new("get-next-timers");
     let scan = exclusive_start_key_range(partition_id, exclusive_start);
     let mut produced = 0;
     storage.for_each_key_value_in_place(scan, move |k, v| {

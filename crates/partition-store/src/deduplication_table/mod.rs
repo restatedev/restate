@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_rocksdb::RocksDbPerfGuard;
+use restate_rocksdb::RocksDbReadPerfGuard;
 use restate_storage_api::Result;
 use restate_storage_api::deduplication_table::{
     DedupSequenceNumber, ProducerId, ReadDeduplicationTable, WriteDeduplicationTable,
@@ -41,7 +41,7 @@ fn get_dedup_sequence_number<S: StorageAccess>(
     partition_id: PartitionId,
     producer_id: &ProducerId,
 ) -> Result<Option<DedupSequenceNumber>> {
-    let _x = RocksDbPerfGuard::new("get-dedup-seq");
+    let _x = RocksDbReadPerfGuard::new("get-dedup-seq");
     let key = create_key(partition_id, producer_id.clone());
 
     storage.get_value_proto(key)

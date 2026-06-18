@@ -10,7 +10,7 @@
 
 use bytestring::ByteString;
 
-use restate_rocksdb::{Priority, RocksDbPerfGuard};
+use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::service_status_table::{
     ReadVirtualObjectStatusTable, ScanVirtualObjectStatusTable, VirtualObjectStatus,
@@ -60,7 +60,7 @@ fn get_virtual_object_status<S: StorageAccess>(
     storage: &mut S,
     service_id: &ServiceId,
 ) -> Result<VirtualObjectStatus> {
-    let _x = RocksDbPerfGuard::new("get-virtual-obj-status");
+    let _x = RocksDbReadPerfGuard::new("get-virtual-obj-status");
     let key = write_status_key(service_id);
 
     storage
