@@ -21,7 +21,7 @@ use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 use restate_memory::{
     AvailabilityNotified, LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream,
 };
-use restate_rocksdb::{Priority, RocksDbPerfGuard};
+use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
 use restate_storage_api::state_table::{ReadStateTable, ScanStateTable, WriteStateTable};
 use restate_storage_api::{BudgetedReadError, Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
@@ -248,7 +248,7 @@ fn get_user_state<S: StorageAccess>(
     service_id: &ServiceId,
     state_key: &Bytes,
 ) -> Result<Option<Bytes>> {
-    let _x = RocksDbPerfGuard::new("get-user-state");
+    let _x = RocksDbReadPerfGuard::new("get-user-state");
     if use_scoped_state(storage_version, service_id) {
         //todo(tillrohrmann) remove once ServiceId carries the right types
         let service_name = ServiceName::new(service_id.service_name.as_ref());
@@ -276,7 +276,7 @@ fn get_all_user_states_for_service<'a, S: StorageAccess>(
     storage_version: StorageVersion,
     service_id: &ServiceId,
 ) -> Result<StateEntryIter<'a, S::DBAccess<'a>>> {
-    let _x = RocksDbPerfGuard::new("get-all-user-state-iter-setup");
+    let _x = RocksDbReadPerfGuard::new("get-all-user-state-iter-setup");
 
     if use_scoped_state(storage_version, service_id) {
         //todo(tillrohrmann) remove once ServiceId carries the right types
