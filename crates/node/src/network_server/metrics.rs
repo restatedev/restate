@@ -51,6 +51,45 @@ const ROCKSDB_TICKERS: &[Ticker] = &[
     Ticker::WalFileBytes,
     Ticker::WalFileSynced,
     Ticker::WriteWithWal,
+    Ticker::BlockCacheAdd,
+    // Merge Operator
+    Ticker::MergeOperationTotalTime,
+    // Flushes
+    Ticker::MemtablePayloadBytesAtFlush,
+    Ticker::MemtableGarbageBytesAtFlush,
+    // Block Cache | Data
+    Ticker::BlockCacheDataHit,
+    Ticker::BlockCacheDataMiss,
+    Ticker::BlockCacheDataAdd,
+    // Block Cache | Index
+    Ticker::BlockCacheIndexHit,
+    Ticker::BlockCacheIndexMiss,
+    Ticker::BlockCacheIndexAdd,
+    Ticker::BlockCacheIndexBytesInsert,
+    Ticker::BlockCacheIndexAddRedundant,
+    // Block Cache | Filters
+    Ticker::BlockCacheFilterAdd,
+    Ticker::BlockCacheFilterMiss,
+    Ticker::BlockCacheFilterHit,
+    Ticker::BlockCacheFilterBytesInsert,
+    Ticker::BlockCacheFilterAddRedundant,
+    // Get Efficiency
+    Ticker::GetHitL2AndUp,
+    Ticker::GetHitL0,
+    Ticker::GetHitL1,
+    Ticker::DbMutexWaitMicros,
+    // Compaction
+    Ticker::CompactionCpuTotalTime,
+    Ticker::CompactionKeyDropObsolete,
+    Ticker::CompactionKeyDropNewerEntry,
+    Ticker::CompactionKeyDropRangeDel,
+    Ticker::CompactionRangeDelDropObsolete,
+    // Compression
+    Ticker::BytesCompressedTo,
+    Ticker::BytesCompressedFrom,
+    // Read Amplification
+    Ticker::ReadAmpTotalReadBytes,
+    Ticker::ReadAmpEstimateUsefulBytes,
 ];
 
 const ROCKSDB_HISTOGRAMS: &[(Histogram, &str, MetricUnit)] = &[
@@ -63,6 +102,11 @@ const ROCKSDB_HISTOGRAMS: &[(Histogram, &str, MetricUnit)] = &[
     (Histogram::DbWrite, "rocksdb.db.write", MetricUnit::Micros),
     (Histogram::DbSeek, "rocksdb.db.seek", MetricUnit::Micros),
     (Histogram::FlushTime, "rocksdb.db.flush", MetricUnit::Micros),
+    (
+        Histogram::WriteStall,
+        "rocksdb.db.write.stall",
+        MetricUnit::Micros,
+    ),
     (
         Histogram::ReadBlockGetMicros,
         "rocksdb.read.block.get",
@@ -162,6 +206,7 @@ const ROCKSDB_CF_PROPERTIES: &[(&str, MetricUnit)] = &[
     ("rocksdb.obsolete-sst-files-size", MetricUnit::Bytes),
     ("rocksdb.live-blob-file-size", MetricUnit::Bytes),
     ("rocksdb.live-blob-file-garbage-size", MetricUnit::Bytes),
+    ("rocksdb.total-sst-files-size", MetricUnit::Bytes),
     (
         "rocksdb.estimate-pending-compaction-bytes",
         MetricUnit::Bytes,
