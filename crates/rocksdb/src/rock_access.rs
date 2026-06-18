@@ -24,7 +24,7 @@ use crate::DbSpec;
 use crate::RawRocksDb;
 use crate::RocksError;
 use crate::configuration::create_default_cf_options;
-use crate::{CfName, RocksDbPerfGuard};
+use crate::{CfName, RocksDbReadPerfGuard};
 use crate::{DbName, OpenMode};
 
 /// Operations in this wrapper can be IO blocking, prefer using [`crate::RocksDb`]
@@ -201,7 +201,7 @@ impl RocksAccess {
 
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
     pub(crate) fn shutdown(&self) {
-        let _x = RocksDbPerfGuard::new("shutdown");
+        let _x = RocksDbReadPerfGuard::new("shutdown");
         if let Err(e) = self.db.flush_wal(true) {
             warn!(
                 db = %self.name(),
