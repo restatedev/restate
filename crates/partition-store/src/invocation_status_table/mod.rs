@@ -12,7 +12,7 @@ use std::ops::ControlFlow;
 
 use futures::Stream;
 
-use restate_rocksdb::{Priority, RocksDbPerfGuard};
+use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
 use restate_storage_api::invocation_status_table::{
     InvocationLite, InvocationStatus, InvocationStatusDiscriminants, InvokedInvocationStatusLite,
     ReadInvocationStatusTable, ScanInvocationStatusTable, ScanInvocationStatusTableRange,
@@ -71,7 +71,7 @@ fn get_invocation_status<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
 ) -> Result<InvocationStatus> {
-    let _x = RocksDbPerfGuard::new("get-invocation-status");
+    let _x = RocksDbReadPerfGuard::new("get-invocation-status");
 
     storage
         .get_value_proto::<_, InvocationStatus>(create_invocation_status_key(invocation_id))

@@ -14,7 +14,7 @@ use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
 
-use restate_rocksdb::{Priority, RocksDbPerfGuard};
+use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
 use restate_storage_api::inbox_table::{
     InboxEntry, ReadInboxTable, ScanInboxTable, SequenceNumberInboxEntry, WriteInboxTable,
 };
@@ -188,7 +188,7 @@ impl WriteInboxTable for PartitionStoreTransaction<'_> {
         service_id: &ServiceId,
     ) -> Result<Option<SequenceNumberInboxEntry>> {
         self.assert_partition_key(service_id)?;
-        let _x = RocksDbPerfGuard::new("pop-inbox");
+        let _x = RocksDbReadPerfGuard::new("pop-inbox");
         let result = peek_inbox(self, service_id);
 
         if let Ok(Some(ref inbox_entry)) = result {
