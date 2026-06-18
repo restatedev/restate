@@ -10,7 +10,7 @@
 
 use std::ops::RangeInclusive;
 
-use restate_rocksdb::RocksDbPerfGuard;
+use restate_rocksdb::RocksDbReadPerfGuard;
 use restate_storage_api::Result;
 use restate_storage_api::outbox_table::{OutboxMessage, ReadOutboxTable, WriteOutboxTable};
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
@@ -46,7 +46,7 @@ fn get_outbox_head_seq_number<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
 ) -> Result<Option<u64>> {
-    let _x = RocksDbPerfGuard::new("get-head-outbox");
+    let _x = RocksDbReadPerfGuard::new("get-head-outbox");
     let start = OutboxKey::builder().partition_id(partition_id.into());
 
     let end = OutboxKey::builder()
@@ -71,7 +71,7 @@ fn get_next_outbox_message<S: StorageAccess>(
     partition_id: PartitionId,
     next_sequence_number: u64,
 ) -> Result<Option<(u64, OutboxMessage)>> {
-    let _x = RocksDbPerfGuard::new("get-next-outbox");
+    let _x = RocksDbReadPerfGuard::new("get-next-outbox");
     let start = OutboxKey::builder()
         .partition_id(partition_id.into())
         .message_index(next_sequence_number);
@@ -98,7 +98,7 @@ fn get_outbox_message<S: StorageAccess>(
     partition_id: PartitionId,
     sequence_number: u64,
 ) -> Result<Option<OutboxMessage>> {
-    let _x = RocksDbPerfGuard::new("get-outbox");
+    let _x = RocksDbReadPerfGuard::new("get-outbox");
     let outbox_key = OutboxKey {
         partition_id: partition_id.into(),
         message_index: sequence_number,
@@ -112,7 +112,7 @@ fn truncate_outbox<S: StorageAccess>(
     partition_id: PartitionId,
     range: RangeInclusive<u64>,
 ) -> Result<()> {
-    let _x = RocksDbPerfGuard::new("truncate-outbox");
+    let _x = RocksDbReadPerfGuard::new("truncate-outbox");
     let partition_id: PaddedPartitionId = partition_id.into();
     for seq in range {
         let key = OutboxKey {

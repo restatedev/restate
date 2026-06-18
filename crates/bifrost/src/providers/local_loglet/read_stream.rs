@@ -19,7 +19,7 @@ use rocksdb::{DB, DBRawIteratorWithThreadMode};
 use tracing::{debug, error, warn};
 
 use restate_core::ShutdownError;
-use restate_rocksdb::RocksDbPerfGuard;
+use restate_rocksdb::RocksDbReadPerfGuard;
 use restate_types::logs::{KeyFilter, LogletOffset, SequenceNumber, TailState};
 
 use crate::loglet::{Loglet, LogletReadStream, OperationError};
@@ -152,7 +152,7 @@ impl Stream for LocalLogletReadStream {
             return Poll::Ready(None);
         }
 
-        let perf_guard = RocksDbPerfGuard::new("local-loglet-next");
+        let perf_guard = RocksDbReadPerfGuard::new("local-loglet-next");
         loop {
             // We have reached the limit we are allowed to read
             if self
