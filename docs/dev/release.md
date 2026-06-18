@@ -40,7 +40,7 @@ Check that the e2e tests are passing:
 1. Make sure that the version is set to the new release version `X.Y.Z`. fields in: 
   - [/Cargo.toml](/Cargo.toml) 
   - [charts/restate-helm/Chart.yaml](/charts/restate-helm/Chart.yaml) 
-1. Make sure that [COMPATIBILITY_INFORMATION](/crates/node/src/cluster_marker.rs) is updated if `X.Y.Z` changes the requirements for backward/forward compatible Restate versions.
+1. Make sure that [COMPATIBILITY_INFORMATION](/crates/types/src/cluster_marker.rs) is updated if `X.Y.Z` changes the requirements for backward/forward compatible Restate versions.
 1. [Publish the unreleased release notes](/release-notes/README.md#release-process).
 1. Create a tag of the form `vX.Y.Z` and push it to the repository. The tag will trigger the [release.yml](/.github/workflows/release.yml) workflow which runs the unit tests, the e2e tests, creates the docker image of the runtime, builds the CLI/runtime binaries, and prepares a Github draft release.
 1. Manually publish the draft release created by the release automation [here](https://github.com/restatedev/restate/releases).
