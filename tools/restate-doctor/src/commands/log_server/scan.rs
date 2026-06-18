@@ -14,6 +14,7 @@ use anyhow::{Context, Result};
 use bytes::BytesMut;
 use cling::prelude::*;
 use comfy_table::Table;
+use strum::VariantNames;
 
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::{c_println, c_title};
@@ -23,7 +24,7 @@ use restate_log_server::rocksdb_logstore::record_format::DataRecordDecoder;
 use restate_types::logs::{LogId, LogletId, LogletOffset, Record, SequenceNumber};
 use restate_types::storage::StorageCodec;
 use restate_util_bytecount::ByteCount;
-use restate_wal_protocol::Envelope;
+use restate_wal_protocol::{Command, Envelope};
 
 use crate::app::GlobalOpts;
 use crate::util::hex_encode;
@@ -55,6 +56,18 @@ pub struct Scan {
     /// Start reading from this offset (inclusive, applies per-loglet)
     #[arg(long, default_value = "0")]
     pub from_offset: u32,
+
+    /// Only show records created at or after this RFC3339 timestamp
+    /// (e.g. 2026-06-10T12:00:00Z). Applies while scanning, so combine with
+    /// --loglet-id/--log-id to avoid full-store scans.
+    #[arg(long)]
+    pub from_time: Option<jiff::Timestamp>,
+
+    /// Only show records with these WAL command types (e.g. Invoke,InvokerEffect).
+    /// Case-insensitive; can be specified multiple times or comma-separated.
+    /// By default all command types are shown.
+    #[arg(long, value_delimiter = ',', num_args = 1..)]
+    pub command: Vec<String>,
 
     /// Maximum number of records to display
     #[arg(long, short = 'n', default_value = "20")]
@@ -93,6 +106,31 @@ pub async fn run_scan(global_opts: &GlobalOpts, cmd: &Scan) -> Result<()> {
     };
 
     let from_offset = LogletOffset::new(cmd.from_offset);
+    let from_time_nanos: Option<i128> = cmd.from_time.map(|ts| ts.as_nanosecond());
+
+    // Resolve --command values to canonical command names upfront
+    let command_filter: Option<Vec<&'static str>> = if cmd.command.is_empty() {
+        None
+    } else {
+        Some(
+            cmd.command
+                .iter()
+                .map(|c| {
+                    Command::VARIANTS
+                        .iter()
+                        .find(|v| v.eq_ignore_ascii_case(c))
+                        .copied()
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "unknown command type '{c}', valid command types: {}",
+                                Command::VARIANTS.join(", ")
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>>>()?,
+        )
+    };
+
     let mut records = Vec::new();
     let mut skipped = 0;
 
@@ -168,6 +206,29 @@ pub async fn run_scan(global_opts: &GlobalOpts, cmd: &Scan) -> Result<()> {
             }
         }
 
+        // Time filter: skip records created before --from-time. Records whose
+        // header fails to decode are kept so the decode error is surfaced.
+        if let Some(threshold) = from_time_nanos
+            && let Ok(decoder) = DataRecordDecoder::new(value_bytes)
+            && let Ok(created_at) = decoder.created_at()
+            && (created_at.as_u64() as i128) < threshold
+        {
+            iter.next();
+            continue;
+        }
+
+        // Command filter: requires decoding the record body. Records whose
+        // envelope fails to decode have command_name "?" and never match.
+        let mut decoded = None;
+        if let Some(filter) = &command_filter {
+            let info = decode_record_info(loglet_id, offset, value_bytes, cmd);
+            if !filter.contains(&info.command_name.as_str()) {
+                iter.next();
+                continue;
+            }
+            decoded = Some(info);
+        }
+
         // Pagination: skip
         if skipped < cmd.skip {
             skipped += 1;
@@ -180,7 +241,8 @@ pub async fn run_scan(global_opts: &GlobalOpts, cmd: &Scan) -> Result<()> {
             break;
         }
 
-        let record_info = decode_record_info(loglet_id, offset, value_bytes, cmd);
+        let record_info =
+            decoded.unwrap_or_else(|| decode_record_info(loglet_id, offset, value_bytes, cmd));
         records.push(record_info);
         iter.next();
     }
@@ -203,6 +265,12 @@ pub async fn run_scan(global_opts: &GlobalOpts, cmd: &Scan) -> Result<()> {
             LogletFilter::All => "all loglets".to_string(),
         },
     );
+    if let Some(from_time) = cmd.from_time {
+        summary.add_kv_row("From time:", from_time.to_string());
+    }
+    if let Some(filter) = &command_filter {
+        summary.add_kv_row("Commands:", filter.join(", "));
+    }
     if truncated {
         summary.add_kv_row(
             "Records:",

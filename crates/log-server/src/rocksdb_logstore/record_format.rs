@@ -84,16 +84,14 @@ impl<'a> DataRecordDecoder<'a> {
         self.buffer.len()
     }
 
-    pub fn decode(mut self) -> Result<Record, RecordDecodeError> {
-        // record flags
-        let flags = RecordFlags::from_bits_retain(self.buffer.get_u16_le());
+    /// Reads the record's `created_at` timestamp without consuming the decoder.
+    pub fn created_at(&self) -> Result<NanosSinceEpoch, RecordDecodeError> {
+        let mut buf = self.buffer;
+        read_flags_and_created_at(&mut buf).map(|(_, created_at)| created_at)
+    }
 
-        let timestamp = self.buffer.get_u64_le();
-        let created_at = if flags.contains(RecordFlags::HlcTimestamp) {
-            NanosSinceEpoch::from(UniqueTimestamp::try_from(timestamp)?)
-        } else {
-            NanosSinceEpoch::from(timestamp)
-        };
+    pub fn decode(mut self) -> Result<Record, RecordDecodeError> {
+        let (flags, created_at) = read_flags_and_created_at(&mut self.buffer)?;
 
         if flags.contains(RecordFlags::ExtendedHeader) {
             let extra_header_bytes = self.buffer.get_u8();
@@ -187,6 +185,20 @@ impl DataRecordEncoder<'_> {
     }
 }
 
+// Reads the record flags and the `created_at` timestamp from the buffer
+fn read_flags_and_created_at<B: Buf>(
+    buf: &mut B,
+) -> Result<(RecordFlags, NanosSinceEpoch), RecordDecodeError> {
+    let flags = RecordFlags::from_bits_retain(buf.get_u16_le());
+    let timestamp = buf.get_u64_le();
+    let created_at = if flags.contains(RecordFlags::HlcTimestamp) {
+        NanosSinceEpoch::from(UniqueTimestamp::try_from(timestamp)?)
+    } else {
+        NanosSinceEpoch::from(timestamp)
+    };
+    Ok((flags, created_at))
+}
+
 // Reads KeyStyle and extract the keys from the buffer
 fn read_keys<B: Buf>(buf: &mut B) -> Result<Keys, RecordDecodeError> {
     let key_style = buf.get_u8();
@@ -246,6 +258,10 @@ mod tests {
             buf.put_slice(body);
 
             let decoder = DataRecordDecoder::new(&buf)?;
+            assert_that!(
+                decoder.created_at()?,
+                eq(NanosSinceEpoch::from(timestamp_nanos))
+            );
             let decoded = decoder.decode()?;
             assert_that!(decoded.keys(), eq(&Keys::Single(42)));
             assert_that!(
@@ -269,6 +285,10 @@ mod tests {
             buf.put_slice(body);
 
             let decoder = DataRecordDecoder::new(&buf)?;
+            assert_that!(
+                decoder.created_at()?,
+                eq(NanosSinceEpoch::from(hlc_timestamp))
+            );
             let decoded = decoder.decode()?;
             assert_that!(decoded.keys(), eq(&Keys::Single(42)));
             // HLC timestamp gets converted to NanosSinceEpoch (millisecond precision)
