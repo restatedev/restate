@@ -51,7 +51,7 @@ pub enum Rules {
 pub(crate) struct RuleRow {
     pub pattern: String,
     #[serde(default)]
-    pub action_concurrency: Option<u32>,
+    pub concurrency: Option<u32>,
     #[serde(default)]
     pub description: Option<String>,
     pub disabled: bool,
@@ -61,9 +61,9 @@ pub(crate) struct RuleRow {
 }
 
 impl RuleRow {
-    /// The action concurrency limit as a `NonZeroU32` (the runtime shape).
+    /// The concurrency limit as a `NonZeroU32` (the runtime shape).
     fn concurrency(&self) -> Option<NonZeroU32> {
-        self.action_concurrency.and_then(NonZeroU32::new)
+        self.concurrency.and_then(NonZeroU32::new)
     }
 }
 
@@ -88,7 +88,7 @@ pub(crate) async fn fetch_rule(
     canonical_pattern: &str,
 ) -> Result<Option<RuleRow>> {
     let query = format!(
-        "SELECT pattern, action_concurrency, description, disabled, version, last_modified \
+        "SELECT pattern, concurrency, description, disabled, version, last_modified \
          FROM sys_rules WHERE pattern = '{}'",
         escape_sql(canonical_pattern)
     );

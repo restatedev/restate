@@ -13,7 +13,7 @@ use futures_util::stream;
 use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 
 use restate_memory::{LocalMemoryLease, LocalMemoryPool};
-use restate_rocksdb::{Priority, RocksDbPerfGuard};
+use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
 use restate_storage_api::journal_table::{
     JournalEntry, ReadJournalTable, ScanJournalTable, ScanJournalTableRange, WriteJournalTable,
 };
@@ -163,7 +163,7 @@ async fn get_journal_entry_budgeted<S: StorageAccess>(
         // Read raw value from RocksDB.
         // RocksDbPerfGuard is !Send and must not live across .await.
         let deficit = {
-            let _x = RocksDbPerfGuard::new("get-journal-entry-budgeted");
+            let _x = RocksDbReadPerfGuard::new("get-journal-entry-budgeted");
             let Some(pinned) = storage.get(Journal, &buf)? else {
                 return Ok(None);
             };
@@ -200,7 +200,7 @@ fn get_journal<'a, S: StorageAccess>(
     invocation_id: &InvocationId,
     journal_length: EntryIndex,
 ) -> Result<JournalEntryIter<'a, S::DBAccess<'a>>> {
-    let _x = RocksDbPerfGuard::new("get-journal-iter-setup");
+    let _x = RocksDbReadPerfGuard::new("get-journal-iter-setup");
     let key = JournalKey::builder()
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid());
@@ -234,7 +234,7 @@ impl ReadJournalTable for PartitionStore {
         journal_index: u32,
     ) -> Result<Option<JournalEntry>> {
         self.assert_partition_key(invocation_id)?;
-        let _x = RocksDbPerfGuard::new("get-journal-entry");
+        let _x = RocksDbReadPerfGuard::new("get-journal-entry");
         get_journal_entry(self, invocation_id, journal_index)
     }
 
@@ -335,7 +335,7 @@ impl ReadJournalTable for PartitionStoreTransaction<'_> {
         journal_index: u32,
     ) -> Result<Option<JournalEntry>> {
         self.assert_partition_key(invocation_id)?;
-        let _x = RocksDbPerfGuard::new("get-journal-entry");
+        let _x = RocksDbReadPerfGuard::new("get-journal-entry");
         get_journal_entry(self, invocation_id, journal_index)
     }
 
@@ -465,7 +465,7 @@ impl WriteJournalTable for PartitionStoreTransaction<'_> {
         journal_length: EntryIndex,
     ) -> Result<()> {
         self.assert_partition_key(invocation_id)?;
-        let _x = RocksDbPerfGuard::new("delete-journal");
+        let _x = RocksDbReadPerfGuard::new("delete-journal");
         delete_journal(self, invocation_id, journal_length)
     }
 }

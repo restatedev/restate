@@ -4,12 +4,17 @@ This directory contains Grafana dashboards for monitoring Restate Server cluster
 
 ## Dashboards
 
-| Dashboard | File | Description |
-|-----------|------|-------------|
-| **Restate: Overview** | `restate-overview.json` | High-level cluster health, resources, and throughput |
-| **Restate: Internals** | `restate-internals.json` | Deep-dive into Bifrost, Invoker, RocksDB, and more |
+| Dashboard | File | grafana.com | Description |
+|-----------|------|-------------|-------------|
+| **Restate: Overview** | `restate-overview.json` | [24747](https://grafana.com/grafana/dashboards/24747) | High-level cluster health, resources, and throughput |
+| **Restate: Internals** | `restate-internals.json` | [24748](https://grafana.com/grafana/dashboards/24748) | Deep-dive into Bifrost, Invoker, RocksDB, and more |
 
 The dashboards are linked together - click "Internals" from the Overview to drill down, or "Overview" from Internals to go back.
+
+These JSON files are the source of truth. On every stable release the `Publish Grafana
+dashboards` workflow (`.github/workflows/grafana-dashboards.yml`) pushes them as a new
+revision of the grafana.com listings above. The workflow requires the `GRAFANA_COM_API_KEY`
+repository secret (a grafana.com API token allowed to publish revisions for the restatedev org).
 
 ### Overview Dashboard
 

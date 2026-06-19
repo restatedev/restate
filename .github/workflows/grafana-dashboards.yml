@@ -1,0 +1,77 @@
+name: Publish Grafana dashboards
+
+# Publishes the in-repo Grafana dashboards (monitoring/grafana/*.json) as a new
+# revision of their grafana.com marketplace listings on every stable release, so
+# the published dashboards never drift from the code.
+#
+# Requires the `GRAFANA_COM_API_KEY` repository secret: a grafana.com API token
+# with permission to publish dashboard revisions for the restatedev org.
+#
+# NOTE: grafana.com's community-dashboards publish API is not officially
+# documented. The revision resource (.../revisions/{n}/download) is confirmed to
+# exist, so the publish endpoint is `POST /api/dashboards/{id}/revisions`. The
+# request body shape below ({"json": "<stringified dashboard>"}) and the required
+# token scope should be confirmed with a manual `workflow_dispatch` dry-run before
+# relying on this in a real release.
+
+on:
+  workflow_call:
+    inputs:
+      # comes from cargo-dist workflow call
+      plan:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "ref to publish from, eg v1.5.0 (defaults to the default branch)"
+        required: false
+        type: string
+      dry_run:
+        description: "print the endpoint and payload instead of publishing"
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  publish-grafana-dashboards:
+    runs-on: warp-ubuntu-latest-x64-2x
+    strategy:
+      fail-fast: false
+      matrix:
+        dashboard:
+          - id: 24747
+            file: monitoring/grafana/restate-overview.json
+          - id: 24748
+            file: monitoring/grafana/restate-internals.json
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Publish dashboard revision
+        # Non-blocking: a grafana.com failure must not fail the release.
+        continue-on-error: true
+        env:
+          GRAFANA_COM_API_KEY: ${{ secrets.GRAFANA_COM_API_KEY }}
+          ID: ${{ matrix.dashboard.id }}
+          FILE: ${{ matrix.dashboard.file }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          # The published JSON must have a null top-level "id".
+          payload="$(jq -c '{json: (.id = null | tostring)}' "$FILE")"
+          endpoint="https://grafana.com/api/dashboards/$ID/revisions"
+
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "DRY RUN — would POST $FILE to $endpoint"
+            printf '%s' "$payload" | jq -C '.json |= "<stringified dashboard, \(. | length) bytes>"'
+            exit 0
+          fi
+
+          echo "Publishing $FILE to $endpoint"
+          curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer $GRAFANA_COM_API_KEY" \
+            -H "Content-Type: application/json" \
+            "$endpoint" \
+            -d "$payload"

@@ -41,10 +41,7 @@ pub async fn run_delete(State(env): State<CliEnv>, opts: &Delete) -> Result<()> 
 
     let mut table = Table::new_styled();
     table.add_kv_row("Pattern:", &canonical);
-    table.add_kv_row(
-        "Concurrency:",
-        render_concurrency(current.action_concurrency),
-    );
+    table.add_kv_row("Concurrency:", render_concurrency(current.concurrency));
     if let Some(description) = &current.description {
         table.add_kv_row("Description:", description);
     }

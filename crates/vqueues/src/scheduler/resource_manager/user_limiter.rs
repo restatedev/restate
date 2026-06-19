@@ -246,7 +246,7 @@ impl UserLimiter {
     /// Decrements usage counters and wakes up to 1 vqueue per affected counter level.
     ///
     /// Returns up to 3 vqueue handles that should be woken via `EligibilityTracker`.
-    pub(super) fn release_action_concurrency(
+    pub(super) fn release_concurrency(
         &mut self,
         scope: &Scope,
         limit_key: &LimitKey<ReString>,
@@ -394,7 +394,7 @@ fn limit_and_pattern(
     match limit {
         Limit::Undefined => (None, None),
         Limit::Defined(handle, user_limits) => {
-            let value = user_limits.action_concurrency.map(NonZeroU32::get);
+            let value = user_limits.concurrency.map(NonZeroU32::get);
             let pattern = rules.get_pattern(*handle).map(ToString::to_string);
             (value, pattern)
         }
@@ -972,7 +972,7 @@ fn make_level_status(
         Limit::Undefined => (None, None),
         Limit::Defined(handle, user_limits) => {
             let value = match limit_kind {
-                LimitKind::Concurrency => user_limits.action_concurrency,
+                LimitKind::Concurrency => user_limits.concurrency,
             };
             (value, Some(*handle))
         }
@@ -1111,7 +1111,7 @@ mod tests {
         assert_eq!(limiter.state.scopes[&s].l1[l1].l2[l2].value.concurrency, 2);
 
         // Decrement via release (also pops waiters, but there are none)
-        let woken = limiter.release_action_concurrency(&s, &lk);
+        let woken = limiter.release_concurrency(&s, &lk);
         assert!(woken.is_empty());
         assert_eq!(limiter.state.scopes[&s].value.concurrency, 1);
         assert_eq!(limiter.state.scopes[&s].l1[l1].value.concurrency, 1);
@@ -1128,7 +1128,7 @@ mod tests {
         assert!(limiter.state.scopes.contains_key(&s));
 
         // Release the single permit — all counters go to zero, nodes should be pruned
-        limiter.release_action_concurrency(&s, &lk);
+        limiter.release_concurrency(&s, &lk);
         assert!(
             !limiter.state.scopes.contains_key(&s),
             "scope node should be pruned when fully empty"
@@ -1139,7 +1139,7 @@ mod tests {
         limiter.increment_all(&s, &LimitKey::None, LimitKind::Concurrency);
 
         // Release the L2 path — L2 and L1 should be pruned, but scope stays (has usage=1)
-        limiter.release_action_concurrency(&s, &lk);
+        limiter.release_concurrency(&s, &lk);
         assert!(limiter.state.scopes.contains_key(&s));
         let l1 = lk.level1().unwrap();
         assert!(
@@ -1195,7 +1195,7 @@ mod tests {
         limiter.add_to_waiters(handles[5], &s, &lk, Level::Level2);
 
         // Release 1 permit for the full L2 path
-        let woken = limiter.release_action_concurrency(&s, &lk);
+        let woken = limiter.release_concurrency(&s, &lk);
         // Should wake exactly 1 from each level, deepest first
         assert_eq!(woken.len(), 3);
         assert_eq!(woken[0], handles[4]); // l2 head (deepest, highest priority)

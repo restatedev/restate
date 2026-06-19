@@ -43,7 +43,7 @@ pub use self::db_spec::*;
 pub use self::error::*;
 pub use self::iterator::IterAction;
 use self::iterator::RocksIterator;
-pub use self::perf::RocksDbPerfGuard;
+pub use self::perf::{RocksDbReadPerfGuard, RocksDbWritePerfGuard};
 pub use self::rock_access::RocksAccess;
 
 use self::background::StorageTask;
@@ -124,7 +124,7 @@ impl RocksDb {
         let task = StorageTask::default()
             .kind(StorageTaskKind::OpenDb)
             .op(move || {
-                let _x = RocksDbPerfGuard::new("open-db");
+                let _x = RocksDbReadPerfGuard::new("open-db");
                 RocksAccess::open_db(
                     spec,
                     &manager.env,
@@ -226,7 +226,7 @@ impl RocksDb {
         //  depending on the IoMode, we decide how to do the write.
         match io_mode {
             IoMode::AllowBlockingIO => {
-                let _x = RocksDbPerfGuard::new(name);
+                let _x = RocksDbWritePerfGuard::new(name);
                 debug!(
                     "Blocking IO is allowed for write_batch, stall detection will not be used in this operation!"
                 );
@@ -251,7 +251,7 @@ impl RocksDb {
                     .priority(priority)
                     .kind(StorageTaskKind::WriteBatch)
                     .op(move || -> Result<B, rocksdb::Error> {
-                        let _x = RocksDbPerfGuard::new(name);
+                        let _x = RocksDbWritePerfGuard::new(name);
                         write_op(&db.db, &write_options, &batch)?;
                         Ok(batch)
                     })
@@ -268,7 +268,7 @@ impl RocksDb {
                 return self.manager.async_spawn(task).await?.map_err(|e| e.into());
             }
             IoMode::OnlyIfNonBlocking => {
-                let _x = RocksDbPerfGuard::new(name);
+                let _x = RocksDbWritePerfGuard::new(name);
                 write_options.set_no_slowdown(true);
                 if let Err(e) = write_op(&self.db, &write_options, &batch) {
                     return Err(e.into());
@@ -288,7 +288,7 @@ impl RocksDb {
         // First, attempt to write without blocking
         write_options.set_no_slowdown(true);
 
-        let perf_guard = RocksDbPerfGuard::new(name);
+        let perf_guard = RocksDbWritePerfGuard::new(name);
         let result = write_op(&self.db, &write_options, &batch);
         match result {
             Ok(_) => {
@@ -319,7 +319,7 @@ impl RocksDb {
                     .priority(priority)
                     .kind(StorageTaskKind::WriteBatch)
                     .op(move || -> Result<B, rocksdb::Error> {
-                        let _x = RocksDbPerfGuard::new(name);
+                        let _x = RocksDbWritePerfGuard::new(name);
                         write_op(&db.db, &write_options, &batch)?;
                         Ok(batch)
                     })
@@ -360,7 +360,7 @@ impl RocksDb {
             .op(move || {
                 // note: the perf guard's lifetime encapsulates all operations in the iterator and
                 // the total duration includes all the time spent blocking on the tx's capacity.
-                let _x = RocksDbPerfGuard::new(name);
+                let _x = RocksDbReadPerfGuard::new(name);
                 let Some(cf) = self.db.cf_handle(cf.as_str()) else {
                     on_item(Err(RocksError::UnknownColumnFamily(cf)));
                     return;
@@ -402,7 +402,7 @@ impl RocksDb {
         let task = StorageTask::default()
             .kind(StorageTaskKind::FlushWal)
             .op(move || {
-                let _x = RocksDbPerfGuard::new("flush-wal");
+                let _x = RocksDbReadPerfGuard::new("flush-wal");
                 self.db.flush_wal(sync)
             })
             .build()
@@ -417,7 +417,7 @@ impl RocksDb {
         let task = StorageTask::default()
             .kind(StorageTaskKind::FlushWal)
             .op(move || {
-                let _x = RocksDbPerfGuard::new("bg-wal-sync");
+                let _x = RocksDbReadPerfGuard::new("bg-wal-sync");
                 if let Err(e) = self.db.flush_wal(true) {
                     error!("Failed to flush rocksdb WAL: {}", e);
                 }
@@ -451,7 +451,7 @@ impl RocksDb {
         let task = StorageTask::default()
             .kind(StorageTaskKind::FlushMemtables)
             .op(move || {
-                let _x = RocksDbPerfGuard::new("manual-flush");
+                let _x = RocksDbReadPerfGuard::new("manual-flush");
                 self.db.flush_all()
             })
             .build()
@@ -466,7 +466,7 @@ impl RocksDb {
         let task = StorageTask::default()
             .kind(StorageTaskKind::Compaction)
             .op(move || {
-                let _x = RocksDbPerfGuard::new("manual-compaction");
+                let _x = RocksDbReadPerfGuard::new("manual-compaction");
                 self.db.compact_all();
             })
             .build()
@@ -514,7 +514,7 @@ impl RocksDb {
             .kind(StorageTaskKind::ImportColumnFamily)
             .priority(Priority::Low)
             .op(move || {
-                let _x = RocksDbPerfGuard::new("import-column-family");
+                let _x = RocksDbReadPerfGuard::new("import-column-family");
                 self.db.import_cf(
                     name,
                     &manager.write_buffer_manager,
@@ -539,7 +539,7 @@ impl RocksDb {
             .kind(StorageTaskKind::ExportColumnFamily)
             .priority(Priority::Low)
             .op(move || {
-                let _x = RocksDbPerfGuard::new("export-column-family");
+                let _x = RocksDbReadPerfGuard::new("export-column-family");
 
                 let checkpoint = Checkpoint::new(self.db.as_raw_db()).unwrap();
 

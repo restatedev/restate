@@ -18,7 +18,7 @@ use crate::{
     PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind,
     TableScanIterationDecision, break_on_err,
 };
-use restate_rocksdb::{Priority, RocksDbPerfGuard};
+use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
 use restate_storage_api::promise_table::{
     OwnedPromiseRow, Promise, ReadPromiseTable, ScanPromiseTable, WritePromiseTable,
 };
@@ -78,7 +78,7 @@ fn get_promise<S: StorageAccess>(
     service_id: &ServiceId,
     key: &ByteString,
 ) -> Result<Option<Promise>> {
-    let _x = RocksDbPerfGuard::new("get-promise");
+    let _x = RocksDbReadPerfGuard::new("get-promise");
     if use_scoped_promise(storage_version, service_id) {
         // todo(tillrohrmann) remove once ServiceId uses ServiceName and ReString internally
         let service_name = ServiceName::new(&service_id.service_name);

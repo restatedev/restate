@@ -41,7 +41,7 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     let client = DataFusionHttpClient::new(env).await?;
     let rows: Vec<RuleRow> = client
         .run_json_query(
-            "SELECT pattern, action_concurrency, description, disabled, version, last_modified \
+            "SELECT pattern, concurrency, description, disabled, version, last_modified \
              FROM sys_rules ORDER BY pattern"
                 .to_string(),
         )
@@ -72,7 +72,7 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
             let last_modified = row.last_modified.map(|dt| dt.display()).unwrap_or_default();
             table.add_row(vec![
                 Cell::new(row.pattern),
-                Cell::new(render_concurrency(row.action_concurrency)),
+                Cell::new(render_concurrency(row.concurrency)),
                 Cell::new(disabled),
                 Cell::new(row.description.unwrap_or_default()),
                 Cell::new(row.version),
@@ -81,7 +81,7 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
         } else {
             table.add_row(vec![
                 Cell::new(row.pattern),
-                Cell::new(render_concurrency(row.action_concurrency)),
+                Cell::new(render_concurrency(row.concurrency)),
                 Cell::new(disabled),
             ]);
         }

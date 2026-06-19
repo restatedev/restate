@@ -482,7 +482,7 @@ mod tests {
     fn upsert(concurrency: u32) -> RuleUpsert {
         RuleUpsert {
             limits: UserLimits {
-                action_concurrency: NonZeroU32::new(concurrency),
+                concurrency: NonZeroU32::new(concurrency),
             },
             description: None,
             disabled: false,
@@ -515,7 +515,7 @@ mod tests {
             pat("*"),
             PersistedRule {
                 limits: UserLimits {
-                    action_concurrency: NonZeroU32::new(1000),
+                    concurrency: NonZeroU32::new(1000),
                 },
                 description: Some("global default".to_owned()),
                 disabled: false,
@@ -527,7 +527,7 @@ mod tests {
             pat("scope1/*/tenant1"),
             PersistedRule {
                 limits: UserLimits {
-                    action_concurrency: NonZeroU32::new(10),
+                    concurrency: NonZeroU32::new(10),
                 },
                 description: None,
                 disabled: true,
@@ -553,7 +553,7 @@ mod tests {
         let r = book.get(&pat("*")).unwrap();
         assert_eq!(r.version, Version::from(1));
         assert!(!r.disabled);
-        assert_eq!(r.limits.action_concurrency, NonZeroU32::new(1000));
+        assert_eq!(r.limits.concurrency, NonZeroU32::new(1000));
     }
 
     #[test]
@@ -567,7 +567,7 @@ mod tests {
         book.apply_change(pat("*"), RuleChange::Upsert(upsert(500)))
             .unwrap();
         let r = book.get(&pat("*")).unwrap();
-        assert_eq!(r.limits.action_concurrency, NonZeroU32::new(500));
+        assert_eq!(r.limits.concurrency, NonZeroU32::new(500));
         assert_eq!(r.version, v_before_rule.next());
         assert_eq!(book.version(), v_before_book.next());
     }
@@ -690,7 +690,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            book.get(&pat("*")).unwrap().limits.action_concurrency,
+            book.get(&pat("*")).unwrap().limits.concurrency,
             NonZeroU32::new(500)
         );
     }
@@ -951,7 +951,7 @@ mod tests {
         let updates = book.diff(&prev);
         assert_eq!(updates_summary(&updates), vec![("*".to_owned(), "upsert")]);
         if let RuleUpdate::Upsert { limit, .. } = &updates[0] {
-            assert_eq!(limit.action_concurrency, NonZeroU32::new(500));
+            assert_eq!(limit.concurrency, NonZeroU32::new(500));
         }
     }
 
