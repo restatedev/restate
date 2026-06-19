@@ -377,6 +377,16 @@ jobs:
       "id-token": "write"
       "packages": "write"
 
+  custom-grafana:
+    needs:
+      - plan
+      - host
+    if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
+    uses: ./.github/workflows/grafana-dashboards.yml
+    with:
+      plan: ${{ needs.plan.outputs.val }}
+    secrets: inherit
+
   custom-docker-push-release:
     needs:
       - plan
@@ -427,10 +437,11 @@ jobs:
       - custom-docker-push-release
       - custom-npm
       - custom-release-notes
+      - custom-grafana
     # use "always() && ..." to allow us to wait for all publish jobs while
     # still allowing individual publish jobs to skip themselves (for prereleases).
     # "host" however must run to completion, no skipping allowed!
-    if: ${{ always() && needs.host.result == 'success' && (needs.custom-homebrew.result == 'skipped' || needs.custom-homebrew.result == 'success') && (needs.custom-docker-push-release.result == 'skipped' || needs.custom-docker-push-release.result == 'success') && (needs.custom-npm.result == 'skipped' || needs.custom-npm.result == 'success') && (needs.custom-release-notes.result == 'skipped' || needs.custom-release-notes.result == 'success') }}
+    if: ${{ always() && needs.host.result == 'success' && (needs.custom-homebrew.result == 'skipped' || needs.custom-homebrew.result == 'success') && (needs.custom-docker-push-release.result == 'skipped' || needs.custom-docker-push-release.result == 'success') && (needs.custom-npm.result == 'skipped' || needs.custom-npm.result == 'success') && (needs.custom-release-notes.result == 'skipped' || needs.custom-release-notes.result == 'success') && (needs.custom-grafana.result == 'skipped' || needs.custom-grafana.result == 'success') }}
     runs-on: "warp-ubuntu-latest-arm64-2x"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
