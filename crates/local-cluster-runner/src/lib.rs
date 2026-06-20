@@ -18,7 +18,7 @@ use std::{
     path::PathBuf,
 };
 
-use rand::Rng;
+use rand::RngExt;
 use tokio::signal::unix::SignalKind;
 use tracing::info;
 

@@ -991,12 +991,12 @@ flexbuffers_storage_encode_decode!(Chain);
 pub fn new_single_node_loglet_params(default_provider: ProviderKind) -> LogletParams {
     match default_provider {
         ProviderKind::Local => {
-            use rand::RngCore;
+            use rand::Rng;
             let loglet_id = rand::rng().next_u64().to_string();
             LogletParams::from(loglet_id)
         }
         ProviderKind::InMemory => {
-            use rand::RngCore;
+            use rand::Rng;
             let loglet_id = rand::rng().next_u64().to_string();
             LogletParams::from(loglet_id)
         }
