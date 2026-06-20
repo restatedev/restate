@@ -11,7 +11,7 @@
 use bytes::Bytes;
 use bytestring::ByteString;
 use rand::distr::{Alphanumeric, SampleString};
-use rand::{RngCore, rng};
+use rand::{Rng, rng};
 
 pub fn bytes() -> Bytes {
     bytes_of_len(128)

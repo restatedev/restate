@@ -47,7 +47,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use rand::rngs::StdRng;
-use rand::{Rng, RngCore, SeedableRng};
+use rand::{Rng, RngExt, SeedableRng};
 
 use restate_cli_util::{c_println, c_success};
 use restate_types::logs::{Keys, Record};
