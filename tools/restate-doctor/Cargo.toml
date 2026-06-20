@@ -21,7 +21,7 @@ restate-workspace-hack = { workspace = true }
 # Restate crates
 restate-cli-util = { workspace = true }
 restate-limiter = { workspace = true }
-restate-log-server = { workspace = true, features = ["expose-internals"] }
+restate-log-server = { workspace = true, features = ["expose-internals", "test-util"] }
 restate-partition-store = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-util-bytecount = { workspace = true, features = ["serde"] }

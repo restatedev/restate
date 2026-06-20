@@ -37,16 +37,21 @@ Check that the e2e tests are passing:
 
 ## Releasing the Restate runtime
 
-1. Make sure that the version is set to the new release version `X.Y.Z`. fields in: 
-  - [/Cargo.toml](/Cargo.toml) 
-  - [charts/restate-helm/Chart.yaml](/charts/restate-helm/Chart.yaml) 
-1. Make sure that [COMPATIBILITY_INFORMATION](/crates/node/src/cluster_marker.rs) is updated if `X.Y.Z` changes the requirements for backward/forward compatible Restate versions.
+1. Make sure that the version is set to the new release version `X.Y.Z`. fields in:
+  - [/Cargo.toml](/Cargo.toml)
+  - [charts/restate-helm/Chart.yaml](/charts/restate-helm/Chart.yaml)
+1. Make sure that [COMPATIBILITY_INFORMATION](/crates/types/src/cluster_marker.rs) is updated if `X.Y.Z` changes the requirements for backward/forward compatible Restate versions.
 1. [Publish the unreleased release notes](/release-notes/README.md#release-process).
 1. Create a tag of the form `vX.Y.Z` and push it to the repository. The tag will trigger the [release.yml](/.github/workflows/release.yml) workflow which runs the unit tests, the e2e tests, creates the docker image of the runtime, builds the CLI/runtime binaries, and prepares a Github draft release.
 1. Manually publish the draft release created by the release automation [here](https://github.com/restatedev/restate/releases).
 1. Bump the version in the [Cargo.toml](/Cargo.toml) to the next patch version with a `-dev` suffix after the release. The `-dev` suffix is helpful for distinguishing between versions that are under development and those that are released.
+1. Upload the Grafana dashboards to the marketplace.
+  - Log into the grafana.com account.
+  - Navigate to My Account -> Org Settings -> My Dashboards.
+  - Click `Details` for the dashboard you want to update.
+  - Scroll to the bottom of the page and click `Upload Revision`.
 
-**Note:** 
+**Note:**
 Don't immediately create a release branch after a MAJOR/MINOR release.
 A release branch `release-MAJOR.MINOR` should only be created once a change to the storage formats, APIs or a new feature gets merged that should be shipped with the next MAJOR/MINOR release.
 

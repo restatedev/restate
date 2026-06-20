@@ -85,6 +85,7 @@ impl<'a> DataRecordDecoder<'a> {
     }
 
     /// Reads the record's `created_at` timestamp without consuming the decoder.
+    #[cfg(any(test, feature = "test-util"))]
     pub fn created_at(&self) -> Result<NanosSinceEpoch, RecordDecodeError> {
         let mut buf = self.buffer;
         read_flags_and_created_at(&mut buf).map(|(_, created_at)| created_at)

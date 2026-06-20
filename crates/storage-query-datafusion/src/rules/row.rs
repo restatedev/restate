@@ -20,8 +20,8 @@ pub(crate) fn append_rule_row(
 ) {
     let mut row = builder.row();
     row.fmt_pattern(pattern);
-    if let Some(concurrency) = rule.limits.action_concurrency {
-        row.action_concurrency(concurrency.get());
+    if let Some(concurrency) = rule.limits.concurrency {
+        row.concurrency(concurrency.get());
     }
     if let Some(description) = rule.description.as_deref() {
         row.description(description);
