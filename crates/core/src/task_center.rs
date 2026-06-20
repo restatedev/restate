@@ -52,6 +52,7 @@ use restate_types::health::{Health, NodeStatus};
 use restate_types::identifiers::PartitionId;
 use restate_types::net::listener::AddressBook;
 use restate_types::{GenerationalNodeId, NodeId};
+use restate_util_time::DurationExt;
 
 const EXIT_CODE_FAILURE: i32 = 1;
 
@@ -1048,11 +1049,14 @@ impl TaskCenterInner {
 
         if shutdown_result.is_err() {
             warn!(
-                "Timeout waiting for graceful shutdown. Shutdown took {:?}",
-                start.elapsed()
+                "Timeout waiting for graceful shutdown. Shutdown took {}",
+                start.elapsed().friendly()
             );
         } else {
-            info!("Restate has gracefully shutdown in {:?}", start.elapsed());
+            info!(
+                "Restate has gracefully shutdown in {}",
+                start.elapsed().friendly()
+            );
         };
         self.root_task_context.cancel();
         self.global_cancel_token.cancel();

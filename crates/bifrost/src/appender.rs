@@ -24,6 +24,7 @@ use restate_types::live::Live;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{LogId, Lsn, Record};
 use restate_types::storage::StorageEncode;
+use restate_util_time::DurationExt;
 
 use crate::bifrost::{BifrostInner, ErrorRecoveryStrategy, PreferenceControl};
 use crate::loglet::AppendError;
@@ -230,8 +231,8 @@ impl<T: StorageEncode> Appender<T> {
                                 attempt,
                                 segment_index = %loglet.segment_index(),
                                 error_recovery_strategy = %self.error_recovery_strategy,
-                                "Failed to append this batch. Since underlying error is retryable, will retry in {:?}",
-                                retry_dur
+                                "Failed to append this batch. Since underlying error is retryable, will retry in {}",
+                                retry_dur.friendly()
                             );
                             tokio::time::sleep(retry_dur).await;
                         }
@@ -370,15 +371,15 @@ impl<T: StorageEncode> Appender<T> {
                     info!(
                         open_segment = %loglet.segment_index(),
                         %error_recovery_strategy,
-                        "New segment detected after {:?}",
-                        total_dur
+                        "New segment detected after {}",
+                        total_dur.friendly()
                     );
                 } else {
                     debug!(
                         open_segment = %loglet.segment_index(),
                         %error_recovery_strategy,
-                        "New segment detected after {:?}",
-                        total_dur
+                        "New segment detected after {}",
+                        total_dur.friendly()
                     );
                 }
                 return Ok(loglet);
@@ -397,8 +398,8 @@ impl<T: StorageEncode> Appender<T> {
                 let admin = BifrostAdmin::new(bifrost_inner);
                 info!(
                     %sealed_segment,
-                    "[Auto Recovery] Attempting to extend the chain to recover log availability with a new configuration. It has been {:?} since encountering the sealed loglet",
-                    start.elapsed(),
+                    "[Auto Recovery] Attempting to extend the chain to recover log availability with a new configuration. It has been {} since encountering the sealed loglet",
+                    start.elapsed().friendly(),
                 );
                 if let Err(err) = admin
                     .seal_and_auto_extend_chain(log_id, Some(sealed_segment))
@@ -435,15 +436,15 @@ impl<T: StorageEncode> Appender<T> {
                     info!(
                         %log_metadata_version,
                         %error_recovery_strategy,
-                        "In holding pattern, still waiting for log reconfiguration to complete. Elapsed={:?}",
-                        start.elapsed(),
+                        "In holding pattern, still waiting for log reconfiguration to complete. Elapsed={}",
+                        start.elapsed().friendly(),
                     );
                 } else {
                     debug!(
                         %log_metadata_version,
                         %error_recovery_strategy,
-                        "In holding pattern, waiting for log reconfiguration to complete. Elapsed={:?}",
-                        start.elapsed(),
+                        "In holding pattern, waiting for log reconfiguration to complete. Elapsed={}",
+                        start.elapsed().friendly(),
                     );
                 }
             }

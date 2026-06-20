@@ -11,13 +11,14 @@
 use std::sync::Weak;
 use std::time::Duration;
 
-use restate_types::retries::with_jitter;
 use tokio::time::Instant;
 use tracing::instrument;
 use tracing::{debug, trace};
 
 use restate_core::network::TransportConnect;
 use restate_types::logs::LogletId;
+use restate_types::retries::with_jitter;
+use restate_util_time::DurationExt;
 
 use crate::loglet::OperationError;
 use crate::providers::replicated_loglet::loglet::{FindTailFlags, ReplicatedLoglet};
@@ -69,8 +70,8 @@ impl PeriodicTailChecker {
                         known_global_tail = %tail.offset(),
                         is_sequencer = ?loglet.is_sequencer_local(),
                         is_sealed = ?tail.is_sealed(),
-                        "Successfully determined the tail status of the loglet, took={:?}",
-                        start.elapsed(),
+                        "Successfully determined the tail status of the loglet, took={}",
+                        start.elapsed().friendly(),
                     );
                 }
                 Err(OperationError::Shutdown(_)) => {

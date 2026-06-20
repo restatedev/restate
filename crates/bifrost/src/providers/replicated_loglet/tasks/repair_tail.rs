@@ -17,6 +17,7 @@ use restate_core::{Metadata, ShutdownError, TaskCenterFutureExt};
 use restate_types::logs::{KeyFilter, LogletOffset, RecordCache, SequenceNumber, TailOffsetWatch};
 use restate_types::net::log_server::{GetDigest, LogServerRequestHeader};
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
+use restate_util_time::DurationExt;
 
 use crate::providers::replicated_loglet::read_path::ReadStreamTask;
 
@@ -193,7 +194,7 @@ impl<T: TransportConnect> RepairTail<T> {
             loglet_id = %self.my_params.loglet_id,
             start_offset = %self.digests.start_offset(),
             target_tail = %self.digests.target_tail(),
-            elapsed = ?start.elapsed(),
+            elapsed = %start.elapsed().friendly(),
             "Digest phase completed."
         );
 
@@ -202,7 +203,7 @@ impl<T: TransportConnect> RepairTail<T> {
                 loglet_id = %self.my_params.loglet_id,
                 known_global_tail = %self.known_global_tail.latest_offset(),
                 target_tail = %self.digests.target_tail(),
-                elapsed = ?start.elapsed(),
+                elapsed = %start.elapsed().friendly(),
                 "Repair task completed, no records required repairing"
             );
             return RepairTailResult::Completed;
@@ -217,7 +218,7 @@ impl<T: TransportConnect> RepairTail<T> {
                 nodeset = %self.my_params.nodeset,
                 nodes_responded = %self.digests.known_nodes(),
                 replication = %self.my_params.replication,
-                elapsed = ?start.elapsed(),
+                elapsed = %start.elapsed().friendly(),
                 "Couldn't repair the tail! We have records to repair but not enough writeable nodes \
                 have responded to our digest request. We'll not be able to re-replicate the missing records until \
                 they are online and responsive",
@@ -236,7 +237,7 @@ impl<T: TransportConnect> RepairTail<T> {
                 nodeset = %self.my_params.nodeset,
                 nodes_responded = %self.digests.known_nodes(),
                 replication = %self.my_params.replication,
-                elapsed = ?start.elapsed(),
+                elapsed = %start.elapsed().friendly(),
                 "Couldn't repair the tail! We have records to repair **and** enough nodes to repair, but \
                  we couldn't find any node with copies for the oldest record within the repair range. \
                  We'll not be able to re-replicate the missing records until we can read back this \
@@ -308,7 +309,7 @@ impl<T: TransportConnect> RepairTail<T> {
             info!(
                 loglet_id = %self.my_params.loglet_id,
                 known_global_tail = %self.known_global_tail.latest_offset(),
-                elapsed = ?start.elapsed(),
+                elapsed = %start.elapsed().friendly(),
                 "Repair task completed, {} record(s) have been repaired",
                 self.digests.num_fixups(),
             );
@@ -320,7 +321,7 @@ impl<T: TransportConnect> RepairTail<T> {
             nodeset = %self.my_params.nodeset,
             nodes_responded = %self.digests.known_nodes(),
             replication = %self.my_params.replication,
-            elapsed = ?start.elapsed(),
+            elapsed = %start.elapsed().friendly(),
             "Failed to repair the tail. The under-replicated region is from {} to {} [inclusive]. \
              {} records have been repaired during the process",
             self.digests.start_offset(),
