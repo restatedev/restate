@@ -14,6 +14,7 @@ use std::time::Duration as StdDuration;
 
 use jiff::fmt::{friendly, temporal};
 use jiff::{Span, SpanRelativeTo, SpanRound};
+use rand::RngExt;
 
 static VERBOSE_PRINTER: friendly::SpanPrinter = friendly::SpanPrinter::new()
     .designator(friendly::Designator::Verbose)
@@ -45,6 +46,26 @@ pub trait DurationExt {
     fn friendly_non_zero(&self) -> Option<NonZeroFriendlyDuration> {
         self.friendly().to_non_zero()
     }
+
+    /// Add random jitter to the duration
+    ///
+    /// Jitter is a random duration added to the duration, it ranges from 3ms to
+    /// (max_multiplier * duration) of the original duration. The minimum of +3ms
+    /// is to avoid falling into common zero-ending values (0, 10, 100, etc.) which are
+    /// common cause of harmonics in systems (avoiding resonance frequencies)
+    fn add_jitter(self, factor: f32) -> Self;
+
+    /// Apply symmetric random jitter to the duration.
+    ///
+    /// Returns a duration uniformly sampled from
+    /// `[self * (1 - factor), self * (1 + factor)]`, i.e. the original duration
+    /// randomly scaled by up to ±`factor`. The lower bound is clamped to zero, so a
+    /// `factor >= 1.0` yields `[0, self * (1 + factor)]`.
+    ///
+    /// Unlike [`add_jitter`](DurationExt::add_jitter), which only ever increases the
+    /// duration, this spreads symmetrically around it — useful for de-correlating
+    /// periodic work without biasing it longer on average.
+    fn jitter(self, factor: f32) -> Self;
 }
 
 /// Displays a time span with 'days' as the maximum unit.
@@ -111,6 +132,42 @@ impl DurationExt for StdDuration {
     /// Returns None if duration is zero
     fn friendly_non_zero(&self) -> Option<NonZeroFriendlyDuration> {
         FriendlyDuration::from(*self).to_non_zero()
+    }
+
+    fn add_jitter(self, multiplier: f32) -> Self {
+        const MIN_JITTER: StdDuration = StdDuration::from_millis(3);
+
+        let max_jitter = self.mul_f32(multiplier);
+        if max_jitter <= MIN_JITTER {
+            // We can't get a random value unless max_jitter is higher than MIN_JITTER.
+            self + MIN_JITTER
+        } else {
+            // Microsecond granularity is plenty: jitter only needs to break
+            // harmonics, and timers/schedulers don't honor sub-microsecond waits.
+            // It also keeps the u64 well clear of overflow for any realistic
+            // duration (~584,000 years).
+            let min = MIN_JITTER.as_micros() as u64;
+            let max = u64::try_from(max_jitter.as_micros()).unwrap_or(u64::MAX);
+            let span = max - min;
+            // Map the random u64 uniformly into 0..span with a wide-multiply
+            // reduction (no modulo bias, no float).
+            let offset = ((rand::rng().random::<u64>() as u128 * span as u128) >> 64) as u64;
+            self + StdDuration::from_micros(min + offset)
+        }
+    }
+
+    fn jitter(self, factor: f32) -> Self {
+        // Microsecond granularity for the same reasons as `add_jitter`.
+        let lower = self.mul_f32((1.0 - factor).max(0.0));
+        let upper = self.mul_f32(1.0 + factor);
+        let span = u64::try_from(upper.saturating_sub(lower).as_micros()).unwrap_or(u64::MAX);
+        if span == 0 {
+            return self;
+        }
+        // Map the random u64 uniformly into 0..span with a wide-multiply
+        // reduction (no modulo bias, no float).
+        let offset = ((rand::rng().random::<u64>() as u128 * span as u128) >> 64) as u64;
+        lower + StdDuration::from_micros(offset)
     }
 }
 
@@ -679,6 +736,56 @@ mod helpers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn add_jitter_bounds() {
+        const MIN: StdDuration = StdDuration::from_millis(3);
+        let base = StdDuration::from_secs(10);
+
+        // only increases, stays within [base + 3ms, base + factor*base], and the
+        // result actually varies across calls (not pinned to a bound).
+        let mut seen_distinct = false;
+        let mut prev = None;
+        for _ in 0..1000 {
+            let j = base.add_jitter(0.5);
+            assert!(j >= base + MIN && j <= base + base.mul_f32(0.5));
+            if prev.is_some_and(|p| p != j) {
+                seen_distinct = true;
+            }
+            prev = Some(j);
+        }
+        assert!(seen_distinct, "add_jitter produced a constant value");
+
+        // when factor*base <= MIN_JITTER, falls back to exactly base + 3ms
+        let tiny = StdDuration::from_millis(2);
+        assert_eq!(tiny.add_jitter(0.5), tiny + MIN);
+        assert_eq!(StdDuration::ZERO.add_jitter(1.0), MIN);
+    }
+
+    #[test]
+    fn jitter_bounds() {
+        let base = StdDuration::from_secs(10);
+
+        // symmetric: stays within [base*(1-f), base*(1+f)] and varies across calls.
+        let mut seen_distinct = false;
+        let mut prev = None;
+        for _ in 0..1000 {
+            let j = base.jitter(0.2);
+            assert!(j >= base.mul_f32(0.8) && j <= base.mul_f32(1.2));
+            if prev.is_some_and(|p| p != j) {
+                seen_distinct = true;
+            }
+            prev = Some(j);
+        }
+        assert!(seen_distinct, "jitter produced a constant value");
+
+        // factor >= 1.0 clamps the lower bound to zero, never panics
+        assert!(base.jitter(2.0) <= base.mul_f32(3.0));
+
+        // zero span returns the input unchanged (zero base, or zero factor)
+        assert_eq!(StdDuration::ZERO.jitter(0.5), StdDuration::ZERO);
+        assert_eq!(base.jitter(0.0), base);
+    }
 
     #[test]
     fn friendly_conversion() {
