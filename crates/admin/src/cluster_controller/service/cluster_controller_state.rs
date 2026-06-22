@@ -106,6 +106,7 @@ impl Leader {
             SchedulerTask::new(
                 service.cluster_state_refresher.cluster_state_watcher(),
                 scheduler,
+                service.replica_set_states.clone(),
                 service.metadata_writer.raw_metadata_store_client().clone(),
                 sync_epoch_metadata_rx,
             )
