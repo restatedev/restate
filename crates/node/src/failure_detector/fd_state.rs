@@ -666,7 +666,7 @@ impl FdState {
                 let is_me = node.gen_node_id.as_plain() == self.my_node_id.as_plain();
                 (is_known && has_capacity && !is_me).then_some(node)
             })
-            .choose_multiple(&mut rng, GOSSIP_ATTEMPT_LIMIT);
+            .sample(&mut rng, GOSSIP_ATTEMPT_LIMIT);
         chosen.shuffle(&mut rng);
         chosen
     }

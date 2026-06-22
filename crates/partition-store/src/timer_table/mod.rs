@@ -219,7 +219,7 @@ mod tests {
     use super::*;
     use crate::keys::EncodeTableKeyPrefix;
     use crate::timer_table::TimerKey;
-    use rand::Rng;
+    use rand::RngExt;
     use restate_storage_api::timer_table::TimerKeyKindDiscriminants;
     use restate_types::identifiers::InvocationUuid;
     use restate_types::invocation::InvocationTarget;

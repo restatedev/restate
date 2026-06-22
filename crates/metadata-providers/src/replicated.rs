@@ -680,7 +680,7 @@ impl Channels {
 
     fn choose_next(&mut self, rng: &mut impl rand::Rng) -> Option<ChannelOrInitialAddress> {
         // sample up to two distinct channels/initial addresses from the full list
-        let mut random_channels = rand::seq::IteratorRandom::choose_multiple(
+        let mut random_channels = rand::seq::IteratorRandom::sample(
             0..(self.channels.len() + self.initial_addresses.len()),
             rng,
             2,

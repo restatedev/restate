@@ -16,7 +16,7 @@ use enumset::enum_set;
 use futures_util::never::Never;
 use googletest::prelude::err;
 use googletest::{IntoTestResult, assert_that, pat};
-use rand::Rng;
+use rand::RngExt;
 use rand::seq::IndexedMutRandom;
 use restate_core::{TaskCenter, TaskKind, cancellation_token};
 use restate_local_cluster_runner::cluster::{Cluster, StartedCluster};
