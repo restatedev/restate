@@ -28,8 +28,8 @@ use restate_platform::memory::EstimatedMemorySize;
 use restate_types::GenerationalNodeId;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber, TailState};
 use restate_types::net::{RpcRequest, UnaryMessage, log_server::*};
-use restate_types::retries::with_jitter;
 use restate_util_bytecount::ByteCount;
+use restate_util_time::DurationExt;
 
 use crate::logstore::{LogStore, LogletWriter, WriteDisableReason};
 use crate::metadata::{IntrospectLogletWorker, LogletState, LogletWorkerState};
@@ -152,7 +152,7 @@ impl<S: LogStore> LogletWorker<S> {
         let cancel_token = cancellation_token();
         let mut write_disable_fut = std::pin::pin!(log_store_state.wait_disabled());
 
-        let mut check_interval = tokio::time::interval(with_jitter(Duration::from_secs(10), 0.3));
+        let mut check_interval = tokio::time::interval(Duration::from_secs(10).add_jitter(0.3));
         check_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {

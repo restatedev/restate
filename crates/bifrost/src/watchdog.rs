@@ -28,7 +28,7 @@ use restate_core::{
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::{Logs, ProviderKind, SegmentIndex};
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
-use restate_types::retries::with_jitter;
+use restate_util_time::DurationExt;
 
 use crate::BifrostAdmin;
 use crate::bifrost::BifrostInner;
@@ -278,7 +278,7 @@ impl Watchdog {
         let mut actioned: Vec<LogId> = Vec::default();
         for (log_id, preferred) in self.my_preferred_logs.iter_mut() {
             debug_assert!(preferred.ref_cnt > 0);
-            if preferred.last_checked.elapsed() < with_jitter(IMPROVEMENT_ACTION_AFTER, 0.5) {
+            if preferred.last_checked.elapsed() < IMPROVEMENT_ACTION_AFTER.add_jitter(0.5) {
                 continue;
             }
             let Some(chain) = logs.chain(log_id) else {
