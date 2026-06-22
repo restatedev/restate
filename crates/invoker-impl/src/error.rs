@@ -391,14 +391,22 @@ pub(crate) enum CommandPreconditionError {
     #[error("the service {0} is exposed by the deprecated deployment {1}.")]
     #[code(restate_errors::RT0020)]
     DeploymentDeprecated(String, DeploymentId),
-    #[error("the provided limit_key is invalid")]
-    InvalidLimitKey,
-    #[error("limit_key was provided without a scope")]
+    #[error("scoped invocations require flow control experimental feature to be enabled")]
+    #[code(restate_errors::RT0024)]
+    ScopeRequiresVQueues,
+    #[error(
+        "limit key was provided without a scope. Limit keys take effect only when used in combination with scope"
+    )]
+    #[code(restate_errors::RT0024)]
     LimitKeyWithoutScope,
     #[error("scope is not supported for Virtual Object targets")]
     ScopedVirtualObjectNotSupported,
-    #[error("invalid scope: {0}")]
-    InvalidScope(RestrictedValueError),
+    #[error("the provided scope '{0}' is invalid: {1}")]
+    #[code(restate_errors::RT0024)]
+    InvalidScope(String, RestrictedValueError),
+    #[error("the provided limit key '{0}' is invalid: {1}")]
+    #[code(restate_errors::RT0024)]
+    InvalidLimitKey(String, restate_types::limit_key::ParseError),
     #[error("invalid invocation id {0}: {1}")]
     InvalidInvocationId(String, IdDecodeError),
 }

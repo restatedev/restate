@@ -1502,14 +1502,16 @@ where
             }
             proto_lite::TargetLite::IdempotentRequestTarget(idempotent_request_target) => {
                 if let Some(scope) = idempotent_request_target.scope.as_ref() {
-                    let _ = RestrictedValue::new(scope.as_str())
-                        .map_err(CommandPreconditionError::InvalidScope)?;
+                    let _ = RestrictedValue::new(scope.as_str()).map_err(|e| {
+                        CommandPreconditionError::InvalidScope(scope.to_string(), e)
+                    })?;
                 }
             }
             proto_lite::TargetLite::WorkflowTarget(workflow_target) => {
                 if let Some(scope) = workflow_target.scope.as_ref() {
-                    let _ = RestrictedValue::new(scope.as_str())
-                        .map_err(CommandPreconditionError::InvalidScope)?;
+                    let _ = RestrictedValue::new(scope.as_str()).map_err(|e| {
+                        CommandPreconditionError::InvalidScope(scope.to_string(), e)
+                    })?;
                 }
             }
         }
@@ -1546,6 +1548,10 @@ fn resolve_call_request(
             )
         })?;
 
+    let experimental_config = &restate_types::config::Configuration::pinned()
+        .common
+        .experimental;
+
     if let DeploymentStatus::Deprecated(dp_id) = meta.deployment_status {
         return Err(CommandPreconditionError::DeploymentDeprecated(
             request.service_name.to_string(),
@@ -1580,7 +1586,13 @@ fn resolve_call_request(
         if let Some(scope) = request.scope
             && !scope.is_empty()
         {
-            Some(Scope::try_new(&scope).map_err(CommandPreconditionError::InvalidScope)?)
+            if !experimental_config.is_vqueues_enabled() {
+                return Err(CommandPreconditionError::ScopeRequiresVQueues);
+            }
+            Some(
+                Scope::try_new(&scope)
+                    .map_err(|e| CommandPreconditionError::InvalidScope(scope, e))?,
+            )
         } else {
             None
         },
@@ -1597,7 +1609,7 @@ fn resolve_call_request(
     let limit_key: LimitKey<ReString> = if let Some(limit_key) = request.limit_key {
         limit_key
             .parse()
-            .map_err(|_| CommandPreconditionError::InvalidLimitKey)?
+            .map_err(|e| CommandPreconditionError::InvalidLimitKey(limit_key, e))?
     } else {
         LimitKey::None
     };
@@ -1609,10 +1621,7 @@ fn resolve_call_request(
 
     if invocation_target.scope().is_some()
         && matches!(meta.target_ty, InvocationTargetType::VirtualObject(_))
-        && !restate_types::config::Configuration::pinned()
-            .common
-            .experimental
-            .is_scoped_virtual_objects_enabled()
+        && !experimental_config.is_scoped_virtual_objects_enabled()
     {
         return Err(CommandPreconditionError::ScopedVirtualObjectNotSupported);
     }
