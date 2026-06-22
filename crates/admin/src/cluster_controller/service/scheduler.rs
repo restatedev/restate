@@ -895,8 +895,10 @@ impl<T: TransportConnect> Scheduler<T> {
 
             match (partition_state.next.as_ref(), observed_version.next_version) {
                 (None, None) => false,
-                // We have recorded a next replica set, but the observed state doesn't have one. Did someone abort our next version?
-                (Some(_our_next), None) => true,
+                // The scheduler sticks with its proposed next version even if if it read None from the metadata store.
+                // So triggering a refetch wouldn't help. To avoid excessive metadata fetches, let's error on the
+                // side of reporting it as not stale.
+                (Some(_our_next), None) => false,
                 // There's a next version observed, only consider it stale if it's newer than our current version.
                 (None, Some(their_next)) => their_next > partition_state.current.version(),
                 (Some(our_next), Some(their_next)) => our_next.version() < their_next,
