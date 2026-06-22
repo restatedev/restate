@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use restate_util_time::FriendlyDuration;
 
-use rand::Rng;
+use rand::RngExt;
 
 const DEFAULT_JITTER_MULTIPLIER: f32 = 0.3;
 

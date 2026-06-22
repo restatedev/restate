@@ -38,7 +38,7 @@ use std::path::Path;
 
 use bytes::{Bytes, BytesMut};
 use rand::rngs::StdRng;
-use rand::{Rng, RngCore, SeedableRng};
+use rand::{Rng, RngExt, SeedableRng};
 
 use restate_cli_util::{c_println, c_success};
 use restate_types::identifiers::{

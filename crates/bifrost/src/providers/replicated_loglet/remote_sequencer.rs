@@ -489,7 +489,7 @@ mod test {
         time::Duration,
     };
 
-    use rand::Rng;
+    use rand::RngExt;
 
     use restate_core::{
         TestCoreEnv, TestCoreEnvBuilder,

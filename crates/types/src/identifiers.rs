@@ -27,7 +27,7 @@ use base64::Engine;
 use bytes::Bytes;
 use bytestring::ByteString;
 use generic_array::ArrayLength;
-use rand::Rng;
+use rand::RngExt;
 use sha2::{Digest, Sha256};
 use ulid::Ulid;
 
@@ -1425,7 +1425,6 @@ impl WithInvocationId for ExternalSignalIdentifier {
 mod mocks {
     use super::*;
 
-    use rand::Rng;
     use rand::distr::{Alphanumeric, SampleString};
 
     impl InvocationUuid {

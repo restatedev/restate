@@ -27,7 +27,7 @@ use futures::FutureExt;
 use futures::stream::{FuturesUnordered, StreamExt};
 use itertools::{Either, Itertools};
 use metrics::{counter, gauge};
-use rand::Rng;
+use rand::RngExt;
 use rand::seq::SliceRandom;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;

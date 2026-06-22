@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use googletest::prelude::*;
-use rand::{RngCore, rng};
+use rand::{Rng, rng};
 
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::{
