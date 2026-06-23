@@ -19,9 +19,9 @@ define_table!(
         plain_node_id: DataType::Utf8,
         /// Current known generation ID of the node.
         gen_node_id: DataType::Utf8,
-        /// Config key
+        /// Config key where each level is dot separated. For example `worker.storage.rocksdb-memory-budget`
         key: DataType::Utf8,
-        /// Config value
+        /// Config value.
         value: DataType::Utf8,
     )
 );

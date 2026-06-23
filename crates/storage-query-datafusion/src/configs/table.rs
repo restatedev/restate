@@ -10,8 +10,10 @@
 
 use std::sync::Arc;
 
+use anyhow::Context;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::error::DataFusionError;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
@@ -75,7 +77,9 @@ impl Scan for ConfigsScanner {
 
         let config = self.config.snapshot();
         stream_builder.spawn(async move {
-            for_each_state(schema, tx, node_id, config, batch_size).await;
+            for_each_state(schema, tx, node_id, config, batch_size)
+                .await
+                .map_err(|e| DataFusionError::Execution(e.to_string()))?;
             Ok(())
         });
         stream_builder.build()
@@ -88,9 +92,9 @@ async fn for_each_state(
     node_id: GenerationalNodeId,
     config: Arc<Configuration>,
     batch_size: usize,
-) {
-    let mut builder = ConfigsBuilder::new(schema.clone());
-    let json_value = serde_json::to_value(config).unwrap();
+) -> anyhow::Result<()> {
+    let mut builder = ConfigsBuilder::new(schema);
+    let json_value = serde_json::to_value(config).context("Failed to serialize config")?;
     let plain_node_id_str = node_id.as_plain().to_string();
     let gen_node_id_str = node_id.to_string();
 
@@ -100,7 +104,11 @@ async fn for_each_state(
             row.plain_node_id(plain_node_id_str.as_str());
             row.gen_node_id(gen_node_id_str.as_str());
             row.key(k.as_str());
-            row.value(v.as_str());
+            row.value(if is_potentially_secret(k.as_str()) {
+                "<REDACTED>"
+            } else {
+                v.as_str()
+            });
         }
 
         if builder.num_rows() >= batch_size {
@@ -109,7 +117,7 @@ async fn for_each_state(
                 // not sure what to do here?
                 // the other side has hung up on us.
                 // we probably don't want to panic, is it will cause the entire process to exit
-                return;
+                return Ok(());
             }
         }
     }
@@ -117,6 +125,7 @@ async fn for_each_state(
         let result = builder.finish();
         let _ = tx.send(result).await;
     }
+    Ok(())
 }
 
 fn flatten_json(val: &serde_json::Value) -> impl Iterator<Item = (String, String)> + '_ {
@@ -141,4 +150,14 @@ fn flatten_json(val: &serde_json::Value) -> impl Iterator<Item = (String, String
 
         None
     })
+}
+
+/// Best-effort secret detection.
+/// Access to the configs table is previliged anyways (via restatectl). Hence why it's ok
+/// for this to be best effort.
+fn is_potentially_secret(key: &str) -> bool {
+    key.contains("access_key")
+        || key.contains("password")
+        || key.contains("secret")
+        || key.contains("token")
 }
