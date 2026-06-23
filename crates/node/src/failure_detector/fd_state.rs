@@ -622,7 +622,7 @@ impl FdState {
         if msg.instance_ts > msg.sent_at {
             error!(
                 %peer,
-                "Gossip received message with sent_at higher than instance_ts (sent_at: {}, instance_ts: {})",
+                "Gossip received message with sent_at smaller than instance_ts (sent_at: {}, instance_ts: {})",
                 msg.sent_at, msg.instance_ts,
             );
             return false;
