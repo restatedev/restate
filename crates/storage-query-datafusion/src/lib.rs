@@ -41,6 +41,7 @@ pub mod table_docs;
 mod table_macro;
 mod table_providers;
 mod user_limits;
+mod vqueue_entry_status;
 mod vqueue_meta;
 mod vqueues;
 pub use table_providers::Scan;
