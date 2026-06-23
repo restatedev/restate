@@ -15,7 +15,7 @@ use super::Status;
 use super::metadata::{VQueueMeta, VQueueMetaRef};
 use super::{
     EntryId, EntryKey, EntryMetadata, EntryStatusHeader, EntryValue, LazyEntryStatus,
-    stats::EntryStatistics,
+    OwnedEntryStatusHeader, stats::EntryStatistics,
 };
 use crate::Result;
 
@@ -282,4 +282,20 @@ pub trait ScanVQueueEntries {
             + Sync
             + 'static,
         S: IntoIterator<Item = Stage>;
+}
+
+pub trait ScanVQueueEntryStatusTable {
+    /// Iterate vqueue entry status headers within a partition-key range.
+    ///
+    /// Used for data-fusion queries.
+    fn for_each_vqueue_entry_status<F>(
+        &self,
+        range: KeyRange,
+        f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send>
+    where
+        F: for<'a> FnMut(&'a OwnedEntryStatusHeader) -> std::ops::ControlFlow<()>
+            + Send
+            + Sync
+            + 'static;
 }
