@@ -299,6 +299,12 @@ where
             self.partition_store_manager.clone(),
             &self.remote_scanner_manager,
         )?;
+        crate::vqueue_entry_status::register_self(
+            ctx,
+            self.partition_selector.clone(),
+            self.partition_store_manager.clone(),
+            &self.remote_scanner_manager,
+        )?;
         crate::vqueues::register_self(
             ctx,
             self.partition_selector.clone(),
