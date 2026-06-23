@@ -77,7 +77,7 @@ impl Scan for ConfigsScanner {
 
         let config = self.config.snapshot();
         stream_builder.spawn(async move {
-            for_each_state(schema, tx, node_id, config, batch_size)
+            for_each_config(schema, tx, node_id, config, batch_size)
                 .await
                 .map_err(|e| DataFusionError::Execution(e.to_string()))?;
             Ok(())
@@ -86,7 +86,7 @@ impl Scan for ConfigsScanner {
     }
 }
 
-async fn for_each_state(
+async fn for_each_config(
     schema: SchemaRef,
     tx: Sender<datafusion::common::Result<RecordBatch>>,
     node_id: GenerationalNodeId,
@@ -114,9 +114,8 @@ async fn for_each_state(
         if builder.num_rows() >= batch_size {
             let batch = builder.finish_and_new();
             if tx.send(batch).await.is_err() {
-                // not sure what to do here?
-                // the other side has hung up on us.
-                // we probably don't want to panic, is it will cause the entire process to exit
+                // The receiver has hung up; stop scanning. We don't propagate an error
+                // here as there's no one left to receive it.
                 return Ok(());
             }
         }
@@ -153,11 +152,14 @@ fn flatten_json(val: &serde_json::Value) -> impl Iterator<Item = (String, String
 }
 
 /// Best-effort secret detection.
-/// Access to the configs table is previliged anyways (via restatectl). Hence why it's ok
+/// Access to the configs table is privileged anyways (via restatectl). Hence why it's ok
 /// for this to be best effort.
+///
+/// Config keys are serialized in `kebab-case` (e.g. `aws-access-key-id`), so we match
+/// against the hyphenated forms here.
 fn is_potentially_secret(key: &str) -> bool {
-    key.contains("access_key")
-        || key.contains("password")
-        || key.contains("secret")
-        || key.contains("token")
+    let key = key.to_ascii_lowercase();
+    ["access-key", "password", "secret", "token"]
+        .iter()
+        .any(|needle| key.contains(needle))
 }
