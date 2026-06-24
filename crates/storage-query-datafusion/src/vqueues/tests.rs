@@ -79,7 +79,7 @@ async fn get_vqueue_entry_value_fields() {
         .execute(
             "SELECT stage, status, num_attempts, num_pauses, num_suspensions, num_yields, \
             created_at, transitioned_at, first_attempt_at, latest_attempt_at, first_runnable_at, \
-            run_at, deployment FROM sys_vqueues WHERE stage = 'inbox' ORDER BY sequence_number",
+            next_at, deployment FROM sys_vqueues WHERE stage = 'inbox' ORDER BY sequence_number",
         )
         .await
         .unwrap()
@@ -107,7 +107,7 @@ async fn get_vqueue_entry_value_fields() {
                 "first_attempt_at" => TimestampMillisecondArray: eq(first_attempt_at.to_unix_millis().as_u64() as i64),
                 "latest_attempt_at" => TimestampMillisecondArray: eq(latest_attempt_at.to_unix_millis().as_u64() as i64),
                 "first_runnable_at" => TimestampMillisecondArray: eq(value.stats.first_runnable_at.as_u64() as i64),
-                "run_at" => TimestampMillisecondArray: eq(key.run_at().as_unix_millis().as_u64() as i64),
+                "next_at" => TimestampMillisecondArray: eq(key.run_at().as_unix_millis().as_u64() as i64),
                 "deployment" => StringArray: eq("dp_123"),
             }
         ))
