@@ -26,8 +26,9 @@ use restate_types::config::Configuration;
 use restate_types::live::Live;
 use restate_types::metadata::GlobalMetadata;
 use restate_types::net::metadata::{Extraction, GetMetadataRequest};
-use restate_types::retries::{RetryPolicy, with_jitter};
+use restate_types::retries::RetryPolicy;
 use restate_types::{GenerationalNodeId, Version};
+use restate_util_time::DurationExt;
 
 use crate::network::Connection;
 use crate::{ShutdownError, TaskCenter, TaskHandle, TaskKind, cancellation_watcher};
@@ -100,7 +101,7 @@ where
         // we have a path to reset this value dynamically based on the next known duration, but I'm
         // not sure if it's worth the effort.
         let mut next_fetch_interval =
-            tokio::time::interval(with_jitter(Duration::from_millis(100), 0.5));
+            tokio::time::interval(Duration::from_millis(100).add_jitter(0.5));
         next_fetch_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         let task = Self {
@@ -181,11 +182,11 @@ where
     ) {
         let config = self.config.live_load();
         let metadata_store_idle_dur: Duration =
-            with_jitter(config.common.metadata_update_interval.into(), 0.3);
+            Duration::from(config.common.metadata_update_interval).add_jitter(0.3);
         // Attempt to read from metadata store if we couldn't get a value from peers within this
         // duration.
         let fallback_to_metadata_dur: Duration =
-            with_jitter(config.common.metadata_fetch_from_peer_timeout.into(), 0.3);
+            Duration::from(config.common.metadata_fetch_from_peer_timeout).add_jitter(0.3);
         let current_version = self.item.load().version();
 
         // ## Fetching metadata from peers

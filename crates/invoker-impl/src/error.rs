@@ -15,7 +15,6 @@ use std::ops::RangeInclusive;
 use std::time::Duration;
 
 use http::{HeaderName, HeaderValue};
-use tokio::task::JoinError;
 
 use restate_memory::OutOfMemoryKind;
 use restate_service_client::ServiceClientError;
@@ -129,9 +128,6 @@ pub(crate) enum InvokerError {
     #[error("unexpected error while reading the response body: {0}")]
     #[code(restate_errors::RT0010)]
     ClientBody(Box<dyn std::error::Error + Send + Sync>),
-    #[error("unexpected join error, looks like hyper panicked: {0}")]
-    #[code(restate_errors::RT0010)]
-    UnexpectedJoinError(#[from] JoinError),
     #[error("unexpected closed request stream while trying to write a message")]
     #[code(restate_errors::RT0010)]
     UnexpectedClosedRequestStream,
@@ -391,14 +387,22 @@ pub(crate) enum CommandPreconditionError {
     #[error("the service {0} is exposed by the deprecated deployment {1}.")]
     #[code(restate_errors::RT0020)]
     DeploymentDeprecated(String, DeploymentId),
-    #[error("the provided limit_key is invalid")]
-    InvalidLimitKey,
-    #[error("limit_key was provided without a scope")]
+    #[error("scoped invocations require flow control experimental feature to be enabled")]
+    #[code(restate_errors::RT0024)]
+    ScopeRequiresVQueues,
+    #[error(
+        "limit key was provided without a scope. Limit keys take effect only when used in combination with scope"
+    )]
+    #[code(restate_errors::RT0024)]
     LimitKeyWithoutScope,
     #[error("scope is not supported for Virtual Object targets")]
     ScopedVirtualObjectNotSupported,
-    #[error("invalid scope: {0}")]
-    InvalidScope(RestrictedValueError),
+    #[error("the provided scope '{0}' is invalid: {1}")]
+    #[code(restate_errors::RT0024)]
+    InvalidScope(String, RestrictedValueError),
+    #[error("the provided limit key '{0}' is invalid: {1}")]
+    #[code(restate_errors::RT0024)]
+    InvalidLimitKey(String, restate_types::limit_key::ParseError),
     #[error("invalid invocation id {0}: {1}")]
     InvalidInvocationId(String, IdDecodeError),
 }

@@ -27,9 +27,9 @@ use restate_types::logs::metadata::Logs;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
-use restate_types::retries::with_jitter;
 use restate_types::schema::Schema;
 use restate_types::{Version, Versioned};
+use restate_util_time::DurationExt;
 
 use crate::network::io::EgressMessage;
 use crate::network::metric_definitions::NETWORK_SERVICE_REJECTED_REQUEST_BYTES;
@@ -151,7 +151,7 @@ impl ConnectionReactor {
         let mut cancellation = std::pin::pin!(current_task.cancellation_token().cancelled());
 
         // Set up periodic garbage collection for the reply tracker
-        let mut gc_interval = tokio::time::interval(with_jitter(RPC_GC_INTERVAL, 0.2));
+        let mut gc_interval = tokio::time::interval(RPC_GC_INTERVAL.add_jitter(0.2));
         gc_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         conn_tracker.connection_created(&self.connection, is_dedicated);

@@ -21,7 +21,7 @@ use restate_core::{ShutdownError, TaskCenter, TaskHandle, TaskId, TaskKind, canc
 use restate_storage_api::invocation_status_table::ScanInvocationStatusTable;
 use restate_types::errors::ConversionError;
 use restate_types::identifiers::{InvocationId, PartitionId};
-use restate_types::retries::with_jitter;
+use restate_util_time::DurationExt;
 
 const CLEANER_EFFECT_QUEUE_SIZE: usize = 10;
 
@@ -88,7 +88,7 @@ where
 
         // the cleaner is currently quite an expensive scan and we don't strictly need to do it on startup, so we will wait
         // for 20-40% of the interval (so, 12-24 minutes by default) before doing the first one
-        let initial_wait = with_jitter(self.cleanup_interval.mul_f32(0.2), 1.0);
+        let initial_wait = self.cleanup_interval.mul_f32(0.2).add_jitter(1.0);
 
         // the first tick will fire after initial_wait
         let mut interval =

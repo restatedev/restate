@@ -214,7 +214,7 @@ impl EventListener for LoggingEventListener {
         let cf_name = String::from_utf8_lossy(&cf_name);
         let before = i.prev().as_friendly_reason();
         let after = i.cur().as_friendly_reason();
-        warn!(
+        debug!(
             db = %self.db_name,
             cf = %cf_name,
             "Stall conditions changed: {before} -> {after}",
