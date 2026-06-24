@@ -143,7 +143,29 @@ fn flatten_json(val: &serde_json::Value) -> impl Iterator<Item = (String, String
                         stack.push((key, v));
                     }
                 }
-                _ => return Some((parent, serde_json::to_string(val).unwrap())),
+                // If the array is a list of objects, flatten it.
+                serde_json::Value::Array(v)
+                    if let Some(first) = v.first()
+                        && first.is_object() =>
+                {
+                    for (i, v) in v.iter().enumerate().rev() {
+                        let key = if parent.is_empty() {
+                            format!("[{}]", i)
+                        } else {
+                            format!("{}[{}]", parent, i)
+                        };
+                        stack.push((key, v));
+                    }
+                }
+                _ => {
+                    return Some((
+                        parent,
+                        serde_json::to_string(val)
+                            .unwrap()
+                            .trim_matches('"')
+                            .to_string(),
+                    ));
+                }
             }
         }
 
@@ -162,4 +184,55 @@ fn is_potentially_secret(key: &str) -> bool {
     ["access-key", "password", "secret", "token"]
         .iter()
         .any(|needle| key.contains(needle))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_flatten_json() {
+        let json = serde_json::json!({
+            "name": "node-name",
+            "worker": {
+                "test": "val",
+                "test2": "val2",
+            },
+            "arr": ["i", "j"],
+            "nodes": [
+                {
+                    "addr": "addr1",
+                },
+                {
+                    "addr": "addr2",
+                },
+            ]
+        });
+        let mut iter = flatten_json(&json);
+        assert_eq!(
+            iter.next(),
+            Some(("arr".to_string(), "[\"i\",\"j\"]".to_string()))
+        );
+        assert_eq!(
+            iter.next(),
+            Some(("name".to_string(), "node-name".to_string()))
+        );
+        assert_eq!(
+            iter.next(),
+            Some(("nodes[0].addr".to_string(), "addr1".to_string()))
+        );
+        assert_eq!(
+            iter.next(),
+            Some(("nodes[1].addr".to_string(), "addr2".to_string()))
+        );
+        assert_eq!(
+            iter.next(),
+            Some(("worker.test".to_string(), "val".to_string()))
+        );
+        assert_eq!(
+            iter.next(),
+            Some(("worker.test2".to_string(), "val2".to_string()))
+        );
+        assert_eq!(iter.next(), None);
+    }
 }
