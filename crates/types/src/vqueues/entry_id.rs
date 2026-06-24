@@ -16,9 +16,20 @@ use super::ParseError;
 const REMAINDER_LEN: usize = 16;
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, strum::FromRepr, bilrost::Enumeration,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    strum::FromRepr,
+    bilrost::Enumeration,
+    strum::Display,
 )]
 #[repr(u8)]
+#[strum(serialize_all = "kebab-case")]
 pub enum EntryKind {
     /// Must not be used as input when encoding but it can be observed when decoding
     /// if the raw bytes did not form a known entry kind.

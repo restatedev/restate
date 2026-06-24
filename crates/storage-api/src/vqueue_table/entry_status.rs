@@ -49,6 +49,99 @@ pub enum Status {
     Succeeded,
 }
 
+/// Owned vqueue entry status header.
+#[derive(Debug, Clone)]
+pub struct OwnedEntryStatusHeader {
+    qid: VQueueId,
+    stage: Stage,
+    entry_key: EntryKey,
+    metadata: EntryMetadata,
+    status: Status,
+    stats: EntryStatistics,
+}
+
+impl OwnedEntryStatusHeader {
+    pub fn new(
+        qid: VQueueId,
+        stage: Stage,
+        entry_key: EntryKey,
+        metadata: EntryMetadata,
+        stats: EntryStatistics,
+        status: Status,
+    ) -> Self {
+        Self {
+            qid,
+            stage,
+            entry_key,
+            metadata,
+            status,
+            stats,
+        }
+    }
+}
+
+impl EntryStatusHeader for OwnedEntryStatusHeader {
+    #[inline]
+    fn vqueue_id(&self) -> &VQueueId {
+        &self.qid
+    }
+
+    #[inline]
+    fn entry_id(&self) -> &EntryId {
+        self.entry_key.entry_id()
+    }
+
+    #[inline]
+    fn entry_key(&self) -> &EntryKey {
+        &self.entry_key
+    }
+
+    #[inline]
+    fn kind(&self) -> EntryKind {
+        self.entry_key.kind()
+    }
+
+    #[inline]
+    fn stage(&self) -> Stage {
+        self.stage
+    }
+
+    #[inline]
+    fn seq(&self) -> Seq {
+        self.entry_key.seq()
+    }
+
+    #[inline]
+    fn has_lock(&self) -> bool {
+        self.entry_key.has_lock()
+    }
+
+    #[inline]
+    fn next_run_at(&self) -> RoughTimestamp {
+        self.entry_key.run_at()
+    }
+
+    #[inline]
+    fn stats(&self) -> &EntryStatistics {
+        &self.stats
+    }
+
+    #[inline]
+    fn metadata(&self) -> &EntryMetadata {
+        &self.metadata
+    }
+
+    #[inline]
+    fn display_entry_id(&self) -> impl std::fmt::Display + '_ {
+        self.entry_id().display(self.qid.partition_key())
+    }
+
+    #[inline]
+    fn status(&self) -> Status {
+        self.status
+    }
+}
+
 mod bilrost_encoding {
     use bilrost::encoding::{DistinguishedProxiable, Proxiable};
     use bilrost::{Canonicity, DecodeErrorKind, Enumeration};

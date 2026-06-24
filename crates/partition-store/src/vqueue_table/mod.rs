@@ -39,11 +39,13 @@ use restate_storage_api::vqueue_table::{
     EntryKey, EntryMetadata, EntryStatusHeader, EntryValue, LazyEntryStatus, ReadVQueueTable,
     ScanVQueueTable, Stage, Status, WriteVQueueTable, stats::EntryStatistics,
 };
-use restate_storage_api::vqueue_table::{ScanVQueueEntries, ScanVQueueMetaTable};
+use restate_storage_api::vqueue_table::{
+    OwnedEntryStatusHeader, ScanVQueueEntries, ScanVQueueEntryStatusTable, ScanVQueueMetaTable,
+};
 use restate_types::sharding::{KeyRange, PartitionKey};
 use restate_types::vqueues::{EntryId, Seq, VQueueId};
 
-use self::entry::{LazyEntryStatusHolder, OwnedEntryStatusHeader, StatusHeaderRawRef};
+use self::entry::{LazyEntryStatusHolder, StatusHeaderRawRef, entry_status_header_from_raw};
 use crate::keys::{DecodeTableKey, EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
 use crate::scan::TableScan;
 use crate::vqueue_table::input::InputPayloadKeyRef;
@@ -361,10 +363,9 @@ impl ReadVQueueTable for PartitionStoreTransaction<'_> {
             return Ok(None);
         };
 
-        Ok(Some(OwnedEntryStatusHeader::new(
-            *id,
-            StatusHeaderRaw::decode_length_delimited(&mut raw_value.as_ref())?,
-        )))
+        let header = StatusHeaderRaw::decode_length_delimited(&mut raw_value.as_ref())?;
+
+        Ok(Some(entry_status_header_from_raw(*id, header)))
     }
 
     // Currently unused but left for future use
@@ -466,6 +467,38 @@ impl ScanVQueueMetaTable for PartitionStore {
 
                 let (vqueue_id,) = meta_key.split();
                 f((&vqueue_id, &meta)).map_break(Ok)
+            },
+        )
+        .map_err(|_| StorageError::OperationalError)
+    }
+}
+
+impl ScanVQueueEntryStatusTable for PartitionStore {
+    fn for_each_vqueue_entry_status<F>(
+        &self,
+        range: KeyRange,
+        mut f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send>
+    where
+        F: for<'a> FnMut(&'a OwnedEntryStatusHeader) -> std::ops::ControlFlow<()>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.iterator_for_each(
+            "df-vqueue-entry-status",
+            Priority::Low,
+            TableScan::FullScanPartitionKeyRange::<EntryStatusKey>(range),
+            move |(mut key, mut value)| {
+                let status_key = break_on_err(EntryStatusKey::deserialize_from(&mut key))?;
+                let (_, entry_id) = status_key.split();
+                let header = break_on_err(
+                    StatusHeaderRaw::decode_length_delimited(&mut value)
+                        .map_err(StorageError::BilrostDecode),
+                )?;
+                let header = entry_status_header_from_raw(entry_id, header);
+
+                f(&header).map_break(Ok)
             },
         )
         .map_err(|_| StorageError::OperationalError)
