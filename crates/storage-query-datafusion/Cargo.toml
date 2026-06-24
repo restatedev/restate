@@ -16,7 +16,7 @@ table_docs = []
 restate-workspace-hack = { workspace = true }
 
 restate-core = { workspace = true }
-restate-limiter = { workspace = true, features = ["rule-book"] }
+restate-limiter = { workspace = true, features = ["rule-book", "serde"] }
 restate-metadata-store = { workspace = true }
 restate-partition-store = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["codec"] }
@@ -25,7 +25,7 @@ restate-sharding = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-types = { workspace = true }
 restate-util-string = { workspace = true }
-restate-worker-api = { workspace = true }
+restate-worker-api = { workspace = true, features = ["serde"] }
 
 ahash = { workspace = true }                                                    # Required to due a yanked version used by datafusion
 anyhow = { workspace = true }

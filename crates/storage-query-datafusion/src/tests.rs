@@ -47,6 +47,7 @@ use restate_worker_api::{
     BlockedResource, SchedulerStatusEntry, SchedulingStatus, UserLimitCounterEntry,
     VQueueSchedulerStatus,
 };
+use strum::IntoDiscriminant;
 
 use crate::context::PartitionLeaderStatusHandle;
 use crate::mocks::*;
@@ -105,7 +106,8 @@ async fn query_sys_scheduler() {
         blocked_level: Level::Level1,
         blocked_rule: Some(ReString::new("svc-A/tenant-*")),
     };
-    let expected_blocked_display = blocked_resource.to_string();
+    let expected_blocked_on = blocked_resource.discriminant().to_string();
+    let expected_blocked_on_json = serde_json::to_string(&blocked_resource).unwrap();
 
     let engine = MockQueryEngine::create_with(
         MockPartitionLeaderStatusHandle {
@@ -140,6 +142,7 @@ async fn query_sys_scheduler() {
                 head_entry_id,
                 num_inbox,
                 blocked_on,
+                blocked_on_json,
                 invoker_concurrency_block_duration,
                 concurrency_rules_block_duration,
                 deployment_concurrency_block_duration
@@ -163,7 +166,8 @@ async fn query_sys_scheduler() {
                 "status" => StringArray: eq("blocked"),
                 "head_entry_id" => StringArray: eq(expected_head_entry_display),
                 "num_inbox" => UInt64Array: eq(7),
-                "blocked_on" => StringArray: eq(expected_blocked_display),
+                "blocked_on" => StringArray: eq(expected_blocked_on),
+                "blocked_on_json" => StringArray: eq(expected_blocked_on_json),
                 "invoker_concurrency_block_duration" => DurationMillisecondArray: eq(15),
                 "concurrency_rules_block_duration" => DurationMillisecondArray: eq(35),
                 "deployment_concurrency_block_duration" => DurationMillisecondArray: eq(45),
