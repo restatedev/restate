@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_storage_api::vqueue_table::{EntryKey, EntryKind, EntryValue, Stage};
+use restate_storage_api::vqueue_table::{EntryKey, EntryValue, Stage};
 use restate_types::vqueues::VQueueId;
 
 use super::schema::SysVqueuesBuilder;
@@ -49,11 +49,7 @@ pub(crate) fn append_vqueues_row<'a>(
     }
 
     if row.is_entry_kind_defined() {
-        row.entry_kind(match entry_key.kind() {
-            EntryKind::Invocation => "invocation",
-            EntryKind::StateMutation => "state-mutation",
-            EntryKind::Unknown => "unknown",
-        });
+        row.fmt_entry_kind(entry_key.kind());
     }
 
     if row.is_created_at_defined() {
