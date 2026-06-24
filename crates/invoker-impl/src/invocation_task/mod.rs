@@ -29,11 +29,10 @@ use http_body_util::StreamBody;
 use metrics::{counter, histogram};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use tokio_util::task::AbortOnDropHandle;
 use tracing::{debug, instrument};
 
 use restate_memory::{LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream};
-use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClientError};
+use restate_service_client::{ResponseBody, ServiceClient, ServiceClientError};
 use restate_types::LimitKey;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::InvocationId;
@@ -654,9 +653,10 @@ enum ResponseChunk {
 
 pin_project_lite::pin_project! {
     #[project = ResponseStreamProj]
-    enum ResponseStream {
+    enum ResponseStream<F>{
         WaitingHeaders {
-            join_handle: AbortOnDropHandle<Result<Response<ResponseBody>, ServiceClientError>>,
+            #[pin]
+            fut: F
         },
         ReadingBody {
             #[pin]
@@ -666,36 +666,30 @@ pin_project_lite::pin_project! {
     }
 }
 
-impl ResponseStream {
-    fn initialize(client: &ServiceClient, req: Request<InvokerBodyType>) -> Self {
-        // Because the body sender blocks on waiting for the request body buffer to be available,
-        // we need to spawn the request initiation separately, otherwise the loop below
-        // will deadlock on the journal entry write.
-        // This task::spawn won't be required by hyper 1.0, as the connection will be driven by a task
-        // spawned somewhere else (perhaps in the connection pool).
-        // See: https://github.com/restatedev/restate/issues/96 and https://github.com/restatedev/restate/issues/76
-        Self::WaitingHeaders {
-            join_handle: AbortOnDropHandle::new(tokio::task::spawn(client.call(req))),
-        }
+impl<F> ResponseStream<F>
+where
+    F: Future<Output = Result<Response<ResponseBody>, ServiceClientError>>,
+{
+    fn new(fut: F) -> Self {
+        Self::WaitingHeaders { fut }
     }
 }
 
-impl Stream for ResponseStream {
+impl<F> Stream for ResponseStream<F>
+where
+    F: Future<Output = Result<Response<ResponseBody>, ServiceClientError>>,
+{
     type Item = Result<ResponseChunk, InvokerError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.as_mut().project();
         match this {
-            ResponseStreamProj::WaitingHeaders { join_handle } => {
-                let http_response = match ready!(join_handle.poll_unpin(cx)) {
-                    Ok(Ok(res)) => res,
-                    Ok(Err(hyper_err)) => {
-                        *self = ResponseStream::Terminated;
+            ResponseStreamProj::WaitingHeaders { mut fut } => {
+                let http_response = match ready!(fut.poll_unpin(cx)) {
+                    Ok(res) => res,
+                    Err(hyper_err) => {
+                        self.as_mut().set(ResponseStream::Terminated);
                         return Poll::Ready(Some(Err(InvokerError::Client(Box::new(hyper_err)))));
-                    }
-                    Err(join_err) => {
-                        *self = ResponseStream::Terminated;
-                        return Poll::Ready(Some(Err(InvokerError::UnexpectedJoinError(join_err))));
                     }
                 };
 
@@ -703,7 +697,7 @@ impl Stream for ResponseStream {
                 let (http_response_header, body) = http_response.into_parts();
 
                 // Transition to reading body
-                *self = ResponseStream::ReadingBody { body };
+                self.as_mut().set(ResponseStream::ReadingBody { body });
                 Poll::Ready(Some(Ok(ResponseChunk::Parts(http_response_header))))
             }
             ResponseStreamProj::ReadingBody { body } => {
@@ -713,11 +707,11 @@ impl Stream for ResponseStream {
                         Poll::Ready(Some(Ok(ResponseChunk::Data(frame.into_data().unwrap()))))
                     }
                     Ok(_) => {
-                        *self = ResponseStream::Terminated;
+                        self.as_mut().set(ResponseStream::Terminated);
                         Poll::Ready(None)
                     }
                     Err(err) => {
-                        *self = ResponseStream::Terminated;
+                        self.as_mut().set(ResponseStream::Terminated);
                         Poll::Ready(Some(Err(InvokerError::ClientBody(err))))
                     }
                 }
