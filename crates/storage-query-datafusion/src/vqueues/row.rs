@@ -37,8 +37,8 @@ pub(crate) fn append_vqueues_row<'a>(
     if row.is_has_lock_defined() {
         row.has_lock(entry_key.has_lock());
     }
-    if matches!(stage, Stage::Inbox) && row.is_run_at_defined() {
-        row.run_at(entry_key.run_at().as_unix_millis().as_u64() as i64);
+    if matches!(stage, Stage::Inbox) && row.is_next_at_defined() {
+        row.next_at(entry_key.run_at().as_unix_millis().as_u64() as i64);
     }
     if row.is_sequence_number_defined() {
         row.sequence_number(entry_key.seq().as_u64());

@@ -39,9 +39,9 @@ define_table!(sys_vqueues(
     /// Whether this entry currently holds a lock.
     has_lock: DataType::Boolean,
 
-    /// The entry will be eligible to run after this timestamp. Only present for entries
-    /// that are in the stage=inbox.
-    run_at: TimestampMillisecond,
+    /// The next timestamp at which this entry is scheduled for the next transition.
+    /// Only present for entries that are in the stage=inbox.
+    next_at: TimestampMillisecond,
 
     /// Sequence number encoded in the queue ordering key.
     sequence_number: DataType::UInt64,
