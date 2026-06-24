@@ -181,9 +181,17 @@ fn flatten_json(val: &serde_json::Value) -> impl Iterator<Item = (String, String
 /// against the hyphenated forms here.
 fn is_potentially_secret(key: &str) -> bool {
     let key = key.to_ascii_lowercase();
-    ["access-key", "password", "secret", "token", "authorization"]
-        .iter()
-        .any(|needle| key.contains(needle))
+    [
+        "access-key",
+        "password",
+        "secret",
+        "token",
+        "authorization",
+        "api-key",
+        "cookie",
+    ]
+    .iter()
+    .any(|needle| key.contains(needle))
 }
 
 #[cfg(test)]
@@ -191,7 +199,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_flatten_json() {
+    fn flatten_json_works() {
         let json = serde_json::json!({
             "name": "node-name",
             "worker": {
