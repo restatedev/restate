@@ -58,8 +58,9 @@ pub use user_limits::{RuleUpdate, UserLimits};
 ///
 /// This enum is used throughout the limiter to identify which level
 /// of the hierarchy is being referenced.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 #[repr(u8)]
+#[serde(rename_all = "kebab-case")]
 pub enum Level {
     /// Level 1 - top-level grouping (aka. Scope)
     Scope = 1,

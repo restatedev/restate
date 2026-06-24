@@ -36,8 +36,11 @@ define_table!(sys_scheduler(
     /// Set only when status is `Scheduled`.
     scheduled_at: TimestampMillisecond,
 
-    /// Detailed blocking resource when status is `BlockedOn`.
+    /// The current resource blocking the queue from dequeuing.
     blocked_on: DataType::Utf8,
+
+    /// Detailed blocking resource when status is `BlockedOn`.
+    blocked_on_json: DataType::Utf8,
 
     /// Time the head entry spent waiting on global invoker concurrency.
     invoker_concurrency_block_duration: DataType::Duration,

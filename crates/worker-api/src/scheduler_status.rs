@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use serde_with::serde_as;
+
 use restate_clock::RoughTimestamp;
 use restate_limiter::{Level, LimitKey, RuleHandle};
 use restate_storage_api::vqueue_table::stats::WaitStats;
@@ -157,11 +159,20 @@ impl ResourceKind {
 /// rule-pattern string rather than an opaque [`RuleHandle`], so downstream
 /// consumers (DataFusion tables, CLI, …) don't need to reach into the rules
 /// store to render it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Note that `serde::Serialize` is used to serialize into json in the context
+/// of datafusion.
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, strum::EnumDiscriminants)]
+#[strum_discriminants(derive(strum::IntoStaticStr, derive_more::Display, serde::Serialize))]
+#[strum_discriminants(display(rename_all = "kebab-case"))]
+#[serde(rename_all = "kebab-case")]
+#[serde(tag = "resource")]
 pub enum BlockedResource {
     /// Waiting to acquire the lock of a virtual object.
     Lock {
         scope: Option<Scope>,
+        #[serde_as(as = "serde_with::DisplayFromStr")]
         lock_name: LockName,
     },
     /// Waiting on global invoker concurrency capacity.
