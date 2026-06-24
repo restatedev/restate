@@ -157,11 +157,23 @@ impl ResourceKind {
 /// rule-pattern string rather than an opaque [`RuleHandle`], so downstream
 /// consumers (DataFusion tables, CLI, …) don't need to reach into the rules
 /// store to render it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Note that `serde::Serialize` is used to serialize into json in the context
+/// of datafusion.
+#[derive(Debug, Clone, PartialEq, Eq, strum::EnumDiscriminants)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[strum_discriminants(derive(strum::IntoStaticStr, derive_more::Display))]
+#[strum_discriminants(display(rename_all = "kebab-case"))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
+#[cfg_attr(feature = "serde", serde(tag = "resource"))]
 pub enum BlockedResource {
     /// Waiting to acquire the lock of a virtual object.
     Lock {
         scope: Option<Scope>,
+        #[cfg_attr(
+            feature = "serde",
+            serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
+        )]
         lock_name: LockName,
     },
     /// Waiting on global invoker concurrency capacity.

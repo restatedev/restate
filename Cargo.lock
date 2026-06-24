@@ -8913,6 +8913,7 @@ version = "1.7.1-dev"
 dependencies = [
  "bytes",
  "codederror",
+ "derive_more",
  "futures",
  "gardal",
  "restate-clock",
@@ -8926,7 +8927,9 @@ dependencies = [
  "restate-util-string",
  "restate-workspace-hack",
  "serde",
+ "serde_with",
  "smallvec",
+ "strum",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

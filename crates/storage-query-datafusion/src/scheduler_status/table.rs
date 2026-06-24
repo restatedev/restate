@@ -19,6 +19,7 @@ use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::metrics::Time;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
+use strum::IntoDiscriminant;
 use tokio::sync::mpsc::Sender;
 
 use restate_partition_store::PartitionStoreManager;
@@ -205,11 +206,21 @@ fn append_scheduler_row(builder: &mut SysSchedulerBuilder, row_data: SchedulerSt
     {
         row.scheduled_at(at.as_unix_millis().as_u64() as i64);
     }
+
+    if row.is_blocked_on_json_defined()
+        && let SchedulingStatus::BlockedOn(ref blocked_on) = status.status
+    {
+        let json =
+            serde_json::to_string(blocked_on).expect("blocked_on_json serde should be infallible");
+        row.blocked_on_json(json);
+    }
+
     if row.is_blocked_on_defined()
         && let SchedulingStatus::BlockedOn(blocked_on) = status.status
     {
-        row.fmt_blocked_on(blocked_on);
+        row.fmt_blocked_on(blocked_on.discriminant());
     }
+
     if row.is_invoker_concurrency_block_duration_defined() {
         row.invoker_concurrency_block_duration(
             status.wait_stats.blocked_on_invoker_concurrency_ms as i64,

@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-serde = ["dep:serde"]
+serde = ["dep:serde", "dep:serde_with", "restate-limiter/serde"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
@@ -29,7 +29,10 @@ codederror = { workspace = true }
 futures = { workspace = true }
 gardal = { workspace = true, features = ["tokio"] }
 serde = { workspace = true, optional = true }
+derive_more = { workspace = true, features = ["display"] }
+serde_with = { workspace = true, optional = true }
 smallvec = { workspace = true }
+strum = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
