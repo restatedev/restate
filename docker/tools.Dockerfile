@@ -61,4 +61,4 @@ COPY --from=builder /restate/target/restatectl /usr/local/bin
 COPY --from=builder /restate/target/restate /usr/local/bin
 COPY --from=builder /restate/target/restate-doctor /usr/local/bin
 WORKDIR /
-ENTRYPOINT [ "/bin/bash" ]
+CMD [ "/bin/bash" ]
