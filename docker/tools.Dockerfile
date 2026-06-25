@@ -47,18 +47,16 @@ RUN --mount=type=cache,target=/var/cache/sccache \
     mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restatectl target/restatectl && \
     mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restate target/restate && \
     mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restate-doctor target/restate-doctor;
-RUN cp docker/scripts/no-restate-debug-symbols.sh target/download-restate-debug-symbols.sh
 
 FROM debian:trixie-slim AS tools
 RUN apt-get update && apt-get install --no-install-recommends -y \
-    jq curl iproute2 iputils-ping tcpdump procps htop sysstat \
-    less ca-certificates file neovim \
+    jq curl iproute2 iputils-ping tcpdump procps htop sysstat iotop \
+    less ca-certificates file neovim binutils linux-perf \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /restate/NOTICE /NOTICE
 COPY --from=builder /restate/LICENSE /LICENSE
 # copy OS roots
 COPY --from=builder /etc/ssl /etc/ssl
-COPY --from=builder /restate/target/download-restate-debug-symbols.sh /usr/local/bin
 COPY --from=builder /restate/target/restatectl /usr/local/bin
 COPY --from=builder /restate/target/restate /usr/local/bin
 COPY --from=builder /restate/target/restate-doctor /usr/local/bin
