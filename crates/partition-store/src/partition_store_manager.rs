@@ -387,7 +387,10 @@ impl PartitionStoreManager {
         self.state.drop_partition(partition_id).await
     }
 
-    #[cfg(test)]
+    /// Opens a partition store by importing an already-downloaded snapshot, discarding any
+    /// existing local state for the partition. Unlike [`Self::open`], this takes a snapshot the
+    /// caller has fetched itself (e.g. via [`crate::snapshots::SnapshotRepository::get_latest`]),
+    /// which lets the caller use the snapshot's own key range.
     pub async fn open_from_snapshot(
         &self,
         partition: &Partition,
