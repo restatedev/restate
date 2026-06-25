@@ -17,21 +17,21 @@ use datafusion::error::DataFusionError;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
+use tokio::sync::mpsc::Sender;
+
 use restate_core::Metadata;
 use restate_types::GenerationalNodeId;
 use restate_types::config::Configuration;
 use restate_types::live::Live;
-use tokio::sync::mpsc::Sender;
 
+use super::schema::ConfigBuilder;
 use crate::context::QueryContext;
 use crate::node_fan_out::{AllNodeLocator, NodeFanOutTableProvider};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::Scan;
 use crate::table_util::Builder;
 
-use super::schema::ConfigsBuilder;
-
-pub(crate) const TABLE_NAME: &str = "configs";
+pub(crate) const TABLE_NAME: &str = "config";
 
 pub fn register_self(
     ctx: &QueryContext,
@@ -42,7 +42,7 @@ pub fn register_self(
     let node_locator = Arc::new(AllNodeLocator::new(metadata));
 
     let config_table = NodeFanOutTableProvider::new(
-        ConfigsBuilder::schema(),
+        ConfigBuilder::schema(),
         node_locator,
         remote_scanner_manager,
         local_scanner,
@@ -52,17 +52,17 @@ pub fn register_self(
 }
 
 pub fn create_scanner(metadata: Metadata, config: Live<Configuration>) -> Arc<dyn Scan> {
-    Arc::new(ConfigsScanner { metadata, config })
+    Arc::new(ConfigScanner { metadata, config })
 }
 
 #[derive(Clone, derive_more::Debug)]
-#[debug("ConfigsScanner")]
-struct ConfigsScanner {
+#[debug("ConfigScanner")]
+struct ConfigScanner {
     metadata: Metadata,
     config: Live<Configuration>,
 }
 
-impl Scan for ConfigsScanner {
+impl Scan for ConfigScanner {
     fn scan(
         &self,
         projection: SchemaRef,
@@ -93,16 +93,14 @@ async fn for_each_config(
     config: Arc<Configuration>,
     batch_size: usize,
 ) -> anyhow::Result<()> {
-    let mut builder = ConfigsBuilder::new(schema);
-    let json_value = serde_json::to_value(config).context("Failed to serialize config")?;
-    let plain_node_id_str = node_id.as_plain().to_string();
-    let gen_node_id_str = node_id.to_string();
+    let mut builder = ConfigBuilder::new(schema);
+    let json_value = serde_json::to_value(config).context("df config query")?;
 
     for (k, v) in flatten_json(&json_value) {
         {
             let mut row = builder.row();
-            row.plain_node_id(plain_node_id_str.as_str());
-            row.gen_node_id(gen_node_id_str.as_str());
+            row.fmt_plain_node_id(node_id.as_plain());
+            row.fmt_gen_node_id(node_id);
             row.key(k.as_str());
             row.value(if is_potentially_secret(k.as_str()) {
                 "<REDACTED>"
@@ -174,7 +172,7 @@ fn flatten_json(val: &serde_json::Value) -> impl Iterator<Item = (String, String
 }
 
 /// Best-effort secret detection.
-/// Access to the configs table is privileged anyways (via restatectl). Hence why it's ok
+/// Access to the config table is privileged anyways (via restatectl). Hence why it's ok
 /// for this to be best effort.
 ///
 /// Config keys are serialized in `kebab-case` (e.g. `aws-access-key-id`), so we match

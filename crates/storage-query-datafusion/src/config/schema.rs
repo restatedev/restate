@@ -14,7 +14,7 @@ use crate::table_macro::*;
 
 define_table!(
     /// Introspect cluster config.
-    configs(
+    config(
         /// The PlainNodeId of the node hosting this config.
         plain_node_id: DataType::Utf8,
         /// Current known generation ID of the node.

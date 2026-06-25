@@ -357,13 +357,17 @@ impl Node {
             remote_scanner_manager.register_node_scanner("bifrost_read_streams", local_scanner);
         }
 
-        // Register configs scanner — available on every node.
+        // Register config scanner — available on every node.
+        if !Configuration::pinned()
+            .admin
+            .query_engine
+            .disable_config_table
         {
-            let local_scanner = restate_storage_query_datafusion::configs::create_scanner(
+            let local_scanner = restate_storage_query_datafusion::config::create_scanner(
                 metadata.clone(),
                 Configuration::live(),
             );
-            remote_scanner_manager.register_node_scanner("configs", local_scanner);
+            remote_scanner_manager.register_node_scanner("config", local_scanner);
         }
 
         // Create a minimal QueryContext for the remote scanner server — it only

@@ -13,6 +13,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use restate_types::config::Configuration;
 use tokio::sync::watch;
 use tracing::warn;
 
@@ -375,12 +376,19 @@ impl RegisterTable for ClusterTables {
             self.remote_scanner_manager.clone(),
             None, // local scanner is registered separately by the node
         )?;
-        crate::configs::register_self(
-            ctx,
-            metadata,
-            self.remote_scanner_manager.clone(),
-            None, // local scanner is registered separately by the node
-        )?;
+
+        if !Configuration::pinned()
+            .admin
+            .query_engine
+            .disable_config_table
+        {
+            crate::config::register_self(
+                ctx,
+                metadata,
+                self.remote_scanner_manager.clone(),
+                None, // local scanner is registered separately by the node
+            )?;
+        }
 
         ctx.datafusion_context
             .sql(CLUSTER_LOGS_TAIL_SEGMENTS_VIEW)

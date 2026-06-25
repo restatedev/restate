@@ -44,6 +44,15 @@ pub struct QueryEngineOptions {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     #[cfg_attr(feature = "schemars", schemars(skip))]
     pub datafusion_options: HashMap<String, String>,
+
+    /// # Disable the config table
+    ///
+    /// Disables the `config` SQL table, which exposes the node's running
+    /// configuration via SQL queries.
+    ///
+    /// Since v1.8.0
+    #[serde(default)]
+    pub disable_config_table: bool,
 }
 
 impl QueryEngineOptions {
@@ -60,6 +69,7 @@ impl Default for QueryEngineOptions {
             tmp_dir: None,
             query_parallelism: None,
             datafusion_options: HashMap::new(),
+            disable_config_table: false,
         }
     }
 }
