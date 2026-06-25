@@ -1,0 +1,53 @@
+[package]
+name = "snapshot-debugger"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "snapshot-debugger"
+path = "src/main.rs"
+
+[dependencies]
+restate-workspace-hack = { workspace = true }
+
+restate-cli-util = { workspace = true }
+restate-core = { workspace = true }
+restate-metadata-store = { workspace = true }
+restate-object-store-util = { workspace = true }
+restate-partition-store = { workspace = true }
+restate-rocksdb = { workspace = true }
+restate-storage-query-datafusion = { workspace = true }
+restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio"] }
+restate-types = { workspace = true, features = ["clap", "unsafe-mutable-config"] }
+
+anyhow = { workspace = true }
+arrow = { workspace = true, features = ["prettyprint", "json", "ipc"] }
+async-trait = { workspace = true }
+axum = { workspace = true, features = ["json", "tokio", "http1"] }
+bytes = { workspace = true }
+bytestring = { workspace = true }
+clap = { workspace = true, features = ["derive", "env", "color", "help", "wrap_help", "usage", "suggestions", "error-context", "std"] }
+comfy-table = { workspace = true }
+datafusion = { workspace = true }
+futures = { workspace = true }
+http = { workspace = true }
+http-body = { workspace = true }
+http-body-util = { workspace = true }
+object_store = { workspace = true }
+rustyline = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
+tracing = { workspace = true }
+url = { workspace = true }
+
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = { workspace = true, features = ["unprefixed_malloc_on_supported_platforms"] }
+
+[lints]
+workspace = true
