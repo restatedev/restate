@@ -51,7 +51,7 @@ RUN --mount=type=cache,target=/var/cache/sccache \
 FROM debian:trixie-slim AS tools
 RUN apt-get update && apt-get install --no-install-recommends -y \
     jq curl iproute2 iputils-ping tcpdump procps htop sysstat iotop \
-    less ca-certificates file neovim binutils linux-perf \
+    less ca-certificates file neovim binutils linux-perf du-dust \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /restate/NOTICE /NOTICE
 COPY --from=builder /restate/LICENSE /LICENSE
