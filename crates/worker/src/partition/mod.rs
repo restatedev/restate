@@ -703,7 +703,9 @@ where
 
                         if let Some(announce_leader) = maybe_announce_leader {
                             // update partition store with latest epoch metadata
-                            if let Some(current_config) = &announce_leader.current_config {
+                            if let Some(current_config) = &announce_leader.current_config
+                                && self.cached_epoch_metadata.as_ref().is_none_or(|c| c.version < announce_leader.epoch_version.unwrap()) {
+
                                 let announced = CachedEpochMetadata {
                                     version: announce_leader.epoch_version.unwrap(),
                                     leader_node_id: announce_leader.node_id,
@@ -712,10 +714,8 @@ where
                                     next: announce_leader.next_config.as_ref().map(|v| v.to_next_replica_set_state()),
                                 };
 
-                                if self.cached_epoch_metadata.as_ref().is_none_or(|c| c.version < announced.version) {
-                                    transaction.put_partition_config_state(&announced)?;
-                                    self.cached_epoch_metadata = Some(announced);
-                                }
+                                transaction.put_partition_config_state(&announced)?;
+                                self.cached_epoch_metadata = Some(announced);
                             };
 
                             // commit all changes so far, this is important so that the actuators see all changes
@@ -732,12 +732,24 @@ where
                             self.status.last_observed_leader_epoch = Some(announce_leader.leader_epoch);
                             self.status.last_observed_leader_node = Some(announce_leader.node_id);
 
-                            self.replica_set_states.note_observed_leader(
+                            // It's safe to pass `Default` if current_config is None
+                            // since the merge algorithm will ignore values with
+                            // invalid or smaller version number.
+                            self.replica_set_states.note_observed_membership(
                                 partition_id,
                                 restate_types::partitions::state::LeadershipState {
                                     current_leader_epoch: announce_leader.leader_epoch,
                                     current_leader: announce_leader.node_id,
-                                }
+                                },
+                                &announce_leader
+                                    .current_config
+                                    .as_ref()
+                                    .map(|c| c.to_replica_set_state())
+                                    .unwrap_or_default(),
+                                &announce_leader
+                                    .next_config
+                                    .as_ref()
+                                    .map(|c| c.to_replica_set_state()),
                             );
 
                             let is_leader = self.leadership_state.on_announce_leader(
@@ -755,17 +767,6 @@ where
                             Span::current().record("is_leader", is_leader);
 
                             if is_leader {
-                                if let Some(cached) = &self.cached_epoch_metadata {
-                                    self.replica_set_states.note_observed_membership(
-                                        partition_id,
-                                        restate_types::partitions::state::LeadershipState {
-                                            current_leader_epoch: cached.leader_epoch,
-                                            current_leader: cached.leader_node_id,
-                                        },
-                                        &cached.current.replica_set,
-                                        &cached.next.as_ref().map(|c| &c.replica_set).cloned(),
-                                    );
-                                }
                                 self.status.effective_mode = RunMode::Leader;
                             } else {
                                 // make sure that we set our effective_mode to follower also when
