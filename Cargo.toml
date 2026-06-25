@@ -16,6 +16,7 @@ members = [
     "tools/restate-doctor",
     "tools/restatectl",
     "tools/service-protocol-wireshark-dissector",
+    "tools/snapshot-debugger",
     "tools/xtask",
     "workspace-hack",
 ]
@@ -28,6 +29,7 @@ default-members = [
     "server",
     "tools/restate-doctor",
     "tools/restatectl",
+    "tools/snapshot-debugger"
 ]
 resolver = "2"
 
@@ -235,6 +237,7 @@ rocksdb = { version = "0.48.0", package = "rust-rocksdb", features = [
 ], git = "https://github.com/restatedev/rust-rocksdb", rev = "432ac4288a219dd70d4c71ccfcd0ad51d6bcc0d1" }
 rstest = "0.26.1"
 rustls = { version = "0.23.35", default-features = false, features = ["ring"] }
+rustyline = { version = "14.0.0" }
 schemars = { version = "1.2", features = ["bytes1"] }
 semver = { version = "1.0", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
