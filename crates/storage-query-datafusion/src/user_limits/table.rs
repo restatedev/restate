@@ -105,7 +105,7 @@ where
     fn scan_partition(
         &self,
         partition_id: PartitionId,
-        _range: KeyRange,
+        range: KeyRange,
         projection: SchemaRef,
         _predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
@@ -119,7 +119,14 @@ where
         let tx = stream_builder.tx();
 
         let background_task = async move {
-            let range = partition_key_range(&partition_store_manager, partition_id).await?;
+            // Filter the user-limit counters by the *requested* `range`, not the full
+            // partition range. A `partition_key IN (...)` predicate expands into one
+            // point read per key, and several point reads can land on the same
+            // partition. Reading the full partition range on each would re-emit every
+            // counter in that partition once per point read.
+            let partition_range =
+                partition_key_range(&partition_store_manager, partition_id).await?;
+            let range = range.intersect(&partition_range).unwrap_or(range);
             match limit {
                 Some(limit) => {
                     for_each_user_limit(

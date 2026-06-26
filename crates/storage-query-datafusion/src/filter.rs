@@ -283,9 +283,8 @@ where
         // would otherwise spuriously gate the inner extractor open.
         let has_null_check = filters.iter().any(|filter| {
             filter
-                .as_any()
                 .downcast_ref::<IsNullExpr>()
-                .and_then(|is_null| is_null.arg().as_any().downcast_ref::<Column>())
+                .and_then(|is_null| is_null.arg().downcast_ref::<Column>())
                 .is_some_and(|column| column.name() == self.null_column_name)
         });
 
@@ -312,12 +311,12 @@ impl<'a> InList<'a> {
         }
 
         // Handle IN list: col IN ('a', 'b', ...)
-        if let Some(in_list) = predicate.as_any().downcast_ref::<InListExpr>() {
-            let col = in_list.expr().as_any().downcast_ref::<Column>()?;
+        if let Some(in_list) = predicate.downcast_ref::<InListExpr>() {
+            let col = in_list.expr().downcast_ref::<Column>()?;
 
             let mut list = HashSet::with_capacity(in_list.len());
             for lit in in_list.list() {
-                let lit = lit.as_any().downcast_ref::<Literal>()?;
+                let lit = lit.downcast_ref::<Literal>()?;
                 list.insert(lit.value());
             }
 
@@ -328,7 +327,7 @@ impl<'a> InList<'a> {
             });
         }
 
-        let binary = predicate.as_any().downcast_ref::<BinaryExpr>()?;
+        let binary = predicate.downcast_ref::<BinaryExpr>()?;
 
         match binary.op() {
             // Handle simple equality: col = 'a'
@@ -367,8 +366,8 @@ fn extract_column_literal<'a>(
     column: &'a Arc<dyn PhysicalExpr>,
     literal: &'a Arc<dyn PhysicalExpr>,
 ) -> Option<(&'a Column, &'a Literal)> {
-    let col = column.as_any().downcast_ref::<Column>()?;
-    let lit = literal.as_any().downcast_ref::<Literal>()?;
+    let col = column.downcast_ref::<Column>()?;
+    let lit = literal.downcast_ref::<Literal>()?;
     Some((col, lit))
 }
 

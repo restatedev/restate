@@ -7,7 +7,6 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
-use std::any::Any;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -135,10 +134,6 @@ where
     T: ScanPartition + Clone,
     S: SelectPartitions,
 {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
@@ -254,8 +249,8 @@ where
             limit,
             predicate,
             scanner: self.partition_scanner.clone(),
-            plan,
-            statistics: self.statistics.clone().project(projection),
+            plan: Arc::new(plan),
+            statistics: Arc::new(self.statistics.clone().project(projection)),
             metrics: ExecutionPlanMetricsSet::new(),
         }))
     }
@@ -284,8 +279,8 @@ struct PartitionedExecutionPlan<T> {
     limit: Option<usize>,
     predicate: Option<Arc<dyn PhysicalExpr>>,
     scanner: T,
-    plan: PlanProperties,
-    statistics: Statistics,
+    plan: Arc<PlanProperties>,
+    statistics: Arc<Statistics>,
     metrics: ExecutionPlanMetricsSet,
 }
 
@@ -297,15 +292,11 @@ where
         "PartitionedExecutionPlan"
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.projected_schema.clone()
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.plan
     }
 
@@ -326,14 +317,10 @@ where
         Ok(self)
     }
 
-    fn statistics(&self) -> datafusion::common::Result<Statistics> {
-        Ok(self.statistics.clone())
-    }
-
     fn partition_statistics(
         &self,
         _partition: Option<usize>,
-    ) -> datafusion::common::Result<Statistics> {
+    ) -> datafusion::common::Result<Arc<Statistics>> {
         Ok(self.statistics.clone())
     }
 
@@ -517,10 +504,6 @@ impl GenericTableProvider {
 
 #[async_trait]
 impl TableProvider for GenericTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
@@ -569,8 +552,8 @@ struct GenericExecutionPlan {
     scanner: ScannerRef,
     limit: Option<usize>,
     filters: Vec<Expr>,
-    plan_properties: PlanProperties,
-    statistics: Statistics,
+    plan_properties: Arc<PlanProperties>,
+    statistics: Arc<Statistics>,
     metrics: ExecutionPlanMetricsSet,
 }
 
@@ -596,8 +579,8 @@ impl GenericExecutionPlan {
             scanner,
             limit,
             filters: filters.to_vec(),
-            plan_properties,
-            statistics,
+            plan_properties: Arc::new(plan_properties),
+            statistics: Arc::new(statistics),
             metrics: ExecutionPlanMetricsSet::new(),
         }
     }
@@ -608,15 +591,11 @@ impl ExecutionPlan for GenericExecutionPlan {
         "GenericExecutionPlan"
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.projected_schema.clone()
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.plan_properties
     }
 
@@ -666,11 +645,7 @@ impl ExecutionPlan for GenericExecutionPlan {
         Some(self.metrics.clone_inner())
     }
 
-    fn statistics(&self) -> datafusion::error::Result<Statistics> {
-        Ok(self.statistics.clone())
-    }
-
-    fn partition_statistics(&self, _: Option<usize>) -> datafusion::error::Result<Statistics> {
+    fn partition_statistics(&self, _: Option<usize>) -> datafusion::error::Result<Arc<Statistics>> {
         Ok(self.statistics.clone())
     }
 }
