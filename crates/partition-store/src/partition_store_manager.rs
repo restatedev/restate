@@ -12,12 +12,17 @@ use std::path::Path;
 use std::sync::{Arc, Weak};
 
 use ahash::HashMap;
+use bytes::Bytes;
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
+use rocksdb::BottommostLevelCompaction;
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::{debug, error, info, instrument, warn};
 
-use restate_rocksdb::{CfPrefixPattern, DbSpecBuilder, RocksDb, RocksDbManager, RocksError};
+use restate_rocksdb::{
+    CfName, CfPrefixPattern, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
+};
 use restate_storage_api::fsm_table::ReadFsmTable;
+use restate_types::cluster_marker::ClusterMarker;
 use restate_types::config::Configuration;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::{Lsn, SequenceNumber};
@@ -25,6 +30,7 @@ use restate_types::partitions::Partition;
 use restate_types::protobuf::common::DatabaseKind;
 
 use crate::SnapshotError;
+use crate::keys::KeyKind;
 use crate::memory::MemoryController;
 use crate::partition_db::{AllDataCf, PartitionCell, PartitionDb, RocksConfigurator};
 use crate::snapshots::{LocalPartitionSnapshot, PartitionSnapshotStatus, Snapshots};
@@ -228,6 +234,30 @@ impl PartitionStoreManager {
         partition: &Partition,
         target_lsn: Option<Lsn>,
     ) -> Result<PartitionStore, OpenError> {
+        let partition_store = self.open_inner(partition, target_lsn).await?;
+        // Before the partition processor can issue any `SingleDelete` on the vqueue/lock ranges,
+        // make sure no legacy `Delete` tombstones survive for them by compacting those ranges once.
+        // Recorded in the cluster marker so we don't recompact on every startup; always redone after
+        // a snapshot restore. Gating is off in tests/tools, which never touch the marker.
+        let partition_id = partition.partition_id;
+        if !ClusterMarker::is_partition_single_delete_safe(partition_id)? {
+            debug!("Running range compaction to enable single-delete safety");
+            self.compact_vqueue_and_lock_ranges(
+                partition_store.partition_db().rocksdb(),
+                partition,
+            )
+            .await?;
+            ClusterMarker::mark_partition_single_delete_safe(partition_id)?;
+        }
+
+        Ok(partition_store)
+    }
+
+    async fn open_inner(
+        &self,
+        partition: &Partition,
+        target_lsn: Option<Lsn>,
+    ) -> Result<PartitionStore, OpenError> {
         let rocksdb = self.open_rocksdb(partition).await?;
 
         // If we already have the partition locally and we don't have a fast-forward target, or the
@@ -298,8 +328,8 @@ impl PartitionStoreManager {
                 // Play it safe and keep the partition store intact; we can't do much else at this
                 // point. We'll likely halt again as soon as the processor starts up.
                 let recovery_guide_msg = "The partition's log is trimmed to a point from which this processor can not resume. \
-                Visit https://docs.restate.dev/operate/clusters#handling-missing-snapshots \
-                to learn more about how to recover this processor.";
+                    Visit https://docs.restate.dev/operate/clusters#handling-missing-snapshots \
+                    to learn more about how to recover this processor.";
 
                 if let Some(snapshot) = maybe_snapshot {
                     warn!(
@@ -326,6 +356,43 @@ impl PartitionStoreManager {
                 }
             }
         }
+    }
+
+    /// Runs a forced bottommost-level compaction over the vqueue (`q*`) and lock (`lo`) key ranges
+    /// of the partition's column family, so that any legacy `Delete` tombstones are physically
+    /// dropped and `SingleDelete` becomes safe to use on those keys.
+    async fn compact_vqueue_and_lock_ranges(
+        &self,
+        rocksdb: &Arc<RocksDb>,
+        partition: &Partition,
+    ) -> Result<(), RocksError> {
+        let cf = CfName::from(partition.cf_name());
+
+        // VQueues own every key that starts with b"q" (see `keys.rs`): compact [b"q", b"r").
+        rocksdb
+            .clone()
+            .compact_range(
+                cf.clone(),
+                Some(Bytes::from_static(b"q")),
+                Some(Bytes::from_static(b"r")),
+                BottommostLevelCompaction::Force,
+            )
+            .await?;
+
+        // Locks live under the `KeyKind::Lock` prefix.
+        rocksdb
+            .clone()
+            .compact_range(
+                cf,
+                Some(Bytes::copy_from_slice(KeyKind::Lock.as_bytes())),
+                Some(Bytes::copy_from_slice(
+                    &KeyKind::Lock.exclusive_upper_bound(),
+                )),
+                BottommostLevelCompaction::Force,
+            )
+            .await?;
+
+        Ok(())
     }
 
     /// Closes a partition store for the given partition
