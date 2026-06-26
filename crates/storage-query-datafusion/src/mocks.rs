@@ -250,7 +250,7 @@ impl MockQueryEngine {
     pub async fn execute(
         &self,
         sql: impl AsRef<str> + Send,
-    ) -> datafusion::common::Result<crate::context::QueryResult> {
+    ) -> Result<crate::context::QueryResult, crate::context::QueryError> {
         self.2.execute(sql.as_ref()).await
     }
 }
