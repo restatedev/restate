@@ -1,0 +1,113 @@
+name: Build Tools Docker image
+
+# Builds the CLI tools image (restate, restatectl, restate-doctor) from
+# docker/tools.Dockerfile and pushes it to ghcr.io/restatedev/restate-tools.
+# Runs daily so the tools image tracks the latest main.
+
+on:
+  schedule:
+    # Run daily at 02:00 UTC
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+env:
+  REPOSITORY_OWNER: ${{ github.repository_owner }}
+  GHCR_REGISTRY: "ghcr.io"
+  GHCR_REGISTRY_USERNAME: ${{ github.actor }}
+  GHCR_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  IMAGE_NAME: restate-tools
+
+jobs:
+  build-and-push-image:
+    if: github.repository_owner == 'restatedev'
+    runs-on: warp-ubuntu-latest-x64-16x
+    timeout-minutes: 70
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cargo-hakari
+        if: ${{ hashFiles('.config/hakari.toml') != '' }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hakari
+
+      - name: Disable hakari
+        if: ${{ hashFiles('.config/hakari.toml') != '' }}
+        run: cargo hakari disable
+
+      # this is needed to be able to load and push a multiplatform image in one step
+      - name: Set up Docker containerd snapshotter
+        uses: depot/use-containerd-snapshotter-action@v1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          # https://docs.warpbuild.com/cache/docker-layer-caching#step-1-set-up-docker-buildx-action
+          driver-opts: |
+            network=host
+
+      - name: Cache sccache
+        id: cache
+        uses: WarpBuilds/cache@v1
+        with:
+          path: sccache-cache
+          key: ${{ runner.os }}-sccache-tools-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Inject sccache-cache into Docker
+        uses: reproducible-containers/buildkit-cache-dance@v3.1.2
+        with:
+          cache-map: |
+            {
+              "sccache-cache": "/var/cache/sccache"
+            }
+          skip-extraction: ${{ steps.cache.outputs.cache-hit }}
+
+      - name: Log into GitHub container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ env.GHCR_REGISTRY_USERNAME }}
+          password: ${{ env.GHCR_REGISTRY_TOKEN }}
+
+      - name: Extract base image from Dockerfile
+        id: base-image
+        run: |
+          BASE_IMAGE=$(grep 'FROM.*AS tools' docker/tools.Dockerfile | head -1 | awk '{print $2}')
+          echo "name=${BASE_IMAGE}" >> $GITHUB_OUTPUT
+          echo "Base image: ${BASE_IMAGE}"
+
+          # Get the base image digest for the amd64 platform
+          BASE_DIGEST=$(docker buildx imagetools inspect "${BASE_IMAGE}" --raw | \
+            jq -r '.manifests[] | select(.platform.architecture == "amd64") | .digest' 2>/dev/null | head -1 || true)
+          echo "digest=${BASE_DIGEST}" >> $GITHUB_OUTPUT
+          echo "Base image digest: ${BASE_DIGEST}"
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.GHCR_REGISTRY }}/${{ env.REPOSITORY_OWNER }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=true
+          tags: |
+            type=raw,value={{date 'YYYYMMDD'}}
+          labels: |
+            org.opencontainers.image.base.name=${{ steps.base-image.outputs.name }}
+            org.opencontainers.image.base.digest=${{ steps.base-image.outputs.digest }}
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: "docker/tools.Dockerfile"
+          tags: ${{ steps.meta.outputs.tags }}
+          outputs: type=registry
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/arm64,linux/amd64
+          network: host
+          cache-from: type=gha,url=http://127.0.0.1:49160/,version=1
+          cache-to: type=gha,url=http://127.0.0.1:49160/,mode=max,version=1
