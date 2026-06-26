@@ -20,35 +20,51 @@ restate-workspace-hack = { workspace = true }
 
 # Restate crates
 restate-cli-util = { workspace = true }
+restate-core = { workspace = true }
 restate-limiter = { workspace = true }
 restate-log-server = { workspace = true, features = ["expose-internals", "test-util"] }
+restate-metadata-store = { workspace = true }
+restate-object-store-util = { workspace = true }
 restate-partition-store = { workspace = true }
 restate-rocksdb = { workspace = true }
+restate-storage-query-datafusion = { workspace = true }
 restate-util-bytecount = { workspace = true, features = ["serde"] }
 restate-storage-api = { workspace = true }
-restate-types = { workspace = true }
+restate-types = { workspace = true, features = ["clap", "unsafe-mutable-config"] }
 restate-wal-protocol = { workspace = true }
 
 anyhow = { workspace = true }
+arrow = { workspace = true, features = ["prettyprint", "json", "ipc"] }
+async-trait = { workspace = true }
+axum = { workspace = true, features = ["json", "tokio", "http1"] }
 bilrost = { workspace = true }
 bytes = { workspace = true }
+bytestring = { workspace = true }
 clap = { workspace = true, features = ["derive", "env", "wrap_help", "color", "std", "suggestions", "usage"] }
 clap_complete = { workspace = true }
 cling = { workspace = true }
 comfy-table = { workspace = true }
 crossterm = { workspace = true }
 ctrlc = { version = "3.4" }
+datafusion = { workspace = true }
+futures = { workspace = true }
+http = { workspace = true }
+http-body = { workspace = true }
+http-body-util = { workspace = true }
 jiff = { workspace = true }
+object_store = { workspace = true }
 rlimit = { workspace = true }
 rocksdb = { workspace = true }
+rustyline = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 ulid = { workspace = true }
+url = { workspace = true }
 
 [build-dependencies]
 vergen = { workspace = true, default-features = false, features = [

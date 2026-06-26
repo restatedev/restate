@@ -892,6 +892,10 @@ impl StorageOptions {
             })
     }
 
+    pub fn set_rocksdb_memory_budget(&mut self, budget: NonZeroByteCount) {
+        self.rocksdb_memory_budget = Some(budget);
+    }
+
     pub fn data_dir(&self, db_name: &str) -> PathBuf {
         super::data_dir(db_name)
     }
