@@ -9,13 +9,16 @@
 // by the Apache License, Version 2.0.
 
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::path::Path;
+use std::sync::Mutex;
 
 use tracing::debug;
 
 use crate::SemanticRestateVersion;
 use crate::config::node_filepath;
+use crate::identifiers::PartitionId;
 use crate::nodes_config::ClusterFingerprint;
 
 const CLUSTER_MARKER_FILE_NAME: &str = ".cluster-marker";
@@ -127,6 +130,17 @@ pub struct ClusterMarker {
     /// *Since v1.7.0*
     #[serde(default)]
     use_multi_db_layout: bool,
+    /// Partitions whose vqueue (`q*`) and lock (`lo`) key ranges have been compacted so that
+    /// using `SingleDelete` on them is safe (i.e. no surviving legacy `Delete` tombstones).
+    ///
+    /// Tracked here rather than in the partition FSM on purpose: an older binary that doesn't
+    /// know this field drops it when it rewrites the marker, which correctly forces a
+    /// recompaction on the next upgrade (the old binary would have re-introduced `Delete`
+    /// tombstones for these ranges).
+    ///
+    /// *Since v1.7.1*
+    #[serde(default)]
+    single_delete_safe_partitions: HashSet<PartitionId>,
 }
 
 impl ClusterMarker {
@@ -145,6 +159,7 @@ impl ClusterMarker {
             is_provisioned,
             use_multi_db_layout,
             cluster_fingerprint: None,
+            single_delete_safe_partitions: HashSet::new(),
         }
     }
 }
@@ -187,6 +202,74 @@ impl ClusterMarker {
     pub fn uses_multi_db_layout(&self) -> bool {
         self.use_multi_db_layout
     }
+
+    /// Returns `true` if `partition_id`'s vqueue/lock key ranges have already been compacted and
+    /// recorded as safe to `SingleDelete`.
+    ///
+    /// Reads the marker file directly without taking [`CLUSTER_MARKER_WRITE_LOCK`]: the write path
+    /// swaps the file in atomically (tmp-file + `rename`), so a concurrent read sees either the old
+    /// or the new file in full, never a torn read.
+    pub fn is_partition_single_delete_safe(
+        partition_id: PartitionId,
+    ) -> Result<bool, ClusterValidationError> {
+        is_partition_single_delete_safe_inner(
+            node_filepath(CLUSTER_MARKER_FILE_NAME).as_path(),
+            partition_id,
+        )
+    }
+
+    /// Records that `partition_id`'s vqueue/lock ranges have been compacted. Idempotent: a no-op
+    /// (no file write) if the partition is already recorded.
+    pub fn mark_partition_single_delete_safe(
+        partition_id: PartitionId,
+    ) -> Result<(), ClusterValidationError> {
+        mark_partition_single_delete_safe_inner(
+            node_filepath(CLUSTER_MARKER_FILE_NAME).as_path(),
+            partition_id,
+        )
+    }
+}
+
+/// Serializes all read-modify-write updates of the (single, per-process) cluster marker file.
+/// Reads don't take this lock — the atomic `rename` in [`write_new_cluster_marker`] makes them safe.
+static CLUSTER_MARKER_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(any(test, feature = "test-util"))]
+fn is_partition_single_delete_safe_inner(
+    _cluster_marker_filepath: &Path,
+    _partition_id: PartitionId,
+) -> Result<bool, ClusterValidationError> {
+    Ok(true)
+}
+
+#[cfg(any(test, feature = "test-util"))]
+fn mark_partition_single_delete_safe_inner(
+    _cluster_marker_filepath: &Path,
+    _partition_id: PartitionId,
+) -> Result<(), ClusterValidationError> {
+    Ok(())
+}
+
+#[cfg(not(any(test, feature = "test-util")))]
+fn is_partition_single_delete_safe_inner(
+    cluster_marker_filepath: &Path,
+    partition_id: PartitionId,
+) -> Result<bool, ClusterValidationError> {
+    read_cluster_marker(cluster_marker_filepath)
+        .map(|marker| marker.single_delete_safe_partitions.contains(&partition_id))
+}
+
+#[cfg(not(any(test, feature = "test-util")))]
+fn mark_partition_single_delete_safe_inner(
+    cluster_marker_filepath: &Path,
+    partition_id: PartitionId,
+) -> Result<(), ClusterValidationError> {
+    let _guard = CLUSTER_MARKER_WRITE_LOCK.lock().unwrap();
+    let mut marker = read_cluster_marker(cluster_marker_filepath)?;
+    if marker.single_delete_safe_partitions.insert(partition_id) {
+        write_new_cluster_marker(cluster_marker_filepath, &marker)?;
+    }
+    Ok(())
 }
 
 fn validate_and_update_cluster_marker_inner(
@@ -196,6 +279,7 @@ fn validate_and_update_cluster_marker_inner(
     use_multi_db_layout: bool,
     compatibility_information: &CompatibilityInformation,
 ) -> Result<ClusterMarker, ClusterValidationError> {
+    let _guard = CLUSTER_MARKER_WRITE_LOCK.lock().unwrap();
     let mut cluster_marker = if cluster_marker_filepath.exists() {
         read_cluster_marker(cluster_marker_filepath)?
     } else {
@@ -331,6 +415,7 @@ fn mark_cluster_as_provisioned_inner(
     cluster_marker_filepath: &Path,
     fingerprint: Option<ClusterFingerprint>,
 ) -> Result<(), ClusterValidationError> {
+    let _guard = CLUSTER_MARKER_WRITE_LOCK.lock().unwrap();
     let mut cluster_marker = read_cluster_marker(cluster_marker_filepath)?;
 
     // Reconcile the persisted fingerprint with the input:
@@ -424,6 +509,7 @@ mod tests {
                 is_provisioned: false,
                 use_multi_db_layout: false,
                 cluster_fingerprint: None,
+                single_delete_safe_partitions: Default::default(),
             }
         )
     }
@@ -468,6 +554,7 @@ mod tests {
                 is_provisioned: true,
                 use_multi_db_layout: false,
                 cluster_fingerprint: None,
+                single_delete_safe_partitions: Default::default(),
             }
         );
         Ok(())
@@ -513,6 +600,7 @@ mod tests {
                 is_provisioned: false,
                 use_multi_db_layout: false,
                 cluster_fingerprint: None,
+                single_delete_safe_partitions: Default::default(),
             }
         );
         Ok(())
