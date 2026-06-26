@@ -15,6 +15,7 @@ use codederror::CodedError;
 use restate_core::ShutdownError;
 use restate_rocksdb::RocksError;
 use restate_storage_api::StorageError;
+use restate_types::cluster_marker::ClusterValidationError;
 use restate_types::identifiers::PartitionId;
 
 #[derive(Debug, thiserror::Error)]
@@ -33,6 +34,8 @@ pub enum OpenError {
     RocksDb(#[from] RocksError),
     #[error("open failed due to partition data error: {0}")]
     Storage(#[from] StorageError),
+    #[error("open failed while updating the cluster marker: {0}")]
+    ClusterMarker(#[from] ClusterValidationError),
 }
 
 #[derive(Debug, thiserror::Error, CodedError)]
