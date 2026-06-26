@@ -16,6 +16,8 @@ use serde_with::serde_as;
 
 use restate_util_bytecount::NonZeroByteCount;
 
+use crate::config::throttling::ThrottlingOptions;
+
 /// # Storage query engine options
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
@@ -44,6 +46,15 @@ pub struct QueryEngineOptions {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     #[cfg_attr(feature = "schemars", schemars(skip))]
     pub datafusion_options: HashMap<String, String>,
+
+    /// # Query rate limiting
+    ///
+    /// Per-node rate limiting options for datafusion query execution. When exceeded,
+    /// the query will fail with TOO_MANY_REQUESTS. If unset, no rate limiting is applied.
+    ///
+    /// Since v1.7.1
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limiting: Option<ThrottlingOptions>,
 }
 
 impl QueryEngineOptions {
@@ -60,6 +71,7 @@ impl Default for QueryEngineOptions {
             tmp_dir: None,
             query_parallelism: None,
             datafusion_options: HashMap::new(),
+            rate_limiting: None,
         }
     }
 }
