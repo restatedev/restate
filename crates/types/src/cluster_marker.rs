@@ -9,13 +9,16 @@
 // by the Apache License, Version 2.0.
 
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::path::Path;
+use std::sync::Mutex;
 
 use tracing::debug;
 
 use crate::SemanticRestateVersion;
 use crate::config::node_filepath;
+use crate::identifiers::PartitionId;
 use crate::nodes_config::ClusterFingerprint;
 
 const CLUSTER_MARKER_FILE_NAME: &str = ".cluster-marker";
@@ -127,6 +130,17 @@ pub struct ClusterMarker {
     /// *Since v1.7.0*
     #[serde(default)]
     use_multi_db_layout: bool,
+    /// Partitions whose vqueue (`q*`) and lock (`lo`) key ranges have been compacted so that
+    /// using `SingleDelete` on them is safe (i.e. no surviving legacy `Delete` tombstones).
+    ///
+    /// Tracked here rather than in the partition FSM on purpose: an older binary that doesn't
+    /// know this field drops it when it rewrites the marker, which correctly forces a
+    /// recompaction on the next upgrade (the old binary would have re-introduced `Delete`
+    /// tombstones for these ranges).
+    ///
+    /// *Since v1.7.1*
+    #[serde(default)]
+    single_delete_safe_partitions: HashSet<PartitionId>,
 }
 
 impl ClusterMarker {
@@ -145,6 +159,7 @@ impl ClusterMarker {
             is_provisioned,
             use_multi_db_layout,
             cluster_fingerprint: None,
+            single_delete_safe_partitions: HashSet::new(),
         }
     }
 }
@@ -187,6 +202,56 @@ impl ClusterMarker {
     pub fn uses_multi_db_layout(&self) -> bool {
         self.use_multi_db_layout
     }
+
+    /// Returns `true` if `partition_id`'s vqueue/lock key ranges have already been compacted and
+    /// recorded as safe to `SingleDelete`.
+    ///
+    /// Reads the marker file directly without taking [`CLUSTER_MARKER_WRITE_LOCK`]: the write path
+    /// swaps the file in atomically (tmp-file + `rename`), so a concurrent read sees either the old
+    /// or the new file in full, never a torn read.
+    pub fn is_partition_single_delete_safe(
+        partition_id: PartitionId,
+    ) -> Result<bool, ClusterValidationError> {
+        is_partition_single_delete_safe_inner(
+            node_filepath(CLUSTER_MARKER_FILE_NAME).as_path(),
+            partition_id,
+        )
+    }
+
+    /// Records that `partition_id`'s vqueue/lock ranges have been compacted. Idempotent: a no-op
+    /// (no file write) if the partition is already recorded.
+    pub fn mark_partition_single_delete_safe(
+        partition_id: PartitionId,
+    ) -> Result<(), ClusterValidationError> {
+        mark_partition_single_delete_safe_inner(
+            node_filepath(CLUSTER_MARKER_FILE_NAME).as_path(),
+            partition_id,
+        )
+    }
+}
+
+/// Serializes all read-modify-write updates of the (single, per-process) cluster marker file.
+/// Reads don't take this lock — the atomic `rename` in [`write_new_cluster_marker`] makes them safe.
+static CLUSTER_MARKER_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+fn is_partition_single_delete_safe_inner(
+    cluster_marker_filepath: &Path,
+    partition_id: PartitionId,
+) -> Result<bool, ClusterValidationError> {
+    read_cluster_marker(cluster_marker_filepath)
+        .map(|marker| marker.single_delete_safe_partitions.contains(&partition_id))
+}
+
+fn mark_partition_single_delete_safe_inner(
+    cluster_marker_filepath: &Path,
+    partition_id: PartitionId,
+) -> Result<(), ClusterValidationError> {
+    let _guard = CLUSTER_MARKER_WRITE_LOCK.lock().unwrap();
+    let mut marker = read_cluster_marker(cluster_marker_filepath)?;
+    if marker.single_delete_safe_partitions.insert(partition_id) {
+        write_new_cluster_marker(cluster_marker_filepath, &marker)?;
+    }
+    Ok(())
 }
 
 fn validate_and_update_cluster_marker_inner(
@@ -196,6 +261,7 @@ fn validate_and_update_cluster_marker_inner(
     use_multi_db_layout: bool,
     compatibility_information: &CompatibilityInformation,
 ) -> Result<ClusterMarker, ClusterValidationError> {
+    let _guard = CLUSTER_MARKER_WRITE_LOCK.lock().unwrap();
     let mut cluster_marker = if cluster_marker_filepath.exists() {
         read_cluster_marker(cluster_marker_filepath)?
     } else {
@@ -331,6 +397,7 @@ fn mark_cluster_as_provisioned_inner(
     cluster_marker_filepath: &Path,
     fingerprint: Option<ClusterFingerprint>,
 ) -> Result<(), ClusterValidationError> {
+    let _guard = CLUSTER_MARKER_WRITE_LOCK.lock().unwrap();
     let mut cluster_marker = read_cluster_marker(cluster_marker_filepath)?;
 
     // Reconcile the persisted fingerprint with the input:
@@ -360,13 +427,17 @@ mod tests {
     use crate::SemanticRestateVersion;
     use crate::cluster_marker::{
         CLUSTER_MARKER_FILE_NAME, COMPATIBILITY_INFORMATION, ClusterMarker, ClusterValidationError,
-        CompatibilityInformation, mark_cluster_as_provisioned_inner,
+        CompatibilityInformation, is_partition_single_delete_safe_inner,
+        mark_cluster_as_provisioned_inner, mark_partition_single_delete_safe_inner,
         validate_and_update_cluster_marker_inner,
     };
+    use crate::identifiers::PartitionId;
     use crate::nodes_config::ClusterFingerprint;
+    use std::collections::HashSet;
     use std::fs;
     use std::fs::OpenOptions;
     use std::path::Path;
+    use std::sync::Arc;
     use tempfile::tempdir;
 
     fn read_cluster_marker(path: impl AsRef<Path>) -> anyhow::Result<ClusterMarker> {
@@ -424,6 +495,7 @@ mod tests {
                 is_provisioned: false,
                 use_multi_db_layout: false,
                 cluster_fingerprint: None,
+                single_delete_safe_partitions: Default::default(),
             }
         )
     }
@@ -468,6 +540,7 @@ mod tests {
                 is_provisioned: true,
                 use_multi_db_layout: false,
                 cluster_fingerprint: None,
+                single_delete_safe_partitions: Default::default(),
             }
         );
         Ok(())
@@ -513,6 +586,7 @@ mod tests {
                 is_provisioned: false,
                 use_multi_db_layout: false,
                 cluster_fingerprint: None,
+                single_delete_safe_partitions: Default::default(),
             }
         );
         Ok(())
@@ -700,6 +774,90 @@ mod tests {
         assert!(marker.is_provisioned);
         assert_eq!(marker.cluster_fingerprint, None);
 
+        Ok(())
+    }
+
+    #[test]
+    fn old_format_marker_decodes_to_empty_single_delete_set() -> anyhow::Result<()> {
+        // A marker written by a binary that predates the field has no `single_delete_safe_partitions`
+        // key. It must decode to an empty set (forcing recompaction), which is the rollback behavior.
+        let dir = tempdir()?;
+        let file = dir.path().join(CLUSTER_MARKER_FILE_NAME);
+        let old_json = serde_json::json!({
+            "cluster_name": CLUSTER_NAME,
+            "cluster_fingerprint": null,
+            "max_version": "1.7.0",
+            "current_version": "1.7.0",
+            "min_forward_compatible_version": "1.6.0",
+            "is_provisioned": true,
+        });
+        fs::write(&file, serde_json::to_vec(&old_json)?)?;
+
+        let marker = read_cluster_marker(&file)?;
+        assert!(marker.single_delete_safe_partitions.is_empty());
+        assert!(!is_partition_single_delete_safe_inner(
+            &file,
+            PartitionId::from(0)
+        )?);
+        Ok(())
+    }
+
+    fn write_fresh_marker(file: &Path) -> anyhow::Result<()> {
+        write_cluster_marker(
+            &ClusterMarker::new(
+                CLUSTER_NAME.to_owned(),
+                SemanticRestateVersion::new(1, 7, 1),
+                TESTING_COMPATIBILITY_INFORMATION.min_forward_compatible_version,
+                true,
+                false,
+            ),
+            file,
+        )
+    }
+
+    #[test]
+    fn marks_partitions_and_is_idempotent() -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let file = dir.path().join(CLUSTER_MARKER_FILE_NAME);
+        write_fresh_marker(&file)?;
+
+        let p = PartitionId::from(7);
+        assert!(!is_partition_single_delete_safe_inner(&file, p)?);
+        mark_partition_single_delete_safe_inner(&file, p)?;
+        mark_partition_single_delete_safe_inner(&file, p)?; // idempotent
+        assert!(is_partition_single_delete_safe_inner(&file, p)?);
+
+        // The mark must not clobber unrelated fields (e.g. is_provisioned).
+        let marker = read_cluster_marker(&file)?;
+        assert!(marker.is_provisioned);
+        assert_eq!(marker.single_delete_safe_partitions, HashSet::from([p]));
+        Ok(())
+    }
+
+    #[test]
+    fn marks_concurrently_without_lost_updates() -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let file = Arc::new(dir.path().join(CLUSTER_MARKER_FILE_NAME));
+        write_fresh_marker(file.as_path())?;
+
+        let expected: HashSet<PartitionId> = (0..32u16).map(PartitionId::from).collect();
+
+        // Concurrent read-modify-writes against one file must all land: the global
+        // CLUSTER_MARKER_WRITE_LOCK serializes them so none clobbers another.
+        let threads: Vec<_> = expected
+            .iter()
+            .copied()
+            .map(|p| {
+                let file = Arc::clone(&file);
+                std::thread::spawn(move || mark_partition_single_delete_safe_inner(&file, p))
+            })
+            .collect();
+        for t in threads {
+            t.join().expect("thread panicked")?;
+        }
+
+        let marker = read_cluster_marker(file.as_path())?;
+        assert_eq!(marker.single_delete_safe_partitions, expected);
         Ok(())
     }
 }
