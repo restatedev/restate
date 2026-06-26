@@ -20,7 +20,6 @@
 //! The `plain_node_id` column enables predicate pushdown so queries like
 //! `WHERE plain_node_id = 'N5'` target only the relevant node.
 
-use std::any::Any;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -226,10 +225,6 @@ impl NodeFanOutTableProvider {
 
 #[async_trait]
 impl datafusion::catalog::TableProvider for NodeFanOutTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
@@ -301,8 +296,8 @@ pub(crate) struct NodeFanOutExecutionPlan {
     table_name: String,
     filters: Vec<Expr>,
     limit: Option<usize>,
-    plan_properties: PlanProperties,
-    statistics: Statistics,
+    plan_properties: Arc<PlanProperties>,
+    statistics: Arc<Statistics>,
     metrics: ExecutionPlanMetricsSet,
     node_warnings: NodeWarnings,
 }
@@ -337,8 +332,8 @@ impl NodeFanOutExecutionPlan {
             table_name,
             filters,
             limit,
-            plan_properties,
-            statistics,
+            plan_properties: Arc::new(plan_properties),
+            statistics: Arc::new(statistics),
             metrics: ExecutionPlanMetricsSet::new(),
             node_warnings: Arc::new(Mutex::new(Vec::new())),
         }
@@ -356,15 +351,11 @@ impl ExecutionPlan for NodeFanOutExecutionPlan {
         "NodeFanOutExecutionPlan"
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.projected_schema.clone()
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.plan_properties
     }
 
@@ -458,11 +449,7 @@ impl ExecutionPlan for NodeFanOutExecutionPlan {
         Some(self.metrics.clone_inner())
     }
 
-    fn statistics(&self) -> datafusion::error::Result<Statistics> {
-        Ok(self.statistics.clone())
-    }
-
-    fn partition_statistics(&self, _: Option<usize>) -> datafusion::error::Result<Statistics> {
+    fn partition_statistics(&self, _: Option<usize>) -> datafusion::error::Result<Arc<Statistics>> {
         Ok(self.statistics.clone())
     }
 }
