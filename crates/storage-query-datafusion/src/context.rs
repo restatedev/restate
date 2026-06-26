@@ -675,7 +675,7 @@ fn collect_node_warnings(plan: &Arc<dyn ExecutionPlan>) -> Vec<NodeWarnings> {
     let mut warnings = Vec::new();
     let mut stack = vec![Arc::clone(plan)];
     while let Some(node) = stack.pop() {
-        if let Some(fan_out) = node.as_any().downcast_ref::<NodeFanOutExecutionPlan>() {
+        if let Some(fan_out) = node.downcast_ref::<NodeFanOutExecutionPlan>() {
             warnings.push(fan_out.node_warnings().clone());
         }
         for child in node.children() {

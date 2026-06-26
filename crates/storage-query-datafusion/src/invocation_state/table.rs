@@ -96,7 +96,7 @@ impl<S: StatusHandle + Send + Sync + Debug + Clone + 'static> ScanPartition for 
     fn scan_partition(
         &self,
         partition_id: PartitionId,
-        _range: KeyRange,
+        range: KeyRange,
         projection: SchemaRef,
         _predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
@@ -110,7 +110,18 @@ impl<S: StatusHandle + Send + Sync + Debug + Clone + 'static> ScanPartition for 
         let tx = stream_builder.tx();
 
         let background_task = async move {
-            let range = partition_key_range(&partition_store_manager, partition_id).await?;
+            // Validate the partition store exists locally, then clamp the requested
+            // range to the partition's own key range.
+            let partition_range =
+                partition_key_range(&partition_store_manager, partition_id).await?;
+
+            // Filter the invoker status by the *requested* `range`, not the full
+            // partition range. An `id IN (...)` predicate expands into one point
+            // read per key, and several point reads can land on the same partition.
+            // Reading the full partition range on each would re-emit every in-flight
+            // invocation in that partition once per point read, which then gets
+            // multiplied by the `sys_invocation` view's join against this table.
+            let range = range.intersect(&partition_range).unwrap_or(range);
             match limit {
                 Some(limit) => {
                     for_each_state(
