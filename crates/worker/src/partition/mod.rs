@@ -173,7 +173,7 @@ impl PartitionProcessorBuilder {
     pub async fn build<T>(
         self,
         bifrost: Bifrost,
-        ingestion_client: IngestionClient<T, Envelope>,
+        ingestion_client: IngestionClient<T, v2::Envelope<v2::Raw>>,
         mut partition_store: PartitionStore,
         replica_set_states: PartitionReplicaSetStates,
     ) -> Result<PartitionProcessor<T>, state_machine::Error>

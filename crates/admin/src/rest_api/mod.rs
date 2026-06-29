@@ -29,10 +29,8 @@ use utoipa::OpenApi;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use restate_core::network::TransportConnect;
-use restate_types::identifiers::PartitionKey;
 use restate_types::invocation::client::InvocationClient;
 use restate_types::schema::registry::{DiscoveryClient, MetadataService, TelemetryClient};
-use restate_wal_protocol::{Destination, Header, Source};
 
 use crate::state::AdminServiceState;
 
@@ -185,16 +183,6 @@ where
             axum::routing::get(|| async move { axum::Json(api) }),
         )
         .with_state(state)
-}
-
-fn create_envelope_header(partition_key: PartitionKey) -> Header {
-    Header {
-        source: Source::ControlPlane {},
-        dest: Destination::Processor {
-            partition_key,
-            dedup: None,
-        },
-    }
 }
 
 /// # Error description response

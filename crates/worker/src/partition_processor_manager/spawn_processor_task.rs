@@ -26,7 +26,7 @@ use restate_types::cluster::cluster_state::PartitionProcessorStatus;
 use restate_types::logs::Lsn;
 use restate_types::partitions::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
-use restate_wal_protocol::Envelope;
+use restate_wal_protocol::v2::{Envelope, Raw};
 use restate_worker_api::invoker::capacity::InvokerCapacity;
 
 use crate::PartitionProcessorBuilder;
@@ -43,7 +43,7 @@ pub struct SpawnPartitionProcessorTask<T> {
     partition_store_manager: Arc<PartitionStoreManager>,
     fast_forward_lsn: Option<Lsn>,
     invoker_capacity: InvokerCapacity,
-    ingestion_client: IngestionClient<T, Envelope>,
+    ingestion_client: IngestionClient<T, Envelope<Raw>>,
     leader_handles_registry: PartitionLeaderHandlesRegistry,
     rule_book_cache: RuleBookCacheHandle,
 }
@@ -61,7 +61,7 @@ where
         partition_store_manager: Arc<PartitionStoreManager>,
         fast_forward_lsn: Option<Lsn>,
         invoker_capacity: InvokerCapacity,
-        ingestion_client: IngestionClient<T, Envelope>,
+        ingestion_client: IngestionClient<T, Envelope<Raw>>,
         leader_handles_registry: PartitionLeaderHandlesRegistry,
         rule_book_cache: RuleBookCacheHandle,
     ) -> Self {
