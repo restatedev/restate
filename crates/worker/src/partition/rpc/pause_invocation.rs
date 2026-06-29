@@ -72,14 +72,10 @@ where
             // straggler effect from the attempt we are pausing is dropped at write time.
             self.proposer
                 .propose_pause_and_fence(
-                    invocation_id,
-                    Command::PauseInvocation(
-                        PauseInvocationCommand {
-                            invocation_id,
-                            request_id: Some(request_id),
-                        }
-                        .bilrost_encode_to_bytes(),
-                    ),
+                    PauseInvocationCommand {
+                        invocation_id,
+                        request_id: Some(request_id),
+                    },
                     request_id,
                     replier,
                 )
@@ -240,12 +236,7 @@ mod tests {
         proposer.expect_is_leader().return_const(true);
         proposer
             .expect_propose_pause_and_fence::<PauseInvocationRpcResponse>()
-            .return_once_st(move |got_invocation_id, cmd, request_id, replier| {
-                assert_eq!(got_invocation_id, invocation_id);
-                let Command::PauseInvocation(bytes) = cmd else {
-                    panic!("expected a PauseInvocation command");
-                };
-                let pause = PauseInvocationCommand::bilrost_decode(bytes).unwrap();
+            .return_once_st(move |pause, request_id, replier| {
                 assert_eq!(pause.invocation_id, invocation_id);
                 assert_eq!(pause.request_id, Some(request_id));
                 replier.send(PauseInvocationRpcResponse::Accepted);
