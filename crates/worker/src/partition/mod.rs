@@ -35,6 +35,7 @@ use anyhow::Context;
 use assert2::let_assert;
 use futures::{FutureExt, Stream, StreamExt};
 use metrics::{gauge, histogram};
+use restate_memory::NonZeroByteCount;
 use tokio::sync::watch;
 use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{Span, debug, error, info, instrument, trace, warn};
@@ -49,6 +50,7 @@ use restate_core::{
 };
 use restate_ingestion_client::IngestionClient;
 use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
+use restate_platform::memory::EstimatedMemorySize;
 use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, ProducerId, ReadDeduplicationTable,
     WriteDeduplicationTable,
@@ -665,7 +667,12 @@ where
                         old.updated_at = MillisSinceEpoch::now();
                     });
                 }
-                operation = Self::read_entries(&mut record_stream, config.worker.max_command_batch_size(), &mut command_buffer) => {
+                operation = Self::read_entries(
+                    &mut record_stream,
+                    config.worker.max_command_batch_size(),
+                    config.worker.write_batch_commit_bytes,
+                    &mut command_buffer
+                    ) => {
                     // check that reading has succeeded
                     operation?;
 
@@ -1175,11 +1182,13 @@ where
     async fn read_entries<S>(
         log_reader: &mut S,
         max_batching_size: usize,
+        bytes_limit: NonZeroByteCount,
         record_buffer: &mut Vec<LogEntry>,
     ) -> Result<(), ProcessorError>
     where
         S: Stream<Item = Result<LogEntry, restate_bifrost::Error>> + Unpin,
     {
+        let mut accumulated_bytes = 0;
         // beyond this point we must not await; otherwise we are no longer cancellation safe
         let first_record = log_reader.next().await;
 
@@ -1188,15 +1197,20 @@ where
         };
 
         record_buffer.clear();
-        record_buffer.push(first_record?);
+        let first_record = first_record?;
+        accumulated_bytes += first_record.estimated_memory_size();
+        record_buffer.push(first_record);
 
-        while record_buffer.len() < max_batching_size {
+        while record_buffer.len() < max_batching_size && accumulated_bytes < bytes_limit.as_usize()
+        {
             // read more message from the stream but only if they are immediately available
             if let Some(record) = log_reader.next().now_or_never() {
                 let Some(record) = record else {
                     return Err(ProcessorError::LogReadStreamTerminated);
                 };
-                record_buffer.push(record?);
+                let record = record?;
+                accumulated_bytes += record.estimated_memory_size();
+                record_buffer.push(record);
             } else {
                 // no more immediately available records found
                 break;

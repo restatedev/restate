@@ -12,11 +12,11 @@ use std::num::{NonZero, NonZeroU8, NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use restate_serde_util::SerdeableHeaderHashMap;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tracing::warn;
 
+use restate_serde_util::SerdeableHeaderHashMap;
 use restate_util_bytecount::{ByteCount, NonZeroByteCount};
 use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
 
@@ -70,6 +70,16 @@ pub struct WorkerOptions {
     /// The maximum number of commands a partition processor will apply in a batch. The larger this
     /// value is, the higher the throughput and latency are.
     max_command_batch_size: NonZeroUsize,
+
+    /// # Maximum write batch size (in bytes) for partition processors
+    ///
+    /// Caps the in-memory size of a command batch applied by a partition processor.
+    /// A batch is sealed when *either* limit is hit first: the record count
+    /// (`max-command-batch-size`) or this byte size. Larger values raise throughput
+    /// and latency.
+    ///
+    /// Since v1.7.1
+    pub write_batch_commit_bytes: NonZeroByteCount,
 
     /// # Snapshots
     ///
@@ -181,6 +191,9 @@ impl Default for WorkerOptions {
             storage: StorageOptions::default(),
             invoker: Default::default(),
             max_command_batch_size: NonZeroUsize::new(32).expect("Non zero number"),
+            write_batch_commit_bytes: NonZeroByteCount::new(
+                NonZeroUsize::new(1024 * 1024).unwrap(),
+            ),
             snapshots: SnapshotsOptions::default(),
             // 10 minutes delayed trimming by default to give time for followers to catch up
             // to the new durable LSN before observing the trim gap.
