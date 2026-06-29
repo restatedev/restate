@@ -8,14 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
-use restate_types::identifiers::{InvocationId, WithPartitionKey};
+use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
     IngressInvocationResponseSink, InvocationMutationResponseSink, InvocationTermination,
     TerminationFlavor,
 };
 use restate_types::net::partition_processor::KillInvocationRpcResponse;
-use restate_wal_protocol::Command;
+use restate_wal_protocol::v2::commands;
+
+use super::*;
 
 pub(super) struct Request {
     pub(super) request_id: PartitionProcessorRpcRequestId,
@@ -38,8 +39,7 @@ impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
     ) -> Result<(), Self::Error> {
         self.proposer
             .handle_rpc_proposal_command(
-                invocation_id.partition_key(),
-                Command::TerminateInvocation(InvocationTermination {
+                commands::TerminateInvocationCommand::from(InvocationTermination {
                     invocation_id,
                     flavor: TerminationFlavor::Kill,
                     response_sink: Some(InvocationMutationResponseSink::Ingress(

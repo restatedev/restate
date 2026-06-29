@@ -8,12 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
-use restate_types::identifiers::{InvocationId, WithPartitionKey};
+use restate_types::identifiers::InvocationId;
 use restate_types::invocation::NotifySignalRequest;
 use restate_types::journal_v2::Signal;
 use restate_types::net::partition_processor::PartitionProcessorRpcResponse;
-use restate_wal_protocol::Command;
+use restate_wal_protocol::v2::commands;
+
+use super::*;
 
 pub(super) struct Request {
     pub(super) invocation_id: InvocationId,
@@ -36,8 +37,7 @@ impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
     ) -> Result<(), Self::Error> {
         self.proposer
             .append_and_respond_asynchronously(
-                invocation_id.partition_key(),
-                Command::NotifySignal(NotifySignalRequest {
+                commands::NotifySignalCommand::from(NotifySignalRequest {
                     invocation_id,
                     signal,
                 }),
