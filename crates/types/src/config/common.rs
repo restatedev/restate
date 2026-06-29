@@ -482,8 +482,8 @@ pub struct CommonOptions {
     /// Disables the `config` SQL table, which exposes the node's running
     /// configuration via SQL queries.
     ///
-    /// Since v1.8.0
-    #[serde(default)]
+    /// Since v1.7.1
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disable_config_table: bool,
 
     /// Options of gossip-based failure detector
