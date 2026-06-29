@@ -155,14 +155,9 @@ fn flatten_json(val: &serde_json::Value) -> impl Iterator<Item = (String, String
                         stack.push((key, v));
                     }
                 }
+                serde_json::Value::String(v) => return Some((parent, v.to_string())),
                 _ => {
-                    return Some((
-                        parent,
-                        serde_json::to_string(val)
-                            .unwrap()
-                            .trim_matches('"')
-                            .to_string(),
-                    ));
+                    return Some((parent, serde_json::to_string(val).unwrap()));
                 }
             }
         }
@@ -206,6 +201,7 @@ mod tests {
                 "test": "val",
                 "test2": "val2",
             },
+            "integer": 1,
             "arr": ["i", "j"],
             "nodes": [
                 {
@@ -221,6 +217,7 @@ mod tests {
             iter.next(),
             Some(("arr".to_string(), "[\"i\",\"j\"]".to_string()))
         );
+        assert_eq!(iter.next(), Some(("integer".to_string(), "1".to_string())));
         assert_eq!(
             iter.next(),
             Some(("name".to_string(), "node-name".to_string()))
