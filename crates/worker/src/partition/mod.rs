@@ -64,6 +64,7 @@ use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStat
 use restate_types::config::Configuration;
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::LeaderEpoch;
+use restate_types::live::Live;
 use restate_types::logs::{
     KeyFilter, Keys, Lsn, MatchKeyQuery, Record, RecordDecodeError, SequenceNumber,
 };
