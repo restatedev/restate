@@ -358,11 +358,7 @@ impl Node {
         }
 
         // Register config scanner — available on every node.
-        if !Configuration::pinned()
-            .admin
-            .query_engine
-            .disable_config_table
-        {
+        if !Configuration::pinned().common.disable_config_table {
             let local_scanner = restate_storage_query_datafusion::config::create_scanner(
                 metadata.clone(),
                 Configuration::live(),

@@ -477,6 +477,15 @@ pub struct CommonOptions {
     /// You can set this flag to true to disable this collection. It can also be set with the environment variable DO_NOT_TRACK=1.
     pub disable_telemetry: bool,
 
+    /// # Disable the config table
+    ///
+    /// Disables the `config` SQL table, which exposes the node's running
+    /// configuration via SQL queries.
+    ///
+    /// Since v1.8.0
+    #[serde(default)]
+    pub disable_config_table: bool,
+
     /// Options of gossip-based failure detector
     #[serde(flatten)]
     pub gossip: GossipOptions,
@@ -869,6 +878,7 @@ impl Default for CommonOptions {
             ),
             initialization_timeout: NonZeroFriendlyDuration::from_secs_unchecked(5 * 60),
             disable_telemetry: false,
+            disable_config_table: false,
             gossip: GossipOptions::default(),
             hlc_max_drift: FriendlyDuration::from_millis(5000),
             experimental: Experimental::default(),
