@@ -19,6 +19,7 @@ use crate::commands::id;
 use crate::commands::log_server;
 use crate::commands::partition_store;
 use crate::commands::partition_table;
+use crate::commands::snapshot;
 
 /// Restate Doctor - Diagnostic tools Restate storage
 ///
@@ -64,6 +65,8 @@ pub enum Command {
     /// Decode and analyze resource IDs
     #[clap(subcommand)]
     Id(id::IdCommand),
+    /// Run SQL queries against Restate partition snapshots from a repository
+    Snapshot(snapshot::SnapshotArgs),
     /// Generate or install shell completions
     #[clap(subcommand)]
     Completions(Completions),

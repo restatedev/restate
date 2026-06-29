@@ -19,11 +19,11 @@ publish = false
 adaptive-timeout = { version = "0.0.1-alpha.4", features = ["schemars", "serde", "sync", "tokio"] }
 ahash = { version = "0.8", features = ["serde"] }
 arrayvec = { version = "0.7" }
-arrow = { version = "57", features = ["chrono-tz", "prettyprint"] }
-arrow-array = { version = "57", default-features = false, features = ["chrono-tz"] }
-arrow-cast = { version = "57", default-features = false, features = ["prettyprint"] }
-arrow-ipc = { version = "57", features = ["lz4"] }
-arrow-schema = { version = "57", default-features = false, features = ["canonical_extension_types"] }
+arrow = { version = "58", features = ["canonical_extension_types", "chrono-tz", "prettyprint"] }
+arrow-array = { version = "58", default-features = false, features = ["chrono-tz"] }
+arrow-cast = { version = "58", default-features = false, features = ["prettyprint"] }
+arrow-ipc = { version = "58", features = ["lz4", "zstd"] }
+arrow-schema = { version = "58", default-features = false, features = ["canonical_extension_types"] }
 aws-credential-types = { version = "1", default-features = false, features = ["test-util"] }
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 aws-lc-sys = { version = "0.40", default-features = false, features = ["prebuilt-nasm"] }
@@ -64,7 +64,7 @@ gardal = { version = "0.0.1-alpha.9", features = ["async"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2", default-features = false, features = ["num-traits"] }
 hashbrown-582f2526e08bb6a0 = { package = "hashbrown", version = "0.14", default-features = false, features = ["inline-more", "raw"] }
-hashbrown-986da7b5efc2b80e = { package = "hashbrown", version = "0.16" }
+hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17" }
 hdrhistogram = { version = "7" }
 hex = { version = "0.4" }
 hyper = { version = "1", features = ["full"] }
@@ -80,7 +80,6 @@ lexical-util = { version = "1", default-features = false, features = ["format", 
 libc = { version = "0.2", features = ["extra_traits"] }
 libz-sys = { version = "1", features = ["static"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
-md-5 = { version = "0.10" }
 memchr = { version = "2" }
 nom = { version = "7" }
 num-bigint = { version = "0.4" }
@@ -149,11 +148,11 @@ zstd-sys = { version = "2", features = ["experimental", "std"] }
 adaptive-timeout = { version = "0.0.1-alpha.4", features = ["schemars", "serde", "sync", "tokio"] }
 ahash = { version = "0.8", features = ["serde"] }
 arrayvec = { version = "0.7" }
-arrow = { version = "57", features = ["chrono-tz", "prettyprint"] }
-arrow-array = { version = "57", default-features = false, features = ["chrono-tz"] }
-arrow-cast = { version = "57", default-features = false, features = ["prettyprint"] }
-arrow-ipc = { version = "57", features = ["lz4"] }
-arrow-schema = { version = "57", default-features = false, features = ["canonical_extension_types"] }
+arrow = { version = "58", features = ["canonical_extension_types", "chrono-tz", "prettyprint"] }
+arrow-array = { version = "58", default-features = false, features = ["chrono-tz"] }
+arrow-cast = { version = "58", default-features = false, features = ["prettyprint"] }
+arrow-ipc = { version = "58", features = ["lz4", "zstd"] }
+arrow-schema = { version = "58", default-features = false, features = ["canonical_extension_types"] }
 aws-credential-types = { version = "1", default-features = false, features = ["test-util"] }
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 aws-lc-sys = { version = "0.40", default-features = false, features = ["prebuilt-nasm"] }
@@ -196,7 +195,7 @@ gardal = { version = "0.0.1-alpha.9", features = ["async"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2", default-features = false, features = ["num-traits"] }
 hashbrown-582f2526e08bb6a0 = { package = "hashbrown", version = "0.14", default-features = false, features = ["inline-more", "raw"] }
-hashbrown-986da7b5efc2b80e = { package = "hashbrown", version = "0.16" }
+hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17" }
 hdrhistogram = { version = "7" }
 hex = { version = "0.4" }
 hyper = { version = "1", features = ["full"] }
@@ -212,7 +211,6 @@ lexical-util = { version = "1", default-features = false, features = ["format", 
 libc = { version = "0.2", features = ["extra_traits"] }
 libz-sys = { version = "1", features = ["static"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
-md-5 = { version = "0.10" }
 memchr = { version = "2" }
 nom = { version = "7" }
 num-bigint = { version = "0.4" }
