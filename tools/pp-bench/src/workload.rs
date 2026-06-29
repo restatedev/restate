@@ -27,6 +27,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use anyhow::Context;
 use hdrhistogram::Histogram;
 
 use restate_cli_util::{c_println, c_success};
@@ -35,6 +36,7 @@ use restate_partition_store::PartitionStoreManager;
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_types::SemanticRestateVersion;
+use restate_types::cluster_marker::ClusterMarker;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::partitions::{Partition, PersistedStateMachineFeatures};
@@ -95,6 +97,9 @@ pub async fn run(
     // 2. Set up StateMachine + PartitionStore
     // -----------------------------------------------------------------------
     RocksDbManager::init();
+
+    ClusterMarker::validate_or_create("pp-bench", true)
+        .context("failed to initialize cluster marker")?;
 
     let manager = PartitionStoreManager::create(true).await?;
     let mut partition_store = manager

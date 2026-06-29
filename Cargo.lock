@@ -7658,7 +7658,7 @@ dependencies = [
  "http-body 1.0.1",
  "http-body-util",
  "jiff",
- "object_store 0.13.2",
+ "object_store",
  "restate-cli-util",
  "restate-core",
  "restate-limiter",

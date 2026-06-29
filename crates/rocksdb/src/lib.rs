@@ -28,11 +28,13 @@ use std::mem::ManuallyDrop;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use rocksdb::ExportImportFilesMetaData;
 use rocksdb::checkpoint::Checkpoint;
 use rocksdb::statistics::Histogram;
 use rocksdb::statistics::HistogramData;
 use rocksdb::statistics::Ticker;
+use rocksdb::{BottommostLevelCompaction, CompactOptions};
 
 use restate_core::ShutdownError;
 use restate_types::protobuf::common::DatabaseKind;
@@ -468,6 +470,38 @@ impl RocksDb {
             .op(move || {
                 let _x = RocksDbReadPerfGuard::new("manual-compaction");
                 self.db.compact_all();
+            })
+            .build()
+            .unwrap();
+
+        manager.async_spawn_unchecked(task).await?;
+        Ok(())
+    }
+
+    /// Runs a manual compaction over `[start_key, end_key)` on the given column family.
+    ///
+    /// `None` bounds mean unbounded. `bottommost` controls whether the bottommost level is
+    /// recompacted (use [`BottommostLevelCompaction::Force`] to guarantee tombstones are dropped).
+    /// The compaction runs on the storage thread-pool, like [`Self::compact_all`].
+    #[tracing::instrument(skip_all, fields(db = %self.name(), cf = %cf))]
+    pub async fn compact_range(
+        self: Arc<Self>,
+        cf: CfName,
+        start_key: Option<Bytes>,
+        end_key: Option<Bytes>,
+        bottommost: BottommostLevelCompaction,
+    ) -> Result<(), RocksError> {
+        let manager = self.manager;
+        let task = StorageTask::default()
+            .kind(StorageTaskKind::Compaction)
+            .op(move || {
+                let _x = RocksDbReadPerfGuard::new("manual-range-compaction");
+                if let Some(cf_handle) = self.db.cf_handle(cf.as_ref()) {
+                    let mut opts = CompactOptions::default();
+                    opts.set_bottommost_level_compaction(bottommost);
+                    self.db
+                        .compact_cf(&cf_handle, &opts, start_key.as_deref(), end_key.as_deref());
+                }
             })
             .build()
             .unwrap();
