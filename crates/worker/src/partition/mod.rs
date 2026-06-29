@@ -87,8 +87,8 @@ use restate_vqueues::{VQueuesMeta, VQueuesMetaCache};
 use restate_wal_protocol::control::{
     AnnounceLeaderCommand, CurrentReplicaSetConfiguration, NextReplicaSetConfiguration,
 };
-use restate_wal_protocol::v2::commands;
-use restate_wal_protocol::{Envelope, v2};
+use restate_wal_protocol::v1;
+use restate_wal_protocol::v2::{CommandKind, Envelope, Raw, commands};
 use restate_worker_api::invoker::capacity::InvokerCapacity;
 use restate_worker_api::{LeaderQueryCommand, LeaderQueryReceiver};
 
@@ -173,7 +173,7 @@ impl PartitionProcessorBuilder {
     pub async fn build<T>(
         self,
         bifrost: Bifrost,
-        ingestion_client: IngestionClient<T, Envelope>,
+        ingestion_client: IngestionClient<T, Envelope<Raw>>,
         mut partition_store: PartitionStore,
         replica_set_states: PartitionReplicaSetStates,
     ) -> Result<PartitionProcessor<T>, state_machine::Error>
@@ -396,7 +396,7 @@ struct LsnEnvelope {
     pub lsn: Lsn,
     pub keys: Keys,
     pub created_at: NanosSinceEpoch,
-    pub envelope: Arc<v2::Envelope<v2::Raw>>,
+    pub envelope: Arc<Envelope<Raw>>,
 }
 
 /// OrderedOperations are scheduled operations that
@@ -459,11 +459,11 @@ where
 
     /// Decode record tries to decode the record first as v2 Envelope, if it failed,
     /// it decodes as v1 Envelope then converts into v2.
-    fn decode_record(record: Record) -> Result<Arc<v2::Envelope<v2::Raw>>, StorageDecodeError> {
-        let envelope = match record.decode_arc::<v2::Envelope<v2::Raw>>() {
+    fn decode_record(record: Record) -> Result<Arc<Envelope<Raw>>, StorageDecodeError> {
+        let envelope = match record.decode_arc::<Envelope<Raw>>() {
             Ok(envelope) => envelope,
             Err(RecordDecodeError::TypedValueMismatch(v1_envelope)) => {
-                let v1_envelope: Arc<Envelope> = v1_envelope
+                let v1_envelope: Arc<v1::Envelope> = v1_envelope
                     .downcast_arc()
                     .map_err(|_| StorageDecodeError::DecodeValue("Type mismatch. Record value in PolyBytes::Typed does not match requested type".into()))?;
 
@@ -472,7 +472,7 @@ where
                     Err(arc) => arc.as_ref().clone(),
                 };
 
-                let envelope: v2::Envelope<v2::Raw> = v1_envelope
+                let envelope: Envelope<Raw> = v1_envelope
                     .try_into()
                     .map_err(|err: anyhow::Error| StorageDecodeError::DecodeValue(err.into()))?;
 
@@ -1096,12 +1096,12 @@ where
         let envelope = Arc::unwrap_or_clone(record.envelope);
 
         match envelope.kind() {
-            v2::CommandKind::AnnounceLeader => {
+            CommandKind::AnnounceLeader => {
                 let envelope = envelope.into_typed::<commands::AnnounceLeaderCommand>();
                 let announce_leader = envelope.into_inner()?;
                 return Ok(Some(Box::new(announce_leader)));
             }
-            v2::CommandKind::UpdatePartitionDurability => {
+            CommandKind::UpdatePartitionDurability => {
                 let envelope = envelope.into_typed::<commands::UpdatePartitionDurabilityCommand>();
                 let partition_durability = envelope.into_inner()?;
                 if partition_durability.partition_id != self.partition_store.partition_id() {

@@ -199,7 +199,7 @@ where
         );
 
         // Initialize the response stream state
-        let http_stream_rx = ResponseStream::initialize(&self.invocation_task.client, request);
+        let http_stream_rx = ResponseStream::new(self.invocation_task.client.call(request));
 
         let mut decoder_stream = std::pin::pin!(
             DecoderStream::new(
@@ -241,7 +241,7 @@ where
             }
         }
 
-        let inner_stream = &mut decoder_stream.inner_pin_mut().inner;
+        let mut inner_stream = decoder_stream.inner_pin_mut().project().inner;
 
         if tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -1734,7 +1734,7 @@ impl<S> DecoderStream<S> {
 
 impl<S> Stream for DecoderStream<S>
 where
-    S: Stream<Item = Result<ResponseChunk, InvokerError>> + Unpin,
+    S: Stream<Item = Result<ResponseChunk, InvokerError>>,
 {
     type Item = Result<DecoderStreamItem, InvokerError>;
 

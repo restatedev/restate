@@ -26,19 +26,20 @@ use rdkafka::error::KafkaError;
 use rdkafka::topic_partition_list::TopicPartitionListElem;
 use rdkafka::types::RDKafkaErrorCode;
 use rdkafka::{ClientConfig, ClientContext, Message, Statistics};
+use tokio::sync::{mpsc, oneshot};
+use tracing::{debug, instrument, trace, warn};
 
 use restate_core::network::{NetworkSender, Swimlane, TransportConnect};
 use restate_core::{Metadata, TaskCenter, TaskHandle, TaskKind, task_center};
 use restate_ingestion_client::{IngestionClient, IngestionError, RecordCommit};
+use restate_types::identifiers::SubscriptionId;
 use restate_types::identifiers::partitioner::HashPartitioner;
-use restate_types::identifiers::{SubscriptionId, WithPartitionKey};
+use restate_types::logs::{BodyWithKeys, Keys};
 use restate_types::net::ingest::{DedupSequenceNrQueryRequest, ProducerId, ResponseStatus};
 use restate_types::partitions::FindPartition;
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::subscriptions::{EventInvocationTargetTemplate, Sink};
-use restate_wal_protocol::Envelope;
-use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, instrument, trace, warn};
+use restate_wal_protocol::v2::{Envelope, Raw};
 
 use crate::Error;
 use crate::builder::EnvelopeBuilder;
@@ -50,7 +51,7 @@ type MessageConsumer<T> = StreamConsumer<RebalanceContext<T>>;
 pub struct ConsumerTask<T> {
     client_config: ClientConfig,
     topics: Vec<String>,
-    ingestion: IngestionClient<T, Envelope>,
+    ingestion: IngestionClient<T, Envelope<Raw>>,
     builder: EnvelopeBuilder,
 }
 
@@ -61,7 +62,7 @@ where
     pub fn new(
         client_config: ClientConfig,
         topics: Vec<String>,
-        ingestion: IngestionClient<T, Envelope>,
+        ingestion: IngestionClient<T, Envelope<Raw>>,
         builder: EnvelopeBuilder,
     ) -> Self {
         Self {
@@ -167,7 +168,7 @@ struct RebalanceContext<T: TransportConnect> {
     consumer: OnceLock<Weak<MessageConsumer<T>>>,
     topic_partition_tasks: parking_lot::Mutex<HashMap<TopicPartition, AbortOnDrop>>,
     failures_tx: mpsc::UnboundedSender<Error>,
-    ingestion: IngestionClient<T, Envelope>,
+    ingestion: IngestionClient<T, Envelope<Raw>>,
     builder: EnvelopeBuilder,
     consumer_group_id: String,
 }
@@ -324,7 +325,7 @@ where
     T: TransportConnect,
     C: ConsumerContext,
 {
-    ingestion: IngestionClient<T, Envelope>,
+    ingestion: IngestionClient<T, Envelope<Raw>>,
     builder: EnvelopeBuilder,
     topic_partition: TopicPartition,
     topic_partition_consumer: StreamPartitionQueue<C>,
@@ -339,7 +340,7 @@ where
     C: ConsumerContext,
 {
     fn new(
-        ingestion: IngestionClient<T, Envelope>,
+        ingestion: IngestionClient<T, Envelope<Raw>>,
         builder: EnvelopeBuilder,
         topic_partition: TopicPartition,
         topic_partition_consumer: StreamPartitionQueue<C>,
@@ -530,11 +531,11 @@ where
                         "Ingesting kafka message"
                     );
 
-                    let envelope = self.builder.build(producer_id, &self.consumer_group_id, msg)?;
+                    let (partition_key, envelope) = self.builder.build(producer_id, &self.consumer_group_id, msg)?;
 
                     let commit_token = self
                         .ingestion
-                        .ingest(envelope.partition_key(), envelope)
+                        .ingest(partition_key,  BodyWithKeys::new(envelope.into_raw(), Keys::Single(partition_key)))
                         .await?
                         .map(|_| offset);
 

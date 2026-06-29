@@ -168,7 +168,9 @@ where
         );
 
         // Initialize the response stream state
-        let mut http_stream_rx = ResponseStream::initialize(&self.invocation_task.client, request);
+        let mut http_stream_rx = std::pin::pin!(ResponseStream::new(
+            self.invocation_task.client.call(request)
+        ));
 
         // === Replay phase (transaction alive) ===
         {
@@ -329,14 +331,15 @@ where
     // --- Loops
 
     /// This loop concurrently pushes journal entries and waits for the response headers and end of replay.
-    async fn replay_loop<JournalStream, E>(
+    async fn replay_loop<JournalStream, S, E>(
         &mut self,
         http_stream_tx: &mut InvokerBodySender,
-        http_stream_rx: &mut ResponseStream,
+        http_stream_rx: &mut S,
         journal_stream: JournalStream,
     ) -> TerminalLoopState<()>
     where
         JournalStream: Stream<Item = Result<(JournalEntry, LocalMemoryLease), E>> + Unpin,
+        S: Stream<Item = Result<ResponseChunk, InvokerError>> + Unpin,
         E: InvocationReaderError,
     {
         let mut journal_stream = journal_stream.fuse();
@@ -405,15 +408,16 @@ where
     }
 
     /// This loop concurrently reads the http response stream and journal completions from the invoker.
-    async fn bidi_stream_loop<IR>(
+    async fn bidi_stream_loop<S, IR>(
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
         mut http_stream_tx: InvokerBodySender,
-        http_stream_rx: &mut ResponseStream,
+        http_stream_rx: &mut S,
         mut invocation_reader: IR,
         outbound_budget: &mut LocalMemoryPool,
     ) -> TerminalLoopState<()>
     where
+        S: Stream<Item = Result<ResponseChunk, InvokerError>> + Unpin,
         IR: InvocationReader,
     {
         let mut release_interval = tokio::time::interval(Self::BUDGET_RELEASE_INTERVAL);
@@ -472,11 +476,14 @@ where
         }
     }
 
-    async fn response_stream_loop(
+    async fn response_stream_loop<S>(
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
-        http_stream_rx: &mut ResponseStream,
-    ) -> TerminalLoopState<()> {
+        http_stream_rx: &mut S,
+    ) -> TerminalLoopState<()>
+    where
+        S: Stream<Item = Result<ResponseChunk, InvokerError>> + Unpin,
+    {
         loop {
             tokio::select! {
                 chunk = http_stream_rx.next() => {
