@@ -209,7 +209,7 @@ impl WriteLockTable for PartitionStoreTransaction<'_> {
             key_buf.split()
         };
 
-        self.raw_delete_cf(KeyKind::Lock, key_buf);
+        self.raw_single_delete_cf(KeyKind::Lock, key_buf);
     }
 }
 
