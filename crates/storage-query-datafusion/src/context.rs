@@ -377,7 +377,7 @@ impl RegisterTable for ClusterTables {
             None, // local scanner is registered separately by the node
         )?;
 
-        if !Configuration::pinned().common.disable_config_table {
+        if !Configuration::pinned().common.disable_config_sql_table {
             crate::config::register_self(
                 ctx,
                 metadata,

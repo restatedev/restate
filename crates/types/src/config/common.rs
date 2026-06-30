@@ -484,7 +484,7 @@ pub struct CommonOptions {
     ///
     /// Since v1.7.1
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub disable_config_table: bool,
+    pub disable_config_sql_table: bool,
 
     /// Options of gossip-based failure detector
     #[serde(flatten)]
@@ -878,7 +878,7 @@ impl Default for CommonOptions {
             ),
             initialization_timeout: NonZeroFriendlyDuration::from_secs_unchecked(5 * 60),
             disable_telemetry: false,
-            disable_config_table: false,
+            disable_config_sql_table: false,
             gossip: GossipOptions::default(),
             hlc_max_drift: FriendlyDuration::from_millis(5000),
             experimental: Experimental::default(),
