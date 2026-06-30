@@ -109,7 +109,7 @@ restate-workspace-hack = "0.0.1"
 # External crates
 adaptive-timeout = { version = "0.0.1-alpha.4" }
 ahash = "0.8.12"
-anyhow = "1.0.100"
+anyhow = "1.0.103"
 arc-swap = "1.8"
 arrayvec = { version = "0.7" }
 arrow = { version = "58.3.0", default-features = false }
