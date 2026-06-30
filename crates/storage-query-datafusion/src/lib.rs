@@ -23,6 +23,7 @@ mod keyed_service_status;
 mod locks;
 mod log;
 pub mod loglet_worker;
+mod metric_definitions;
 mod node;
 pub mod node_fan_out;
 mod partition;
@@ -57,6 +58,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::PhysicalExpr;
+pub use metric_definitions::describe_metrics;
 use prost::Message;
 
 #[cfg(test)]

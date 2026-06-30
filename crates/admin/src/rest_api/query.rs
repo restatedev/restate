@@ -11,6 +11,8 @@
 use std::io::Write;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
+use std::time::Instant;
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -22,10 +24,11 @@ use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::json::writer::JsonArray;
 use datafusion::common::DataFusionError;
-use futures::{StreamExt, TryStreamExt};
+use futures::{Stream, StreamExt, TryStreamExt};
 use http::{HeaderMap, HeaderValue};
 use http_body::Frame;
 use http_body_util::StreamBody;
+use metrics::histogram;
 use parking_lot::Mutex;
 use serde::Serialize;
 
@@ -34,6 +37,7 @@ use restate_core::network::TransportConnect;
 use restate_types::invocation::client::InvocationClient;
 use restate_types::schema::registry::{DiscoveryClient, MetadataService, TelemetryClient};
 
+use crate::metric_definitions::QUERY_ENGINE_QUERY_DURATION_SECONDS;
 use crate::query_utils::{RecordBatchWriter, WriteRecordBatchStream};
 use crate::state::AdminServiceState;
 
@@ -129,6 +133,10 @@ where
     Invocations: InvocationClient + Send + Sync + Clone + 'static,
     Transport: TransportConnect,
 {
+    let duration_guard = QueryDurationGuard {
+        start: Instant::now(),
+    };
+
     let Some(query_context) = state.query_context.as_ref() else {
         return Err(QueryError::Unavailable);
     };
@@ -161,11 +169,44 @@ where
         return Err(err.into());
     }
 
+    // Move the guard into the body so the duration is recorded once the stream is fully
+    // consumed or dropped (e.g. on client disconnect).
+    let result_stream = Timed {
+        inner: result_stream,
+        _guard: duration_guard,
+    };
+
     Ok(Response::builder()
         .header(http::header::CONTENT_TYPE, content_type)
         .body(StreamBody::new(result_stream))
         .expect("content-type header is correct")
         .into_response())
+}
+
+/// Records the elapsed time since `start` into the query-duration histogram when dropped.
+struct QueryDurationGuard {
+    start: Instant,
+}
+
+impl Drop for QueryDurationGuard {
+    fn drop(&mut self) {
+        histogram!(QUERY_ENGINE_QUERY_DURATION_SECONDS).record(self.start.elapsed().as_secs_f64());
+    }
+}
+
+/// Wraps a stream, keeping a [`QueryDurationGuard`] alive for as long as the stream is held.
+/// The guard records the query duration when this wrapper (the response body) is dropped.
+struct Timed<S> {
+    inner: S,
+    _guard: QueryDurationGuard,
+}
+
+impl<S: Stream + Unpin> Stream for Timed<S> {
+    type Item = S::Item;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.inner.poll_next_unpin(cx)
+    }
 }
 
 #[derive(Clone)]

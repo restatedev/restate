@@ -10,16 +10,21 @@
 
 use std::collections::BTreeMap;
 use std::fmt::{Debug, Formatter};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::task::{Context, Poll};
 
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
-use datafusion::execution::SendableRecordBatchStream;
+use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream};
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::metrics::Time;
+use futures::Stream;
+use metrics::{counter, gauge};
 use parking_lot::Mutex;
 
 use restate_core::Metadata;
@@ -29,6 +34,7 @@ use restate_types::identifiers::PartitionId;
 use restate_types::net::remote_query_scanner::{RemoteQueryScannerOpen, ScannerId};
 use restate_types::sharding::KeyRange;
 
+use crate::metric_definitions::{DATAFUSION_NUM_ACTIVE_SCANNERS, DATAFUSION_NUM_SCANNERS};
 use crate::remote_query_scanner_client::{
     RemoteScanner, RemoteScannerService, remote_scan_as_datafusion_stream,
 };
@@ -201,8 +207,10 @@ impl RemoteScannerManager {
             // make the local scanner available to serve a remote RPC.
             // see usages of [[local_partition_scanner]]
             // we use the table_name to associate a remote scanner with its local counterpart.
-            self.local_store_scanners
-                .register(name.clone(), local_scanner.clone());
+            self.local_store_scanners.register(
+                name.clone(),
+                Arc::new(InstrumentedScanPartition(local_scanner)),
+            );
         }
 
         RemotePartitionsScanner::new(self.clone(), name)
@@ -213,8 +221,12 @@ impl RemoteScannerManager {
     /// as a `ScanPartition` adapter so it integrates with the existing remote
     /// scanner server infrastructure.
     pub fn register_node_scanner(&self, table_name: impl Into<String>, scanner: Arc<dyn Scan>) {
-        self.local_store_scanners
-            .register(table_name, Arc::new(ScanToScanPartitionAdapter(scanner)));
+        self.local_store_scanners.register(
+            table_name,
+            Arc::new(InstrumentedScanPartition(Arc::new(
+                ScanToScanPartitionAdapter(scanner),
+            ))),
+        );
     }
 
     pub fn local_partition_scanner(&self, table: &str) -> Option<Arc<dyn ScanPartition>> {
@@ -249,6 +261,66 @@ impl RemotePartitionsScanner {
             manager,
             table_name: table.into(),
         }
+    }
+}
+
+/// Wraps a `SendableRecordBatchStream` to instrument metrics associated with
+/// the stream lifetime.
+struct InstrumentedRecordBatchStream(SendableRecordBatchStream);
+
+impl InstrumentedRecordBatchStream {
+    fn new(inner: SendableRecordBatchStream) -> Self {
+        gauge!(DATAFUSION_NUM_ACTIVE_SCANNERS).increment(1);
+        counter!(DATAFUSION_NUM_SCANNERS).increment(1);
+        Self(inner)
+    }
+}
+
+impl Stream for InstrumentedRecordBatchStream {
+    type Item = datafusion::common::Result<RecordBatch>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.0.as_mut().poll_next(cx)
+    }
+}
+
+impl RecordBatchStream for InstrumentedRecordBatchStream {
+    fn schema(&self) -> SchemaRef {
+        self.0.schema()
+    }
+}
+
+impl Drop for InstrumentedRecordBatchStream {
+    fn drop(&mut self) {
+        gauge!(DATAFUSION_NUM_ACTIVE_SCANNERS).decrement(1);
+    }
+}
+
+/// Wraps `ScanPartition`s so returned record batch streams are instrumented.
+#[derive(Debug)]
+struct InstrumentedScanPartition(Arc<dyn ScanPartition>);
+
+impl ScanPartition for InstrumentedScanPartition {
+    fn scan_partition(
+        &self,
+        partition_id: PartitionId,
+        range: KeyRange,
+        projection: SchemaRef,
+        predicate: Option<Arc<dyn PhysicalExpr>>,
+        batch_size: usize,
+        limit: Option<usize>,
+        elapsed_compute: Time,
+    ) -> anyhow::Result<SendableRecordBatchStream> {
+        let stream = self.0.scan_partition(
+            partition_id,
+            range,
+            projection,
+            predicate,
+            batch_size,
+            limit,
+            elapsed_compute,
+        )?;
+        Ok(Box::pin(InstrumentedRecordBatchStream::new(stream)))
     }
 }
 
