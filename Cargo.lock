@@ -7403,6 +7403,7 @@ dependencies = [
  "restate-log-server",
  "restate-memory",
  "restate-metadata-store",
+ "restate-platform",
  "restate-rocksdb",
  "restate-storage-api",
  "restate-test-util",
