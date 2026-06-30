@@ -225,7 +225,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
 
     fn delete_vqueue_inbox(&mut self, qid: &VQueueId, stage: Stage, key: &EntryKey) {
         // Note: the key kind here is not used, so we always use the InboxKey.
-        self.raw_delete_cf(
+        self.raw_single_delete_cf(
             KeyKind::VQueueInboxStage,
             inbox::encode_stage_key(stage, qid, key),
         );
@@ -244,7 +244,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         ActiveKeyRef::builder()
             .qid(qid)
             .serialize_to(&mut key_buffer.as_mut());
-        self.raw_delete_cf(KeyKind::VQueueActive, key_buffer);
+        self.raw_single_delete_cf(KeyKind::VQueueActive, key_buffer);
     }
 
     fn put_vqueue_entry_status(
@@ -293,6 +293,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
             .id(id)
             .serialize_to(&mut key_buffer.as_mut());
 
+        // Cannot use single delete because we constantly overwrite the same key on transitions
         self.raw_delete_cf(KeyKind::VQueueEntryStatus, key_buffer);
     }
 
@@ -331,7 +332,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
             key_buf.split()
         };
 
-        self.raw_delete_cf(KeyKind::VQueueInput, key_buf);
+        self.raw_single_delete_cf(KeyKind::VQueueInput, key_buf);
     }
 }
 

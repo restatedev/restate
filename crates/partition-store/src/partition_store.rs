@@ -875,6 +875,14 @@ impl PartitionStoreTransaction<'_> {
             .delete_cf(self.data_cf_handle, key);
     }
 
+    #[inline]
+    pub fn raw_single_delete_cf(&mut self, _key_kind: KeyKind, key: impl AsRef<[u8]>) {
+        self.write_batch_with_index
+            .as_mut()
+            .expect("transaction valid")
+            .single_delete_cf(self.data_cf_handle, key);
+    }
+
     pub(crate) fn prefix_iterator(
         &self,
         table: TableKind,
