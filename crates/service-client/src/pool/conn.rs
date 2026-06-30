@@ -21,7 +21,7 @@ use futures::never::Never;
 use futures::{FutureExt, ready};
 use h2::client::{ResponseFuture as H2ResponseFuture, SendRequest};
 use h2::{Reason, RecvStream, SendStream};
-use http::{HeaderMap, Request, Response, Uri};
+use http::{Request, Response, Uri};
 use http_body::{Body, Frame};
 use http_body_util::BodyExt;
 use metrics::{counter, histogram};
@@ -819,7 +819,7 @@ where
         }
 
         // Send an explicit end stream
-        self.send_stream.send_trailers(HeaderMap::default())?;
+        self.send_stream.send_data(Bytes::default(), true)?;
 
         Ok(())
     }
