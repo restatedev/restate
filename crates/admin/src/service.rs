@@ -13,8 +13,6 @@ use std::time::Duration;
 
 use axum::error_handling::HandleErrorLayer;
 use http::{Request, Response, StatusCode};
-use restate_ingestion_client::IngestionClient;
-use restate_wal_protocol::Envelope;
 use tower::ServiceBuilder;
 use tower_http::classify::ServerErrorsFailureClass;
 use tower_http::compression::CompressionLayer;
@@ -24,6 +22,7 @@ use tracing::{Span, debug, info, info_span};
 use restate_admin_rest_model::version::AdminApiVersion;
 use restate_core::network::{TransportConnect, net_util};
 use restate_core::{MetadataWriter, TaskCenter};
+use restate_ingestion_client::IngestionClient;
 use restate_limiter::rule_book::RuleBookObserver;
 use restate_metadata_store::MetadataStoreClient;
 use restate_service_client::HttpClient;
@@ -36,6 +35,7 @@ use restate_types::net::address::AdminPort;
 use restate_types::net::listener::Listeners;
 use restate_types::schema::registry::SchemaRegistry;
 use restate_util_time::DurationExt;
+use restate_wal_protocol::v2::{Envelope, Raw};
 
 use crate::rest_api::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
 use crate::schema_registry_integration::{MetadataService, TelemetryClient};
@@ -47,7 +47,7 @@ pub struct BuildError(#[from] restate_service_client::BuildError);
 
 pub struct AdminService<Metadata, Discovery, Telemetry, Invocations, Transport> {
     listeners: Listeners<AdminPort>,
-    ingestion_client: IngestionClient<Transport, Envelope>,
+    ingestion_client: IngestionClient<Transport, Envelope<Raw>>,
     schema_registry: SchemaRegistry<Metadata, Discovery, Telemetry>,
     serdes_client: SerdesClient,
     invocation_client: Invocations,
@@ -65,7 +65,7 @@ where
     pub fn new(
         listeners: Listeners<AdminPort>,
         metadata_writer: MetadataWriter,
-        ingestion_client: IngestionClient<Transport, Envelope>,
+        ingestion_client: IngestionClient<Transport, Envelope<Raw>>,
         invocation_client: Invocations,
         serdes_client: SerdesClient,
         service_discovery: ServiceDiscovery,
