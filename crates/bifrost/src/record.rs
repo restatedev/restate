@@ -13,6 +13,8 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use bytes::Bytes;
+
+use restate_platform::memory::EstimatedMemorySize;
 use restate_types::logs::{BodyWithKeys, HasRecordKeys, Keys, Lsn, Record};
 use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::storage::{PolyBytes, StorageDecode, StorageDecodeError, StorageEncode};
@@ -56,6 +58,15 @@ impl LogEntry<LogletOffset> {
         LogEntry {
             offset: base_lsn.offset_by(self.offset),
             record,
+        }
+    }
+}
+
+impl<S> EstimatedMemorySize for LogEntry<S> {
+    fn estimated_memory_size(&self) -> usize {
+        match &self.record {
+            MaybeRecord::TrimGap(_) | MaybeRecord::Filtered(_) | MaybeRecord::DataLoss(_) => 0,
+            MaybeRecord::Data(record) => record.estimated_memory_size(),
         }
     }
 }

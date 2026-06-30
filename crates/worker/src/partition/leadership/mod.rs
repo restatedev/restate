@@ -339,7 +339,7 @@ where
     pub async fn on_announce_leader(
         &mut self,
         announce_leader: &AnnounceLeaderCommand,
-        partition_store: &mut PartitionStore,
+        partition_store: PartitionStore,
         replica_set_states: &PartitionReplicaSetStates,
         config: &Configuration,
         vqueues_cache: &mut VQueuesMetaCache,
@@ -409,7 +409,7 @@ where
     #[allow(clippy::too_many_arguments)]
     async fn become_leader(
         &mut self,
-        partition_store: &mut PartitionStore,
+        mut partition_store: PartitionStore,
         replica_set_states: PartitionReplicaSetStates,
         vqueues_cache: &mut VQueuesMetaCache,
         config: &Configuration,
@@ -497,7 +497,7 @@ where
             }
 
             let (fencing_tokens, next_fencing_token) =
-                Self::resume_invoked_invocations(&mut invoker_handle, partition_store).await?;
+                Self::resume_invoked_invocations(&mut invoker_handle, &mut partition_store).await?;
 
             let timer_service = TimerService::new(
                 TokioClock,
@@ -1055,12 +1055,12 @@ mod tests {
         assert!(announce_leader.current_config.is_some());
         assert!(announce_leader.next_config.is_none());
 
-        let mut partition_store = partition_store_manager.open(&PARTITION, None).await?;
+        let partition_store = partition_store_manager.open(&PARTITION, None).await?;
         let rule_book = RuleBook::default();
         state
             .on_announce_leader(
                 &announce_leader,
-                &mut partition_store,
+                partition_store.clone(),
                 &replica_set_states,
                 &Configuration::pinned(),
                 &mut VQueuesMetaCache::new_empty(1024),
