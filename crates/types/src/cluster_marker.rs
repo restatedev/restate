@@ -34,8 +34,8 @@ const TMP_CLUSTER_MARKER_FILE_NAME: &str = ".tmp-cluster-marker";
 /// To reduce the risk of unexpected incompatibility issues, the minimum tracks the
 /// version we allow restate to downgrade to according to the compatibility policy.
 const COMPATIBILITY_INFORMATION: CompatibilityInformation = CompatibilityInformation::new(
-    SemanticRestateVersion::new(1, 6, 0),
-    SemanticRestateVersion::new(1, 6, 0),
+    SemanticRestateVersion::new(1, 7, 0),
+    SemanticRestateVersion::new(1, 7, 0),
 );
 
 /// Compatibility information defining the minimum Restate version that can read data written by

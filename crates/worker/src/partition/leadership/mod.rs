@@ -67,11 +67,12 @@ use restate_types::{GenerationalNodeId, SemanticRestateVersion};
 use restate_util_time::DurationExt;
 use restate_vqueues::scheduler::{self};
 use restate_vqueues::{ResourceManager, SchedulerService, VQueuesMeta, VQueuesMetaCache};
+use restate_wal_protocol::Command;
 use restate_wal_protocol::control::{
     AnnounceLeaderCommand, UpdatePartitionDurabilityCommand, VersionBarrierCommand,
 };
 use restate_wal_protocol::timer::TimerKeyValue;
-use restate_wal_protocol::{Command, Envelope};
+use restate_wal_protocol::v2::{Envelope, Raw};
 use restate_worker_api::invoker::InvokerHandle;
 use restate_worker_api::invoker::capacity::InvokerCapacity;
 use restate_worker_api::{
@@ -182,7 +183,7 @@ pub(crate) struct LeadershipState<T> {
     last_seen_leader_epoch: Option<LeaderEpoch>,
 
     partition: Arc<Partition>,
-    ingestion_client: IngestionClient<T, Envelope>,
+    ingestion_client: IngestionClient<T, Envelope<Raw>>,
     invoker_capacity: InvokerCapacity,
     bifrost: Bifrost,
     trim_queue: TrimQueue,
@@ -199,7 +200,7 @@ where
     pub(crate) fn new(
         partition: Arc<Partition>,
         invoker_capacity: InvokerCapacity,
-        ingestion_client: IngestionClient<T, Envelope>,
+        ingestion_client: IngestionClient<T, Envelope<Raw>>,
         bifrost: Bifrost,
         last_seen_leader_epoch: Option<LeaderEpoch>,
         trim_queue: TrimQueue,
@@ -508,7 +509,7 @@ where
             let (shuffle_tx, shuffle_rx) = mpsc::channel(config.worker.internal_queue_length());
 
             let shuffle = Shuffle::new(
-                ShuffleMetadata::new(self.partition.partition_id, *leader_epoch),
+                ShuffleMetadata::new(self.partition.partition_id),
                 OutboxReader::from(partition_store.clone()),
                 shuffle_tx,
                 config.worker.internal_queue_length(),
