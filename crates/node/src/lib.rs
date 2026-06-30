@@ -15,12 +15,12 @@ mod metric_definitions;
 mod network_server;
 mod roles;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
 use enumset::EnumSet;
 use prost_dto::IntoProst;
-use std::sync::Arc;
 use tracing::{debug, info, trace, warn};
 
 use codederror::CodedError;
@@ -355,6 +355,15 @@ impl Node {
                 metadata.clone(),
             );
             remote_scanner_manager.register_node_scanner("bifrost_read_streams", local_scanner);
+        }
+
+        // Register config scanner — available on every node.
+        if !Configuration::pinned().common.disable_config_sql_table {
+            let local_scanner = restate_storage_query_datafusion::config::create_scanner(
+                metadata.clone(),
+                Configuration::live(),
+            );
+            remote_scanner_manager.register_node_scanner("config", local_scanner);
         }
 
         // Create a minimal QueryContext for the remote scanner server — it only
