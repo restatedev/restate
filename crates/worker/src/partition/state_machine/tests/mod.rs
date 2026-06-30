@@ -62,7 +62,7 @@ use restate_types::journal::{CompleteAwakeableEntry, EntryResult, InvokeRequest}
 use restate_types::journal::{Entry, EntryType};
 use restate_types::journal_events::Event;
 use restate_types::journal_v2::raw::TryFromEntry;
-use restate_types::logs::{Keys, SequenceNumber};
+use restate_types::logs::SequenceNumber;
 use restate_types::partitions::Partition;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_wal_protocol::v2::Command;
@@ -1054,7 +1054,6 @@ async fn truncate_outbox_from_empty() -> Result<(), Error> {
         .apply(commands::TruncateOutboxCommand::test_envelope(
             commands::TruncateOutboxCommand {
                 index: outbox_index,
-                partition_key_range: Keys::None,
             },
         ))
         .await;
@@ -1095,7 +1094,6 @@ async fn truncate_outbox_with_gap() -> Result<(), Error> {
         .apply(commands::TruncateOutboxCommand::test_envelope(
             commands::TruncateOutboxCommand {
                 index: outbox_tail_index,
-                partition_key_range: Keys::None,
             },
         ))
         .await;
