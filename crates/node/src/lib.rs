@@ -163,6 +163,8 @@ impl Node {
         mut address_book: AddressBook,
     ) -> Result<Self, BuildError> {
         metric_definitions::describe_metrics();
+        restate_storage_query_datafusion::describe_metrics();
+
         let mut server_builder = NetworkServerBuilder::new(&mut address_book);
         let config = updateable_config.pinned();
 

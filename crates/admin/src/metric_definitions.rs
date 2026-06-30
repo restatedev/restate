@@ -10,11 +10,16 @@
 
 use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
 
+// Storage Accounting metrics
 pub(crate) const USAGE_STATE_STORAGE_BYTES: &str = "restate.usage.state.storage_bytes";
 pub(crate) const USAGE_STATE_STORAGE_BYTE_SECONDS: &str =
     "restate.usage.state.storage_byte_seconds.total";
 pub(crate) const USAGE_STATE_SIZE_ACCOUNTING_QUERY_DURATION_SECONDS: &str =
     "restate.usage.state_size_accounting.query_duration_seconds";
+
+// Query Engine metrics
+pub(crate) const QUERY_ENGINE_QUERY_DURATION_SECONDS: &str =
+    "restate.query_engine.query_duration_seconds";
 
 pub(crate) fn describe_metrics() {
     describe_gauge!(
@@ -33,5 +38,11 @@ pub(crate) fn describe_metrics() {
         USAGE_STATE_SIZE_ACCOUNTING_QUERY_DURATION_SECONDS,
         Unit::Seconds,
         "Accounting query execution duration"
+    );
+
+    describe_histogram!(
+        QUERY_ENGINE_QUERY_DURATION_SECONDS,
+        Unit::Seconds,
+        "End-to-end duration of a query, including planning, execution and streaming the response"
     )
 }
