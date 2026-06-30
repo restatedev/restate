@@ -82,6 +82,9 @@ pub async fn run_echo_server(stream: DuplexStream, config: std::sync::Arc<Server
 
             while let Some(data) = request_body.data().await {
                 let data = data.unwrap();
+                if data.is_empty() {
+                    break;
+                }
                 request_body
                     .flow_control()
                     .release_capacity(data.len())
