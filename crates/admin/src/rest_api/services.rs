@@ -8,12 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use tracing::{debug, warn};
-
 use axum::Json;
 use axum::extract::{Path, State};
 use bytes::Bytes;
 use http::StatusCode;
+use tracing::{debug, warn};
 
 use restate_admin_rest_model::services::ListServicesResponse;
 use restate_admin_rest_model::services::*;
@@ -22,13 +21,14 @@ use restate_core::network::TransportConnect;
 use restate_errors::warn_it;
 use restate_types::config::Configuration;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
+use restate_types::logs::{BodyWithKeys, Keys};
 use restate_types::schema::registry::MetadataService;
 use restate_types::schema::service::ServiceMetadata;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::{Scope, schema};
-use restate_wal_protocol::{Command, Envelope};
+use restate_wal_protocol::v2;
+use restate_wal_protocol::v2::commands;
 
-use super::create_envelope_header;
 use super::error::*;
 use crate::state::AdminServiceState;
 
@@ -250,14 +250,17 @@ where
         state: new_state,
     };
 
-    let envelope = Envelope::new(
-        create_envelope_header(partition_key),
-        Command::PatchState(patch_state),
+    let envelop = v2::Envelope::new(
+        v2::Dedup::None,
+        commands::PatchStateCommand::from(patch_state),
     );
 
     let result = state
         .ingestion_client
-        .ingest(partition_key, envelope)
+        .ingest(
+            partition_key,
+            BodyWithKeys::new(envelop.into_raw(), Keys::Single(partition_key)),
+        )
         .await
         .map_err(|err| {
             warn!("Could not ingest state patching command: {err}");

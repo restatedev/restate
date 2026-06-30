@@ -18,16 +18,18 @@ use tracing::debug;
 use restate_core::cancellation_token;
 use restate_core::network::TransportConnect;
 use restate_ingestion_client::IngestionClient;
-use restate_storage_api::deduplication_table::DedupInformation;
 use restate_storage_api::outbox_table::OutboxMessage;
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
+use restate_types::identifiers::PartitionId;
 use restate_types::message::MessageIndex;
-use restate_wal_protocol::{Destination, Envelope, Header, Source};
+use restate_wal_protocol::v2::commands::{
+    AttachInvocationCommand, InvocationResponseCommand, InvokeCommand, NotifySignalCommand,
+    TerminateInvocationCommand,
+};
+use restate_wal_protocol::v2::{Dedup, Envelope, Raw};
 
 use crate::metric_definitions::{
     PARTITION_LABEL, PARTITION_SHUFFLE_INFLIGHT_COUNT, PARTITION_SHUFFLE_MESSAGE_COUNT,
 };
-use crate::partition::types::OutboxMessageExt;
 
 #[derive(Debug)]
 pub(crate) struct NewOutboxMessage {
@@ -61,30 +63,32 @@ pub(crate) fn wrap_outbox_message_in_envelope(
     message: OutboxMessage,
     seq_number: MessageIndex,
     shuffle_metadata: &ShuffleMetadata,
-) -> Envelope {
-    Envelope::new(
-        create_header(message.partition_key(), seq_number, shuffle_metadata),
-        message.to_command(),
-    )
+) -> Envelope<Raw> {
+    let dedup = create_dedup(seq_number, shuffle_metadata);
+
+    match message {
+        OutboxMessage::AttachInvocation(payload) => {
+            Envelope::new(dedup, AttachInvocationCommand::from(payload)).into_raw()
+        }
+        OutboxMessage::InvocationTermination(payload) => {
+            Envelope::new(dedup, TerminateInvocationCommand::from(payload)).into_raw()
+        }
+        OutboxMessage::ServiceInvocation(payload) => {
+            Envelope::new(dedup, InvokeCommand::from(*payload)).into_raw()
+        }
+        OutboxMessage::NotifySignal(payload) => {
+            Envelope::new(dedup, NotifySignalCommand::from(payload)).into_raw()
+        }
+        OutboxMessage::ServiceResponse(payload) => {
+            Envelope::new(dedup, InvocationResponseCommand::from(payload)).into_raw()
+        }
+    }
 }
 
-fn create_header(
-    dest_partition_key: PartitionKey,
-    seq_number: MessageIndex,
-    shuffle_metadata: &ShuffleMetadata,
-) -> Header {
-    Header {
-        source: Source::Processor {
-            partition_key: None,
-            leader_epoch: shuffle_metadata.leader_epoch,
-        },
-        dest: Destination::Processor {
-            partition_key: dest_partition_key,
-            dedup: Some(DedupInformation::cross_partition(
-                shuffle_metadata.partition_id,
-                seq_number,
-            )),
-        },
+fn create_dedup(seq_number: MessageIndex, shuffle_metadata: &ShuffleMetadata) -> Dedup {
+    Dedup::ForeignPartition {
+        partition: shuffle_metadata.partition_id,
+        seq: seq_number,
     }
 }
 
@@ -151,22 +155,18 @@ impl HintSender {
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct ShuffleMetadata {
     partition_id: PartitionId,
-    leader_epoch: LeaderEpoch,
 }
 
 impl ShuffleMetadata {
-    pub(crate) fn new(partition_id: PartitionId, leader_epoch: LeaderEpoch) -> Self {
-        ShuffleMetadata {
-            partition_id,
-            leader_epoch,
-        }
+    pub(crate) fn new(partition_id: PartitionId) -> Self {
+        ShuffleMetadata { partition_id }
     }
 }
 
 pub(crate) struct Shuffle<T, OR> {
     metadata: ShuffleMetadata,
     outbox_reader: OR,
-    ingestion_client: IngestionClient<T, Envelope>,
+    ingestion_client: IngestionClient<T, Envelope<Raw>>,
     // used to tell partition processor about outbox truncations
     truncation_tx: mpsc::Sender<OutboxTruncation>,
     hint_rx: async_channel::Receiver<NewOutboxMessage>,
@@ -184,7 +184,7 @@ where
         outbox_reader: OR,
         truncation_tx: mpsc::Sender<OutboxTruncation>,
         channel_size: usize,
-        ingestion_client: IngestionClient<T, Envelope>,
+        ingestion_client: IngestionClient<T, Envelope<Raw>>,
     ) -> Self {
         let (hint_tx, hint_rx) = async_channel::bounded(channel_size);
 
@@ -270,8 +270,12 @@ mod state_machine {
     use restate_core::network::TransportConnect;
     use restate_ingestion_client::{IngestFuture, IngestionClient, RecordCommit};
     use restate_storage_api::outbox_table::OutboxMessage;
-    use restate_types::{identifiers::WithPartitionKey, message::MessageIndex};
-    use restate_wal_protocol::Envelope;
+    use restate_types::{
+        identifiers::WithPartitionKey,
+        logs::{BodyWithKeys, Keys},
+        message::MessageIndex,
+    };
+    use restate_wal_protocol::v2::{Envelope, Raw};
 
     use crate::partition::shuffle::{
         NewOutboxMessage, OutboxReaderError, ShuffleMetadata, wrap_outbox_message_in_envelope,
@@ -304,7 +308,7 @@ mod state_machine {
 
     pub struct StateMachine<T, R> {
         metadata: ShuffleMetadata,
-        ingestion: IngestionClient<T, Envelope>,
+        ingestion: IngestionClient<T, Envelope<Raw>>,
         hint_rx: async_channel::Receiver<NewOutboxMessage>,
         reader: Option<R>,
         read_fut: ReadFuture<R>,
@@ -319,7 +323,7 @@ mod state_machine {
     {
         pub fn new(
             metadata: ShuffleMetadata,
-            ingestion: IngestionClient<T, Envelope>,
+            ingestion: IngestionClient<T, Envelope<Raw>>,
             reader: R,
             hint_rx: async_channel::Receiver<NewOutboxMessage>,
         ) -> Self {
@@ -349,12 +353,15 @@ mod state_machine {
 
                         match sn.cmp(&self.next_sequence_number) {
                             Ordering::Equal => {
+                                let partition_key = message.partition_key();
                                 let envelope =
                                     wrap_outbox_message_in_envelope(message, sn, &self.metadata);
+
                                 self.state = State::Ingesting {
-                                    ingest: self
-                                        .ingestion
-                                        .ingest(envelope.partition_key(), envelope),
+                                    ingest: self.ingestion.ingest(
+                                        partition_key,
+                                        BodyWithKeys::new(envelope, Keys::Single(partition_key)),
+                                    ),
                                     sn,
                                 };
                             }
@@ -398,12 +405,14 @@ mod state_machine {
                                     sn >= self.next_sequence_number,
                                     "message sequence numbers must not decrease"
                                 );
+                                let partition_key = message.partition_key();
                                 let envelope =
                                     wrap_outbox_message_in_envelope(message, sn, &self.metadata);
                                 self.state = State::Ingesting {
-                                    ingest: self
-                                        .ingestion
-                                        .ingest(envelope.partition_key(), envelope),
+                                    ingest: self.ingestion.ingest(
+                                        partition_key,
+                                        BodyWithKeys::new(envelope, Keys::Single(partition_key)),
+                                    ),
                                     sn,
                                 };
                             }
@@ -423,7 +432,6 @@ mod ingestion_client_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use anyhow::{Context, anyhow};
-    use assert2::let_assert;
     use futures::StreamExt;
     use restate_core::partitions::PartitionRouting;
     use restate_ingestion_client::{IngestionClient, SessionOptions};
@@ -432,6 +440,8 @@ mod ingestion_client_tests {
     use restate_types::net::partition_processor::PartitionLeaderService;
     use restate_types::partitions::state::{LeadershipState, PartitionReplicaSetStates};
     use restate_types::storage::StorageCodec;
+    use restate_wal_protocol::v2::commands::InvokeCommand;
+    use restate_wal_protocol::v2::{CommandKind, Envelope, Raw};
     use test_log::test;
     use tokio::sync::mpsc;
 
@@ -447,7 +457,6 @@ mod ingestion_client_tests {
     use restate_types::invocation::ServiceInvocation;
     use restate_types::message::MessageIndex;
     use restate_types::partition_table::PartitionTable;
-    use restate_wal_protocol::{Command, Envelope};
 
     use crate::partition::shuffle::{OutboxReader, OutboxReaderError, Shuffle, ShuffleMetadata};
 
@@ -569,12 +578,15 @@ mod ingestion_client_tests {
             let (r, body) = incoming.split();
             r.send(ResponseStatus::Ack.into());
             for mut record in body.records {
-                let envelope = StorageCodec::decode::<Envelope, _>(&mut record.record)
+                let envelope = StorageCodec::decode::<Envelope<Raw>, _>(&mut record.record)
                     .context("Failed to decode envelope")?;
 
-                let_assert!(Command::Invoke(service_invocation) = envelope.command);
+                assert!(CommandKind::Invoke == envelope.kind());
+                let envelope: Envelope<InvokeCommand> = envelope.into_typed();
+                let service_invocation: ServiceInvocation = envelope.into_inner().unwrap().into();
+
                 let invocation_id = service_invocation.invocation_id;
-                messages.push(*service_invocation);
+                messages.push(service_invocation);
 
                 if last_invocation_id == invocation_id {
                     break 'out;
@@ -615,7 +627,7 @@ mod ingestion_client_tests {
         #[allow(dead_code)]
         env: TestCoreEnv<FailingConnector>,
         stream: ServiceStream<PartitionLeaderService>,
-        ingestion: IngestionClient<FailingConnector, Envelope>,
+        ingestion: IngestionClient<FailingConnector, Envelope<Raw>>,
         shuffle: Shuffle<FailingConnector, OR>,
     }
 
@@ -627,7 +639,7 @@ mod ingestion_client_tests {
             PartitionTable::with_equally_sized_partitions(Version::MIN, 1),
         );
 
-        let metadata = ShuffleMetadata::new(PartitionId::from(0), LeaderEpoch::from(0));
+        let metadata = ShuffleMetadata::new(PartitionId::from(0));
 
         let partition_replica_set_states = PartitionReplicaSetStates::default();
 
