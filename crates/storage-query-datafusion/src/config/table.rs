@@ -184,6 +184,7 @@ fn is_potentially_secret(key: &str) -> bool {
         "cookie",
         "private-key",
         "key-pem",
+        "jaas",
     ]
     .iter()
     .any(|needle| key.contains(needle))
