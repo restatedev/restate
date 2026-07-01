@@ -78,6 +78,40 @@ pub(crate) struct TargetNode {
     pub is_local: bool,
 }
 
+/// Locates all nodes in the cluster.
+#[derive(Clone)]
+pub(crate) struct AllNodeLocator {
+    metadata: Metadata,
+}
+
+impl Debug for AllNodeLocator {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AllNodeLocator").finish()
+    }
+}
+
+impl AllNodeLocator {
+    pub fn new(metadata: Metadata) -> Self {
+        Self { metadata }
+    }
+}
+
+impl NodeLocator for AllNodeLocator {
+    fn target_nodes(&self) -> anyhow::Result<Vec<TargetNode>> {
+        let nodes_config = self.metadata.nodes_config_snapshot();
+        let my_node_id = self.metadata.my_node_id();
+
+        Ok(nodes_config
+            .iter()
+            .map(|(plain_id, config)| TargetNode {
+                plain_node_id: plain_id,
+                node_id: NodeId::from(config.current_generation),
+                is_local: config.current_generation == my_node_id,
+            })
+            .collect())
+    }
+}
+
 /// Locates target nodes by filtering [`NodesConfiguration`] by role.
 #[derive(Clone)]
 pub(crate) struct RoleBasedNodeLocator {

@@ -13,6 +13,7 @@ pub mod context;
 pub mod remote_query_scanner_server;
 
 pub mod bifrost_read_stream;
+pub mod config;
 mod deployment;
 mod inbox;
 mod invocation_state;

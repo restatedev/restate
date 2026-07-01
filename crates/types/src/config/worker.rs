@@ -12,11 +12,11 @@ use std::num::{NonZero, NonZeroU8, NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use restate_serde_util::SerdeableHeaderHashMap;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tracing::warn;
 
+use restate_serde_util::SerdeableHeaderHashMap;
 use restate_util_bytecount::{ByteCount, NonZeroByteCount};
 use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
 
@@ -65,11 +65,22 @@ pub struct WorkerOptions {
 
     pub invoker: InvokerOptions,
 
-    /// # Maximum command batch size for partition processors
+    /// # Maximum command batch size (count) for partition processors
     ///
-    /// The maximum number of commands a partition processor will apply in a batch. The larger this
-    /// value is, the higher the throughput and latency are.
+    /// The maximum number of Bifrost log records a partition processor will process opportunistically
+    /// in a single batch. The larger this value is, the higher the throughput and latency are.
     max_command_batch_size: NonZeroUsize,
+
+    /// # Maximum command batch size (in bytes) for partition processors
+    ///
+    /// Caps the total bytes of Bifrost log records processed opportunistically by the partition processor in
+    /// a single iteration. This works in conjunction with `max-command-batch-size` which caps the
+    /// number of records. The processor will process the batch when whichever limit is hit first.
+    ///
+    /// Default: 1 MiB
+    ///
+    /// Since v1.7.1
+    pub max_command_batch_bytes: NonZeroByteCount,
 
     /// # Snapshots
     ///
@@ -181,6 +192,7 @@ impl Default for WorkerOptions {
             storage: StorageOptions::default(),
             invoker: Default::default(),
             max_command_batch_size: NonZeroUsize::new(32).expect("Non zero number"),
+            max_command_batch_bytes: NonZeroByteCount::new(NonZeroUsize::new(1024 * 1024).unwrap()),
             snapshots: SnapshotsOptions::default(),
             // 10 minutes delayed trimming by default to give time for followers to catch up
             // to the new durable LSN before observing the trim gap.

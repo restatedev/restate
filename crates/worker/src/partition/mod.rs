@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use assert2::let_assert;
-use futures::{FutureExt, Stream, StreamExt};
+use futures::{FutureExt, StreamExt};
 use metrics::{gauge, histogram};
 use tokio::sync::watch;
 use tokio::time::{Instant, MissedTickBehavior};
@@ -49,6 +49,7 @@ use restate_core::{
 };
 use restate_ingestion_client::IngestionClient;
 use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
+use restate_platform::memory::EstimatedMemorySize;
 use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, ProducerId, ReadDeduplicationTable,
     WriteDeduplicationTable,
@@ -62,6 +63,7 @@ use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStat
 use restate_types::config::Configuration;
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::LeaderEpoch;
+use restate_types::live::Live;
 use restate_types::logs::{
     KeyFilter, Keys, Lsn, MatchKeyQuery, Record, RecordDecodeError, SequenceNumber,
 };
@@ -254,6 +256,7 @@ impl PartitionProcessorBuilder {
             bifrost,
             target_leader_state_rx,
             network_leader_svc_rx: rpc_rx,
+            config: Configuration::live(),
             status_watch_tx,
             leader_query_rx,
             status,
@@ -338,6 +341,7 @@ pub struct PartitionProcessor<T> {
     leader_query_rx: LeaderQueryReceiver,
     status: PartitionProcessorStatus,
     replica_set_states: PartitionReplicaSetStates,
+    config: Live<Configuration>,
 
     partition_store: PartitionStore,
     trim_queue: TrimQueue,
@@ -572,7 +576,6 @@ where
             self.status.replay_status = ReplayStatus::CatchingUp;
         }
 
-        let mut live_config = Configuration::live();
         let mut live_schemas = Metadata::with_current(|m| m.updateable_schema());
 
         // Telemetry setup
@@ -580,12 +583,16 @@ where
         let follower_record_write_to_read_latency = histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, LEADER_LABEL => LEADER_LABEL_FOLLOWER);
         // Start reading after the last applied lsn
 
-        let mut record_stream = self.bifrost.create_reader(
-            log_id,
-            KeyFilter::Within(self.partition_store.partition_key_range().into()),
-            last_applied_lsn.next(),
-            Lsn::MAX,
-        )?;
+        let mut record_stream = std::pin::pin!(
+            self.bifrost
+                .create_reader(
+                    log_id,
+                    KeyFilter::Within(self.partition_store.partition_key_range().into()),
+                    last_applied_lsn.next(),
+                    Lsn::MAX,
+                )?
+                .peekable()
+        );
 
         // avoid synchronized timers.
         let mut status_update_timer =
@@ -599,8 +606,6 @@ where
         .await?;
 
         let mut action_collector = ActionCollector::default();
-        let mut command_buffer =
-            Vec::with_capacity(live_config.live_load().worker.max_command_batch_size());
 
         let mut watch_leader_changes = self.replica_set_states.watch_leadership_state(partition_id);
         watch_leader_changes.mark_changed();
@@ -621,7 +626,7 @@ where
         let mut transaction = partition_store_cloned.transaction();
 
         loop {
-            let config = live_config.live_load();
+            let config = self.config.live_load();
             tokio::select! {
                 _ = self.target_leader_state_rx.changed() => {
                     let target_leader_state = self.target_leader_state_rx.borrow_and_update().clone();
@@ -665,116 +670,71 @@ where
                         old.updated_at = MillisSinceEpoch::now();
                     });
                 }
-                operation = Self::read_entries(&mut record_stream, config.worker.max_command_batch_size(), &mut command_buffer) => {
-                    // check that reading has succeeded
-                    operation?;
+                // Awaiting the first record is the only stream `.await` and is cancellation-safe:
+                // if this branch is dropped before a record is ready, nothing has been consumed.
+                // Subsequent records are drained synchronously below (`now_or_never`), so the
+                // applied-but-uncommitted records can never be lost to select cancellation.
+                maybe_first = record_stream.next() => {
+                    let Some(first) = maybe_first else {
+                        return Err(ProcessorError::LogReadStreamTerminated);
+                    };
+                    let first = first?;
 
                     transaction.clear();
-
                     // clear buffers used when applying the next record
                     action_collector.clear();
 
-                    for entry in command_buffer.drain(..) {
-                        let Some((lsn, record)) = self.maybe_advance(entry, &mut transaction, &started_at)? else {
-                            // this happens when we are reading a filtered gap
-                            continue;
-                        };
+                    let max_batching_size = config.worker.max_command_batch_size();
+                    // This is a sanity check. max_command_batch is in fact, non-zero usize.
+                    debug_assert!(max_batching_size > 0);
+                    let bytes_limit = config.worker.max_command_batch_bytes.as_usize();
 
-                        if self.leadership_state.is_leader() {
-                            leader_record_write_to_read_latency.record(record.created_at().elapsed());
-                        } else {
-                            follower_record_write_to_read_latency.record(record.created_at().elapsed());
-                        }
-
-                        let record = LsnEnvelope {
-                            lsn,
-                            keys: record.keys().clone(),
-                            created_at: record.created_at(),
-                            envelope: Self::decode_record(record)?,
-                        };
-
-                        let maybe_announce_leader = self.apply_record(
-                            record,
+                    // Apply the batch one record at a time, seeded with the record we just awaited.
+                    // The first record is always applied, which guarantees forward progress even
+                    // when a single record is larger than `bytes_limit`. Further records are pulled
+                    // only while immediately available and within the record-count and byte limits.
+                    let mut accumulated_bytes = 0;
+                    let mut count = 0usize;
+                    let mut next_entry = Some(first);
+                    while let Some(entry) = next_entry.take() {
+                        accumulated_bytes += entry.estimated_memory_size();
+                        count += 1;
+                        self.apply_log_entry(
+                            entry,
                             &mut transaction,
                             &mut action_collector,
                             &mut vqueues,
+                            &started_at,
+                            &leader_record_write_to_read_latency,
+                            &follower_record_write_to_read_latency,
                         )
                         .await?;
 
-                        if let Some(announce_leader) = maybe_announce_leader {
-                            // update partition store with latest epoch metadata
-                            if let Some(current_config) = &announce_leader.current_config {
-                                let announced = CachedEpochMetadata {
-                                    version: announce_leader.epoch_version.unwrap(),
-                                    leader_node_id: announce_leader.node_id,
-                                    leader_epoch: announce_leader.leader_epoch,
-                                    current: current_config.to_current_replica_set_state(),
-                                    next: announce_leader.next_config.as_ref().map(|v| v.to_next_replica_set_state()),
-                                };
-
-                                if self.cached_epoch_metadata.as_ref().is_none_or(|c| c.version < announced.version) {
-                                    transaction.put_partition_config_state(&announced)?;
-                                    self.cached_epoch_metadata = Some(announced);
-                                }
-                            };
-
-                            // commit all changes so far, this is important so that the actuators see all changes
-                            // when becoming leader.
-                            transaction.commit().await?;
-                            // Notify all lsn watchers that the lsn has been committed
-
-                            self.last_applied_log_lsn_watch.send_replace(lsn);
-
-                            // We can ignore all actions collected so far because as a new leader we have to instruct the
-                            // actuators afresh.
-                            action_collector.clear();
-
-                            self.status.last_observed_leader_epoch = Some(announce_leader.leader_epoch);
-                            self.status.last_observed_leader_node = Some(announce_leader.node_id);
-
-                            self.replica_set_states.note_observed_leader(
-                                partition_id,
-                                restate_types::partitions::state::LeadershipState {
-                                    current_leader_epoch: announce_leader.leader_epoch,
-                                    current_leader: announce_leader.node_id,
-                                }
-                            );
-
-                            let is_leader = self.leadership_state.on_announce_leader(
-                                &announce_leader,
-                                &mut partition_store,
-                                &self.replica_set_states,
-                                config,
-                                &mut vqueues,
-                                &self.state_machine.rule_book,
-                                &self.state_machine,
-                                &self.state_machine.min_restate_version,
-                            )
-                            .await?;
-
-                            Span::current().record("is_leader", is_leader);
-
-                            if is_leader {
-                                if let Some(cached) = &self.cached_epoch_metadata {
-                                    self.replica_set_states.note_observed_membership(
-                                        partition_id,
-                                        restate_types::partitions::state::LeadershipState {
-                                            current_leader_epoch: cached.leader_epoch,
-                                            current_leader: cached.leader_node_id,
-                                        },
-                                        &cached.current.replica_set,
-                                        &cached.next.as_ref().map(|c| &c.replica_set).cloned(),
-                                    );
-                                }
-                                self.status.effective_mode = RunMode::Leader;
-                            } else {
-                                // make sure that we set our effective_mode to follower also when
-                                // not being explicitly asked by the PPM
-                                self.status.effective_mode = RunMode::Follower;
-                            }
-
-                            transaction.clear();
+                        if count >= max_batching_size {
+                            break;
                         }
+
+                        // Peek primes `Peekable`'s slot without consuming, so we can decide against
+                        // pulling the next record before committing to it.
+                        let next_size = match record_stream.as_mut().peek().now_or_never() {
+                            Some(Some(Ok(peeked))) => peeked.estimated_memory_size(),
+                            // Not immediately available, stream terminated, or an error: stop the
+                            // batch. Termination/errors resurface on the next `next().await`.
+                            _ => break,
+                        };
+                        if accumulated_bytes + next_size > bytes_limit {
+                            // Leave the peeked record in the slot; it leads the next batch.
+                            break;
+                        }
+
+                        // The slot was primed by the peek above: immediately ready and `Ok`.
+                        next_entry = Some(
+                            record_stream
+                                .next()
+                                .now_or_never()
+                                .expect("peeked record is buffered")
+                                .expect("stream cannot terminate after a successful peek")?,
+                        );
                     }
 
                     // Commit our changes and notify actuators about actions if we are the leader
@@ -1170,37 +1130,126 @@ where
         Ok(is_duplicate)
     }
 
-    /// Tries to read as many records from the `log_reader` as are immediately available and stops
-    /// reading at `max_batching_size`. Trim gaps will result in an immediate error.
-    async fn read_entries<S>(
-        log_reader: &mut S,
-        max_batching_size: usize,
-        record_buffer: &mut Vec<LogEntry>,
-    ) -> Result<(), ProcessorError>
-    where
-        S: Stream<Item = Result<LogEntry, restate_bifrost::Error>> + Unpin,
-    {
-        // beyond this point we must not await; otherwise we are no longer cancellation safe
-        let first_record = log_reader.next().await;
-
-        let Some(first_record) = first_record else {
-            return Err(ProcessorError::LogReadStreamTerminated);
+    /// Applies a single log entry to the in-flight `transaction`, advancing the FSM and, when the
+    /// entry announces a new leader, committing the batch so far and reacting to the leadership
+    /// change. Filtered gaps only advance the applied LSN and return without applying a record.
+    #[allow(clippy::too_many_arguments)]
+    async fn apply_log_entry(
+        &mut self,
+        entry: LogEntry,
+        txn: &mut PartitionStoreTransaction<'_>,
+        action_collector: &mut ActionCollector,
+        vqueues: &mut VQueuesMetaCache,
+        started_at: &Instant,
+        leader_record_write_to_read_latency: &metrics::Histogram,
+        follower_record_write_to_read_latency: &metrics::Histogram,
+    ) -> Result<(), ProcessorError> {
+        let Some((lsn, record)) = self.maybe_advance(entry, txn, started_at)? else {
+            // this happens when we are reading a filtered gap
+            return Ok(());
         };
 
-        record_buffer.clear();
-        record_buffer.push(first_record?);
+        if self.leadership_state.is_leader() {
+            leader_record_write_to_read_latency.record(record.created_at().elapsed());
+        } else {
+            follower_record_write_to_read_latency.record(record.created_at().elapsed());
+        }
 
-        while record_buffer.len() < max_batching_size {
-            // read more message from the stream but only if they are immediately available
-            if let Some(record) = log_reader.next().now_or_never() {
-                let Some(record) = record else {
-                    return Err(ProcessorError::LogReadStreamTerminated);
+        let record = LsnEnvelope {
+            lsn,
+            keys: record.keys().clone(),
+            created_at: record.created_at(),
+            envelope: Self::decode_record(record)?,
+        };
+
+        let maybe_announce_leader = self
+            .apply_record(record, txn, action_collector, vqueues)
+            .await?;
+
+        if let Some(announce_leader) = maybe_announce_leader {
+            let partition_id = self.partition_store.partition_id();
+
+            // update partition store with latest epoch metadata
+            if let Some(current_config) = &announce_leader.current_config {
+                let announced = CachedEpochMetadata {
+                    version: announce_leader.epoch_version.unwrap(),
+                    leader_node_id: announce_leader.node_id,
+                    leader_epoch: announce_leader.leader_epoch,
+                    current: current_config.to_current_replica_set_state(),
+                    next: announce_leader
+                        .next_config
+                        .as_ref()
+                        .map(|v| v.to_next_replica_set_state()),
                 };
-                record_buffer.push(record?);
+
+                if self
+                    .cached_epoch_metadata
+                    .as_ref()
+                    .is_none_or(|c| c.version < announced.version)
+                {
+                    txn.put_partition_config_state(&announced)?;
+                    self.cached_epoch_metadata = Some(announced);
+                }
+            };
+
+            // commit all changes so far, this is important so that the actuators see all changes
+            // when becoming leader.
+            txn.commit().await?;
+            // Notify all lsn watchers that the lsn has been committed
+
+            self.last_applied_log_lsn_watch.send_replace(lsn);
+
+            // We can ignore all actions collected so far because as a new leader we have to instruct the
+            // actuators afresh.
+            action_collector.clear();
+
+            self.status.last_observed_leader_epoch = Some(announce_leader.leader_epoch);
+            self.status.last_observed_leader_node = Some(announce_leader.node_id);
+
+            self.replica_set_states.note_observed_leader(
+                partition_id,
+                restate_types::partitions::state::LeadershipState {
+                    current_leader_epoch: announce_leader.leader_epoch,
+                    current_leader: announce_leader.node_id,
+                },
+            );
+
+            let is_leader = self
+                .leadership_state
+                .on_announce_leader(
+                    &announce_leader,
+                    self.partition_store.clone(),
+                    &self.replica_set_states,
+                    self.config.live_load(),
+                    vqueues,
+                    &self.state_machine.rule_book,
+                    &self.state_machine,
+                    &self.state_machine.min_restate_version,
+                )
+                .await?;
+
+            Span::current().record("is_leader", is_leader);
+
+            if is_leader {
+                if let Some(cached) = &self.cached_epoch_metadata {
+                    self.replica_set_states.note_observed_membership(
+                        partition_id,
+                        restate_types::partitions::state::LeadershipState {
+                            current_leader_epoch: cached.leader_epoch,
+                            current_leader: cached.leader_node_id,
+                        },
+                        &cached.current.replica_set,
+                        &cached.next.as_ref().map(|c| &c.replica_set).cloned(),
+                    );
+                }
+                self.status.effective_mode = RunMode::Leader;
             } else {
-                // no more immediately available records found
-                break;
+                // make sure that we set our effective_mode to follower also when
+                // not being explicitly asked by the PPM
+                self.status.effective_mode = RunMode::Follower;
             }
+
+            txn.clear();
         }
 
         Ok(())

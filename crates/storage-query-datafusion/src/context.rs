@@ -13,6 +13,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use codederror::CodedError;
 use tokio::sync::watch;
 use tracing::warn;
 
@@ -26,13 +27,13 @@ use datafusion::physical_plan::{ExecutionPlan, SendableRecordBatchStream, execut
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion::sql::TableReference;
 
-use codederror::CodedError;
 use restate_core::{Metadata, TaskCenter};
 use restate_limiter::rule_book::RuleBookObserver;
 use restate_metadata_store::MetadataStoreClient;
 use restate_partition_store::PartitionStoreManager;
 use restate_sharding::KeyRange;
 use restate_types::cluster::cluster_state::LegacyClusterState;
+use restate_types::config::Configuration;
 use restate_types::config::QueryEngineOptions;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
@@ -381,10 +382,19 @@ impl RegisterTable for ClusterTables {
         )?;
         crate::bifrost_read_stream::register_self(
             ctx,
-            metadata,
+            metadata.clone(),
             self.remote_scanner_manager.clone(),
             None, // local scanner is registered separately by the node
         )?;
+
+        if !Configuration::pinned().common.disable_config_sql_table {
+            crate::config::register_self(
+                ctx,
+                metadata,
+                self.remote_scanner_manager.clone(),
+                None, // local scanner is registered separately by the node
+            )?;
+        }
 
         ctx.datafusion_context
             .sql(CLUSTER_LOGS_TAIL_SEGMENTS_VIEW)

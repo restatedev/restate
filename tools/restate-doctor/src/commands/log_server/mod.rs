@@ -44,21 +44,22 @@ pub struct LogServerOpts {
     #[arg(long, short)]
     pub path: Option<PathBuf>,
 
-    /// Open database as a secondary instance.
+    /// DANGER: open the database in RocksDB read-only mode instead of as a
+    /// secondary instance.
     ///
-    /// This allows analysis while the Restate server is running.
-    /// Without this flag, the database is opened in read-only mode
-    /// which requires exclusive access (server must be stopped).
+    /// Read-only mode requires exclusive access and WILL corrupt the database
+    /// if a Restate server currently has it open. Only use it when the server
+    /// is stopped. The default (secondary) mode is always safe.
     #[arg(long)]
-    pub secondary: bool,
+    pub read_only: bool,
 }
 
 impl LogServerOpts {
     pub fn open_mode(&self) -> OpenMode {
-        if self.secondary {
-            OpenMode::Secondary
-        } else {
+        if self.read_only {
             OpenMode::ReadOnly
+        } else {
+            OpenMode::Secondary
         }
     }
 }
