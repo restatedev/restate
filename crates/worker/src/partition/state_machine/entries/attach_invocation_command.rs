@@ -11,10 +11,11 @@
 use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::fsm_table::WriteFsmTable;
-use restate_storage_api::outbox_table::{OutboxMessage, WriteOutboxTable};
+use restate_storage_api::outbox_table::WriteOutboxTable;
 use restate_storage_api::timer_table::WriteTimerTable;
 use restate_types::invocation::{AttachInvocationRequest, ServiceInvocationResponseSink};
 use restate_types::journal_v2::AttachInvocationCommand;
+use restate_wal_protocol::v2::commands;
 
 pub(super) type ApplyAttachInvocationCommand<'e> =
     ApplyJournalCommandEffect<'e, AttachInvocationCommand>;
@@ -25,14 +26,16 @@ where
     S: WriteTimerTable + WriteOutboxTable + WriteFsmTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
-        ctx.handle_outgoing_message(OutboxMessage::AttachInvocation(AttachInvocationRequest {
-            invocation_query: self.entry.target.into(),
-            block_on_inflight: true,
-            response_sink: ServiceInvocationResponseSink::partition_processor(
-                self.invocation_id,
-                self.entry.completion_id,
-            ),
-        }))?;
+        ctx.handle_outgoing_message(commands::AttachInvocationCommand::from(
+            AttachInvocationRequest {
+                invocation_query: self.entry.target.into(),
+                block_on_inflight: true,
+                response_sink: ServiceInvocationResponseSink::partition_processor(
+                    self.invocation_id,
+                    self.entry.completion_id,
+                ),
+            },
+        ))?;
 
         Ok(())
     }
