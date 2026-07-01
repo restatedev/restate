@@ -40,7 +40,9 @@ datafusion-proto = { workspace = true }
 derive_more = { workspace = true, features = ["debug"] }
 enumset = { workspace = true }
 futures = { workspace = true }
+gardal = { workspace = true }
 itertools = { workspace = true }
+metrics = { workspace = true }
 parking_lot = { workspace = true }
 paste = { workspace = true }
 prost = { workspace = true }

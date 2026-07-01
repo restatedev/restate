@@ -11,9 +11,9 @@
 use std::io::Write;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
+use std::time::Instant;
 
-use crate::query_utils::{RecordBatchWriter, WriteRecordBatchStream};
-use crate::state::AdminServiceState;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -24,16 +24,24 @@ use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::json::writer::JsonArray;
 use datafusion::common::DataFusionError;
-use futures::{StreamExt, TryStreamExt};
+use futures::{Stream, StreamExt, TryStreamExt};
 use http::{HeaderMap, HeaderValue};
 use http_body::Frame;
 use http_body_util::StreamBody;
+use metrics::histogram;
 use parking_lot::Mutex;
+use serde::Serialize;
+
 use restate_admin_rest_model::query::QueryRequest;
 use restate_core::network::TransportConnect;
 use restate_types::invocation::client::InvocationClient;
 use restate_types::schema::registry::{DiscoveryClient, MetadataService, TelemetryClient};
-use serde::Serialize;
+
+use crate::metric_definitions::QUERY_ENGINE_QUERY_DURATION_SECONDS;
+use crate::query_utils::{RecordBatchWriter, WriteRecordBatchStream};
+use crate::state::AdminServiceState;
+
+const RETRY_AFTER_HEADER: &str = "Retry-After";
 
 /// Error response for query endpoint.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -48,16 +56,47 @@ pub(crate) enum QueryError {
     Datafusion(#[from] datafusion::error::DataFusionError),
     #[error("Query service not available")]
     Unavailable,
+    #[error("Rate limited")]
+    RateLimited(#[from] gardal::RateLimited),
+}
+
+impl From<restate_storage_query_datafusion::context::QueryError> for QueryError {
+    fn from(err: restate_storage_query_datafusion::context::QueryError) -> Self {
+        match err {
+            restate_storage_query_datafusion::context::QueryError::DataFusion(e) => {
+                Self::Datafusion(e)
+            }
+            restate_storage_query_datafusion::context::QueryError::RateLimited(e) => {
+                Self::RateLimited(e)
+            }
+        }
+    }
 }
 
 impl IntoResponse for QueryError {
     fn into_response(self) -> Response {
         let status_code = match &self {
+            QueryError::Datafusion(datafusion::error::DataFusionError::Plan(_))
+            | QueryError::Datafusion(datafusion::error::DataFusionError::SchemaError(_, _))
+            | QueryError::Datafusion(datafusion::error::DataFusionError::SQL(_, _)) => {
+                StatusCode::BAD_REQUEST
+            }
             QueryError::Datafusion(_) => StatusCode::INTERNAL_SERVER_ERROR,
             QueryError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+            QueryError::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
         };
+
+        let mut headers = http::HeaderMap::new();
+        if let QueryError::RateLimited(e) = &self {
+            headers.insert(
+                RETRY_AFTER_HEADER,
+                HeaderValue::from(e.earliest_retry_after().as_secs()),
+            );
+        }
+
         (
             status_code,
+            headers,
             Json(QueryErrorBody {
                 message: self.to_string(),
             }),
@@ -94,6 +133,10 @@ where
     Invocations: InvocationClient + Send + Sync + Clone + 'static,
     Transport: TransportConnect,
 {
+    let duration_guard = QueryDurationGuard {
+        start: Instant::now(),
+    };
+
     let Some(query_context) = state.query_context.as_ref() else {
         return Err(QueryError::Unavailable);
     };
@@ -126,11 +169,44 @@ where
         return Err(err.into());
     }
 
+    // Move the guard into the body so the duration is recorded once the stream is fully
+    // consumed or dropped (e.g. on client disconnect).
+    let result_stream = Timed {
+        inner: result_stream,
+        _guard: duration_guard,
+    };
+
     Ok(Response::builder()
         .header(http::header::CONTENT_TYPE, content_type)
         .body(StreamBody::new(result_stream))
         .expect("content-type header is correct")
         .into_response())
+}
+
+/// Records the elapsed time since `start` into the query-duration histogram when dropped.
+struct QueryDurationGuard {
+    start: Instant,
+}
+
+impl Drop for QueryDurationGuard {
+    fn drop(&mut self) {
+        histogram!(QUERY_ENGINE_QUERY_DURATION_SECONDS).record(self.start.elapsed().as_secs_f64());
+    }
+}
+
+/// Wraps a stream, keeping a [`QueryDurationGuard`] alive for as long as the stream is held.
+/// The guard records the query duration when this wrapper (the response body) is dropped.
+struct Timed<S> {
+    inner: S,
+    _guard: QueryDurationGuard,
+}
+
+impl<S: Stream + Unpin> Stream for Timed<S> {
+    type Item = S::Item;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.inner.poll_next_unpin(cx)
+    }
 }
 
 #[derive(Clone)]

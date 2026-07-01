@@ -29,6 +29,7 @@ mod networking;
 mod object_store;
 mod query_engine;
 mod rocksdb;
+mod throttling;
 mod worker;
 
 pub use admin::*;
@@ -49,6 +50,7 @@ pub use networking::*;
 pub use object_store::*;
 pub use query_engine::*;
 pub use rocksdb::*;
+pub use throttling::*;
 pub use worker::*;
 
 use std::fs;
