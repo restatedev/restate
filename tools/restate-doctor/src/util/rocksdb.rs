@@ -14,17 +14,24 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use restate_cli_util::c_warn;
+use restate_cli_util::ui::console::confirm_or_exit;
 use restate_partition_store::keys::KeyKind;
 use rocksdb::{ColumnFamilyDescriptor, DB, LiveFile, Options};
 
-/// Mode for opening the database
+/// Mode for opening the database.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OpenMode {
-    /// Open in read-only mode (requires exclusive access)
+    /// Open as a secondary instance (default). Safe to run while the primary
+    /// (Restate server) has the database open read-write, and equally fine when
+    /// the server is stopped.
     #[default]
-    ReadOnly,
-    /// Open as secondary instance (can run while primary is active)
     Secondary,
+    /// Open in RocksDB read-only mode.
+    ///
+    /// DANGEROUS: this WILL corrupt the database if a Restate server currently
+    /// has it open. Only use when the server is fully stopped.
+    ReadOnly,
 }
 
 /// The default column family name in RocksDB (not used for partition data)
@@ -102,10 +109,12 @@ pub fn extract_file_number(filename: &str) -> Option<u64> {
         .and_then(|s| s.parse::<u64>().ok())
 }
 
-/// Open a RocksDB database for read-only analysis with default CF options.
+/// Open a RocksDB database for analysis with default CF options.
 ///
-/// If `max_open_files` is `Some`, limits the number of open file handles RocksDB will use.
-/// This is useful in environments where the file descriptor limit cannot be increased.
+/// See [`OpenMode`] for the trade-offs between secondary (default, safe) and
+/// read-only mode. If `max_open_files` is `Some`, limits the number of open
+/// file handles RocksDB will use in read-only mode; it is ignored in secondary
+/// mode as it requires setting this to `-1` (unlimited).
 pub fn open_partition_store_db(
     path: impl AsRef<Path>,
     mode: OpenMode,
@@ -122,7 +131,7 @@ pub fn open_partition_store_db(
     })
 }
 
-/// Open a RocksDB database for read-only analysis with per-CF options.
+/// Open a RocksDB database for analysis with per-CF options.
 ///
 /// `cf_opts_fn` is called for each column family name and should return the
 /// `Options` to use when opening that CF. This is required when the database
@@ -151,8 +160,26 @@ pub fn open_db_with_cf_options(
     );
 
     let mut opts = Options::default();
-    if let Some(limit) = max_open_files {
-        opts.set_max_open_files(limit);
+    match mode {
+        // A secondary reading mode must set `max_open_files` must be -1 (unlimited). Reject
+        // any other explicit value.
+        OpenMode::Secondary => {
+            if let Some(limit) = max_open_files
+                && limit != -1
+            {
+                bail!(
+                    "--limit-open-files must be -1 (unlimited) in secondary mode; \
+                     a secondary instance needs load all the files in case the primary \
+                     unlinks them. Got {limit}."
+                );
+            }
+            opts.set_max_open_files(-1);
+        }
+        OpenMode::ReadOnly => {
+            if let Some(limit) = max_open_files {
+                opts.set_max_open_files(limit);
+            }
+        }
     }
 
     opts.set_disable_auto_compactions(true);
@@ -163,20 +190,28 @@ pub fn open_db_with_cf_options(
         .collect();
 
     let db = match mode {
-        OpenMode::ReadOnly => DB::open_cf_descriptors_read_only(&opts, &path, descriptors, false)
-            .context(
-            "Failed to open database in read-only mode. \
-                 This requires exclusive access - is the Restate server running? \
-                 Try using --secondary to analyze while the server is active.",
-        )?,
         OpenMode::Secondary => {
-            // Secondary mode requires a secondary path for WAL replay
+            // Secondary mode requires a secondary path for WAL replay / catch-up.
             let secondary_path = std::env::temp_dir()
                 .join(format!("restate-doctor-secondary-{}", std::process::id()));
             std::fs::create_dir_all(&secondary_path)?;
 
             DB::open_cf_descriptors_as_secondary(&opts, &path, &secondary_path, descriptors)
                 .context("Failed to open database as secondary instance.")?
+        }
+        OpenMode::ReadOnly => {
+            c_warn!(
+                "Opening the database in READ-ONLY mode. This is UNSAFE if a Restate server \
+                 currently has this database open and WILL corrupt a running server's database. Only \
+                 use read-only mode when the server is fully stopped. The default secondary mode \
+                 is always safe."
+            );
+            confirm_or_exit("Are you sure you want to open the database in read-only mode?")?;
+            DB::open_cf_descriptors_read_only(&opts, &path, descriptors, false).context(
+                "Failed to open database in read-only mode. This requires exclusive access - is \
+                 the Restate server running? Omit --read-only to open a safe secondary instance \
+                 instead.",
+            )?
         }
     };
 
