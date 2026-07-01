@@ -13,8 +13,12 @@
 use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
 
 pub const TYPE_LABEL: &str = "type";
+pub const STATUS_LABEL: &str = "status";
+pub const ERROR_CODE_LABEL: &str = "error_code";
 pub const PARTITION_LABEL: &str = "partition";
 pub const REASON_LABEL: &str = "reason";
+pub const RPC_SERVICE_LABEL: &str = "rpc.service";
+pub const RPC_METHOD_LABEL: &str = "rpc.method";
 pub const LEADER_LABEL: &str = "leader";
 pub const LEADER_LABEL_LEADER: &str = "1";
 pub const LEADER_LABEL_FOLLOWER: &str = "0";
@@ -60,6 +64,11 @@ pub const PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS: &str =
 
 pub const PARTITION_SHUFFLE_MESSAGE_COUNT: &str = "restate.partition.shuffle.message.count";
 pub const PARTITION_SHUFFLE_INFLIGHT_COUNT: &str = "restate.partition.shuffle.inflight.count";
+
+pub const INVOCATION_FAILURES: &str = "restate.invocation.failures.total";
+pub const INVOCATION_FAILURE_STATUS_FAILED: &str = "failed";
+pub const INVOCATION_FAILURE_STATUS_CANCELLED: &str = "cancelled";
+pub const INVOCATION_FAILURE_STATUS_KILLED: &str = "killed";
 
 pub(crate) fn describe_metrics() {
     describe_gauge!(
@@ -154,5 +163,13 @@ pub(crate) fn describe_metrics() {
         PARTITION_SHUFFLE_INFLIGHT_COUNT,
         Unit::Count,
         "Number of inflight records by source partition"
+    );
+
+    describe_counter!(
+        INVOCATION_FAILURES,
+        Unit::Count,
+        "Number of invocations that reached a non-success terminal state, labeled by target service \
+         (rpc.service), handler (rpc.method), terminal status (failed/cancelled/killed), and error \
+         code. Counts terminal invocation outcomes only, not per-attempt execution failures"
     );
 }

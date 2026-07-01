@@ -36,6 +36,11 @@ use restate_clock::RoughTimestamp;
 use restate_limiter::LimitKey;
 use restate_limiter::RuleBook;
 
+use crate::metric_definitions::{
+    ERROR_CODE_LABEL, INVOCATION_FAILURE_STATUS_CANCELLED, INVOCATION_FAILURE_STATUS_FAILED,
+    INVOCATION_FAILURE_STATUS_KILLED, INVOCATION_FAILURES, RPC_METHOD_LABEL, RPC_SERVICE_LABEL,
+    STATUS_LABEL,
+};
 use crate::rule_book_cache::RuleBookCacheHandle;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
@@ -2154,6 +2159,11 @@ impl<S> StateMachineApplyContext<'_, S> {
             input.span_context(),
             Err(&error),
         );
+        self.record_invocation_failure_metric(
+            &invocation_target,
+            Self::invocation_failure_status(Some(termination_flavor), &error),
+            &error,
+        );
 
         Ok(())
     }
@@ -2267,6 +2277,11 @@ impl<S> StateMachineApplyContext<'_, S> {
             &invocation_target,
             input.span_context(),
             Err(&error),
+        );
+        self.record_invocation_failure_metric(
+            &invocation_target,
+            Self::invocation_failure_status(Some(termination_flavor), &error),
+            &error,
         );
 
         Ok(())
@@ -3025,6 +3040,16 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         let vqueue_id = invocation_metadata.vqueue_id.clone();
         let mut end_status = vqueue_table::Status::Succeeded;
+
+        let has_override = response_result_override.is_some();
+        if let Some(ResponseResult::Failure(error)) = &response_result_override {
+            self.record_invocation_failure_metric(
+                &invocation_target,
+                Self::invocation_failure_status(flavor, error),
+                error,
+            );
+        }
+
         // If there are any response sinks, or we need to store back the completed status,
         //  we need to find the latest output entry
         if !invocation_metadata.response_sinks.is_empty() || !completion_retention.is_zero() {
@@ -3082,6 +3107,15 @@ impl<S> StateMachineApplyContext<'_, S> {
                     ResponseResult::Failure(err) => Err(err),
                 },
             );
+            // Explicit-result failures are recorded before the block; here we only account for
+            // failures discovered by reading the output entry.
+            if !has_override && let ResponseResult::Failure(error) = &response_result {
+                self.record_invocation_failure_metric(
+                    &invocation_target,
+                    Self::invocation_failure_status(flavor, error),
+                    error,
+                );
+            }
 
             // Store the completed status, if needed
             if !completion_retention.is_zero() {
@@ -4520,6 +4554,39 @@ impl<S> StateMachineApplyContext<'_, S> {
                 }
             }
         }
+    }
+
+    fn invocation_failure_status(
+        flavor: Option<TerminationFlavor>,
+        error: &InvocationError,
+    ) -> &'static str {
+        match flavor {
+            Some(TerminationFlavor::Kill) => INVOCATION_FAILURE_STATUS_KILLED,
+            Some(TerminationFlavor::Cancel) => INVOCATION_FAILURE_STATUS_CANCELLED,
+            None if error.code() == restate_types::errors::codes::ABORTED => {
+                INVOCATION_FAILURE_STATUS_CANCELLED
+            }
+            None => INVOCATION_FAILURE_STATUS_FAILED,
+        }
+    }
+
+    fn record_invocation_failure_metric(
+        &self,
+        invocation_target: &InvocationTarget,
+        status: &'static str,
+        error: &InvocationError,
+    ) {
+        if !self.is_leader {
+            return;
+        }
+        counter!(
+            INVOCATION_FAILURES,
+            STATUS_LABEL => status,
+            RPC_SERVICE_LABEL => invocation_target.service_name().to_string(),
+            RPC_METHOD_LABEL => invocation_target.handler_name().to_string(),
+            ERROR_CODE_LABEL => u16::from(error.code()).to_string(),
+        )
+        .increment(1);
     }
 
     fn handle_outgoing_message(&mut self, message: OutboxMessage) -> Result<(), Error>
