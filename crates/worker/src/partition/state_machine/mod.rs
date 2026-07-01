@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use assert2::let_assert;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
 use futures::{StreamExt, TryStreamExt};
 use metrics::{counter, histogram};
@@ -52,7 +52,7 @@ use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table::ReadJournalTable;
 use restate_storage_api::journal_table::{JournalEntry, WriteJournalTable};
 use restate_storage_api::lock_table::WriteLockTable;
-use restate_storage_api::outbox_table::{OutboxMessage, WriteOutboxTable};
+use restate_storage_api::outbox_table::{OpaqueMessage, OutboxMessage, WriteOutboxTable};
 use restate_storage_api::promise_table::{
     Promise, PromiseState, ReadPromiseTable, WritePromiseTable,
 };
@@ -114,7 +114,9 @@ use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::sharding::KeyRange;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::state_mut::StateMutationVersion;
-use restate_types::storage::{StorageDecodeError, StoredRawEntry, StoredRawEntryHeader};
+use restate_types::storage::{
+    StorageDecodeError, StorageEncodeError, StoredRawEntry, StoredRawEntryHeader,
+};
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::{self, EntryId, VQueueId};
 use restate_types::{RestateVersion, SemanticRestateVersion};
@@ -133,7 +135,7 @@ use crate::metric_definitions::{
     USAGE_LEADER_JOURNAL_ENTRY_COUNT,
 };
 use crate::partition::state_machine::lifecycle::OnCancelCommand;
-use crate::partition::types::{InvokerEffectKind, OutboxMessageExt};
+use crate::partition::types::InvokerEffectKind;
 
 /// Read-only view of the state-machine features currently enabled for a partition.
 ///
@@ -229,6 +231,9 @@ pub struct StateMachine {
     pub(crate) rule_book_cache: RuleBookCacheHandle,
 
     pub(crate) partition_key_range: KeyRange,
+
+    /// Helper arena used to encode outbox messages
+    arena: BytesMut,
 }
 
 impl Debug for StateMachine {
@@ -296,6 +301,8 @@ pub enum Error {
     EnvelopeDecoding(#[from] StorageDecodeError),
     #[error("Bifrost envelope has unknown command kind")]
     UnknownCommandKind,
+    #[error("Failed to encode outbox message: {0}")]
+    Outbox(StorageEncodeError),
 }
 
 #[macro_export]
@@ -353,6 +360,7 @@ impl StateMachine {
             schema,
             rule_book,
             rule_book_cache,
+            arena: BytesMut::new(),
         }
     }
 }
@@ -373,6 +381,7 @@ pub(crate) struct StateMachineApplyContext<'a, S> {
     rule_book_cache: &'a RuleBookCacheHandle,
     partition_key_range: KeyRange,
     is_leader: bool,
+    arena: &'a mut BytesMut,
 }
 
 trait CommandHandler<CTX> {
@@ -415,6 +424,7 @@ impl StateMachine {
                 rule_book: &mut self.rule_book,
                 rule_book_cache: &self.rule_book_cache,
                 partition_key_range: self.partition_key_range,
+                arena: &mut self.arena,
                 is_leader,
             }
             .on_apply(envelope)
@@ -697,9 +707,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 let inner = envelope
                     .into_typed::<commands::ProxyThroughCommand>()
                     .into_inner()?;
-                self.handle_outgoing_message(OutboxMessage::ServiceInvocation(Box::new(
-                    inner.invocation.into(),
-                )))?;
+                self.handle_outgoing_message(inner.invocation)?;
                 Ok(())
             }
             CommandKind::AttachInvocation => {
@@ -2405,7 +2413,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         };
 
         for invocation_id in invocation_ids_to_kill {
-            self.handle_outgoing_message(OutboxMessage::InvocationTermination(
+            self.handle_outgoing_message(commands::TerminateInvocationCommand::from(
                 InvocationTermination {
                     invocation_id,
                     flavor: TerminationFlavor::Kill,
@@ -2459,7 +2467,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 } => {
                     // For calls, we don't immediately complete the call entry with cancelled,
                     // but we let the cancellation result propagate from the callee.
-                    self.handle_outgoing_message(OutboxMessage::InvocationTermination(
+                    self.handle_outgoing_message(commands::TerminateInvocationCommand::from(
                         InvocationTermination {
                             invocation_id: enrichment_result.invocation_id,
                             flavor: TerminationFlavor::Cancel,
@@ -3181,7 +3189,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         for response_sink in response_sinks {
             match response_sink {
                 ServiceInvocationResponseSink::PartitionProcessor(target) => self
-                    .handle_outgoing_message(OutboxMessage::ServiceResponse(
+                    .handle_outgoing_message(commands::InvocationResponseCommand::from(
                         InvocationResponse {
                             target,
                             result: result.clone(),
@@ -3850,12 +3858,14 @@ impl<S> StateMachineApplyContext<'_, S> {
                             }) => {
                                 // Send response to listeners
                                 for listener in listeners {
-                                    self.handle_outgoing_message(OutboxMessage::ServiceResponse(
-                                        InvocationResponse {
-                                            target: listener,
-                                            result: completion.clone().into(),
-                                        },
-                                    ))?;
+                                    self.handle_outgoing_message(
+                                        commands::InvocationResponseCommand::from(
+                                            InvocationResponse {
+                                                target: listener,
+                                                result: completion.clone().into(),
+                                            },
+                                        ),
+                                    )?;
                                 }
 
                                 // Now register the promise completion
@@ -3926,7 +3936,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                             journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
 
-                    let service_invocation = Box::new(ServiceInvocation {
+                    let service_invocation = ServiceInvocation {
                         invocation_id: *callee_invocation_id,
                         invocation_target: callee_invocation_target.clone(),
                         argument: request.parameter,
@@ -3948,9 +3958,9 @@ impl<S> StateMachineApplyContext<'_, S> {
                         limit_key: Default::default(),
                         submit_notification_sink: None,
                         restate_version: RestateVersion::current(),
-                    });
+                    };
 
-                    self.handle_outgoing_message(OutboxMessage::ServiceInvocation(
+                    self.handle_outgoing_message(commands::InvokeCommand::from(
                         service_invocation,
                     ))?;
                 } else {
@@ -3981,7 +3991,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     Some(MillisSinceEpoch::new(invoke_time))
                 };
 
-                let service_invocation = Box::new(ServiceInvocation {
+                let service_invocation = ServiceInvocation {
                     invocation_id: *callee_invocation_id,
                     invocation_target: callee_invocation_target.clone(),
                     argument: request.parameter,
@@ -3999,9 +4009,9 @@ impl<S> StateMachineApplyContext<'_, S> {
                     limit_key: Default::default(),
                     submit_notification_sink: None,
                     restate_version: RestateVersion::current(),
-                });
+                };
 
-                self.handle_outgoing_message(OutboxMessage::ServiceInvocation(service_invocation))?;
+                self.handle_outgoing_message(commands::InvokeCommand::from(service_invocation))?;
             }
             EnrichedEntryHeader::Awakeable { is_completed, .. } => {
                 debug_assert!(!is_completed, "Awakeable entry must not be completed.");
@@ -4037,14 +4047,16 @@ impl<S> StateMachineApplyContext<'_, S> {
 
                 // Check is this is old or new awakeable id
                 if AwakeableIdentifier::from_str(&entry.id).is_ok() {
-                    self.handle_outgoing_message(OutboxMessage::from_awakeable_completion(
-                        *invocation_id,
-                        *entry_index,
-                        entry.result.into(),
-                    ))?;
+                    self.handle_outgoing_message(
+                        commands::InvocationResponseCommand::from_awakeable_completion(
+                            *invocation_id,
+                            *entry_index,
+                            entry.result.into(),
+                        ),
+                    )?;
                 } else if let Ok(new_awk_id) = ExternalSignalIdentifier::from_str(&entry.id) {
                     let (invocation_id, signal_id) = new_awk_id.into_inner();
-                    self.handle_outgoing_message(OutboxMessage::NotifySignal(
+                    self.handle_outgoing_message(commands::NotifySignalCommand::from(
                         NotifySignalRequest {
                             invocation_id,
                             signal: Signal::new(
@@ -4132,7 +4144,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                         )
                         .await?
                     {
-                        self.handle_outgoing_message(OutboxMessage::AttachInvocation(
+                        self.handle_outgoing_message(commands::AttachInvocationCommand::from(
                             AttachInvocationRequest {
                                 invocation_query,
                                 block_on_inflight: true,
@@ -4159,7 +4171,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                         )
                         .await?
                     {
-                        self.handle_outgoing_message(OutboxMessage::AttachInvocation(
+                        self.handle_outgoing_message(commands::AttachInvocationCommand::from(
                             AttachInvocationRequest {
                                 invocation_query,
                                 block_on_inflight: false,
@@ -4219,7 +4231,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         };
 
         if let Some(target_invocation_id) = target_invocation_id {
-            self.handle_outgoing_message(OutboxMessage::InvocationTermination(
+            self.handle_outgoing_message(commands::TerminateInvocationCommand::from(
                 InvocationTermination {
                     invocation_id: target_invocation_id,
                     flavor: TerminationFlavor::Cancel,
@@ -4522,8 +4534,9 @@ impl<S> StateMachineApplyContext<'_, S> {
         }
     }
 
-    fn handle_outgoing_message(&mut self, message: OutboxMessage) -> Result<(), Error>
+    fn handle_outgoing_message<M>(&mut self, message: M) -> Result<(), Error>
     where
+        M: v2::OutboxMessage,
         S: WriteOutboxTable + WriteFsmTable,
     {
         // TODO Here we could add an optimization to immediately execute outbox message command
@@ -4968,81 +4981,38 @@ impl<S> StateMachineApplyContext<'_, S> {
         Ok(())
     }
 
-    fn do_enqueue_into_outbox(
+    fn do_enqueue_into_outbox<M>(
         &mut self,
         seq_number: MessageIndex,
-        message: OutboxMessage,
+        message: M,
     ) -> Result<(), Error>
     where
+        M: v2::OutboxMessage,
         S: WriteOutboxTable + WriteFsmTable,
     {
-        match &message {
-            OutboxMessage::ServiceInvocation(service_invocation) => {
-                debug_if_leader!(
-                    self.is_leader,
-                    rpc.service = %service_invocation.invocation_target.service_name(),
-                    rpc.method = %service_invocation.invocation_target.handler_name(),
-                    restate.invocation.id = %service_invocation.invocation_id,
-                    restate.invocation.target = %service_invocation.invocation_target,
-                    restate.outbox.seq = seq_number,
-                    "Effect: Send service invocation to partition processor"
-                )
-            }
-            OutboxMessage::ServiceResponse(InvocationResponse {
-                result: ResponseResult::Success(_),
-                target,
-            }) => {
-                debug_if_leader!(
-                    self.is_leader,
-                    restate.invocation.id = %target.caller_id,
-                    restate.outbox.seq = seq_number,
-                    "Effect: Send success response to another invocation for completion id {}",
-                    target.caller_completion_id
-                )
-            }
-            OutboxMessage::InvocationTermination(invocation_termination) => {
-                debug_if_leader!(
-                    self.is_leader,
-                    restate.invocation.id = %invocation_termination.invocation_id,
-                    restate.outbox.seq = seq_number,
-                    "Effect: Send invocation termination command '{:?}' to partition processor",
-                    invocation_termination.flavor
-                )
-            }
-            OutboxMessage::ServiceResponse(InvocationResponse {
-                result: ResponseResult::Failure(e),
-                target,
-            }) => {
-                debug_if_leader!(
-                    self.is_leader,
-                    restate.invocation.id = %target.caller_id,
-                    restate.outbox.seq = seq_number,
-                    "Effect: Send failure '{}' response to another invocation for completion id {}",
-                    e,
-                    target.caller_completion_id
-                )
-            }
-            OutboxMessage::AttachInvocation(AttachInvocationRequest {
-                invocation_query, ..
-            }) => {
-                debug_if_leader!(
-                    self.is_leader,
-                    restate.outbox.seq = seq_number,
-                    "Effect: Enqueuing attach invocation request to '{:?}'",
-                    invocation_query,
-                )
-            }
-            OutboxMessage::NotifySignal(NotifySignalRequest {
-                invocation_id,
-                signal,
-            }) => {
-                debug_if_leader!(
-                    self.is_leader,
-                    restate.outbox.seq = seq_number,
-                    "Notifying signal to {invocation_id} with signal id {:?}",
-                    signal.id,
-                )
-            }
+        debug_if_leader!(
+            self.is_leader,
+            restate.outbox.seq = seq_number,
+            restate.partition.key = message.partition_key(),
+            "Send outbox message with kind {}",
+            M::KIND
+        );
+
+        // todo(azmy): Before merging this should be replaced
+        // with a semver matched to enable the feature (to write opaque message)
+        // from Restate v1.9
+        const WRITE_V1: bool = true;
+        let message = if WRITE_V1 {
+            message.into_outbox_message()
+        } else {
+            message.encode(self.arena).map_err(Error::Outbox)?;
+
+            OutboxMessage::Opaque(OpaqueMessage {
+                partition_key: message.partition_key(),
+                codec: message.default_codec(),
+                kind: M::KIND.into(),
+                message: self.arena.split().freeze(),
+            })
         };
 
         self.storage

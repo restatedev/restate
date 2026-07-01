@@ -10,6 +10,7 @@
 
 use std::future::Future;
 
+use anyhow::Context;
 use async_channel::{TryRecvError, TrySendError};
 use metrics::{counter, histogram};
 use tokio::sync::mpsc;
@@ -25,7 +26,7 @@ use restate_wal_protocol::v2::commands::{
     AttachInvocationCommand, InvocationResponseCommand, InvokeCommand, NotifySignalCommand,
     TerminateInvocationCommand,
 };
-use restate_wal_protocol::v2::{Dedup, Envelope, Raw};
+use restate_wal_protocol::v2::{CommandKind, Dedup, Envelope, Raw};
 
 use crate::metric_definitions::{
     PARTITION_LABEL, PARTITION_SHUFFLE_INFLIGHT_COUNT, PARTITION_SHUFFLE_MESSAGE_COUNT,
@@ -63,10 +64,10 @@ pub(crate) fn wrap_outbox_message_in_envelope(
     message: OutboxMessage,
     seq_number: MessageIndex,
     shuffle_metadata: &ShuffleMetadata,
-) -> Envelope<Raw> {
+) -> anyhow::Result<Envelope<Raw>> {
     let dedup = create_dedup(seq_number, shuffle_metadata);
 
-    match message {
+    let envelope = match message {
         OutboxMessage::AttachInvocation(payload) => {
             Envelope::new(dedup, AttachInvocationCommand::from(payload)).into_raw()
         }
@@ -82,7 +83,16 @@ pub(crate) fn wrap_outbox_message_in_envelope(
         OutboxMessage::ServiceResponse(payload) => {
             Envelope::new(dedup, InvocationResponseCommand::from(payload)).into_raw()
         }
-    }
+        OutboxMessage::Opaque(opaque) => {
+            let kind: CommandKind = opaque
+                .kind
+                .try_into()
+                .context("Opaque outbox message has unknown command kind")?;
+            Envelope::from_bytes_unchecked(kind, opaque.codec, dedup, opaque.message)
+        }
+    };
+
+    Ok(envelope)
 }
 
 fn create_dedup(seq_number: MessageIndex, shuffle_metadata: &ShuffleMetadata) -> Dedup {
@@ -355,7 +365,7 @@ mod state_machine {
                             Ordering::Equal => {
                                 let partition_key = message.partition_key();
                                 let envelope =
-                                    wrap_outbox_message_in_envelope(message, sn, &self.metadata);
+                                    wrap_outbox_message_in_envelope(message, sn, &self.metadata)?;
 
                                 self.state = State::Ingesting {
                                     ingest: self.ingestion.ingest(
@@ -407,7 +417,8 @@ mod state_machine {
                                 );
                                 let partition_key = message.partition_key();
                                 let envelope =
-                                    wrap_outbox_message_in_envelope(message, sn, &self.metadata);
+                                    wrap_outbox_message_in_envelope(message, sn, &self.metadata)?;
+
                                 self.state = State::Ingesting {
                                     ingest: self.ingestion.ingest(
                                         partition_key,

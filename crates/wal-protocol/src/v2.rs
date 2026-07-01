@@ -8,6 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+pub mod commands;
+mod compatibility;
+mod markers;
+
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -16,6 +20,7 @@ use bilrost::{Message, OwnedMessage};
 use bytes::{BufMut, Bytes, BytesMut};
 
 use restate_encoding::U128;
+use restate_types::errors::ConversionError;
 use restate_types::identifiers::{LeaderEpoch, PartitionId};
 use restate_types::logs::{BodyWithKeys, HasRecordKeys, Keys};
 use restate_types::storage::{
@@ -25,9 +30,7 @@ use restate_types::storage::{
 use restate_util_string::ReString;
 
 use crate::v1;
-
-pub mod commands;
-mod compatibility;
+pub use markers::OutboxMessage;
 
 mod sealed {
     pub trait Sealed {}
@@ -237,6 +240,7 @@ impl<C: Command> From<Envelope<C>> for Envelope<Raw> {
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, bilrost::Enumeration, strum::Display, strum::IntoStaticStr,
 )]
+#[repr(u8)]
 pub enum CommandKind {
     Unknown = 0,
 
@@ -265,6 +269,9 @@ pub enum CommandKind {
     /// Truncate the message outbox up to, and including, the specified index.
     TruncateOutbox = 9,
     /// Proxy a service invocation through this partition processor, to reuse the deduplication id map.
+    ///
+    // Drop in v1.8 it's not used at the moment and is only here
+    // for backward compatibility with V1.
     ProxyThrough = 10,
     /// Attach to an existing invocation
     AttachInvocation = 11,
@@ -314,6 +321,54 @@ pub enum CommandKind {
     /// payload is bilrost encoded [`invocation::PauseInvocationCommand`]
     /// *Since v1.7.0
     PauseInvocation = 25,
+}
+
+impl From<CommandKind> for u8 {
+    fn from(value: CommandKind) -> Self {
+        value as u8
+    }
+}
+
+impl TryFrom<u8> for CommandKind {
+    type Error = ConversionError;
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        let v = match value {
+            0 => Self::Unknown,
+            1 => Self::AnnounceLeader,
+            2 => Self::VersionBarrier,
+            3 => Self::UpdatePartitionDurability,
+            4 => Self::PatchState,
+            5 => Self::TerminateInvocation,
+            6 => Self::PurgeInvocation,
+            7 => Self::PurgeJournal,
+            8 => Self::Invoke,
+            9 => Self::TruncateOutbox,
+            10 => Self::ProxyThrough,
+            11 => Self::AttachInvocation,
+            12 => Self::ResumeInvocation,
+            13 => Self::RestartAsNewInvocation,
+            14 => Self::InvokerEffect,
+            15 => Self::Timer,
+            16 => Self::ScheduleTimer,
+            17 => Self::InvocationResponse,
+            18 => Self::NotifyGetInvocationOutputResponse,
+            19 => Self::NotifySignal,
+            20 => Self::UpsertSchema,
+            21 => Self::UpsertRuleBook,
+            22 => Self::VQSchedulerDecisions,
+            23 => Self::VQueuesPause,
+            24 => Self::VQueuesResume,
+            25 => Self::PauseInvocation,
+            other => {
+                return Err(ConversionError::unexpected_enum_variant(
+                    "CommandKind",
+                    i32::from(other),
+                ));
+            }
+        };
+
+        Ok(v)
+    }
 }
 
 mod bilrost_encoding {
