@@ -21,11 +21,11 @@ define_table!(sys_vqueues(
     partition_key: DataType::UInt64,
 
     /// The VQueue Identifier (vq_...).
-    id: DataType::Utf8,
+    id: DataType::LargeUtf8,
 
     /// The stage this entry currently belongs to. Choices are 'inbox', 'running', 'paused',
     /// 'suspended', and 'finished'.
-    stage: DataType::Utf8,
+    stage: DataType::LargeUtf8,
 
     /// The entry processing status. Examples are `new`, `scheduled`, `started`,
     /// `backing-off`, `yielded`, `killed`, `cancelled`, `failed`, and `succeeded`.
@@ -34,7 +34,7 @@ define_table!(sys_vqueues(
     /// to transitioning into the current stage. We preserve the last known status
     /// because it will be useful to know when the entry transitions out of the
     /// current stage.
-    status: DataType::Utf8,
+    status: DataType::LargeUtf8,
 
     /// Whether this entry currently holds a lock.
     has_lock: DataType::Boolean,
@@ -47,10 +47,13 @@ define_table!(sys_vqueues(
     sequence_number: DataType::UInt64,
 
     /// Identifier of the entry.
-    entry_id: DataType::Utf8,
+    ///
+    /// Due to quirks in DataFusion, this should remain `LargeUtf8` to match
+    /// `id` in `sys_invocation_status` for dynamic filter pushdown.
+    entry_id: DataType::LargeUtf8,
 
     /// Entry kind (`invocation` or `state-mutation`).
-    entry_kind: DataType::Utf8,
+    entry_kind: DataType::LargeUtf8,
 
     /// Creation timestamp of the entry.
     created_at: TimestampMillisecond,
@@ -83,5 +86,8 @@ define_table!(sys_vqueues(
     first_runnable_at: TimestampMillisecond,
 
     /// If set, the entry's pinned deployment identifier.
-    deployment: DataType::Utf8,
+    ///
+    /// Due to quirks in DataFusion, this should remain `LargeUtf8` to match
+    /// `id` in `sys_deployment` for dynamic filter pushdown.
+    deployment: DataType::LargeUtf8,
 ));

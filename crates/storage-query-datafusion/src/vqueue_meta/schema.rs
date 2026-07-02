@@ -19,7 +19,7 @@ define_table!(sys_vqueue_meta(
     partition_key: DataType::UInt64,
 
     /// The VQueue Identifier (vq_...)
-    id: DataType::Utf8,
+    id: DataType::LargeUtf8,
 
     /// Whether this vqueue is active or not. An active vqueue
     /// is a vqueue that is not paused, and has non-finished
@@ -30,18 +30,18 @@ define_table!(sys_vqueue_meta(
     queue_is_paused: DataType::Boolean,
 
     /// Service name linked to this vqueue
-    service_name: DataType::Utf8,
+    service_name: DataType::LargeUtf8,
 
     /// The scope of this vqueue.
-    scope: DataType::Utf8,
+    scope: DataType::LargeUtf8,
 
     /// The name of the limit-key assigned to this vqueue
-    limit_key: DataType::Utf8,
+    limit_key: DataType::LargeUtf8,
 
     /// The name of the lock (in the format of `service/key`)
     ///
     /// This is only set if this is a vqueue for a virtual object.
-    lock_name: DataType::Utf8,
+    lock_name: DataType::LargeUtf8,
 
     /// When was this vqueue first created
     created_at: TimestampMillisecond,

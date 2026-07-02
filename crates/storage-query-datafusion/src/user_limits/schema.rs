@@ -19,16 +19,16 @@ define_table!(sys_user_limits(
     partition_key: DataType::UInt64,
 
     /// The scope this counter belongs to.
-    scope: DataType::Utf8,
+    scope: DataType::LargeUtf8,
 
     /// The level-1 key component (null for scope-level counters).
-    l1: DataType::Utf8,
+    l1: DataType::LargeUtf8,
 
     /// The level-2 key component (null for scope-level and L1-level counters).
-    l2: DataType::Utf8,
+    l2: DataType::LargeUtf8,
 
     /// The hierarchy level: "Scope", "Level1", or "Level2".
-    level: DataType::Utf8,
+    level: DataType::LargeUtf8,
 
     /// Current concurrency usage at this counter.
     usage: DataType::UInt32,
@@ -39,7 +39,7 @@ define_table!(sys_user_limits(
     /// The rule pattern that defines the limit (null if unlimited).
     /// Resolved from the rule handle; shows "[removed]" if the rule was
     /// deleted since the counter was created.
-    rule_pattern: DataType::Utf8,
+    rule_pattern: DataType::LargeUtf8,
 
     /// Available capacity (limit - usage). Null if unlimited.
     available: DataType::UInt32,
