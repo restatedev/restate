@@ -12,9 +12,9 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
 
-use ahash::HashMap;
+use ahash::{HashMap, HashMapExt};
 use futures::{StreamExt, TryStreamExt};
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 use restate_core::network::{NetworkSender as _, Networking, Swimlane, TransportConnect};
 use restate_core::{Metadata, MetadataWriter, ShutdownError, SyncError, TaskCenter, TaskKind};
@@ -23,8 +23,10 @@ use restate_metadata_store::{
 };
 use restate_types::cluster::cluster_state::LegacyClusterState;
 use restate_types::cluster_state::ClusterState;
+use restate_types::config::Configuration;
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::PartitionId;
+use restate_types::locality::LocationScope;
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::net::partition_processor_manager::{
     ControlProcessor, ControlProcessors, ProcessorCommand,
@@ -39,8 +41,14 @@ use restate_types::partitions::{PartitionConfiguration, worker_candidate_filter}
 use restate_types::replication::balanced_spread_selector::{
     BalancedSpreadSelector, SelectorOptions,
 };
-use restate_types::replication::{NodeSet, ReplicationProperty};
+use restate_types::replication::{
+    NodeSet, ReplicationProperty, extend_top_n_load_balanced, hash_node_id,
+};
 use restate_types::{NodeId, PlainNodeId, Version, Versioned};
+
+// Pick from the top HRW candidates to keep placement deterministic and stable,
+// while still allowing the least-loaded nearby candidate to win.
+const BALANCED_PLACEMENT_TOP_N: usize = 3;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -63,6 +71,11 @@ struct PartitionState {
     leadership_policy: LeadershipPolicy,
     current: PartitionConfiguration,
     next: Option<PartitionConfiguration>,
+}
+
+#[derive(Debug)]
+struct PlannedPlacement {
+    configuration: PartitionConfiguration,
 }
 
 impl PartitionState {
@@ -164,6 +177,228 @@ pub struct Scheduler<T> {
     partitions: HashMap<PartitionId, PartitionState>,
     replica_set_states: PartitionReplicaSetStates,
     cluster_state: ClusterState,
+}
+
+fn experimental_balanced_placement_enabled() -> bool {
+    Configuration::pinned()
+        .common
+        .experimental_placement_strategy
+        .is_balanced_v2()
+}
+
+fn experimental_rebalances_when_healthy() -> bool {
+    Configuration::pinned()
+        .common
+        .experimental_placement_rebalance_mode
+        .rebalances_when_healthy()
+}
+
+fn supports_balanced_placement(replication: &ReplicationProperty) -> bool {
+    replication.copies_at_scope(LocationScope::Region).is_none()
+        && replication.copies_at_scope(LocationScope::Zone).is_none()
+}
+
+fn alive_worker_candidates(
+    nodes_config: &NodesConfiguration,
+    cluster_state: &ClusterState,
+) -> Vec<PlainNodeId> {
+    nodes_config
+        .iter()
+        .filter(|(node_id, node_config)| {
+            worker_candidate_filter(*node_id, node_config)
+                && cluster_state.is_alive((*node_id).into())
+        })
+        .map(|(node_id, _)| node_id)
+        .collect()
+}
+
+fn all_worker_candidates_alive(
+    nodes_config: &NodesConfiguration,
+    cluster_state: &ClusterState,
+) -> bool {
+    nodes_config
+        .iter()
+        .filter(|(node_id, node_config)| worker_candidate_filter(*node_id, node_config))
+        .all(|(node_id, _)| cluster_state.is_alive(node_id.into()))
+}
+
+fn plan_balanced_partition_placements(
+    partitions: &HashMap<PartitionId, PartitionState>,
+    nodes_config: &NodesConfiguration,
+    partition_table: &PartitionTable,
+    cluster_state: &ClusterState,
+    partition_replication: &ReplicationProperty,
+) -> HashMap<PartitionId, PlannedPlacement> {
+    if !supports_balanced_placement(partition_replication) {
+        warn!(
+            replication = %partition_replication,
+            "Experimental balanced partition placement only supports flat replication; falling back to legacy placement"
+        );
+        return HashMap::default();
+    }
+
+    let candidates = alive_worker_candidates(nodes_config, cluster_state);
+    let target_size = partition_replication.num_copies() as usize;
+    if candidates.len() < target_size {
+        warn!(
+            candidates = candidates.len(),
+            target_size,
+            "Experimental balanced partition placement has too few alive worker candidates; falling back to legacy placement"
+        );
+        return HashMap::default();
+    }
+
+    let rebalance = experimental_rebalances_when_healthy()
+        && all_worker_candidates_alive(nodes_config, cluster_state);
+    let mut replica_loads = HashMap::<PlainNodeId, usize>::default();
+    let mut plan = HashMap::with_capacity(partition_table.num_partitions() as usize);
+
+    for partition_id in partition_table.iter_ids().copied() {
+        let mut selected = NodeSet::new();
+        if !rebalance
+            && let Some(existing) = partitions
+                .get(&partition_id)
+                .map(|state| state.next.as_ref().unwrap_or(&state.current))
+            && existing.replication() == partition_replication
+        {
+            selected = existing
+                .replica_set()
+                .iter()
+                .copied()
+                .filter(|node_id| candidates.contains(node_id))
+                .collect();
+        }
+
+        let replica_set = extend_top_n_load_balanced(
+            candidates.iter().copied(),
+            u64::from(partition_id),
+            target_size,
+            selected,
+            BALANCED_PLACEMENT_TOP_N,
+            |node_id| replica_loads.get(&node_id).copied().unwrap_or_default(),
+        );
+
+        let Some(replica_set) = replica_set else {
+            warn!(
+                %partition_id,
+                candidates = candidates.len(),
+                target_size,
+                "Experimental balanced partition placement failed; falling back to legacy placement"
+            );
+            return HashMap::default();
+        };
+
+        for node_id in replica_set.iter().copied() {
+            *replica_loads.entry(node_id).or_default() += 1;
+        }
+
+        plan.insert(
+            partition_id,
+            PlannedPlacement {
+                configuration: PartitionConfiguration::new(
+                    partition_replication.clone(),
+                    replica_set,
+                    HashMap::default(),
+                ),
+            },
+        );
+    }
+
+    plan
+}
+
+fn ensure_balanced_leaders(
+    partitions: &mut HashMap<PartitionId, PartitionState>,
+    cluster_state: &ClusterState,
+    legacy_cluster_state: &LegacyClusterState,
+    nodes_config: &NodesConfiguration,
+    partition_table: &PartitionTable,
+) {
+    let mut leader_loads = HashMap::<PlainNodeId, usize>::default();
+
+    for partition_id in partition_table.iter_ids() {
+        let Some(partition) = partitions.get_mut(partition_id) else {
+            continue;
+        };
+        if partition.leadership_policy.freeze.is_some() {
+            if let Some(leader) = partition.target_leader {
+                *leader_loads.entry(leader).or_default() += 1;
+            }
+            continue;
+        }
+
+        let Some(leader) = select_balanced_leader(
+            partition_id,
+            partition,
+            cluster_state,
+            legacy_cluster_state,
+            nodes_config,
+            &leader_loads,
+        ) else {
+            continue;
+        };
+
+        *leader_loads.entry(leader).or_default() += 1;
+        if partition.target_leader != Some(leader) {
+            debug!(
+                "Selecting node {} as partition processor leader for partition {partition_id}",
+                leader
+            );
+            partition.target_leader = Some(leader);
+        }
+    }
+}
+
+fn select_balanced_leader(
+    partition_id: &PartitionId,
+    partition: &PartitionState,
+    cluster_state: &ClusterState,
+    legacy_cluster_state: &LegacyClusterState,
+    nodes_config: &NodesConfiguration,
+    leader_loads: &HashMap<PlainNodeId, usize>,
+) -> Option<PlainNodeId> {
+    let affinity = partition.leadership_policy.affinity.as_ref();
+    partition
+        .current
+        .replica_set()
+        .iter()
+        .copied()
+        .filter(|node_id| cluster_state.is_alive(NodeId::from(*node_id)))
+        .min_by_key(|node_id| {
+            let has_affinity =
+                affinity.is_some_and(|a| matches_affinity(*node_id, a, nodes_config));
+            let is_caught_up =
+                legacy_cluster_state.is_partition_processor_active(partition_id, node_id);
+            let readiness_rank = match (has_affinity, is_caught_up) {
+                (true, true) => 0u8,
+                (false, true) => 1,
+                (true, false) => 2,
+                (false, false) => 3,
+            };
+            (
+                readiness_rank,
+                leader_loads.get(node_id).copied().unwrap_or_default(),
+                std::cmp::Reverse(hash_node_id(u64::from(*partition_id), *node_id)),
+                u32::from(*node_id),
+            )
+        })
+}
+
+fn requires_reconfiguration_to(
+    partition_state: &PartitionState,
+    default_replication: &ReplicationProperty,
+    planned: &PartitionConfiguration,
+) -> bool {
+    if let Some(next) = partition_state.next.as_ref() {
+        next.replication() != default_replication
+            || !next.replica_set().is_equivalent(planned.replica_set())
+    } else {
+        partition_state.current.replication() != default_replication
+            || !partition_state
+                .current
+                .replica_set()
+                .is_equivalent(planned.replica_set())
+    }
 }
 
 /// The scheduler is responsible for assigning partition processors to nodes and to electing
@@ -325,6 +560,17 @@ impl<T: TransportConnect> Scheduler<T> {
         nodes_config: &NodesConfiguration,
         partition_table: &PartitionTable,
     ) {
+        if experimental_balanced_placement_enabled() {
+            ensure_balanced_leaders(
+                &mut self.partitions,
+                cluster_state,
+                legacy_cluster_state,
+                nodes_config,
+                partition_table,
+            );
+            return;
+        }
+
         for partition_id in partition_table.iter_ids() {
             // select the leader based on the observed cluster state
             self.select_leader(
@@ -343,29 +589,61 @@ impl<T: TransportConnect> Scheduler<T> {
         nodes_config: &NodesConfiguration,
         partition_table: &PartitionTable,
     ) -> Result<(), Error> {
+        let partition_replication = partition_table.replication_property(nodes_config);
+        let use_balanced_placement = experimental_balanced_placement_enabled();
+        let balanced_plan = if use_balanced_placement {
+            plan_balanced_partition_placements(
+                &self.partitions,
+                nodes_config,
+                partition_table,
+                cluster_state,
+                &partition_replication,
+            )
+        } else {
+            HashMap::default()
+        };
+
         for partition_id in partition_table.iter_ids().copied() {
             let entry = self.partitions.entry(partition_id);
 
             // make sure that we have a valid partition processor configuration
             let mut occupied_entry = match entry {
                 Entry::Occupied(mut entry) if entry.get().current.is_valid() => {
-                    let partition_replication = partition_table.replication_property(nodes_config);
-                    if Self::requires_reconfiguration(
-                        partition_id,
-                        entry.get(),
-                        &partition_replication,
-                        nodes_config,
-                        &self.cluster_state,
-                    ) {
+                    let planned = balanced_plan.get(&partition_id);
+                    let requires_reconfiguration = planned
+                        .map(|planned| {
+                            requires_reconfiguration_to(
+                                entry.get(),
+                                &partition_replication,
+                                &planned.configuration,
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            Self::requires_reconfiguration(
+                                partition_id,
+                                entry.get(),
+                                &partition_replication,
+                                nodes_config,
+                                &self.cluster_state,
+                            )
+                        });
+
+                    if requires_reconfiguration {
                         trace!("Partition {} requires reconfiguration", partition_id);
 
-                        if let Some(next) = Self::choose_partition_configuration(
-                            partition_id,
-                            nodes_config,
-                            partition_replication,
-                            NodeSet::new(),
-                            &self.cluster_state,
-                        ) {
+                        let next = planned
+                            .map(|planned| planned.configuration.clone())
+                            .or_else(|| {
+                                Self::choose_partition_configuration(
+                                    partition_id,
+                                    nodes_config,
+                                    partition_replication.clone(),
+                                    NodeSet::new(),
+                                    &self.cluster_state,
+                                )
+                            });
+
+                        if let Some(next) = next {
                             let partition_configuration_update =
                                 Self::reconfigure_partition_configuration(
                                     self.metadata_writer.raw_metadata_store_client(),
@@ -396,16 +674,20 @@ impl<T: TransportConnect> Scheduler<T> {
                     entry
                 }
                 entry => {
-                    let partition_replication = partition_table.replication_property(nodes_config);
-
                     // no or no valid current configuration, pick a valid configuration
-                    if let Some(current) = Self::choose_partition_configuration(
-                        partition_id,
-                        nodes_config,
-                        partition_replication.clone(),
-                        NodeSet::default(),
-                        &self.cluster_state,
-                    ) {
+                    let current = balanced_plan
+                        .get(&partition_id)
+                        .map(|planned| planned.configuration.clone())
+                        .or_else(|| {
+                            Self::choose_partition_configuration(
+                                partition_id,
+                                nodes_config,
+                                partition_replication.clone(),
+                                NodeSet::default(),
+                                &self.cluster_state,
+                            )
+                        });
+                    if let Some(current) = current {
                         let occupied_entry = entry.insert_entry(
                             Self::store_initial_partition_configuration(
                                 self.metadata_writer.raw_metadata_store_client(),
@@ -455,12 +737,24 @@ impl<T: TransportConnect> Scheduler<T> {
                 }
             }
 
-            // select the leader based on the observed cluster state
-            self.select_leader(
-                &partition_id,
+            if !use_balanced_placement {
+                // select the leader based on the observed cluster state
+                self.select_leader(
+                    &partition_id,
+                    cluster_state,
+                    legacy_cluster_state,
+                    nodes_config,
+                );
+            }
+        }
+
+        if use_balanced_placement {
+            ensure_balanced_leaders(
+                &mut self.partitions,
                 cluster_state,
                 legacy_cluster_state,
                 nodes_config,
+                partition_table,
             );
         }
 
@@ -942,5 +1236,230 @@ fn matches_affinity(
                     .shares_domain_with(location, location.smallest_defined_scope())
             })
             .unwrap_or(false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use restate_types::cluster_state::NodeState;
+    use restate_types::nodes_config::{Role, WorkerConfig, WorkerState};
+    use restate_types::{GenerationalNodeId, RestateVersion};
+
+    use super::*;
+
+    fn node_id(id: u32) -> PlainNodeId {
+        PlainNodeId::new(id)
+    }
+
+    fn node_index(node_id: PlainNodeId) -> usize {
+        usize::try_from(u32::from(node_id) - 1).expect("node id should fit into usize")
+    }
+
+    fn worker_node(id: u32) -> NodeConfig {
+        NodeConfig::builder()
+            .name(format!("node-{id}"))
+            .current_generation(GenerationalNodeId::new(id, 1))
+            .address(format!("unix:/tmp/scheduler-test-{id}").parse().unwrap())
+            .roles(Role::Worker.into())
+            .worker_config(WorkerConfig {
+                worker_state: WorkerState::Active,
+            })
+            .binary_version(RestateVersion::current())
+            .build()
+    }
+
+    fn active_worker_nodes(count: u32) -> NodesConfiguration {
+        let mut nodes_config = NodesConfiguration::new_for_testing();
+        for id in 1..=count {
+            nodes_config.upsert_node(worker_node(id));
+        }
+        nodes_config
+    }
+
+    fn alive_cluster_state(count: u32) -> ClusterState {
+        cluster_state_with_alive_nodes(1..=count)
+    }
+
+    fn cluster_state_with_alive_nodes(alive_nodes: impl IntoIterator<Item = u32>) -> ClusterState {
+        let cluster_state = ClusterState::default();
+        let mut updater = cluster_state.clone().updater();
+        for id in alive_nodes {
+            updater.upsert_node_state(GenerationalNodeId::new(id, 1), NodeState::Alive);
+        }
+        cluster_state
+    }
+
+    fn partition_table(partitions: u16, replication: ReplicationProperty) -> PartitionTable {
+        let mut builder =
+            PartitionTable::with_equally_sized_partitions(Version::MIN, partitions).into_builder();
+        builder.set_partition_replication(PartitionReplication::Limit(replication));
+        builder.build()
+    }
+
+    fn load_range(loads: &[usize]) -> usize {
+        loads.iter().max().unwrap() - loads.iter().min().unwrap()
+    }
+
+    fn partition_states_from_plan(
+        plan: &HashMap<PartitionId, PlannedPlacement>,
+    ) -> HashMap<PartitionId, PartitionState> {
+        plan.iter()
+            .map(|(partition_id, planned)| {
+                (
+                    *partition_id,
+                    PartitionState::new(
+                        planned.configuration.clone(),
+                        None,
+                        LeadershipPolicy::default(),
+                    ),
+                )
+            })
+            .collect()
+    }
+
+    fn count_changed_replica_sets(
+        left: &HashMap<PartitionId, PlannedPlacement>,
+        right: &HashMap<PartitionId, PlannedPlacement>,
+    ) -> usize {
+        left.iter()
+            .filter(|(partition_id, left)| {
+                right.get(partition_id).is_some_and(|right| {
+                    !left
+                        .configuration
+                        .replica_set()
+                        .is_equivalent(right.configuration.replica_set())
+                })
+            })
+            .count()
+    }
+
+    fn count_replica_sets_containing(
+        plan: &HashMap<PartitionId, PlannedPlacement>,
+        node_id: PlainNodeId,
+    ) -> usize {
+        plan.values()
+            .filter(|planned| planned.configuration.replica_set().contains(node_id))
+            .count()
+    }
+
+    #[test]
+    fn balanced_partition_plan_spreads_replica_load() {
+        let nodes_config = active_worker_nodes(5);
+        let cluster_state = alive_cluster_state(5);
+        let replication = ReplicationProperty::new_unchecked(3);
+        let partition_table = partition_table(200, replication.clone());
+
+        let plan = plan_balanced_partition_placements(
+            &HashMap::default(),
+            &nodes_config,
+            &partition_table,
+            &cluster_state,
+            &replication,
+        );
+
+        assert_eq!(plan.len(), 200);
+        let mut loads = vec![0; 5];
+        for planned in plan.values() {
+            assert_eq!(planned.configuration.replica_set().len(), 3);
+            for node_id in planned.configuration.replica_set().iter().copied() {
+                loads[node_index(node_id)] += 1;
+            }
+        }
+        assert!(
+            load_range(&loads) <= 1,
+            "replica load should be near-ideal: {loads:?}"
+        );
+    }
+
+    #[test]
+    fn balanced_partition_plan_repairs_down_node_without_cascading_churn() {
+        let nodes_config = active_worker_nodes(5);
+        let replication = ReplicationProperty::new_unchecked(3);
+        let partition_table = partition_table(200, replication.clone());
+
+        let all_alive = alive_cluster_state(5);
+        let initial = plan_balanced_partition_placements(
+            &HashMap::default(),
+            &nodes_config,
+            &partition_table,
+            &all_alive,
+            &replication,
+        );
+        let partitions_with_down_node = count_replica_sets_containing(&initial, node_id(5));
+
+        let node_down = cluster_state_with_alive_nodes(1..=4);
+        let repaired = plan_balanced_partition_placements(
+            &partition_states_from_plan(&initial),
+            &nodes_config,
+            &partition_table,
+            &node_down,
+            &replication,
+        );
+        let repaired_changes = count_changed_replica_sets(&initial, &repaired);
+
+        let restored = plan_balanced_partition_placements(
+            &partition_states_from_plan(&repaired),
+            &nodes_config,
+            &partition_table,
+            &all_alive,
+            &replication,
+        );
+        let restored_changes = count_changed_replica_sets(&initial, &restored);
+        let up_transition_changes = count_changed_replica_sets(&repaired, &restored);
+
+        assert_eq!(initial.len(), 200);
+        assert_eq!(repaired.len(), 200);
+        assert_eq!(restored.len(), 200);
+        assert_eq!(repaired_changes, partitions_with_down_node);
+        assert_eq!(restored_changes, 0);
+        assert_eq!(up_transition_changes, partitions_with_down_node);
+    }
+
+    #[test]
+    fn balanced_leader_selection_moves_leaders_off_overloaded_node() {
+        let nodes_config = active_worker_nodes(3);
+        let cluster_state = alive_cluster_state(3);
+        let legacy_cluster_state = LegacyClusterState::empty();
+        let replication = ReplicationProperty::new_unchecked(3);
+        let partition_table = partition_table(90, replication.clone());
+        let replica_set = NodeSet::from_iter([node_id(1), node_id(2), node_id(3)]);
+        let mut partitions = HashMap::default();
+
+        for partition_id in partition_table.iter_ids().copied() {
+            let mut partition = PartitionState::new(
+                PartitionConfiguration::new(
+                    replication.clone(),
+                    replica_set.clone(),
+                    HashMap::default(),
+                ),
+                None,
+                LeadershipPolicy::default(),
+            );
+            partition.target_leader = Some(node_id(1));
+            partitions.insert(partition_id, partition);
+        }
+
+        ensure_balanced_leaders(
+            &mut partitions,
+            &cluster_state,
+            &legacy_cluster_state,
+            &nodes_config,
+            &partition_table,
+        );
+
+        let mut loads = vec![0; 3];
+        for partition in partitions.values() {
+            let leader = partition.target_leader.expect("leader should be selected");
+            loads[node_index(leader)] += 1;
+        }
+
+        assert!(
+            loads[0] < 90,
+            "node 1 should not keep every leader: {loads:?}"
+        );
+        assert!(
+            load_range(&loads) <= 1,
+            "leader load should be near-ideal: {loads:?}"
+        );
     }
 }

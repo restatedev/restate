@@ -84,6 +84,47 @@ impl ListenMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+#[cfg_attr(feature = "clap", clap(rename_all = "kebab-case"))]
+pub enum ExperimentalPlacementStrategy {
+    /// Use the existing deterministic per-partition/per-log placement algorithm.
+    #[default]
+    Legacy,
+    /// Balance partition replicas, partition leaders, and replicated-loglet nodeset members.
+    ///
+    /// This experimental strategy only applies to flat node-scope replication; region/zone-scoped
+    /// replication continues using the legacy placement selectors.
+    BalancedV2,
+}
+
+impl ExperimentalPlacementStrategy {
+    pub fn is_balanced_v2(self) -> bool {
+        matches!(self, Self::BalancedV2)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+#[cfg_attr(feature = "clap", clap(rename_all = "kebab-case"))]
+pub enum ExperimentalPlacementRebalanceMode {
+    /// Only repair placements that are no longer viable.
+    RepairOnly,
+    /// Rebalance existing placements while all placement candidates are healthy.
+    #[default]
+    Rebalance,
+}
+
+impl ExperimentalPlacementRebalanceMode {
+    pub fn rebalances_when_healthy(self) -> bool {
+        matches!(self, Self::Rebalance)
+    }
+}
+
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -296,6 +337,25 @@ pub struct CommonOptions {
     #[serde_as(as = "crate::replication::ReplicationPropertyFromTo")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub default_replication: ReplicationProperty,
+
+    /// # Experimental placement strategy
+    ///
+    /// Selects the algorithm used for partition replica, partition leader, and replicated-loglet
+    /// nodeset placement.
+    ///
+    /// This must be configured consistently across all nodes. Mixed settings can make cluster
+    /// controllers propose different placements during rollout.
+    ///
+    /// Since v1.7.0
+    pub experimental_placement_strategy: ExperimentalPlacementStrategy,
+
+    /// # Experimental placement rebalance mode
+    ///
+    /// Controls whether the experimental placement strategy only repairs invalid placements or also
+    /// rebalances existing placements when placement candidates are healthy.
+    ///
+    /// Since v1.7.0
+    pub experimental_placement_rebalance_mode: ExperimentalPlacementRebalanceMode,
 
     /// # Shutdown grace timeout
     ///
@@ -846,6 +906,8 @@ impl Default for CommonOptions {
             fabric_listener_options: Default::default(),
             default_num_partitions: 24,
             default_replication: ReplicationProperty::new_unchecked(1),
+            experimental_placement_strategy: ExperimentalPlacementStrategy::default(),
+            experimental_placement_rebalance_mode: ExperimentalPlacementRebalanceMode::default(),
             disable_prometheus: false,
             #[allow(deprecated)]
             service_client: Default::default(),
