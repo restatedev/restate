@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn parse_tunnel_destination_missing_leading_slash() {
-        let path_and_query = PathAndQuery::from_static("http/example.com/8080/api");
+        let path_and_query = PathAndQuery::from_static("*");
         let result = parse_tunnel_destination(&path_and_query);
 
         assert_eq!(result, Err("no leading /"));
