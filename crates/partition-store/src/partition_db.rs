@@ -459,6 +459,15 @@ impl PartitionCell {
         }
     }
 
+    /// Returns the underlying Partition information if the database is open.
+    pub async fn get_partition_if_open(&self) -> Option<Arc<Partition>> {
+        let guard = self.inner.read().await;
+        match &*guard {
+            State::Unknown | State::CfMissing | State::Closed { .. } => None,
+            State::Open { db } => Some(Arc::clone(db.partition())),
+        }
+    }
+
     /// Updates the durable Lsn of the local partition store.
     pub fn note_durable_lsn(&self, lsn: Lsn) {
         let durable_lsn_guard = self.durable_lsn.read();
