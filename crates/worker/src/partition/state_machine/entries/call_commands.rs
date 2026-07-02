@@ -13,13 +13,14 @@ use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyCo
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::invocation_status_table::InvocationStatus;
-use restate_storage_api::outbox_table::{OutboxMessage, WriteOutboxTable};
+use restate_storage_api::outbox_table::WriteOutboxTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{ServiceInvocation, ServiceInvocationResponseSink, Source};
 use restate_types::journal_v2::command::{CallCommand, CallRequest, OneWayCallCommand};
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::journal_v2::{CallInvocationIdCompletion, CompletionId, Entry};
 use restate_types::time::MillisSinceEpoch;
+use restate_wal_protocol::v2::commands;
 use std::collections::VecDeque;
 
 pub(super) type ApplyCallCommand<'e> = ApplyJournalCommandEffect<'e, CallCommand>;
@@ -130,9 +131,7 @@ where
             )
         };
 
-        ctx.handle_outgoing_message(OutboxMessage::ServiceInvocation(Box::new(
-            service_invocation,
-        )))?;
+        ctx.handle_outgoing_message(commands::InvokeCommand::from(service_invocation))?;
 
         // Notify the invocation id back
         self.completions_to_process.push_back(

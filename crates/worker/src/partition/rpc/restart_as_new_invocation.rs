@@ -8,9 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
 use assert2::let_assert;
 use opentelemetry::trace::Span;
+
 use restate_service_protocol::codec::ProtobufRawEntryCodec as OldProtocolEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
@@ -28,6 +28,9 @@ use restate_types::journal_v2::{CommandMetadata, EntryMetadata, EntryType};
 use restate_types::net::partition_processor::RestartAsNewInvocationRpcResponse;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::{invocation, journal_v2};
+use restate_wal_protocol::v2::commands;
+
+use super::*;
 
 pub(super) struct Request {
     pub(super) request_id: PartitionProcessorRpcRequestId,
@@ -240,14 +243,13 @@ where
             );
 
             // Propose the usual Invoke command
-            let cmd = Command::Invoke(Box::new(service_invocation));
+            let record = commands::InvokeCommand::from(service_invocation);
 
             // Propose and done
             // This path should be no longer needed once we switch to the journal v2 by default.
             self.proposer
                 .append_and_respond_asynchronously(
-                    invocation_id.partition_key(),
-                    cmd,
+                    record,
                     replier,
                     RestartAsNewInvocationRpcResponse::Ok { new_invocation_id },
                 )
@@ -372,7 +374,7 @@ where
         }
 
         // Pass the ball to the state machine, the PP will reply to the RPC request.
-        let cmd = Command::RestartAsNewInvocation(RestartAsNewInvocationRequest {
+        let record = commands::RestartAsNewInvocationCommand::from(RestartAsNewInvocationRequest {
             invocation_id,
             new_invocation_id,
             copy_prefix_up_to_index_included,
@@ -382,7 +384,7 @@ where
             )),
         });
         self.proposer
-            .handle_rpc_proposal_command(invocation_id.partition_key(), cmd, request_id, replier)
+            .handle_rpc_proposal_command(record, request_id, replier)
             .await;
 
         Ok(())
@@ -394,7 +396,6 @@ mod tests {
     use std::collections::HashMap;
     use std::future::ready;
 
-    use assert2::let_assert;
     use bytes::Bytes;
     use futures::{FutureExt, Stream, StreamExt, stream};
     use googletest::prelude::*;
@@ -735,12 +736,12 @@ mod tests {
         let headers_clone = vec![Header::new("key", "value")];
         let payload_clone = payload.clone();
         proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
-            .return_once_st(move |_, cmd, _, response| {
-                let_assert!(Command::Invoke(service_invocation) = cmd);
+            .expect_append_and_respond_asynchronously::<commands::InvokeCommand, RestartAsNewInvocationRpcResponse>()
+            .return_once_st(move |cmd, _, response| {
+                let service_invocation: ServiceInvocation = cmd.into();
                 assert_that!(
                     service_invocation,
-                    points_to(all!(
+                    all!(
                         field!(ServiceInvocation.invocation_id, not(eq(old_invocation_id))),
                         field!(ServiceInvocation.argument, eq(payload_clone)),
                         field!(ServiceInvocation.headers, eq(headers_clone)),
@@ -750,7 +751,7 @@ mod tests {
                         ),
                         field!(ServiceInvocation.response_sink, none()),
                         field!(ServiceInvocation.submit_notification_sink, none()),
-                    ))
+                    )
                 );
                 assert_that!(
                     response,
@@ -761,7 +762,7 @@ mod tests {
                 ready(()).boxed()
             });
         proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::InvokeCommand, commands::InvokeCommand, RestartAsNewInvocationRpcResponse>()
             .never();
 
         let mut storage = MockStorage::new_with_input_v1(
@@ -803,10 +804,10 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
         proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::RestartAsNewInvocationCommand, commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
 
         // Completed with no pinned deployment triggers v1 workaround
@@ -858,10 +859,10 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
         proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::RestartAsNewInvocationCommand, commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
 
         let status = InvocationStatus::Completed(CompletedInvocation {
@@ -905,10 +906,10 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
         proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::RestartAsNewInvocationCommand, commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
 
         let status = InvocationStatus::Completed(CompletedInvocation {
@@ -959,10 +960,10 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
         proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::RestartAsNewInvocationCommand, commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
 
         // Completed with journal length>0 but no v1 input present in storage
@@ -1015,21 +1016,20 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .return_once_st(move |_, cmd, _, _| {
+            .expect_handle_rpc_proposal_command::<commands::RestartAsNewInvocationCommand, commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
+            .return_once_st(move |cmd, _, _| {
+                let request: RestartAsNewInvocationRequest = cmd.into();
                 assert_that!(
-                    cmd,
-                    pat!(Command::RestartAsNewInvocation(pat!(
-                        RestartAsNewInvocationRequest {
-                            copy_prefix_up_to_index_included: eq(0),
-                            patch_deployment_id: none()
-                        }
-                    )))
+                    request,
+                    pat!(RestartAsNewInvocationRequest {
+                        copy_prefix_up_to_index_included: eq(0),
+                        patch_deployment_id: none()
+                    })
                 );
                 ready(()).boxed()
             });
         proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
 
         let (tx, rx) = Reciprocal::mock();
@@ -1077,21 +1077,20 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .return_once_st(move |_, cmd, _, _| {
+            .expect_handle_rpc_proposal_command::<commands::RestartAsNewInvocationCommand, commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
+            .return_once_st(move |cmd, _, _| {
+                let request: RestartAsNewInvocationRequest =cmd.into();
                 assert_that!(
-                    cmd,
-                    pat!(Command::RestartAsNewInvocation(pat!(
-                        RestartAsNewInvocationRequest {
-                            copy_prefix_up_to_index_included: eq(0),
-                            patch_deployment_id: none()
-                        }
-                    )))
+                    request,
+                    pat!(RestartAsNewInvocationRequest {
+                        copy_prefix_up_to_index_included: eq(0),
+                        patch_deployment_id: none()
+                    })
                 );
                 ready(()).boxed()
             });
         proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
 
         let (tx, rx) = Reciprocal::mock();
@@ -1122,10 +1121,10 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
         proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::RestartAsNewInvocationCommand, commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
 
         let mut storage = MockStorage::new_without_journal(invocation_id, Default::default());
@@ -1159,10 +1158,10 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
         proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::RestartAsNewInvocationCommand, commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
 
         let mut storage = MockStorage::new_with_input_v1(
@@ -1218,10 +1217,10 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
         proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::RestartAsNewInvocationCommand, commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
 
         let mut storage = MockStorage::new_without_journal(invocation_id, status);
@@ -1267,10 +1266,10 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
         proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::RestartAsNewInvocationCommand, commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
 
         let mut storage = MockStorage::new_without_journal(invocation_id, status);
@@ -1351,21 +1350,20 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .return_once_st(move |_, cmd, _, _| {
+            .expect_handle_rpc_proposal_command::<commands::RestartAsNewInvocationCommand, commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
+            .return_once_st(move |cmd, _, _| {
+                let request: RestartAsNewInvocationRequest = cmd.into();
                 assert_that!(
-                    cmd,
-                    pat!(Command::RestartAsNewInvocation(pat!(
-                        RestartAsNewInvocationRequest {
-                            copy_prefix_up_to_index_included: eq(1),
-                            patch_deployment_id: none()
-                        }
-                    )))
+                    request,
+                    pat!(RestartAsNewInvocationRequest {
+                        copy_prefix_up_to_index_included: eq(1),
+                        patch_deployment_id: none()
+                    })
                 );
                 ready(()).boxed()
             });
         proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
 
         let (tx, rx) = Reciprocal::mock();
@@ -1415,21 +1413,20 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .return_once_st(move |_, cmd, _, _| {
+            .expect_handle_rpc_proposal_command::<commands::RestartAsNewInvocationCommand, commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
+            .return_once_st(move |cmd, _, _| {
+                let request: RestartAsNewInvocationRequest = cmd.into();
                 assert_that!(
-                    cmd,
-                    pat!(Command::RestartAsNewInvocation(pat!(
-                        RestartAsNewInvocationRequest {
-                            copy_prefix_up_to_index_included: eq(1),
-                            patch_deployment_id: some(eq(latest_id))
-                        }
-                    )))
+                    request,
+                    pat!(RestartAsNewInvocationRequest {
+                        copy_prefix_up_to_index_included: eq(1),
+                        patch_deployment_id: some(eq(latest_id))
+                    })
                 );
                 ready(()).boxed()
             });
         proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
 
         let (tx, rx) = Reciprocal::mock();
@@ -1473,10 +1470,10 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::RestartAsNewInvocationCommand, commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
         proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
 
         let (tx, rx) = Reciprocal::mock();
@@ -1524,7 +1521,7 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::RestartAsNewInvocationCommand, commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
 
         let (tx, rx) = Reciprocal::mock();
@@ -1565,7 +1562,7 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::RestartAsNewInvocationCommand, commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
 
         let (tx, rx) = Reciprocal::mock();
@@ -1606,7 +1603,7 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::RestartAsNewInvocationCommand, commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
 
         let (tx, rx) = Reciprocal::mock();
@@ -1645,10 +1642,10 @@ mod tests {
             .expect_partition_id()
             .return_const(PartitionId::from(0));
         proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .expect_append_and_respond_asynchronously::<commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
         proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::RestartAsNewInvocationCommand, commands::RestartAsNewInvocationCommand, RestartAsNewInvocationRpcResponse>()
             .never();
 
         let mut storage = MockStorage::new_without_journal(invocation_id, Default::default());
