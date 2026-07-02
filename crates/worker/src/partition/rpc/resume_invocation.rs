@@ -8,16 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
-use crate::partition::state_machine::resolve_pinned_deployment;
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
-use restate_types::identifiers::{InvocationId, WithPartitionKey};
+use restate_types::identifiers::InvocationId;
 use restate_types::invocation::client::PatchDeploymentId;
 use restate_types::invocation::{
     IngressInvocationResponseSink, InvocationMutationResponseSink, ResumeInvocationRequest,
 };
 use restate_types::net::partition_processor::ResumeInvocationRpcResponse;
 use restate_types::schema::deployment::DeploymentResolver;
+use restate_wal_protocol::v2::commands;
+
+use super::*;
+use crate::partition::state_machine::resolve_pinned_deployment;
 
 pub(super) struct Request {
     pub(super) request_id: PartitionProcessorRpcRequestId,
@@ -68,8 +70,7 @@ where
                     // is safe here: vqueues being enabled implies a cluster min version >= 1.7.0.
                     self.proposer
                         .handle_rpc_proposal_command(
-                            invocation_id.partition_key(),
-                            Command::ResumeInvocation(ResumeInvocationRequest {
+                            commands::ResumeInvocationCommand::from(ResumeInvocationRequest {
                                 invocation_id,
                                 update_deployment_id: Some(update_deployment_id),
                                 update_pinned_deployment_id: None,
@@ -101,8 +102,7 @@ where
                     // `update_deployment_id` field -- vqueues imply a cluster min version >= 1.7.0.
                     self.proposer
                         .handle_rpc_proposal_command(
-                            invocation_id.partition_key(),
-                            Command::ResumeInvocation(ResumeInvocationRequest {
+                            commands::ResumeInvocationCommand::from(ResumeInvocationRequest {
                                 invocation_id,
                                 update_deployment_id: Some(update_deployment_id),
                                 update_pinned_deployment_id: None,
@@ -137,8 +137,7 @@ where
 
                 self.proposer
                     .handle_rpc_proposal_command(
-                        invocation_id.partition_key(),
-                        Command::ResumeInvocation(ResumeInvocationRequest {
+                        commands::ResumeInvocationCommand::from(ResumeInvocationRequest {
                             invocation_id,
                             update_deployment_id: None,
                             update_pinned_deployment_id,
@@ -177,7 +176,6 @@ mod tests {
     use super::*;
 
     use crate::partition::rpc::MockActuator;
-    use assert2::let_assert;
     use futures::FutureExt;
     use googletest::prelude::*;
     use restate_storage_api::invocation_status_table::{
@@ -191,6 +189,7 @@ mod tests {
     use restate_types::schema::deployment::Deployment;
     use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry;
     use restate_types::service_protocol::ServiceProtocolVersion;
+    use restate_types::sharding::WithPartitionKey;
     use rstest::rstest;
     use std::future::ready;
     use test_log::test;
@@ -264,12 +263,11 @@ mod tests {
         // The invoker must NOT be poked for a VQueue invocation.
         proposer.expect_notify_invoker_to_retry_now().never();
         proposer
-            .expect_handle_rpc_proposal_command::<ResumeInvocationRpcResponse>()
-            .return_once_st(move |_, cmd, _request_id, replier| {
+            .expect_handle_rpc_proposal_command::<commands::ResumeInvocationCommand, commands::ResumeInvocationCommand, ResumeInvocationRpcResponse>()
+            .return_once_st(move |request, _request_id, replier| {
                 // The command shape (response_sink, deployment patching) is covered by
                 // `propose_resume_command_on_paused_and_suspended`; here we only care that the
                 // Invoked+VQueue path proposes ResumeInvocation rather than poking the invoker.
-                let_assert!(Command::ResumeInvocation(request) = cmd);
                 assert_eq!(request.invocation_id, invocation_id);
                 replier.send(ResumeInvocationRpcResponse::Ok);
                 ready(()).boxed()
@@ -318,9 +316,9 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_handle_rpc_proposal_command::<ResumeInvocationRpcResponse>()
-            .return_once_st(move |_, cmd, request_id, replier| {
-                let_assert!(Command::ResumeInvocation(resume_invocation_request) = cmd);
+            .expect_handle_rpc_proposal_command::<commands::ResumeInvocationCommand, commands::ResumeInvocationCommand, ResumeInvocationRpcResponse>()
+            .return_once_st(move |cmd, request_id, replier| {
+                let resume_invocation_request: ResumeInvocationRequest = cmd.into();
                 assert_that!(
                     resume_invocation_request,
                     all!(
@@ -368,7 +366,7 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_handle_rpc_proposal_command::<PartitionProcessorRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::ResumeInvocationCommand, commands::ResumeInvocationCommand, PartitionProcessorRpcResponse>()
             .never();
 
         let mut storage = MockStorage {
@@ -402,7 +400,7 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_handle_rpc_proposal_command::<PartitionProcessorRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::ResumeInvocationCommand, commands::ResumeInvocationCommand, PartitionProcessorRpcResponse>()
             .never();
 
         let mut storage = MockStorage {
@@ -448,7 +446,7 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_handle_rpc_proposal_command::<ResumeInvocationRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::ResumeInvocationCommand, commands::ResumeInvocationCommand, ResumeInvocationRpcResponse>()
             .never();
 
         let mut storage = MockStorage {
@@ -501,7 +499,7 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer.expect_is_leader().return_const(true);
         proposer
-            .expect_handle_rpc_proposal_command::<ResumeInvocationRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::ResumeInvocationCommand, commands::ResumeInvocationCommand, ResumeInvocationRpcResponse>()
             .never();
 
         let metadata = InFlightInvocationMetadata {
@@ -565,7 +563,7 @@ mod tests {
         proposer.expect_is_leader().return_const(true);
         proposer.expect_notify_invoker_to_retry_now().never();
         proposer
-            .expect_handle_rpc_proposal_command::<ResumeInvocationRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::ResumeInvocationCommand, commands::ResumeInvocationCommand, ResumeInvocationRpcResponse>()
             .never();
 
         let mut storage = MockStorage {
@@ -604,7 +602,7 @@ mod tests {
             .expect_partition_id()
             .return_const(PartitionId::from(0));
         proposer
-            .expect_handle_rpc_proposal_command::<PartitionProcessorRpcResponse>()
+            .expect_handle_rpc_proposal_command::<commands::ResumeInvocationCommand, commands::ResumeInvocationCommand, PartitionProcessorRpcResponse>()
             .never();
 
         let mut storage = MockStorage {

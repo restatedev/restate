@@ -80,7 +80,7 @@ use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_util_string::format_restring;
 use restate_util_time::DurationExt;
-use restate_wal_protocol::Envelope;
+use restate_wal_protocol::v2::{Envelope, Raw};
 use restate_worker_api::invoker::capacity::InvokerCapacity;
 use restate_worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 
@@ -131,7 +131,7 @@ pub struct PartitionProcessorManager<T> {
 
     invoker_capacity: InvokerCapacity,
 
-    ingestion_client: IngestionClient<T, Envelope>,
+    ingestion_client: IngestionClient<T, Envelope<Raw>>,
 
     /// Built in `new`; the polling task is spawned at the start of `run`.
     rule_book_cache_task: Option<RuleBookCache>,
@@ -208,7 +208,7 @@ where
         router_builder: &mut MessageRouterBuilder,
         bifrost: Bifrost,
         snapshot_repository: Option<SnapshotRepository>,
-        ingestion_client: IngestionClient<T, Envelope>,
+        ingestion_client: IngestionClient<T, Envelope<Raw>>,
     ) -> Self {
         let config = updateable_config.pinned();
         let ppm_svc_rx = router_builder.register_service(BackPressureMode::Lossy);
