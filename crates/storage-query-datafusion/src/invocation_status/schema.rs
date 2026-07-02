@@ -53,11 +53,11 @@ define_table!(sys_invocation_status(
 
     /// The scope of the invocation for vqueue partitioning, if scoped. NULL for unscoped invocations.
     /// Since v1.7.0.
-    scope: DataType::Utf8,
+    scope: DataType::LargeUtf8,
 
     /// The limit key that was used for the invocation. NULL if no limit key was set.
     /// Since v1.7.0.
-    limit_key: DataType::Utf8,
+    limit_key: DataType::LargeUtf8,
 
     /// Idempotency key, if any.
     idempotency_key: DataType::LargeUtf8,

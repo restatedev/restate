@@ -20,7 +20,7 @@ define_table!(state(
 
     /// The scope of the Virtual Object instance, if scoped. NULL for unscoped entries.
     /// Since v1.7.0
-    scope: DataType::Utf8,
+    scope: DataType::LargeUtf8,
 
     /// The name of the invoked service.
     service_name: DataType::LargeUtf8,

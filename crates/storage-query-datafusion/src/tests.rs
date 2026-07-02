@@ -13,8 +13,8 @@ use std::time::{Duration, SystemTime};
 
 use bytes::Bytes;
 use datafusion::arrow::array::{
-    ArrayRef, DurationMillisecondArray, LargeStringArray, ListArray, StringArray,
-    TimestampMillisecondArray, UInt32Array, UInt64Array,
+    ArrayRef, DurationMillisecondArray, LargeStringArray, ListArray, TimestampMillisecondArray,
+    UInt32Array, UInt64Array,
 };
 use datafusion::arrow::record_batch::RecordBatch;
 use futures::StreamExt;
@@ -162,12 +162,12 @@ async fn query_sys_scheduler() {
         all!(row!(
             0,
             {
-                "id" => StringArray: eq(qid.to_string()),
-                "status" => StringArray: eq("blocked"),
-                "head_entry_id" => StringArray: eq(expected_head_entry_display),
+                "id" => LargeStringArray: eq(qid.to_string()),
+                "status" => LargeStringArray: eq("blocked"),
+                "head_entry_id" => LargeStringArray: eq(expected_head_entry_display),
                 "num_inbox" => UInt64Array: eq(7),
-                "blocked_on" => StringArray: eq(expected_blocked_on),
-                "blocked_on_json" => StringArray: eq(expected_blocked_on_json),
+                "blocked_on" => LargeStringArray: eq(expected_blocked_on),
+                "blocked_on_json" => LargeStringArray: eq(expected_blocked_on_json),
                 "invoker_concurrency_block_duration" => DurationMillisecondArray: eq(15),
                 "concurrency_rules_block_duration" => DurationMillisecondArray: eq(35),
                 "deployment_concurrency_block_duration" => DurationMillisecondArray: eq(45),
@@ -572,8 +572,8 @@ fn extract_nullable_string(column: &ArrayRef, row: usize) -> Option<Option<Strin
 
     let column = column
         .as_any()
-        .downcast_ref::<StringArray>()
-        .expect("Downcast ref to StringArray");
+        .downcast_ref::<LargeStringArray>()
+        .expect("Downcast ref to LargeStringArray");
     if column.len() <= row {
         return None;
     }

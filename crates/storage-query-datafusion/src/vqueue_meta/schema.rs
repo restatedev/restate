@@ -33,10 +33,10 @@ define_table!(sys_vqueue_meta(
     service_name: DataType::LargeUtf8,
 
     /// The scope of this vqueue.
-    scope: DataType::Utf8,
+    scope: DataType::LargeUtf8,
 
     /// The name of the limit-key assigned to this vqueue
-    limit_key: DataType::Utf8,
+    limit_key: DataType::LargeUtf8,
 
     /// The name of the lock (in the format of `service/key`)
     ///
