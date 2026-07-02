@@ -19,17 +19,17 @@ define_table!(sys_scheduler(
     partition_key: DataType::UInt64,
 
     /// Identifier of the scheduled vqueue (vq_...).
-    id: DataType::Utf8,
+    id: DataType::LargeUtf8,
 
     /// Number of entries currently waiting in the inbox stage.
     num_inbox: DataType::UInt64,
 
     /// High-level scheduler state (dormant, blocked, scheduled, ...).
-    status: DataType::Utf8,
+    status: DataType::LargeUtf8,
 
     /// Identifier of the head entry if the scheduler has already advanced to it.
     /// Null when the head has not yet been materialized
-    head_entry_id: DataType::Utf8,
+    head_entry_id: DataType::LargeUtf8,
 
     /// Earliest time when the head entry becomes runnable.
     ///
@@ -37,10 +37,10 @@ define_table!(sys_scheduler(
     scheduled_at: TimestampMillisecond,
 
     /// The current resource blocking the queue from dequeuing.
-    blocked_on: DataType::Utf8,
+    blocked_on: DataType::LargeUtf8,
 
     /// Detailed blocking resource when status is `blocked`.
-    blocked_on_json: DataType::Utf8,
+    blocked_on_json: DataType::LargeUtf8,
 
     /// Time the head entry spent waiting on global invoker concurrency.
     invoker_concurrency_block_duration: DataType::Duration,
