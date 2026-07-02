@@ -12,8 +12,6 @@ use std::io::Write;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::query_utils::{RecordBatchWriter, WriteRecordBatchStream};
-use crate::state::AdminServiceState;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -29,11 +27,17 @@ use http::{HeaderMap, HeaderValue};
 use http_body::Frame;
 use http_body_util::StreamBody;
 use parking_lot::Mutex;
+use serde::Serialize;
+
 use restate_admin_rest_model::query::QueryRequest;
 use restate_core::network::TransportConnect;
 use restate_types::invocation::client::InvocationClient;
 use restate_types::schema::registry::{DiscoveryClient, MetadataService, TelemetryClient};
-use serde::Serialize;
+
+use crate::query_utils::{RecordBatchWriter, WriteRecordBatchStream};
+use crate::state::AdminServiceState;
+
+const RETRY_AFTER_HEADER: &str = "Retry-After";
 
 /// Error response for query endpoint.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -48,16 +52,46 @@ pub(crate) enum QueryError {
     Datafusion(#[from] datafusion::error::DataFusionError),
     #[error("Query service not available")]
     Unavailable,
+    #[error("Rate limited")]
+    RateLimited(#[from] gardal::RateLimited),
+}
+
+impl From<restate_storage_query_datafusion::context::QueryError> for QueryError {
+    fn from(err: restate_storage_query_datafusion::context::QueryError) -> Self {
+        match err {
+            restate_storage_query_datafusion::context::QueryError::DataFusion(e) => {
+                Self::Datafusion(e)
+            }
+            restate_storage_query_datafusion::context::QueryError::RateLimited(e) => {
+                Self::RateLimited(e)
+            }
+        }
+    }
 }
 
 impl IntoResponse for QueryError {
     fn into_response(self) -> Response {
+        let mut headers = http::HeaderMap::new();
         let status_code = match &self {
+            QueryError::Datafusion(datafusion::error::DataFusionError::Plan(_))
+            | QueryError::Datafusion(datafusion::error::DataFusionError::SchemaError(_, _))
+            | QueryError::Datafusion(datafusion::error::DataFusionError::SQL(_, _)) => {
+                StatusCode::BAD_REQUEST
+            }
             QueryError::Datafusion(_) => StatusCode::INTERNAL_SERVER_ERROR,
             QueryError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+            QueryError::RateLimited(e) => {
+                headers.insert(
+                    RETRY_AFTER_HEADER,
+                    HeaderValue::from(std::cmp::max(e.earliest_retry_after().as_secs(), 1)),
+                );
+                StatusCode::TOO_MANY_REQUESTS
+            }
         };
+
         (
             status_code,
+            headers,
             Json(QueryErrorBody {
                 message: self.to_string(),
             }),

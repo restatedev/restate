@@ -55,21 +55,28 @@ struct QueryErrorBody {
 }
 
 /// Errors that can occur when executing a query.
-#[derive(Debug, thiserror::Error)]
-enum QueryError {
-    #[error("Datafusion error: {0}")]
-    Datafusion(#[from] DataFusionError),
+struct QueryError(restate_storage_query_datafusion::context::QueryError);
+
+impl From<datafusion::error::DataFusionError> for QueryError {
+    fn from(err: datafusion::error::DataFusionError) -> Self {
+        Self(restate_storage_query_datafusion::context::QueryError::DataFusion(err))
+    }
 }
 
 impl IntoResponse for QueryError {
     fn into_response(self) -> Response {
-        let status_code = match &self {
-            QueryError::Datafusion(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        let status_code = match &self.0 {
+            restate_storage_query_datafusion::context::QueryError::DataFusion(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+            restate_storage_query_datafusion::context::QueryError::RateLimited(_) => {
+                StatusCode::TOO_MANY_REQUESTS
+            }
         };
         (
             status_code,
             Json(QueryErrorBody {
-                message: self.to_string(),
+                message: self.0.to_string(),
             }),
         )
             .into_response()
@@ -104,7 +111,7 @@ async fn query(
     headers: HeaderMap,
     Json(payload): Json<QueryRequest>,
 ) -> Result<Response, QueryError> {
-    let query_result = ctx.execute(&payload.query).await?;
+    let query_result = ctx.execute(&payload.query).await.map_err(QueryError)?;
 
     let (result_stream, content_type) = match headers.get(http::header::ACCEPT) {
         Some(v) if v == HeaderValue::from_static("application/json") => (

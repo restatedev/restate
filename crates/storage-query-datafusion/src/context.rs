@@ -49,6 +49,16 @@ use crate::empty_invoker_status_handle::EmptyInvokerStatusHandle;
 use crate::node_fan_out::NodeWarnings;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 
+type RateLimiter = gardal::SharedTokenBucket<gardal::TokioClock>;
+
+#[derive(thiserror::Error, Debug)]
+pub enum QueryError {
+    #[error("Datafusion error: {0}")]
+    DataFusion(#[from] datafusion::common::DataFusionError),
+    #[error("Rate limited")]
+    RateLimited(#[from] gardal::RateLimited),
+}
+
 const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
             ss.id,
             ss.vqueue_id,
@@ -506,6 +516,7 @@ where
 pub struct QueryContext {
     sql_options: SQLOptions,
     datafusion_context: SessionContext,
+    rate_limiter: Option<RateLimiter>,
 }
 
 impl QueryContext {
@@ -518,6 +529,9 @@ impl QueryContext {
             options.tmp_dir.clone(),
             options.query_parallelism(),
             &options.datafusion_options,
+            options.rate_limiting.as_ref().map(|limit| {
+                RateLimiter::new(gardal::Limit::from(limit.clone()), gardal::TokioClock)
+            }),
         )?;
 
         registerer.register(&ctx).await?;
@@ -582,6 +596,7 @@ impl QueryContext {
         temp_folder: Option<String>,
         default_parallelism: Option<usize>,
         datafusion_options: &HashMap<String, String>,
+        rate_limiter: Option<RateLimiter>,
     ) -> Result<Self, DataFusionError> {
         //
         // build the runtime
@@ -635,10 +650,15 @@ impl QueryContext {
         Ok(Self {
             sql_options,
             datafusion_context: ctx,
+            rate_limiter,
         })
     }
 
-    pub async fn execute(&self, sql: &str) -> datafusion::common::Result<QueryResult> {
+    pub async fn execute(&self, sql: &str) -> Result<QueryResult, QueryError> {
+        if let Some(limiter) = self.rate_limiter.as_ref() {
+            limiter.try_consume_one()?;
+        }
+
         let state = self.datafusion_context.state();
         let statement = state.sql_to_statement(sql, &datafusion::config::Dialect::PostgreSQL)?;
         let plan = state.statement_to_plan(statement).await?;
