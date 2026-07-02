@@ -94,5 +94,9 @@ fn tokio_builder(prefix: &'static str, common_opts: &CommonOptions) -> tokio::ru
 
     builder.worker_threads(common_opts.default_thread_pool_size());
 
+    if let Some(stack_size) = common_opts.default_thread_stack_size() {
+        builder.thread_stack_size(stack_size);
+    }
+
     builder
 }
