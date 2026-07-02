@@ -14,14 +14,14 @@ use datafusion::arrow::datatypes::DataType;
 
 define_table!(sys_rules(
     /// Rule pattern in canonical display form (e.g. `scope/*/tenant`).
-    pattern: DataType::Utf8,
+    pattern: DataType::LargeUtf8,
 
     /// Concurrency limit imposed by this rule. Null means the
     /// rule does not constrain concurrency.
     concurrency: DataType::UInt32,
 
     /// Free-form description set by the operator.
-    description: DataType::Utf8,
+    description: DataType::LargeUtf8,
 
     /// True when the rule is parked (treated as absent at runtime).
     disabled: DataType::Boolean,
