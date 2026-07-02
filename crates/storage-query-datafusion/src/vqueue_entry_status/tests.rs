@@ -11,8 +11,8 @@
 use std::num::NonZeroUsize;
 
 use datafusion::arrow::array::{
-    BooleanArray, DurationMillisecondArray, StringArray, TimestampMillisecondArray, UInt32Array,
-    UInt64Array,
+    BooleanArray, DurationMillisecondArray, LargeStringArray, TimestampMillisecondArray,
+    UInt32Array, UInt64Array,
 };
 use datafusion::arrow::record_batch::RecordBatch;
 use futures::StreamExt;
@@ -131,14 +131,14 @@ async fn get_vqueue_entry_status_header_fields() {
         all!(row!(
             0,
             {
-                "entry_id" => StringArray: eq(entry_id),
-                "vqueue_id" => StringArray: eq(qid.to_string()),
-                "stage" => StringArray: eq("running"),
-                "status" => StringArray: eq("started"),
+                "entry_id" => LargeStringArray: eq(entry_id),
+                "vqueue_id" => LargeStringArray: eq(qid.to_string()),
+                "stage" => LargeStringArray: eq("running"),
+                "status" => LargeStringArray: eq("started"),
                 "has_lock" => BooleanArray: eq(true),
                 "next_at" => TimestampMillisecondArray: eq(key.run_at().as_unix_millis().as_u64() as i64),
                 "sequence_number" => UInt64Array: eq(42),
-                "entry_kind" => StringArray: eq("invocation"),
+                "entry_kind" => LargeStringArray: eq("invocation"),
                 "created_at" => TimestampMillisecondArray: eq(created_at.to_unix_millis().as_u64() as i64),
                 "transitioned_at" => TimestampMillisecondArray: eq(transitioned_at.to_unix_millis().as_u64() as i64),
                 "num_attempts" => UInt32Array: eq(3),
@@ -149,7 +149,7 @@ async fn get_vqueue_entry_status_header_fields() {
                 "first_attempt_at" => TimestampMillisecondArray: eq(first_attempt_at.to_unix_millis().as_u64() as i64),
                 "latest_attempt_at" => TimestampMillisecondArray: eq(latest_attempt_at.to_unix_millis().as_u64() as i64),
                 "first_runnable_at" => TimestampMillisecondArray: eq(first_runnable_at.as_u64() as i64),
-                "deployment" => StringArray: eq("dp_status"),
+                "deployment" => LargeStringArray: eq("dp_status"),
                 "needed_memory" => UInt64Array: eq(needed_memory.get() as u64),
                 "retry_attempts" => UInt32Array: eq(7),
                 "retry_count_since_last_stored_command" => UInt32Array: eq(2),
