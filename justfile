@@ -6,11 +6,21 @@ export RESTATE_TEST_PORTS_POOL := "/tmp/restate_tests_ports_pool"
 
 dev_tools_image := "ghcr.io/restatedev/dev-tools:latest"
 
-# Docker image name & tag. The backtick falls back to "unknown" when git fails,
-# so evaluation doesn't crash inside the docker build context where the
-# worktree's `.git` pointer references a non-existent host path.
+# Docker image name & tag. We detect git first, then Sapling (sl), and fall back
+# to "unknown" when neither works, so evaluation doesn't crash inside the docker
+# build context where the worktree's `.git` pointer references a non-existent host path.
 docker_repo := "localhost/restatedev/restate"
-docker_tag := `if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo "$(git rev-parse --abbrev-ref HEAD | sed 's|/|.|g').$(git rev-parse --short HEAD)"; else echo unknown; fi`
+docker_tag := ```
+    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "$(git rev-parse --abbrev-ref HEAD | sed 's|/|.|g').$(git rev-parse --short HEAD)"
+    elif command -v sl >/dev/null 2>&1 && sl root >/dev/null 2>&1; then
+        bookmark="$(sl log -r . -T '{activebookmark}' 2>/dev/null | sed 's|/|.|g')"
+        hash="$(sl log -r . -T '{node|short}' 2>/dev/null)"
+        if [ -n "$bookmark" ]; then echo "$bookmark.$hash"; else echo "$hash"; fi
+    else
+        echo unknown
+    fi
+    ```
 docker_image := docker_repo + ":" + docker_tag
 
 features := ""
@@ -176,12 +186,17 @@ docker-debug:
     docker buildx build . --platform linux/{{ _docker_arch }} --file docker/debug.Dockerfile --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}' --build-arg RESTATE_FEATURES={{ features }} --load
 
 docker-local-fedora:
+    #!/usr/bin/env bash
+    set -euo pipefail
     # Build the restate-server binary locally
     just arch={{ _arch }} features={{ features }} build -p restate-server
-    # Move the binary to the location expected by the Dockerfile
-    cp target/debug/restate-server restate-server
+    # Stage the binary in a temp dir inside the build context.
+    # Hard-link to avoid copying the (large) binary.
+    mkdir -p ./.docker-local-cache
+    trap 'rm -rf "./.docker-local-cache"' EXIT
+    cp -l target/debug/restate-server "./.docker-local-cache/restate-server" 2>/dev/null || cp target/debug/restate-server "./.docker-local-cache/restate-server"
     # Build the Docker image using the local.Dockerfile
-    docker buildx build . --platform linux/{{ _docker_arch }} --file docker/local-fedora.Dockerfile --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}' --load
+    docker buildx build . --platform linux/{{ _docker_arch }} --file docker/local-fedora.Dockerfile --build-arg RESTATE_BINARY_PATH="./.docker-local-cache/restate-server" --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}' --load
 
 notice-file:
     cargo license -d -a --avoid-build-deps --avoid-dev-deps {{ _features }} | (echo "Restate Runtime\nCopyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH <code@restate.dev>\n" && cat) > NOTICE
