@@ -210,6 +210,17 @@ impl PartitionStoreManager {
         cell.clone_db().await
     }
 
+    /// Returns the partition metadata if the database is open locally
+    pub async fn get_local_partition_if_open(
+        &self,
+        partition_id: PartitionId,
+    ) -> Option<Arc<Partition>> {
+        // note: we don't hold the map read lock while trying to acquire the partition cell's lock.
+        // hence the `cloned()` call.
+        let cell = self.state.partitions.read().get(&partition_id).cloned()?;
+        cell.get_partition_if_open().await
+    }
+
     /// Returns a partition store that's already open by a running partition processor
     pub async fn get_partition_store(&self, partition_id: PartitionId) -> Option<PartitionStore> {
         // note: we don't hold the map read lock while trying to acquire the partition cell's lock.
