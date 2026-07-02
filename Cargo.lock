@@ -9151,6 +9151,8 @@ dependencies = [
  "regex-syntax",
  "reqwest 0.12.28",
  "ring",
+ "rust-librocksdb-sys",
+ "rust-rocksdb",
  "rustix",
  "rustls",
  "rustls-pki-types",

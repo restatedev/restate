@@ -73,6 +73,9 @@ RUN --mount=type=cache,target=/var/cache/sccache \
 
 # We do not need the Rust toolchain to run the server binary!
 FROM debian:trixie-slim AS runtime
+# useful for health checks
+RUN apt update && apt upgrade -y && apt install -y jq curl liburing2 && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /restate/target/restate-server /usr/local/bin
 COPY --from=builder /restate/target/restatectl /usr/local/bin
 COPY --from=builder /restate/target/restate /usr/local/bin
@@ -80,7 +83,5 @@ COPY --from=builder /restate/NOTICE /NOTICE
 COPY --from=builder /restate/LICENSE /LICENSE
 # copy OS roots
 COPY --from=builder /etc/ssl /etc/ssl
-# useful for health checks
-RUN apt-get update && apt-get install -y jq curl && rm -rf /var/lib/apt/lists/*
 WORKDIR /
 ENTRYPOINT ["/usr/local/bin/restate-server"]
