@@ -147,7 +147,7 @@ pub(crate) enum TaskTermination {
 
 #[derive(Debug)]
 pub(crate) enum ActionEffect {
-    Scheduler(scheduler::Decisions),
+    Scheduler(Result<scheduler::Decisions, StorageError>),
     Invoker(InvokerEffect),
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerKeyValue),
