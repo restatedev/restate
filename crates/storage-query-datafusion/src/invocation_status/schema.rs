@@ -23,7 +23,7 @@ define_table!(sys_invocation_status(
 
     /// The VQueue assigned to the the invocation. NULL if invocation was not migrated to vqueues.
     /// Since v1.7.0.
-    vqueue_id: DataType::Utf8,
+    vqueue_id: DataType::LargeUtf8,
 
     /// Either `inboxed` or `scheduled` or `invoked` or `suspended` or `paused` or `completed`
     status: DataType::LargeUtf8,
