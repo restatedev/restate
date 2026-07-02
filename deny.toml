@@ -11,6 +11,15 @@ ignore = [
     { id = "RUSTSEC-2025-0141", reason = "bincode is no longer maintained, it's only used by restate-queue which will soon be removed" },
     # package proc-macro-error2 is pulled by `raft` -> `getset` -> `proc-macro-error2`
     { id = "RUSTSEC-2026-0173", reason = "The author of `proc-macro-error2` has [confirmed](https://github.com/GnomedDev/proc-macro-error-2/issues/17#issuecomment-4643215473) that the crate is no longer maintained and recommends that users migrate away from it" },
+    # quick-xml <0.41 DoS advisories (both fixed only in 0.41.0): RUSTSEC-2026-0194 (quadratic-time
+    # `BytesStart::attributes()`) and RUSTSEC-2026-0195 (unbounded namespace-declaration allocation in
+    # `NsReader`). Only pulled transitively: `inferno` (flamegraph SVG generation from self-generated
+    # profiling data, not exploitable) and `object_store` (parses XML from the configured S3/Azure/GCS
+    # endpoint only). No upstream fix yet: latest inferno (0.12.6) pins quick-xml ^0.39 and latest
+    # object_store (0.14.0) pins ^0.40.1, both <0.41. Revisit once object_store/inferno release versions
+    # using quick-xml >=0.41 and datafusion permits the bump.
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml <0.41 quadratic-time DoS, only reachable via inferno flamegraph generation and object_store XML parsing; no upstream release uses 0.41 yet" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml <0.41 unbounded namespace-declaration allocation DoS, only reachable via inferno flamegraph generation and object_store XML parsing; no upstream release uses 0.41 yet" },
 ]
 
 
