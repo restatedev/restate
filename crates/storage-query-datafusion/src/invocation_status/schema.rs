@@ -23,7 +23,7 @@ define_table!(sys_invocation_status(
 
     /// The VQueue assigned to the the invocation. NULL if invocation was not migrated to vqueues.
     /// Since v1.7.0.
-    vqueue_id: DataType::Utf8,
+    vqueue_id: DataType::LargeUtf8,
 
     /// Either `inboxed` or `scheduled` or `invoked` or `suspended` or `paused` or `completed`
     status: DataType::LargeUtf8,
@@ -53,11 +53,11 @@ define_table!(sys_invocation_status(
 
     /// The scope of the invocation for vqueue partitioning, if scoped. NULL for unscoped invocations.
     /// Since v1.7.0.
-    scope: DataType::Utf8,
+    scope: DataType::LargeUtf8,
 
     /// The limit key that was used for the invocation. NULL if no limit key was set.
     /// Since v1.7.0.
-    limit_key: DataType::Utf8,
+    limit_key: DataType::LargeUtf8,
 
     /// Idempotency key, if any.
     idempotency_key: DataType::LargeUtf8,

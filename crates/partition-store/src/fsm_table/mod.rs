@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::TableKind::PartitionStateMachine;
-use crate::keys::{EncodeTableKeyPrefix, KeyKind, define_table_key};
+use crate::keys::{EncodeTableKey, KeyKind, define_table_key};
 use crate::{
     PaddedPartitionId, PartitionDb, PartitionStore, PartitionStoreTransaction, StorageAccess,
 };
@@ -26,7 +26,7 @@ use restate_types::message::MessageIndex;
 use restate_types::partitions::StorageVersion;
 use restate_types::partitions::features::PersistedStateMachineFeatures;
 use restate_types::schema::Schema;
-use restate_types::storage::StorageCodec;
+use restate_types::storage::{StorageCodec, StorageDecode};
 
 define_table_key!(
     PartitionStateMachine,
@@ -42,6 +42,24 @@ fn create_key(
     PartitionStateMachineKey {
         partition_id: partition_id.into(),
         state_id,
+    }
+}
+
+// 'ps' | PaddedPartitionId | state_id
+static_assertions::const_assert_eq!(PartitionStateMachineKey::serialized_length_fixed(), 18);
+
+impl PartitionStateMachineKey {
+    pub const fn serialized_length_fixed() -> usize {
+        KeyKind::SERIALIZED_LENGTH
+            + std::mem::size_of::<PaddedPartitionId>()
+            + std::mem::size_of::<u64>()
+    }
+
+    #[inline]
+    pub fn to_bytes(&self) -> [u8; Self::serialized_length_fixed()] {
+        let mut buf = [0u8; Self::serialized_length_fixed()];
+        EncodeTableKey::serialize_to(self, &mut buf.as_mut());
+        buf
     }
 }
 
@@ -130,44 +148,9 @@ pub async fn get_locally_durable_lsn(partition_store: &mut PartitionStore) -> Re
     .map(|opt| opt.map(|seq_number| Lsn::from(u64::from(seq_number))))
 }
 
-pub(crate) async fn get_storage_version<S: StorageAccess>(
-    storage: &mut S,
-    partition_id: PartitionId,
-) -> Result<StorageVersion> {
-    get::<SequenceNumber, _>(storage, partition_id, fsm_variable::STORAGE_VERSION).and_then(|opt| {
-        let storage_version = if let Some(seq_number) = opt {
-            StorageVersion::try_from(
-                u16::try_from(seq_number.0).map_err(|_| StorageError::DataIntegrityError)?,
-            )?
-        } else {
-            StorageVersion::None
-        };
-
-        Ok(storage_version)
-    })
-}
-
 pub(crate) fn get_storage_version_from_partition_db(db: &PartitionDb) -> Result<StorageVersion> {
-    let cf = db.cf_handle();
-    let key = create_key(db.partition().partition_id, fsm_variable::STORAGE_VERSION);
-    let sequence_number: Option<SequenceNumber> = db
-        .rocksdb()
-        .inner()
-        .as_raw_db()
-        .get_pinned_cf(cf, key.serialize())
-        .map_err(|err| StorageError::Generic(err.into()))?
-        .map(|value| {
-            let mut slice = value.as_ref();
-            StorageCodec::decode::<
-                ProtobufStorageWrapper<
-                    <SequenceNumber as PartitionStoreProtobufValue>::ProtobufType,
-                >,
-                _,
-            >(&mut slice)
-            .map(|v| v.0.into())
-        })
-        .transpose()
-        .map_err(|err| StorageError::Generic(err.into()))?;
+    let sequence_number: Option<SequenceNumber> =
+        get_proto_from_partition_db(db, fsm_variable::STORAGE_VERSION)?;
 
     Ok(if let Some(sequence_number) = sequence_number {
         let raw = u16::try_from(sequence_number.0).map_err(|_| StorageError::DataIntegrityError)?;
@@ -201,7 +184,7 @@ pub(crate) fn append_storage_version_to_wb(
     use restate_types::storage::StorageCodec;
 
     let key = create_key(partition_id, fsm_variable::STORAGE_VERSION);
-    let key_buffer = key.serialize();
+    let key_buffer = key.to_bytes();
 
     let value = SequenceNumber::from(version as u64);
     let mut value_buffer = BytesMut::new();
@@ -213,7 +196,7 @@ pub(crate) fn append_storage_version_to_wb(
     )
     .map_err(|e| restate_storage_api::StorageError::Generic(e.into()))?;
 
-    wb.put_cf(cf_handle, &key_buffer, &value_buffer);
+    wb.put_cf(cf_handle, key_buffer, &value_buffer);
     Ok(())
 }
 
@@ -235,6 +218,89 @@ pub(crate) fn put_jc_orphan_cleanup_done<S: StorageAccess>(
         fsm_variable::JC_ORPHAN_CLEANUP_DONE,
         &SequenceNumber::from(1u64),
     )
+}
+
+/// Reads a `StorageCodec`-encoded value directly from the partition db's column family.
+///
+/// [`PartitionDb`] does not implement [`StorageAccess`], so we read the raw bytes from
+/// RocksDB and decode via the standard prost path rather than the `BytesMut` arena used
+/// by [`PartitionStore`].
+fn get_storage_codec_from_partition_db<V: StorageDecode>(
+    db: &PartitionDb,
+    state_id: u64,
+) -> Result<Option<V>> {
+    let cf = db.cf_handle();
+    let key = create_key(db.partition().id(), state_id);
+    db.rocksdb()
+        .inner()
+        .as_raw_db()
+        .get_pinned_cf(cf, key.to_bytes())
+        .map_err(|err| StorageError::Generic(err.into()))?
+        .map(|value| {
+            let mut slice = value.as_ref();
+            StorageCodec::decode::<V, _>(&mut slice)
+        })
+        .transpose()
+        .map_err(|err| StorageError::Conversion(err.into()))
+}
+
+fn get_proto_from_partition_db<T: PartitionStoreProtobufValue>(
+    db: &PartitionDb,
+    state_id: u64,
+) -> Result<Option<T>>
+where
+    <<T as PartitionStoreProtobufValue>::ProtobufType as TryInto<T>>::Error: Into<anyhow::Error>,
+{
+    get_storage_codec_from_partition_db::<ProtobufStorageWrapper<T::ProtobufType>>(db, state_id)?
+        .map(|wrapper| wrapper.0.try_into())
+        .transpose()
+        .map_err(|err| StorageError::Conversion(err.into()))
+}
+
+impl ReadFsmTable for PartitionDb {
+    async fn get_inbox_seq_number(&mut self) -> Result<MessageIndex> {
+        get_proto_from_partition_db::<SequenceNumber>(self, fsm_variable::INBOX_SEQ_NUMBER)
+            .map(|opt| opt.map(Into::into).unwrap_or_default())
+    }
+
+    async fn get_outbox_seq_number(&mut self) -> Result<MessageIndex> {
+        get_proto_from_partition_db::<SequenceNumber>(self, fsm_variable::OUTBOX_SEQ_NUMBER)
+            .map(|opt| opt.map(Into::into).unwrap_or_default())
+    }
+
+    async fn get_applied_lsn(&mut self) -> Result<Option<Lsn>> {
+        get_proto_from_partition_db::<SequenceNumber>(self, fsm_variable::APPLIED_LSN)
+            .map(|opt| opt.map(|seq_number| Lsn::from(u64::from(seq_number))))
+    }
+
+    async fn get_min_restate_version(&mut self) -> Result<SemanticRestateVersion> {
+        get_proto_from_partition_db::<SemanticRestateVersion>(
+            self,
+            fsm_variable::RESTATE_VERSION_BARRIER,
+        )
+        .map(|opt| opt.unwrap_or_default())
+    }
+
+    async fn get_partition_durability(&mut self) -> Result<Option<PartitionDurability>> {
+        get_proto_from_partition_db::<PartitionDurability>(self, fsm_variable::PARTITION_DURABILITY)
+    }
+
+    async fn get_schema(&mut self) -> Result<Option<Schema>> {
+        get_storage_codec_from_partition_db(self, fsm_variable::SERVICES_SCHEMA_METADATA)
+    }
+
+    async fn get_partition_config_state(&mut self) -> Result<Option<CachedEpochMetadata>> {
+        get_storage_codec_from_partition_db(self, fsm_variable::PARTITION_CONFIG_STATE)
+    }
+
+    async fn get_rule_book(&mut self) -> Result<Option<RuleBook>> {
+        get_storage_codec_from_partition_db(self, fsm_variable::RULE_BOOK)
+    }
+
+    async fn get_state_machine_features(&mut self) -> Result<PersistedStateMachineFeatures> {
+        get_storage_codec_from_partition_db(self, fsm_variable::STATE_MACHINE_FEATURES)
+            .map(|opt| opt.unwrap_or_default())
+    }
 }
 
 impl ReadFsmTable for PartitionStore {

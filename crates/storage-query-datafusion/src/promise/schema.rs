@@ -20,7 +20,7 @@ define_table!(sys_promise(
 
     /// The scope of the workflow instance, if scoped. NULL for unscoped entries.
     /// Since v1.7.0
-    scope: DataType::Utf8,
+    scope: DataType::LargeUtf8,
 
     /// The name of the workflow service.
     service_name: DataType::LargeUtf8,

@@ -76,13 +76,13 @@ async fn partition_key_range(
     partition_id: PartitionId,
 ) -> datafusion::common::Result<KeyRange> {
     partition_store_manager
-        .get_partition_store(partition_id)
+        .get_local_partition_if_open(partition_id)
         .await
         .ok_or_else(|| {
             let err = anyhow!("expecting a partition store");
             DataFusionError::External(err.into())
         })
-        .map(|store| store.partition_key_range())
+        .map(|partition| partition.key_range)
 }
 
 #[derive(derive_more::Debug, Clone)]
