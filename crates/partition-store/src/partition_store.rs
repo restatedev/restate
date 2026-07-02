@@ -11,7 +11,7 @@
 use std::ops::ControlFlow;
 use std::ops::RangeBounds;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::anyhow;
 use bytes::Bytes;
@@ -45,8 +45,8 @@ use restate_types::storage::StorageEncode;
 use restate_types::partitions::StorageVersion;
 
 use crate::fsm_table::{
-    get_locally_durable_lsn, get_storage_version, get_storage_version_from_partition_db,
-    is_jc_orphan_cleanup_done, put_jc_orphan_cleanup_done, put_storage_version,
+    get_locally_durable_lsn, get_storage_version_from_partition_db, is_jc_orphan_cleanup_done,
+    put_jc_orphan_cleanup_done, put_storage_version,
 };
 use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
 use crate::migrations::run_migrations_up_to;
@@ -200,7 +200,7 @@ impl TableKind {
 
 pub struct PartitionStore {
     db: PartitionDb,
-    storage_version: StorageVersion,
+    storage_version: OnceLock<StorageVersion>,
     key_buffer: BytesMut,
     value_buffer: BytesMut,
 }
@@ -220,7 +220,7 @@ impl Clone for PartitionStore {
     fn clone(&self) -> Self {
         PartitionStore {
             db: self.db.clone(),
-            storage_version: self.storage_version,
+            storage_version: self.storage_version.clone(),
             key_buffer: BytesMut::default(),
             value_buffer: BytesMut::default(),
         }
@@ -235,20 +235,29 @@ impl From<PartitionDb> for PartitionStore {
 
 impl PartitionStore {
     pub(crate) fn new(db: PartitionDb) -> Self {
-        let storage_version =
-            get_storage_version_from_partition_db(&db).expect("storage version must exist");
-
         Self {
             db,
-            storage_version,
+            storage_version: OnceLock::new(),
             key_buffer: BytesMut::new(),
             value_buffer: BytesMut::new(),
         }
     }
 
+    /// Returns the on-disk storage version, reading it from RocksDB on the first
+    /// call and memoizing it. Clones of PartitionStore will copy the memoized value.
     #[inline]
     pub fn storage_version(&self) -> StorageVersion {
-        self.storage_version
+        *self.storage_version.get_or_init(|| {
+            get_storage_version_from_partition_db(self.partition_db())
+                .expect("storage version must exist")
+        })
+    }
+
+    /// Overwrites the memoized storage version. Requires exclusive access to PartitionStore.
+    fn set_storage_version(&mut self, version: StorageVersion) {
+        // Clear first: the lock is empty afterwards, so `set` cannot fail.
+        self.storage_version.take();
+        let _ = self.storage_version.set(version);
     }
 
     pub fn partition_db(&self) -> &PartitionDb {
@@ -575,6 +584,11 @@ impl PartitionStore {
             }
         };
 
+        // 99.9% of the time, this will return an already loaded value.
+        // If PartitionStore.storage_version() was never called before,
+        // this will fetch the value and cache it.
+        let storage_version = self.storage_version();
+
         PartitionStoreTransaction {
             write_batch_with_index: Some(rocksdb::WriteBatchWithIndex::new(0, true)),
             data_cf_handle,
@@ -582,7 +596,7 @@ impl PartitionStore {
             key_buffer: &mut self.key_buffer,
             value_buffer: &mut self.value_buffer,
             meta: self.db.partition(),
-            storage_version: self.storage_version,
+            storage_version,
             snapshot,
         }
     }
@@ -687,11 +701,15 @@ impl PartitionStore {
             // A fresh partition store cannot have orphaned jc index entries, so mark the
             // cleanup as already done to avoid a needless scan on first startup.
             put_jc_orphan_cleanup_done(self, self.partition_id())?;
-            self.storage_version = target;
+            self.set_storage_version(target);
             return Ok(());
         }
 
-        let mut storage_version = get_storage_version(self, self.partition_id()).await?;
+        // Read the authoritative on-disk version rather than the memoized
+        // `storage_version()`: the cache may hold a stale value (e.g. `None`
+        // memoized by a transaction created before the version was stamped),
+        // and migration decisions must be based on what's actually persisted.
+        let mut storage_version = get_storage_version_from_partition_db(self.partition_db())?;
         if storage_version < target {
             // We need to run some migrations!
             debug!(
@@ -700,7 +718,7 @@ impl PartitionStore {
             );
             storage_version = run_migrations_up_to(storage_version, target, self).await?;
         }
-        self.storage_version = storage_version;
+        self.set_storage_version(storage_version);
 
         Ok(())
     }
