@@ -8,7 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod grouped_waiters;
 mod invoker;
+
+/// Test-only handle to the grouped waiter list (weight-lifecycle tests live in
+/// `scheduler.rs` next to the scope-weights plumbing they exercise).
+#[cfg(test)]
+pub(super) fn test_grouped_waiters(
+    weight_resolver: super::eligible::WeightResolver,
+) -> grouped_waiters::GroupedWaiters {
+    grouped_waiters::GroupedWaiters::new(weight_resolver)
+}
 mod invoker_memory;
 mod invoker_throttle;
 mod locks;
@@ -45,7 +55,7 @@ use self::locks::Locks;
 use self::permit::ProvisionalPermit;
 use self::user_limiter::UserLimiter;
 use super::VQueueHandle;
-use super::eligible::EligibilityTracker;
+use super::eligible::{EligibilityTracker, SchedulingGroup, WeightResolver};
 use crate::GlobalTokenBucket;
 
 // A set of queues waiting on a resource
@@ -77,13 +87,17 @@ impl ResourceManager {
         global_throttling: Option<GlobalTokenBucket>,
         memory_pool: MemoryPool,
         initial_invocation_memory: NonZeroByteCount,
+        weight_resolver: WeightResolver,
     ) -> Result<Self, StorageError> {
         let locks = Locks::create(storage).await?;
 
         let (_tx, rx) = mpsc::unbounded_channel();
 
         Ok(Self {
-            invoker_concurrency: InvokerConcurrencyLimiter::new(concurrency_limiter),
+            invoker_concurrency: InvokerConcurrencyLimiter::new(
+                concurrency_limiter,
+                weight_resolver,
+            ),
             invoker_throttling: InvokerThrottlingLimiter::new(global_throttling),
             invoker_memory: InvokerMemoryLimiter::new(memory_pool, initial_invocation_memory),
             user_limiter: UserLimiter::create(),
@@ -258,8 +272,11 @@ impl ResourceManager {
                 // Do we have one?
                 if !current_permit.has_invoker_permit() {
                     // poll for one or die trying
-                    let Some(invoker_permit) = self.invoker_concurrency.poll_acquire(cx, vqueue)
-                    else {
+                    let Some(invoker_permit) = self.invoker_concurrency.poll_acquire(
+                        cx,
+                        vqueue,
+                        &SchedulingGroup::of(meta),
+                    ) else {
                         return AcquireOutcome::BlockedOn(ResourceKind::InvokerConcurrency);
                     };
                     current_permit.set_invoker_permit(invoker_permit);

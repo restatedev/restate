@@ -21,7 +21,7 @@ use std::time::Duration;
 pub use cache::{VQueueHandle, VQueuesMeta, VQueuesMetaCache};
 pub use metric_definitions::describe_metrics;
 pub use restate_worker_api::{ResourceKind, SchedulingStatus, VQueueSchedulerStatus};
-pub use scheduler::{ResourceManager, SchedulerService};
+pub use scheduler::{ResourceManager, SchedulerService, ScopeWeights, scope_weight_resolver};
 pub use util::*;
 
 use smallvec::SmallVec;

@@ -37,6 +37,14 @@ pub struct Set {
     #[clap(long)]
     unlimited: bool,
 
+    /// Scheduling weight (>= 1) for this rule's scope in the weighted
+    /// round-robin scheduler: weight N receives N dispatch slots per cycle
+    /// relative to weight-1 groups. On an existing rule, omitting this leaves
+    /// the current weight unchanged. Requires the vqueues scheduler; only
+    /// scope-level exact patterns are consulted.
+    #[clap(long)]
+    weight: Option<NonZeroU32>,
+
     /// Description for the rule
     #[clap(long)]
     description: Option<String>,
@@ -62,7 +70,8 @@ pub async fn run_set(State(env): State<CliEnv>, opts: &Set) -> Result<()> {
                 None
             } else {
                 opts.concurrency
-            }),
+            })
+            .with_scheduling_weight(opts.weight),
             description: opts.description.clone(),
             disabled: opts.disabled,
             precondition: Precondition::DoesNotExist,
@@ -82,9 +91,10 @@ pub async fn run_set(State(env): State<CliEnv>, opts: &Set) -> Result<()> {
                 .description
                 .clone()
                 .or_else(|| rule.description.clone());
+            let scheduling_weight = opts.weight.or_else(|| rule.scheduling_weight());
             UpsertRuleRequest {
                 pattern,
-                limits: UserLimits::new(concurrency),
+                limits: UserLimits::new(concurrency).with_scheduling_weight(scheduling_weight),
                 description,
                 disabled: rule.disabled,
                 precondition: Precondition::Matches(Version::from(rule.version)),

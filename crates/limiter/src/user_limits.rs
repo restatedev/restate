@@ -45,11 +45,35 @@ pub struct UserLimits {
     )]
     #[cfg_attr(feature = "schema", schema(value_type = Option<u32>, minimum = 1))]
     pub concurrency: Option<NonZeroU32>,
+
+    /// Scheduling weight of this rule's scope in the scheduler's weighted
+    /// round-robin: a scope with weight N receives N dispatch slots per cycle
+    /// relative to weight-1 groups, regardless of how many queues it has.
+    /// `None` means the default weight of 1. Only scope-level exact patterns
+    /// are consulted. Requires the vqueues scheduler.
+    ///
+    /// Upserts replace the whole limits object: omitting this field resets
+    /// the weight (the CLI preserves it by re-reading the current rule).
+    #[cfg_attr(feature = "bilrost", bilrost(tag(2)))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<u32>, minimum = 1))]
+    pub scheduling_weight: Option<NonZeroU32>,
 }
 
 impl UserLimits {
     pub fn new(concurrency: Option<NonZeroU32>) -> Self {
-        Self { concurrency }
+        Self {
+            concurrency,
+            scheduling_weight: None,
+        }
+    }
+
+    pub fn with_scheduling_weight(mut self, scheduling_weight: Option<NonZeroU32>) -> Self {
+        self.scheduling_weight = scheduling_weight;
+        self
     }
 }
 
@@ -68,4 +92,37 @@ pub enum RuleUpdate {
     },
     /// Remove a rule by its pattern.
     Remove { pattern: RulePattern<ReString> },
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroU32;
+
+    use bilrost::{Message, OwnedMessage};
+
+    use super::*;
+
+    /// Wire compatibility: pre-weight encodings (concurrency only) decode with
+    /// `scheduling_weight = None`, and a default weight is omitted on the wire
+    /// so old readers see the exact pre-weight byte layout.
+    #[test]
+    fn scheduling_weight_wire_compat() {
+        // "old" shape: only tag(1) present
+        let old = UserLimits::new(NonZeroU32::new(100));
+        let old_bytes = old.encode_to_bytes();
+        let decoded = <UserLimits as OwnedMessage>::decode(old_bytes.clone()).unwrap();
+        assert_eq!(decoded.scheduling_weight, None);
+        assert_eq!(decoded.concurrency, NonZeroU32::new(100));
+
+        // new shape round-trips
+        let new = UserLimits::new(NonZeroU32::new(100)).with_scheduling_weight(NonZeroU32::new(10));
+        let new_bytes = new.encode_to_bytes();
+        let decoded = <UserLimits as OwnedMessage>::decode(new_bytes).unwrap();
+        assert_eq!(decoded.scheduling_weight, NonZeroU32::new(10));
+
+        // None weight encodes identically to the old shape (old readers
+        // decoding new writers see no unknown data)
+        let new_default = UserLimits::new(NonZeroU32::new(100));
+        assert_eq!(new_default.encode_to_bytes(), old_bytes);
+    }
 }

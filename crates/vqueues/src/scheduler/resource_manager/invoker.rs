@@ -12,65 +12,69 @@ use std::task::Poll;
 
 use restate_futures_util::concurrency::{Concurrency, Permit};
 
-use super::Waiters;
+use super::grouped_waiters::GroupedWaiters;
 use crate::scheduler::VQueueHandle;
+use crate::scheduler::eligible::{SchedulingGroup, WeightResolver};
 
 pub struct InvokerConcurrencyLimiter {
     limiter: Concurrency,
-    waiters: Waiters,
+    // Weighted round-robin over service groups instead of a flat FIFO: with a
+    // FIFO, whichever service floods the waiter list first monopolizes freed
+    // permits and starves every other service regardless of scheduling weights.
+    waiters: GroupedWaiters,
     cached_permit: Permit,
 }
 
 impl InvokerConcurrencyLimiter {
-    pub fn new(limiter: Concurrency) -> Self {
+    pub fn new(limiter: Concurrency, weight_resolver: WeightResolver) -> Self {
         Self {
             limiter,
-            waiters: Default::default(),
+            waiters: GroupedWaiters::new(weight_resolver),
             cached_permit: Permit::new_empty(),
         }
     }
 
     pub fn remove_from_waiters(&mut self, vqueue: VQueueHandle) {
-        self.waiters.retain(|h| *h != vqueue);
+        self.waiters.remove(vqueue);
     }
 
-    fn pop_and_advance(&mut self, cx: &mut std::task::Context<'_>) {
-        // pop ourselves.
-        self.waiters.pop_front();
-
-        if !self.waiters.is_empty() {
-            cx.waker().wake_by_ref();
-        }
-    }
-
+    /// Attempts to claim a permit for a queue the scheduler decided to dispatch.
+    ///
+    /// Unlike the previous FIFO design, this does NOT gate the claim on the
+    /// caller being the waiter-list head: the eligibility ring already applies
+    /// weighted round-robin when choosing which queue polls, and with a
+    /// rotating (WRR) waiter head the head-only gate livelocks — the woken
+    /// queue arrives at dispatch after the head has rotated past it, fails,
+    /// re-queues, and the freed permit is never claimed. The waiter list's job
+    /// is reduced to picking the wake-up order (see `poll_head`), which is
+    /// where the group weights apply.
     pub(super) fn poll_acquire(
         &mut self,
         cx: &mut std::task::Context<'_>,
         vqueue: VQueueHandle,
+        group: &SchedulingGroup,
     ) -> Option<Permit> {
-        if self.waiters.is_empty() {
-            self.waiters.push_back(vqueue);
+        // cached permit exists (set aside by poll_head when it woke a waiter)
+        if let Some(permit) = self.cached_permit.split(1) {
+            self.claimed(cx, vqueue);
+            return Some(permit);
         }
 
-        if self.waiters.front().is_some_and(|waiter| waiter == &vqueue) {
-            tracing::trace!("Checking the head vqueue {vqueue:?} for invoker concurrency permits");
-            // cached permit exists, return it.
-            if let Some(permit) = self.cached_permit.split(1) {
-                self.pop_and_advance(cx);
-                return Some(permit);
-            }
+        if let Poll::Ready(invoker_permit) = self.limiter.poll_acquire(cx) {
+            self.claimed(cx, vqueue);
+            return Some(invoker_permit);
+        }
 
-            if let Poll::Ready(invoker_permit) = self.limiter.poll_acquire(cx) {
-                self.pop_and_advance(cx);
-                Some(invoker_permit)
-            } else {
-                // waker registered
-                None
-            }
-        } else {
-            // We need to stand behind
-            self.waiters.push_back(vqueue);
-            None
+        // No permit available: park this queue in its service group's wait list
+        // (push_back de-duplicates).
+        self.waiters.push_back(vqueue, group);
+        None
+    }
+
+    fn claimed(&mut self, cx: &mut std::task::Context<'_>, vqueue: VQueueHandle) {
+        self.waiters.remove(vqueue);
+        if !self.waiters.is_empty() {
+            cx.waker().wake_by_ref();
         }
     }
 
@@ -104,5 +108,76 @@ impl InvokerConcurrencyLimiter {
         }
 
         Poll::Pending
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::{NonZeroU32, NonZeroUsize};
+    use std::sync::Arc;
+
+    use slotmap::SlotMap;
+
+    use restate_types::ServiceName;
+
+    use super::*;
+    use crate::scheduler::eligible::WeightResolver;
+
+    fn resolver() -> WeightResolver {
+        Arc::new(|_: &SchedulingGroup| NonZeroU32::MIN)
+    }
+
+    fn group(name: &str) -> SchedulingGroup {
+        SchedulingGroup::Service(ServiceName::new(name))
+    }
+
+    /// The wake-then-steal race is intentional and livelock-free: `poll_head`
+    /// sets a permit aside and wakes waiter A, but whichever queue the
+    /// scheduler dispatches first may claim it. The loser simply re-parks and
+    /// the WRR waiter list routes a later permit to it — no permit is ever
+    /// stranded (the livelock the previous head-gated design had).
+    #[test]
+    fn woken_permit_can_be_claimed_by_another_queue_without_stranding() {
+        let mut handles = SlotMap::<VQueueHandle, ()>::with_key();
+        let holder = handles.insert(());
+        let vq_a = handles.insert(());
+        let vq_b = handles.insert(());
+        let group_a = group("a");
+        let group_b = group("b");
+
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(waker);
+        let mut limiter = InvokerConcurrencyLimiter::new(
+            Concurrency::new(Some(NonZeroUsize::new(1).unwrap())),
+            resolver(),
+        );
+
+        // holder takes the only permit; A and B park in the waiter list
+        let permit = limiter
+            .poll_acquire(&mut cx, holder, &group("holder"))
+            .expect("permit");
+        assert!(limiter.poll_acquire(&mut cx, vq_a, &group_a).is_none());
+        assert!(limiter.poll_acquire(&mut cx, vq_b, &group_b).is_none());
+
+        // release; poll_head caches the freed permit and wakes A (WRR head)
+        drop(permit);
+        let woken = limiter.poll_head(&mut cx);
+        assert!(matches!(woken, Poll::Ready(Some(h)) if h == vq_a));
+
+        // B "wins the race" to dispatch first and steals the cached permit
+        let stolen = limiter
+            .poll_acquire(&mut cx, vq_b, &group_b)
+            .expect("B claims the cached permit");
+
+        // A loses, re-parks — and the next released permit reaches A: nothing
+        // is stranded and the loser is not starved
+        assert!(limiter.poll_acquire(&mut cx, vq_a, &group_a).is_none());
+        drop(stolen);
+        let woken = limiter.poll_head(&mut cx);
+        assert!(matches!(woken, Poll::Ready(Some(h)) if h == vq_a));
+        assert!(
+            limiter.poll_acquire(&mut cx, vq_a, &group_a).is_some(),
+            "A claims the permit on its wake"
+        );
     }
 }
