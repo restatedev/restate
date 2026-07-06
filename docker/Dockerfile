@@ -113,7 +113,7 @@ COPY --from=upload-true /restate/target/restate-server.debug /
 # NOTE: When modifying this runtime stage, also update docker/Dockerfile.refresh to keep them in sync.
 FROM debian:trixie-slim AS runtime
 # useful for health checks
-RUN apt-get update && apt-get install --no-install-recommends -y jq curl && rm -rf /var/lib/apt/lists/*
+RUN apt update && apt upgrade -y && apt install --no-install-recommends -y jq curl liburing2 && rm -rf /var/lib/apt/lists/*
 # Create symlink for debug symbols fallback path (for read-only /usr/local/bin scenarios)
 RUN mkdir -p /usr/local/bin/.debug && \
     ln -s /tmp/.debug/restate-server.debug /usr/local/bin/.debug/restate-server.debug

@@ -10,6 +10,7 @@ publish = false
 [features]
 default = []
 test-util = ["restate-types/test-util"]
+io-uring = ["rocksdb/io-uring"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
