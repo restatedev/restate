@@ -58,7 +58,7 @@ use restate_types::limit_key::LimitKey;
 use restate_types::schema::deployment::{Deployment, DeploymentType, ProtocolType};
 use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
 use restate_types::service_protocol::ServiceProtocolVersion;
-use restate_util_string::{ReString, RestateString, RestrictedValue, ToReString};
+use restate_util_string::{ReString, RestateString, RestrictedValue, StringLike, ToReString};
 use restate_worker_api::invoker::JournalMetadata;
 use restate_worker_api::invoker::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
@@ -82,6 +82,7 @@ use crate::{Notification, shortcircuit};
 
 ///  Provides the value of the invocation id
 const INVOCATION_ID_HEADER_NAME: HeaderName = HeaderName::from_static("x-restate-invocation-id");
+const SERVICE_KEY_HEADER_NAME: HeaderName = HeaderName::from_static("x-restate-service-key");
 
 const GATEWAY_ERRORS_CODES: [StatusCode; 2] =
     [StatusCode::BAD_GATEWAY, StatusCode::GATEWAY_TIMEOUT];
@@ -440,6 +441,12 @@ where
             (http::header::ACCEPT, service_protocol_header_value),
             (INVOCATION_ID_HEADER_NAME, invocation_id_header_value),
         ]);
+        if let Some(service_key) = service_key
+            && let Ok(service_key_header) =
+                HeaderValue::from_str(urlencoding::encode(service_key.as_str()).as_str())
+        {
+            headers.insert(SERVICE_KEY_HEADER_NAME, service_key_header);
+        }
 
         // Inject OpenTelemetry context into the headers so the SDK sees the
         // per-attempt span as its parent.

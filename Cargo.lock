@@ -8028,6 +8028,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tracing",
+ "urlencoding",
 ]
 
 [[package]]
