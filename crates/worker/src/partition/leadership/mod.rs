@@ -476,6 +476,14 @@ where
                 })?
                 .into_guard();
 
+            // Scheduling weights are scope-keyed and arrive via the rules system
+            // (`restate rules set <scope> --weight N`): the scheduler service keeps
+            // the shared scope-weight map in sync from rule updates, and the
+            // resolver closures read it whenever a scheduling group is (re-)created.
+            // Service-name groups always run at the default weight 1.
+            let scope_weights = restate_vqueues::ScopeWeights::default();
+            let weight_resolver = restate_vqueues::scope_weight_resolver(scope_weights.clone());
+
             let scheduler_service = SchedulerService::create(
                 ResourceManager::create(
                     partition_store.partition_db().clone(),
@@ -483,10 +491,13 @@ where
                     self.invoker_capacity.invocation_token_bucket.clone(),
                     self.invoker_capacity.memory_pool.clone(),
                     self.invoker_capacity.initial_invocation_memory,
+                    weight_resolver.clone(),
                 )
                 .await?,
                 partition_store.partition_db().clone(),
                 vqueues_cache,
+                weight_resolver,
+                scope_weights,
             )
             .await?;
 
@@ -584,6 +595,14 @@ where
                 && !state_machine_features.is_unique_random_seeds_enabled()
             {
                 feature_changes.push(PartitionFeatureChange::EnableUniqueRandomSeeds);
+            }
+
+            // Children of scoped invocations join their caller's scope, so
+            // scope-level rules govern whole call trees.
+            if config.common.experimental.is_scope_inheritance_enabled()
+                && !state_machine_features.is_scope_inheritance_enabled()
+            {
+                feature_changes.push(PartitionFeatureChange::EnableScopeInheritance);
             }
 
             if !feature_changes.is_empty() {
@@ -991,6 +1010,10 @@ mod tests {
         }
 
         fn is_unique_random_seeds_enabled(&self) -> bool {
+            false
+        }
+
+        fn is_scope_inheritance_enabled(&self) -> bool {
             false
         }
     }

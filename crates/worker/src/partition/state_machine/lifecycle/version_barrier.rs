@@ -60,6 +60,9 @@ where
         // point. Pre-existing invocations without a stored random seed keep working via the
         // `to_random_seed()` fallback in `invoker_storage_reader.rs`.
         PartitionFeatureChange::EnableUniqueRandomSeeds => Ok(false),
+        // Flipping scope inheritance on only affects child invocations created
+        // after the apply point; pre-existing invocations are untouched.
+        PartitionFeatureChange::EnableScopeInheritance => Ok(false),
     }
 }
 
@@ -468,6 +471,7 @@ mod tests {
                 journal_v2: false,
                 vqueues: true,
                 unique_random_seeds: false,
+                scope_inheritance: false,
             },
             Default::default(),
             std::sync::Arc::new(RuleBook::default()),

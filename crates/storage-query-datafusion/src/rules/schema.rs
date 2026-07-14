@@ -20,6 +20,10 @@ define_table!(sys_rules(
     /// rule does not constrain concurrency.
     concurrency: DataType::UInt32,
 
+    /// Scheduling weight of this rule's scope in the weighted round-robin
+    /// scheduler. Null means the default weight of 1.
+    scheduling_weight: DataType::UInt32,
+
     /// Free-form description set by the operator.
     description: DataType::LargeUtf8,
 

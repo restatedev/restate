@@ -49,6 +49,11 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.7.0*
     EnableUniqueRandomSeeds = 3,
+    /// Child invocations created via ctx.call inherit their caller's scope
+    /// when the child target has none.
+    ///
+    /// *Since v1.7.0*
+    EnableScopeInheritance = 4,
 }
 
 impl PartitionFeatureChange {
@@ -65,6 +70,7 @@ impl PartitionFeatureChange {
             Self::EnableJournalV2 => &RESTATE_VERSION_1_6_0,
             Self::EnableVqueues => &RESTATE_VERSION_1_7_0,
             Self::EnableUniqueRandomSeeds => &RESTATE_VERSION_1_7_0,
+            Self::EnableScopeInheritance => &RESTATE_VERSION_1_7_0,
         }
     }
 
@@ -76,6 +82,9 @@ impl PartitionFeatureChange {
             Self::EnableVqueues => !std::mem::replace(&mut features.vqueues, true),
             Self::EnableUniqueRandomSeeds => {
                 !std::mem::replace(&mut features.unique_random_seeds, true)
+            }
+            Self::EnableScopeInheritance => {
+                !std::mem::replace(&mut features.scope_inheritance, true)
             }
         }
     }
@@ -121,6 +130,11 @@ pub struct PersistedFeatures {
     /// *Since v1.7.0*
     #[bilrost(tag(3))]
     pub unique_random_seeds: bool,
+    /// Child invocations inherit their caller's scope when they have none.
+    ///
+    /// *Since v1.7.0*
+    #[bilrost(tag(4))]
+    pub scope_inheritance: bool,
 }
 
 impl PersistedFeatures {
@@ -132,6 +146,7 @@ impl PersistedFeatures {
             self.journal_v2.then_some("journal_v2"),
             self.vqueues.then_some("vqueues"),
             self.unique_random_seeds.then_some("unique_random_seeds"),
+            self.scope_inheritance.then_some("scope_inheritance"),
         ]
         .into_iter()
         .flatten()

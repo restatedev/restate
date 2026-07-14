@@ -148,6 +148,10 @@ impl PartitionFeatures for StateMachine {
     fn is_unique_random_seeds_enabled(&self) -> bool {
         self.enabled_features.unique_random_seeds
     }
+
+    fn is_scope_inheritance_enabled(&self) -> bool {
+        self.enabled_features.scope_inheritance
+    }
 }
 
 impl<S> PartitionFeatures for StateMachineApplyContext<'_, S> {
@@ -161,6 +165,10 @@ impl<S> PartitionFeatures for StateMachineApplyContext<'_, S> {
 
     fn is_unique_random_seeds_enabled(&self) -> bool {
         self.enabled_features.unique_random_seeds
+    }
+
+    fn is_scope_inheritance_enabled(&self) -> bool {
+        self.enabled_features.scope_inheritance
     }
 }
 pub struct StateMachine {
@@ -3887,9 +3895,19 @@ impl<S> StateMachineApplyContext<'_, S> {
                             journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
 
+                    // Scope inheritance (journal-v2 equivalent: call_commands.rs).
+                    let mut callee_invocation_target = callee_invocation_target.clone();
+                    if self.is_scope_inheritance_enabled()
+                        && callee_invocation_target.scope().is_none()
+                        && let Some(scope) = invocation_metadata.invocation_target.scope()
+                    {
+                        callee_invocation_target =
+                            callee_invocation_target.with_scope(Some(scope.clone()));
+                    }
+
                     let service_invocation = Box::new(ServiceInvocation {
                         invocation_id: *callee_invocation_id,
-                        invocation_target: callee_invocation_target.clone(),
+                        invocation_target: callee_invocation_target,
                         argument: request.parameter,
                         source: Source::Service(
                             invocation_id,
@@ -3942,9 +3960,19 @@ impl<S> StateMachineApplyContext<'_, S> {
                     Some(MillisSinceEpoch::new(invoke_time))
                 };
 
+                // Scope inheritance: see the Call arm above.
+                let mut callee_invocation_target = callee_invocation_target.clone();
+                if self.is_scope_inheritance_enabled()
+                    && callee_invocation_target.scope().is_none()
+                    && let Some(scope) = invocation_metadata.invocation_target.scope()
+                {
+                    callee_invocation_target =
+                        callee_invocation_target.with_scope(Some(scope.clone()));
+                }
+
                 let service_invocation = Box::new(ServiceInvocation {
                     invocation_id: *callee_invocation_id,
-                    invocation_target: callee_invocation_target.clone(),
+                    invocation_target: callee_invocation_target,
                     argument: request.parameter,
                     source: Source::Service(
                         invocation_id,

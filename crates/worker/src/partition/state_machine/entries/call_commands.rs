@@ -20,6 +20,7 @@ use restate_types::journal_v2::command::{CallCommand, CallRequest, OneWayCallCom
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::journal_v2::{CallInvocationIdCompletion, CompletionId, Entry};
 use restate_types::time::MillisSinceEpoch;
+use restate_worker_api::processor::PartitionFeatures;
 use std::collections::VecDeque;
 
 pub(super) type ApplyCallCommand<'e> = ApplyJournalCommandEffect<'e, CallCommand>;
@@ -94,7 +95,7 @@ where
 
         let CallRequest {
             invocation_id,
-            invocation_target,
+            mut invocation_target,
             span_context,
             parameter,
             headers,
@@ -103,6 +104,15 @@ where
             journal_retention_duration,
             limit_key,
         } = self.request;
+
+        // A child without its own scope joins its caller's scope. Deterministic:
+        // gated on the partition-persisted feature set, replicated state only.
+        if ctx.is_scope_inheritance_enabled()
+            && invocation_target.scope().is_none()
+            && let Some(scope) = caller_invocation_metadata.invocation_target.scope()
+        {
+            invocation_target = invocation_target.with_scope(Some(scope.clone()));
+        }
 
         // Prepare the service invocation to propose
         let service_invocation = ServiceInvocation {

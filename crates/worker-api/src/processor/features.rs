@@ -33,6 +33,12 @@ pub trait PartitionFeatures {
     ///
     /// *Since v1.7.0*
     fn is_unique_random_seeds_enabled(&self) -> bool;
+
+    /// Whether child invocations created via ctx.call inherit their caller's
+    /// scope when the child target carries none.
+    ///
+    /// *Since v1.7.0*
+    fn is_scope_inheritance_enabled(&self) -> bool;
 }
 
 impl PartitionFeatures for PersistedFeatures {
@@ -50,6 +56,11 @@ impl PartitionFeatures for PersistedFeatures {
     fn is_unique_random_seeds_enabled(&self) -> bool {
         self.unique_random_seeds
     }
+
+    #[inline]
+    fn is_scope_inheritance_enabled(&self) -> bool {
+        self.scope_inheritance
+    }
 }
 
 // -- Boilerplate --
@@ -66,6 +77,10 @@ impl<T: PartitionFeatures> PartitionFeatures for &T {
     fn is_unique_random_seeds_enabled(&self) -> bool {
         (**self).is_unique_random_seeds_enabled()
     }
+
+    fn is_scope_inheritance_enabled(&self) -> bool {
+        (**self).is_scope_inheritance_enabled()
+    }
 }
 
 impl<T: PartitionFeatures> PartitionFeatures for &mut T {
@@ -79,5 +94,9 @@ impl<T: PartitionFeatures> PartitionFeatures for &mut T {
 
     fn is_unique_random_seeds_enabled(&self) -> bool {
         (**self).is_unique_random_seeds_enabled()
+    }
+
+    fn is_scope_inheritance_enabled(&self) -> bool {
+        (**self).is_scope_inheritance_enabled()
     }
 }

@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZeroU16;
+use std::num::NonZeroU32;
 use std::pin::Pin;
 use std::task::Poll;
 use std::task::Waker;
@@ -36,7 +36,7 @@ use crate::cache;
 use crate::cache::VQueueHandle;
 use crate::metric_definitions::VQUEUE_ENQUEUE;
 use crate::metric_definitions::VQUEUE_RUN_CONFIRMED;
-use crate::scheduler::eligible::EligibilityTracker;
+use crate::scheduler::eligible::{EligibilityTracker, SchedulingGroup, WeightResolver};
 use crate::scheduler::vqueue_state::Pop;
 
 use super::Decisions;
@@ -57,9 +57,9 @@ pub struct DRRScheduler<S: VQueueStore> {
     last_report: Instant,
 
     /// Limits the number of queues picked per scheduler's poll
-    limit_qid_per_poll: NonZeroU16,
+    limit_qid_per_poll: NonZeroU32,
     /// Limits the number of items included in a single decision across all queues
-    max_items_per_decision: NonZeroU16,
+    max_items_per_decision: NonZeroU32,
 
     // SAFETY NOTE: **must** Keep this at the end since it needs to outlive all readers.
     storage: S,
@@ -67,25 +67,26 @@ pub struct DRRScheduler<S: VQueueStore> {
 
 impl<S: VQueueStore> DRRScheduler<S> {
     pub fn new(
-        limit_qid_per_poll: NonZeroU16,
-        max_items_per_decision: NonZeroU16,
+        limit_qid_per_poll: NonZeroU32,
+        max_items_per_decision: NonZeroU32,
         resource_manager: ResourceManager,
         storage: S,
         vqueues: VQueuesMeta<'_>,
+        weight_resolver: WeightResolver,
     ) -> Self {
         let mut total_running = 0;
         let mut total_waiting = 0;
 
         let mut q = SecondaryMap::with_capacity(vqueues.capacity());
         let mut eligible: EligibilityTracker =
-            EligibilityTracker::with_capacity(vqueues.capacity());
+            EligibilityTracker::with_capacity(vqueues.capacity(), weight_resolver);
 
         for (handle, qid, meta) in vqueues.iter_active_vqueues() {
             total_running += meta.num_running();
             total_waiting += meta.total_waiting();
             q.insert(handle, VQueueState::new(qid, &storage, meta.num_running()));
             // We init all active vqueues as eligible first
-            eligible.insert_eligible(handle);
+            eligible.insert_eligible(handle, SchedulingGroup::of(meta));
         }
 
         debug!(
@@ -409,6 +410,12 @@ impl<S: VQueueStore> DRRScheduler<S> {
         }
     }
 
+    /// Verifies the eligibility tracker's internal invariants. Test-only.
+    #[cfg(test)]
+    pub fn assert_scheduler_invariants(&self) {
+        self.eligible.assert_invariants();
+    }
+
     /// Snapshot of every user-limit counter currently tracked by this scheduler's
     /// resource manager. Stamped with the owning partition's key.
     pub fn scan_user_limit_counters(
@@ -422,7 +429,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
 
 #[cfg(test)]
 mod tests {
-    use std::num::{NonZeroU16, NonZeroU32, NonZeroUsize};
+    use std::num::{NonZeroU32, NonZeroUsize};
     use std::task::Poll;
 
     use restate_clock::RoughTimestamp;
@@ -454,6 +461,11 @@ mod tests {
     use crate::{GlobalTokenBucket, SchedulingStatus, VQueue, VQueueEvent};
 
     const TEST_VQUEUES_CAPACITY: usize = 1024;
+
+    /// All services get the default weight of 1 unless a test overrides the resolver.
+    fn test_weight_resolver() -> WeightResolver {
+        std::sync::Arc::new(|_group: &SchedulingGroup| NonZeroU32::MIN)
+    }
 
     use super::*;
 
@@ -491,6 +503,47 @@ mod tests {
     ) -> EntryKey {
         let run_at = MillisSinceEpoch::new(BASE_RUN_AT_MS + run_at_ms);
         enqueue_entry_with_run_at(txn, cache, qid, id, run_at, action_collector).await
+    }
+
+    /// Like [`enqueue_entry`] but linking the vqueue to a caller-chosen service, so
+    /// tests can exercise the per-service group ring.
+    async fn enqueue_entry_for_service(
+        txn: &mut PartitionStoreTransaction<'_>,
+        cache: &mut VQueuesMetaCache,
+        qid: &VQueueId,
+        service: &ServiceName,
+        id: u8,
+        action_collector: Option<&mut Vec<VQueueEvent>>,
+    ) -> EntryKey {
+        let run_at = MillisSinceEpoch::new(BASE_RUN_AT_MS);
+        let created_at = UniqueTimestamp::try_from(1000u64 + id as u64).unwrap();
+        let seq = id as u64;
+        let entry_id = EntryId::new(EntryKind::Invocation, [id; EntryId::REMAINDER_LEN]);
+        let run_at_rough = RoughTimestamp::from_unix_millis_clamped(run_at);
+
+        let mut vqueue = VQueue::get_or_create_vqueue(
+            created_at,
+            qid,
+            txn,
+            cache,
+            action_collector,
+            service,
+            &None,
+            &LimitKey::None,
+            &None,
+        )
+        .await
+        .expect("vqueue should be created");
+
+        vqueue.enqueue_new(
+            created_at,
+            seq,
+            Some(run_at),
+            entry_id,
+            EntryMetadata::default(),
+        );
+
+        EntryKey::new(false, run_at_rough, seq, entry_id)
     }
 
     async fn enqueue_entry_with_run_at(
@@ -645,12 +698,23 @@ mod tests {
         concurrency: Concurrency,
         global_throttling: Option<GlobalTokenBucket>,
     ) -> ResourceManager {
+        create_resource_manager_full(db, concurrency, global_throttling, test_weight_resolver())
+            .await
+    }
+
+    async fn create_resource_manager_full(
+        db: &PartitionDb,
+        concurrency: Concurrency,
+        global_throttling: Option<GlobalTokenBucket>,
+        weight_resolver: WeightResolver,
+    ) -> ResourceManager {
         ResourceManager::create(
             db.clone(),
             concurrency,
             global_throttling,
             MemoryPool::unlimited(),
             NonZeroByteCount::new(NonZeroUsize::MIN),
+            weight_resolver,
         )
         .await
         .expect("resource manager creation should succeed")
@@ -668,11 +732,12 @@ mod tests {
         cache: &VQueuesMetaCache,
     ) -> DRRScheduler<PartitionDb> {
         DRRScheduler::new(
-            NonZeroU16::new(100).unwrap(),
-            NonZeroU16::new(100).unwrap(),
+            NonZeroU32::new(100).unwrap(),
+            NonZeroU32::new(100).unwrap(),
             create_resource_manager(db, Concurrency::new_unlimited()).await,
             db.clone(),
             cache.view(),
+            test_weight_resolver(),
         )
     }
 
@@ -682,8 +747,8 @@ mod tests {
         concurrency_limit: usize,
     ) -> DRRScheduler<PartitionDb> {
         DRRScheduler::new(
-            NonZeroU16::new(100).unwrap(),
-            NonZeroU16::new(100).unwrap(),
+            NonZeroU32::new(100).unwrap(),
+            NonZeroU32::new(100).unwrap(),
             create_resource_manager(
                 db,
                 Concurrency::new(Some(NonZeroUsize::new(concurrency_limit).unwrap())),
@@ -691,6 +756,7 @@ mod tests {
             .await,
             db.clone(),
             cache.view(),
+            test_weight_resolver(),
         )
     }
 
@@ -913,6 +979,7 @@ mod tests {
         assert!(events.is_empty());
 
         txn.commit().await.expect("commit should succeed");
+        drop(txn);
     }
 
     #[restate_core::test]
@@ -940,11 +1007,12 @@ mod tests {
 
         let db = rocksdb.partition_db();
         let mut scheduler = DRRScheduler::new(
-            NonZeroU16::new(100).unwrap(),
-            NonZeroU16::new(3).unwrap(),
+            NonZeroU32::new(100).unwrap(),
+            NonZeroU32::new(3).unwrap(),
             create_resource_manager(db, Concurrency::new_unlimited()).await,
             db.clone(),
             cache.view(),
+            test_weight_resolver(),
         );
 
         let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
@@ -1075,8 +1143,8 @@ mod tests {
 
         let db = rocksdb.partition_db();
         let mut scheduler = DRRScheduler::new(
-            NonZeroU16::new(100).unwrap(),
-            NonZeroU16::new(100).unwrap(),
+            NonZeroU32::new(100).unwrap(),
+            NonZeroU32::new(100).unwrap(),
             create_resource_manager_with_throttling(
                 db,
                 Concurrency::new_unlimited(),
@@ -1085,6 +1153,7 @@ mod tests {
             .await,
             db.clone(),
             cache.view(),
+            test_weight_resolver(),
         );
 
         let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
@@ -1156,8 +1225,8 @@ mod tests {
 
         let db = rocksdb.partition_db();
         let mut scheduler = DRRScheduler::new(
-            NonZeroU16::new(100).unwrap(),
-            NonZeroU16::new(100).unwrap(),
+            NonZeroU32::new(100).unwrap(),
+            NonZeroU32::new(100).unwrap(),
             create_resource_manager_with_throttling(
                 db,
                 Concurrency::new_unlimited(),
@@ -1166,6 +1235,7 @@ mod tests {
             .await,
             db.clone(),
             cache.view(),
+            test_weight_resolver(),
         );
 
         let Poll::Ready(Ok(_decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
@@ -1209,11 +1279,12 @@ mod tests {
 
         let db = rocksdb.partition_db();
         let mut scheduler = DRRScheduler::new(
-            NonZeroU16::new(100).unwrap(),
-            NonZeroU16::new(2).unwrap(),
+            NonZeroU32::new(100).unwrap(),
+            NonZeroU32::new(2).unwrap(),
             create_resource_manager(db, Concurrency::new_unlimited()).await,
             db.clone(),
             cache.view(),
+            test_weight_resolver(),
         );
 
         if let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view()) {
@@ -1238,11 +1309,12 @@ mod tests {
 
         let db = rocksdb.partition_db();
         let mut scheduler = DRRScheduler::new(
-            NonZeroU16::new(100).unwrap(),
-            NonZeroU16::new(2).unwrap(),
+            NonZeroU32::new(100).unwrap(),
+            NonZeroU32::new(2).unwrap(),
             create_resource_manager(db, Concurrency::new_unlimited()).await,
             db.clone(),
             cache.view(),
+            test_weight_resolver(),
         );
 
         let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
@@ -1313,12 +1385,13 @@ mod tests {
 
         let db = rocksdb.partition_db();
         let mut scheduler = DRRScheduler::new(
-            NonZeroU16::new(100).unwrap(),
-            NonZeroU16::new(10).unwrap(),
+            NonZeroU32::new(100).unwrap(),
+            NonZeroU32::new(10).unwrap(),
             create_resource_manager(db, Concurrency::new(Some(NonZeroUsize::new(1).unwrap())))
                 .await,
             db.clone(),
             cache.view(),
+            test_weight_resolver(),
         );
 
         let h_qid1 = cache.view().handle_for(&qid1).unwrap();
@@ -1391,5 +1464,985 @@ mod tests {
             poll_scheduler(scheduler.as_mut(), cache.view()),
             Poll::Pending
         ));
+    }
+
+    // --- Two-level weighted round-robin tests -------------------------------------
+    //
+    // The tests below cover the service-group WRR layered on top of the per-queue DRR:
+    // backwards compatibility at weight=1, weighted dispatch ratios, work conservation,
+    // group lifecycle, and internal data-structure invariants.
+
+    /// Weight resolver used by WRR tests: derives the weight from the service name
+    /// suffix, e.g. "svc-w10" gets weight 10. Anything else gets weight 1.
+    fn suffix_weight_resolver() -> WeightResolver {
+        std::sync::Arc::new(|group: &SchedulingGroup| {
+            let SchedulingGroup::Service(service_name) = group else {
+                return NonZeroU32::MIN;
+            };
+            let name: &str = service_name.as_ref();
+            name.rsplit_once("-w")
+                .and_then(|(_, w)| w.parse::<u32>().ok())
+                .and_then(NonZeroU32::new)
+                .unwrap_or(NonZeroU32::MIN)
+        })
+    }
+
+    /// Builds `queues_per_service` single-entry vqueues for each given service. Queue
+    /// partition keys are `base + service_index * 1000 + queue_index` so a dispatched
+    /// qid can be mapped back to its service.
+    async fn setup_services(
+        rocksdb: &mut PartitionStore,
+        cache: &mut VQueuesMetaCache,
+        base: u64,
+        services: &[&str],
+        queues_per_service: u64,
+    ) {
+        let mut txn = rocksdb.transaction();
+        for (si, service) in services.iter().enumerate() {
+            let service_name = ServiceName::new(service);
+            for qi in 0..queues_per_service {
+                let pk = base + si as u64 * 1000 + qi;
+                let qid = test_qid(pk);
+                enqueue_entry_for_service(
+                    &mut txn,
+                    cache,
+                    &qid,
+                    &service_name,
+                    // entry ids only need to be unique within a queue
+                    ((si * 40 + qi as usize) % 255) as u8 + 1,
+                    None,
+                )
+                .await;
+            }
+        }
+        txn.commit().await.expect("commit should succeed");
+        drop(txn);
+    }
+
+    /// Polls the scheduler with max_items_per_decision=1 until it goes Pending, and
+    /// counts dispatched items per service index (derived from the partition key).
+    fn drain_and_count(
+        scheduler: &mut DRRScheduler<PartitionDb>,
+        cache: &VQueuesMetaCache,
+        base: u64,
+        num_services: usize,
+        max_polls: usize,
+    ) -> Vec<usize> {
+        let mut counts = vec![0usize; num_services];
+        for _ in 0..max_polls {
+            match poll_scheduler(Pin::new(scheduler), cache.view()) {
+                Poll::Ready(Ok(decision)) => {
+                    for qid in decision.qids.keys() {
+                        let si = ((qid.partition_key() - base) / 1000) as usize;
+                        counts[si] += 1;
+                    }
+                    scheduler.assert_scheduler_invariants();
+                }
+                Poll::Ready(Err(err)) => panic!("scheduler error: {err}"),
+                Poll::Pending => break,
+            }
+        }
+        counts
+    }
+
+    fn scheduler_with_resolver(
+        db: &PartitionDb,
+        cache: &VQueuesMetaCache,
+        resource_manager: ResourceManager,
+        resolver: WeightResolver,
+    ) -> DRRScheduler<PartitionDb> {
+        DRRScheduler::new(
+            NonZeroU32::new(100).unwrap(),
+            NonZeroU32::new(1).unwrap(), // one item per decision to observe dispatch order
+            resource_manager,
+            db.clone(),
+            cache.view(),
+            resolver,
+        )
+    }
+
+    /// Backwards compatibility: with every service at weight 1 the groups share slots
+    /// equally, and every enqueued item is dispatched (nothing lost, nothing starved).
+    #[restate_core::test]
+    async fn wrr_all_weight_one_equal_service_share() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+        const BASE: u64 = 30_000;
+
+        setup_services(
+            &mut rocksdb,
+            &mut cache,
+            BASE,
+            &["svc-a", "svc-b", "svc-c"],
+            5,
+        )
+        .await;
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = scheduler_with_resolver(
+            db,
+            &cache,
+            create_resource_manager(db, Concurrency::new_unlimited()).await,
+            test_weight_resolver(),
+        );
+
+        let counts = drain_and_count(&mut scheduler, &cache, BASE, 3, 100);
+        assert_eq!(counts, vec![5, 5, 5], "each weight-1 service drains fully");
+    }
+
+    /// A single service must drain exactly like the previous flat ring: all items
+    /// dispatched, scheduler Pending afterwards, group dropped when empty.
+    #[restate_core::test]
+    async fn wrr_single_service_drains_completely() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+        const BASE: u64 = 32_000;
+
+        setup_services(&mut rocksdb, &mut cache, BASE, &["svc-solo"], 10).await;
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = scheduler_with_resolver(
+            db,
+            &cache,
+            create_resource_manager(db, Concurrency::new_unlimited()).await,
+            test_weight_resolver(),
+        );
+
+        let counts = drain_and_count(&mut scheduler, &cache, BASE, 1, 100);
+        assert_eq!(counts, vec![10]);
+        assert!(matches!(
+            poll_scheduler(Pin::new(&mut scheduler), cache.view()),
+            Poll::Pending
+        ));
+        scheduler.assert_scheduler_invariants();
+    }
+
+    /// Weighted ratio: weight-10 service gets ~10 slots per weight-1 slot while both
+    /// have work queued. Observed over the first dispatches before either drains.
+    #[restate_core::test]
+    async fn wrr_two_groups_dispatch_ratio_one_to_ten() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+        const BASE: u64 = 34_000;
+
+        // 40 queues each so neither group drains within the observation window
+        setup_services(
+            &mut rocksdb,
+            &mut cache,
+            BASE,
+            &["payment-w1", "indexer-w10"],
+            40,
+        )
+        .await;
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = scheduler_with_resolver(
+            db,
+            &cache,
+            create_resource_manager(db, Concurrency::new_unlimited()).await,
+            suffix_weight_resolver(),
+        );
+
+        // observe 22 dispatch slots: exactly two full WRR cycles (1 + 10 per cycle)
+        let counts = drain_and_count(&mut scheduler, &cache, BASE, 2, 22);
+        assert_eq!(
+            counts[0] + counts[1],
+            22,
+            "both groups still had work; every poll must dispatch"
+        );
+        assert_eq!(counts[0], 2, "weight-1 group gets 1 slot per cycle");
+        assert_eq!(counts[1], 20, "weight-10 group gets 10 slots per cycle");
+    }
+
+    /// Work conservation: when the high-weight group drains, the low-weight group gets
+    /// every remaining slot and drains completely (no starvation, no lost items).
+    #[restate_core::test]
+    async fn wrr_work_conservation_after_group_drains() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+        const BASE: u64 = 36_000;
+
+        let mut txn = rocksdb.transaction();
+        let heavy = ServiceName::new("heavy-w100");
+        let light = ServiceName::new("light-w1");
+        for qi in 0..2u64 {
+            let qid = test_qid(BASE + qi);
+            enqueue_entry_for_service(&mut txn, &mut cache, &qid, &heavy, qi as u8 + 1, None).await;
+        }
+        for qi in 0..20u64 {
+            let qid = test_qid(BASE + 1000 + qi);
+            enqueue_entry_for_service(&mut txn, &mut cache, &qid, &light, qi as u8 + 10, None)
+                .await;
+        }
+        txn.commit().await.expect("commit should succeed");
+        drop(txn);
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = scheduler_with_resolver(
+            db,
+            &cache,
+            create_resource_manager(db, Concurrency::new_unlimited()).await,
+            suffix_weight_resolver(),
+        );
+
+        let counts = drain_and_count(&mut scheduler, &cache, BASE, 2, 100);
+        assert_eq!(
+            counts,
+            vec![2, 20],
+            "heavy group drains its 2 items, light group still drains all 20"
+        );
+        assert!(matches!(
+            poll_scheduler(Pin::new(&mut scheduler), cache.view()),
+            Poll::Pending
+        ));
+    }
+
+    /// Group lifecycle: a drained group is removed from the ring and correctly
+    /// re-created when new work for its service arrives.
+    #[restate_core::test]
+    async fn wrr_group_removed_and_recreated_on_new_enqueue() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+        const BASE: u64 = 38_000;
+        let service = ServiceName::new("cycler");
+        let qid = test_qid(BASE);
+
+        let mut txn = rocksdb.transaction();
+        enqueue_entry_for_service(&mut txn, &mut cache, &qid, &service, 1, None).await;
+        txn.commit().await.expect("commit should succeed");
+        drop(txn);
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = scheduler_with_resolver(
+            db,
+            &cache,
+            create_resource_manager(db, Concurrency::new_unlimited()).await,
+            test_weight_resolver(),
+        );
+
+        let counts = drain_and_count(&mut scheduler, &cache, BASE, 1, 10);
+        assert_eq!(counts, vec![1]);
+        scheduler.assert_scheduler_invariants();
+
+        // new work for the same service re-creates the group
+        let mut txn = rocksdb.transaction();
+        let mut events = Vec::new();
+        enqueue_entry_for_service(&mut txn, &mut cache, &qid, &service, 2, Some(&mut events)).await;
+        txn.commit().await.expect("commit should succeed");
+        drop(txn);
+        for event in events.drain(..) {
+            scheduler.on_inbox_event(cache.view(), event);
+        }
+
+        let counts = drain_and_count(&mut scheduler, &cache, BASE, 1, 10);
+        assert_eq!(counts, vec![1], "re-created group dispatches new work");
+        scheduler.assert_scheduler_invariants();
+    }
+
+    /// Blocked queues leave the ring without stalling their group: with a concurrency
+    /// limit of 1, other queues of the same service keep dispatching one at a time.
+    #[restate_core::test]
+    async fn wrr_blocked_queue_does_not_stall_group() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+        const BASE: u64 = 40_000;
+
+        setup_services(&mut rocksdb, &mut cache, BASE, &["limited"], 3).await;
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = scheduler_with_resolver(
+            db,
+            &cache,
+            create_resource_manager(db, Concurrency::new(Some(NonZeroUsize::new(1).unwrap())))
+                .await,
+            test_weight_resolver(),
+        );
+
+        // Only one Run fits within the concurrency limit; the other two queues get
+        // blocked on InvokerConcurrency and must leave the ring without panicking.
+        let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
+        else {
+            panic!("expected a decision");
+        };
+        assert_eq!(decision.num_run(), 1);
+        scheduler.assert_scheduler_invariants();
+
+        assert!(matches!(
+            poll_scheduler(Pin::new(&mut scheduler), cache.view()),
+            Poll::Pending
+        ));
+        scheduler.assert_scheduler_invariants();
+
+        // Confirming the running item frees the concurrency slot; a blocked queue is
+        // woken up and dispatches next.
+        let first_qid = decision.qids.keys().next().unwrap().clone();
+        let first_key = run_keys(&decision)[0];
+        let metas = cache.view();
+        let h_first = metas.handle_for(&first_qid).unwrap();
+        let first_slot = metas.get(h_first).unwrap();
+        let mut scheduler = Pin::new(&mut scheduler);
+        let resources = scheduler
+            .as_mut()
+            .confirm_run_attempt(h_first, first_slot, &first_key);
+        assert!(resources.is_some());
+        drop(resources);
+
+        let Poll::Ready(Ok(decision2)) = poll_scheduler(scheduler.as_mut(), cache.view()) else {
+            panic!("expected a second decision");
+        };
+        assert_eq!(decision2.num_run(), 1);
+        scheduler.assert_scheduler_invariants();
+    }
+
+    /// Weight changes take effect when a group cycles: the resolver is re-consulted on
+    /// group re-creation, mirroring an admin PATCH between benchmark runs.
+    #[restate_core::test]
+    async fn wrr_weight_change_applies_on_group_recreation() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+        const BASE: u64 = 42_000;
+        let service = ServiceName::new("mutable");
+        let qid = test_qid(BASE);
+
+        let mut txn = rocksdb.transaction();
+        enqueue_entry_for_service(&mut txn, &mut cache, &qid, &service, 1, None).await;
+        txn.commit().await.expect("commit should succeed");
+        drop(txn);
+
+        let weight = Arc::new(AtomicU32::new(1));
+        let resolver_weight = Arc::clone(&weight);
+        let resolver: WeightResolver = Arc::new(move |_group: &SchedulingGroup| {
+            NonZeroU32::new(resolver_weight.load(Ordering::Relaxed)).unwrap()
+        });
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = scheduler_with_resolver(
+            db,
+            &cache,
+            create_resource_manager(db, Concurrency::new_unlimited()).await,
+            resolver,
+        );
+
+        // drain the group so it gets dropped, then bump the weight
+        let counts = drain_and_count(&mut scheduler, &cache, BASE, 1, 10);
+        assert_eq!(counts, vec![1]);
+        weight.store(10, Ordering::Relaxed);
+
+        // new work re-creates the group; the new weight must be picked up (verified
+        // indirectly: the dispatch succeeds and invariants hold — the ratio itself is
+        // covered by wrr_two_groups_dispatch_ratio_one_to_ten)
+        let mut txn = rocksdb.transaction();
+        let mut events = Vec::new();
+        enqueue_entry_for_service(&mut txn, &mut cache, &qid, &service, 2, Some(&mut events)).await;
+        txn.commit().await.expect("commit should succeed");
+        drop(txn);
+        for event in events.drain(..) {
+            scheduler.on_inbox_event(cache.view(), event);
+        }
+        let counts = drain_and_count(&mut scheduler, &cache, BASE, 1, 10);
+        assert_eq!(counts, vec![1]);
+        scheduler.assert_scheduler_invariants();
+    }
+
+    /// Bulk stress on the invariants: many services, many queues, drain everything.
+    #[restate_core::test]
+    async fn wrr_invariants_under_bulk_load() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+        const BASE: u64 = 44_000;
+
+        setup_services(
+            &mut rocksdb,
+            &mut cache,
+            BASE,
+            &["s0-w1", "s1-w2", "s2-w4", "s3-w1", "s4-w8"],
+            8,
+        )
+        .await;
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = scheduler_with_resolver(
+            db,
+            &cache,
+            create_resource_manager(db, Concurrency::new_unlimited()).await,
+            suffix_weight_resolver(),
+        );
+
+        // drain_and_count asserts invariants after every poll
+        let counts = drain_and_count(&mut scheduler, &cache, BASE, 5, 200);
+        assert_eq!(counts, vec![8, 8, 8, 8, 8], "all queues fully drained");
+        assert!(matches!(
+            poll_scheduler(Pin::new(&mut scheduler), cache.view()),
+            Poll::Pending
+        ));
+    }
+
+    /// Three groups with weights 1/2/4: within one full WRR cycle (7 slots) the groups
+    /// receive exactly 1, 2 and 4 dispatches.
+    #[restate_core::test]
+    async fn wrr_three_groups_weighted_ratio() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+        const BASE: u64 = 46_000;
+
+        setup_services(
+            &mut rocksdb,
+            &mut cache,
+            BASE,
+            &["a-w1", "b-w2", "c-w4"],
+            20,
+        )
+        .await;
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = scheduler_with_resolver(
+            db,
+            &cache,
+            create_resource_manager(db, Concurrency::new_unlimited()).await,
+            suffix_weight_resolver(),
+        );
+
+        // two full cycles: 2 * (1 + 2 + 4) = 14 slots, no group drains (20 queues each)
+        let counts = drain_and_count(&mut scheduler, &cache, BASE, 3, 14);
+        assert_eq!(counts.iter().sum::<usize>(), 14);
+        assert_eq!(
+            counts,
+            vec![2, 4, 8],
+            "1:2:4 weighted split over two cycles"
+        );
+    }
+
+    /// The thesis starvation scenario in miniature: a huge weight-1 group must not
+    /// starve a tiny weight-10 group. The small group's share depends only on the
+    /// weights, not on the queue-count imbalance.
+    #[restate_core::test]
+    async fn wrr_small_high_weight_group_not_starved_by_large_group() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+        const BASE: u64 = 48_000;
+
+        let mut txn = rocksdb.transaction();
+        let payment = ServiceName::new("payment-w1");
+        let batcher = ServiceName::new("batcher-w10");
+        // 100 payment queues vs 2 batcher queues with plenty of work: enqueue two
+        // entries per batcher queue so the batcher group survives multiple cycles
+        for qi in 0..100u64 {
+            let qid = test_qid(BASE + qi);
+            enqueue_entry_for_service(&mut txn, &mut cache, &qid, &payment, qi as u8, None).await;
+        }
+        for qi in 0..2u64 {
+            let qid = test_qid(BASE + 1000 + qi);
+            enqueue_entry_for_service(&mut txn, &mut cache, &qid, &batcher, 200 + qi as u8, None)
+                .await;
+        }
+        txn.commit().await.expect("commit should succeed");
+        drop(txn);
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = scheduler_with_resolver(
+            db,
+            &cache,
+            create_resource_manager(db, Concurrency::new_unlimited()).await,
+            suffix_weight_resolver(),
+        );
+
+        // Observe the first 4 slots: the flat ring would have given the batcher a
+        // ~2/102 chance per slot; the WRR must dispatch both batcher queues within the
+        // first cycle (1 payment slot + up to 10 batcher slots).
+        let counts = drain_and_count(&mut scheduler, &cache, BASE, 2, 4);
+        assert_eq!(
+            counts[1], 2,
+            "both batcher queues dispatched within the first cycle despite 100 payment queues"
+        );
+    }
+
+    /// max_items_per_decision caps the whole decision across groups, not per group.
+    #[restate_core::test]
+    async fn wrr_max_items_per_decision_across_groups() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+        const BASE: u64 = 50_000;
+
+        setup_services(
+            &mut rocksdb,
+            &mut cache,
+            BASE,
+            &["x-w1", "y-w1", "z-w1"],
+            10,
+        )
+        .await;
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = DRRScheduler::new(
+            NonZeroU32::new(100).unwrap(),
+            NonZeroU32::new(5).unwrap(),
+            create_resource_manager(db, Concurrency::new_unlimited()).await,
+            db.clone(),
+            cache.view(),
+            suffix_weight_resolver(),
+        );
+
+        let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
+        else {
+            panic!("expected decision");
+        };
+        assert!(
+            decision.total_items() <= 5,
+            "decision item cap applies across all groups, got {}",
+            decision.total_items()
+        );
+        scheduler.assert_scheduler_invariants();
+    }
+
+    /// Delayed items (run_at in the future) leave the ring into the delay queue and the
+    /// overdue item preempts within the same queue — original behavior, now per group.
+    #[restate_core::test]
+    async fn wrr_run_at_scheduling_unchanged() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+        let qid = test_qid(52_000);
+        let now = MillisSinceEpoch::now().as_u64();
+
+        let mut txn = rocksdb.transaction();
+        let future_key = enqueue_entry_with_run_at(
+            &mut txn,
+            &mut cache,
+            &qid,
+            1,
+            MillisSinceEpoch::new(now.saturating_add(60_000)),
+            None,
+        )
+        .await;
+        let overdue_key = enqueue_entry_with_run_at(
+            &mut txn,
+            &mut cache,
+            &qid,
+            2,
+            MillisSinceEpoch::new(now.saturating_sub(1_000)),
+            None,
+        )
+        .await;
+        txn.commit().await.expect("commit should succeed");
+        drop(txn);
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = create_scheduler(db, &cache).await;
+
+        let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
+        else {
+            panic!("expected decision");
+        };
+        let keys = run_keys(&decision);
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0], overdue_key);
+        assert_ne!(keys[0], future_key);
+        scheduler.assert_scheduler_invariants();
+    }
+
+    /// External removal (RemovedFromInbox) of a queue's only item makes the queue
+    /// dormant; its group must not retain a stale handle and the sibling queue in the
+    /// same group keeps dispatching.
+    #[restate_core::test]
+    async fn wrr_external_removal_purges_handle_from_group() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+        const BASE: u64 = 54_000;
+        let service = ServiceName::new("removal");
+        let qid_kept = test_qid(BASE);
+        let qid_removed = test_qid(BASE + 1);
+
+        let mut txn = rocksdb.transaction();
+        enqueue_entry_for_service(&mut txn, &mut cache, &qid_kept, &service, 1, None).await;
+        let removed_key =
+            enqueue_entry_for_service(&mut txn, &mut cache, &qid_removed, &service, 2, None).await;
+        txn.commit().await.expect("commit should succeed");
+        drop(txn);
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = scheduler_with_resolver(
+            db,
+            &cache,
+            create_resource_manager(db, Concurrency::new_unlimited()).await,
+            test_weight_resolver(),
+        );
+
+        // Externally remove the only item of the second queue.
+        let mut txn = rocksdb.transaction();
+        let mut events = Vec::new();
+        let at = UniqueTimestamp::try_from(2_000u64).unwrap();
+        let header = txn
+            .get_vqueue_entry_status(qid_removed.partition_key(), removed_key.entry_id())
+            .await
+            .expect("lookup succeeds")
+            .expect("entry exists");
+        let mut vqueue = VQueue::get_or_create_vqueue(
+            at,
+            &qid_removed,
+            &mut txn,
+            &mut cache,
+            Some(&mut events),
+            &service,
+            &None,
+            &LimitKey::None,
+            &None,
+        )
+        .await
+        .expect("vqueue exists");
+        vqueue.end(
+            at,
+            &header,
+            restate_storage_api::vqueue_table::Status::Killed,
+            Duration::ZERO,
+        );
+        txn.commit().await.expect("commit should succeed");
+        drop(txn);
+        for event in events.drain(..) {
+            scheduler.on_inbox_event(cache.view(), event);
+        }
+        scheduler.assert_scheduler_invariants();
+
+        // Only the kept queue's item is dispatched; the removed one never appears.
+        let counts = drain_and_count(&mut scheduler, &cache, BASE, 1, 10);
+        assert_eq!(counts, vec![1], "only the kept queue dispatches");
+        assert!(matches!(
+            poll_scheduler(Pin::new(&mut scheduler), cache.view()),
+            Poll::Pending
+        ));
+        scheduler.assert_scheduler_invariants();
+    }
+
+    /// Vqueues without a service link land in the shared unlinked group and are
+    /// scheduled normally alongside service-linked groups.
+    #[restate_core::test]
+    async fn wrr_unlinked_and_linked_queues_coexist() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+        const BASE: u64 = 56_000;
+
+        let mut txn = rocksdb.transaction();
+        // enqueue_entry uses the fixed service "test" — plus one differently-named
+        // service, exercising two coexisting groups with default weight
+        enqueue_entry(&mut txn, &mut cache, &test_qid(BASE), 1, 0, None).await;
+        let other = ServiceName::new("other");
+        enqueue_entry_for_service(
+            &mut txn,
+            &mut cache,
+            &test_qid(BASE + 1000),
+            &other,
+            2,
+            None,
+        )
+        .await;
+        txn.commit().await.expect("commit should succeed");
+        drop(txn);
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = scheduler_with_resolver(
+            db,
+            &cache,
+            create_resource_manager(db, Concurrency::new_unlimited()).await,
+            test_weight_resolver(),
+        );
+
+        let counts = drain_and_count(&mut scheduler, &cache, BASE, 2, 10);
+        assert_eq!(counts, vec![1, 1], "both groups fully served");
+        scheduler.assert_scheduler_invariants();
+    }
+
+    /// Higher-priority (earlier run_at) items still preempt within a queue between
+    /// polls — regression guard for the original `higher_priority_preempts` behavior
+    /// under the group ring.
+    #[restate_core::test]
+    async fn wrr_priority_preemption_within_group_unchanged() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+        let qid = test_qid(58_000);
+        let service = ServiceName::new("preempt");
+        let mut events = Vec::new();
+
+        let mut txn = rocksdb.transaction();
+        for i in 1..=3 {
+            enqueue_entry_for_service(&mut txn, &mut cache, &qid, &service, i, None).await;
+        }
+        txn.commit().await.expect("commit should succeed");
+        drop(txn);
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = DRRScheduler::new(
+            NonZeroU32::new(100).unwrap(),
+            NonZeroU32::new(2).unwrap(),
+            create_resource_manager(db, Concurrency::new_unlimited()).await,
+            db.clone(),
+            cache.view(),
+            test_weight_resolver(),
+        );
+
+        let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
+        else {
+            panic!("expected decision");
+        };
+        assert_eq!(decision.num_run(), 2);
+        scheduler.assert_scheduler_invariants();
+
+        // enqueue a fourth item while the first two are in flight
+        let mut txn = rocksdb.transaction();
+        events.clear();
+        enqueue_entry_for_service(&mut txn, &mut cache, &qid, &service, 4, Some(&mut events)).await;
+        txn.commit().await.expect("commit should succeed");
+        drop(txn);
+        for event in events.drain(..) {
+            scheduler.on_inbox_event(cache.view(), event);
+        }
+
+        let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
+        else {
+            panic!("expected decision");
+        };
+        assert_eq!(decision.num_run(), 2, "remaining items keep flowing");
+        scheduler.assert_scheduler_invariants();
+    }
+
+    /// End-to-end: under invoker-concurrency pressure (limit 1), the WRR waiter
+    /// list — not arrival order — decides who acquires freed permits. Payment
+    /// queues arrive first and outnumber the batcher 6:2; a FIFO waiter list
+    /// would grant all payment permits before any batcher permit. The batcher
+    /// must instead be dispatched within the first WRR cycle after a release.
+    #[restate_core::test]
+    async fn wrr_waiter_list_decides_dispatch_under_concurrency_pressure() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+        const BASE: u64 = 62_000;
+        let payment = ServiceName::new("payment-w1");
+        let batcher = ServiceName::new("batcher-w10");
+
+        let mut txn = rocksdb.transaction();
+        // payments enqueued FIRST — they flood the waiter list on the first poll
+        for qi in 0..6u64 {
+            let qid = test_qid(BASE + qi);
+            enqueue_entry_for_service(&mut txn, &mut cache, &qid, &payment, qi as u8 + 1, None)
+                .await;
+        }
+        for qi in 0..2u64 {
+            let qid = test_qid(BASE + 1000 + qi);
+            enqueue_entry_for_service(&mut txn, &mut cache, &qid, &batcher, 50 + qi as u8, None)
+                .await;
+        }
+        txn.commit().await.expect("commit should succeed");
+        drop(txn);
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = DRRScheduler::new(
+            NonZeroU32::new(100).unwrap(),
+            NonZeroU32::new(1).unwrap(),
+            create_resource_manager_full(
+                db,
+                Concurrency::new(Some(NonZeroUsize::new(1).unwrap())),
+                None,
+                suffix_weight_resolver(),
+            )
+            .await,
+            db.clone(),
+            cache.view(),
+            suffix_weight_resolver(),
+        );
+
+        // Dispatch one item at a time; after each Run, confirm it to release
+        // the single permit, then record which service the next dispatch hits.
+        let mut order: Vec<&str> = Vec::new();
+        for _ in 0..8 {
+            let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
+            else {
+                panic!("expected a decision, got Pending after {order:?}");
+            };
+            assert_eq!(decision.num_run(), 1);
+            let qid = decision.qids.keys().next().unwrap().clone();
+            let service = if qid.partition_key() >= BASE + 1000 {
+                "batcher"
+            } else {
+                "payment"
+            };
+            order.push(service);
+            scheduler.assert_scheduler_invariants();
+
+            // release the permit so the waiter list decides the next grant
+            let key = run_keys(&decision)[0];
+            let metas = cache.view();
+            let handle = metas.handle_for(&qid).unwrap();
+            let slot = metas.get(handle).unwrap();
+            let resources = Pin::new(&mut scheduler).confirm_run_attempt(handle, slot, &key);
+            assert!(resources.is_some());
+            drop(resources);
+        }
+
+        assert_eq!(order.len(), 8, "all queues eventually dispatched");
+        assert_eq!(
+            order.iter().filter(|s| **s == "batcher").count(),
+            2,
+            "both batcher queues dispatched"
+        );
+        let first_batcher = order.iter().position(|s| *s == "batcher").unwrap();
+        assert!(
+            first_batcher <= 2,
+            "batcher must be granted within the first WRR cycle despite arriving \
+             last behind 6 payment queues; order: {order:?}"
+        );
+    }
+
+    /// Scope groups: scoped queues of DIFFERENT services schedule as ONE group
+    /// whose weight comes from the (rule-fed) scope-weights map, competing
+    /// against unscoped per-service groups at weight 1 — the end-to-end shape
+    /// of `restate rules set payment --weight 10` + scope inheritance.
+    #[restate_core::test]
+    async fn wrr_scope_group_spans_services_with_rule_weight() {
+        use crate::scheduler::{ScopeWeights, scope_weight_resolver};
+        use restate_types::Scope;
+
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+        const BASE: u64 = 64_000;
+        let payment_scope = Scope::try_non_interned("payment").unwrap();
+
+        let mut txn = rocksdb.transaction();
+        // scoped: two different services under ONE scope, 20 queues total
+        for qi in 0..10u64 {
+            for (si, svc) in ["PaymentWorkflow", "SepaService"].iter().enumerate() {
+                let qid = test_qid(BASE + si as u64 * 100 + qi);
+                let service = ServiceName::new(svc);
+                let at = UniqueTimestamp::try_from(1000u64 + qi + si as u64 * 50).unwrap();
+                let entry_id = EntryId::new(
+                    EntryKind::Invocation,
+                    [(si as u8) * 100 + qi as u8 + 1; EntryId::REMAINDER_LEN],
+                );
+                let run_at = MillisSinceEpoch::new(BASE_RUN_AT_MS);
+                let mut vqueue = VQueue::get_or_create_vqueue(
+                    at,
+                    &qid,
+                    &mut txn,
+                    &mut cache,
+                    None::<&mut Vec<VQueueEvent>>,
+                    &service,
+                    &Some(payment_scope.clone()),
+                    &LimitKey::None,
+                    &None,
+                )
+                .await
+                .expect("vqueue should be created");
+                vqueue.enqueue_new(
+                    at,
+                    qi + si as u64 * 100,
+                    Some(run_at),
+                    entry_id,
+                    EntryMetadata::default(),
+                );
+            }
+        }
+        // unscoped competitor: one service, 20 queues
+        for qi in 0..20u64 {
+            let qid = test_qid(BASE + 1000 + qi);
+            enqueue_entry_for_service(
+                &mut txn,
+                &mut cache,
+                &qid,
+                &ServiceName::new("indexer"),
+                200 + qi as u8,
+                None,
+            )
+            .await;
+        }
+        txn.commit().await.expect("commit should succeed");
+        drop(txn);
+
+        // rule-fed weights: scope "payment" -> 10
+        let weights = ScopeWeights::default();
+        weights
+            .write()
+            .unwrap()
+            .insert("payment".to_owned(), NonZeroU32::new(10).unwrap());
+        let resolver = scope_weight_resolver(weights);
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = DRRScheduler::new(
+            NonZeroU32::new(100).unwrap(),
+            NonZeroU32::new(1).unwrap(),
+            create_resource_manager(db, Concurrency::new_unlimited()).await,
+            db.clone(),
+            cache.view(),
+            resolver,
+        );
+
+        // one full WRR cycle = 10 (scope) + 1 (indexer service group) slots
+        let mut scope_count = 0usize;
+        let mut service_count = 0usize;
+        for _ in 0..22 {
+            let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
+            else {
+                panic!("expected a decision");
+            };
+            for qid in decision.qids.keys() {
+                if qid.partition_key() >= BASE + 1000 {
+                    service_count += 1;
+                } else {
+                    scope_count += 1;
+                }
+            }
+            scheduler.assert_scheduler_invariants();
+        }
+        assert_eq!(
+            (scope_count, service_count),
+            (20, 2),
+            "scope group (weight 10, spanning two services) gets 10 slots per cycle \
+             vs 1 for the unscoped service group"
+        );
+    }
+
+    /// Rapid enqueue/drain cycles across many services: groups are created and dropped
+    /// repeatedly without desyncing ring and map.
+    #[restate_core::test]
+    async fn wrr_repeated_group_churn_invariants() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+        const BASE: u64 = 60_000;
+        let db = rocksdb.partition_db().clone();
+
+        let mut scheduler = scheduler_with_resolver(
+            &db,
+            &cache,
+            create_resource_manager(&db, Concurrency::new_unlimited()).await,
+            suffix_weight_resolver(),
+        );
+
+        for round in 0..5u64 {
+            let mut txn = rocksdb.transaction();
+            let mut events = Vec::new();
+            for si in 0..3u64 {
+                let service = ServiceName::new(&format!("churn{si}-w{}", si + 1));
+                let qid = test_qid(BASE + si * 1000 + round);
+                enqueue_entry_for_service(
+                    &mut txn,
+                    &mut cache,
+                    &qid,
+                    &service,
+                    (round * 10 + si) as u8 + 1,
+                    Some(&mut events),
+                )
+                .await;
+            }
+            txn.commit().await.expect("commit should succeed");
+            drop(txn);
+            for event in events.drain(..) {
+                scheduler.on_inbox_event(cache.view(), event);
+            }
+
+            let counts = drain_and_count(&mut scheduler, &cache, BASE, 3, 20);
+            assert_eq!(counts, vec![1, 1, 1], "round {round}: all services served");
+        }
+        assert!(matches!(
+            poll_scheduler(Pin::new(&mut scheduler), cache.view()),
+            Poll::Pending
+        ));
+        scheduler.assert_scheduler_invariants();
     }
 }

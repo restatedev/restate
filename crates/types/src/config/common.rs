@@ -662,6 +662,14 @@ experimental! {
     /// Since v1.7.0
     scoped_virtual_objects,
 
+    /// # Enables scope inheritance along the call chain
+    ///
+    /// When enabled, a child invocation created via ctx.call/ctx.send inherits
+    /// its caller's scope when the child target carries no scope of its own,
+    /// so scope-level rules govern the whole call tree rooted at a scoped
+    /// ingress invocation. Requires `vqueues`.
+    scope_inheritance,
+
     /// # Enables Kafka header support for scoped invocations
     ///
     /// When enabled, Kafka subscriptions read `x-restate-scope` and

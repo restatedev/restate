@@ -483,6 +483,7 @@ mod tests {
         RuleUpsert {
             limits: UserLimits {
                 concurrency: NonZeroU32::new(concurrency),
+                scheduling_weight: None,
             },
             description: None,
             disabled: false,
@@ -516,6 +517,7 @@ mod tests {
             PersistedRule {
                 limits: UserLimits {
                     concurrency: NonZeroU32::new(1000),
+                    scheduling_weight: None,
                 },
                 description: Some("global default".to_owned()),
                 disabled: false,
@@ -528,6 +530,7 @@ mod tests {
             PersistedRule {
                 limits: UserLimits {
                     concurrency: NonZeroU32::new(10),
+                    scheduling_weight: None,
                 },
                 description: None,
                 disabled: true,

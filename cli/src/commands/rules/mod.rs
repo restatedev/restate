@@ -53,6 +53,8 @@ pub(crate) struct RuleRow {
     #[serde(default)]
     pub concurrency: Option<u32>,
     #[serde(default)]
+    pub scheduling_weight: Option<u32>,
+    #[serde(default)]
     pub description: Option<String>,
     pub disabled: bool,
     pub version: u32,
@@ -64,6 +66,11 @@ impl RuleRow {
     /// The concurrency limit as a `NonZeroU32` (the runtime shape).
     fn concurrency(&self) -> Option<NonZeroU32> {
         self.concurrency.and_then(NonZeroU32::new)
+    }
+
+    /// The scheduling weight as a `NonZeroU32` (the runtime shape).
+    fn scheduling_weight(&self) -> Option<std::num::NonZeroU32> {
+        self.scheduling_weight.and_then(std::num::NonZeroU32::new)
     }
 }
 
@@ -88,7 +95,7 @@ pub(crate) async fn fetch_rule(
     canonical_pattern: &str,
 ) -> Result<Option<RuleRow>> {
     let query = format!(
-        "SELECT pattern, concurrency, description, disabled, version, last_modified \
+        "SELECT pattern, concurrency, scheduling_weight, description, disabled, version, last_modified \
          FROM sys_rules WHERE pattern = '{}'",
         escape_sql(canonical_pattern)
     );
@@ -142,7 +149,8 @@ pub(crate) async fn toggle_disabled(env: &CliEnv, pattern: &str, disabled: bool)
     let client = AdminClient::new(env).await?;
     let request = UpsertRuleRequest {
         pattern,
-        limits: UserLimits::new(current.concurrency()),
+        limits: UserLimits::new(current.concurrency())
+            .with_scheduling_weight(current.scheduling_weight()),
         description: current.description.clone(),
         disabled,
         precondition: Precondition::Matches(Version::from(current.version)),

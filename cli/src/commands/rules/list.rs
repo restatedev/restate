@@ -41,7 +41,7 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     let client = DataFusionHttpClient::new(env).await?;
     let rows: Vec<RuleRow> = client
         .run_json_query(
-            "SELECT pattern, concurrency, description, disabled, version, last_modified \
+            "SELECT pattern, concurrency, scheduling_weight, description, disabled, version, last_modified \
              FROM sys_rules ORDER BY pattern"
                 .to_string(),
         )
@@ -57,13 +57,14 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
         table.set_styled_header(vec![
             "PATTERN",
             "CONCURRENCY",
+            "WEIGHT",
             "DISABLED",
             "DESCRIPTION",
             "VERSION",
             "LAST MODIFIED",
         ]);
     } else {
-        table.set_styled_header(vec!["PATTERN", "CONCURRENCY", "DISABLED"]);
+        table.set_styled_header(vec!["PATTERN", "CONCURRENCY", "WEIGHT", "DISABLED"]);
     }
 
     for row in rows {
@@ -73,6 +74,7 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
             table.add_row(vec![
                 Cell::new(row.pattern),
                 Cell::new(render_concurrency(row.concurrency)),
+                Cell::new(row.scheduling_weight.unwrap_or(1)),
                 Cell::new(disabled),
                 Cell::new(row.description.unwrap_or_default()),
                 Cell::new(row.version),
@@ -82,6 +84,7 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
             table.add_row(vec![
                 Cell::new(row.pattern),
                 Cell::new(render_concurrency(row.concurrency)),
+                Cell::new(row.scheduling_weight.unwrap_or(1)),
                 Cell::new(disabled),
             ]);
         }
