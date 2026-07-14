@@ -59,7 +59,7 @@ pub const PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS: &str =
     "restate.partition.record_committed_to_read_latency.seconds";
 
 pub const PARTITION_SHUFFLE_MESSAGE_COUNT: &str = "restate.partition.shuffle.message.count";
-pub const PARTITION_SHUFFLE_INFLIGHT_COUNT: &str = "restate.partition.shuffle.inflight.count";
+pub const PARTITION_SHUFFLE_INFLIGHT_COUNT: &str = "restate.partition.shuffle.inflight";
 
 pub(crate) fn describe_metrics() {
     describe_gauge!(
