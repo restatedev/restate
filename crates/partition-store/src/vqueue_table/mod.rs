@@ -35,7 +35,7 @@ use tracing::error;
 
 use restate_rocksdb::{Priority, StorageTaskKind};
 use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
+use restate_storage_api::vqueue_table::filters::{ScanEntryIdFilter, ScanMetaFilter};
 use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaRef};
 use restate_storage_api::vqueue_table::{
     EntryKey, EntryMetadata, EntryStatusHeader, EntryValue, ReadVQueueTable, ScanVQueueTable,
@@ -398,31 +398,133 @@ impl ReadVQueueTable for PartitionStoreTransaction<'_> {
 }
 
 impl ScanVQueueMetaTable for PartitionStore {
-    fn for_each_vqueue_meta<
+    fn for_each_vqueue_meta<F>(
+        &self,
+        filter: ScanMetaFilter,
+        mut f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send>
+    where
         F: for<'a> FnMut((&'a VQueueId, &'a VQueueMetaRef<'a>)) -> std::ops::ControlFlow<()>
             + Send
             + Sync
             + 'static,
-    >(
-        &self,
-        range: KeyRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send> {
-        self.iterator_for_each(
-            "df-vqueue-meta",
-            Priority::Low,
-            TableScan::FullScanPartitionKeyRange::<MetaKey>(range),
-            move |(mut key, value)| {
-                let meta_key = break_on_err(MetaKey::deserialize_from(&mut key))?;
-                let meta = break_on_err(
-                    VQueueMetaRef::decode_borrowed(value).map_err(StorageError::BilrostDecode),
-                )?;
+    {
+        // Fast path: each vqueue id maps to exactly one fixed-length key, so a
+        // bounded set is served via a single batched multi-get instead of
+        // scanning every metadata row in the partition-key range.
+        if let ScanMetaFilter::MetaIdSet(ids) = filter {
+            return Ok(multi_get_vqueue_meta(self, ids, f).boxed());
+        }
 
-                let (vqueue_id,) = meta_key.split();
-                f((&vqueue_id, &meta)).map_break(Ok)
-            },
-        )
-        .map_err(|_| StorageError::OperationalError)
+        let scan = match filter {
+            ScanMetaFilter::PartitionKey(range) => {
+                TableScan::FullScanPartitionKeyRange::<MetaKey>(range)
+            }
+            ScanMetaFilter::MetaIdRange(range) => {
+                let start = MetaKey::from(&range.start);
+                let end = MetaKey::from(&range.last);
+                TableScan::KeyRangeInclusiveInSinglePartition(self.partition_id(), start, end)
+            }
+            ScanMetaFilter::MetaIdSet(_) => unreachable!("handled above"),
+        };
+
+        let scan_fut = self
+            .iterator_for_each(
+                "df-vqueue-meta",
+                Priority::Low,
+                scan,
+                move |(mut key, value)| {
+                    let meta_key = break_on_err(MetaKey::deserialize_from(&mut key))?;
+                    let meta = break_on_err(
+                        VQueueMetaRef::decode_borrowed(value).map_err(StorageError::BilrostDecode),
+                    )?;
+
+                    let (vqueue_id,) = meta_key.split();
+                    f((&vqueue_id, &meta)).map_break(Ok)
+                },
+            )
+            .map_err(|_| StorageError::OperationalError)?;
+
+        Ok(scan_fut.boxed())
+    }
+}
+
+/// Serves a vqueue-metadata lookup for a known set of ids via a single
+/// `batched_multi_get`, dispatched on the storage background thread-pool.
+///
+/// `ids` is already sorted in on-disk key order (`VQueueId`'s `Ord` matches its
+/// key byte encoding, which is prefixed by the partition key), which is what
+/// `batched_multi_get_cf_opt`'s `sorted_input=true` requires.
+///
+/// `MetaKey`s are fixed-length, so all of them are packed back-to-back into a
+/// single buffer and handed to the multi-get as `chunks_exact` slices — one
+/// allocation for the whole key set instead of a `BytesMut` per key.
+fn multi_get_vqueue_meta<F>(
+    store: &PartitionStore,
+    ids: BTreeSet<VQueueId>,
+    mut f: F,
+) -> impl Future<Output = Result<()>> + Send
+where
+    F: for<'a> FnMut((&'a VQueueId, &'a VQueueMetaRef<'a>)) -> std::ops::ControlFlow<()>
+        + Send
+        + Sync
+        + 'static,
+{
+    const KEY_LEN: usize = MetaKey::serialized_length_fixed();
+
+    let rocksdb = store.partition_db().rocksdb().clone();
+    let cf_name: restate_rocksdb::CfName = store.partition_db().partition().cf_name().into();
+
+    async move {
+        rocksdb
+            .run_background_op(
+                "df-vqueue-meta",
+                StorageTaskKind::MultiGet,
+                Priority::Low,
+                move |raw_db| -> Result<()> {
+                    let Some(cf) = raw_db.cf_handle(cf_name.as_str()) else {
+                        return Err(StorageError::Generic(anyhow::anyhow!(
+                            "column family {cf_name} not found for vqueue meta multi-get"
+                        )));
+                    };
+
+                    // Pack every fixed-length key contiguously into one buffer.
+                    let mut key_buf = BytesMut::with_capacity(ids.len() * KEY_LEN);
+                    for id in &ids {
+                        EncodeTableKey::serialize_to(&MetaKey::from(id), &mut key_buf);
+                    }
+
+                    let mut readopts = ReadOptions::default();
+                    readopts.set_async_io(true);
+
+                    let results = raw_db.batched_multi_get_cf_opt(
+                        &cf,
+                        key_buf.chunks_exact(KEY_LEN),
+                        true,
+                        &readopts,
+                    );
+                    // `ids` and `key_buf` chunks are in the same order, so we can
+                    // zip the results straight back onto the ids.
+                    for (id, result) in ids.iter().zip(results) {
+                        let Some(value) = result.map_err(|e| StorageError::Generic(e.into()))?
+                        else {
+                            // id not present; skip.
+                            continue;
+                        };
+
+                        let meta = VQueueMetaRef::decode_borrowed(value.as_ref())
+                            .map_err(StorageError::BilrostDecode)?;
+
+                        if f((id, &meta)).is_break() {
+                            break;
+                        }
+                    }
+
+                    Ok(())
+                },
+            )
+            .await
+            .map_err(|_| StorageError::OperationalError)?
     }
 }
 
