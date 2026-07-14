@@ -63,6 +63,13 @@ pub(crate) struct PartitionedTableProvider<T, S> {
     partition_scanner: T,
     partition_key_extractor: FirstMatchingPartitionKeyExtractor,
     statistics: Statistics,
+    /// When set, a point-read predicate (`col IN (...)`) fans out to one physical
+    /// partition per restate partition (covering its whole key range) instead of
+    /// one per requested key. This lets a scanner that serves point reads with a
+    /// batched multi-get actually batch every requested key that lands in a
+    /// partition, rather than receiving them one key at a time. Only enable it
+    /// for tables whose scanner batches (one row per key).
+    group_point_reads_by_partition: bool,
 }
 
 impl<T, S> PartitionedTableProvider<T, S> {
@@ -81,11 +88,20 @@ impl<T, S> PartitionedTableProvider<T, S> {
             partition_scanner,
             partition_key_extractor,
             statistics,
+            group_point_reads_by_partition: false,
         }
     }
 
     pub(crate) fn with_statistics(self, statistics: Statistics) -> Self {
         Self { statistics, ..self }
+    }
+
+    /// See [`PartitionedTableProvider::group_point_reads_by_partition`].
+    pub(crate) fn with_grouped_point_reads(self) -> Self {
+        Self {
+            group_point_reads_by_partition: true,
+            ..self
+        }
     }
 }
 
@@ -183,10 +199,28 @@ where
             .flat_map(|(partition_id, partition)| {
                 match &partition_keys {
                     // User requested a full scan of all partitions, return one physical partition per restate partition
-                    None => itertools::Either::Left([(partition_id, partition)].into_iter()),
+                    None => itertools::Either::Left(Some((partition_id, partition)).into_iter()),
                     // User requested too many point reads; for safety reasons we will ignore them
                     Some(partition_keys) if partition_keys.len() > 4096 => {
-                        itertools::Either::Left([(partition_id, partition)].into_iter())
+                        itertools::Either::Left(Some((partition_id, partition)).into_iter())
+                    }
+                    // Point reads, grouped mode: emit one physical partition per restate
+                    // partition that holds at least one requested key, covering the span
+                    // `[first_key, last_key]` of the requested keys landing in it. The scanner's
+                    // filter re-derives (from the same predicate) every requested key in that
+                    // span, so a batching scanner sees them together instead of one key at a
+                    // time. A single requested key collapses to `[k, k]` — identical to the
+                    // per-key path — so single point lookups don't regress.
+                    Some(partition_keys) if self.group_point_reads_by_partition => {
+                        let mut keys = partition_keys.range(partition.key_range).copied();
+                        let selected = keys.next().map(|first| {
+                            let last = keys.next_back().unwrap_or(first);
+                            (
+                                partition_id,
+                                Partition::new(partition_id, KeyRange::new(first, last)),
+                            )
+                        });
+                        itertools::Either::Left(selected.into_iter())
                     }
                     // User requested a list of point reads
                     Some(partition_keys) => {
