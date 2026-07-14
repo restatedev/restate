@@ -60,7 +60,7 @@ pub(crate) fn register_self(
         sys_vqueue_entry_status_sort_order(),
         remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
         FirstMatchingPartitionKeyExtractor::default()
-            .with_vqueue_entry_id("entry_id")
+            .with_grouped_vqueue_entry_id("entry_id")
             .with_partitioned_resource_id::<VQueueId>("vqueue_id"),
     )
     .with_statistics(statistics.build());
