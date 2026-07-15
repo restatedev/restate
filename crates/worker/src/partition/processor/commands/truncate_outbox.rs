@@ -99,7 +99,7 @@ mod tests {
             partition_key_range: Keys::None,
         });
         let record = DataRecord::new(
-            NanosSinceEpoch::UNIX_EPOCH,
+            NanosSinceEpoch::RESTATE_EPOCH,
             Keys::None,
             Lsn::OLDEST,
             envelope,

@@ -18,17 +18,21 @@ restate-clock = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-limiter = { workspace = true }
 restate-memory = { workspace = true }
+# Used only for migrations
+restate-partition-store = { workspace = true }
 restate-platform = { workspace = true }
 restate-rocksdb = { workspace = true }
-restate-util-bytecount = { workspace = true, features = ["serde"] }
 restate-storage-api = { workspace = true }
-restate-util-time = { workspace = true }
 restate-types = { workspace = true }
+restate-util-bytecount = { workspace = true, features = ["serde"] }
 restate-util-string = { workspace = true }
+restate-util-time = { workspace = true }
 restate-worker-api = { workspace = true }
 
+anyhow = { workspace = true }
 arrayvec = { workspace = true }
 bilrost = { workspace = true, features = ["smallvec"] }
+bytes = { workspace = true }
 derive_more = { workspace = true, features = ["debug", "is_variant"] }
 enum-map = { workspace = true }
 gardal = { workspace = true, features = ["tokio"] }
@@ -36,6 +40,7 @@ hashbrown = { workspace = true }
 itertools = { workspace = true }
 metrics = { workspace = true }
 pin-project = { workspace = true }
+rocksdb = { workspace = true }
 sha2 = { workspace = true }
 slotmap = { workspace = true }
 smallvec = { workspace = true, features = ["const_new"] }
