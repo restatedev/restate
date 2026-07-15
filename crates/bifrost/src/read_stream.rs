@@ -370,6 +370,23 @@ impl Stream for LogReadStream {
                         panic!("substream must be set at this point");
                     };
 
+                    // A prefix-trim may have clipped the chain at or below our read_pointer
+                    // while we were parked in Reading (e.g. the segment under us was dropped
+                    // from the chain). A substream sitting on a known sealed tail only observes
+                    // trims of its own loglet, not a chain-level prefix-trim that drops the
+                    // whole segment, so we must consult the chain here — the same check the
+                    // FindingLoglet / AwaitingReconfiguration / AwaitingOrSealChain states
+                    // already perform via `check_chain`.
+                    let trimmed_to = match chain.find_segment_for_lsn(*this.read_pointer) {
+                        MaybeSegment::Trim { next_base_lsn } => Some(next_base_lsn),
+                        MaybeSegment::Some(_) => None,
+                    };
+                    if let Some(next_base_lsn) = trimmed_to {
+                        let gap = deliver_trim_gap(&mut this, next_base_lsn, bifrost_inner);
+                        update_shared_state(&this);
+                        return Poll::Ready(Some(Ok(gap)));
+                    }
+
                     // If the loglet's `tail_lsn` is known, this is the tail we should always respect.
                     match substream.tail_lsn() {
                         // Next LSN is beyond the boundaries of this substream
