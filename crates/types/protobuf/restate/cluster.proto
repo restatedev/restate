@@ -51,6 +51,18 @@ enum RunMode {
   FOLLOWER = 2;
 }
 
+// Since v1.7.3 (if missing, use effective_mode)
+enum DetailedRunMode {
+  DetailedRunMode_UNKNOWN = 0;
+  DetailedRunMode_CANDIDATE = 1;
+  DetailedRunMode_FOLLOWER = 2;
+  // The node is leader but is currently performing data migrations or enabling
+  // certain features. During this time, the node is not be accepting RPC requests
+  // until it completes the process and transitions to Leader (or Follower).
+  DetailedRunMode_BECOMING_LEADER = 3;
+  DetailedRunMode_LEADER = 4;
+}
+
 enum ReplayStatus {
   ReplayStatus_UNKNOWN = 0;
   STARTING = 1;
@@ -80,6 +92,7 @@ message PartitionProcessorStatus {
   repeated string enabled_features = 15;
   // Partition-store on-disk storage version (StorageVersion discriminant).
   optional uint32 storage_version = 16;
+  DetailedRunMode detailed_effective_mode = 17;
 }
 
 message ReplicationProperty { string replication_property = 1; }

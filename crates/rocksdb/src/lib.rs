@@ -47,7 +47,7 @@ pub use self::perf::{RocksDbReadPerfGuard, RocksDbWritePerfGuard};
 pub use self::rock_access::RocksAccess;
 
 use self::background::StorageTask;
-use self::background::StorageTaskKind;
+pub use self::background::StorageTaskKind;
 use self::metric_definitions::*;
 
 pub type RawRocksDb = rocksdb::DBWithThreadMode<rocksdb::MultiThreaded>;
@@ -394,6 +394,40 @@ impl RocksDb {
             .unwrap();
 
         manager.spawn(task)
+    }
+
+    /// Runs a blocking read operation on the storage background thread-pool and
+    /// awaits its result.
+    ///
+    /// Unlike [`Self::run_background_iterator`], this is for bounded operations
+    /// (e.g. a batched multi-get) that run to completion and produce a single
+    /// value, rather than streaming rows. The op receives the raw rocksdb handle
+    /// and must not let any borrowed value (pinnable slices, cf handles) escape
+    /// its own scope, since those borrow the database.
+    #[tracing::instrument(skip_all, fields(db = %self.name()))]
+    pub async fn run_background_op<OP, R>(
+        self: Arc<Self>,
+        name: &'static str,
+        kind: StorageTaskKind,
+        priority: Priority,
+        op: OP,
+    ) -> Result<R, ShutdownError>
+    where
+        OP: FnOnce(&RawRocksDb) -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        let manager = self.manager;
+        let task = StorageTask::default()
+            .kind(kind)
+            .priority(priority)
+            .op(move || {
+                let _x = RocksDbReadPerfGuard::new(name);
+                op(self.db.as_raw_db())
+            })
+            .build()
+            .unwrap();
+
+        manager.async_spawn(task).await
     }
 
     #[tracing::instrument(skip_all, fields(db = %self.name()))]

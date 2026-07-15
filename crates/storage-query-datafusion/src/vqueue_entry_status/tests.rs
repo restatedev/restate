@@ -32,6 +32,93 @@ use restate_util_string::ToReString;
 use crate::mocks::*;
 use crate::row;
 
+/// Regression: `NOT IN (> 3 values)` survives DataFusion's inline-list
+/// simplifier as a negated `InListExpr` (lists of <= 3 get expanded to
+/// `!=`/`AND` chains, which never reach the id extractor). The filter must not
+/// turn the *excluded* IDs into a multi-get lookup set — doing so fetches
+/// exactly the rows the residual predicate then drops, returning nothing.
+/// Four values is the smallest list that reaches this path.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn vqueue_entry_status_not_in_returns_non_excluded_rows() {
+    use datafusion::arrow::array::Array;
+
+    let mut engine = MockQueryEngine::create().await;
+    let qid = VQueueId::custom(3337, "df-vqueue-not-in");
+
+    let created_at =
+        UniqueTimestamp::try_from_unix_millis(MillisSinceEpoch::new(1_744_010_000_000)).unwrap();
+    let metadata = EntryMetadata {
+        deployment: None,
+        needed_memory: None,
+        retry_attempts: 0,
+        retry_count_since_last_stored_command: 0,
+    };
+
+    let mut ids = Vec::new();
+    let mut tx = engine.partition_store().transaction();
+    // Non-zero uuid bytes: an all-zero invocation uuid is rejected.
+    for i in 1..=6u8 {
+        let entry_id = EntryId::new(EntryKind::Invocation, [i; 16]);
+        let key = EntryKey::new(
+            false,
+            MillisSinceEpoch::new(1_744_010_000_000),
+            i as u64,
+            entry_id,
+        );
+        let stats = EntryStatistics::new(created_at, key.run_at());
+        tx.put_vqueue_entry_status(
+            &qid,
+            Stage::Running,
+            &key,
+            &metadata,
+            stats,
+            Status::Started,
+        );
+        ids.push(key.entry_id().display(qid.partition_key()).to_string());
+    }
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    // Exclude the first four; expect the remaining two back.
+    let excluded = ids[0..4]
+        .iter()
+        .map(|id| format!("'{id}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let records = engine
+        .execute(format!(
+            "SELECT entry_id FROM sys_vqueue_entry_status \
+             WHERE entry_id NOT IN ({excluded})"
+        ))
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    let mut got: Vec<String> = records
+        .column_by_name("entry_id")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<LargeStringArray>()
+        .unwrap()
+        .iter()
+        .flatten()
+        .map(str::to_string)
+        .collect();
+    got.sort();
+
+    let mut expected = vec![ids[4].clone(), ids[5].clone()];
+    expected.sort();
+
+    assert_eq!(
+        got, expected,
+        "NOT IN must scan the whole partition and return the non-excluded rows"
+    );
+}
+
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_vqueue_entry_status_header_fields() {
     let mut engine = MockQueryEngine::create().await;

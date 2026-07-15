@@ -85,8 +85,9 @@ use restate_worker_api::invoker::capacity::InvokerCapacity;
 use restate_worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 
 use crate::metric_definitions::{
-    ERROR_STOP, FLARE_REASON_SNAPSHOT_UNAVAILABLE, GAP_STOP, PARTITION_BLOCKED_FLARE,
-    PARTITION_IS_EFFECTIVE_LEADER, PARTITION_START, REASON_LABEL, STARTUP_ERROR_STOP, TYPE_LABEL,
+    ERROR_STOP, FLARE_REASON_MIGRATION_BARRIER, FLARE_REASON_SNAPSHOT_UNAVAILABLE,
+    FLARE_REASON_VERSION_BARRIER, GAP_STOP, PARTITION_BLOCKED_FLARE, PARTITION_IS_EFFECTIVE_LEADER,
+    PARTITION_START, REASON_LABEL, STARTUP_ERROR_STOP, TYPE_LABEL,
 };
 use crate::metric_definitions::{NORMAL_STOP, PARTITION_TIME_SINCE_LAST_STATUS_UPDATE};
 use crate::metric_definitions::{NUM_ACTIVE_PARTITIONS, PARTITION_APPLIED_LSN_LAG};
@@ -607,6 +608,18 @@ where
                             );
 
                             match &result {
+                                Err(e @ ProcessorError::VersionBarrier { .. }) => {
+                                    counter!(PARTITION_STOP, PARTITION_LABEL => partition_id.to_string(), TYPE_LABEL => ERROR_STOP).increment(1);
+                                    gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL => partition_id.to_string(), REASON_LABEL => FLARE_REASON_VERSION_BARRIER).set(1);
+                                    error!(%partition_id, "Partition processor start error: {e}");
+                                    RestartDelay::MaxBackoff
+                                }
+                                Err(e @ ProcessorError::MigrationBarrier { .. }) => {
+                                    counter!(PARTITION_STOP, PARTITION_LABEL => partition_id.to_string(), TYPE_LABEL => ERROR_STOP).increment(1);
+                                    gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL => partition_id.to_string(), REASON_LABEL => FLARE_REASON_MIGRATION_BARRIER).set(1);
+                                    error!(%partition_id, "Partition processor start error: {e}");
+                                    RestartDelay::MaxBackoff
+                                }
                                 Err(ProcessorError::TrimGapEncountered {
                                     read_pointer: sequence_number,
                                     trim_gap_end: to_lsn,

@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use bytes::BytesMut;
 use bytestring::ByteString;
 use rocksdb::WriteBatch;
+use tokio_util::sync::CancellationToken;
 
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
@@ -82,11 +83,13 @@ async fn migrate_to_scoped_promise_table_moves_unscoped_promises_to_scoped_table
     txn.commit().await.expect("commit should succeed");
     drop(txn);
 
+    let cancel = CancellationToken::new();
     let config = Configuration::default();
     let mut ctx = MigrationContext::new(
         &config,
         rocksdb.partition_db(),
         rocksdb.partition_key_range(),
+        cancel,
     );
     migrate_to_scoped_promise_table::migrate_to_scoped_promise_table(&mut ctx)
         .expect("migration should succeed");

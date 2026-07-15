@@ -115,6 +115,31 @@ pub mod cluster {
         }
     }
 
+    impl From<RunMode> for DetailedRunMode {
+        fn from(value: RunMode) -> Self {
+            match value {
+                RunMode::Leader => DetailedRunMode::Leader,
+                RunMode::Follower => DetailedRunMode::Follower,
+                RunMode::Unknown => DetailedRunMode::Unknown,
+            }
+        }
+    }
+
+    impl PartialEq<RunMode> for DetailedRunMode {
+        fn eq(&self, other: &RunMode) -> bool {
+            match (self, other) {
+                (DetailedRunMode::Unknown, _) => false,
+                (_, RunMode::Unknown) => false,
+                (DetailedRunMode::Leader, RunMode::Leader) => true,
+                (DetailedRunMode::Follower, RunMode::Follower) => true,
+                (DetailedRunMode::Leader, RunMode::Follower)
+                | (DetailedRunMode::Follower, RunMode::Leader) => false,
+                (DetailedRunMode::BecomingLeader, _) => false,
+                (DetailedRunMode::Candidate, _) => false,
+            }
+        }
+    }
+
     impl From<crate::replication::ReplicationProperty> for ReplicationProperty {
         fn from(value: crate::replication::ReplicationProperty) -> Self {
             ReplicationProperty {

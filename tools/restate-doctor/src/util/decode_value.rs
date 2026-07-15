@@ -18,7 +18,7 @@ use bilrost::OwnedMessage;
 use restate_limiter::RuleBook;
 use restate_partition_store::fsm_table::PartitionStateMachineKey;
 use restate_partition_store::keys::{DecodeTableKey, KeyKind};
-use restate_partition_store::vqueue_table::{EntryStatusKey, InputPayloadKey, StatusHeaderRaw};
+use restate_partition_store::vqueue_table::{EntryStatusKey, InputPayloadKey};
 use restate_storage_api::deduplication_table::DedupSequenceNumber;
 use restate_storage_api::fsm_table::{CachedEpochMetadata, PartitionDurability, SequenceNumber};
 use restate_storage_api::inbox_table::InboxEntry;
@@ -31,8 +31,8 @@ use restate_storage_api::promise_table::Promise;
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::service_status_table::VirtualObjectStatus;
 use restate_storage_api::timer_table::Timer;
-use restate_storage_api::vqueue_table::EntryValue;
 use restate_storage_api::vqueue_table::metadata::VQueueMeta;
+use restate_storage_api::vqueue_table::{EntryValue, RawStatusHeader};
 use restate_types::SemanticRestateVersion;
 use restate_types::partitions::features::PersistedFeatures;
 use restate_types::state_mut::ExternalStateMutation;
@@ -232,7 +232,7 @@ fn decode_vqueue_entry_status(value: &[u8], key: &[u8]) -> DecodedValue {
     };
 
     let mut buf = value;
-    let header = match StatusHeaderRaw::decode_length_delimited(&mut buf) {
+    let header = match RawStatusHeader::decode_length_delimited(&mut buf) {
         Ok(header) => header,
         Err(e) => {
             return DecodedValue::error(

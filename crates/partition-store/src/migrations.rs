@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod migrate_to_locks_table;
+pub mod migrate_to_locks_table;
 mod migrate_to_scoped_promise_table;
 mod migrate_to_scoped_state_table;
 
@@ -18,6 +18,8 @@ use std::sync::Arc;
 use anyhow::Context;
 use bytes::BytesMut;
 use rocksdb::WriteBatch;
+use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use restate_clock::{AtomicStorage, HlcClock, WallClock};
@@ -27,6 +29,7 @@ use restate_types::config::Configuration;
 use restate_types::partitions::StorageVersion;
 use restate_types::sharding::KeyRange;
 use restate_types::sharding::subsharding::ShardPlan;
+use restate_util_time::DurationExt;
 
 use crate::fsm_table::append_storage_version_to_wb;
 use crate::{PartitionDb, PartitionStore, Result};
@@ -38,6 +41,16 @@ use self::migrate_to_scoped_state_table::{
     append_delete_state_data, migrate_to_scoped_state_table,
 };
 
+/// Migration error
+#[derive(Debug, thiserror::Error)]
+pub enum MigrationError {
+    #[error("migration barrier: {0}")]
+    MigrationBarrier(String),
+    #[error("migration was cancelled")]
+    MigrationCancelled,
+    #[error("error during migration: {0}")]
+    StorageError(#[from] StorageError),
+}
 /// Runs the migrations needed to transition the [`StorageVersion`] from current to the target
 /// storage version. A failure can leave the storage version at any valid version between current
 /// and target.
@@ -45,9 +58,14 @@ pub async fn run_migrations_up_to(
     mut current: StorageVersion,
     target: StorageVersion,
     storage: &mut PartitionStore,
-) -> Result<StorageVersion> {
+    cancel: CancellationToken,
+    config: &Configuration,
+) -> Result<StorageVersion, MigrationError> {
     while current < target {
-        current = do_migration(current, storage).await?;
+        if cancel.is_cancelled() {
+            return Err(MigrationError::MigrationCancelled);
+        }
+        current = do_migration(current, storage, cancel.clone(), config).await?;
     }
     Ok(current)
 }
@@ -65,23 +83,26 @@ pub async fn run_migrations_up_to(
 async fn do_migration(
     current: StorageVersion,
     storage: &mut PartitionStore,
-) -> Result<StorageVersion> {
+    cancel: CancellationToken,
+    config: &Configuration,
+) -> Result<StorageVersion, MigrationError> {
     let new_storage_version = match current {
         StorageVersion::None => {
             // Version 1.6+ does not support upgrading from pre-1.5
             // The InvocationStatusV1 migration was removed in 1.6
-            return Err(StorageError::Generic(anyhow::anyhow!(
+            return Err(MigrationError::MigrationBarrier(
                 "Cannot upgrade from version <1.5 directly to 1.6 or later. \
                  Please upgrade to version 1.5 first, which will migrate your data, \
                  and then upgrade to 1.6+"
-            )));
+                    .to_owned(),
+            ));
         }
         StorageVersion::V1_5 => {
-            let config = Configuration::pinned();
+            let start = Instant::now();
             let key_range = storage.partition_key_range();
             let partition_id = storage.partition_id();
             let partition_db = storage.partition_db().clone();
-            let mut ctx = MigrationContext::new(&config, &partition_db, key_range);
+            let mut ctx = MigrationContext::new(config, &partition_db, key_range, cancel);
             let new_storage_version = StorageVersion::ScopedStateAndPromise;
 
             migrate_to_scoped_state_table(&mut ctx)?;
@@ -97,6 +118,7 @@ async fn do_migration(
             append_delete_promise_data(&ctx, &mut wb);
             append_storage_version_to_wb(&cf_handle, &mut wb, partition_id, new_storage_version)?;
 
+            ctx.fail_if_cancelled()?;
             let mut opts = rocksdb::WriteOptions::default();
             opts.disable_wal(true);
             partition_db
@@ -113,8 +135,12 @@ async fn do_migration(
                 .map_err(StorageError::Generic)?;
             debug!(
                 %partition_id,
-                "Finalized scoped state/promise migration"
+                "Finalized scoped state/promise migration in {}", start.elapsed().friendly()
             );
+
+            // todo: Add flush + compact_range(s) to the deleted data to reduce the space
+            // amplification expected after the state migration. Alternatively, one compaction
+            // after all migrations are done.
             new_storage_version
         }
         StorageVersion::ScopedStateAndPromise => {
@@ -128,15 +154,21 @@ async fn do_migration(
 
 #[allow(dead_code)]
 pub struct MigrationContext<'a> {
-    clock: HlcClock<WallClock, Arc<AtomicStorage>>,
-    arena: BytesMut,
-    partition_db: &'a PartitionDb,
-    key_range: KeyRange,
+    pub clock: HlcClock<WallClock, Arc<AtomicStorage>>,
+    pub arena: BytesMut,
+    pub partition_db: &'a PartitionDb,
+    pub key_range: KeyRange,
+    pub cancel: CancellationToken,
 }
 
 #[allow(dead_code)]
 impl<'a> MigrationContext<'a> {
-    pub fn new(config: &Configuration, partition_db: &'a PartitionDb, key_range: KeyRange) -> Self {
+    pub fn new(
+        config: &Configuration,
+        partition_db: &'a PartitionDb,
+        key_range: KeyRange,
+        cancel: CancellationToken,
+    ) -> Self {
         Self {
             clock: HlcClock::new(
                 config.common.hlc_max_drift(),
@@ -147,6 +179,7 @@ impl<'a> MigrationContext<'a> {
             arena: BytesMut::default(),
             partition_db,
             key_range,
+            cancel,
         }
     }
 
@@ -171,6 +204,15 @@ impl<'a> MigrationContext<'a> {
             arena: BytesMut::default(),
             partition_db: self.partition_db,
             key_range,
+            cancel: self.cancel.clone(),
+        }
+    }
+
+    fn fail_if_cancelled(&self) -> Result<(), MigrationError> {
+        if self.cancel.is_cancelled() {
+            Err(MigrationError::MigrationCancelled)
+        } else {
+            Ok(())
         }
     }
 }
@@ -220,7 +262,13 @@ mod tests {
             .expect("DB storage creation succeeds");
 
         let config = Configuration::default();
-        let mut ctx = MigrationContext::new(&config, store.partition_db(), KeyRange::new(1, 100));
+        let cancel = CancellationToken::new();
+        let mut ctx = MigrationContext::new(
+            &config,
+            store.partition_db(),
+            KeyRange::new(1, 100),
+            cancel.clone(),
+        );
         ctx.arena.extend_from_slice(b"dirty parent arena");
 
         let mut split = ctx.split(NonZeroU16::new(2).expect("two is non-zero"));
@@ -252,7 +300,7 @@ mod tests {
         assert!(left_timestamp < right_timestamp);
 
         let single_key_ctx =
-            MigrationContext::new(&config, store.partition_db(), KeyRange::new(42, 42));
+            MigrationContext::new(&config, store.partition_db(), KeyRange::new(42, 42), cancel);
         let single_key_ranges = single_key_ctx
             .split(NonZeroU16::new(2).expect("two is non-zero"))
             .map(|ctx| ctx.key_range)
@@ -295,7 +343,7 @@ mod tests {
             .expect("seeding unknown storage version should succeed");
 
         let err = store
-            .verify_and_run_migrations(&Configuration::pinned())
+            .verify_and_run_migrations(CancellationToken::new(), &Configuration::pinned())
             .await
             .expect_err("unknown storage version should fail verify_and_run_migrations");
         let msg = err.to_string();

@@ -14,7 +14,7 @@ use restate_bifrost::DataRecord;
 use restate_partition_store::PartitionStoreTransaction;
 use restate_storage_api::fsm_table::PartitionDurability;
 use restate_wal_protocol::control::UpdatePartitionDurabilityCommand;
-use restate_wal_protocol::v2::Envelope;
+use restate_wal_protocol::v2::{CommandScope, Envelope};
 
 use super::{ApplyPartitionCommand, NextStep};
 use crate::partition::ProcessorError;
@@ -42,7 +42,11 @@ impl<P: Processor + HasFsmMut + HasTrimQueue>
                 partition_durability.partition_id,
                 self.processor.partition_id()
             );
-            return Ok(NextStep::AdvanceLastAppliedLsn(lsn, header.into_dedup()));
+            return Ok(NextStep::AdvanceLastAppliedLsn {
+                lsn,
+                dedup: header.into_dedup(),
+                scope: CommandScope::PartitionScoped,
+            });
         }
 
         let partition_durability = PartitionDurability {
@@ -55,6 +59,11 @@ impl<P: Processor + HasFsmMut + HasTrimQueue>
                 .fsm_mut()
                 .set_durable_point(self.txn, partition_durability);
         }
-        Ok(NextStep::AdvanceLastAppliedLsn(lsn, header.into_dedup()))
+
+        Ok(NextStep::AdvanceLastAppliedLsn {
+            lsn,
+            dedup: header.into_dedup(),
+            scope: CommandScope::PartitionScoped,
+        })
     }
 }

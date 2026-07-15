@@ -16,7 +16,7 @@ use restate_bifrost::DataRecord;
 use restate_partition_store::PartitionStoreTransaction;
 use restate_types::Versioned;
 use restate_wal_protocol::control::UpsertSchemaCommand;
-use restate_wal_protocol::v2::Envelope;
+use restate_wal_protocol::v2::{CommandScope, Envelope};
 
 use crate::partition::ProcessorError;
 use crate::partition::processor::{FsmAccess, FsmMut, HasFsmMut, Processor};
@@ -49,6 +49,11 @@ impl<P: Processor + HasFsmMut> ApplyPartitionCommand<UpsertSchemaCommand>
                 .fsm_mut()
                 .set_schema(self.txn, Arc::new(upsert.schema));
         }
-        Ok(NextStep::AdvanceLastAppliedLsn(lsn, header.into_dedup()))
+
+        Ok(NextStep::AdvanceLastAppliedLsn {
+            lsn,
+            dedup: header.into_dedup(),
+            scope: CommandScope::PartitionScoped,
+        })
     }
 }

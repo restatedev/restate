@@ -31,7 +31,16 @@ use crate::{RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, SemanticRestateVersion
 ///
 /// *Since v1.7.0*
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, strum::FromRepr, strum::EnumString, strum::Display,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    strum::FromRepr,
+    strum::EnumString,
+    strum::IntoStaticStr,
+    strum::Display,
 )]
 #[strum(ascii_case_insensitive)]
 #[repr(u16)]

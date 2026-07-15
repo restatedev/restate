@@ -20,7 +20,7 @@ use crate::keys::{EncodeTableKeyPrefix, KeyKind};
 use crate::promise_table::PromiseKey;
 use crate::scan::{PhysicalScan, TableScan};
 
-use super::MigrationContext;
+use super::{MigrationContext, MigrationError};
 
 /// Length of a `KeyKind | partition_key` prefix.
 const KEY_PREFIX_LEN: usize = KeyKind::SERIALIZED_LENGTH + std::mem::size_of::<PartitionKey>();
@@ -30,7 +30,9 @@ const KEY_PREFIX_LEN: usize = KeyKind::SERIALIZED_LENGTH + std::mem::size_of::<P
 /// unchanged.
 ///
 /// We use direct rocksdb access because no async operations are needed.
-pub fn migrate_to_scoped_promise_table(ctx: &mut MigrationContext<'_>) -> Result<(), StorageError> {
+pub fn migrate_to_scoped_promise_table(
+    ctx: &mut MigrationContext<'_>,
+) -> Result<(), MigrationError> {
     let rocks = ctx.partition_db.rocksdb();
     let key_range = ctx.key_range;
     let mut counter = 0;
@@ -43,14 +45,14 @@ pub fn migrate_to_scoped_promise_table(ctx: &mut MigrationContext<'_>) -> Result
 
     // 1 MiB batches
     let mut wb = WriteBatch::with_capacity_bytes(1024 * 1024);
-    let arena = &mut ctx.arena;
-    arena.clear();
+    ctx.arena.clear();
 
     let mut opts = rocksdb::WriteOptions::default();
     // We disable WAL since bifrost is our durable distributed log.
     opts.disable_wal(true);
 
     while iterator.valid() {
+        ctx.fail_if_cancelled()?;
         // safe to unwrap because the iterator is valid
         let (mut key, value) = iterator.item().unwrap();
         // Advance past the legacy `KeyKind::Promise` prefix and the partition_key.
@@ -60,12 +62,12 @@ pub fn migrate_to_scoped_promise_table(ctx: &mut MigrationContext<'_>) -> Result
         debug_assert_eq!(kind, KeyKind::Promise);
         let partition_key: PartitionKey = crate::keys::deserialize(&mut key)?;
 
-        KeyKind::ScopedPromise.serialize(arena);
-        crate::keys::serialize(&partition_key, arena);
+        KeyKind::ScopedPromise.serialize(&mut ctx.arena);
+        crate::keys::serialize(&partition_key, &mut ctx.arena);
         // unscoped
-        arena.put_u8(b'u');
-        arena.put_slice(key);
-        let new_key = arena.split().freeze();
+        ctx.arena.put_u8(b'u');
+        ctx.arena.put_slice(key);
+        let new_key = ctx.arena.split().freeze();
 
         wb.put_cf(ctx.partition_db.cf_handle(), new_key, value);
         counter += 1;
@@ -75,7 +77,8 @@ pub fn migrate_to_scoped_promise_table(ctx: &mut MigrationContext<'_>) -> Result
             rocks
                 .inner()
                 .write_batch(&wb, &opts)
-                .context("failed to write batch")?;
+                .context("failed to write batch")
+                .map_err(StorageError::Generic)?;
             wb.clear();
         }
 
@@ -94,7 +97,8 @@ pub fn migrate_to_scoped_promise_table(ctx: &mut MigrationContext<'_>) -> Result
         rocks
             .inner()
             .write_batch(&wb, &opts)
-            .context("failed to write batch")?;
+            .context("failed to write batch")
+            .map_err(StorageError::Generic)?;
     }
 
     debug!("Finished migrating {} promises", counter);

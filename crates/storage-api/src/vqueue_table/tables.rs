@@ -11,12 +11,12 @@
 use restate_sharding::{KeyRange, PartitionKey};
 use restate_types::vqueues::{Seq, VQueueId};
 
-use super::Status;
+use super::filters::{ScanEntryIdFilter, ScanMetaFilter};
 use super::metadata::{VQueueMeta, VQueueMetaRef};
 use super::{
-    EntryId, EntryKey, EntryMetadata, EntryStatusHeader, EntryValue, LazyEntryStatus,
-    OwnedEntryStatusHeader, stats::EntryStatistics,
+    EntryId, EntryKey, EntryMetadata, EntryStatusHeader, EntryValue, stats::EntryStatistics,
 };
+use super::{RawStatusHeaderRef, Status};
 use crate::Result;
 
 /// Stages in the inbox/vqueue
@@ -205,12 +205,12 @@ pub trait ReadVQueueTable {
         id: &EntryId,
     ) -> impl Future<Output = Result<Option<impl EntryStatusHeader + 'static>>>;
 
-    /// Get the entry state for a vqueue entry by id
-    fn get_vqueue_entry_status_lazy<'a>(
-        &'a self,
-        partition_key: PartitionKey,
-        entry_id: &EntryId,
-    ) -> impl Future<Output = Result<Option<impl LazyEntryStatus + 'a>>>;
+    // /// Get the entry state for a vqueue entry by id
+    // fn get_vqueue_entry_status_lazy<'a>(
+    //     &'a self,
+    //     partition_key: PartitionKey,
+    //     entry_id: &EntryId,
+    // ) -> impl Future<Output = Result<Option<impl LazyEntryStatus + 'a>>>;
 
     // Left intentionally for future reference
     // fn get_entry_state<I>(
@@ -255,7 +255,7 @@ pub trait ScanVQueueMetaTable {
             + 'static,
     >(
         &self,
-        range: KeyRange,
+        filter: ScanMetaFilter,
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
@@ -290,11 +290,15 @@ pub trait ScanVQueueEntryStatusTable {
     /// Used for data-fusion queries.
     fn for_each_vqueue_entry_status<F>(
         &self,
-        range: KeyRange,
+        filter: ScanEntryIdFilter,
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>
     where
-        F: for<'a> FnMut(&'a OwnedEntryStatusHeader) -> std::ops::ControlFlow<()>
+        F: for<'a> FnMut(
+                PartitionKey,
+                &'a EntryId,
+                &'a RawStatusHeaderRef<'a>,
+            ) -> std::ops::ControlFlow<()>
             + Send
             + Sync
             + 'static;

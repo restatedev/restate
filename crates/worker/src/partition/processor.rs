@@ -26,6 +26,7 @@ pub mod commands;
 mod context;
 mod dedup;
 mod fsm;
+pub mod leadership;
 mod outbox;
 mod status;
 

@@ -13,6 +13,7 @@
 
 use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
+use tokio_util::sync::CancellationToken;
 
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
@@ -182,8 +183,9 @@ async fn flag_off_keeps_partition_at_v1_5() {
     assert!(legacy_state_before > 0);
     assert!(legacy_promise_before > 0);
 
+    let cancel = CancellationToken::new();
     store
-        .verify_and_run_migrations(&Configuration::pinned())
+        .verify_and_run_migrations(cancel, &Configuration::pinned())
         .await
         .expect("verify with flag off");
 
@@ -224,8 +226,9 @@ async fn flag_on_migrates_and_bumps_version() {
 
     // Now turn the flag back on and run migrations.
     with_migrate_scoped_tables(true);
+    let cancel = CancellationToken::new();
     store
-        .verify_and_run_migrations(&Configuration::pinned())
+        .verify_and_run_migrations(cancel, &Configuration::pinned())
         .await
         .expect("verify with flag on");
 
@@ -255,8 +258,9 @@ async fn flag_on_migrates_and_bumps_version() {
     }
 
     // Idempotency: a second verify is a no-op.
+    let cancel = CancellationToken::new();
     store
-        .verify_and_run_migrations(&Configuration::pinned())
+        .verify_and_run_migrations(cancel, &Configuration::pinned())
         .await
         .expect("second verify");
     assert_eq!(
@@ -285,8 +289,9 @@ async fn flag_on_writes_post_migration_land_in_scoped() {
         .expect("open");
 
     // Empty partition + flag on → fast path initializes at ScopedStateAndPromise.
+    let cancel = CancellationToken::new();
     store
-        .verify_and_run_migrations(&Configuration::pinned())
+        .verify_and_run_migrations(cancel, &Configuration::pinned())
         .await
         .expect("verify fresh");
     assert_eq!(

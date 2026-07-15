@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_types::partitions::PersistedFeatures;
+use restate_types::partitions::{PartitionFeatureChange, PersistedFeatures};
 
 /// Read-only view of the state-machine features currently enabled for a partition.
 ///
@@ -17,6 +17,9 @@ use restate_types::partitions::PersistedFeatures;
 /// ([`PersistedFeatures`]), depending on what the feature requires. See each method's
 /// doc-comment for the specific gate.
 pub trait PartitionFeatures {
+    /// Whether the feature is enabled on this partition.
+    fn has_feature(&self, feature: PartitionFeatureChange) -> bool;
+
     /// Write to journal v2 instead of journal v1 by default. This is a preparational step for
     /// removing the journal v1 after enabling this feature and migrating all unpinned invocations
     /// from journal v1 to journal v2.
@@ -37,6 +40,15 @@ pub trait PartitionFeatures {
 
 impl PartitionFeatures for PersistedFeatures {
     #[inline]
+    fn has_feature(&self, feature: PartitionFeatureChange) -> bool {
+        match feature {
+            PartitionFeatureChange::EnableJournalV2 => self.journal_v2,
+            PartitionFeatureChange::EnableVqueues => self.vqueues,
+            PartitionFeatureChange::EnableUniqueRandomSeeds => self.unique_random_seeds,
+        }
+    }
+
+    #[inline]
     fn use_journal_v2_as_default(&self) -> bool {
         self.journal_v2
     }
@@ -55,6 +67,10 @@ impl PartitionFeatures for PersistedFeatures {
 // -- Boilerplate --
 
 impl<T: PartitionFeatures> PartitionFeatures for &T {
+    fn has_feature(&self, feature: PartitionFeatureChange) -> bool {
+        (**self).has_feature(feature)
+    }
+
     fn use_journal_v2_as_default(&self) -> bool {
         (**self).use_journal_v2_as_default()
     }
@@ -69,6 +85,10 @@ impl<T: PartitionFeatures> PartitionFeatures for &T {
 }
 
 impl<T: PartitionFeatures> PartitionFeatures for &mut T {
+    fn has_feature(&self, feature: PartitionFeatureChange) -> bool {
+        (**self).has_feature(feature)
+    }
+
     fn use_journal_v2_as_default(&self) -> bool {
         (**self).use_journal_v2_as_default()
     }

@@ -15,7 +15,7 @@ use restate_storage_api::Transaction;
 use restate_storage_api::fsm_table::CachedEpochMetadata;
 use restate_vqueues::context::HasVQueuesMut;
 use restate_wal_protocol::control::AnnounceLeaderCommand;
-use restate_wal_protocol::v2::Envelope;
+use restate_wal_protocol::v2::{CommandScope, Envelope};
 
 use super::{ApplyPartitionCommand, NextStep};
 use crate::partition::leadership::LeadershipState;
@@ -87,7 +87,7 @@ impl<P: Processor + HasFsmMut + HasVQueuesMut + HasTrimQueue + HasStatusMut, T: 
                 self.node_ctx,
                 &mut self.processor,
                 self.partition_store,
-                &announce_leader,
+                announce_leader.leader_epoch,
             )
             .await?;
 
@@ -113,6 +113,10 @@ impl<P: Processor + HasFsmMut + HasVQueuesMut + HasTrimQueue + HasStatusMut, T: 
             },
         );
 
-        Ok(NextStep::AdvanceLastAppliedLsn(lsn, header.into_dedup()))
+        Ok(NextStep::AdvanceLastAppliedLsn {
+            lsn,
+            dedup: header.into_dedup(),
+            scope: CommandScope::PartitionScoped,
+        })
     }
 }
