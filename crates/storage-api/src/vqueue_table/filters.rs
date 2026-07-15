@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use std::range::RangeInclusive;
 
 use restate_sharding::KeyRange;
-use restate_types::vqueues::VQueueEntryId;
+use restate_types::vqueues::{VQueueEntryId, VQueueId};
 
 /// Filter vqueue entries by partition keys, entry ID range, or an exact set of entry IDs.
 #[derive(Debug, Clone)]
@@ -23,4 +23,19 @@ pub enum ScanEntryIdFilter {
     /// of a range scan. The set is sorted in on-disk key order (see the ordering
     /// invariant asserted in `partition-store`'s `entry` tests).
     EntryIdSet(BTreeSet<VQueueEntryId>),
+}
+
+/// Filter vqueue metadata rows by partition keys, vqueue ID range, or an exact
+/// set of vqueue IDs.
+///
+/// Each vqueue id maps to exactly one metadata row, so [`ScanMetaFilter::MetaIdSet`]
+/// is served via a batched multi-get instead of a partition-key-range scan.
+#[derive(Debug, Clone)]
+pub enum ScanMetaFilter {
+    PartitionKey(KeyRange),
+    MetaIdRange(RangeInclusive<VQueueId>),
+    /// A known, bounded set of vqueue IDs served via a batched multi-get. The
+    /// set is sorted in on-disk key order (`VQueueId`'s `Ord` matches its key
+    /// byte encoding, which is prefixed by the partition key).
+    MetaIdSet(BTreeSet<VQueueId>),
 }
