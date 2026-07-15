@@ -213,7 +213,9 @@ where
                 continue;
             };
 
-            if inlist.col.name() != self.column_name {
+            // A negated list (`NOT IN`/`!=`) enumerates *excluded* values, so it
+            // can't be used to narrow the partition scan.
+            if inlist.col.name() != self.column_name || inlist.negated {
                 continue;
             }
 
@@ -473,7 +475,9 @@ fn parse_invocation_id_range(
 ) -> Option<RangeInclusive<InvocationId>> {
     let in_list = InList::parse(predicate, 5)?;
 
-    if in_list.col.name() != column_name {
+    // A negated list (`NOT IN`/`!=`) enumerates *excluded* IDs; using it to build
+    // a lookup range/set would fetch exactly the rows that must be filtered out.
+    if in_list.col.name() != column_name || in_list.negated {
         return None;
     }
 
@@ -544,7 +548,9 @@ fn parse_entry_id_selection(
 ) -> Option<EntryIdSelection> {
     let in_list = InList::parse(predicate, 5)?;
 
-    if in_list.col.name() != column_name {
+    // A negated list (`NOT IN`/`!=`) enumerates *excluded* IDs; serving it via
+    // multi-get would fetch exactly the rows the residual predicate then drops.
+    if in_list.col.name() != column_name || in_list.negated {
         return None;
     }
 
@@ -636,9 +642,21 @@ mod tests {
     }
 
     fn in_list(col_name: &str, list: Vec<Arc<dyn PhysicalExpr>>) -> Arc<dyn PhysicalExpr> {
+        make_in_list(col_name, list, false)
+    }
+
+    fn not_in_list(col_name: &str, list: Vec<Arc<dyn PhysicalExpr>>) -> Arc<dyn PhysicalExpr> {
+        make_in_list(col_name, list, true)
+    }
+
+    fn make_in_list(
+        col_name: &str,
+        list: Vec<Arc<dyn PhysicalExpr>>,
+        negated: bool,
+    ) -> Arc<dyn PhysicalExpr> {
         use datafusion::arrow::datatypes::{DataType, Field, Schema};
         let schema = Schema::new(vec![Field::new(col_name, DataType::LargeUtf8, true)]);
-        Arc::new(InListExpr::try_new(col(col_name), list, false, &schema).expect("valid in-list"))
+        Arc::new(InListExpr::try_new(col(col_name), list, negated, &schema).expect("valid in-list"))
     }
 
     fn and(left: Arc<dyn PhysicalExpr>, right: Arc<dyn PhysicalExpr>) -> Arc<dyn PhysicalExpr> {
@@ -1109,6 +1127,39 @@ mod tests {
         let filter = VQueueEntryIdFilter::new(narrow_range, Some(predicate));
 
         assert!(filter.entry_ids.is_none());
+    }
+
+    #[test]
+    fn partition_key_extractor_rejects_negated_in_list() {
+        // `service_key NOT IN (...)` enumerates excluded keys; it must not be
+        // used to narrow the partition scan.
+        let extractor =
+            FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
+
+        let got = extractor
+            .try_extract(&[not_in_list("service_key", vec![utf8_lit("key-1")])])
+            .expect("extract");
+
+        assert_eq!(None, got);
+    }
+
+    #[test]
+    fn id_filters_reject_negated_in_list() {
+        // `NOT IN`/`!=` must fall back to a full partition scan so the residual
+        // predicate can exclude the listed IDs; building a lookup set from them
+        // would instead fetch exactly the rows that need removing.
+        let inv = make_invocation_id("key-1");
+        let inv_filter = InvocationIdFilter::new(
+            FULL_RANGE,
+            Some(not_in_list("id", vec![utf8_lit(inv.to_string())])),
+        );
+        assert!(inv_filter.invocation_ids.is_none());
+
+        let entry_filter = VQueueEntryIdFilter::new(
+            FULL_RANGE,
+            Some(not_in_list("entry_id", vec![utf8_lit(inv.to_string())])),
+        );
+        assert!(entry_filter.entry_ids.is_none());
     }
 
     #[test]
