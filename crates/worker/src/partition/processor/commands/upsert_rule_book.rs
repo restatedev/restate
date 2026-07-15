@@ -15,7 +15,7 @@ use restate_core::network::TransportConnect;
 use restate_partition_store::PartitionStoreTransaction;
 use restate_types::Versioned;
 use restate_wal_protocol::control::UpsertRuleBookCommand;
-use restate_wal_protocol::v2::Envelope;
+use restate_wal_protocol::v2::{CommandScope, Envelope};
 
 use super::{ApplyPartitionCommand, NextStep};
 use crate::partition::leadership::LeadershipState;
@@ -50,7 +50,11 @@ impl<P: Processor + HasFsmMut, T: TransportConnect> ApplyPartitionCommand<Upsert
                 new_book.version(),
                 current_version,
             );
-            return Ok(NextStep::AdvanceLastAppliedLsn(lsn, header.into_dedup()));
+            return Ok(NextStep::AdvanceLastAppliedLsn {
+                lsn,
+                dedup: header.into_dedup(),
+                scope: CommandScope::PartitionScoped,
+            });
         }
 
         debug!(
@@ -79,6 +83,10 @@ impl<P: Processor + HasFsmMut, T: TransportConnect> ApplyPartitionCommand<Upsert
         // Persist within the apply transaction.
         self.processor.fsm_mut().set_rule_book(self.txn, new_book);
 
-        Ok(NextStep::AdvanceLastAppliedLsn(lsn, header.into_dedup()))
+        Ok(NextStep::AdvanceLastAppliedLsn {
+            lsn,
+            dedup: header.into_dedup(),
+            scope: CommandScope::PartitionScoped,
+        })
     }
 }

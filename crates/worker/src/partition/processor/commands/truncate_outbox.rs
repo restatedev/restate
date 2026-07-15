@@ -10,8 +10,8 @@
 
 use restate_bifrost::DataRecord;
 use restate_partition_store::PartitionStoreTransaction;
-use restate_wal_protocol::v2::Envelope;
 use restate_wal_protocol::v2::commands::TruncateOutboxCommand;
+use restate_wal_protocol::v2::{CommandScope, Envelope};
 
 use super::{ApplyPartitionCommand, NextStep};
 use crate::partition::ProcessorError;
@@ -35,7 +35,11 @@ impl<P: HasOutboxMut> ApplyPartitionCommand<TruncateOutboxCommand>
         self.processor
             .outbox_mut()
             .truncate_outbox_to(self.txn, truncate.index)?;
-        Ok(NextStep::AdvanceLastAppliedLsn(lsn, header.into_dedup()))
+        Ok(NextStep::AdvanceLastAppliedLsn {
+            lsn,
+            dedup: header.into_dedup(),
+            scope: CommandScope::PartitionScoped,
+        })
     }
 }
 

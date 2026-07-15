@@ -273,6 +273,7 @@ impl<C: Command> From<Envelope<C>> for Envelope<Raw> {
 /// In some cases, the actual command may be carrying a single partition key but that
 /// doesn't affect that the command is still scoped to the partition-range that starts
 /// with this partition key.
+#[derive(Debug, Copy, Clone)]
 pub enum CommandScope {
     /// The command operates on the partition-range level. It affects the processor's state
     /// machine rather than a single invocation, vqueue, or other key-scoped resources.
