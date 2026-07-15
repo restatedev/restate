@@ -91,7 +91,7 @@ use restate_wal_protocol::control::{
 };
 use restate_wal_protocol::v2::commands;
 use restate_wal_protocol::{Envelope, v2};
-use restate_worker_api::invoker::capacity::InvokerCapacity;
+use restate_worker_api::invoker::{InvokerHandle, capacity::InvokerCapacity};
 use restate_worker_api::{LeaderQueryCommand, LeaderQueryReceiver};
 
 use self::leadership::trim_queue::TrimQueue;
@@ -797,12 +797,62 @@ where
         partition_store: &mut PartitionStore,
         schemas: &Schema,
     ) {
-        let _ = rpc::RpcHandler::handle(
-            rpc::RpcContext::new(&mut self.leadership_state, schemas, partition_store),
-            body,
-            rpc::Replier::new(response_tx),
-        )
-        .await;
+        let context = rpc::RpcContext::new(
+            self.leadership_state.is_leader(),
+            self.leadership_state.partition_id(),
+            schemas,
+            partition_store,
+        );
+        let decision = rpc::RpcHandler::handle(context, body).await;
+
+        match decision {
+            rpc::Decision::Propose {
+                partition_key,
+                cmd,
+                reply_on,
+            } => match reply_on {
+                rpc::ReplyOn::Apply { request_id } => {
+                    self.leadership_state
+                        .handle_rpc_proposal_command(request_id, response_tx, partition_key, cmd)
+                        .await;
+                }
+                rpc::ReplyOn::Commit { response } => {
+                    self.leadership_state
+                        .append_and_respond_asynchronously(
+                            partition_key,
+                            cmd,
+                            response_tx,
+                            response,
+                        )
+                        .await;
+                }
+                rpc::ReplyOn::ApplyAndFence {
+                    request_id,
+                    invocation_id,
+                } => {
+                    self.leadership_state
+                        .propose_pause_and_fence(request_id, response_tx, invocation_id, cmd)
+                        .await;
+                }
+            },
+            rpc::Decision::Reply(reply) => response_tx.send(reply),
+            rpc::Decision::NotifyInvokerAndReply {
+                notification,
+                reply,
+            } => {
+                if let Some(invoker_handle) = self.leadership_state.invoker_handle() {
+                    match notification {
+                        rpc::InvokerNotification::RetryNow(invocation_id) => {
+                            let _ = invoker_handle.retry_invocation_now(invocation_id);
+                        }
+                        rpc::InvokerNotification::Pause(invocation_id) => {
+                            let _ = invoker_handle.pause_invocation(invocation_id);
+                        }
+                    }
+                }
+                response_tx.send(Ok(reply));
+            }
+        }
     }
 
     async fn on_rpc(
