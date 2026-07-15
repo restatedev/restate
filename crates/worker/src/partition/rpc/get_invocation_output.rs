@@ -28,9 +28,8 @@ pub(super) struct Request {
     pub(super) response_mode: GetInvocationOutputResponseMode,
 }
 
-impl<'a, TActuator, TSchemas, TStorage> RpcContext<'a, TActuator, TSchemas, TStorage>
+impl<'a, TSchemas, TStorage> RpcContext<'a, TSchemas, TStorage>
 where
-    TActuator: Actuator,
     TStorage: ReadInvocationStatusTable,
 {
     async fn get_invocation_output(
@@ -65,12 +64,10 @@ where
     }
 }
 
-impl<'a, Proposer: Actuator, TSchemas, Storage> RpcHandler<Request>
-    for RpcContext<'a, Proposer, TSchemas, Storage>
+impl<'a, TSchemas, Storage> RpcHandler<Request> for RpcContext<'a, TSchemas, Storage>
 where
     Storage: ReadInvocationStatusTable,
 {
-    type Output = PartitionProcessorRpcResponse;
     type Error = ();
 
     async fn handle(
@@ -80,8 +77,7 @@ where
             invocation_query,
             response_mode,
         }: Request,
-        replier: Replier<Self::Output>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<NextStep, Self::Error> {
         match response_mode {
             GetInvocationOutputResponseMode::BlockWhenNotReady => {
                 // Try to get invocation output now, if it's ready reply immediately with it
@@ -89,22 +85,18 @@ where
                     .get_invocation_output(request_id, invocation_query.clone())
                     .await
                 {
-                    replier.send(ready_result);
-                    return Ok(());
+                    return Ok(NextStep::Reply(Ok(ready_result)));
                 }
 
-                self.proposer
-                    .handle_rpc_proposal_command(
-                        invocation_query.partition_key(),
-                        Command::AttachInvocation(AttachInvocationRequest {
-                            invocation_query,
-                            block_on_inflight: true,
-                            response_sink: ServiceInvocationResponseSink::Ingress { request_id },
-                        }),
-                        request_id,
-                        replier,
-                    )
-                    .await;
+                Ok(NextStep::Propose {
+                    partition_key: invocation_query.partition_key(),
+                    cmd: Command::AttachInvocation(AttachInvocationRequest {
+                        invocation_query,
+                        block_on_inflight: true,
+                        response_sink: ServiceInvocationResponseSink::Ingress { request_id },
+                    }),
+                    reply_policy: ReplyPolicy::OnApply { request_id },
+                })
             }
             GetInvocationOutputResponseMode::ReplyIfNotReady => {
                 // Reading invocation output from a non-leader partition processor can return
@@ -121,20 +113,17 @@ where
                 // An open question is how to handle partitioned followers that can no longer apply
                 // the latest records (e.g. due to network partitions) — they would need to time
                 // out and return an error rather than blocking indefinitely.
-                if !self.proposer.is_leader() {
-                    replier.send_result(Err(PartitionProcessorRpcError::NotLeader(
-                        self.proposer.partition_id(),
-                    )));
-                    return Ok(());
+                if !self.is_leader {
+                    return Ok(NextStep::Reply(Err(PartitionProcessorRpcError::NotLeader(
+                        self.partition_id,
+                    ))));
                 }
-                replier.send_result(
+                Ok(NextStep::Reply(
                     self.get_invocation_output(request_id, invocation_query)
                         .await
                         .map_err(|err| PartitionProcessorRpcError::Internal(err.to_string())),
-                );
+                ))
             }
         }
-
-        Ok(())
     }
 }

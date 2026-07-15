@@ -13,7 +13,6 @@ use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::invocation::{
     IngressInvocationResponseSink, InvocationMutationResponseSink, PurgeInvocationRequest,
 };
-use restate_types::net::partition_processor::PurgeInvocationRpcResponse;
 use restate_wal_protocol::Command;
 
 pub(super) struct Request {
@@ -21,10 +20,7 @@ pub(super) struct Request {
     pub(super) invocation_id: InvocationId,
 }
 
-impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
-    for RpcContext<'a, TActuator, TSchemas, TStorage>
-{
-    type Output = PurgeInvocationRpcResponse;
+impl<'a, TSchemas, TStorage> RpcHandler<Request> for RpcContext<'a, TSchemas, TStorage> {
     type Error = ();
 
     async fn handle(
@@ -33,22 +29,16 @@ impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
             request_id,
             invocation_id,
         }: Request,
-        replier: Replier<Self::Output>,
-    ) -> Result<(), Self::Error> {
-        self.proposer
-            .handle_rpc_proposal_command(
-                invocation_id.partition_key(),
-                Command::PurgeJournal(PurgeInvocationRequest {
-                    invocation_id,
-                    response_sink: Some(InvocationMutationResponseSink::Ingress(
-                        IngressInvocationResponseSink { request_id },
-                    )),
-                }),
-                request_id,
-                replier,
-            )
-            .await;
-
-        Ok(())
+    ) -> Result<NextStep, Self::Error> {
+        Ok(NextStep::Propose {
+            partition_key: invocation_id.partition_key(),
+            cmd: Command::PurgeJournal(PurgeInvocationRequest {
+                invocation_id,
+                response_sink: Some(InvocationMutationResponseSink::Ingress(
+                    IngressInvocationResponseSink { request_id },
+                )),
+            }),
+            reply_policy: ReplyPolicy::OnApply { request_id },
+        })
     }
 }
