@@ -16,7 +16,7 @@ use restate_types::SemanticRestateVersion;
 use restate_types::partitions::features::PartitionFeatureChange;
 use restate_types::sharding::KeyRange;
 use restate_wal_protocol::control::VersionBarrierCommand;
-use restate_wal_protocol::v2::Envelope;
+use restate_wal_protocol::v2::{CommandScope, Envelope};
 
 use super::{ApplyPartitionCommand, NextStep};
 use crate::debug_if_leader;
@@ -149,7 +149,11 @@ impl ApplyPartitionCommand<VersionBarrierCommand> for VersionBarrierContext<'_, 
             );
         }
 
-        Ok(NextStep::AdvanceLastAppliedLsn(lsn, header.into_dedup()))
+        Ok(NextStep::AdvanceLastAppliedLsn {
+            lsn,
+            dedup: header.into_dedup(),
+            scope: CommandScope::PartitionScoped,
+        })
     }
 }
 
@@ -222,7 +226,7 @@ mod tests {
     use restate_types::state_mut::ExternalStateMutation;
     use restate_types::time::NanosSinceEpoch;
     use restate_wal_protocol::control::VersionBarrierCommand;
-    use restate_wal_protocol::v2::{self, Command};
+    use restate_wal_protocol::v2::{self, Command, CommandScope};
 
     use super::{ApplyPartitionCommand, VersionBarrierContext};
     use crate::partition::ProcessorError;
@@ -290,10 +294,11 @@ mod tests {
 
         assert_that!(
             next_step,
-            pat!(NextStep::AdvanceLastAppliedLsn(
-                eq(Lsn::OLDEST),
-                eq(v2::Dedup::None)
-            ))
+            pat!(NextStep::AdvanceLastAppliedLsn {
+                lsn: eq(Lsn::OLDEST),
+                dedup: eq(v2::Dedup::None),
+                scope: pat!(CommandScope::PartitionScoped),
+            })
         );
 
         txn.commit().await.unwrap();

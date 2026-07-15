@@ -25,13 +25,21 @@ pub use version_barrier::VersionBarrierContext;
 
 use restate_bifrost::DataRecord;
 use restate_types::logs::Lsn;
-use restate_wal_protocol::v2::{self, Envelope};
+use restate_wal_protocol::v2::{self, CommandScope, Envelope};
 
 use crate::partition::ProcessorError;
 
 #[derive(Debug)]
 pub enum NextStep {
-    AdvanceLastAppliedLsn(Lsn, v2::Dedup),
+    /// The record covers a range of LSNs (e.g. a filter gap or duplicate). Applying this record
+    /// advances the processor's applied LSN to the supplied value.
+    SkipUntil(Lsn),
+
+    AdvanceLastAppliedLsn {
+        lsn: Lsn,
+        dedup: v2::Dedup,
+        scope: CommandScope,
+    },
 }
 
 /// Applies a single partition-scoped record to the processor.

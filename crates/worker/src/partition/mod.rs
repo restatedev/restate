@@ -83,7 +83,7 @@ use restate_util_string::{ReString, ToReString};
 use restate_util_time::DurationExt;
 use restate_vqueues::context::HasVQueues;
 use restate_wal_protocol::control::{CurrentReplicaSetConfiguration, NextReplicaSetConfiguration};
-use restate_wal_protocol::v2::{CommandScope, Dedup};
+use restate_wal_protocol::v2::CommandScope;
 use restate_wal_protocol::{Envelope, v2};
 use restate_worker_api::{LeaderQueryCommand, LeaderQueryReceiver};
 
@@ -522,37 +522,21 @@ where
                 _ = self.target_leader_state_rx.changed() => {
                     let target_leader_state = self.target_leader_state_rx.borrow_and_update().clone();
                     self.on_target_leader_state(target_leader_state).await.context("failed handling target leader state change")?;
+                    self.refresh_status(&mut durable_lsn_watch)?;
                 }
                 Ok(()) = watch_leader_changes.changed() => {
                     // cloning to avoid holding the underlying RwLock.
                     let new_state = *watch_leader_changes.borrow_and_update();
                     self.leadership_state.maybe_step_down(&mut self.ctx, new_state.current_leader_epoch, new_state.current_leader).await;
+                    self.refresh_status(&mut durable_lsn_watch)?;
                 }
                 Some(msg) = self.network_leader_svc_rx.next() => {
                     // todo: replace the live schema with the leader's consistent schema
                     self.on_rpc(msg, live_schemas.live_load(), &last_applied_lsn_watch).await;
                 }
                 _ = status_update_timer.tick() => {
-                    let durable_lsn = if durable_lsn_watch.has_changed().map_err(|e| ProcessorError::Other(e.into()))? {
-                        let durable_lsn = durable_lsn_watch
-                                .borrow_and_update()
-                                .unwrap_or(Lsn::INVALID);
-                        self.node_ctx.replica_set_states.note_durable_lsn(
-                            partition_id,
-                            my_node,
-                            durable_lsn,
-                        );
-                        durable_lsn
-                    } else {
-                        durable_lsn_watch.borrow().unwrap_or(Lsn::INVALID)
-                    };
-                    self.status_watch_tx.send_modify(|old| {
-                        self.ctx.merge_with_status(old);
-                        old.durable_lsn = Some(durable_lsn);
-                        old.storage_version = Some(self.partition_store.storage_version());
-                        old.effective_mode = self.leadership_state.effective_mode();
-                        old.updated_at = MillisSinceEpoch::now();
-                    });
+                    // Update the status to ensure changes are observable
+                    self.refresh_status(&mut durable_lsn_watch)?;
                 }
                 // Awaiting the first record is the only stream `.await` and is cancellation-safe:
                 // if this branch is dropped before a record is ready, nothing has been consumed.
@@ -585,10 +569,17 @@ where
                             &leader_record_write_to_read_latency,
                         )
                         .await? {
-                            NextStep::AdvanceLastAppliedLsn(lsn, ref dedup ) => {
+                            NextStep::AdvanceLastAppliedLsn { lsn, ref dedup, scope } => {
                                 self.ctx.dedup_mut().store_dedup_information(&mut txn, dedup)?;
                                 self.ctx.update_last_applied_lsn(&mut txn, lsn)?;
+                                if matches!(scope, CommandScope::PartitionScoped) {
+                                    // Update the status to ensure changes are observable
+                                    self.refresh_status(&mut durable_lsn_watch)?;
+                                }
                             },
+                            NextStep::SkipUntil(lsn) => {
+                                self.ctx.update_last_applied_lsn(&mut txn, lsn)?;
+                            }
                         }
 
                         if count >= max_batching_size {
@@ -685,6 +676,37 @@ where
             rpc::Replier::new(response_tx),
         )
         .await;
+    }
+
+    fn refresh_status(
+        &mut self,
+        durable_lsn_watch: &mut watch::Receiver<Option<Lsn>>,
+    ) -> Result<(), ProcessorError> {
+        let durable_lsn = if durable_lsn_watch
+            .has_changed()
+            .map_err(|e| ProcessorError::Other(e.into()))?
+        {
+            let durable_lsn = durable_lsn_watch
+                .borrow_and_update()
+                .unwrap_or(Lsn::INVALID);
+            self.node_ctx.replica_set_states.note_durable_lsn(
+                self.ctx.partition_id(),
+                self.node_ctx.my_node_id().as_plain(),
+                durable_lsn,
+            );
+            durable_lsn
+        } else {
+            durable_lsn_watch.borrow().unwrap_or(Lsn::INVALID)
+        };
+        self.status_watch_tx.send_modify(|old| {
+            self.ctx.merge_with_status(old);
+            old.durable_lsn = Some(durable_lsn);
+            old.storage_version = Some(self.partition_store.storage_version());
+            old.effective_mode = self.leadership_state.effective_mode();
+            old.updated_at = MillisSinceEpoch::now();
+        });
+
+        Ok(())
     }
 
     async fn on_rpc(
@@ -851,7 +873,7 @@ where
             Err(DataRecordError::Filtered { to, .. }) => {
                 // We advance our applied lsn to the end of the filtered gap
                 // Update replay status
-                return Ok(NextStep::AdvanceLastAppliedLsn(to, Dedup::None));
+                return Ok(NextStep::SkipUntil(to));
             }
             Err(DataRecordError::DataLoss { from, to }) => {
                 let log_id = self.ctx.log_id();
@@ -884,10 +906,11 @@ where
                 "Ignoring outdated or duplicate message: {:?}",
                 envelope.as_ref().header()
             );
-            return Ok(NextStep::AdvanceLastAppliedLsn(lsn, Dedup::None));
+            return Ok(NextStep::SkipUntil(lsn));
         }
 
-        match envelope.as_ref().scope() {
+        let scope = envelope.as_ref().scope();
+        match scope {
             CommandScope::PartitionScoped => {
                 self.apply_partition_command(envelope, txn, action_collector)
                     .await
@@ -902,7 +925,7 @@ where
                     self.leadership_state.is_leader(),
                 )
                 .await?;
-                Ok(NextStep::AdvanceLastAppliedLsn(lsn, dedup))
+                Ok(NextStep::AdvanceLastAppliedLsn { lsn, dedup, scope })
             }
         }
     }
