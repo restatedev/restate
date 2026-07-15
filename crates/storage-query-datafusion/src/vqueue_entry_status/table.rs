@@ -20,7 +20,7 @@ use restate_storage_api::vqueue_table::{RawStatusHeaderRef, ScanVQueueEntryStatu
 use restate_types::vqueues::{EntryId, VQueueId};
 
 use crate::context::{QueryContext, SelectPartitions};
-use crate::filter::{FirstMatchingPartitionKeyExtractor, VQueueEntryIdFilter};
+use crate::filter::{EntryIdSelection, FirstMatchingPartitionKeyExtractor, VQueueEntryIdFilter};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::statistics::{DEPLOYMENT_ROW_ESTIMATE, RowEstimate, TableStatisticsBuilder};
@@ -106,10 +106,10 @@ impl ScanLocalPartition for VQueueEntryStatusScanner {
 
 impl From<VQueueEntryIdFilter> for ScanEntryIdFilter {
     fn from(value: VQueueEntryIdFilter) -> Self {
-        if let Some(entry_ids) = value.entry_ids {
-            ScanEntryIdFilter::EntryIdRange(entry_ids)
-        } else {
-            ScanEntryIdFilter::PartitionKey(value.partition_keys)
+        match value.entry_ids {
+            Some(EntryIdSelection::Set(ids)) => ScanEntryIdFilter::EntryIdSet(ids),
+            Some(EntryIdSelection::Range(range)) => ScanEntryIdFilter::EntryIdRange(range),
+            None => ScanEntryIdFilter::PartitionKey(value.partition_keys),
         }
     }
 }

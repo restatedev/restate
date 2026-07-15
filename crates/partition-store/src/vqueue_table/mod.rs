@@ -17,6 +17,7 @@ mod metadata;
 mod reader;
 mod running_reader;
 
+use std::collections::BTreeSet;
 use std::pin::Pin;
 
 pub use entry::{EntryStatusKey, EntryStatusKeyRef};
@@ -27,11 +28,12 @@ pub use metadata::*;
 use anyhow::Context;
 use bilrost::{BorrowedMessage, Message, OwnedMessage};
 use bytes::BytesMut;
+use futures::FutureExt;
 use rocksdb::{DBRawIteratorWithThreadMode, ReadOptions};
 use strum::EnumCount;
 use tracing::error;
 
-use restate_rocksdb::Priority;
+use restate_rocksdb::{Priority, StorageTaskKind};
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
 use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaRef};
@@ -44,7 +46,7 @@ use restate_storage_api::vqueue_table::{
     ScanVQueueMetaTable,
 };
 use restate_types::sharding::{KeyRange, PartitionKey};
-use restate_types::vqueues::{EntryId, Seq, VQueueId};
+use restate_types::vqueues::{EntryId, Seq, VQueueEntryId, VQueueId};
 
 use self::entry::{EntryStatusKeyBuilder, entry_status_header_from_raw};
 use crate::keys::{DecodeTableKey, EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
@@ -440,6 +442,13 @@ impl ScanVQueueEntryStatusTable for PartitionStore {
             + Sync
             + 'static,
     {
+        // Fast path: for a known, bounded set of entry IDs each ID maps to exactly
+        // one fixed-length key, so we issue a single batched multi-get instead of
+        // scanning the (potentially huge) span between the smallest and largest ID.
+        if let ScanEntryIdFilter::EntryIdSet(ids) = filter {
+            return Ok(multi_get_vqueue_entry_status(self, ids, f).boxed());
+        }
+
         let scan = match filter {
             ScanEntryIdFilter::PartitionKey(range) => {
                 TableScan::FullScanPartitionKeyRange::<EntryStatusKeyBuilder>(range)
@@ -455,24 +464,122 @@ impl ScanVQueueEntryStatusTable for PartitionStore {
 
                 TableScan::KeyRangeInclusiveInSinglePartition(self.partition_id(), start, end)
             }
+            ScanEntryIdFilter::EntryIdSet(_) => unreachable!("handled above"),
         };
 
-        self.iterator_for_each(
-            "df-vqueue-entry-status",
-            Priority::Low,
-            scan,
-            move |(mut key, mut value)| {
-                let status_key = break_on_err(EntryStatusKey::deserialize_from(&mut key))?;
-                let (partition_key, entry_id) = status_key.split();
-                let header = break_on_err(
-                    RawStatusHeaderRef::decode_borrowed_length_delimited(&mut value)
-                        .map_err(StorageError::BilrostDecode),
-                )?;
+        let scan_fut = self
+            .iterator_for_each(
+                "df-vqueue-entry-status",
+                Priority::Low,
+                scan,
+                move |(mut key, mut value)| {
+                    let status_key = break_on_err(EntryStatusKey::deserialize_from(&mut key))?;
+                    let (partition_key, entry_id) = status_key.split();
+                    let header = break_on_err(
+                        RawStatusHeaderRef::decode_borrowed_length_delimited(&mut value)
+                            .map_err(StorageError::BilrostDecode),
+                    )?;
 
-                f(partition_key, &entry_id, &header).map_break(Ok)
-            },
-        )
-        .map_err(|_| StorageError::OperationalError)
+                    f(partition_key, &entry_id, &header).map_break(Ok)
+                },
+            )
+            .map_err(|_| StorageError::OperationalError)?;
+
+        Ok(scan_fut.boxed())
+    }
+}
+
+/// Serves an entry-status lookup for a known set of IDs via a single
+/// `batched_multi_get`, dispatched on the storage background thread-pool.
+///
+/// `ids` is already sorted in on-disk key order (it comes from a `BTreeSet`
+/// whose `Ord` matches the encoded key bytes), which is exactly what
+/// `batched_multi_get_cf_opt`'s `sorted_input=true` and the declared table
+/// sort order both require.
+///
+/// Entry-status keys are fixed-length, so all of them are packed back-to-back
+/// into a single buffer and handed to the multi-get as `chunks_exact` slices.
+/// That keeps us to one allocation for the whole key set (rocksdb only borrows
+/// pointers into it), instead of a `BytesMut` per key plus a `Vec` to hold them.
+fn multi_get_vqueue_entry_status<F>(
+    store: &PartitionStore,
+    ids: BTreeSet<VQueueEntryId>,
+    mut f: F,
+) -> impl Future<Output = Result<()>> + Send
+where
+    F: for<'a> FnMut(
+            PartitionKey,
+            &'a EntryId,
+            &'a RawStatusHeaderRef<'a>,
+        ) -> std::ops::ControlFlow<()>
+        + Send
+        + Sync
+        + 'static,
+{
+    const KEY_LEN: usize = EntryStatusKey::serialized_length_fixed();
+
+    let rocksdb = store.partition_db().rocksdb().clone();
+    let cf_name: restate_rocksdb::CfName = store.partition_db().partition().cf_name().into();
+
+    async move {
+        rocksdb
+            .run_background_op(
+                "df-vqueue-entry-status",
+                StorageTaskKind::MultiGet,
+                Priority::Low,
+                move |raw_db| -> Result<()> {
+                    let Some(cf) = raw_db.cf_handle(cf_name.as_str()) else {
+                        return Err(StorageError::Generic(anyhow::anyhow!(
+                            "column family {cf_name} not found for vqueue entry-status multi-get"
+                        )));
+                    };
+
+                    // Pack every fixed-length key contiguously into one buffer.
+                    let mut key_buf = BytesMut::with_capacity(ids.len() * KEY_LEN);
+                    for id in &ids {
+                        EncodeTableKey::serialize_to(
+                            &EntryStatusKey {
+                                partition_key: id.partition_key(),
+                                id: EntryId::from(*id),
+                            },
+                            &mut key_buf,
+                        );
+                    }
+
+                    let mut readopts = ReadOptions::default();
+                    readopts.set_async_io(true);
+
+                    let results = raw_db.batched_multi_get_cf_opt(
+                        &cf,
+                        key_buf.chunks_exact(KEY_LEN),
+                        true,
+                        &readopts,
+                    );
+                    // `ids` and `key_buf` chunks are in the same order, so we can
+                    // zip the results straight back onto the ids.
+                    for (id, result) in ids.iter().zip(results) {
+                        let Some(value) = result.map_err(|e| StorageError::Generic(e.into()))?
+                        else {
+                            // ID not present; skip.
+                            continue;
+                        };
+
+                        let entry_id = EntryId::from(*id);
+                        let mut value = value.as_ref();
+                        let header =
+                            RawStatusHeaderRef::decode_borrowed_length_delimited(&mut value)
+                                .map_err(StorageError::BilrostDecode)?;
+
+                        if f(id.partition_key(), &entry_id, &header).is_break() {
+                            break;
+                        }
+                    }
+
+                    Ok(())
+                },
+            )
+            .await
+            .map_err(|_| StorageError::OperationalError)?
     }
 }
 

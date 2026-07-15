@@ -495,10 +495,24 @@ fn parse_invocation_id_range(
     invocation_ids
 }
 
+/// Above this many distinct entry IDs we stop building a multi-get set and
+/// collapse to a `min..=max` range scan instead. Keeps the multi-get key vector
+/// bounded; scattered opaque IDs are never dense, so below the threshold the
+/// multi-get always wins over scanning the whole span.
+const ENTRY_ID_SET_THRESHOLD: usize = 500;
+
+/// How an `entry_id` predicate is served: either an exact set of IDs (small
+/// enough for a batched multi-get) or a collapsed `min..=max` range scan.
+#[derive(Debug, Clone)]
+pub enum EntryIdSelection {
+    Set(BTreeSet<VQueueEntryId>),
+    Range(std::range::RangeInclusive<VQueueEntryId>),
+}
+
 #[derive(Debug, Clone)]
 pub struct VQueueEntryIdFilter {
     pub partition_keys: KeyRange,
-    pub entry_ids: Option<std::range::RangeInclusive<VQueueEntryId>>,
+    pub entry_ids: Option<EntryIdSelection>,
 }
 
 impl ScanLocalPartitionFilter for VQueueEntryIdFilter {
@@ -507,7 +521,7 @@ impl ScanLocalPartitionFilter for VQueueEntryIdFilter {
             && let Ok(predicate) = snapshot_physical_expr(predicate)
         {
             for conjunct in split_conjunction(&predicate) {
-                if let Some(entry_ids) = parse_entry_id_range("entry_id", range, conjunct) {
+                if let Some(entry_ids) = parse_entry_id_selection("entry_id", range, conjunct) {
                     return Self {
                         partition_keys: range,
                         entry_ids: Some(entry_ids),
@@ -523,42 +537,52 @@ impl ScanLocalPartitionFilter for VQueueEntryIdFilter {
     }
 }
 
-fn parse_entry_id_range(
+fn parse_entry_id_selection(
     column_name: &str,
     range: KeyRange,
     predicate: &Arc<dyn PhysicalExpr>,
-) -> Option<std::range::RangeInclusive<VQueueEntryId>> {
+) -> Option<EntryIdSelection> {
     let in_list = InList::parse(predicate, 5)?;
 
     if in_list.col.name() != column_name {
         return None;
     }
 
-    let mut entry_ids: Option<std::range::RangeInclusive<VQueueEntryId>> = None;
+    // A `BTreeSet` gives us both dedup and on-disk key ordering for free:
+    // `VQueueEntryId`'s `Ord` matches the encoded key byte order, so iterating
+    // the set yields keys in the exact order RocksDB (and the declared table
+    // sort order) expects.
+    let mut entry_ids = BTreeSet::new();
     for literal in in_list.list {
         let str = literal.try_as_str()??;
         let entry_id = VQueueEntryId::from_str(str).ok()?;
 
         if range.contains(&entry_id.partition_key()) {
-            if let Some(entry_ids) = &mut entry_ids {
-                *entry_ids = std::range::RangeInclusive {
-                    start: entry_ids.start.min(entry_id),
-                    last: entry_ids.last.max(entry_id),
-                };
-            } else {
-                entry_ids = Some(std::range::RangeInclusive {
-                    start: entry_id,
-                    last: entry_id,
-                })
-            }
+            entry_ids.insert(entry_id);
         }
     }
 
-    entry_ids
+    if entry_ids.is_empty() {
+        return None;
+    }
+
+    if entry_ids.len() <= ENTRY_ID_SET_THRESHOLD {
+        Some(EntryIdSelection::Set(entry_ids))
+    } else {
+        // Too many IDs to multi-get: fall back to a single range scan over the
+        // span they cover. `first`/`last` are the in-range min/max.
+        let start = *entry_ids.first().expect("non-empty");
+        let last = *entry_ids.last().expect("non-empty");
+        Some(EntryIdSelection::Range(std::range::RangeInclusive {
+            start,
+            last,
+        }))
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
     use std::sync::Arc;
 
     use datafusion::common::ScalarValue;
@@ -571,9 +595,11 @@ mod tests {
     use restate_types::identifiers::{InvocationId, ServiceId, StateMutationId, WithPartitionKey};
     use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType};
     use restate_types::sharding::KeyRange;
+    use restate_types::vqueues::VQueueEntryId;
 
     use crate::filter::{
-        FirstMatchingPartitionKeyExtractor, InvocationIdFilter, PartitionKeyExtractor, VQueueFilter,
+        EntryIdSelection, FirstMatchingPartitionKeyExtractor, InvocationIdFilter,
+        PartitionKeyExtractor, VQueueEntryIdFilter, VQueueFilter,
     };
     use crate::partition_store_scanner::ScanLocalPartitionFilter;
 
@@ -1043,6 +1069,46 @@ mod tests {
 
         let filter = InvocationIdFilter::new(FULL_RANGE, Some(predicate));
         assert!(filter.invocation_ids.is_none());
+    }
+
+    #[test]
+    fn vqueue_entry_id_filter_set_from_in_list() {
+        let id1 = make_invocation_id("key-1");
+        let id2 = make_invocation_id("key-2");
+        let predicate = in_list(
+            "entry_id",
+            vec![utf8_lit(id1.to_string()), utf8_lit(id2.to_string())],
+        );
+
+        let filter = VQueueEntryIdFilter::new(FULL_RANGE, Some(predicate));
+
+        let expected1 = VQueueEntryId::from_str(&id1.to_string()).unwrap();
+        let expected2 = VQueueEntryId::from_str(&id2.to_string()).unwrap();
+        match filter.entry_ids {
+            Some(EntryIdSelection::Set(ids)) => {
+                assert_eq!(ids.len(), 2);
+                assert!(ids.contains(&expected1));
+                assert!(ids.contains(&expected2));
+            }
+            other => panic!("expected an entry-id set, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vqueue_entry_id_filter_excludes_out_of_range() {
+        let id = make_invocation_id("key-1");
+        let entry_id = VQueueEntryId::from_str(&id.to_string()).unwrap();
+        let pk = entry_id.partition_key();
+        let narrow_range = if pk > 0 {
+            KeyRange::new(0, pk - 1)
+        } else {
+            KeyRange::new(1, 1)
+        };
+
+        let predicate = eq(col("entry_id"), utf8_lit(id.to_string()));
+        let filter = VQueueEntryIdFilter::new(narrow_range, Some(predicate));
+
+        assert!(filter.entry_ids.is_none());
     }
 
     #[test]
