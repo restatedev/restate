@@ -8428,6 +8428,7 @@ dependencies = [
  "restate-types",
  "restate-util-bytecount",
  "restate-util-string",
+ "restate-util-time",
  "restate-workspace-hack",
  "rust-rocksdb",
  "serde",

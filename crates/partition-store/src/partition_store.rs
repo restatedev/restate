@@ -26,7 +26,8 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, trace};
+use tokio_util::sync::CancellationToken;
+use tracing::{info, trace};
 
 use restate_core::ShutdownError;
 use restate_rocksdb::{IoMode, IterAction, Priority, RocksDb, RocksError};
@@ -50,6 +51,7 @@ use crate::fsm_table::{
     put_jc_orphan_cleanup_done,
 };
 use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
+use crate::migrations::MigrationError;
 use crate::migrations::run_migrations_up_to;
 use crate::partition_db::PartitionDb;
 use crate::scan::PhysicalScan;
@@ -681,8 +683,9 @@ impl PartitionStore {
 
     pub async fn verify_and_run_migrations(
         &mut self,
+        cancel: CancellationToken,
         config: &Configuration,
-    ) -> Result<(), StorageError> {
+    ) -> Result<(), MigrationError> {
         // The target schema version is gated by the operator opt-in. Without
         // the flag we leave the partition at `V1_5` so a downgrade to a
         // pre-`ScopedStateAndPromise` binary stays possible. With the flag
@@ -718,11 +721,14 @@ impl PartitionStore {
         let mut storage_version = get_storage_version_from_partition_db(self.partition_db())?;
         if storage_version < target {
             // We need to run some migrations!
-            debug!(
-                "Running storage migration from {:?} to {:?}",
-                storage_version, target
-            );
-            storage_version = run_migrations_up_to(storage_version, target, self).await?;
+            if !is_empty {
+                info!(
+                    "Running storage migration from {:?} to {:?}",
+                    storage_version, target
+                );
+            }
+            storage_version =
+                run_migrations_up_to(storage_version, target, self, cancel, config).await?;
         }
         self.set_storage_version(storage_version);
         Ok(())

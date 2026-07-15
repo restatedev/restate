@@ -209,7 +209,7 @@ where
                     let run_result = async move {
                         let pp = pp_builder
                             .build(ingestion_client, db).await?;
-                        Box::pin(pp.run()).await
+                        pp.run().await
                     }
                     .await;
 

@@ -40,19 +40,21 @@ use std::time::Duration;
 
 use anyhow::Context;
 use futures::{FutureExt, StreamExt};
-use metrics::{gauge, histogram};
+use metrics::histogram;
 use tokio::sync::watch;
 use tokio::time::{Instant, MissedTickBehavior};
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{debug, error, instrument, trace, warn};
 
 use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{DataRecord, DataRecordError, LogEntry};
 use restate_core::network::{
     Incoming, Oneshot, Reciprocal, Rpc, ServiceMessage, ServiceStream, TransportConnect, Verdict,
 };
-use restate_core::{Metadata, ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
+use restate_core::{Metadata, ShutdownError, TaskCenter, TaskKind, cancellation_token};
 use restate_ingestion_client::IngestionClient;
-use restate_partition_store::{PartitionDb, PartitionStore, PartitionStoreTransaction};
+use restate_partition_store::{
+    MigrationError, PartitionDb, PartitionStore, PartitionStoreTransaction,
+};
 use restate_platform::memory::EstimatedMemorySize;
 use restate_storage_api::deduplication_table::{
     DedupSequenceNumber, ProducerId, ReadDeduplicationTable,
@@ -79,7 +81,6 @@ use restate_types::storage::{
 };
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{GenerationalNodeId, SemanticRestateVersion, Version};
-use restate_util_string::{ReString, ToReString};
 use restate_util_time::DurationExt;
 use restate_vqueues::context::HasVQueues;
 use restate_wal_protocol::control::{CurrentReplicaSetConfiguration, NextReplicaSetConfiguration};
@@ -94,8 +95,7 @@ use self::processor::commands::{
 use self::processor::*;
 use self::state_machine::StateMachine;
 use crate::metric_definitions::{
-    FLARE_REASON_VERSION_BARRIER, LEADER_LABEL, LEADER_LABEL_LEADER, PARTITION_BLOCKED_FLARE,
-    PARTITION_LABEL, PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, REASON_LABEL,
+    LEADER_LABEL, LEADER_LABEL_LEADER, PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
 };
 use crate::partition::leadership::LeadershipState;
 use crate::partition::processor::leadership::LeadershipContext;
@@ -168,7 +168,6 @@ impl PartitionProcessorBuilder {
             node_ctx,
         } = self;
 
-        let partition_id_str = partition_db.partition().id().to_restring();
         let mut partition_store = PartitionStore::from(partition_db);
 
         let ctx =
@@ -198,7 +197,6 @@ impl PartitionProcessorBuilder {
             LeadershipState::new(ctx.partition_id(), ingestion_client, leader_query_tx);
 
         Ok(PartitionProcessor {
-            partition_id_str,
             partition_store,
             ctx,
             node_ctx,
@@ -212,7 +210,6 @@ impl PartitionProcessorBuilder {
 }
 
 pub struct PartitionProcessor<T> {
-    partition_id_str: ReString,
     partition_store: PartitionStore,
     ctx: ProcessorRawContext,
     node_ctx: NodeContext,
@@ -285,6 +282,10 @@ pub enum ProcessorError {
     MigrationRequired {
         features: Vec<PartitionFeatureChange>,
     },
+    #[error(
+        "partition is blocked; restate-server cannot perform data migration. reason='{reason}'"
+    )]
+    MigrationBarrier { reason: String },
     #[error(transparent)]
     ActionEffect(#[from] leadership::Error),
     #[error(transparent)]
@@ -316,28 +317,46 @@ where
     pub async fn run(mut self) -> Result<(), ProcessorError> {
         debug!("Starting the partition processor.");
 
-        let res = tokio::select! {
-            res = self.run_inner() => {
-                match res.as_ref() {
-                    // run_inner never returns normally
-                    Ok(_) => warn!("Shutting partition processor down because it stopped unexpectedly."),
-                    Err(ProcessorError::TrimGapEncountered { trim_gap_end, read_pointer }) =>
-                        info!(
-                            %read_pointer,
-                            %trim_gap_end,
-                            "Shutting partition processor down because it encountered a trim gap in the log."
-                        ),
-                    Err(ProcessorError::VersionBarrier{ .. }) => {
-                        gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL => self.partition_id_str, REASON_LABEL => FLARE_REASON_VERSION_BARRIER).set(1);
-                    }
-                    Err(err) => warn!("Shutting partition processor down because of error: {err}"),
-                }
-                res
-            },
-            _ = cancellation_watcher() => {
+        let cancel = cancellation_token();
+        // Run migrations first.
+        //
+        // Important to note: This only runs the migration for the given partition store. In a setup,
+        // where not every node runs every partition, it can happen that partition data remains
+        // untouched when going from one version to the next.
+        // todo https://github.com/restatedev/restate/issues/4175.
+        //
+        // This will fail with StorageError::MigrationCancelled if the current task was cancelled
+        // during the migration phase.
+        match self
+            .partition_store
+            .verify_and_run_migrations(cancel.clone(), self.node_ctx.config.live_load())
+            .await
+        {
+            Ok(()) => {}
+            Err(MigrationError::MigrationCancelled) => {
+                debug!(
+                    "Shutting partition processor during data migration because it was cancelled."
+                );
+                return Ok(());
+            }
+            Err(MigrationError::MigrationBarrier(reason)) => {
+                return Err(ProcessorError::MigrationBarrier { reason });
+            }
+            Err(MigrationError::StorageError(err)) => {
+                warn!(
+                    "Shutting partition processor during data migration down because of error: {err}"
+                );
+                return Err(err.into());
+            }
+        }
+
+        // Note: Boxing because it's a rather large future (>35KiB)
+        let res = match cancel.run_until_cancelled(Box::pin(self.run_inner())).await {
+            Some(res) => res,
+            None => {
                 debug!("Shutting partition processor down because it was cancelled.");
                 Ok(())
-            },
+            }
         };
 
         // clean up pending rpcs and stop child tasks
@@ -396,14 +415,6 @@ where
     }
 
     async fn run_inner(&mut self) -> Result<(), ProcessorError> {
-        // Important to note: This only runs the migration for the given partition store. In a setup,
-        // where not every node runs every partition, it can happen that partition data remains
-        // untouched when going from one version to the next.
-        // todo https://github.com/restatedev/restate/issues/4175.
-        self.partition_store
-            .verify_and_run_migrations(self.node_ctx.config.live_load())
-            .await?;
-
         let last_applied_lsn_watch = self.ctx.subscribe_to_last_applied_lsn();
 
         let log_id = self.ctx.log_id();

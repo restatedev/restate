@@ -14,6 +14,8 @@ use std::ops::ControlFlow;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use tokio_util::sync::CancellationToken;
+
 use restate_clock::ClockUpkeep;
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
@@ -107,11 +109,13 @@ async fn migrate_to_locks_table_moves_service_status_locks_to_lock_table() {
     txn.commit().await.expect("commit should succeed");
     drop(txn);
 
+    let cancel = CancellationToken::new();
     let config = Configuration::default();
     let mut ctx = MigrationContext::new(
         &config,
         rocksdb.partition_db(),
         rocksdb.partition_key_range(),
+        cancel,
     );
     crate::migrations::migrate_to_locks_table::migrate_to_locks_table(&mut ctx)
         .expect("migration should succeed");
@@ -197,7 +201,8 @@ async fn migrate_to_locks_table_runs_split_ranges_concurrently_with_shared_conte
     drop(txn);
 
     let config = Configuration::default();
-    let ctx = MigrationContext::new(&config, rocksdb.partition_db(), key_range);
+    let cancel = CancellationToken::new();
+    let ctx = MigrationContext::new(&config, rocksdb.partition_db(), key_range, cancel);
     let contexts = ctx
         .split(NonZeroU16::new(2).expect("two is non-zero"))
         .collect::<Vec<_>>();
