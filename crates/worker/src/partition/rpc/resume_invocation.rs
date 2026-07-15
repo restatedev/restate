@@ -25,15 +25,12 @@ pub(super) struct Request {
     pub(super) update_deployment_id: PatchDeploymentId,
 }
 
-impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
-    for RpcContext<'a, TActuator, TSchemas, TStorage>
+impl<'a, TSchemas, TStorage> RpcHandler<Request> for RpcContext<'a, TSchemas, TStorage>
 where
-    TActuator: Actuator,
     // Needed for the non-VQueue path, which resolves the deployment here (see `handle`).
     TSchemas: DeploymentResolver,
     TStorage: ReadInvocationStatusTable,
 {
-    type Output = ResumeInvocationRpcResponse;
     type Error = ();
 
     async fn handle(
@@ -43,33 +40,31 @@ where
             invocation_id,
             update_deployment_id,
         }: Request,
-        replier: Replier<Self::Output>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<NextStep, Self::Error> {
         // Reading from a non-leader partition processor can return stale results
         // (e.g. NotFound for an invocation that exists on the leader) because the
         // follower's local store may not have replayed all log entries yet.
-        if !self.proposer.is_leader() {
-            replier.send_result(Err(PartitionProcessorRpcError::NotLeader(
-                self.proposer.partition_id(),
-            )));
-            return Ok(());
+        if !self.is_leader {
+            return Ok(NextStep::Reply(Err(PartitionProcessorRpcError::NotLeader(
+                self.partition_id,
+            ))));
         }
 
         // -- Figure out the invocation status
-        match self.storage.get_invocation_status(&invocation_id).await {
-            Ok(InvocationStatus::Invoked(metadata)) => {
-                if metadata.vqueue_id.is_some() {
-                    // VQueue-owned: the invoker no longer solely drives the lifecycle. Propose the
-                    // persisted command, forwarding the *unresolved* deployment patch -- it is
-                    // resolved and validated (and the entry rescheduled) in the apply path
-                    // (`OnManualResumeCommand`), which classifies the possibly-changed status. There
-                    // is no running attempt to fence, so use the plain proposal path -- unlike
-                    // pause's `propose_pause_and_fence`. Writing the new `update_deployment_id` field
-                    // is safe here: vqueues being enabled implies a cluster min version >= 1.7.0.
-                    self.proposer
-                        .handle_rpc_proposal_command(
-                            invocation_id.partition_key(),
-                            Command::ResumeInvocation(ResumeInvocationRequest {
+        Ok(
+            match self.storage.get_invocation_status(&invocation_id).await {
+                Ok(InvocationStatus::Invoked(metadata)) => {
+                    if metadata.vqueue_id.is_some() {
+                        // VQueue-owned: the invoker no longer solely drives the lifecycle. Propose the
+                        // persisted command, forwarding the *unresolved* deployment patch -- it is
+                        // resolved and validated (and the entry rescheduled) in the apply path
+                        // (`OnManualResumeCommand`), which classifies the possibly-changed status. There
+                        // is no running attempt to fence, so use the plain proposal path -- unlike
+                        // pause's `propose_pause_and_fence`. Writing the new `update_deployment_id` field
+                        // is safe here: vqueues being enabled implies a cluster min version >= 1.7.0.
+                        NextStep::Propose {
+                            partition_key: invocation_id.partition_key(),
+                            cmd: Command::ResumeInvocation(ResumeInvocationRequest {
                                 invocation_id,
                                 update_deployment_id: Some(update_deployment_id),
                                 update_pinned_deployment_id: None,
@@ -78,31 +73,31 @@ where
                                     IngressInvocationResponseSink { request_id },
                                 )),
                             }),
-                            request_id,
-                            replier,
-                        )
-                        .await;
-                } else {
-                    // Legacy invoker-owned path: there is a live attempt, so the pinned deployment
-                    // cannot be patched. Poke the invoker to retry now, if possible.
-                    if !matches!(update_deployment_id, PatchDeploymentId::KeepPinned) {
-                        replier.send(ResumeInvocationRpcResponse::CannotPatchDeploymentId);
-                        return Ok(());
+                            reply_policy: ReplyPolicy::OnApply { request_id },
+                        }
+                    } else {
+                        // Legacy invoker-owned path: there is a live attempt, so the pinned deployment
+                        // cannot be patched. Poke the invoker to retry now, if possible.
+                        if !matches!(update_deployment_id, PatchDeploymentId::KeepPinned) {
+                            return Ok(NextStep::Reply(Ok(
+                                ResumeInvocationRpcResponse::CannotPatchDeploymentId.into(),
+                            )));
+                        }
+                        NextStep::NotifyInvokerAndReply {
+                            notification: InvokerNotification::RetryNow(invocation_id),
+                            reply: ResumeInvocationRpcResponse::Ok.into(),
+                        }
                     }
-                    self.proposer.notify_invoker_to_retry_now(invocation_id);
-                    replier.send(ResumeInvocationRpcResponse::Ok);
                 }
-            }
-            Ok(InvocationStatus::Suspended { metadata, .. })
-            | Ok(InvocationStatus::Paused(metadata)) => {
-                if metadata.vqueue_id.is_some() {
-                    // VQueue path: forward the unresolved patch; the apply path resolves it against
-                    // the status as of the command's log position. Safe to write the new
-                    // `update_deployment_id` field -- vqueues imply a cluster min version >= 1.7.0.
-                    self.proposer
-                        .handle_rpc_proposal_command(
-                            invocation_id.partition_key(),
-                            Command::ResumeInvocation(ResumeInvocationRequest {
+                Ok(InvocationStatus::Suspended { metadata, .. })
+                | Ok(InvocationStatus::Paused(metadata)) => {
+                    if metadata.vqueue_id.is_some() {
+                        // VQueue path: forward the unresolved patch; the apply path resolves it against
+                        // the status as of the command's log position. Safe to write the new
+                        // `update_deployment_id` field -- vqueues imply a cluster min version >= 1.7.0.
+                        return Ok(NextStep::Propose {
+                            partition_key: invocation_id.partition_key(),
+                            cmd: Command::ResumeInvocation(ResumeInvocationRequest {
                                 invocation_id,
                                 update_deployment_id: Some(update_deployment_id),
                                 update_pinned_deployment_id: None,
@@ -111,34 +106,32 @@ where
                                     IngressInvocationResponseSink { request_id },
                                 )),
                             }),
-                            request_id,
-                            replier,
-                        )
-                        .await;
-                    return Ok(());
-                }
-
-                // Non-VQueue path: a pre-1.7.0 node may still apply this command and does not know
-                // `update_deployment_id`, so we resolve here -- reusing the apply path's resolver --
-                // and propose the already-resolved `update_pinned_deployment_id` (the field older
-                // nodes understand).
-                let update_pinned_deployment_id = match resolve_pinned_deployment(
-                    Some(&update_deployment_id),
-                    None,
-                    &metadata,
-                    Some(self.schemas),
-                ) {
-                    Ok(resolved) => resolved,
-                    Err(response) => {
-                        replier.send(response.into());
-                        return Ok(());
+                            reply_policy: ReplyPolicy::OnApply { request_id },
+                        });
                     }
-                };
 
-                self.proposer
-                    .handle_rpc_proposal_command(
-                        invocation_id.partition_key(),
-                        Command::ResumeInvocation(ResumeInvocationRequest {
+                    // Non-VQueue path: a pre-1.7.0 node may still apply this command and does not know
+                    // `update_deployment_id`, so we resolve here -- reusing the apply path's resolver --
+                    // and propose the already-resolved `update_pinned_deployment_id` (the field older
+                    // nodes understand).
+                    let update_pinned_deployment_id = match resolve_pinned_deployment(
+                        Some(&update_deployment_id),
+                        None,
+                        &metadata,
+                        Some(self.schemas),
+                    ) {
+                        Ok(resolved) => resolved,
+                        Err(response) => {
+                            return Ok(NextStep::Reply(Ok(ResumeInvocationRpcResponse::from(
+                                response,
+                            )
+                            .into())));
+                        }
+                    };
+
+                    NextStep::Propose {
+                        partition_key: invocation_id.partition_key(),
+                        cmd: Command::ResumeInvocation(ResumeInvocationRequest {
                             invocation_id,
                             update_deployment_id: None,
                             update_pinned_deployment_id,
@@ -147,28 +140,23 @@ where
                                 IngressInvocationResponseSink { request_id },
                             )),
                         }),
-                        request_id,
-                        replier,
-                    )
-                    .await;
-            }
-            Ok(InvocationStatus::Scheduled(_)) | Ok(InvocationStatus::Inboxed(_)) => {
-                replier.send(ResumeInvocationRpcResponse::NotStarted);
-            }
-            Ok(InvocationStatus::Completed(_)) => {
-                replier.send(ResumeInvocationRpcResponse::Completed);
-            }
-            Ok(InvocationStatus::Free) => {
-                replier.send(ResumeInvocationRpcResponse::NotFound);
-            }
-            Err(storage_error) => {
-                replier.send_result(Err(PartitionProcessorRpcError::Internal(
+                        reply_policy: ReplyPolicy::OnApply { request_id },
+                    }
+                }
+                Ok(InvocationStatus::Scheduled(_)) | Ok(InvocationStatus::Inboxed(_)) => {
+                    NextStep::Reply(Ok(ResumeInvocationRpcResponse::NotStarted.into()))
+                }
+                Ok(InvocationStatus::Completed(_)) => {
+                    NextStep::Reply(Ok(ResumeInvocationRpcResponse::Completed.into()))
+                }
+                Ok(InvocationStatus::Free) => {
+                    NextStep::Reply(Ok(ResumeInvocationRpcResponse::NotFound.into()))
+                }
+                Err(storage_error) => NextStep::Reply(Err(PartitionProcessorRpcError::Internal(
                     storage_error.to_string(),
-                )));
-            }
-        };
-
-        Ok(())
+                ))),
+            },
+        )
     }
 }
 
@@ -176,9 +164,7 @@ where
 mod tests {
     use super::*;
 
-    use crate::partition::rpc::MockActuator;
     use assert2::let_assert;
-    use futures::FutureExt;
     use googletest::prelude::*;
     use restate_storage_api::invocation_status_table::{
         CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation,
@@ -217,40 +203,60 @@ mod tests {
         }
     }
 
+    async fn handle<R: DeploymentResolver>(
+        is_leader: bool,
+        schemas: &R,
+        storage: &mut MockStorage,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+        update_deployment_id: PatchDeploymentId,
+    ) -> NextStep {
+        RpcHandler::handle(
+            RpcContext::new(is_leader, PartitionId::MIN, schemas, storage),
+            Request {
+                request_id,
+                invocation_id,
+                update_deployment_id,
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    fn assert_reply(next_step: NextStep, expected: ResumeInvocationRpcResponse) {
+        let NextStep::Reply(Ok(actual)) = next_step else {
+            panic!("expected an immediate successful reply");
+        };
+        assert_eq!(actual, PartitionProcessorRpcResponse::from(expected));
+    }
+
     #[test(restate_core::test)]
     async fn reply_ok_when_invoked() {
         let invocation_id = InvocationId::mock_random();
-
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
-        proposer
-            .expect_notify_invoker_to_retry_now()
-            .return_once_st(move |got_invocation_id| {
-                assert_eq!(got_invocation_id, invocation_id);
-            });
 
         let mut storage = MockStorage {
             expected_invocation_id: invocation_id,
             status: InvocationStatus::Invoked(InFlightInvocationMetadata::mock()),
         };
 
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &(), &mut storage),
-            Request {
-                request_id: Default::default(),
-                invocation_id,
-                update_deployment_id: Default::default(),
-            },
-            Replier::new(tx),
+        let next_step = handle(
+            true,
+            &(),
+            &mut storage,
+            Default::default(),
+            invocation_id,
+            Default::default(),
         )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            rx.recv().await.unwrap(),
-            PartitionProcessorRpcResponse::ResumeInvocation(ResumeInvocationRpcResponse::Ok)
-        );
+        .await;
+        assert!(matches!(
+            next_step,
+            NextStep::NotifyInvokerAndReply {
+                notification: InvokerNotification::RetryNow(actual_invocation_id),
+                reply: PartitionProcessorRpcResponse::ResumeInvocation(
+                    ResumeInvocationRpcResponse::Ok
+                ),
+            } if actual_invocation_id == invocation_id
+        ));
     }
 
     /// A VQueue Invoked invocation is resumed by proposing the persisted ResumeInvocation command
@@ -259,22 +265,6 @@ mod tests {
     async fn vqueue_invoked_proposes_resume_command() {
         let invocation_id = InvocationId::mock_random();
 
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
-        // The invoker must NOT be poked for a VQueue invocation.
-        proposer.expect_notify_invoker_to_retry_now().never();
-        proposer
-            .expect_handle_rpc_proposal_command::<ResumeInvocationRpcResponse>()
-            .return_once_st(move |_, cmd, _request_id, replier| {
-                // The command shape (response_sink, deployment patching) is covered by
-                // `propose_resume_command_on_paused_and_suspended`; here we only care that the
-                // Invoked+VQueue path proposes ResumeInvocation rather than poking the invoker.
-                let_assert!(Command::ResumeInvocation(request) = cmd);
-                assert_eq!(request.invocation_id, invocation_id);
-                replier.send(ResumeInvocationRpcResponse::Ok);
-                ready(()).boxed()
-            });
-
         let mut storage = MockStorage {
             expected_invocation_id: invocation_id,
             status: InvocationStatus::Invoked(InFlightInvocationMetadata::mock_with_vqueue(
@@ -282,23 +272,23 @@ mod tests {
             )),
         };
 
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &(), &mut storage),
-            Request {
-                request_id: Default::default(),
-                invocation_id,
-                update_deployment_id: Default::default(),
-            },
-            Replier::new(tx),
+        let next_step = handle(
+            true,
+            &(),
+            &mut storage,
+            Default::default(),
+            invocation_id,
+            Default::default(),
         )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            rx.recv().await.unwrap(),
-            PartitionProcessorRpcResponse::ResumeInvocation(ResumeInvocationRpcResponse::Ok)
+        .await;
+        let_assert!(
+            NextStep::Propose {
+                cmd: Command::ResumeInvocation(request),
+                reply_policy: ReplyPolicy::OnApply { .. },
+                ..
+            } = next_step
         );
+        assert_eq!(request.invocation_id, invocation_id);
     }
 
     #[rstest]
@@ -315,49 +305,42 @@ mod tests {
     ) {
         let invocation_id = InvocationId::mock_random();
 
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
-        proposer
-            .expect_handle_rpc_proposal_command::<ResumeInvocationRpcResponse>()
-            .return_once_st(move |_, cmd, request_id, replier| {
-                let_assert!(Command::ResumeInvocation(resume_invocation_request) = cmd);
-                assert_that!(
-                    resume_invocation_request,
-                    all!(
-                        field!(ResumeInvocationRequest.invocation_id, eq(invocation_id)),
-                        field!(
-                            ResumeInvocationRequest.response_sink,
-                            some(eq(InvocationMutationResponseSink::Ingress(
-                                IngressInvocationResponseSink { request_id }
-                            )))
-                        ),
-                    )
-                );
-                replier.send(ResumeInvocationRpcResponse::Ok);
-                ready(()).boxed()
-            });
-
         let mut storage = MockStorage {
             expected_invocation_id: invocation_id,
             status,
         };
 
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &(), &mut storage),
-            Request {
-                request_id: Default::default(),
-                invocation_id,
-                update_deployment_id: Default::default(),
-            },
-            Replier::new(tx),
+        let request_id = PartitionProcessorRpcRequestId::new();
+        let next_step = handle(
+            true,
+            &(),
+            &mut storage,
+            request_id,
+            invocation_id,
+            Default::default(),
         )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            rx.recv().await.unwrap(),
-            PartitionProcessorRpcResponse::ResumeInvocation(ResumeInvocationRpcResponse::Ok)
+        .await;
+        let_assert!(
+            NextStep::Propose {
+                cmd: Command::ResumeInvocation(resume_invocation_request),
+                reply_policy: ReplyPolicy::OnApply {
+                    request_id: actual_request_id,
+                },
+                ..
+            } = next_step
+        );
+        assert_eq!(actual_request_id, request_id);
+        assert_that!(
+            resume_invocation_request,
+            all!(
+                field!(ResumeInvocationRequest.invocation_id, eq(invocation_id)),
+                field!(
+                    ResumeInvocationRequest.response_sink,
+                    some(eq(InvocationMutationResponseSink::Ingress(
+                        IngressInvocationResponseSink { request_id }
+                    )))
+                ),
+            )
         );
     }
 
@@ -365,68 +348,42 @@ mod tests {
     async fn reply_not_found_for_unknown_invocation() {
         let invocation_id = InvocationId::mock_random();
 
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
-        proposer
-            .expect_handle_rpc_proposal_command::<PartitionProcessorRpcResponse>()
-            .never();
-
         let mut storage = MockStorage {
             expected_invocation_id: invocation_id,
             status: Default::default(),
         };
 
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &(), &mut storage),
-            Request {
-                request_id: Default::default(),
-                invocation_id,
-                update_deployment_id: Default::default(),
-            },
-            Replier::new(tx),
+        let next_step = handle(
+            true,
+            &(),
+            &mut storage,
+            Default::default(),
+            invocation_id,
+            Default::default(),
         )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            rx.recv().await.unwrap(),
-            PartitionProcessorRpcResponse::ResumeInvocation(ResumeInvocationRpcResponse::NotFound)
-        );
+        .await;
+        assert_reply(next_step, ResumeInvocationRpcResponse::NotFound);
     }
 
     #[test(restate_core::test)]
     async fn reply_completed() {
         let invocation_id = InvocationId::mock_random();
 
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
-        proposer
-            .expect_handle_rpc_proposal_command::<PartitionProcessorRpcResponse>()
-            .never();
-
         let mut storage = MockStorage {
             expected_invocation_id: invocation_id,
             status: InvocationStatus::Completed(CompletedInvocation::mock_neo()),
         };
 
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &(), &mut storage),
-            Request {
-                request_id: Default::default(),
-                invocation_id,
-                update_deployment_id: Default::default(),
-            },
-            Replier::new(tx),
+        let next_step = handle(
+            true,
+            &(),
+            &mut storage,
+            Default::default(),
+            invocation_id,
+            Default::default(),
         )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            rx.recv().await.unwrap(),
-            PartitionProcessorRpcResponse::ResumeInvocation(ResumeInvocationRpcResponse::Completed)
-        );
+        .await;
+        assert_reply(next_step, ResumeInvocationRpcResponse::Completed);
     }
 
     #[rstest]
@@ -445,36 +402,21 @@ mod tests {
     ) {
         let invocation_id = InvocationId::mock_random();
 
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
-        proposer
-            .expect_handle_rpc_proposal_command::<ResumeInvocationRpcResponse>()
-            .never();
-
         let mut storage = MockStorage {
             expected_invocation_id: invocation_id,
             status,
         };
 
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &(), &mut storage),
-            Request {
-                request_id: Default::default(),
-                invocation_id,
-                update_deployment_id: Default::default(),
-            },
-            Replier::new(tx),
+        let next_step = handle(
+            true,
+            &(),
+            &mut storage,
+            Default::default(),
+            invocation_id,
+            Default::default(),
         )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            rx.recv().await.unwrap(),
-            PartitionProcessorRpcResponse::ResumeInvocation(
-                ResumeInvocationRpcResponse::NotStarted
-            )
-        );
+        .await;
+        assert_reply(next_step, ResumeInvocationRpcResponse::NotStarted);
     }
 
     #[rstest]
@@ -498,12 +440,6 @@ mod tests {
             schemas.mock_latest_service(invocation_target.service_name(), dep.id);
         }
 
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
-        proposer
-            .expect_handle_rpc_proposal_command::<ResumeInvocationRpcResponse>()
-            .never();
-
         let metadata = InFlightInvocationMetadata {
             invocation_target,
             pinned_deployment: Some(PinnedDeployment::new(DeploymentId::new(), pinned_version)),
@@ -521,7 +457,6 @@ mod tests {
             },
         };
 
-        let (tx, rx) = Reciprocal::mock();
         let update_deployment_id = if pin_to_specific {
             PatchDeploymentId::PinTo {
                 id: expected_deployment_id,
@@ -529,22 +464,23 @@ mod tests {
         } else {
             PatchDeploymentId::PinToLatest
         };
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &schemas, &mut storage),
-            Request {
-                request_id: Default::default(),
-                invocation_id,
-                update_deployment_id,
-            },
-            Replier::new(tx),
+        let next_step = handle(
+            true,
+            &schemas,
+            &mut storage,
+            Default::default(),
+            invocation_id,
+            update_deployment_id,
         )
-        .await
-        .unwrap();
+        .await;
 
         // Non-VQueue path resolves the deployment in the RPC and rejects the incompatible pin
         // synchronously (no command proposed).
         assert_eq!(
-            rx.recv().await.unwrap(),
+            match next_step {
+                NextStep::Reply(Ok(response)) => response,
+                _ => panic!("expected an immediate successful reply"),
+            },
             PartitionProcessorRpcResponse::ResumeInvocation(
                 ResumeInvocationRpcResponse::IncompatibleDeploymentId {
                     pinned_protocol_version: i32::from(pinned_version),
@@ -561,36 +497,23 @@ mod tests {
     async fn legacy_invoked_rejects_deployment_patch() {
         let invocation_id = InvocationId::mock_random();
 
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
-        proposer.expect_notify_invoker_to_retry_now().never();
-        proposer
-            .expect_handle_rpc_proposal_command::<ResumeInvocationRpcResponse>()
-            .never();
-
         let mut storage = MockStorage {
             expected_invocation_id: invocation_id,
             status: InvocationStatus::Invoked(InFlightInvocationMetadata::mock()),
         };
 
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &(), &mut storage),
-            Request {
-                request_id: Default::default(),
-                invocation_id,
-                update_deployment_id: PatchDeploymentId::PinToLatest,
-            },
-            Replier::new(tx),
+        let next_step = handle(
+            true,
+            &(),
+            &mut storage,
+            Default::default(),
+            invocation_id,
+            PatchDeploymentId::PinToLatest,
         )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            rx.recv().await.unwrap(),
-            PartitionProcessorRpcResponse::ResumeInvocation(
-                ResumeInvocationRpcResponse::CannotPatchDeploymentId
-            )
+        .await;
+        assert_reply(
+            next_step,
+            ResumeInvocationRpcResponse::CannotPatchDeploymentId,
         );
     }
 
@@ -598,36 +521,24 @@ mod tests {
     async fn reply_not_leader_when_not_leader() {
         let invocation_id = InvocationId::mock_random();
 
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(false);
-        proposer
-            .expect_partition_id()
-            .return_const(PartitionId::from(0));
-        proposer
-            .expect_handle_rpc_proposal_command::<PartitionProcessorRpcResponse>()
-            .never();
-
         let mut storage = MockStorage {
             expected_invocation_id: invocation_id,
             status: Default::default(),
         };
 
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &(), &mut storage),
-            Request {
-                request_id: Default::default(),
-                invocation_id,
-                update_deployment_id: Default::default(),
-            },
-            Replier::new(tx),
+        let next_step = handle(
+            false,
+            &(),
+            &mut storage,
+            Default::default(),
+            invocation_id,
+            Default::default(),
         )
-        .await
-        .unwrap();
+        .await;
 
         assert!(matches!(
-            rx.recv().await,
-            Err(PartitionProcessorRpcError::NotLeader(_))
+            next_step,
+            NextStep::Reply(Err(PartitionProcessorRpcError::NotLeader(_)))
         ));
     }
 }
