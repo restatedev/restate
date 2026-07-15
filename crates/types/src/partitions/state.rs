@@ -50,6 +50,11 @@ impl PartitionReplicaSetStates {
         partition_id: PartitionId,
         incoming_leader: LeadershipState,
     ) {
+        // filter out invalid leader epochs.
+        if !incoming_leader.current_leader_epoch.is_valid() {
+            return;
+        }
+
         let modified = match self.inner.partitions.entry(partition_id) {
             Entry::Occupied(mut occupied_entry) => occupied_entry
                 .get_mut()

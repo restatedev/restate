@@ -87,7 +87,7 @@ impl<P: Processor + HasFsmMut + HasVQueuesMut + HasTrimQueue + HasStatusMut, T: 
                 self.node_ctx,
                 &mut self.processor,
                 self.partition_store,
-                &announce_leader,
+                announce_leader.leader_epoch,
             )
             .await?;
 

@@ -12,7 +12,6 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use prost_dto::IntoProst;
-use serde::{Deserialize, Serialize};
 
 use restate_encoding::NetSerde;
 
@@ -20,6 +19,7 @@ use crate::identifiers::{LeaderEpoch, PartitionId};
 use crate::logs::Lsn;
 use crate::partitions::StorageVersion;
 use crate::partitions::features::PersistedFeatures;
+pub use crate::protobuf::cluster::DetailedRunMode;
 use crate::time::MillisSinceEpoch;
 use crate::{GenerationalNodeId, PlainNodeId, Version};
 
@@ -139,17 +139,7 @@ pub struct DeadNode {
 }
 
 #[derive(
-    Debug,
-    Clone,
-    Copy,
-    Serialize,
-    Deserialize,
-    Eq,
-    PartialEq,
-    IntoProst,
-    strum::Display,
-    bilrost::Enumeration,
-    NetSerde,
+    Debug, Clone, Copy, Eq, PartialEq, IntoProst, strum::Display, bilrost::Enumeration, NetSerde,
 )]
 #[prost(target = "crate::protobuf::cluster::RunMode")]
 #[strum(serialize_all = "snake_case")]
@@ -159,17 +149,7 @@ pub enum RunMode {
 }
 
 #[derive(
-    Debug,
-    Clone,
-    Copy,
-    Eq,
-    PartialEq,
-    Serialize,
-    Deserialize,
-    IntoProst,
-    strum::Display,
-    bilrost::Enumeration,
-    NetSerde,
+    Debug, Clone, Copy, Eq, PartialEq, IntoProst, strum::Display, bilrost::Enumeration, NetSerde,
 )]
 #[prost(target = "crate::protobuf::cluster::ReplayStatus")]
 #[strum(serialize_all = "snake_case")]
@@ -227,6 +207,39 @@ pub struct PartitionProcessorStatus {
     #[bilrost(16)]
     #[into_prost(map = "storage_version_to_u32")]
     pub storage_version: Option<StorageVersion>,
+
+    /// Since v1.7.3 (if Unknown, use effective_mode)
+    #[bilrost(17)]
+    pub detailed_effective_mode: DetailedRunMode,
+}
+
+impl PartitionProcessorStatus {
+    pub fn effective_mode(&self) -> DetailedRunMode {
+        match self.detailed_effective_mode {
+            DetailedRunMode::Unknown => self.effective_mode.into(),
+            other => other,
+        }
+    }
+}
+
+impl From<RunMode> for DetailedRunMode {
+    fn from(value: RunMode) -> Self {
+        match value {
+            RunMode::Leader => DetailedRunMode::Leader,
+            RunMode::Follower => DetailedRunMode::Follower,
+        }
+    }
+}
+
+impl From<DetailedRunMode> for RunMode {
+    fn from(value: DetailedRunMode) -> Self {
+        match value {
+            DetailedRunMode::Unknown | DetailedRunMode::Follower | DetailedRunMode::Candidate => {
+                RunMode::Follower
+            }
+            DetailedRunMode::Leader | DetailedRunMode::BecomingLeader => RunMode::Leader,
+        }
+    }
 }
 
 fn storage_version_to_u32(v: StorageVersion) -> u32 {
@@ -243,6 +256,7 @@ impl Default for PartitionProcessorStatus {
             updated_at: MillisSinceEpoch::now(),
             planned_mode: RunMode::Follower,
             effective_mode: RunMode::Follower,
+            detailed_effective_mode: DetailedRunMode::Follower,
             last_observed_leader_epoch: None,
             last_observed_leader_node: None,
             last_applied_log_lsn: None,

@@ -98,6 +98,7 @@ use crate::metric_definitions::{
     PARTITION_LABEL, PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, REASON_LABEL,
 };
 use crate::partition::leadership::LeadershipState;
+use crate::partition::processor::leadership::LeadershipContext;
 use crate::partition::state_machine::ActionCollector;
 
 /// Information needed to run as leader, including the epoch and partition configurations.
@@ -182,17 +183,14 @@ impl PartitionProcessorBuilder {
             .rule_book_cache
             .notify_observed(ctx.fsm().rule_book());
 
-        let last_leader_epoch = ctx.current_leader_epoch();
-        if last_leader_epoch.is_valid() {
-            node_ctx.replica_set_states.note_observed_leader(
-                ctx.partition_id(),
-                restate_types::partitions::state::LeadershipState {
-                    current_leader_epoch: last_leader_epoch,
-                    // if we don't know the old leader node-id, another node will announce it
-                    current_leader: GenerationalNodeId::INVALID,
-                },
-            );
-        }
+        node_ctx.replica_set_states.note_observed_leader(
+            ctx.partition_id(),
+            restate_types::partitions::state::LeadershipState {
+                current_leader_epoch: ctx.current_leader_epoch(),
+                // if we don't know the old leader node-id, another node will announce it
+                current_leader: GenerationalNodeId::INVALID,
+            },
+        );
 
         let (leader_query_tx, leader_query_rx) = restate_worker_api::channel();
 
@@ -528,7 +526,7 @@ where
                     let new_state = *watch_leader_changes.borrow_and_update();
                     self.leadership_state.maybe_step_down(&mut self.ctx, new_state.current_leader_epoch, new_state.current_leader).await;
                 }
-                Some(msg) = self.network_leader_svc_rx.next() => {
+                Some(msg) = self.network_leader_svc_rx.next(), if self.leadership_state.should_process_rpc() => {
                     // todo: replace the live schema with the leader's consistent schema
                     self.on_rpc(msg, live_schemas.live_load(), &last_applied_lsn_watch).await;
                 }
@@ -700,7 +698,8 @@ where
             self.ctx.merge_with_status(old);
             old.durable_lsn = Some(durable_lsn);
             old.storage_version = Some(self.partition_store.storage_version());
-            old.effective_mode = self.leadership_state.effective_mode();
+            old.effective_mode = self.leadership_state.detailed_effective_mode().into();
+            old.detailed_effective_mode = self.leadership_state.detailed_effective_mode();
             old.updated_at = MillisSinceEpoch::now();
         });
 
@@ -967,10 +966,15 @@ where
                 .await
             }
             v2::CommandKind::VersionBarrier => {
+                let mut leadership = LeadershipContext {
+                    partition_store: &mut self.partition_store,
+                    leadership: &mut self.leadership_state,
+                };
                 VersionBarrierContext {
                     txn,
+                    node_ctx: &mut self.node_ctx,
                     processor: &mut self.ctx,
-                    is_leader: self.leadership_state.is_leader(),
+                    leadership: &mut leadership,
                 }
                 .apply(record.map(v2::Envelope::into_typed))
                 .await

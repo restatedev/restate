@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use futures::{StreamExt, TryStreamExt};
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, instrument, warn};
 
@@ -58,6 +59,7 @@ use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
 use restate_types::partitions::PartitionFeatureChange;
+use restate_types::protobuf::cluster::DetailedRunMode;
 use restate_types::schema::Schema;
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use restate_util_time::DurationExt;
@@ -155,9 +157,19 @@ pub(crate) enum ActionEffect {
     UpsertRuleBook(Arc<restate_limiter::RuleBook>),
     AwaitingRpcSelfProposeDone,
 }
+
 enum State {
     Follower,
     Candidate {
+        at: Instant,
+        leader_epoch: LeaderEpoch,
+        // to be able to move out of it
+        self_proposer: Option<SelfProposer>,
+    },
+    /// A leader that's performing migrations or other tasks before it can operate as a full leader.
+    /// From the perspective of other nodes, it's the effective leader of the partition.
+    BecomingLeader {
+        at: Instant,
         leader_epoch: LeaderEpoch,
         // to be able to move out of it
         self_proposer: Option<SelfProposer>,
@@ -170,6 +182,7 @@ impl State {
         match self {
             State::Follower => None,
             State::Candidate { leader_epoch, .. } => Some(*leader_epoch),
+            State::BecomingLeader { leader_epoch, .. } => Some(*leader_epoch),
             State::Leader(leader_state) => Some(leader_state.leader_epoch),
         }
     }
@@ -201,18 +214,29 @@ where
     }
 
     pub(crate) fn is_leader(&self) -> bool {
-        matches!(self.state, State::Leader(_))
+        matches!(self.state, State::Leader(_) | State::BecomingLeader { .. })
     }
 
     pub(crate) fn partition_id(&self) -> PartitionId {
         self.partition_id
     }
 
-    pub fn effective_mode(&self) -> RunMode {
+    pub fn detailed_effective_mode(&self) -> DetailedRunMode {
         match self.state {
-            State::Follower | State::Candidate { .. } => RunMode::Follower,
-            State::Leader(_) => RunMode::Leader,
+            State::Follower => DetailedRunMode::Follower,
+            State::Candidate { .. } => DetailedRunMode::Candidate,
+            State::BecomingLeader { .. } => DetailedRunMode::BecomingLeader,
+            State::Leader(_) => DetailedRunMode::Leader,
         }
+    }
+
+    pub(super) fn should_process_rpc(&self) -> bool {
+        // In case of BecomingLeader we prefer to park RPC requests
+        // until we transition out of the current state.
+        matches!(
+            self.state,
+            State::Leader(_) | State::Follower | State::Candidate { .. }
+        )
     }
 
     #[instrument(level = "debug", skip_all, fields(leader_epoch = %leadership_info.leader_epoch))]
@@ -270,6 +294,7 @@ where
             .await?;
 
         self.state = State::Candidate {
+            at: Instant::now(),
             leader_epoch,
             self_proposer: Some(self_proposer),
         };
@@ -299,20 +324,40 @@ where
 
         let planned_mode = match &self.state {
             State::Follower => RunMode::Follower,
-            State::Candidate { leader_epoch, .. } => match leader_epoch.cmp(&new_leader_epoch) {
-                Ordering::Less => {
-                    debug!(
-                        "Lost leadership campaign. Conceding to {} at epoch {}",
-                        new_leader_node, new_leader_epoch
-                    );
-                    self.become_follower().await;
-                    RunMode::Follower
+            State::Candidate { leader_epoch, .. } => {
+                match leader_epoch.cmp(&new_leader_epoch) {
+                    Ordering::Less => {
+                        debug!(
+                            "Lost leadership campaign. Conceding to {} at epoch {}",
+                            new_leader_node, new_leader_epoch
+                        );
+                        self.become_follower().await;
+                        RunMode::Follower
+                    }
+                    _ => {
+                        /* nothing do to, we are still candidates for leadership */
+                        RunMode::Leader
+                    }
                 }
-                _ => {
-                    /* nothing do to, we are still candidates for leadership */
-                    RunMode::Leader
+            }
+            State::BecomingLeader { leader_epoch, .. } => {
+                match leader_epoch.cmp(&new_leader_epoch) {
+                    Ordering::Less => {
+                        debug!(
+                            my_leadership_epoch = %leader_epoch,
+                            %new_leader_epoch,
+                            "Every reign must end. Stepping down and becoming an conceding to {} at epoch {}",
+                            new_leader_node, new_leader_epoch
+                        );
+                        self.become_follower().await;
+                        RunMode::Follower
+                    }
+                    _ => {
+                        /* nothing do to, we are still leaders */
+                        RunMode::Leader
+                    }
                 }
-            },
+            }
             State::Leader(leader_state) => match leader_state.leader_epoch.cmp(&new_leader_epoch) {
                 Ordering::Less => {
                     debug!(
@@ -331,59 +376,80 @@ where
         ctx.status_mut().set_planned_run_mode(planned_mode);
     }
 
-    #[instrument(level = "debug", skip_all, fields(leader_epoch = %announce_leader.leader_epoch))]
+    #[instrument(level = "debug", skip_all, fields(leader_epoch = %leader_epoch))]
     pub async fn on_announce_leader(
         &mut self,
         node_ctx: &mut NodeContext,
         ctx: impl Processor + HasVQueuesMut + HasTrimQueue,
         partition_store: &mut PartitionStore,
-        announce_leader: &AnnounceLeaderCommand,
+        leader_epoch: LeaderEpoch,
     ) -> Result<(), Error> {
         match &self.state {
             State::Follower => {
                 debug!("Observed new leader. Staying an obedient follower.");
             }
-            State::Candidate { leader_epoch, .. } => {
-                match leader_epoch.cmp(&announce_leader.leader_epoch) {
-                    Ordering::Less => {
-                        debug!("Lost leadership campaign. Becoming an obedient follower.");
-                        self.become_follower().await;
-                    }
-                    Ordering::Equal => {
-                        debug!("Won the leadership campaign. Becoming the strong leader now.");
-                        self.become_leader(node_ctx, ctx, partition_store).await?
-                    }
-                    Ordering::Greater => {
-                        debug!(
-                            "Observed an intermittent leader. Still believing to win the leadership campaign."
-                        );
-                    }
-                }
+            State::Candidate {
+                leader_epoch: my_leader_epoch,
+                ..
             }
-            State::Leader(leader_state) => {
-                match leader_state.leader_epoch.cmp(&announce_leader.leader_epoch) {
-                    Ordering::Less => {
-                        debug!(
-                            my_leadership_epoch = %leader_state.leader_epoch,
-                            new_leader_epoch = %announce_leader.leader_epoch,
-                            "Every reign must end. Stepping down and becoming an obedient follower."
-                        );
-                        self.become_follower().await;
-                    }
-                    Ordering::Equal => {
-                        warn!(
-                            "Observed another leadership announcement for my own leadership. This should never happen and indicates a bug!"
-                        );
-                    }
-                    Ordering::Greater => {
-                        warn!(
-                            "Observed a leadership announcement for an outdated epoch. This should never happen and indicates a bug!"
-                        );
-                    }
+            | State::BecomingLeader {
+                leader_epoch: my_leader_epoch,
+                ..
+            } => match my_leader_epoch.cmp(&leader_epoch) {
+                Ordering::Less => {
+                    debug!("Lost leadership campaign. Becoming an obedient follower.");
+                    self.become_follower().await;
                 }
-            }
+                Ordering::Equal => {
+                    debug!("Won the leadership campaign. Becoming the strong leader now.");
+                    self.become_leader(node_ctx, ctx, partition_store).await?
+                }
+                Ordering::Greater => {
+                    debug!(
+                        "Observed an intermittent leader. Still believing to win the leadership campaign."
+                    );
+                }
+            },
+            State::Leader(leader_state) => match leader_state.leader_epoch.cmp(&leader_epoch) {
+                Ordering::Less => {
+                    debug!(
+                        my_leadership_epoch = %leader_state.leader_epoch,
+                        new_leader_epoch = %leader_epoch,
+                        "Every reign must end. Stepping down and becoming an obedient follower."
+                    );
+                    self.become_follower().await;
+                }
+                Ordering::Equal => {
+                    warn!(
+                        "Observed another leadership announcement for my own leadership. This should never happen and indicates a bug!"
+                    );
+                }
+                Ordering::Greater => {
+                    warn!(
+                        "Observed a leadership announcement for an outdated epoch. This should never happen and indicates a bug!"
+                    );
+                }
+            },
         }
         Ok(())
+    }
+
+    pub async fn finish_becoming_leader(
+        &mut self,
+        node_ctx: &mut NodeContext,
+        processor: impl Processor + HasTrimQueue + HasVQueuesMut,
+        partition_store: &mut PartitionStore,
+    ) -> Result<(), Error> {
+        if !matches!(
+            self.detailed_effective_mode(),
+            DetailedRunMode::BecomingLeader
+        ) {
+            return Ok(());
+        }
+
+        // finish up becoming a leader.
+        self.become_leader(node_ctx, processor, partition_store)
+            .await
     }
 
     async fn become_leader(
@@ -392,14 +458,135 @@ where
         mut processor: impl Processor + HasTrimQueue + HasVQueuesMut,
         partition_store: &mut PartitionStore,
     ) -> Result<(), Error> {
+        let prev_mode = self.detailed_effective_mode();
+
         if let State::Candidate {
+            at,
+            leader_epoch,
+            self_proposer,
+        }
+        | State::BecomingLeader {
+            at,
             leader_epoch,
             self_proposer,
         } = &mut self.state
         {
-            let schema = Metadata::with_current(|m| m.updateable_schema());
             let live_config = &mut node_ctx.config;
             let config = live_config.live_load();
+
+            let mut self_proposer = self_proposer.take().expect("must be present");
+            self_proposer.mark_as_leader();
+
+            // Collect feature changes to apply as a single VersionBarrierCommand.
+            //
+            // RESTATE_INTERNAL_STATE_MACHINE_FEATURES is a comma-separated list of
+            // PartitionFeatureChange variant names (case-insensitive) used by internal
+            // testing to enable specific features explicitly.
+            let mut feature_changes: Vec<PartitionFeatureChange> =
+                if let Ok(raw) = std::env::var("RESTATE_INTERNAL_STATE_MACHINE_FEATURES") {
+                    raw.split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .filter_map(|name| match PartitionFeatureChange::from_str(name) {
+                            Ok(change) => Some(change),
+                            Err(_) => {
+                                warn!(
+                                    "Ignoring unknown state-machine feature \
+                                     '{name}' from RESTATE_INTERNAL_STATE_MACHINE_FEATURES"
+                                );
+                                None
+                            }
+                        })
+                        .filter(|change| !processor.fsm().features().has_feature(*change))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+
+            // Since v1.7.0 we enable by default writing to the journal v2.
+            if !processor.fsm().features().use_journal_v2_as_default() {
+                feature_changes.push(PartitionFeatureChange::EnableJournalV2);
+            }
+
+            // Opt this partition in to vqueues if the operator has flipped the experimental config
+            // flag on and the FSM hasn't already recorded the opt-in. The FSM update itself
+            // happens via `OnVersionBarrierCommand` once this proposed barrier is applied; we do
+            // not touch the local FSM mirror here.
+            if config.common.experimental.is_vqueues_enabled()
+                && !processor.fsm().features().is_vqueues_enabled()
+            {
+                feature_changes.push(PartitionFeatureChange::EnableVqueues);
+            }
+
+            // Persist a unique random seed on new invocations. Needs to be opted-in because
+            // it was only introduced with v1.7.0
+            if config.common.experimental.is_unique_random_seeds_enabled()
+                && !processor.fsm().features().is_unique_random_seeds_enabled()
+            {
+                feature_changes.push(PartitionFeatureChange::EnableUniqueRandomSeeds);
+            }
+
+            if !feature_changes.is_empty() {
+                // Smallest version that supports every listed feature, but never below
+                // the partition's current min_restate_version.
+                let barrier_version = feature_changes
+                    .iter()
+                    .map(|c| c.min_required_version())
+                    .max()
+                    .expect("non-empty")
+                    .max(processor.fsm().min_restate_version())
+                    .clone();
+
+                debug!(
+                    "Proposing VersionBarrier command to enable state-machine features {}",
+                    feature_changes
+                        .iter()
+                        .map(|c| {
+                            let name: &'static str = c.into();
+                            name
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                self_proposer
+                    .self_propose(
+                        processor.key_range().start(),
+                        Command::VersionBarrier(VersionBarrierCommand {
+                            version: barrier_version,
+                            partition_key_range: Keys::RangeInclusive(processor.key_range().into()),
+                            human_reason: Some("Apply state-machine feature changes".to_owned()),
+                            feature_changes: feature_changes.into_iter().map(|c| c.id()).collect(),
+                        }),
+                    )
+                    .await?;
+
+                // Switch to BecomingLeader state until we finish any pending tasks to enable the
+                // new features. We will transition us to an effective leader when the state
+                // machine applies the VersionBarrier command and perform any necessary migrations.
+                //
+                // This will happen by calling become_leader() again.
+                //
+                // Note that between us self proposing and transitioning to a full leader, we may
+                // get preempted by a newer leader. Therefore, we don't perform any migration until
+                // we actually observe the VersionBarrier command back from the log. But we also
+                // don't expect any other commands other than AnnounceLeader (from preemptions) or
+                // VersionBarrier (our own self-proposal) to be next in the log.
+                debug!(
+                    "Transitioning from {prev_mode} -> {}. Spent {} in {prev_mode} mode.",
+                    DetailedRunMode::BecomingLeader,
+                    at.elapsed().friendly(),
+                );
+
+                self.state = State::BecomingLeader {
+                    at: Instant::now(),
+                    leader_epoch: *leader_epoch,
+                    self_proposer: Some(self_proposer),
+                };
+
+                return Ok(());
+            }
+
+            let schema = Metadata::with_current(|m| m.updateable_schema());
 
             let (invoker_tx, invoker_rx) = mpsc::channel(config.worker.internal_queue_length());
             let invoker_rx = ReceiverStream::new(invoker_rx);
@@ -511,80 +698,6 @@ where
                 processor.trim_queue().clone(),
             )?;
 
-            let mut self_proposer = self_proposer.take().expect("must be present");
-            self_proposer.mark_as_leader();
-
-            // Collect feature changes to apply as a single VersionBarrierCommand.
-            //
-            // RESTATE_INTERNAL_STATE_MACHINE_FEATURES is a comma-separated list of
-            // PartitionFeatureChange variant names (case-insensitive) used by internal
-            // testing to enable specific features explicitly.
-            let mut feature_changes: Vec<PartitionFeatureChange> =
-                if let Ok(raw) = std::env::var("RESTATE_INTERNAL_STATE_MACHINE_FEATURES") {
-                    raw.split(',')
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .filter_map(|name| match PartitionFeatureChange::from_str(name) {
-                            Ok(change) => Some(change),
-                            Err(_) => {
-                                warn!(
-                                    "Ignoring unknown state-machine feature \
-                                     '{name}' from RESTATE_INTERNAL_STATE_MACHINE_FEATURES"
-                                );
-                                None
-                            }
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-
-            // In v1.7.0 we enable by default writing to the journal v2.
-            if !processor.fsm().features().use_journal_v2_as_default() {
-                feature_changes.push(PartitionFeatureChange::EnableJournalV2);
-            }
-
-            // Opt this partition in to vqueues if the operator has flipped the experimental config
-            // flag on and the FSM hasn't already recorded the opt-in. The FSM update itself
-            // happens via `OnVersionBarrierCommand` once this proposed barrier is applied; we do
-            // not touch the local FSM mirror here.
-            if config.common.experimental.is_vqueues_enabled()
-                && !processor.fsm().features().is_vqueues_enabled()
-            {
-                feature_changes.push(PartitionFeatureChange::EnableVqueues);
-            }
-
-            // Persist a unique random seed on new invocations. Needs to be opted-in because
-            // it was only introduced with v1.7.0
-            if config.common.experimental.is_unique_random_seeds_enabled()
-                && !processor.fsm().features().is_unique_random_seeds_enabled()
-            {
-                feature_changes.push(PartitionFeatureChange::EnableUniqueRandomSeeds);
-            }
-
-            if !feature_changes.is_empty() {
-                // Smallest version that supports every listed feature, but never below
-                // the partition's current min_restate_version.
-                let barrier_version = feature_changes
-                    .iter()
-                    .map(|c| c.min_required_version())
-                    .max()
-                    .expect("non-empty")
-                    .max(processor.fsm().min_restate_version())
-                    .clone();
-
-                self_proposer
-                    .self_propose(
-                        processor.key_range().start(),
-                        Command::VersionBarrier(VersionBarrierCommand {
-                            version: barrier_version,
-                            partition_key_range: Keys::RangeInclusive(processor.key_range().into()),
-                            human_reason: Some("Apply state-machine feature changes".to_owned()),
-                            feature_changes: feature_changes.into_iter().map(|c| c.id()).collect(),
-                        }),
-                    )
-                    .await?;
-            }
             let last_reported_durable_lsn =
                 processor.fsm().durable_point().map(|d| d.durable_point);
 
@@ -594,6 +707,12 @@ where
                 node_ctx.replica_set_states.clone(),
                 partition_store.partition_db().watch_archived_lsn(),
                 Duration::from_secs(5).add_jitter(0.5),
+            );
+
+            debug!(
+                "Transitioning from {prev_mode} -> {}. Spent {} in {prev_mode} mode.",
+                DetailedRunMode::Leader,
+                at.elapsed().friendly(),
             );
 
             self.state = State::Leader(Box::new(LeaderState::new(
@@ -671,10 +790,7 @@ where
         let old_state = mem::replace(&mut self.state, State::Follower);
 
         match old_state {
-            State::Follower => {
-                // nothing to do :-)
-            }
-            State::Candidate { .. } => {
+            State::Follower | State::Candidate { .. } | State::BecomingLeader { .. } => {
                 // nothing to do :-)
             }
             State::Leader(leader_state) => {
@@ -693,7 +809,7 @@ where
         actions: impl Iterator<Item = Action>,
     ) -> Result<(), Error> {
         match &mut self.state {
-            State::Follower | State::Candidate { .. } => {
+            State::Follower | State::Candidate { .. } | State::BecomingLeader { .. } => {
                 // nothing to do :-)
             }
             State::Leader(leader_state) => {
@@ -715,7 +831,8 @@ where
     ) -> Result<Vec<ActionEffect>, Error> {
         match &mut self.state {
             State::Follower => Ok(futures::future::pending::<Vec<_>>().await),
-            State::Candidate { self_proposer, .. } => Err(self_proposer
+            State::Candidate { self_proposer, .. }
+            | State::BecomingLeader { self_proposer, .. } => Err(self_proposer
                 .as_mut()
                 .expect("must be present")
                 .join_on_err()
@@ -730,7 +847,7 @@ where
         action_effects: impl IntoIterator<Item = ActionEffect>,
     ) -> Result<(), Error> {
         match &mut self.state {
-            State::Follower | State::Candidate { .. } => {
+            State::Follower | State::Candidate { .. } | State::BecomingLeader { .. } => {
                 // nothing to do :-)
             }
             State::Leader(leader_state) => {
@@ -785,7 +902,7 @@ impl<T> LeadershipState<T> {
         cmd: Command,
     ) {
         match &mut self.state {
-            State::Follower | State::Candidate { .. } => {
+            State::Follower | State::Candidate { .. } | State::BecomingLeader { .. } => {
                 // Just fail the rpc
                 reciprocal.send(Err(PartitionProcessorRpcError::NotLeader(
                     self.partition_id,
@@ -809,7 +926,7 @@ impl<T> LeadershipState<T> {
         cmd: Command,
     ) {
         match &mut self.state {
-            State::Follower | State::Candidate { .. } => {
+            State::Follower | State::Candidate { .. } | State::BecomingLeader { .. } => {
                 // Just fail the rpc
                 reciprocal.send(Err(PartitionProcessorRpcError::NotLeader(
                     self.partition_id,
@@ -834,9 +951,10 @@ impl<T> LeadershipState<T> {
         success_response: PartitionProcessorRpcResponse,
     ) {
         match &mut self.state {
-            State::Follower | State::Candidate { .. } => reciprocal.send(Err(
-                PartitionProcessorRpcError::NotLeader(self.partition_id),
-            )),
+            State::Follower | State::Candidate { .. } | State::BecomingLeader { .. } => reciprocal
+                .send(Err(PartitionProcessorRpcError::NotLeader(
+                    self.partition_id,
+                ))),
             State::Leader(leader_state) => {
                 leader_state
                     .append_and_respond_asynchronously(
@@ -859,9 +977,9 @@ impl<T> LeadershipState<T> {
         F: FnOnce(Result<(), PartitionProcessorRpcError>) + Send + Sync + 'static,
     {
         match &mut self.state {
-            State::Follower | State::Candidate { .. } => callback(Err(
-                PartitionProcessorRpcError::NotLeader(self.partition_id),
-            )),
+            State::Follower | State::Candidate { .. } | State::BecomingLeader { .. } => callback(
+                Err(PartitionProcessorRpcError::NotLeader(self.partition_id)),
+            ),
             State::Leader(leader_state) => {
                 leader_state
                     .forward_many_with_callback(records, callback)
@@ -932,7 +1050,9 @@ mod tests {
     use restate_types::identifiers::{LeaderEpoch, PartitionId};
     use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
     use restate_types::partitions::state::PartitionReplicaSetStates;
-    use restate_types::partitions::{Partition, PartitionConfiguration, PersistedFeatures};
+    use restate_types::partitions::{
+        Partition, PartitionConfiguration, PartitionFeatureChange, PersistedFeatures,
+    };
     use restate_types::sharding::KeyRange;
     use restate_types::{GenerationalNodeId, Version};
     use restate_wal_protocol::Command;
@@ -1005,13 +1125,11 @@ mod tests {
 
         assert!(matches!(state.state, State::Candidate { .. }));
 
-        let record = bifrost
+        let mut reader = bifrost
             .create_reader(PARTITION_ID.into(), KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)
-            .expect("valid reader")
-            .next()
-            .await
-            .unwrap()?;
+            .expect("valid reader");
 
+        let record = reader.next().await.unwrap()?;
         let envelope = record.try_decode::<Envelope>().unwrap()?;
 
         let_assert!(Command::AnnounceLeader(announce_leader) = envelope.command);
@@ -1026,8 +1144,32 @@ mod tests {
                 &mut node_ctx,
                 &mut ctx,
                 &mut partition_store,
-                &announce_leader,
+                announce_leader.leader_epoch,
             )
+            .await?;
+
+        // Since v1.7.0, winning the campaign first proposes a VersionBarrier to enable
+        // the journal-v2 default; the processor stays `BecomingLeader` until that barrier
+        // is applied.
+        assert!(matches!(state.state, State::BecomingLeader { .. }));
+
+        let record = reader.next().await.unwrap()?;
+        let envelope = record.try_decode::<Envelope>().unwrap()?;
+        let_assert!(Command::VersionBarrier(barrier) = envelope.command);
+        assert!(
+            barrier
+                .feature_changes
+                .contains(&PartitionFeatureChange::EnableJournalV2.id())
+        );
+
+        // Simulate the barrier being applied to the FSM, then complete the transition
+        // into a full leader (no further feature changes remain to be proposed).
+        ctx.set_enabled_features_in_memory(PersistedFeatures {
+            journal_v2: true,
+            ..PersistedFeatures::default()
+        });
+        state
+            .finish_becoming_leader(&mut node_ctx, &mut ctx, &mut partition_store)
             .await?;
 
         assert!(matches!(state.state, State::Leader(_)));
