@@ -37,26 +37,20 @@ pub(super) struct Request {
 }
 
 macro_rules! bail {
-    ($replier:expr, $err:expr) => {
+    ($err:expr) => {
         use RestartAsNewInvocationRpcResponse::*;
 
-        $replier.send($err);
-        return Ok(());
+        return NextStep::Reply(Ok($err.into()));
     };
 }
 
-impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
-    for RpcContext<'a, TActuator, TSchemas, TStorage>
+impl<'a, TSchemas, TStorage> RpcHandler<Request> for RpcContext<'a, TSchemas, TStorage>
 where
-    TActuator: Actuator,
     TSchemas: DeploymentResolver,
     TStorage: ReadInvocationStatusTable
         + journal_table_v2::ReadJournalTable
         + journal_table_v1::ReadJournalTable,
 {
-    type Output = RestartAsNewInvocationRpcResponse;
-    type Error = ();
-
     async fn handle(
         self,
         Request {
@@ -65,16 +59,14 @@ where
             copy_prefix_up_to_index_included,
             patch_deployment_id,
         }: Request,
-        replier: Replier<Self::Output>,
-    ) -> Result<(), Self::Error> {
+    ) -> NextStep {
         // Reading from a non-leader partition processor can return stale results
         // (e.g. NotFound for an invocation that exists on the leader) because the
         // follower's local store may not have replayed all log entries yet.
-        if !self.proposer.is_leader() {
-            replier.send_result(Err(PartitionProcessorRpcError::NotLeader(
-                self.proposer.partition_id(),
+        if !self.is_leader {
+            return NextStep::Reply(Err(PartitionProcessorRpcError::NotLeader(
+                self.partition_id,
             )));
-            return Ok(());
         }
 
         // -- Resolve completed invocation status and input command
@@ -83,30 +75,29 @@ where
         let completed_invocation = match self.storage.get_invocation_status(&invocation_id).await {
             Ok(InvocationStatus::Completed(completed_invocation)) => completed_invocation,
             Ok(InvocationStatus::Free) => {
-                bail!(replier, NotFound);
+                bail!(NotFound);
             }
             Ok(InvocationStatus::Scheduled(_) | InvocationStatus::Inboxed(_)) => {
-                bail!(replier, NotStarted);
+                bail!(NotStarted);
             }
             Ok(_) => {
-                bail!(replier, StillRunning);
+                bail!(StillRunning);
             }
             Err(storage_error) => {
-                replier.send_result(Err(PartitionProcessorRpcError::Internal(
+                return NextStep::Reply(Err(PartitionProcessorRpcError::Internal(
                     storage_error.to_string(),
                 )));
-                return Ok(());
             }
         };
 
         // Check if there's any journal stored
         if completed_invocation.journal_metadata.length == 0 {
-            bail!(replier, MissingInput);
+            bail!(MissingInput);
         }
 
         // Check that is not a workflow
         if completed_invocation.invocation_target.service_ty() == ServiceType::Workflow {
-            bail!(replier, Unsupported);
+            bail!(Unsupported);
         }
 
         // If the invocation is using the old protocol version or no version is set at all.
@@ -125,10 +116,9 @@ where
                 {
                     Ok(opt_entry) => opt_entry.is_none(),
                     Err(storage_error) => {
-                        replier.send_result(Err(PartitionProcessorRpcError::Internal(
+                        return NextStep::Reply(Err(PartitionProcessorRpcError::Internal(
                             storage_error.to_string(),
                         )));
-                        return Ok(());
                     }
                 }
             }
@@ -147,7 +137,7 @@ where
         if use_old_journal_workaround {
             // Only copying the input entry works with this workaround!
             if copy_prefix_up_to_index_included > 0 {
-                bail!(replier, Unsupported);
+                bail!(Unsupported);
             }
 
             // Restarting an invocation that is using the journal v1 works by creating a new
@@ -158,7 +148,7 @@ where
                 patch_deployment_id,
                 PatchDeploymentId::KeepPinned | PatchDeploymentId::PinTo { .. }
             ) {
-                bail!(replier, CannotPatchDeploymentId);
+                bail!(CannotPatchDeploymentId);
             }
 
             // Now retrieve the input command
@@ -192,12 +182,11 @@ where
                 Ok(Some(ic)) => ic,
                 // No matching entry.
                 Ok(None) => {
-                    bail!(replier, MissingInput);
+                    bail!(MissingInput);
                 }
                 // Failure: a storage or decoding error occurred.
                 Err(err) => {
-                    replier.send_result(Err(err));
-                    return Ok(());
+                    return NextStep::Reply(Err(err));
                 }
             };
 
@@ -244,17 +233,13 @@ where
 
             // Propose and done
             // This path should be no longer needed once we switch to the journal v2 by default.
-            self.proposer
-                .append_and_respond_asynchronously(
-                    invocation_id.partition_key(),
-                    cmd,
-                    replier,
-                    RestartAsNewInvocationRpcResponse::Ok { new_invocation_id },
-                )
-                .await;
-
-            // All good
-            return Ok(());
+            return NextStep::Propose {
+                partition_key: invocation_id.partition_key(),
+                cmd,
+                reply_policy: ReplyPolicy::OnCommit {
+                    response: RestartAsNewInvocationRpcResponse::Ok { new_invocation_id }.into(),
+                },
+            };
         }
 
         // For Restart from prefix, the PP will actually execute the operation,
@@ -269,7 +254,7 @@ where
         if copy_prefix_up_to_index_included > 0
             && pinned_service_protocol_version.is_none_or(|sp| sp < ServiceProtocolVersion::V6)
         {
-            bail!(replier, Unsupported);
+            bail!(Unsupported);
         }
 
         // Figure out the deployment id, validate the protocol version constraints.
@@ -291,7 +276,7 @@ where
                         unreachable!()
                     }
                 }) else {
-                    bail!(replier, DeploymentNotFound);
+                    bail!(DeploymentNotFound);
                 };
 
                 // Check the protocol constraints are respected.
@@ -300,14 +285,14 @@ where
                         .supported_protocol_versions
                         .contains(&(pinned_service_protocol as i32))
                 {
-                    replier.send(
+                    return NextStep::Reply(Ok(
                         RestartAsNewInvocationRpcResponse::IncompatibleDeploymentId {
                             pinned_protocol_version: pinned_service_protocol as i32,
                             deployment_id: deployment.id,
                             supported_protocol_versions: deployment.supported_protocol_versions,
-                        },
-                    );
-                    return Ok(());
+                        }
+                        .into(),
+                    ));
                 }
                 Some(deployment.id)
             }
@@ -339,10 +324,9 @@ where
                     let cmd = match entry.decode::<ServiceProtocolV4Codec, journal_v2::Command>() {
                         Ok(cmd) => cmd,
                         Err(err) => {
-                            replier.send_result(Err(PartitionProcessorRpcError::Internal(
+                            return NextStep::Reply(Err(PartitionProcessorRpcError::Internal(
                                 err.to_string(),
                             )));
-                            return Ok(());
                         }
                     };
                     for completion_id in cmd.related_completion_ids() {
@@ -352,7 +336,7 @@ where
                             .await
                             .is_ok_and(|b| b)
                         {
-                            bail!(replier, JournalCopyRangeInvalid);
+                            bail!(JournalCopyRangeInvalid);
                         }
                     }
                 }
@@ -361,12 +345,13 @@ where
                 }
                 Ok(None) => {
                     // Not sure what else to do here...
-                    bail!(replier, JournalCopyRangeInvalid);
+                    bail!(JournalCopyRangeInvalid);
                 }
 
                 Err(err) => {
-                    replier.send_result(Err(PartitionProcessorRpcError::Internal(err.to_string())));
-                    return Ok(());
+                    return NextStep::Reply(Err(PartitionProcessorRpcError::Internal(
+                        err.to_string(),
+                    )));
                 }
             };
         }
@@ -381,11 +366,11 @@ where
                 IngressInvocationResponseSink { request_id },
             )),
         });
-        self.proposer
-            .handle_rpc_proposal_command(invocation_id.partition_key(), cmd, request_id, replier)
-            .await;
-
-        Ok(())
+        NextStep::Propose {
+            partition_key: invocation_id.partition_key(),
+            cmd,
+            reply_policy: ReplyPolicy::OnApply { request_id },
+        }
     }
 }
 
@@ -394,9 +379,8 @@ mod tests {
     use std::collections::HashMap;
     use std::future::ready;
 
-    use assert2::let_assert;
     use bytes::Bytes;
-    use futures::{FutureExt, Stream, StreamExt, stream};
+    use futures::{Stream, StreamExt, stream};
     use googletest::prelude::*;
     use restate_storage_api::journal_table_v2::NotificationEntryIndex;
     use rstest::rstest;
@@ -421,7 +405,6 @@ mod tests {
 
     use super::*;
 
-    use crate::partition::rpc::MockActuator;
     use journal_v2::{InputCommand, SleepCommand};
     use restate_storage_api::BudgetedReadError;
 
@@ -722,6 +705,26 @@ mod tests {
         }
     }
 
+    async fn handle<R: DeploymentResolver>(
+        is_leader: bool,
+        schemas: &R,
+        storage: &mut MockStorage,
+        request: Request,
+    ) -> NextStep {
+        RpcHandler::handle(
+            RpcContext::new(is_leader, PartitionId::MIN, schemas, storage),
+            request,
+        )
+        .await
+    }
+
+    fn assert_reply(next_step: NextStep, expected: RestartAsNewInvocationRpcResponse) {
+        let NextStep::Reply(Ok(actual)) = next_step else {
+            panic!("expected an immediate successful reply");
+        };
+        assert_eq!(actual, PartitionProcessorRpcResponse::from(expected));
+    }
+
     #[test(restate_core::test)]
     async fn copy_prefix_zero_with_no_version_uses_service_invocation_command() {
         let old_invocation_id = InvocationId::mock_random();
@@ -729,40 +732,9 @@ mod tests {
         let headers = vec![Header::new("key", "value")];
         let payload = rand::bytes();
 
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
         let invocation_target_clone = invocation_target.clone();
         let headers_clone = vec![Header::new("key", "value")];
         let payload_clone = payload.clone();
-        proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
-            .return_once_st(move |_, cmd, _, response| {
-                let_assert!(Command::Invoke(service_invocation) = cmd);
-                assert_that!(
-                    service_invocation,
-                    points_to(all!(
-                        field!(ServiceInvocation.invocation_id, not(eq(old_invocation_id))),
-                        field!(ServiceInvocation.argument, eq(payload_clone)),
-                        field!(ServiceInvocation.headers, eq(headers_clone)),
-                        field!(
-                            ServiceInvocation.invocation_target,
-                            eq(invocation_target_clone)
-                        ),
-                        field!(ServiceInvocation.response_sink, none()),
-                        field!(ServiceInvocation.submit_notification_sink, none()),
-                    ))
-                );
-                assert_that!(
-                    response,
-                    pat!(RestartAsNewInvocationRpcResponse::Ok {
-                        new_invocation_id: eq(service_invocation.invocation_id)
-                    })
-                );
-                ready(()).boxed()
-            });
-        proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .never();
 
         let mut storage = MockStorage::new_with_input_v1(
             old_invocation_id,
@@ -780,34 +752,58 @@ mod tests {
             headers.clone(),
         );
 
-        let (tx, _rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &(), &mut storage),
+        let next_step = handle(
+            true,
+            &(),
+            &mut storage,
             Request {
                 request_id: Default::default(),
                 invocation_id: old_invocation_id,
                 copy_prefix_up_to_index_included: 0,
-                patch_deployment_id: Default::default(),
+                patch_deployment_id: PatchDeploymentId::PinToLatest,
             },
-            Replier::new(tx),
         )
-        .await
-        .unwrap();
+        .await;
+        let (service_invocation, response) = match next_step {
+            NextStep::Propose {
+                cmd: Command::Invoke(service_invocation),
+                reply_policy: ReplyPolicy::OnCommit { response },
+                ..
+            } => (service_invocation, response),
+            NextStep::Propose { cmd, .. } => panic!("unexpected proposal: {cmd:?}"),
+            NextStep::Reply(reply) => panic!("unexpected reply: {reply:?}"),
+            NextStep::NotifyInvokerAndReply { .. } => {
+                panic!("unexpected invoker notification")
+            }
+        };
+        assert_that!(
+            service_invocation,
+            points_to(all!(
+                field!(ServiceInvocation.invocation_id, not(eq(old_invocation_id))),
+                field!(ServiceInvocation.argument, eq(payload_clone)),
+                field!(ServiceInvocation.headers, eq(headers_clone)),
+                field!(
+                    ServiceInvocation.invocation_target,
+                    eq(invocation_target_clone)
+                ),
+                field!(ServiceInvocation.response_sink, none()),
+                field!(ServiceInvocation.submit_notification_sink, none()),
+            ))
+        );
+        assert_that!(
+            response,
+            pat!(PartitionProcessorRpcResponse::RestartAsNewInvocation(pat!(
+                RestartAsNewInvocationRpcResponse::Ok {
+                    new_invocation_id: eq(service_invocation.invocation_id)
+                }
+            )))
+        );
     }
 
     #[test(restate_core::test)]
     async fn old_workaround_nonzero_prefix_is_unsupported() {
         let invocation_id = InvocationId::mock_random();
         let invocation_target = InvocationTarget::mock_virtual_object();
-
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
-        proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
-            .never();
-        proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .never();
 
         // Completed with no pinned deployment triggers v1 workaround
         let status = InvocationStatus::Completed(CompletedInvocation {
@@ -826,26 +822,19 @@ mod tests {
             vec![Header::new("k", "v")],
         );
 
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &(), &mut storage),
+        let next_step = handle(
+            true,
+            &(),
+            &mut storage,
             Request {
                 request_id: Default::default(),
                 invocation_id,
                 copy_prefix_up_to_index_included: 1,
                 patch_deployment_id: Default::default(),
             },
-            Replier::new(tx),
         )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            rx.recv().await.unwrap(),
-            PartitionProcessorRpcResponse::RestartAsNewInvocation(
-                RestartAsNewInvocationRpcResponse::Unsupported
-            )
-        );
+        .await;
+        assert_reply(next_step, RestartAsNewInvocationRpcResponse::Unsupported);
     }
 
     #[test(restate_core::test)]
@@ -854,15 +843,6 @@ mod tests {
         let invocation_target = InvocationTarget::mock_virtual_object();
         let payload = rand::bytes();
         let headers = vec![Header::new("k", "v")];
-
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
-        proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
-            .never();
-        proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .never();
 
         let status = InvocationStatus::Completed(CompletedInvocation {
             journal_metadata: JournalMetadata {
@@ -875,25 +855,21 @@ mod tests {
         });
         let mut storage = MockStorage::new_with_input_v1(invocation_id, status, payload, headers);
 
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &(), &mut storage),
+        let next_step = handle(
+            true,
+            &(),
+            &mut storage,
             Request {
                 request_id: Default::default(),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
                 patch_deployment_id: PatchDeploymentId::KeepPinned,
             },
-            Replier::new(tx),
         )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            rx.recv().await.unwrap(),
-            PartitionProcessorRpcResponse::RestartAsNewInvocation(
-                RestartAsNewInvocationRpcResponse::CannotPatchDeploymentId
-            )
+        .await;
+        assert_reply(
+            next_step,
+            RestartAsNewInvocationRpcResponse::CannotPatchDeploymentId,
         );
     }
 
@@ -901,15 +877,6 @@ mod tests {
     async fn old_workaround_pin_to_is_rejected() {
         let invocation_id = InvocationId::mock_random();
         let invocation_target = InvocationTarget::mock_virtual_object();
-
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
-        proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
-            .never();
-        proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .never();
 
         let status = InvocationStatus::Completed(CompletedInvocation {
             journal_metadata: JournalMetadata {
@@ -927,9 +894,10 @@ mod tests {
             vec![Header::new("k", "v")],
         );
 
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &(), &mut storage),
+        let next_step = handle(
+            true,
+            &(),
+            &mut storage,
             Request {
                 request_id: Default::default(),
                 invocation_id,
@@ -938,16 +906,11 @@ mod tests {
                     id: DeploymentId::new(),
                 },
             },
-            Replier::new(tx),
         )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            rx.recv().await.unwrap(),
-            PartitionProcessorRpcResponse::RestartAsNewInvocation(
-                RestartAsNewInvocationRpcResponse::CannotPatchDeploymentId
-            )
+        .await;
+        assert_reply(
+            next_step,
+            RestartAsNewInvocationRpcResponse::CannotPatchDeploymentId,
         );
     }
 
@@ -955,15 +918,6 @@ mod tests {
     async fn old_workaround_missing_v1_input_is_reported() {
         let invocation_id = InvocationId::mock_random();
         let invocation_target = InvocationTarget::mock_virtual_object();
-
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
-        proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
-            .never();
-        proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .never();
 
         // Completed with journal length>0 but no v1 input present in storage
         let status = InvocationStatus::Completed(CompletedInvocation {
@@ -977,26 +931,19 @@ mod tests {
         });
         let mut storage = MockStorage::new_without_journal(invocation_id, status);
 
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &(), &mut storage),
+        let next_step = handle(
+            true,
+            &(),
+            &mut storage,
             Request {
                 request_id: Default::default(),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
                 patch_deployment_id: PatchDeploymentId::PinToLatest,
             },
-            Replier::new(tx),
         )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            rx.recv().await.unwrap(),
-            PartitionProcessorRpcResponse::RestartAsNewInvocation(
-                RestartAsNewInvocationRpcResponse::MissingInput
-            )
-        );
+        .await;
+        assert_reply(next_step, RestartAsNewInvocationRpcResponse::MissingInput);
     }
 
     #[test(restate_core::test)]
@@ -1012,45 +959,28 @@ mod tests {
             true,
         );
 
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
-        proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .return_once_st(move |_, cmd, _, _| {
-                assert_that!(
-                    cmd,
-                    pat!(Command::RestartAsNewInvocation(pat!(
-                        RestartAsNewInvocationRequest {
-                            copy_prefix_up_to_index_included: eq(0),
-                            patch_deployment_id: none()
-                        }
-                    )))
-                );
-                ready(()).boxed()
-            });
-        proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
-            .never();
-
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(
-                &mut proposer,
-                &MockDeploymentMetadataRegistry::default(),
-                &mut storage,
-            ),
+        let next_step = handle(
+            true,
+            &MockDeploymentMetadataRegistry::default(),
+            &mut storage,
             Request {
                 request_id: Default::default(),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
                 patch_deployment_id: PatchDeploymentId::KeepPinned,
             },
-            Replier::new(tx),
         )
-        .await
-        .unwrap();
-
-        rx.assert_not_received();
+        .await;
+        let NextStep::Propose {
+            cmd: Command::RestartAsNewInvocation(request),
+            reply_policy: ReplyPolicy::OnApply { .. },
+            ..
+        } = next_step
+        else {
+            panic!("expected an on-apply restart-as-new proposal");
+        };
+        assert_eq!(request.copy_prefix_up_to_index_included, 0);
+        assert_eq!(request.patch_deployment_id, None);
     }
 
     #[test(restate_core::test)]
@@ -1074,96 +1004,54 @@ mod tests {
             true,
         );
 
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
-        proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .return_once_st(move |_, cmd, _, _| {
-                assert_that!(
-                    cmd,
-                    pat!(Command::RestartAsNewInvocation(pat!(
-                        RestartAsNewInvocationRequest {
-                            copy_prefix_up_to_index_included: eq(0),
-                            patch_deployment_id: none()
-                        }
-                    )))
-                );
-                ready(()).boxed()
-            });
-        proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
-            .never();
-
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(
-                &mut proposer,
-                &MockDeploymentMetadataRegistry::default(),
-                &mut storage,
-            ),
+        let next_step = handle(
+            true,
+            &MockDeploymentMetadataRegistry::default(),
+            &mut storage,
             Request {
                 request_id: Default::default(),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
                 patch_deployment_id: PatchDeploymentId::KeepPinned,
             },
-            Replier::new(tx),
         )
-        .await
-        .unwrap();
-
-        rx.assert_not_received();
+        .await;
+        let NextStep::Propose {
+            cmd: Command::RestartAsNewInvocation(request),
+            reply_policy: ReplyPolicy::OnApply { .. },
+            ..
+        } = next_step
+        else {
+            panic!("expected an on-apply restart-as-new proposal");
+        };
+        assert_eq!(request.copy_prefix_up_to_index_included, 0);
+        assert_eq!(request.patch_deployment_id, None);
     }
 
     #[test(restate_core::test)]
     async fn reply_not_found_for_unknown_invocation() {
         let invocation_id = InvocationId::mock_random();
 
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
-        proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
-            .never();
-        proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .never();
-
         let mut storage = MockStorage::new_without_journal(invocation_id, Default::default());
 
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &(), &mut storage),
+        let next_step = handle(
+            true,
+            &(),
+            &mut storage,
             Request {
                 request_id: Default::default(),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
                 patch_deployment_id: Default::default(),
             },
-            Replier::new(tx),
         )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            rx.recv().await.unwrap(),
-            PartitionProcessorRpcResponse::RestartAsNewInvocation(
-                RestartAsNewInvocationRpcResponse::NotFound
-            )
-        );
+        .await;
+        assert_reply(next_step, RestartAsNewInvocationRpcResponse::NotFound);
     }
 
     #[test(restate_core::test)]
     async fn reply_unsupported() {
         let invocation_id = InvocationId::mock_random();
-
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
-        proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
-            .never();
-        proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .never();
 
         let mut storage = MockStorage::new_with_input_v1(
             invocation_id,
@@ -1179,26 +1067,19 @@ mod tests {
             vec![Header::new("key", "value")],
         );
 
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &(), &mut storage),
+        let next_step = handle(
+            true,
+            &(),
+            &mut storage,
             Request {
                 request_id: Default::default(),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
                 patch_deployment_id: Default::default(),
             },
-            Replier::new(tx),
         )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            rx.recv().await.unwrap(),
-            PartitionProcessorRpcResponse::RestartAsNewInvocation(
-                RestartAsNewInvocationRpcResponse::Unsupported
-            )
-        );
+        .await;
+        assert_reply(next_step, RestartAsNewInvocationRpcResponse::Unsupported);
     }
 
     #[rstest]
@@ -1215,37 +1096,21 @@ mod tests {
     ) {
         let invocation_id = InvocationId::mock_random();
 
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
-        proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
-            .never();
-        proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .never();
-
         let mut storage = MockStorage::new_without_journal(invocation_id, status);
 
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &(), &mut storage),
+        let next_step = handle(
+            true,
+            &(),
+            &mut storage,
             Request {
                 request_id: Default::default(),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
                 patch_deployment_id: Default::default(),
             },
-            Replier::new(tx),
         )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            rx.recv().await.unwrap(),
-            PartitionProcessorRpcResponse::RestartAsNewInvocation(
-                RestartAsNewInvocationRpcResponse::StillRunning
-            )
-        );
+        .await;
+        assert_reply(next_step, RestartAsNewInvocationRpcResponse::StillRunning);
     }
 
     #[rstest]
@@ -1264,37 +1129,21 @@ mod tests {
     ) {
         let invocation_id = InvocationId::mock_random();
 
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
-        proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
-            .never();
-        proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .never();
-
         let mut storage = MockStorage::new_without_journal(invocation_id, status);
 
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &(), &mut storage),
+        let next_step = handle(
+            true,
+            &(),
+            &mut storage,
             Request {
                 request_id: Default::default(),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
                 patch_deployment_id: Default::default(),
             },
-            Replier::new(tx),
         )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            rx.recv().await.unwrap(),
-            PartitionProcessorRpcResponse::RestartAsNewInvocation(
-                RestartAsNewInvocationRpcResponse::NotStarted
-            )
-        );
+        .await;
+        assert_reply(next_step, RestartAsNewInvocationRpcResponse::NotStarted);
     }
 
     fn mock_completed_invocation(
@@ -1348,45 +1197,28 @@ mod tests {
             /* has completion */ true,
         );
 
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
-        proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .return_once_st(move |_, cmd, _, _| {
-                assert_that!(
-                    cmd,
-                    pat!(Command::RestartAsNewInvocation(pat!(
-                        RestartAsNewInvocationRequest {
-                            copy_prefix_up_to_index_included: eq(1),
-                            patch_deployment_id: none()
-                        }
-                    )))
-                );
-                ready(()).boxed()
-            });
-        proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
-            .never();
-
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(
-                &mut proposer,
-                &MockDeploymentMetadataRegistry::default(),
-                &mut storage,
-            ),
+        let next_step = handle(
+            true,
+            &MockDeploymentMetadataRegistry::default(),
+            &mut storage,
             Request {
                 request_id: Default::default(),
                 invocation_id,
                 copy_prefix_up_to_index_included: 1,
                 patch_deployment_id: PatchDeploymentId::KeepPinned,
             },
-            Replier::new(tx),
         )
-        .await
-        .unwrap();
-
-        rx.assert_not_received();
+        .await;
+        let NextStep::Propose {
+            cmd: Command::RestartAsNewInvocation(request),
+            reply_policy: ReplyPolicy::OnApply { .. },
+            ..
+        } = next_step
+        else {
+            panic!("expected an on-apply restart-as-new proposal");
+        };
+        assert_eq!(request.copy_prefix_up_to_index_included, 1);
+        assert_eq!(request.patch_deployment_id, None);
     }
 
     #[test(restate_core::test)]
@@ -1412,41 +1244,28 @@ mod tests {
             /* has completion */ true,
         );
 
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
-        proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .return_once_st(move |_, cmd, _, _| {
-                assert_that!(
-                    cmd,
-                    pat!(Command::RestartAsNewInvocation(pat!(
-                        RestartAsNewInvocationRequest {
-                            copy_prefix_up_to_index_included: eq(1),
-                            patch_deployment_id: some(eq(latest_id))
-                        }
-                    )))
-                );
-                ready(()).boxed()
-            });
-        proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
-            .never();
-
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &registry, &mut storage),
+        let next_step = handle(
+            true,
+            &registry,
+            &mut storage,
             Request {
                 request_id: Default::default(),
                 invocation_id,
                 copy_prefix_up_to_index_included: 1,
                 patch_deployment_id: PatchDeploymentId::PinToLatest,
             },
-            Replier::new(tx),
         )
-        .await
-        .unwrap();
-
-        rx.assert_not_received();
+        .await;
+        let NextStep::Propose {
+            cmd: Command::RestartAsNewInvocation(request),
+            reply_policy: ReplyPolicy::OnApply { .. },
+            ..
+        } = next_step
+        else {
+            panic!("expected an on-apply restart-as-new proposal");
+        };
+        assert_eq!(request.copy_prefix_up_to_index_included, 1);
+        assert_eq!(request.patch_deployment_id, Some(latest_id));
     }
 
     #[test(restate_core::test)]
@@ -1470,38 +1289,25 @@ mod tests {
             true,
         );
 
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
-        proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .never();
-        proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
-            .never();
-
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &registry, &mut storage),
+        let next_step = handle(
+            true,
+            &registry,
+            &mut storage,
             Request {
                 request_id: Default::default(),
                 invocation_id,
                 copy_prefix_up_to_index_included: 1,
                 patch_deployment_id: PatchDeploymentId::PinTo { id },
             },
-            Replier::new(tx),
         )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            rx.recv().await.unwrap(),
-            PartitionProcessorRpcResponse::RestartAsNewInvocation(
-                RestartAsNewInvocationRpcResponse::IncompatibleDeploymentId {
-                    pinned_protocol_version: pinned.service_protocol_version as i32,
-                    deployment_id: id,
-                    supported_protocol_versions: 1..=2,
-                }
-            )
+        .await;
+        assert_reply(
+            next_step,
+            RestartAsNewInvocationRpcResponse::IncompatibleDeploymentId {
+                pinned_protocol_version: pinned.service_protocol_version as i32,
+                deployment_id: id,
+                supported_protocol_versions: 1..=2,
+            },
         );
     }
 
@@ -1521,31 +1327,21 @@ mod tests {
             true,
         );
 
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
-        proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .never();
-
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &registry, &mut storage),
+        let next_step = handle(
+            true,
+            &registry,
+            &mut storage,
             Request {
                 request_id: Default::default(),
                 invocation_id,
                 copy_prefix_up_to_index_included: 1,
                 patch_deployment_id: PatchDeploymentId::PinTo { id: some_id },
             },
-            Replier::new(tx),
         )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            rx.recv().await.unwrap(),
-            PartitionProcessorRpcResponse::RestartAsNewInvocation(
-                RestartAsNewInvocationRpcResponse::DeploymentNotFound
-            )
+        .await;
+        assert_reply(
+            next_step,
+            RestartAsNewInvocationRpcResponse::DeploymentNotFound,
         );
     }
 
@@ -1562,35 +1358,21 @@ mod tests {
             /* has completion */ false,
         );
 
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
-        proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .never();
-
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(
-                &mut proposer,
-                &MockDeploymentMetadataRegistry::default(),
-                &mut storage,
-            ),
+        let next_step = handle(
+            true,
+            &MockDeploymentMetadataRegistry::default(),
+            &mut storage,
             Request {
                 request_id: Default::default(),
                 invocation_id,
                 copy_prefix_up_to_index_included: 1,
                 patch_deployment_id: PatchDeploymentId::KeepPinned,
             },
-            Replier::new(tx),
         )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            rx.recv().await.unwrap(),
-            PartitionProcessorRpcResponse::RestartAsNewInvocation(
-                RestartAsNewInvocationRpcResponse::JournalCopyRangeInvalid
-            )
+        .await;
+        assert_reply(
+            next_step,
+            RestartAsNewInvocationRpcResponse::JournalCopyRangeInvalid,
         );
     }
 
@@ -1603,73 +1385,43 @@ mod tests {
         let mut storage =
             MockStorage::new_without_journal(invocation_id, InvocationStatus::Completed(completed));
 
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(true);
-        proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .never();
-
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(
-                &mut proposer,
-                &MockDeploymentMetadataRegistry::default(),
-                &mut storage,
-            ),
+        let next_step = handle(
+            true,
+            &MockDeploymentMetadataRegistry::default(),
+            &mut storage,
             Request {
                 request_id: Default::default(),
                 invocation_id,
                 copy_prefix_up_to_index_included: 1,
                 patch_deployment_id: PatchDeploymentId::KeepPinned,
             },
-            Replier::new(tx),
         )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            rx.recv().await.unwrap(),
-            PartitionProcessorRpcResponse::RestartAsNewInvocation(
-                RestartAsNewInvocationRpcResponse::Unsupported
-            )
-        );
+        .await;
+        assert_reply(next_step, RestartAsNewInvocationRpcResponse::Unsupported);
     }
 
     #[test(restate_core::test)]
     async fn reply_not_leader_when_not_leader() {
         let invocation_id = InvocationId::mock_random();
 
-        let mut proposer = MockActuator::new();
-        proposer.expect_is_leader().return_const(false);
-        proposer
-            .expect_partition_id()
-            .return_const(PartitionId::from(0));
-        proposer
-            .expect_append_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
-            .never();
-        proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .never();
-
         let mut storage = MockStorage::new_without_journal(invocation_id, Default::default());
 
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &(), &mut storage),
+        let next_step = handle(
+            false,
+            &(),
+            &mut storage,
             Request {
                 request_id: Default::default(),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
                 patch_deployment_id: Default::default(),
             },
-            Replier::new(tx),
         )
-        .await
-        .unwrap();
+        .await;
 
         assert!(matches!(
-            rx.recv().await,
-            Err(PartitionProcessorRpcError::NotLeader(_))
+            next_step,
+            NextStep::Reply(Err(PartitionProcessorRpcError::NotLeader(_)))
         ));
     }
 }

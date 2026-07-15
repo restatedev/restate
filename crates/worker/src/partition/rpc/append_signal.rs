@@ -20,32 +20,23 @@ pub(super) struct Request {
     pub(super) signal: Signal,
 }
 
-impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
-    for RpcContext<'a, TActuator, TSchemas, TStorage>
-{
-    type Output = PartitionProcessorRpcResponse;
-    type Error = ();
-
+impl<'a, TSchemas, TStorage> RpcHandler<Request> for RpcContext<'a, TSchemas, TStorage> {
     async fn handle(
         self,
         Request {
             invocation_id,
             signal,
         }: Request,
-        replier: Replier<Self::Output>,
-    ) -> Result<(), Self::Error> {
-        self.proposer
-            .append_and_respond_asynchronously(
-                invocation_id.partition_key(),
-                Command::NotifySignal(NotifySignalRequest {
-                    invocation_id,
-                    signal,
-                }),
-                replier,
-                PartitionProcessorRpcResponse::Appended,
-            )
-            .await;
-
-        Ok(())
+    ) -> NextStep {
+        NextStep::Propose {
+            partition_key: invocation_id.partition_key(),
+            cmd: Command::NotifySignal(NotifySignalRequest {
+                invocation_id,
+                signal,
+            }),
+            reply_policy: ReplyPolicy::OnCommit {
+                response: PartitionProcessorRpcResponse::Appended,
+            },
+        }
     }
 }
