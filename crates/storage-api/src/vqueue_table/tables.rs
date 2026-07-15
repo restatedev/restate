@@ -11,7 +11,7 @@
 use restate_sharding::{KeyRange, PartitionKey};
 use restate_types::vqueues::{Seq, VQueueId};
 
-use super::filters::ScanEntryIdFilter;
+use super::filters::{ScanEntryIdFilter, ScanMetaFilter};
 use super::metadata::{VQueueMeta, VQueueMetaRef};
 use super::{
     EntryId, EntryKey, EntryMetadata, EntryStatusHeader, EntryValue, stats::EntryStatistics,
@@ -255,7 +255,7 @@ pub trait ScanVQueueMetaTable {
             + 'static,
     >(
         &self,
-        range: KeyRange,
+        filter: ScanMetaFilter,
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
