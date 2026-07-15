@@ -1037,6 +1037,13 @@ impl Transaction for PartitionStoreTransaction<'_> {
         self.write_batch_with_index.as_mut().unwrap().clear();
         Ok(())
     }
+
+    fn estimated_size_in_bytes(&self) -> usize {
+        self.write_batch_with_index
+            .as_ref()
+            .map(|wbwi| wbwi.size_in_bytes())
+            .unwrap_or_default()
+    }
 }
 
 impl StorageAccess for PartitionStoreTransaction<'_> {

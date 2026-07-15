@@ -274,6 +274,7 @@ pub enum ProcessorError {
         barrier_reason: String,
     },
     /// *Since v1.7.0*
+    #[allow(unused)]
     #[error(
         "partition is blocked; pre-existing in-flight data must be migrated before applying \
          feature changes {features:?}; consult the Restate documentation for the server version \
@@ -977,6 +978,7 @@ where
                 .await
             }
             v2::CommandKind::VersionBarrier => {
+                let partition_db = self.partition_store.partition_db().clone();
                 let mut leadership = LeadershipContext {
                     partition_store: &mut self.partition_store,
                     leadership: &mut self.leadership_state,
@@ -984,6 +986,7 @@ where
                 VersionBarrierContext {
                     txn,
                     node_ctx: &mut self.node_ctx,
+                    partition_db,
                     processor: &mut self.ctx,
                     leadership: &mut leadership,
                 }
