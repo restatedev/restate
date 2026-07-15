@@ -181,15 +181,21 @@ impl ScanJournalEventsTable for PartitionStore {
                 TableScan::FullScanPartitionKeyRange::<JournalEventKeyBuilder>(partition_key)
             }
             ScanJournalEventsTableRange::InvocationId(invocation_id) => {
+                let start_partition_key = invocation_id.start().partition_key();
+                let end_partition_key = invocation_id.end().partition_key();
                 let start = JournalEventKey::builder()
-                    .partition_key(invocation_id.start().partition_key())
+                    .partition_key(start_partition_key)
                     .invocation_uuid(invocation_id.start().invocation_uuid());
 
                 let end = JournalEventKey::builder()
-                    .partition_key(invocation_id.end().partition_key())
+                    .partition_key(end_partition_key)
                     .invocation_uuid(invocation_id.end().invocation_uuid());
 
-                TableScan::KeyRangeInclusiveInSinglePartition(self.partition_id(), start, end)
+                if start_partition_key == end_partition_key {
+                    TableScan::KeyRangeInclusiveInSinglePartition(self.partition_id(), start, end)
+                } else {
+                    TableScan::KeyRangeInclusive(start, end)
+                }
             }
         };
 

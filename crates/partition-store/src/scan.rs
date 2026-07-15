@@ -15,8 +15,8 @@ use restate_types::sharding::KeyRange;
 
 use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, KeyEncode, KeyKind};
 use crate::scan::TableScan::{
-    FullScanPartitionKeyRange, KeyRangeInclusiveInSinglePartition, SinglePartition,
-    SinglePartitionKeyPrefix,
+    FullScanPartitionKeyRange, KeyRangeInclusive, KeyRangeInclusiveInSinglePartition,
+    SinglePartition, SinglePartitionKeyPrefix,
 };
 use crate::{PaddedPartitionId, ScanMode, TableKind};
 
@@ -34,6 +34,9 @@ pub enum TableScan<K> {
     SinglePartitionKeyPrefix(PartitionKey, K),
     /// Inclusive Key Range in a single partition.
     KeyRangeInclusiveInSinglePartition(PartitionId, K, K),
+    /// Inclusive key range that can span multiple partition keys.
+    /// Requires total seek order.
+    KeyRangeInclusive(K, K),
 }
 
 pub(crate) enum PhysicalScan {
@@ -60,6 +63,25 @@ impl PhysicalScan {
                         K::TABLE,
                         K::KEY_KIND,
                         ScanMode::WithinPrefix,
+                        start,
+                        end,
+                    )
+                } else {
+                    // not allowed to happen since we guarantee that KeyKind is
+                    // always incrementable.
+                    panic!("Key range end overflowed, start key {:x?}", &start);
+                }
+            }
+            KeyRangeInclusive(start, end) => {
+                start.serialize_to(arena);
+                let start = arena.split();
+                end.serialize_to(arena);
+                let mut end = arena.split();
+                if try_increment(&mut end) {
+                    PhysicalScan::RangeExclusive(
+                        K::TABLE,
+                        K::KEY_KIND,
+                        ScanMode::TotalOrder,
                         start,
                         end,
                     )
@@ -150,11 +172,32 @@ fn try_increment(bytes: &mut BytesMut) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::scan::try_increment;
-    use bytes::{BufMut, BytesMut};
-    use num_bigint::BigUint;
     use std::collections::BTreeMap;
     use std::ops::Add;
+
+    use bytes::{BufMut, BytesMut};
+    use num_bigint::BigUint;
+
+    use crate::keys::{EncodeTableKey, KeyKind};
+    use crate::scan::{PhysicalScan, TableScan, try_increment};
+    use crate::{ScanMode, TableKind};
+
+    struct TestKey(u64, u64);
+
+    impl EncodeTableKey for TestKey {
+        const TABLE: TableKind = TableKind::InvocationStatus;
+        const KEY_KIND: KeyKind = KeyKind::InvocationStatus;
+
+        fn serialize_to<B: BufMut>(&self, bytes: &mut B) {
+            Self::KEY_KIND.serialize(bytes);
+            bytes.put_u64(self.0);
+            bytes.put_u64(self.1);
+        }
+
+        fn serialized_length(&self) -> usize {
+            KeyKind::SERIALIZED_LENGTH + std::mem::size_of::<u64>() * 2
+        }
+    }
 
     fn verify_binary_increment(bytes: &mut BytesMut) {
         let as_number = BigUint::from_bytes_be(bytes);
@@ -227,6 +270,31 @@ mod tests {
         verify_partition_covers_exactly(32 * 1024);
         verify_partition_covers_exactly(u32::MAX as u64);
         verify_partition_covers_exactly(u64::MAX - 1);
+    }
+
+    #[test]
+    fn inclusive_key_range_uses_total_order() {
+        let scan = TableScan::KeyRangeInclusive(TestKey(1, 0), TestKey(2, 0));
+        let physical_scan: PhysicalScan = scan.into();
+
+        let PhysicalScan::RangeExclusive(_, _, scan_mode, _, _) = physical_scan else {
+            panic!("expected range scan");
+        };
+
+        assert_eq!(scan_mode, ScanMode::TotalOrder);
+    }
+
+    #[test]
+    fn single_partition_inclusive_key_range_stays_within_prefix() {
+        let scan =
+            TableScan::KeyRangeInclusiveInSinglePartition(1.into(), TestKey(1, 0), TestKey(1, 9));
+        let physical_scan: PhysicalScan = scan.into();
+
+        let PhysicalScan::RangeExclusive(_, _, scan_mode, _, _) = physical_scan else {
+            panic!("expected range scan");
+        };
+
+        assert_eq!(scan_mode, ScanMode::WithinPrefix);
     }
 
     #[test]
