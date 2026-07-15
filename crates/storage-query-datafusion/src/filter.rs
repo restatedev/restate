@@ -41,18 +41,44 @@ pub trait PartitionKeyExtractor: Send + Sync + 'static + Debug {
 
 #[derive(Debug)]
 pub struct FirstMatchingPartitionKeyExtractor {
-    extractors: Vec<Box<dyn PartitionKeyExtractor>>,
+    extractors: Vec<PartitionKeyExtractorEntry>,
+}
+
+/// A partition-key extractor and the fanout strategy for its matches.
+#[derive(Debug)]
+struct PartitionKeyExtractorEntry {
+    extractor: Box<dyn PartitionKeyExtractor>,
+    fanout: PointReadFanout,
+}
+
+/// Controls how selected partition keys are mapped to physical scans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PointReadFanout {
+    /// Creates one scan per selected partition key.
+    PerKey,
+    /// Groups selected keys into one scan per Restate partition.
+    PerPartition,
+}
+
+/// The partition keys and fanout produced by the first matching extractor.
+#[derive(Debug)]
+pub(crate) struct PartitionKeySelection {
+    pub(crate) keys: BTreeSet<PartitionKey>,
+    pub(crate) fanout: PointReadFanout,
 }
 
 impl Default for FirstMatchingPartitionKeyExtractor {
     fn default() -> Self {
-        let extractors = vec![Box::new(MatchingColumnExtractor::new(
-            "partition_key",
-            |value: &ScalarValue| match value {
-                ScalarValue::UInt64(Some(v)) => Ok(*v),
-                _ => anyhow::bail!("expected UInt64 partition key"),
-            },
-        )) as Box<dyn PartitionKeyExtractor>];
+        let extractors = vec![PartitionKeyExtractorEntry {
+            extractor: Box::new(MatchingColumnExtractor::new(
+                "partition_key",
+                |value: &ScalarValue| match value {
+                    ScalarValue::UInt64(Some(v)) => Ok(*v),
+                    _ => anyhow::bail!("expected UInt64 partition key"),
+                },
+            )),
+            fanout: PointReadFanout::PerKey,
+        }];
         Self { extractors }
     }
 }
@@ -130,19 +156,65 @@ impl FirstMatchingPartitionKeyExtractor {
     }
 
     pub fn with_invocation_id(self, column_name: impl Into<String>) -> Self {
-        let e = MatchingColumnExtractor::new(column_name, |value: &ScalarValue| {
+        self.append(Self::create_invocation_id_partition_key_extractor(
+            column_name,
+        ))
+    }
+
+    /// Adds an invocation-id extractor whose matches are grouped into a single
+    /// scan per Restate partition, covering the `[min, max]` span of the requested
+    /// keys landing in it.
+    ///
+    /// Only use this when the table's scanner re-fetches each id *exactly* via a
+    /// batched multi-get (e.g. `IdSelection::Set`). A scanner that range-scans the
+    /// span instead (e.g. journals, which hold many rows per id and use
+    /// `IdSelection::bounds`) would read every intermediate key in the span — use
+    /// [`Self::with_invocation_id`] there.
+    pub fn with_grouped_invocation_id(self, column_name: impl Into<String>) -> Self {
+        self.append_with_fanout(
+            Self::create_invocation_id_partition_key_extractor(column_name),
+            PointReadFanout::PerPartition,
+        )
+    }
+
+    fn create_invocation_id_partition_key_extractor(
+        column_name: impl Into<String>,
+    ) -> MatchingColumnExtractor<fn(&ScalarValue) -> anyhow::Result<PartitionKey>> {
+        MatchingColumnExtractor::new(column_name, |value: &ScalarValue| {
             let value = value
                 .try_as_str()
                 .context("expected string invocation id")?
                 .context("unexpected null invocation id")?;
             let invocation_id = InvocationId::from_str(value).context("non valid invocation id")?;
             Ok(invocation_id.partition_key())
-        });
-        self.append(e)
+        })
     }
 
     pub fn with_vqueue_entry_id(self, column_name: impl Into<String>) -> Self {
-        let e = MatchingColumnExtractor::new(column_name, |value: &ScalarValue| {
+        self.append(Self::create_vqueue_entry_id_partition_key_extractor(
+            column_name,
+        ))
+    }
+
+    /// Adds a vqueue-entry-id extractor whose matches are grouped into a single
+    /// scan per Restate partition, covering the `[min, max]` span of the requested
+    /// keys landing in it.
+    ///
+    /// Only use this when the table's scanner re-fetches each entry id *exactly*
+    /// via a batched multi-get (e.g. `IdSelection::Set`); a scanner that
+    /// range-scans the span would read every intermediate key. Use
+    /// [`Self::with_vqueue_entry_id`] otherwise.
+    pub fn with_grouped_vqueue_entry_id(self, column_name: impl Into<String>) -> Self {
+        self.append_with_fanout(
+            Self::create_vqueue_entry_id_partition_key_extractor(column_name),
+            PointReadFanout::PerPartition,
+        )
+    }
+
+    fn create_vqueue_entry_id_partition_key_extractor(
+        column_name: impl Into<String>,
+    ) -> MatchingColumnExtractor<fn(&ScalarValue) -> anyhow::Result<PartitionKey>> {
+        MatchingColumnExtractor::new(column_name, |value: &ScalarValue| {
             let value = value
                 .try_as_str()
                 .context("expected string entry id")?
@@ -150,28 +222,55 @@ impl FirstMatchingPartitionKeyExtractor {
 
             VQueueEntryId::extract_partition_key(value)
                 .map_err(|_| anyhow::anyhow!("non valid entry id"))
-        });
-        self.append(e)
+        })
     }
 
-    pub fn append(mut self, extractor: impl PartitionKeyExtractor) -> Self {
-        self.extractors.push(Box::new(extractor));
+    pub fn append(self, extractor: impl PartitionKeyExtractor) -> Self {
+        self.append_with_fanout(extractor, PointReadFanout::PerKey)
+    }
+
+    fn append_with_fanout(
+        mut self,
+        extractor: impl PartitionKeyExtractor,
+        fanout: PointReadFanout,
+    ) -> Self {
+        self.extractors.push(PartitionKeyExtractorEntry {
+            extractor: Box::new(extractor),
+            fanout,
+        });
         self
+    }
+
+    /// Returns the keys and fanout from the first extractor matching the filters.
+    pub(crate) fn try_extract_selection(
+        &self,
+        filters: &[Arc<dyn PhysicalExpr>],
+    ) -> anyhow::Result<Option<PartitionKeySelection>> {
+        for entry in &self.extractors {
+            if let Some(keys) = entry.extractor.try_extract(filters)? {
+                return Ok(Some(PartitionKeySelection {
+                    keys,
+                    fanout: entry.fanout,
+                }));
+            }
+        }
+
+        Ok(None)
     }
 }
 
+// Test-only: production must call `try_extract_selection` to keep the per-match
+// fanout. This impl discards it (returns keys only) and exists so the extractor
+// tests can assert key extraction without threading `PointReadFanout` through.
+#[cfg(test)]
 impl PartitionKeyExtractor for FirstMatchingPartitionKeyExtractor {
     fn try_extract(
         &self,
         filters: &[Arc<dyn PhysicalExpr>],
     ) -> anyhow::Result<Option<BTreeSet<PartitionKey>>> {
-        for extractor in &self.extractors {
-            if let Some(partition_keys) = extractor.try_extract(filters)? {
-                return Ok(Some(partition_keys));
-            }
-        }
-
-        Ok(None)
+        Ok(self
+            .try_extract_selection(filters)?
+            .map(|selection| selection.keys))
     }
 }
 
@@ -601,11 +700,11 @@ mod tests {
     use restate_types::identifiers::{InvocationId, ServiceId, StateMutationId, WithPartitionKey};
     use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType};
     use restate_types::sharding::KeyRange;
-    use restate_types::vqueues::VQueueEntryId;
+    use restate_types::vqueues::{VQueueEntryId, VQueueId};
 
     use crate::filter::{
         FirstMatchingPartitionKeyExtractor, IdSelection, InvocationIdFilter, PartitionKeyExtractor,
-        VQueueEntryIdFilter, VQueueFilter,
+        PointReadFanout, VQueueEntryIdFilter, VQueueFilter,
     };
     use crate::partition_store_scanner::ScanLocalPartitionFilter;
 
@@ -844,6 +943,44 @@ mod tests {
         let mut got_keys = got_keys.into_iter();
         assert_eq!(expected_key_1, got_keys.next().unwrap());
         assert_eq!(expected_key_2, got_keys.next().unwrap());
+    }
+
+    #[test]
+    fn point_read_fanout_follows_matching_extractor() {
+        let invocation_id = make_invocation_id("key-1");
+        let invocation_status_extractor = FirstMatchingPartitionKeyExtractor::default()
+            .with_service_key("target_service_key")
+            .with_grouped_invocation_id("id");
+
+        let selection = invocation_status_extractor
+            .try_extract_selection(&[eq(col("id"), utf8_lit(invocation_id.to_string()))])
+            .expect("extract")
+            .expect("to find an invocation id");
+        assert_eq!(PointReadFanout::PerPartition, selection.fanout);
+
+        let selection = invocation_status_extractor
+            .try_extract_selection(&[eq(col("target_service_key"), utf8_lit("service-key"))])
+            .expect("extract")
+            .expect("to find a service key");
+        assert_eq!(PointReadFanout::PerKey, selection.fanout);
+
+        let entry_id = StateMutationId::generate(42);
+        let vqueue_id = VQueueId::custom(123, "test");
+        let vqueue_entry_status_extractor = FirstMatchingPartitionKeyExtractor::default()
+            .with_grouped_vqueue_entry_id("entry_id")
+            .with_partitioned_resource_id::<VQueueId>("vqueue_id");
+
+        let selection = vqueue_entry_status_extractor
+            .try_extract_selection(&[eq(col("entry_id"), utf8_lit(entry_id.to_string()))])
+            .expect("extract")
+            .expect("to find an entry id");
+        assert_eq!(PointReadFanout::PerPartition, selection.fanout);
+
+        let selection = vqueue_entry_status_extractor
+            .try_extract_selection(&[eq(col("vqueue_id"), utf8_lit(vqueue_id.to_string()))])
+            .expect("extract")
+            .expect("to find a vqueue id");
+        assert_eq!(PointReadFanout::PerKey, selection.fanout);
     }
 
     #[test]
