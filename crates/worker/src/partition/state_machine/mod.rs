@@ -3130,26 +3130,6 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         match status {
             InvocationStatus::Scheduled(ScheduledInvocation { metadata, .. })
             | InvocationStatus::Inboxed(InboxedInvocation { metadata, .. }) => {
-                // Validate that if VO, that it's not locked already.
-                let invocation_target = &metadata.invocation_target;
-                if matches!(
-                    invocation_target.invocation_target_ty(),
-                    InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
-                ) {
-                    let keyed_service_id = invocation_target.as_keyed_service_id().expect(
-                        "When the handler type is Exclusive, the invocation target must have a key",
-                    );
-                    // Lock the service in the old status table.
-                    // Obsolete: Remove in lieu of using Locks when service status table is fully migrated to
-                    // locks table.
-                    self.storage
-                        .put_virtual_object_status(
-                            &keyed_service_id,
-                            &VirtualObjectStatus::Locked(invocation_id),
-                        )
-                        .map_err(Error::Storage)?;
-                }
-
                 let (metadata, invocation_input) =
                     InFlightInvocationMetadata::from_pre_flight_invocation_metadata(
                         metadata,

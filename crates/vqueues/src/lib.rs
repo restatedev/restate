@@ -11,9 +11,11 @@
 mod cache;
 pub mod context;
 mod metric_definitions;
+pub mod migrations;
 pub mod scheduler;
 mod util;
 
+use std::debug_assert_matches;
 use std::ops::Add;
 use std::time::Duration;
 
@@ -30,6 +32,9 @@ use tracing::debug;
 use restate_clock::RoughTimestamp;
 use restate_clock::time::MillisSinceEpoch;
 use restate_limiter::LimitKey;
+use restate_storage_api::invocation_status_table::{
+    CompletedInvocation, InFlightInvocationMetadata,
+};
 use restate_storage_api::lock_table::{LockState, WriteLockTable};
 use restate_storage_api::vqueue_table::metadata::{VQueueLink, VQueueMeta};
 use restate_storage_api::vqueue_table::stats::{EntryStatistics, WaitStats};
@@ -40,8 +45,9 @@ use restate_storage_api::vqueue_table::{
 use restate_storage_api::{StorageError, lock_table};
 use restate_types::ServiceName;
 use restate_types::clock::UniqueTimestamp;
-use restate_types::identifiers::{DeploymentId, PartitionKey};
-use restate_types::invocation::InvocationTarget;
+use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey};
+use restate_types::invocation::{InvocationTarget, InvocationTargetType, VirtualObjectHandlerType};
+use restate_types::sharding::WithPartitionKey;
 use restate_types::vqueues::{EntryId, Seq, VQueueId};
 use restate_types::{LockName, Scope};
 use restate_util_string::{ReString, ToReString};
@@ -181,6 +187,30 @@ where
             handle: cache_key,
             cache,
             action_collector,
+        })
+    }
+
+    // Used for migrations
+    pub async fn get_or_insert_with(
+        qid: &VQueueId,
+        storage: &'a mut S,
+        cache: &'a mut VQueuesMetaCache,
+        insert_fn: impl FnOnce() -> VQueueMeta,
+    ) -> Result<Self, StorageError> {
+        let cache_key = match cache.load(storage, qid).await? {
+            Some(key) => key,
+            None => {
+                let meta = insert_fn();
+                storage.create_vqueue(qid, &meta);
+                cache.insert(qid.clone(), meta)
+            }
+        };
+
+        Ok(Self {
+            storage,
+            handle: cache_key,
+            cache,
+            action_collector: None,
         })
     }
 
@@ -1275,5 +1305,346 @@ where
             stats.num_yields = stats.num_yields.saturating_add(1);
         }
         stats
+    }
+
+    /// Backfills the vqueue with an existing running invocation
+    fn migrate_invoked_invocation(
+        &mut self,
+        invocation_id: &InvocationId,
+        invoked: &InFlightInvocationMetadata,
+    ) {
+        let meta = self.cache.get_mut(self.handle).unwrap();
+
+        // We use a special value (0) for all running invocations under the following assumptions:
+        // - We don't allow two invocations with the same ID to co-exist (prior to vqueues)
+        // - Any new invocation with the same ID will be created with Lsn > 0 after migration.
+        let seq = 0;
+        let entry_id = EntryId::from(invocation_id);
+        let stage = Stage::Running;
+        let status = Status::Started;
+
+        let partition_key = invocation_id.partition_key();
+        let created_at =
+            UniqueTimestamp::from_unix_millis_unchecked(invoked.timestamps.creation_time());
+        let modified_at =
+            UniqueTimestamp::from_unix_millis_unchecked(invoked.timestamps.modification_time());
+
+        let created_at_unix = created_at.to_unix_millis();
+
+        // following the same logic as enqueue_new
+        let first_run_at = match invoked.execution_time {
+            Some(t) if t > created_at_unix => RoughTimestamp::from_unix_millis_ceil(t),
+            Some(t) => RoughTimestamp::from_unix_millis_clamped(t),
+            None => RoughTimestamp::from_unix_millis_clamped(created_at_unix),
+        };
+
+        let mut metadata = EntryMetadata::default();
+        if let Some(ref pinned) = invoked.pinned_deployment {
+            metadata.deployment = Some(pinned.deployment_id.to_restring());
+        }
+
+        // Prepare Lock
+        // We only use has_lock = true for exclusive handlers of virtual objects
+        let has_lock = matches!(
+            invoked.invocation_target.invocation_target_ty(),
+            InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
+        );
+
+        if has_lock {
+            let lock_state = LockState {
+                acquired_at: modified_at,
+                acquired_by: lock_table::AcquiredBy::from_entry_id(partition_key, &entry_id),
+            };
+            let lock_name = meta.meta().lock_name().expect("vo must have a lock link");
+            self.storage.acquire_lock(&None, lock_name, &lock_state);
+        }
+
+        let key = EntryKey::new(has_lock, first_run_at, seq, entry_id);
+        let mut stats = EntryStatistics::new(created_at, first_run_at);
+        stats.transitioned_at = modified_at;
+        stats.latest_attempt_at = Some(modified_at);
+        // We fallback to assuming that this has only been attempted once because we no source of
+        // truth for this information.
+        // This needs to be > 0 because this is how we denote that an entry "has_started" in stats.
+        stats.num_attempts = 1;
+
+        // This will mess up the last_start_at of the vqueue metadata but it will be corrected
+        // on the next real invocation start.
+        let update = metadata::Update::new(
+            modified_at,
+            metadata::Action::Move {
+                // We deliberately don't set prev_stage here because we are "adding" this entry
+                // to the vqueue and not moving it from another stage.
+                prev_stage: None,
+                next_stage: stage,
+                metrics: Self::build_move_metrics(&stats, None),
+            },
+        );
+
+        // Update vqueue meta cache
+        let (was_active_before, is_active_now) = meta.apply_update(&update);
+
+        // Update vqueue meta in storage
+        self.storage.update_vqueue(meta.vqueue_id(), &update);
+
+        if !was_active_before && is_active_now {
+            self.storage.mark_vqueue_as_active(meta.vqueue_id());
+        }
+
+        // We need to add the entry into the inbox vqueue.
+        let value = EntryValue {
+            status,
+            stats: stats.clone(),
+            metadata: metadata.clone(),
+        };
+
+        self.storage
+            .put_vqueue_inbox(meta.vqueue_id(), stage, &key, &value);
+
+        self.storage.put_vqueue_entry_status(
+            meta.vqueue_id(),
+            stage,
+            &key,
+            &metadata,
+            stats,
+            status,
+        );
+    }
+
+    /// Backfills the vqueue with an existing completed invocation
+    fn migrate_completed_invocation(
+        &mut self,
+        invocation_id: &InvocationId,
+        completed: &CompletedInvocation,
+    ) {
+        let meta = self.cache.get_mut(self.handle).unwrap();
+
+        // We use a special value (0) for all running invocations under the following assumptions:
+        // - We don't allow two invocations with the same ID to co-exist (prior to vqueues)
+        // - Any new invocation with the same ID will be created with Lsn > 0 after migration.
+        let seq = 0;
+        let entry_id = EntryId::from(invocation_id);
+        let stage = Stage::Finished;
+
+        // How do we know if the invocation was "killed" or cancelled?
+        let status = match completed.response_result {
+            restate_types::invocation::ResponseResult::Success(_) => Status::Succeeded,
+            restate_types::invocation::ResponseResult::Failure(ref e) => {
+                if e.code() == restate_types::errors::codes::ABORTED {
+                    // Special handling for cancel/kill. Definitely not ideal, but the current
+                    // design leaves me with no other options.
+                    //
+                    // This takes the same approach as what the UI does to determine if the
+                    // invocation was killed or cancelled.
+                    match e.message.as_ref() {
+                        "cancelled" | "Cancelled" | "canceled" | "Canceled" => Status::Cancelled,
+                        "killed" | "Killed" => Status::Killed,
+                        _ => Status::Failed,
+                    }
+                } else {
+                    Status::Failed
+                }
+            }
+        };
+
+        let created_at =
+            UniqueTimestamp::from_unix_millis_unchecked(completed.timestamps.creation_time());
+        let modified_at =
+            UniqueTimestamp::from_unix_millis_unchecked(completed.timestamps.modification_time());
+        let completed_at = UniqueTimestamp::from_unix_millis_unchecked(
+            completed
+                .timestamps
+                .completed_transition_time()
+                .unwrap_or_else(|| completed.timestamps.modification_time()),
+        );
+
+        let created_at_unix = created_at.to_unix_millis();
+
+        // following the same logic as enqueue_new
+        let first_run_at = match completed.execution_time {
+            Some(t) if t > created_at_unix => RoughTimestamp::from_unix_millis_ceil(t),
+            Some(t) => RoughTimestamp::from_unix_millis_clamped(t),
+            None => RoughTimestamp::from_unix_millis_clamped(created_at_unix),
+        };
+
+        let mut metadata = EntryMetadata::default();
+        if let Some(ref pinned) = completed.pinned_deployment {
+            metadata.deployment = Some(pinned.deployment_id.to_restring());
+        }
+
+        // Completed invocations cannot hold locks
+        // The run_at of the entry_key for completed invocations is set to be the cleanup time.
+        // of completion.
+        let delete_at = completed_at.to_unix_millis() + completed.completion_retention_duration;
+        let key = EntryKey::new(false, delete_at, seq, entry_id);
+
+        let mut stats = EntryStatistics::new(created_at, first_run_at);
+        // We fallback to assuming that this has only been attempted once because we no source of
+        // truth for this information.
+        // This needs to be > 0 because this is how we denote that an entry "has_started" in stats.
+        stats.num_attempts = 1;
+        stats.transitioned_at = modified_at;
+        stats.latest_attempt_at = completed
+            .timestamps
+            .running_transition_time()
+            .map(UniqueTimestamp::from_unix_millis_unchecked);
+
+        // This will mess up the last_finish_at of the vqueue metadata but it will be corrected
+        // on the next real invocation completion.
+        let update = metadata::Update::new(
+            completed_at,
+            metadata::Action::Move {
+                // We deliberately don't set prev_stage here because we are "adding" this entry
+                // to the vqueue and not moving it from another stage.
+                prev_stage: None,
+                next_stage: stage,
+                metrics: Self::build_move_metrics(&stats, None),
+            },
+        );
+
+        // Update vqueue meta cache
+        meta.apply_update(&update);
+
+        // Update vqueue meta in storage
+        self.storage.update_vqueue(meta.vqueue_id(), &update);
+
+        // We need to add the entry into the inbox vqueue.
+        let value = EntryValue {
+            status,
+            stats: stats.clone(),
+            metadata: metadata.clone(),
+        };
+
+        self.storage
+            .put_vqueue_inbox(meta.vqueue_id(), stage, &key, &value);
+
+        self.storage.put_vqueue_entry_status(
+            meta.vqueue_id(),
+            stage,
+            &key,
+            &metadata,
+            stats,
+            status,
+        );
+    }
+
+    /// Backfills the vqueue with an existing completed invocation
+    fn migrate_parked_invocation(
+        &mut self,
+        invocation_id: &InvocationId,
+        parked: &InFlightInvocationMetadata,
+        stage: Stage,
+    ) {
+        debug_assert_matches!(stage, Stage::Paused | Stage::Suspended);
+        let meta = self.cache.get_mut(self.handle).unwrap();
+
+        // We use a special value (0) for all running invocations under the following assumptions:
+        // - We don't allow two invocations with the same ID to co-exist (prior to vqueues)
+        // - Any new invocation with the same ID will be created with Lsn > 0 after migration.
+        let seq = 0;
+        let entry_id = EntryId::from(invocation_id);
+        let status = Status::Started;
+
+        let partition_key = invocation_id.partition_key();
+        let created_at =
+            UniqueTimestamp::from_unix_millis_unchecked(parked.timestamps.creation_time());
+
+        let modified_at =
+            UniqueTimestamp::from_unix_millis_unchecked(parked.timestamps.modification_time());
+
+        let may_have_ran_at = UniqueTimestamp::from_unix_millis_unchecked(
+            parked
+                .timestamps
+                .running_transition_time()
+                .unwrap_or_else(|| parked.timestamps.modification_time()),
+        );
+
+        let created_at_unix = created_at.to_unix_millis();
+
+        // following the same logic as enqueue_new
+        let first_run_at = match parked.execution_time {
+            Some(t) if t > created_at_unix => RoughTimestamp::from_unix_millis_ceil(t),
+            Some(t) => RoughTimestamp::from_unix_millis_clamped(t),
+            None => RoughTimestamp::from_unix_millis_clamped(created_at_unix),
+        };
+
+        let mut metadata = EntryMetadata::default();
+        if let Some(ref pinned) = parked.pinned_deployment {
+            metadata.deployment = Some(pinned.deployment_id.to_restring());
+        }
+
+        // Prepare Lock
+        // We only use has_lock = true for exclusive handlers of virtual objects
+        let has_lock = matches!(
+            parked.invocation_target.invocation_target_ty(),
+            InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
+        );
+
+        if has_lock {
+            let lock_state = LockState {
+                // We try to use the last run timestamp if we have it, otherwise we fallback to the
+                // modification time.
+                acquired_at: may_have_ran_at,
+                acquired_by: lock_table::AcquiredBy::from_entry_id(partition_key, &entry_id),
+            };
+            let lock_name = meta.meta().lock_name().expect("vo must have a lock link");
+            self.storage.acquire_lock(&None, lock_name, &lock_state);
+        }
+
+        // Order parked invocations by their original eligibile run time.
+        let key = EntryKey::new(has_lock, first_run_at, seq, entry_id);
+        let mut stats = EntryStatistics::new(created_at, first_run_at);
+        stats.transitioned_at = modified_at;
+        stats.latest_attempt_at = Some(modified_at);
+        // Without vqueues, we cannot pause inboxed or invocations that didn't go through the
+        // Invoked state. Therefore, we'll assume that we have performed at least one attempt.
+        stats.num_attempts = 1;
+        if matches!(stage, Stage::Paused) {
+            stats.num_paused = 1;
+        } else {
+            stats.num_suspensions = 1;
+        }
+
+        // This will mess up the last_start_at of the vqueue metadata but it will be corrected
+        // on the next real invocation start.
+        let update = metadata::Update::new(
+            modified_at,
+            metadata::Action::Move {
+                // We deliberately don't set prev_stage here because we are "adding" this entry
+                // to the vqueue and not moving it from another stage.
+                prev_stage: None,
+                next_stage: stage,
+                metrics: Self::build_move_metrics(&stats, None),
+            },
+        );
+
+        // Update vqueue meta cache
+        let (was_active_before, is_active_now) = meta.apply_update(&update);
+
+        // Update vqueue meta in storage
+        self.storage.update_vqueue(meta.vqueue_id(), &update);
+
+        if !was_active_before && is_active_now {
+            self.storage.mark_vqueue_as_active(meta.vqueue_id());
+        }
+
+        // We need to add the entry into the inbox vqueue.
+        let value = EntryValue {
+            status,
+            stats: stats.clone(),
+            metadata: metadata.clone(),
+        };
+
+        self.storage
+            .put_vqueue_inbox(meta.vqueue_id(), stage, &key, &value);
+
+        self.storage.put_vqueue_entry_status(
+            meta.vqueue_id(),
+            stage,
+            &key,
+            &metadata,
+            stats,
+            status,
+        );
     }
 }

@@ -28,6 +28,7 @@ pub const LEADER_LABEL_FOLLOWER: &str = "0";
 //                     not configured.
 pub const PARTITION_BLOCKED_FLARE: &str = "restate.partition.blocked_flare";
 pub const FLARE_REASON_VERSION_BARRIER: &str = "version_barrier";
+pub const FLARE_REASON_MIGRATION_BARRIER: &str = "migration_barrier";
 pub const FLARE_REASON_SNAPSHOT_UNAVAILABLE: &str = "snapshot-unavailable";
 
 pub const PARTITION_APPLY_COMMAND: &str = "restate.partition.apply_command_duration.seconds";
