@@ -12,7 +12,7 @@ use crate::table_macro::*;
 
 use datafusion::arrow::datatypes::DataType;
 
-define_sort_order!(sys_vqueue_entry_status(partition_key));
+define_sort_order!(sys_vqueue_entry_status(partition_key, entry_id));
 
 define_table!(sys_vqueue_entry_status(
     /// Internal column that is used for partitioning. Can be ignored.

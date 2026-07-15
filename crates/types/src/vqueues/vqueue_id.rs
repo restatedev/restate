@@ -39,6 +39,38 @@ impl<'a> From<&'a VQueueId> for VQueueIdRef<'a> {
     }
 }
 
+impl VQueueIdRef<'_> {
+    #[inline(always)]
+    pub fn partition_key(&self) -> crate::PartitionKey {
+        u64::from_be_bytes(self.0[0..size_of::<PartitionKey>()].try_into().unwrap())
+    }
+
+    /// The key is encoded as follows:
+    /// - PartitionKey (u64) (big-endian)
+    /// - u8 For the size of the rest of the bytes (to support future evolution) with max 255
+    ///   bytes. and 0 being a special marker to indicate format change.
+    /// - [u8; SIZE]
+    pub fn encode_raw_bytes<B: BufMut>(&self, target: &mut B) {
+        target.put_slice(self.0);
+    }
+
+    /// The dual of `from_raw_bytes`
+    ///
+    /// The key is encoded as follows:
+    /// - PartitionKey (u64) (big-endian)
+    /// - u8 For the size of the rest of the bytes (to support future evolution) with max 255
+    ///   bytes. and 0 being a special marker to indicate format change.
+    /// - [u8; SIZE]
+    pub fn as_raw_bytes(&self) -> &[u8] {
+        self.0
+    }
+
+    // 25 bytes
+    pub const fn serialized_length_fixed() -> usize {
+        std::mem::size_of::<PartitionKey>() + 1 + DIGEST_LEN
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, bilrost::Message)]
 pub struct VQueueId(#[bilrost(encoding(plainbytes))] [u8; RAW_VQUEUE_ID_LEN]);
 
@@ -77,7 +109,7 @@ impl VQueueId {
 
     #[inline]
     pub fn partition_key(&self) -> PartitionKey {
-        u64::from_be_bytes(self.0[0..size_of::<PartitionKey>()].try_into().unwrap())
+        VQueueIdRef(&self.0).partition_key()
     }
 
     /// The key is encoded as follows:
@@ -86,7 +118,7 @@ impl VQueueId {
     ///   bytes. and 0 being a special marker to indicate format change.
     /// - [u8; SIZE]
     pub fn encode_raw_bytes<B: BufMut>(&self, target: &mut B) {
-        target.put_slice(&self.0);
+        VQueueIdRef(&self.0).encode_raw_bytes(target)
     }
 
     pub fn from_raw_bytes<B: Buf>(source: &mut B) -> Self {
@@ -108,7 +140,7 @@ impl VQueueId {
 
     // 25 bytes
     pub const fn serialized_length_fixed() -> usize {
-        std::mem::size_of::<PartitionKey>() + 1 + DIGEST_LEN
+        VQueueIdRef::serialized_length_fixed()
     }
 }
 
@@ -150,6 +182,21 @@ impl PartitionedResourceId for VQueueId {
 impl From<&VQueueId> for VQueueId {
     fn from(value: &VQueueId) -> Self {
         value.clone()
+    }
+}
+
+impl ResourceId for VQueueIdRef<'_> {
+    const RAW_BYTES_LEN: usize = RAW_VQUEUE_ID_LEN;
+    const RESOURCE_TYPE: IdResourceType = IdResourceType::VQueue;
+
+    type StrEncodedLen = <VQueueId as ResourceId>::StrEncodedLen;
+
+    fn push_to_encoder(&self, encoder: &mut IdEncoder<Self>) {
+        // v1 vqueue ID is 37c long
+        encoder.push_u64(self.partition_key());
+        let rest_bytes: [u8; DIGEST_LEN] =
+            self.0[size_of::<PartitionKey>() + 1..].try_into().unwrap();
+        encoder.push_u128(u128::from_be_bytes(rest_bytes));
     }
 }
 
@@ -223,6 +270,21 @@ impl std::fmt::Debug for VQueueId {
 }
 
 impl std::fmt::Display for VQueueId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut encoder = IdEncoder::new();
+        self.push_to_encoder(&mut encoder);
+        f.write_str(encoder.as_str())
+    }
+}
+
+impl std::fmt::Debug for VQueueIdRef<'_> {
+    #[inline]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
+impl std::fmt::Display for VQueueIdRef<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut encoder = IdEncoder::new();
         self.push_to_encoder(&mut encoder);
