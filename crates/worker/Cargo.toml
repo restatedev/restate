@@ -88,7 +88,6 @@ restate-vqueues = { workspace = true, features = ["test-util"] }
 restate-wal-protocol = { workspace = true, features = ["test-util"] }
 
 googletest = { workspace = true }
-mockall = { workspace = true }
 prost = { workspace = true }
 rstest = { workspace = true }
 test-log = { workspace = true }
