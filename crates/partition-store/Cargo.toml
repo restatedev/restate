@@ -85,5 +85,9 @@ harness = false
 name = "vqueue_meta_merge"
 harness = false
 
+[[bench]]
+name = "mem_cmp_string"
+harness = false
+
 [lints]
 workspace = true
