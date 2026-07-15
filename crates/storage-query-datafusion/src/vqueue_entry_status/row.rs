@@ -8,46 +8,52 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_storage_api::vqueue_table::EntryStatusHeader;
+use restate_sharding::PartitionKey;
+use restate_storage_api::vqueue_table::RawStatusHeaderRef;
+use restate_types::vqueues::EntryId;
 
 use super::schema::SysVqueueEntryStatusBuilder;
 
 #[inline]
 pub(crate) fn append_vqueue_entry_status_row(
     builder: &mut SysVqueueEntryStatusBuilder,
-    header: &impl EntryStatusHeader,
+    partition_key: PartitionKey,
+    entry_id: &EntryId,
+    header: &RawStatusHeaderRef<'_>,
 ) {
+    let stats = &header.stats;
+    let metadata = &header.metadata;
+
     let mut row = builder.row();
 
-    let qid = header.vqueue_id();
-    let stats = header.stats();
-    let metadata = header.metadata();
+    if row.is_partition_key_defined() {
+        row.partition_key(partition_key);
+    }
 
-    row.partition_key(qid.partition_key());
     if row.is_entry_id_defined() {
-        row.fmt_entry_id(header.display_entry_id());
+        row.fmt_entry_id(entry_id.display(partition_key));
     }
     if row.is_vqueue_id_defined() {
-        row.fmt_vqueue_id(qid);
+        row.fmt_vqueue_id(&header.qid);
     }
     if row.is_stage_defined() {
-        row.fmt_stage(header.stage());
+        row.fmt_stage(header.stage);
     }
     if row.is_status_defined() {
-        row.fmt_status(header.status());
+        row.fmt_status(header.status);
     }
     if row.is_has_lock_defined() {
-        row.has_lock(header.has_lock());
+        row.has_lock(header.has_lock);
     }
     if row.is_next_at_defined() {
-        row.next_at(header.next_run_at().as_unix_millis().as_u64() as i64);
+        row.next_at(header.next_run_at.as_unix_millis().as_u64() as i64);
     }
     if row.is_sequence_number_defined() {
-        row.sequence_number(header.seq().as_u64());
+        row.sequence_number(header.seq.as_u64());
     }
 
     if row.is_entry_kind_defined() {
-        row.fmt_entry_kind(header.kind());
+        row.fmt_entry_kind(entry_id.kind());
     }
 
     if row.is_created_at_defined() {
@@ -95,7 +101,7 @@ pub(crate) fn append_vqueue_entry_status_row(
     }
 
     if row.is_deployment_defined()
-        && let Some(deployment) = &metadata.deployment
+        && let Some(deployment) = metadata.deployment
     {
         row.fmt_deployment(deployment);
     }

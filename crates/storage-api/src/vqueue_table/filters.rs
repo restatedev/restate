@@ -8,17 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod entry;
-mod entry_status;
-pub mod filters;
-pub mod metadata;
-pub mod scheduler;
-pub mod stats;
-mod store;
-mod tables;
+use std::range::RangeInclusive;
 
-pub use entry::*;
-pub use entry_status::*;
-pub use restate_types::vqueues::{EntryId, EntryKind};
-pub use store::*;
-pub use tables::*;
+use restate_sharding::KeyRange;
+use restate_types::vqueues::VQueueEntryId;
+
+/// Filter vqueue entries by partition keys or entry ID range
+#[derive(Debug, Clone)]
+pub enum ScanEntryIdFilter {
+    PartitionKey(KeyRange),
+    EntryIdRange(RangeInclusive<VQueueEntryId>),
+}

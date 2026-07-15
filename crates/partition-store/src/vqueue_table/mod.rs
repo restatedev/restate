@@ -17,10 +17,9 @@ mod metadata;
 mod reader;
 mod running_reader;
 
-use std::io::Cursor;
 use std::pin::Pin;
 
-pub use entry::{EntryStatusKey, EntryStatusKeyRef, StatusHeaderRaw};
+pub use entry::{EntryStatusKey, EntryStatusKeyRef};
 pub use inbox::InboxKey;
 pub use input::InputPayloadKey;
 pub use metadata::*;
@@ -34,18 +33,20 @@ use tracing::error;
 
 use restate_rocksdb::Priority;
 use restate_storage_api::StorageError;
+use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
 use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaRef};
 use restate_storage_api::vqueue_table::{
-    EntryKey, EntryMetadata, EntryStatusHeader, EntryValue, LazyEntryStatus, ReadVQueueTable,
-    ScanVQueueTable, Stage, Status, WriteVQueueTable, stats::EntryStatistics,
+    EntryKey, EntryMetadata, EntryStatusHeader, EntryValue, ReadVQueueTable, ScanVQueueTable,
+    Stage, Status, WriteVQueueTable, stats::EntryStatistics,
 };
 use restate_storage_api::vqueue_table::{
-    OwnedEntryStatusHeader, ScanVQueueEntries, ScanVQueueEntryStatusTable, ScanVQueueMetaTable,
+    RawStatusHeader, RawStatusHeaderRef, ScanVQueueEntries, ScanVQueueEntryStatusTable,
+    ScanVQueueMetaTable,
 };
 use restate_types::sharding::{KeyRange, PartitionKey};
 use restate_types::vqueues::{EntryId, Seq, VQueueId};
 
-use self::entry::{LazyEntryStatusHolder, StatusHeaderRawRef, entry_status_header_from_raw};
+use self::entry::{EntryStatusKeyBuilder, entry_status_header_from_raw};
 use crate::keys::{DecodeTableKey, EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
 use crate::scan::TableScan;
 use crate::vqueue_table::input::InputPayloadKeyRef;
@@ -262,7 +263,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
             .id(entry_key.entry_id())
             .serialize_to(&mut key_buffer.as_mut());
 
-        let header = StatusHeaderRawRef {
+        let header = RawStatusHeaderRef {
             qid: qid.into(),
             stage,
             has_lock: entry_key.has_lock(),
@@ -364,61 +365,10 @@ impl ReadVQueueTable for PartitionStoreTransaction<'_> {
             return Ok(None);
         };
 
-        let header = StatusHeaderRaw::decode_length_delimited(&mut raw_value.as_ref())?;
+        let header = RawStatusHeader::decode_length_delimited(&mut raw_value.as_ref())?;
 
         Ok(Some(entry_status_header_from_raw(*id, header)))
     }
-
-    // Currently unused but left for future use
-    async fn get_vqueue_entry_status_lazy<'a>(
-        &'a self,
-        partition_key: PartitionKey,
-        entry_id: &EntryId,
-    ) -> Result<Option<impl LazyEntryStatus + 'a>> {
-        let mut key_buffer = [0u8; EntryStatusKey::serialized_length_fixed()];
-        EntryStatusKeyRef::builder()
-            .partition_key(&partition_key)
-            .id(entry_id)
-            .serialize_to(&mut key_buffer.as_mut());
-
-        let Some(raw_value) = self.get(TableKind::VQueue, key_buffer)? else {
-            return Ok(None);
-        };
-
-        let mut cursor = Cursor::new(raw_value);
-        // The cursor will be advanced by the header size so LazyEntryState
-        // will be positioned to read the state next.
-        let header = StatusHeaderRaw::decode_length_delimited(&mut cursor)?;
-
-        Ok(Some(LazyEntryStatusHolder::new(*entry_id, header, cursor)))
-    }
-
-    // Left intentionally for future reference
-    // async fn get_entry_state<I>(
-    //     &self,
-    //     id: I,
-    // ) -> Result<Option<(impl EntryStatusHeader + 'static, I::State)>>
-    // where
-    //     I: IdentifiesEntry,
-    //     I::State: EntryStatus + bilrost::OwnedMessage + Send + Sized + 'static,
-    // {
-    //     let mut key_buffer = [0u8; EntryStatusKey::serialized_length_fixed()];
-    //     let entry_id = id.to_entry_id();
-    //     EntryStatusKey::builder_ref()
-    //         .partition_key(&id.partition_key())
-    //         .id(&entry_id)
-    //         .serialize_to(&mut key_buffer.as_mut());
-    //
-    //     let Some(raw_value) = self.get(TableKind::VQueue, key_buffer)? else {
-    //         return Ok(None);
-    //     };
-    //
-    //     let mut slice = raw_value.as_ref();
-    //     let header = StatusHeaderRaw::decode_length_delimited(&mut slice)?;
-    //     let state = I::State::decode_length_delimited(&mut slice)?;
-    //
-    //     Ok(Some((OwnedEntryStatusHeader::new(entry_id, header), state)))
-    // }
 
     async fn get_vqueue_input_payload<E>(
         &self,
@@ -477,29 +427,49 @@ impl ScanVQueueMetaTable for PartitionStore {
 impl ScanVQueueEntryStatusTable for PartitionStore {
     fn for_each_vqueue_entry_status<F>(
         &self,
-        range: KeyRange,
+        filter: ScanEntryIdFilter,
         mut f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>
     where
-        F: for<'a> FnMut(&'a OwnedEntryStatusHeader) -> std::ops::ControlFlow<()>
+        F: for<'a> FnMut(
+                PartitionKey,
+                &'a EntryId,
+                &'a RawStatusHeaderRef<'a>,
+            ) -> std::ops::ControlFlow<()>
             + Send
             + Sync
             + 'static,
     {
+        let scan = match filter {
+            ScanEntryIdFilter::PartitionKey(range) => {
+                TableScan::FullScanPartitionKeyRange::<EntryStatusKeyBuilder>(range)
+            }
+            ScanEntryIdFilter::EntryIdRange(range) => {
+                let start = EntryStatusKey::builder()
+                    .partition_key(range.start.partition_key())
+                    .id(range.start.into());
+
+                let end = EntryStatusKey::builder()
+                    .partition_key(range.last.partition_key())
+                    .id(range.last.into());
+
+                TableScan::KeyRangeInclusiveInSinglePartition(self.partition_id(), start, end)
+            }
+        };
+
         self.iterator_for_each(
             "df-vqueue-entry-status",
             Priority::Low,
-            TableScan::FullScanPartitionKeyRange::<EntryStatusKey>(range),
+            scan,
             move |(mut key, mut value)| {
                 let status_key = break_on_err(EntryStatusKey::deserialize_from(&mut key))?;
-                let (_, entry_id) = status_key.split();
+                let (partition_key, entry_id) = status_key.split();
                 let header = break_on_err(
-                    StatusHeaderRaw::decode_length_delimited(&mut value)
+                    RawStatusHeaderRef::decode_borrowed_length_delimited(&mut value)
                         .map_err(StorageError::BilrostDecode),
                 )?;
-                let header = entry_status_header_from_raw(entry_id, header);
 
-                f(&header).map_break(Ok)
+                f(partition_key, &entry_id, &header).map_break(Ok)
             },
         )
         .map_err(|_| StorageError::OperationalError)

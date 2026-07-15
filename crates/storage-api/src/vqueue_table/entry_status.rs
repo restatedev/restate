@@ -9,10 +9,10 @@
 // by the Apache License, Version 2.0.
 
 use restate_clock::RoughTimestamp;
-use restate_types::vqueues::{EntryId, EntryKind, Seq, VQueueId};
+use restate_types::vqueues::{EntryId, EntryKind, Seq, VQueueId, VQueueIdRef};
 
 use super::stats::EntryStatistics;
-use super::{EntryKey, EntryMetadata, Stage};
+use super::{EntryKey, EntryMetadata, EntryMetadataRef, Stage};
 
 #[derive(Debug, strum::Display, Clone, Copy, Eq, PartialEq, bilrost::Enumeration)]
 #[strum(serialize_all = "kebab-case")]
@@ -47,6 +47,52 @@ pub enum Status {
     Failed,
     #[bilrost(9)]
     Succeeded,
+}
+
+/// Borrowing version of [`RawStatusHeader`].
+///
+/// NOTE: keep in-sync with [`RawStatusHeader`]
+#[derive(Clone, bilrost::Message)]
+pub struct RawStatusHeaderRef<'a> {
+    #[bilrost(tag(1))]
+    pub qid: VQueueIdRef<'a>,
+    #[bilrost(tag(2))]
+    pub stage: Stage,
+    #[bilrost(tag(3))]
+    pub has_lock: bool,
+    #[bilrost(tag(4))]
+    pub next_run_at: RoughTimestamp,
+    #[bilrost(tag(5))]
+    pub seq: Seq,
+    #[bilrost(tag(6))]
+    pub metadata: EntryMetadataRef<'a>,
+    // Not borrowed because it's full of numeric values
+    #[bilrost(tag(7))]
+    pub stats: EntryStatistics,
+    #[bilrost(tag(8))]
+    pub status: Status,
+}
+
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct RawStatusHeader {
+    #[bilrost(tag(1))]
+    pub qid: VQueueId,
+    #[bilrost(tag(2))]
+    pub stage: Stage,
+    #[bilrost(tag(3))]
+    pub has_lock: bool,
+    #[bilrost(tag(4))]
+    pub next_run_at: RoughTimestamp,
+    #[bilrost(tag(5))]
+    pub seq: Seq,
+    /// Entry metadata is lightweight metadata and/or resource information that
+    /// is copied from entry state to the vqueue's inbox entry on each transition.
+    #[bilrost(tag(6))]
+    pub metadata: EntryMetadata,
+    #[bilrost(tag(7))]
+    pub stats: EntryStatistics,
+    #[bilrost(tag(8))]
+    pub status: Status,
 }
 
 /// Owned vqueue entry status header.

@@ -26,10 +26,9 @@ use strum::EnumCount;
 use restate_storage_api::vqueue_table::Stage;
 use restate_types::PartitionedResourceId;
 use restate_types::identifiers::partitioner::HashPartitioner;
-use restate_types::identifiers::{
-    InvocationId, PartitionKey, ResourceId, StateMutationId, WithPartitionKey,
-};
+use restate_types::identifiers::{InvocationId, PartitionKey, ResourceId, WithPartitionKey};
 use restate_types::sharding::KeyRange;
+use restate_types::vqueues::VQueueEntryId;
 
 use crate::partition_store_scanner::ScanLocalPartitionFilter;
 
@@ -149,15 +148,8 @@ impl FirstMatchingPartitionKeyExtractor {
                 .context("expected string entry id")?
                 .context("unexpected null entry id")?;
 
-            if let Ok(invocation_id) = InvocationId::from_str(value) {
-                return Ok(invocation_id.partition_key());
-            }
-
-            if let Ok(state_mutation_id) = StateMutationId::from_str(value) {
-                return Ok(WithPartitionKey::partition_key(&state_mutation_id));
-            }
-
-            anyhow::bail!("non valid entry id")
+            VQueueEntryId::extract_partition_key(value)
+                .map_err(|_| anyhow::anyhow!("non valid entry id"))
         });
         self.append(e)
     }
@@ -501,6 +493,68 @@ fn parse_invocation_id_range(
     }
 
     invocation_ids
+}
+
+#[derive(Debug, Clone)]
+pub struct VQueueEntryIdFilter {
+    pub partition_keys: KeyRange,
+    pub entry_ids: Option<std::range::RangeInclusive<VQueueEntryId>>,
+}
+
+impl ScanLocalPartitionFilter for VQueueEntryIdFilter {
+    fn new(range: KeyRange, predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
+        if let Some(predicate) = predicate
+            && let Ok(predicate) = snapshot_physical_expr(predicate)
+        {
+            for conjunct in split_conjunction(&predicate) {
+                if let Some(entry_ids) = parse_entry_id_range("entry_id", range, conjunct) {
+                    return Self {
+                        partition_keys: range,
+                        entry_ids: Some(entry_ids),
+                    };
+                }
+            }
+        }
+
+        Self {
+            partition_keys: range,
+            entry_ids: None,
+        }
+    }
+}
+
+fn parse_entry_id_range(
+    column_name: &str,
+    range: KeyRange,
+    predicate: &Arc<dyn PhysicalExpr>,
+) -> Option<std::range::RangeInclusive<VQueueEntryId>> {
+    let in_list = InList::parse(predicate, 5)?;
+
+    if in_list.col.name() != column_name {
+        return None;
+    }
+
+    let mut entry_ids: Option<std::range::RangeInclusive<VQueueEntryId>> = None;
+    for literal in in_list.list {
+        let str = literal.try_as_str()??;
+        let entry_id = VQueueEntryId::from_str(str).ok()?;
+
+        if range.contains(&entry_id.partition_key()) {
+            if let Some(entry_ids) = &mut entry_ids {
+                *entry_ids = std::range::RangeInclusive {
+                    start: entry_ids.start.min(entry_id),
+                    last: entry_ids.last.max(entry_id),
+                };
+            } else {
+                entry_ids = Some(std::range::RangeInclusive {
+                    start: entry_id,
+                    last: entry_id,
+                })
+            }
+        }
+    }
+
+    entry_ids
 }
 
 #[cfg(test)]
