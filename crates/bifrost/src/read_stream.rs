@@ -119,6 +119,13 @@ enum State {
         safe_known_tail: Option<Lsn>,
         #[pin]
         tail_watch: Option<BoxStream<'static, TailState>>,
+        /// Logs-metadata version at which we last confirmed our `read_pointer` is still
+        /// covered by a live segment. A chain prefix-trim always bumps the logs version, so
+        /// we only need to re-scan the chain for a trim gap when this lags the current
+        /// version. Reset to [`Version::INVALID`] on every entry into `Reading` so the check
+        /// runs at least once per substream (catching a trim observed during substream
+        /// creation).
+        trim_checked_version: Version,
     },
     /// Chain reconfiguration has been detected, we'll update our view of the chain.
     AwaitingReconfiguration,
@@ -155,6 +162,7 @@ impl State {
         Self::Reading {
             safe_known_tail: Some(tail_lsn),
             tail_watch: None,
+            trim_checked_version: Version::INVALID,
         }
     }
 }
@@ -354,6 +362,7 @@ impl Stream for LogReadStream {
                     this.state.set(State::Reading {
                         safe_known_tail,
                         tail_watch,
+                        trim_checked_version: Version::INVALID,
                     });
                 }
 
@@ -361,6 +370,7 @@ impl Stream for LogReadStream {
                 StateProj::Reading {
                     safe_known_tail,
                     tail_watch,
+                    trim_checked_version,
                 } => {
                     // Continue driving the substream
                     //
@@ -377,14 +387,22 @@ impl Stream for LogReadStream {
                     // whole segment, so we must consult the chain here — the same check the
                     // FindingLoglet / AwaitingReconfiguration / AwaitingOrSealChain states
                     // already perform via `check_chain`.
-                    let trimmed_to = match chain.find_segment_for_lsn(*this.read_pointer) {
-                        MaybeSegment::Trim { next_base_lsn } => Some(next_base_lsn),
-                        MaybeSegment::Some(_) => None,
-                    };
-                    if let Some(next_base_lsn) = trimmed_to {
-                        let gap = deliver_trim_gap(&mut this, next_base_lsn, bifrost_inner);
-                        update_shared_state(&this);
-                        return Poll::Ready(Some(Ok(gap)));
+                    //
+                    // `find_segment_for_lsn` is a linear scan of the retained chain, and this
+                    // runs on the hot per-record path, so we skip it while the logs version is
+                    // unchanged: a trim can only reach us via a version bump we haven't checked
+                    // yet.
+                    if *trim_checked_version != logs.version() {
+                        match chain.find_segment_for_lsn(*this.read_pointer) {
+                            MaybeSegment::Trim { next_base_lsn } => {
+                                let gap = deliver_trim_gap(&mut this, next_base_lsn, bifrost_inner);
+                                update_shared_state(&this);
+                                return Poll::Ready(Some(Ok(gap)));
+                            }
+                            MaybeSegment::Some(_) => {
+                                *trim_checked_version = logs.version();
+                            }
+                        }
                     }
 
                     // If the loglet's `tail_lsn` is known, this is the tail we should always respect.
