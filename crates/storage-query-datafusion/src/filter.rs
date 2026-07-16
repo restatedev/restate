@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 use std::fmt::{Debug, Formatter};
-use std::ops::{RangeBounds, RangeInclusive};
+use std::ops::RangeBounds;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -42,18 +42,43 @@ pub trait PartitionKeyExtractor: Send + Sync + 'static + Debug {
 
 #[derive(Debug)]
 pub struct FirstMatchingPartitionKeyExtractor {
-    extractors: Vec<Box<dyn PartitionKeyExtractor>>,
+    extractors: Vec<PartitionKeyExtractorEntry>,
+}
+
+#[derive(Debug)]
+struct PartitionKeyExtractorEntry {
+    extractor: Box<dyn PartitionKeyExtractor>,
+    fanout: PointReadFanout,
+}
+
+/// Controls how selected partition keys are mapped to physical scans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PointReadFanout {
+    /// Creates one scan per selected partition key.
+    PerKey,
+    /// Groups selected keys into one scan per Restate partition.
+    PerPartition,
+}
+
+/// The partition keys and fanout produced by the first matching extractor.
+#[derive(Debug)]
+pub(crate) struct PartitionKeySelection {
+    pub(crate) keys: BTreeSet<PartitionKey>,
+    pub(crate) fanout: PointReadFanout,
 }
 
 impl Default for FirstMatchingPartitionKeyExtractor {
     fn default() -> Self {
-        let extractors = vec![Box::new(MatchingColumnExtractor::new(
-            "partition_key",
-            |value: &ScalarValue| match value {
-                ScalarValue::UInt64(Some(v)) => Ok(*v),
-                _ => anyhow::bail!("expected UInt64 partition key"),
-            },
-        )) as Box<dyn PartitionKeyExtractor>];
+        let extractors = vec![PartitionKeyExtractorEntry {
+            extractor: Box::new(MatchingColumnExtractor::new(
+                "partition_key",
+                |value: &ScalarValue| match value {
+                    ScalarValue::UInt64(Some(v)) => Ok(*v),
+                    _ => anyhow::bail!("expected UInt64 partition key"),
+                },
+            )),
+            fanout: PointReadFanout::PerKey,
+        }];
         Self { extractors }
     }
 }
@@ -131,15 +156,34 @@ impl FirstMatchingPartitionKeyExtractor {
     }
 
     pub fn with_invocation_id(self, column_name: impl Into<String>) -> Self {
-        let e = MatchingColumnExtractor::new(column_name, |value: &ScalarValue| {
+        self.append(Self::create_invocation_id_partition_key_extractor(
+            column_name,
+        ))
+    }
+
+    /// Adds an invocation-id extractor whose matches are grouped into a single
+    /// scan per Restate partition.
+    ///
+    /// Only use this when the table's scanner re-fetches each id exactly via an
+    /// exact-id filter; range-scanning tables would read every intermediate key.
+    pub fn with_grouped_invocation_id(self, column_name: impl Into<String>) -> Self {
+        self.append_with_fanout(
+            Self::create_invocation_id_partition_key_extractor(column_name),
+            PointReadFanout::PerPartition,
+        )
+    }
+
+    fn create_invocation_id_partition_key_extractor(
+        column_name: impl Into<String>,
+    ) -> MatchingColumnExtractor<fn(&ScalarValue) -> anyhow::Result<PartitionKey>> {
+        MatchingColumnExtractor::new(column_name, |value: &ScalarValue| {
             let value = value
                 .try_as_str()
                 .context("expected string invocation id")?
                 .context("unexpected null invocation id")?;
             let invocation_id = InvocationId::from_str(value).context("non valid invocation id")?;
             Ok(invocation_id.partition_key())
-        });
-        self.append(e)
+        })
     }
 
     pub fn with_vqueue_entry_id(self, column_name: impl Into<String>) -> Self {
@@ -162,9 +206,36 @@ impl FirstMatchingPartitionKeyExtractor {
         self.append(e)
     }
 
-    pub fn append(mut self, extractor: impl PartitionKeyExtractor) -> Self {
-        self.extractors.push(Box::new(extractor));
+    pub fn append(self, extractor: impl PartitionKeyExtractor) -> Self {
+        self.append_with_fanout(extractor, PointReadFanout::PerKey)
+    }
+
+    fn append_with_fanout(
+        mut self,
+        extractor: impl PartitionKeyExtractor,
+        fanout: PointReadFanout,
+    ) -> Self {
+        self.extractors.push(PartitionKeyExtractorEntry {
+            extractor: Box::new(extractor),
+            fanout,
+        });
         self
+    }
+
+    pub(crate) fn try_extract_selection(
+        &self,
+        filters: &[Arc<dyn PhysicalExpr>],
+    ) -> anyhow::Result<Option<PartitionKeySelection>> {
+        for entry in &self.extractors {
+            if let Some(keys) = entry.extractor.try_extract(filters)? {
+                return Ok(Some(PartitionKeySelection {
+                    keys,
+                    fanout: entry.fanout,
+                }));
+            }
+        }
+
+        Ok(None)
     }
 }
 
@@ -173,13 +244,9 @@ impl PartitionKeyExtractor for FirstMatchingPartitionKeyExtractor {
         &self,
         filters: &[Arc<dyn PhysicalExpr>],
     ) -> anyhow::Result<Option<BTreeSet<PartitionKey>>> {
-        for extractor in &self.extractors {
-            if let Some(partition_keys) = extractor.try_extract(filters)? {
-                return Ok(Some(partition_keys));
-            }
-        }
-
-        Ok(None)
+        Ok(self
+            .try_extract_selection(filters)?
+            .map(|selection| selection.keys))
     }
 }
 
@@ -449,9 +516,25 @@ fn parse_stage_literal(value: &str) -> Option<Stage> {
 }
 
 #[derive(Debug, Clone)]
+pub struct IdSelection<T> {
+    pub ids: BTreeSet<T>,
+}
+
+impl<T: Ord + Clone> IdSelection<T> {
+    /// The inclusive `[min, max]` span the selected IDs cover. Used by consumers
+    /// that can only range-scan, while point-lookup tables consume the exact set.
+    pub fn bounds(&self) -> (T, T) {
+        (
+            self.ids.first().expect("selection is never empty").clone(),
+            self.ids.last().expect("selection is never empty").clone(),
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct InvocationIdFilter {
     pub partition_keys: KeyRange,
-    pub invocation_ids: Option<RangeInclusive<InvocationId>>,
+    pub invocation_ids: Option<IdSelection<InvocationId>>,
 }
 
 impl ScanLocalPartitionFilter for InvocationIdFilter {
@@ -460,7 +543,11 @@ impl ScanLocalPartitionFilter for InvocationIdFilter {
             && let Ok(predicate) = snapshot_physical_expr(predicate)
         {
             for conjunct in split_conjunction(&predicate) {
-                if let Some(invocation_ids) = parse_invocation_id_range("id", range, conjunct) {
+                if let Some(invocation_ids) =
+                    parse_id_selection("id", range, conjunct, |id: &InvocationId| {
+                        id.partition_key()
+                    })
+                {
                     return Self {
                         partition_keys: range,
                         invocation_ids: Some(invocation_ids),
@@ -476,39 +563,43 @@ impl ScanLocalPartitionFilter for InvocationIdFilter {
     }
 }
 
-fn parse_invocation_id_range(
+fn parse_id_selection<T>(
     column_name: &str,
     range: KeyRange,
     predicate: &Arc<dyn PhysicalExpr>,
-) -> Option<RangeInclusive<InvocationId>> {
+    partition_key_of: impl Fn(&T) -> PartitionKey,
+) -> Option<IdSelection<T>>
+where
+    T: FromStr + Ord,
+{
     let in_list = InList::parse(predicate, 5)?;
 
     // A negated list (`NOT IN`/`!=`) enumerates excluded IDs; using it to build
-    // a lookup range would fetch exactly the rows that must be filtered out.
+    // a lookup set would fetch exactly the rows that must be filtered out.
     if in_list.col.name() != column_name || in_list.negated {
         return None;
     }
 
-    let mut invocation_ids: Option<RangeInclusive<InvocationId>> = None;
+    let mut ids = BTreeSet::new();
     for literal in in_list.list {
         let str = literal.try_as_str()??;
-        let invocation_id = InvocationId::from_str(str).ok()?;
+        let id = T::from_str(str).ok()?;
 
-        if range.contains(&invocation_id.partition_key()) {
-            if let Some(invocation_ids) = &mut invocation_ids {
-                *invocation_ids = (*invocation_ids.start()).min(invocation_id)
-                    ..=(*invocation_ids.end()).max(invocation_id);
-            } else {
-                invocation_ids = Some(invocation_id..=invocation_id)
-            }
+        if range.contains(&partition_key_of(&id)) {
+            ids.insert(id);
         }
     }
 
-    invocation_ids
+    if ids.is_empty() {
+        None
+    } else {
+        Some(IdSelection { ids })
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::sync::Arc;
 
     use datafusion::common::ScalarValue;
@@ -927,9 +1018,8 @@ mod tests {
 
         let filter = InvocationIdFilter::new(FULL_RANGE, Some(predicate));
 
-        let range = filter.invocation_ids.expect("should extract range");
-        assert_eq!(*range.start(), id);
-        assert_eq!(*range.end(), id);
+        let selection = filter.invocation_ids.expect("should extract selection");
+        assert_eq!(selection.ids, BTreeSet::from([id]));
     }
 
     #[test]
@@ -943,9 +1033,30 @@ mod tests {
 
         let filter = InvocationIdFilter::new(FULL_RANGE, Some(predicate));
 
-        let range = filter.invocation_ids.expect("should extract range");
-        assert_eq!(*range.start(), id1.min(id2));
-        assert_eq!(*range.end(), id1.max(id2));
+        let selection = filter.invocation_ids.expect("should extract selection");
+        assert_eq!(selection.ids, BTreeSet::from([id1, id2]));
+    }
+
+    #[test]
+    fn invocation_id_filter_keeps_large_in_list_as_set() {
+        let invocation_ids = (0..501)
+            .map(|id| make_invocation_id(&format!("key-{id}")))
+            .collect::<Vec<_>>();
+        let predicate = in_list(
+            "id",
+            invocation_ids
+                .iter()
+                .map(|id| utf8_lit(id.to_string()))
+                .collect(),
+        );
+
+        let filter = InvocationIdFilter::new(FULL_RANGE, Some(predicate));
+
+        let selection = filter.invocation_ids.expect("should extract selection");
+        assert_eq!(selection.ids.len(), invocation_ids.len());
+        for invocation_id in invocation_ids {
+            assert!(selection.ids.contains(&invocation_id));
+        }
     }
 
     #[test]
@@ -975,11 +1086,10 @@ mod tests {
 
         let filter = InvocationIdFilter::new(FULL_RANGE, Some(predicate));
 
-        let range = filter
+        let selection = filter
             .invocation_ids
             .expect("should extract from conjunction");
-        assert_eq!(*range.start(), id);
-        assert_eq!(*range.end(), id);
+        assert_eq!(selection.ids, BTreeSet::from([id]));
     }
 
     #[test]

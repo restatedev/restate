@@ -38,7 +38,7 @@ use restate_types::partition_table::Partition;
 use restate_types::sharding::KeyRange;
 
 use crate::context::SelectPartitions;
-use crate::filter::{FirstMatchingPartitionKeyExtractor, PartitionKeyExtractor};
+use crate::filter::{FirstMatchingPartitionKeyExtractor, PointReadFanout};
 use crate::table_util::{find_sort_columns, make_ordering};
 
 pub trait ScanPartition: Send + Sync + Debug + 'static {
@@ -167,9 +167,9 @@ where
             })
             .collect::<datafusion::common::Result<_>>()?;
 
-        let partition_keys = self
+        let partition_key_selection = self
             .partition_key_extractor
-            .try_extract(&filters)
+            .try_extract_selection(&filters)
             .map_err(|e| DataFusionError::External(e.into()))?;
 
         let predicate = datafusion::physical_expr::conjunction_opt(filters);
@@ -181,17 +181,30 @@ where
             .map_err(DataFusionError::External)?
             .into_iter()
             .flat_map(|(partition_id, partition)| {
-                match &partition_keys {
+                match &partition_key_selection {
                     // User requested a full scan of all partitions, return one physical partition per restate partition
-                    None => itertools::Either::Left([(partition_id, partition)].into_iter()),
+                    None => itertools::Either::Left(Some((partition_id, partition)).into_iter()),
                     // User requested too many point reads; for safety reasons we will ignore them
-                    Some(partition_keys) if partition_keys.len() > 4096 => {
-                        itertools::Either::Left([(partition_id, partition)].into_iter())
+                    Some(selection) if selection.keys.len() > 4096 => {
+                        itertools::Either::Left(Some((partition_id, partition)).into_iter())
+                    }
+                    // Group selected keys into one physical scan per Restate partition.
+                    Some(selection) if selection.fanout == PointReadFanout::PerPartition => {
+                        let mut keys = selection.keys.range(partition.key_range).copied();
+                        let selected = keys.next().map(|first| {
+                            let last = keys.next_back().unwrap_or(first);
+                            (
+                                partition_id,
+                                Partition::new(partition_id, KeyRange::new(first, last)),
+                            )
+                        });
+                        itertools::Either::Left(selected.into_iter())
                     }
                     // User requested a list of point reads
-                    Some(partition_keys) => {
+                    Some(selection) => {
                         itertools::Either::Right(
-                            partition_keys
+                            selection
+                                .keys
                                 // Find requested partition keys that are in this partition
                                 .range(partition.key_range)
                                 .cloned()
