@@ -35,7 +35,7 @@ use tracing::error;
 
 use restate_rocksdb::{Priority, StorageTaskKind};
 use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
+use restate_storage_api::vqueue_table::filters::{ScanEntryIdFilter, ScanMetaFilter};
 use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaRef};
 use restate_storage_api::vqueue_table::{
     EntryKey, EntryMetadata, EntryStatusHeader, EntryValue, ReadVQueueTable, ScanVQueueTable,
@@ -398,31 +398,155 @@ impl ReadVQueueTable for PartitionStoreTransaction<'_> {
 }
 
 impl ScanVQueueMetaTable for PartitionStore {
-    fn for_each_vqueue_meta<
+    fn for_each_vqueue_meta<F>(
+        &self,
+        filter: ScanMetaFilter,
+        mut f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send>
+    where
         F: for<'a> FnMut((&'a VQueueId, &'a VQueueMetaRef<'a>)) -> std::ops::ControlFlow<()>
             + Send
             + Sync
             + 'static,
-    >(
-        &self,
-        range: KeyRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send> {
-        self.iterator_for_each(
-            "df-vqueue-meta",
-            Priority::Low,
-            TableScan::ScanPartitionKeyRange::<MetaKey>(range),
-            move |(mut key, value)| {
-                let meta_key = break_on_err(MetaKey::deserialize_from(&mut key))?;
-                let meta = break_on_err(
-                    VQueueMetaRef::decode_borrowed(value).map_err(StorageError::BilrostDecode),
-                )?;
+    {
+        // Fast path: each vqueue id maps to exactly one fixed-length key, so an
+        // exact set is served via batched multi-get calls instead of scanning
+        // every metadata row in the partition-key range.
+        if let ScanMetaFilter::MetaIdSet(ids) = filter {
+            return Ok(multi_get_vqueue_meta(self, ids, f).boxed());
+        }
 
-                let (vqueue_id,) = meta_key.split();
-                f((&vqueue_id, &meta)).map_break(Ok)
-            },
-        )
-        .map_err(|_| StorageError::OperationalError)
+        let scan = match filter {
+            ScanMetaFilter::PartitionKey(range) => {
+                TableScan::ScanPartitionKeyRange::<MetaKey>(range)
+            }
+            ScanMetaFilter::MetaIdRange(range) => {
+                let start = MetaKey::from(&range.start);
+                let end = MetaKey::from(&range.last);
+                TableScan::RangeInclusive(start, end)
+            }
+            ScanMetaFilter::MetaIdSet(_) => unreachable!("handled above"),
+        };
+
+        let scan_fut = self
+            .iterator_for_each(
+                "df-vqueue-meta",
+                Priority::Low,
+                scan,
+                move |(mut key, value)| {
+                    let meta_key = break_on_err(MetaKey::deserialize_from(&mut key))?;
+                    let meta = break_on_err(
+                        VQueueMetaRef::decode_borrowed(value).map_err(StorageError::BilrostDecode),
+                    )?;
+
+                    let (vqueue_id,) = meta_key.split();
+                    f((&vqueue_id, &meta)).map_break(Ok)
+                },
+            )
+            .map_err(|_| StorageError::OperationalError)?;
+
+        Ok(scan_fut.boxed())
+    }
+}
+
+/// Maximum number of vqueue-metadata keys passed to one RocksDB multi-get call.
+const VQUEUE_META_MULTI_GET_BATCH_SIZE: usize = 500;
+
+/// Serves a vqueue-metadata lookup for a known set of ids via batched
+/// `batched_multi_get` calls, dispatched on the storage background thread-pool.
+///
+/// `ids` is already sorted in on-disk key order (`VQueueId`'s `Ord` matches its
+/// key byte encoding, which is prefixed by the partition key), which is what
+/// `batched_multi_get_cf_opt`'s `sorted_input=true` requires.
+///
+/// `MetaKey`s are fixed-length, so each batch is packed back-to-back into a
+/// single buffer and handed to the multi-get as `chunks_exact` slices.
+fn multi_get_vqueue_meta<F>(
+    store: &PartitionStore,
+    ids: BTreeSet<VQueueId>,
+    mut f: F,
+) -> impl Future<Output = Result<()>> + Send
+where
+    F: for<'a> FnMut((&'a VQueueId, &'a VQueueMetaRef<'a>)) -> std::ops::ControlFlow<()>
+        + Send
+        + Sync
+        + 'static,
+{
+    const KEY_LEN: usize = MetaKey::serialized_length_fixed();
+
+    let rocksdb = store.partition_db().rocksdb().clone();
+    let cf_name: restate_rocksdb::CfName = store.partition_db().partition().cf_name().into();
+
+    async move {
+        rocksdb
+            .run_background_read_op(
+                "df-vqueue-meta",
+                StorageTaskKind::MultiGet,
+                Priority::Low,
+                move |raw_db| -> Result<()> {
+                    let Some(cf) = raw_db.cf_handle(cf_name.as_str()) else {
+                        return Err(StorageError::Generic(anyhow::anyhow!(
+                            "column family {cf_name} not found for vqueue meta multi-get"
+                        )));
+                    };
+
+                    let batch_capacity = ids.len().min(VQUEUE_META_MULTI_GET_BATCH_SIZE);
+                    let mut key_buf = BytesMut::with_capacity(batch_capacity * KEY_LEN);
+                    let mut batch_ids = Vec::with_capacity(batch_capacity);
+
+                    let mut readopts = ReadOptions::default();
+                    // future proofing to make use of parallel L0 reads and async-io
+                    // if/when we build rocksdb with COROUTINES=1 and IO-URING support.
+                    // by default, this will not do anything.
+                    readopts.set_async_io(true);
+                    readopts.set_optimize_multiget_for_io(true);
+
+                    let mut ids = ids.into_iter();
+                    loop {
+                        key_buf.clear();
+                        batch_ids.clear();
+
+                        for id in ids.by_ref().take(VQUEUE_META_MULTI_GET_BATCH_SIZE) {
+                            EncodeTableKey::serialize_to(&MetaKey::from(&id), &mut key_buf);
+                            batch_ids.push(id);
+                        }
+
+                        if batch_ids.is_empty() {
+                            break;
+                        }
+
+                        let results = raw_db.batched_multi_get_cf_opt(
+                            &cf,
+                            key_buf.chunks_exact(KEY_LEN),
+                            true,
+                            &readopts,
+                        );
+
+                        for (id, result) in batch_ids.iter().zip(results) {
+                            let Some(value) =
+                                result.map_err(|e| StorageError::Generic(e.into()))?
+                            else {
+                                continue;
+                            };
+
+                            let meta = VQueueMetaRef::decode_borrowed(value.as_ref())
+                                .map_err(StorageError::BilrostDecode)?;
+
+                            if f((id, &meta)).is_break() {
+                                return Ok(());
+                            }
+                        }
+
+                        if batch_ids.len() < VQUEUE_META_MULTI_GET_BATCH_SIZE {
+                            break;
+                        }
+                    }
+
+                    Ok(())
+                },
+            )
+            .await
+            .map_err(|_| StorageError::OperationalError)?
     }
 }
 
