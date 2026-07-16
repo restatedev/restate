@@ -17,10 +17,10 @@ mod metadata;
 mod reader;
 mod running_reader;
 
-use std::io::Cursor;
+use std::collections::BTreeSet;
 use std::pin::Pin;
 
-pub use entry::{EntryStatusKey, EntryStatusKeyRef, StatusHeaderRaw};
+pub use entry::{EntryStatusKey, EntryStatusKeyRef};
 pub use inbox::InboxKey;
 pub use input::InputPayloadKey;
 pub use metadata::*;
@@ -28,24 +28,27 @@ pub use metadata::*;
 use anyhow::Context;
 use bilrost::{BorrowedMessage, Message, OwnedMessage};
 use bytes::BytesMut;
+use futures::FutureExt;
 use rocksdb::{DBRawIteratorWithThreadMode, ReadOptions};
 use strum::EnumCount;
 use tracing::error;
 
-use restate_rocksdb::Priority;
+use restate_rocksdb::{Priority, StorageTaskKind};
 use restate_storage_api::StorageError;
+use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
 use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaRef};
 use restate_storage_api::vqueue_table::{
-    EntryKey, EntryMetadata, EntryStatusHeader, EntryValue, LazyEntryStatus, ReadVQueueTable,
-    ScanVQueueTable, Stage, Status, WriteVQueueTable, stats::EntryStatistics,
+    EntryKey, EntryMetadata, EntryStatusHeader, EntryValue, ReadVQueueTable, ScanVQueueTable,
+    Stage, Status, WriteVQueueTable, stats::EntryStatistics,
 };
 use restate_storage_api::vqueue_table::{
-    OwnedEntryStatusHeader, ScanVQueueEntries, ScanVQueueEntryStatusTable, ScanVQueueMetaTable,
+    RawStatusHeader, RawStatusHeaderRef, ScanVQueueEntries, ScanVQueueEntryStatusTable,
+    ScanVQueueMetaTable,
 };
 use restate_types::sharding::{KeyRange, PartitionKey};
-use restate_types::vqueues::{EntryId, Seq, VQueueId};
+use restate_types::vqueues::{EntryId, Seq, VQueueEntryId, VQueueId};
 
-use self::entry::{LazyEntryStatusHolder, StatusHeaderRawRef, entry_status_header_from_raw};
+use self::entry::{EntryStatusKeyBuilder, entry_status_header_from_raw};
 use crate::keys::{DecodeTableKey, EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
 use crate::scan::TableScan;
 use crate::vqueue_table::input::InputPayloadKeyRef;
@@ -262,7 +265,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
             .id(entry_key.entry_id())
             .serialize_to(&mut key_buffer.as_mut());
 
-        let header = StatusHeaderRawRef {
+        let header = RawStatusHeaderRef {
             qid: qid.into(),
             stage,
             has_lock: entry_key.has_lock(),
@@ -364,61 +367,10 @@ impl ReadVQueueTable for PartitionStoreTransaction<'_> {
             return Ok(None);
         };
 
-        let header = StatusHeaderRaw::decode_length_delimited(&mut raw_value.as_ref())?;
+        let header = RawStatusHeader::decode_length_delimited(&mut raw_value.as_ref())?;
 
         Ok(Some(entry_status_header_from_raw(*id, header)))
     }
-
-    // Currently unused but left for future use
-    async fn get_vqueue_entry_status_lazy<'a>(
-        &'a self,
-        partition_key: PartitionKey,
-        entry_id: &EntryId,
-    ) -> Result<Option<impl LazyEntryStatus + 'a>> {
-        let mut key_buffer = [0u8; EntryStatusKey::serialized_length_fixed()];
-        EntryStatusKeyRef::builder()
-            .partition_key(&partition_key)
-            .id(entry_id)
-            .serialize_to(&mut key_buffer.as_mut());
-
-        let Some(raw_value) = self.get(TableKind::VQueue, key_buffer)? else {
-            return Ok(None);
-        };
-
-        let mut cursor = Cursor::new(raw_value);
-        // The cursor will be advanced by the header size so LazyEntryState
-        // will be positioned to read the state next.
-        let header = StatusHeaderRaw::decode_length_delimited(&mut cursor)?;
-
-        Ok(Some(LazyEntryStatusHolder::new(*entry_id, header, cursor)))
-    }
-
-    // Left intentionally for future reference
-    // async fn get_entry_state<I>(
-    //     &self,
-    //     id: I,
-    // ) -> Result<Option<(impl EntryStatusHeader + 'static, I::State)>>
-    // where
-    //     I: IdentifiesEntry,
-    //     I::State: EntryStatus + bilrost::OwnedMessage + Send + Sized + 'static,
-    // {
-    //     let mut key_buffer = [0u8; EntryStatusKey::serialized_length_fixed()];
-    //     let entry_id = id.to_entry_id();
-    //     EntryStatusKey::builder_ref()
-    //         .partition_key(&id.partition_key())
-    //         .id(&entry_id)
-    //         .serialize_to(&mut key_buffer.as_mut());
-    //
-    //     let Some(raw_value) = self.get(TableKind::VQueue, key_buffer)? else {
-    //         return Ok(None);
-    //     };
-    //
-    //     let mut slice = raw_value.as_ref();
-    //     let header = StatusHeaderRaw::decode_length_delimited(&mut slice)?;
-    //     let state = I::State::decode_length_delimited(&mut slice)?;
-    //
-    //     Ok(Some((OwnedEntryStatusHeader::new(entry_id, header), state)))
-    // }
 
     async fn get_vqueue_input_payload<E>(
         &self,
@@ -477,32 +429,167 @@ impl ScanVQueueMetaTable for PartitionStore {
 impl ScanVQueueEntryStatusTable for PartitionStore {
     fn for_each_vqueue_entry_status<F>(
         &self,
-        range: KeyRange,
+        filter: ScanEntryIdFilter,
         mut f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>
     where
-        F: for<'a> FnMut(&'a OwnedEntryStatusHeader) -> std::ops::ControlFlow<()>
+        F: for<'a> FnMut(
+                PartitionKey,
+                &'a EntryId,
+                &'a RawStatusHeaderRef<'a>,
+            ) -> std::ops::ControlFlow<()>
             + Send
             + Sync
             + 'static,
     {
-        self.iterator_for_each(
-            "df-vqueue-entry-status",
-            Priority::Low,
-            TableScan::ScanPartitionKeyRange::<EntryStatusKey>(range),
-            move |(mut key, mut value)| {
-                let status_key = break_on_err(EntryStatusKey::deserialize_from(&mut key))?;
-                let (_, entry_id) = status_key.split();
-                let header = break_on_err(
-                    StatusHeaderRaw::decode_length_delimited(&mut value)
-                        .map_err(StorageError::BilrostDecode),
-                )?;
-                let header = entry_status_header_from_raw(entry_id, header);
+        if let ScanEntryIdFilter::EntryIdSet(ids) = filter {
+            return Ok(multi_get_vqueue_entry_status(self, ids, f).boxed());
+        }
 
-                f(&header).map_break(Ok)
-            },
-        )
-        .map_err(|_| StorageError::OperationalError)
+        let scan = match filter {
+            ScanEntryIdFilter::PartitionKey(range) => {
+                TableScan::ScanPartitionKeyRange::<EntryStatusKeyBuilder>(range)
+            }
+            ScanEntryIdFilter::EntryIdRange(range) => {
+                let start_partition_key = range.start.partition_key();
+                let end_partition_key = range.last.partition_key();
+                let start = EntryStatusKey::builder()
+                    .partition_key(start_partition_key)
+                    .id(range.start.into());
+
+                let end = EntryStatusKey::builder()
+                    .partition_key(end_partition_key)
+                    .id(range.last.into());
+
+                TableScan::RangeInclusive(start, end)
+            }
+            ScanEntryIdFilter::EntryIdSet(_) => unreachable!("handled above"),
+        };
+
+        let scan_fut = self
+            .iterator_for_each(
+                "df-vqueue-entry-status",
+                Priority::Low,
+                scan,
+                move |(mut key, mut value)| {
+                    let status_key = break_on_err(EntryStatusKey::deserialize_from(&mut key))?;
+                    let (partition_key, entry_id) = status_key.split();
+                    let header = break_on_err(
+                        RawStatusHeaderRef::decode_borrowed_length_delimited(&mut value)
+                            .map_err(StorageError::BilrostDecode),
+                    )?;
+
+                    f(partition_key, &entry_id, &header).map_break(Ok)
+                },
+            )
+            .map_err(|_| StorageError::OperationalError)?;
+
+        Ok(scan_fut.boxed())
+    }
+}
+
+/// Maximum number of entry-status keys passed to one RocksDB multi-get call.
+const ENTRY_STATUS_MULTI_GET_BATCH_SIZE: usize = 500;
+
+fn multi_get_vqueue_entry_status<F>(
+    store: &PartitionStore,
+    ids: BTreeSet<VQueueEntryId>,
+    mut f: F,
+) -> impl Future<Output = Result<()>> + Send
+where
+    F: for<'a> FnMut(
+            PartitionKey,
+            &'a EntryId,
+            &'a RawStatusHeaderRef<'a>,
+        ) -> std::ops::ControlFlow<()>
+        + Send
+        + Sync
+        + 'static,
+{
+    const KEY_LEN: usize = EntryStatusKey::serialized_length_fixed();
+
+    let rocksdb = store.partition_db().rocksdb().clone();
+    let cf_name: restate_rocksdb::CfName = store.partition_db().partition().cf_name().into();
+
+    async move {
+        rocksdb
+            .run_background_read_op(
+                "df-vqueue-entry-status",
+                StorageTaskKind::MultiGet,
+                Priority::Low,
+                move |raw_db| -> Result<()> {
+                    let Some(cf) = raw_db.cf_handle(cf_name.as_str()) else {
+                        return Err(StorageError::Generic(anyhow::anyhow!(
+                            "column family {cf_name} not found for vqueue entry-status multi-get"
+                        )));
+                    };
+
+                    let batch_capacity = ids.len().min(ENTRY_STATUS_MULTI_GET_BATCH_SIZE);
+                    let mut key_buf = BytesMut::with_capacity(batch_capacity * KEY_LEN);
+                    let mut batch_ids = Vec::with_capacity(batch_capacity);
+
+                    let mut readopts = ReadOptions::default();
+                    // future proofing to make use of parallel L0 reads and async-io
+                    // if/when we build rocksdb with COROUTINES=1 and IO-URING support.
+                    // by default, this will not do anything.
+                    readopts.set_async_io(true);
+                    readopts.set_optimize_multiget_for_io(true);
+
+                    let mut ids = ids.into_iter();
+                    loop {
+                        key_buf.clear();
+                        batch_ids.clear();
+
+                        for id in ids.by_ref().take(ENTRY_STATUS_MULTI_GET_BATCH_SIZE) {
+                            EncodeTableKey::serialize_to(
+                                &EntryStatusKey {
+                                    partition_key: id.partition_key(),
+                                    id: EntryId::from(id),
+                                },
+                                &mut key_buf,
+                            );
+                            batch_ids.push(id);
+                        }
+
+                        if batch_ids.is_empty() {
+                            break;
+                        }
+
+                        let results = raw_db.batched_multi_get_cf_opt(
+                            &cf,
+                            key_buf.chunks_exact(KEY_LEN),
+                            true,
+                            &readopts,
+                        );
+
+                        for (id, result) in batch_ids.iter().zip(results) {
+                            let Some(value) =
+                                result.map_err(|e| StorageError::Generic(e.into()))?
+                            else {
+                                continue;
+                            };
+
+                            let entry_id = EntryId::from(*id);
+                            let mut value = value.as_ref();
+                            let header =
+                                RawStatusHeaderRef::decode_borrowed_length_delimited(&mut value)
+                                    .map_err(StorageError::BilrostDecode)?;
+
+                            if f(id.partition_key(), &entry_id, &header).is_break() {
+                                return Ok(());
+                            }
+                        }
+
+                        if batch_ids.len() < ENTRY_STATUS_MULTI_GET_BATCH_SIZE {
+                            break;
+                        }
+                    }
+
+                    Ok(())
+                },
+            )
+            .await
+            .map_err(|_| StorageError::OperationalError)?
     }
 }
 

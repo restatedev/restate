@@ -12,7 +12,7 @@ mod entry_id;
 mod seq;
 mod vqueue_id;
 
-pub use entry_id::{EntryId, EntryIdDisplay, EntryKind};
+pub use entry_id::{EntryId, EntryIdDisplay, EntryKind, VQueueEntryId};
 pub use seq::Seq;
 pub use vqueue_id::{VQueueId, VQueueIdRef};
 
