@@ -119,12 +119,9 @@ enum State {
         safe_known_tail: Option<Lsn>,
         #[pin]
         tail_watch: Option<BoxStream<'static, TailState>>,
-        /// Logs-metadata version at which we last confirmed our `read_pointer` is still
-        /// covered by a live segment. A chain prefix-trim always bumps the logs version, so
-        /// we only need to re-scan the chain for a trim gap when this lags the current
-        /// version. Reset to [`Version::INVALID`] on every entry into `Reading` so the check
-        /// runs at least once per substream (catching a trim observed during substream
-        /// creation).
+        /// Logs version at which we last confirmed `read_pointer` still falls in a live
+        /// segment. A prefix-trim always bumps the version, so we only re-scan the chain when
+        /// this lags. Reset to [`Version::INVALID`] on entry so the check runs once per substream.
         trim_checked_version: Version,
     },
     /// Chain reconfiguration has been detected, we'll update our view of the chain.
@@ -380,18 +377,10 @@ impl Stream for LogReadStream {
                         panic!("substream must be set at this point");
                     };
 
-                    // A prefix-trim may have clipped the chain at or below our read_pointer
-                    // while we were parked in Reading (e.g. the segment under us was dropped
-                    // from the chain). A substream sitting on a known sealed tail only observes
-                    // trims of its own loglet, not a chain-level prefix-trim that drops the
-                    // whole segment, so we must consult the chain here — the same check the
-                    // FindingLoglet / AwaitingReconfiguration / AwaitingOrSealChain states
-                    // already perform via `check_chain`.
-                    //
-                    // `find_segment_for_lsn` is a linear scan of the retained chain, and this
-                    // runs on the hot per-record path, so we skip it while the logs version is
-                    // unchanged: a trim can only reach us via a version bump we haven't checked
-                    // yet.
+                    // A prefix-trim may have dropped the segment under our read_pointer from
+                    // the chain while we were parked here; a substream on a sealed tail won't
+                    // surface that, so we consult the chain directly, as the other stalled
+                    // states do via `check_chain`.
                     if *trim_checked_version != logs.version() {
                         match chain.find_segment_for_lsn(*this.read_pointer) {
                             MaybeSegment::Trim { next_base_lsn } => {
