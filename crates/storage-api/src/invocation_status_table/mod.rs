@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::future::Future;
 use std::ops::{ControlFlow, RangeInclusive};
 use std::time::Duration;
@@ -817,11 +817,12 @@ pub trait ReadInvocationStatusTable {
 pub enum ScanInvocationStatusTableRange {
     PartitionKey(KeyRange),
     InvocationId(RangeInclusive<InvocationId>),
+    InvocationIdSet(BTreeSet<InvocationId>),
 }
 
 pub trait ScanInvocationStatusTable {
     fn for_each_invocation_status_lazy<
-        E: Into<anyhow::Error>,
+        E: Into<anyhow::Error> + 'static,
         F: for<'a> FnMut(
                 (InvocationId, &'a InvocationStatusV2Lazy<'a>),
             ) -> ControlFlow<std::result::Result<(), E>>
