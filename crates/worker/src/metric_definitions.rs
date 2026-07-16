@@ -14,6 +14,8 @@ use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
 
 pub const TYPE_LABEL: &str = "type";
 pub const PARTITION_LABEL: &str = "partition";
+pub const BRANCH_LABEL: &str = "branch";
+pub const EFFECT_LABEL: &str = "effect";
 pub const REASON_LABEL: &str = "reason";
 pub const LEADER_LABEL: &str = "leader";
 pub const LEADER_LABEL_LEADER: &str = "1";
@@ -58,6 +60,16 @@ pub const PARTITION_IS_EFFECTIVE_LEADER: &str = "restate.partition.is_effective_
 
 pub const PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS: &str =
     "restate.partition.record_committed_to_read_latency.seconds";
+pub const PARTITION_PROCESSOR_LOOP_DURATION_SECONDS: &str =
+    "restate.partition.processor_loop_duration.seconds";
+pub const PARTITION_TRANSACTION_COMMIT_DURATION_SECONDS: &str =
+    "restate.partition.transaction_commit_duration.seconds";
+pub const PARTITION_LEADER_ACTION_EFFECT_DURATION_SECONDS: &str =
+    "restate.partition.leader_action_effect_duration.seconds";
+pub const PARTITION_SELF_PROPOSER_ENQUEUE_DURATION_SECONDS: &str =
+    "restate.partition.self_proposer_enqueue_duration.seconds";
+pub const PARTITION_SELF_PROPOSER_BACKPRESSURE: &str =
+    "restate.partition.self_proposer_backpressure.total";
 
 pub const PARTITION_SHUFFLE_MESSAGE_COUNT: &str = "restate.partition.shuffle.message.total";
 pub const PARTITION_SHUFFLE_INFLIGHT_RECORDS: &str = "restate.partition.shuffle.inflight";
@@ -107,6 +119,31 @@ pub(crate) fn describe_metrics() {
         PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
         Unit::Seconds,
         "Duration between the record commit time to read time"
+    );
+    describe_histogram!(
+        PARTITION_PROCESSOR_LOOP_DURATION_SECONDS,
+        Unit::Seconds,
+        "Time spent handling a selected partition processor loop branch"
+    );
+    describe_histogram!(
+        PARTITION_TRANSACTION_COMMIT_DURATION_SECONDS,
+        Unit::Seconds,
+        "Time spent committing partition store transactions"
+    );
+    describe_histogram!(
+        PARTITION_LEADER_ACTION_EFFECT_DURATION_SECONDS,
+        Unit::Seconds,
+        "Time spent handling partition leader action effects"
+    );
+    describe_histogram!(
+        PARTITION_SELF_PROPOSER_ENQUEUE_DURATION_SECONDS,
+        Unit::Seconds,
+        "Time spent enqueueing records into partition self-proposers"
+    );
+    describe_counter!(
+        PARTITION_SELF_PROPOSER_BACKPRESSURE,
+        Unit::Count,
+        "Number of partition self-proposer enqueues with insufficient immediate queue capacity"
     );
 
     describe_gauge!(

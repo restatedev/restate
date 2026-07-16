@@ -9,50 +9,61 @@
 // by the Apache License, Version 2.0.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use futures::never::Never;
+use metrics::{Histogram, counter, histogram};
 
 use restate_bifrost::{Bifrost, CommitToken, EnqueueError, ErrorRecoveryStrategy, InputRecord};
 use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
+use restate_types::config::Configuration;
 use restate_types::{
-    identifiers::PartitionKey, logs::LogId, net::ingest::IngestRecord, time::NanosSinceEpoch,
+    identifiers::{PartitionId, PartitionKey},
+    logs::LogId,
+    net::ingest::IngestRecord,
+    time::NanosSinceEpoch,
 };
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
+use crate::metric_definitions::{
+    PARTITION_LABEL, PARTITION_SELF_PROPOSER_BACKPRESSURE,
+    PARTITION_SELF_PROPOSER_ENQUEUE_DURATION_SECONDS,
+};
 use crate::partition::leadership::Error;
-
-// Constants since it's very unlikely that we can derive a meaningful configuration
-// that the user can reason about.
-//
-// The queue size is small to reduce the tail latency. This comes at the cost of throughput but
-// this runs within a single processor and the expected throughput is bound by the overall
-// throughput of the processor itself.
-const BIFROST_QUEUE_SIZE: usize = 50;
-const MAX_BIFROST_APPEND_BATCH: usize = 5000;
 
 static BIFROST_APPENDER_TASK: &str = "bifrost-appender";
 
 pub struct SelfProposer {
+    partition_id: PartitionId,
     epoch_sequence_number: EpochSequenceNumber,
     bifrost_appender: restate_bifrost::AppenderHandle<Envelope>,
 }
 
 impl SelfProposer {
     pub fn new(
+        partition_id: PartitionId,
         log_id: LogId,
         epoch_sequence_number: EpochSequenceNumber,
         bifrost: &Bifrost,
     ) -> Result<Self, Error> {
+        let (queue_capacity, max_append_batch_size) = {
+            let config = Configuration::pinned();
+            (
+                config.worker.self_proposer_queue_capacity(),
+                config.worker.self_proposer_max_append_batch_size(),
+            )
+        };
         let bifrost_appender = bifrost
             .create_background_appender(
                 log_id,
                 ErrorRecoveryStrategy::ExtendChainPreferred,
-                BIFROST_QUEUE_SIZE,
-                MAX_BIFROST_APPEND_BATCH,
+                queue_capacity,
+                max_append_batch_size,
             )?
             .start("self-appender")?;
 
         Ok(Self {
+            partition_id,
             epoch_sequence_number,
             bifrost_appender,
         })
@@ -76,11 +87,12 @@ impl SelfProposer {
         &mut self,
         cmds: impl ExactSizeIterator<Item = (PartitionKey, Command)>,
     ) -> Result<(), Error> {
+        let num_commands = cmds.len();
         // allocate a sequence number range for the batch
         let leader_epoch = self.epoch_sequence_number.leader_epoch;
 
         let start_seq = self.epoch_sequence_number.sequence_number;
-        let end_seq = start_seq + cmds.len() as u64;
+        let end_seq = start_seq + num_commands as u64;
 
         let envelopes = cmds.enumerate().map(|(idx, (partition_key, cmd))| {
             let esn = EpochSequenceNumber {
@@ -100,12 +112,13 @@ impl SelfProposer {
             Arc::new(Envelope::new(header, cmd))
         });
 
-        // Only blocks if background append is pushing back (queue full)
-        self.bifrost_appender
-            .sender()
-            .enqueue_many(envelopes)
-            .await
-            .map_err(|e| Error::SelfProposer(e.to_string()))?;
+        let (enqueue_duration, start) = Self::start_enqueue(
+            self.partition_id,
+            self.bifrost_appender.sender().capacity() < num_commands,
+        );
+        let result = self.bifrost_appender.sender().enqueue_many(envelopes).await;
+        enqueue_duration.record(start.elapsed());
+        result.map_err(|e| Error::SelfProposer(e.to_string()))?;
 
         // update the sequence number range for the next batch
         self.epoch_sequence_number = EpochSequenceNumber {
@@ -124,12 +137,17 @@ impl SelfProposer {
     ) -> Result<(), Error> {
         let envelope = Envelope::new(self.create_self_propose_header(partition_key), cmd);
 
-        // Only blocks if background append is pushing back (queue full)
-        self.bifrost_appender
+        let (enqueue_duration, start) = Self::start_enqueue(
+            self.partition_id,
+            self.bifrost_appender.sender().capacity() == 0,
+        );
+        let result = self
+            .bifrost_appender
             .sender()
             .enqueue(Arc::new(envelope))
-            .await
-            .map_err(|e| Error::SelfProposer(e.to_string()))?;
+            .await;
+        enqueue_duration.record(start.elapsed());
+        result.map_err(|e| Error::SelfProposer(e.to_string()))?;
 
         Ok(())
     }
@@ -156,12 +174,17 @@ impl SelfProposer {
         };
         let envelope = Envelope::new(header, cmd);
 
-        let commit_token = self
+        let (enqueue_duration, start) = Self::start_enqueue(
+            self.partition_id,
+            self.bifrost_appender.sender().capacity() == 0,
+        );
+        let result = self
             .bifrost_appender
             .sender()
             .enqueue_with_notification(Arc::new(envelope))
-            .await
-            .map_err(|e| Error::SelfProposer(e.to_string()))?;
+            .await;
+        enqueue_duration.record(start.elapsed());
+        let commit_token = result.map_err(|e| Error::SelfProposer(e.to_string()))?;
 
         Ok(commit_token)
     }
@@ -175,6 +198,12 @@ impl SelfProposer {
         &mut self,
         records: impl ExactSizeIterator<Item = IngestRecord>,
     ) -> Result<CommitToken, EnqueueError<()>> where {
+        let enqueue_duration = histogram!(
+            PARTITION_SELF_PROPOSER_ENQUEUE_DURATION_SECONDS,
+            PARTITION_LABEL => self.partition_id.to_string(),
+        );
+        let start = Instant::now();
+        let partition_id = self.partition_id;
         let sender = self.bifrost_appender.sender();
 
         // This should ideally be implemented
@@ -191,6 +220,9 @@ impl SelfProposer {
         // so instead we do this.
 
         for record in records {
+            if sender.capacity() == 0 {
+                Self::record_backpressure(partition_id);
+            }
             // Skip decoding the envelope; build the InputRecord directly from the raw bytes.
             // The ingestion client should only handle payloads of type Envelope.
             let input = unsafe {
@@ -201,13 +233,39 @@ impl SelfProposer {
                 )
             };
 
-            sender
-                .enqueue_unchecked(input)
-                .await
-                .map_err(|e| e.drop_payload())?;
+            if let Err(err) = sender.enqueue_unchecked(input).await {
+                enqueue_duration.record(start.elapsed());
+                return Err(err.drop_payload());
+            }
         }
 
-        sender.notify_committed().await
+        if sender.capacity() == 0 {
+            Self::record_backpressure(partition_id);
+        }
+        let result = sender.notify_committed().await;
+        enqueue_duration.record(start.elapsed());
+        result
+    }
+
+    fn start_enqueue(partition_id: PartitionId, backpressured: bool) -> (Histogram, Instant) {
+        if backpressured {
+            Self::record_backpressure(partition_id);
+        }
+        (
+            histogram!(
+                PARTITION_SELF_PROPOSER_ENQUEUE_DURATION_SECONDS,
+                PARTITION_LABEL => partition_id.to_string(),
+            ),
+            Instant::now(),
+        )
+    }
+
+    fn record_backpressure(partition_id: PartitionId) {
+        counter!(
+            PARTITION_SELF_PROPOSER_BACKPRESSURE,
+            PARTITION_LABEL => partition_id.to_string(),
+        )
+        .increment(1);
     }
 
     fn create_self_propose_header(&mut self, partition_key: PartitionKey) -> Header {

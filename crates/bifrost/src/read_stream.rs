@@ -20,8 +20,9 @@ use futures::StreamExt;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::stream::FusedStream;
+use metrics::histogram;
 use pin_project::pin_project;
-use tokio::time::Sleep;
+use tokio::time::{Instant, Sleep};
 use tracing::debug;
 use tracing::trace;
 use tracing::warn;
@@ -55,6 +56,7 @@ use crate::bifrost::MaybeLoglet;
 use crate::error::AdminError;
 use crate::loglet::OperationError;
 use crate::loglet_wrapper::LogletReadStreamWrapper;
+use crate::metric_definitions::BIFROST_READ_STREAM_STATE_DURATION;
 use crate::read_stream_registry::{ReadStreamId, ReadStreamState, SharedReadStreamState};
 
 /// A read stream reads from the virtual log. The stream provides a unified view over
@@ -103,12 +105,14 @@ enum State {
     New,
     /// Stream is waiting for bifrost to get a loglet that maps to the `read_pointer`
     FindingLoglet {
+        started_at: Instant,
         /// The future to continue finding the loglet instance via Bifrost
         #[pin]
         find_loglet_fut: BoxFuture<'static, Result<MaybeLoglet>>,
     },
     /// Waiting for the loglet read stream (substream) to be initialized
     CreatingSubstream {
+        started_at: Instant,
         /// Future to continue creating the substream
         #[pin]
         create_stream_fut: BoxFuture<'static, Result<LogletReadStreamWrapper, OperationError>>,
@@ -121,16 +125,20 @@ enum State {
         tail_watch: Option<BoxStream<'static, TailState>>,
     },
     /// Chain reconfiguration has been detected, we'll update our view of the chain.
-    AwaitingReconfiguration,
+    AwaitingReconfiguration {
+        started_at: Instant,
+    },
     /// Waiting for the tail LSN of the substream's loglet to be determined (sealing in-progress).
     /// We land on this state when we observe a "Sealed" signal from an open segment after we
     /// reached the safe known tail for that loglet. We can continue reading only after the chain
     /// has been sealed by a marker or with a new installed chain.
     AwaitingOrSealChain {
+        started_at: Instant,
         timeout: Pin<Box<Sleep>>,
     },
     /// Performing a chain seal operation
     SealingChain {
+        started_at: Instant,
         #[pin]
         seal_chain_fut: BoxFuture<'static, ()>,
     },
@@ -140,6 +148,7 @@ enum State {
 impl State {
     fn awaiting_or_seal_chain() -> Self {
         Self::AwaitingOrSealChain {
+            started_at: Instant::now(),
             // Questionable whether making this value configurable adds value or not.
             timeout: Box::pin(tokio::time::sleep(Duration::from_secs(5).add_jitter(0.5))),
         }
@@ -147,6 +156,7 @@ impl State {
 
     fn finding_loglet(bifrost: &'static BifrostInner, log_id: LogId, read_pointer: Lsn) -> Self {
         Self::FindingLoglet {
+            started_at: Instant::now(),
             find_loglet_fut: Box::pin(bifrost.find_loglet_for_lsn(log_id, read_pointer)),
         }
     }
@@ -295,16 +305,22 @@ impl Stream for LogReadStream {
 
             match state {
                 StateProj::New => {
-                    let find_loglet_fut = Box::pin(
-                        bifrost_inner.find_loglet_for_lsn(*this.log_id, *this.read_pointer),
-                    );
                     // => Find Loglet
-                    this.state.set(State::FindingLoglet { find_loglet_fut });
+                    this.state.set(State::finding_loglet(
+                        bifrost_inner,
+                        *this.log_id,
+                        *this.read_pointer,
+                    ));
                 }
 
                 // Finding a loglet and creating the loglet instance through the provider
-                StateProj::FindingLoglet { find_loglet_fut } => {
-                    let loglet = match ready!(find_loglet_fut.poll(cx)) {
+                StateProj::FindingLoglet {
+                    started_at,
+                    find_loglet_fut,
+                } => {
+                    let result = ready!(find_loglet_fut.poll(cx));
+                    record_state_duration("finding-loglet", started_at);
+                    let loglet = match result {
                         Ok(MaybeLoglet::Some(loglet)) => loglet,
                         Ok(MaybeLoglet::Trim { next_base_lsn }) => {
                             // deliver trim gap and advance read pointer.
@@ -323,13 +339,20 @@ impl Stream for LogReadStream {
                         loglet.create_read_stream(this.filter.clone(), *this.read_pointer),
                     );
                     // => Create Substream
-                    this.state
-                        .set(State::CreatingSubstream { create_stream_fut });
+                    this.state.set(State::CreatingSubstream {
+                        started_at: Instant::now(),
+                        create_stream_fut,
+                    });
                 }
 
                 // Creating a new substream
-                StateProj::CreatingSubstream { create_stream_fut } => {
-                    let substream = match ready!(create_stream_fut.poll(cx)) {
+                StateProj::CreatingSubstream {
+                    started_at,
+                    create_stream_fut,
+                } => {
+                    let result = ready!(create_stream_fut.poll(cx));
+                    record_state_duration("creating-substream", started_at);
+                    let substream = match result {
                         Ok(substream) => substream,
                         Err(e) => {
                             this.state.set(State::Terminated);
@@ -375,13 +398,14 @@ impl Stream for LogReadStream {
                         // Next LSN is beyond the boundaries of this substream
                         Some(tail) if *this.read_pointer >= tail => {
                             // Switch loglets.
-                            let find_loglet_fut = Box::pin(
-                                bifrost_inner.find_loglet_for_lsn(*this.log_id, *this.read_pointer),
-                            );
                             // => Find the next loglet. We know we _probably_ have one, otherwise
                             // `stream_tail_lsn` wouldn't have been set.
                             this.substream.set(None);
-                            this.state.set(State::FindingLoglet { find_loglet_fut });
+                            this.state.set(State::finding_loglet(
+                                bifrost_inner,
+                                *this.log_id,
+                                *this.read_pointer,
+                            ));
                             continue;
                         }
                         // Unsealed loglet, we can only read as far as the safe unsealed tail.
@@ -398,7 +422,9 @@ impl Stream for LogReadStream {
                                 // signal.
                                 if chain.tail_index() > substream.loglet().segment_index() {
                                     // a new segment must have been added, time to use it for tail.
-                                    this.state.set(State::AwaitingReconfiguration);
+                                    this.state.set(State::AwaitingReconfiguration {
+                                        started_at: Instant::now(),
+                                    });
                                     continue;
                                 }
                                 // Wait for tail update...
@@ -505,7 +531,7 @@ impl Stream for LogReadStream {
                 }
 
                 // Waiting for the substream's loglet to be sealed
-                StateProj::AwaitingReconfiguration => {
+                StateProj::AwaitingReconfiguration { started_at } => {
                     let Some(mut substream) = this.substream.as_mut().as_pin_mut() else {
                         panic!("substream must be set at this point");
                     };
@@ -517,6 +543,7 @@ impl Stream for LogReadStream {
                         substream.loglet().config.kind,
                     ) {
                         Decision::NewSegment => {
+                            record_state_duration("awaiting-reconfiguration", started_at);
                             this.substream.set(None);
                             this.state.set(State::finding_loglet(
                                 bifrost_inner,
@@ -526,12 +553,14 @@ impl Stream for LogReadStream {
                             continue;
                         }
                         Decision::TailLsnSet { sealed_tail } => {
+                            record_state_duration("awaiting-reconfiguration", started_at);
                             substream.set_tail_lsn(sealed_tail);
                             // go back to reading.
                             this.state.set(State::reading_to_known_tail(sealed_tail));
                             continue;
                         }
                         Decision::Trim { next_base_lsn } => {
+                            record_state_duration("awaiting-reconfiguration", started_at);
                             // Deliver the trim gap
                             let gap = deliver_trim_gap(&mut this, next_base_lsn, bifrost_inner);
                             update_shared_state(&this);
@@ -552,7 +581,10 @@ impl Stream for LogReadStream {
                 }
 
                 // Waiting for the current segment to be sealed (partial seal detected)
-                StateProj::AwaitingOrSealChain { timeout } => {
+                StateProj::AwaitingOrSealChain {
+                    started_at,
+                    timeout,
+                } => {
                     let Some(mut substream) = this.substream.as_mut().as_pin_mut() else {
                         panic!("substream must be set at this point");
                     };
@@ -564,6 +596,7 @@ impl Stream for LogReadStream {
                         substream.loglet().config.kind,
                     ) {
                         Decision::NewSegment => {
+                            record_state_duration("awaiting-or-seal-chain", started_at);
                             this.substream.set(None);
                             this.state.set(State::finding_loglet(
                                 bifrost_inner,
@@ -573,12 +606,14 @@ impl Stream for LogReadStream {
                             continue;
                         }
                         Decision::TailLsnSet { sealed_tail } => {
+                            record_state_duration("awaiting-or-seal-chain", started_at);
                             substream.set_tail_lsn(sealed_tail);
                             // go back to reading.
                             this.state.set(State::reading_to_known_tail(sealed_tail));
                             continue;
                         }
                         Decision::Trim { next_base_lsn } => {
+                            record_state_duration("awaiting-or-seal-chain", started_at);
                             // Deliver the trim gap
                             let gap = deliver_trim_gap(&mut this, next_base_lsn, bifrost_inner);
                             update_shared_state(&this);
@@ -590,13 +625,17 @@ impl Stream for LogReadStream {
 
                     // Check if we ran out of patience.
                     if let Poll::Ready(()) = timeout.as_mut().poll(cx) {
+                        record_state_duration("awaiting-or-seal-chain", started_at);
                         // we timed out, taking matters into our own hands and sealing the chain.
                         let seal_chain_fut = Box::pin(seal_chain(
                             bifrost_inner,
                             *this.log_id,
                             substream.loglet().segment_index(),
                         ));
-                        this.state.set(State::SealingChain { seal_chain_fut });
+                        this.state.set(State::SealingChain {
+                            started_at: Instant::now(),
+                            seal_chain_fut,
+                        });
                         continue;
                     }
                     // No hope at this metadata version, wait for the next update.
@@ -610,11 +649,15 @@ impl Stream for LogReadStream {
                 }
 
                 // Actively sealing the chain to restore read availability
-                StateProj::SealingChain { seal_chain_fut } => {
+                StateProj::SealingChain {
+                    started_at,
+                    seal_chain_fut,
+                } => {
                     // In this state, we are trying to recover from a partially sealed chain (sealed loglet
                     // in an open segment). We have already waited for a grace period before
                     // moving to this state. The goal is to finish the seal.
                     ready!(seal_chain_fut.poll(cx));
+                    record_state_duration("sealing-chain", started_at);
                     // Note that if the seal operation failed, awaiting-or-seal-chain
                     // will bring us back here again after the grace period.
                     this.state.set(State::awaiting_or_seal_chain());
@@ -697,11 +740,13 @@ fn deliver_trim_gap(
     let record = LogEntry::new_trim_gap(read_pointer, next_base_lsn.prev());
     // fast-forward.
     *this.read_pointer = next_base_lsn;
-    let find_loglet_fut =
-        Box::pin(bifrost_inner.find_loglet_for_lsn(*this.log_id, *this.read_pointer));
     // => Find Loglet
     this.substream.set(None);
-    this.state.set(State::FindingLoglet { find_loglet_fut });
+    this.state.set(State::finding_loglet(
+        bifrost_inner,
+        *this.log_id,
+        *this.read_pointer,
+    ));
     record
 }
 
@@ -711,11 +756,15 @@ fn state_name(state: &State) -> &'static str {
         State::FindingLoglet { .. } => "FindingLoglet",
         State::CreatingSubstream { .. } => "CreatingSubstream",
         State::Reading { .. } => "Reading",
-        State::AwaitingReconfiguration => "AwaitingReconfiguration",
+        State::AwaitingReconfiguration { .. } => "AwaitingReconfiguration",
         State::AwaitingOrSealChain { .. } => "AwaitingOrSealChain",
         State::SealingChain { .. } => "SealingChain",
         State::Terminated => "Terminated",
     }
+}
+
+fn record_state_duration(state: &'static str, started_at: &Instant) {
+    histogram!(BIFROST_READ_STREAM_STATE_DURATION, "state" => state).record(started_at.elapsed());
 }
 
 fn update_shared_state(this: &ReadStreamProj) {

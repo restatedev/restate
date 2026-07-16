@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use adaptive_timeout::{AdaptiveTimeout, TimeoutConfig};
-use metrics::{Counter, counter};
+use metrics::{Counter, Histogram, counter, histogram};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tracing::{info, trace};
@@ -31,8 +31,10 @@ use crate::LogEntry;
 use crate::loglet::OperationError;
 use crate::providers::replicated_loglet::LATENCY_TRACKER;
 use crate::providers::replicated_loglet::metric_definitions::{
+    BIFROST_REPLICATED_READ_BATCH_SIZE, BIFROST_REPLICATED_READ_BATCH_TOTAL,
     BIFROST_REPLICATED_READ_CACHE_FILTERED, BIFROST_REPLICATED_READ_CACHE_HIT,
-    BIFROST_REPLICATED_READ_TOTAL,
+    BIFROST_REPLICATED_READ_RETRY_TOTAL, BIFROST_REPLICATED_READ_TOTAL,
+    BIFROST_REPLICATED_REMOTE_READ_BATCH_DURATION,
 };
 use crate::providers::replicated_loglet::tasks::GetTrimPointTask;
 
@@ -44,6 +46,10 @@ struct Stats {
     cache_filtered: Counter,
     cache_hits: Counter,
     records_read: Counter,
+    cache_batches: Counter,
+    remote_batches: Counter,
+    remote_batch_size: Histogram,
+    remote_batch_duration: Histogram,
 }
 
 impl Default for Stats {
@@ -51,11 +57,36 @@ impl Default for Stats {
         let cache_filtered = counter!(BIFROST_REPLICATED_READ_CACHE_FILTERED);
         let cache_hits = counter!(BIFROST_REPLICATED_READ_CACHE_HIT);
         let records_read = counter!(BIFROST_REPLICATED_READ_TOTAL);
+        let cache_batches = counter!(BIFROST_REPLICATED_READ_BATCH_TOTAL, "source" => "cache");
+        let remote_batches = counter!(BIFROST_REPLICATED_READ_BATCH_TOTAL, "source" => "remote");
+        let remote_batch_size =
+            histogram!(BIFROST_REPLICATED_READ_BATCH_SIZE, "source" => "remote");
+        let remote_batch_duration = histogram!(BIFROST_REPLICATED_REMOTE_READ_BATCH_DURATION);
         Self {
             cache_filtered,
             cache_hits,
             records_read,
+            cache_batches,
+            remote_batches,
+            remote_batch_size,
+            remote_batch_duration,
         }
+    }
+}
+
+impl Stats {
+    fn record_cache_batch(&self) {
+        self.cache_batches.increment(1);
+    }
+
+    fn record_remote_batch(&self, size: usize, duration: Duration) {
+        self.remote_batches.increment(1);
+        self.remote_batch_size.record(size as f64);
+        self.remote_batch_duration.record(duration);
+    }
+
+    fn record_retry(reason: &'static str) {
+        counter!(BIFROST_REPLICATED_READ_RETRY_TOTAL, "reason" => reason).increment(1);
     }
 }
 
@@ -194,6 +225,7 @@ impl ReadStreamTask {
                 }
             };
         let cluster_state = TaskCenter::with_current(|tc| tc.cluster_state().clone());
+        let mut remote_read_started_at = None;
 
         // [important]
         // We rely on the periodic task owned by the provider to refresh our view of the tail.
@@ -257,7 +289,6 @@ impl ReadStreamTask {
             // We are at tail. We need to wait until new records have been released.
             if !self.can_advance() && !self.move_beyond_global_tail {
                 // HODL.
-                // todo(asoli): Measure tail-change wait time in histogram
                 tail_subscriber
                     .changed()
                     .await
@@ -317,6 +348,7 @@ impl ReadStreamTask {
             };
 
             if effective_nodeset.is_empty() {
+                remote_read_started_at.get_or_insert_with(Instant::now);
                 // if nodeset is all disabled, no readable nodes. impossible situation to resolve,
                 if self
                     .my_params
@@ -327,6 +359,7 @@ impl ReadStreamTask {
                         self.my_params.nodeset.clone(),
                     )));
                 } else {
+                    Stats::record_retry("nodeset-unreadable");
                     // Some nodes might be provisioning, wait and try again after a cool off
                     // period.
                     // todo: make this configurable.
@@ -346,19 +379,38 @@ impl ReadStreamTask {
             'attempt_from_servers: loop {
                 // Read from _somewhere_ until we reach the tail, target, or the available permits.
                 // Start by reading from record cache as much as we can
+                let mut cache_batch_size = 0;
                 'attempt_from_cache: loop {
                     match self.send_next_from_cache(&mut permits) {
                         // fast-forward
                         CacheReadResult::Sent => {
+                            cache_batch_size += 1;
                             self.read_pointer = self.read_pointer.next();
                             continue 'attempt_from_cache;
                         }
                         CacheReadResult::Miss => {
+                            if cache_batch_size > 0 {
+                                if let Some(start) = remote_read_started_at.take() {
+                                    self.stats
+                                        .record_remote_batch(cache_batch_size, start.elapsed());
+                                } else {
+                                    self.stats.record_cache_batch();
+                                }
+                            }
+                            remote_read_started_at.get_or_insert_with(Instant::now);
                             // Once a record is not in cache, we fallback to reading from log-servers until
                             // we exhaust remaining permits.
                             break 'attempt_from_cache;
                         }
                         CacheReadResult::Stop => {
+                            if cache_batch_size > 0 {
+                                if let Some(start) = remote_read_started_at.take() {
+                                    self.stats
+                                        .record_remote_batch(cache_batch_size, start.elapsed());
+                                } else {
+                                    self.stats.record_cache_batch();
+                                }
+                            }
                             continue 'main;
                         }
                     }
@@ -368,6 +420,7 @@ impl ReadStreamTask {
                 // If we (my node) are in the nodeset, we'll be the first to try
                 let Some(server) = mutable_effective_nodeset.pop() else {
                     // no more servers to try. Going back and retrying the main loop to start over.
+                    Stats::record_retry("servers-exhausted");
                     info!(
                         loglet_id = %self.my_params.loglet_id,
                         from_offset = %self.read_pointer,
@@ -393,6 +446,18 @@ impl ReadStreamTask {
                     // move to the next server
                     continue 'attempt_from_servers;
                 };
+
+                if !records.is_empty() {
+                    self.stats.record_remote_batch(
+                        records.len(),
+                        remote_read_started_at
+                            .take()
+                            .expect("remote read timer starts on cache miss")
+                            .elapsed(),
+                    );
+                } else {
+                    Stats::record_retry("empty-response");
+                }
 
                 // Note that returned records can have gaps
                 for (offset, maybe_record) in records {
@@ -630,8 +695,11 @@ impl ReadStreamTask {
                 })
             }
             Err(e) => {
-                if let RpcError::Timeout(spent) = e {
-                    LATENCY_TRACKER.record_latency(&server, spent, Instant::now());
+                if let RpcError::Timeout(spent) = &e {
+                    LATENCY_TRACKER.record_latency(&server, *spent, Instant::now());
+                    Stats::record_retry("rpc-timeout");
+                } else {
+                    Stats::record_retry("rpc-error");
                 }
                 trace!(
                     loglet_id = %self.my_params.loglet_id,

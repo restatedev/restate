@@ -290,6 +290,12 @@ impl<T> Clone for LogSender<T> {
     }
 }
 
+impl<T> LogSender<T> {
+    pub fn capacity(&self) -> usize {
+        self.tx.capacity()
+    }
+}
+
 impl<T: StorageEncode> LogSender<T> {
     fn check_record_size<E>(&self, record: &Record) -> Result<(), EnqueueError<E>> {
         let record_size = record.estimated_encode_size();

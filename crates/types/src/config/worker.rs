@@ -82,6 +82,21 @@ pub struct WorkerOptions {
     /// Since v1.7.1
     pub max_command_batch_bytes: NonZeroByteCount,
 
+    /// # Self-proposer queue capacity
+    ///
+    /// Maximum number of records buffered by each partition leader's background Bifrost appender.
+    ///
+    /// Since v1.7.3
+    self_proposer_queue_capacity: NonZeroUsize,
+
+    /// # Self-proposer maximum append batch size
+    ///
+    /// Maximum number of records combined into one Bifrost append by each partition leader's
+    /// background appender.
+    ///
+    /// Since v1.7.3
+    self_proposer_max_append_batch_size: NonZeroUsize,
+
     /// # Snapshots
     ///
     /// Snapshots provide a mechanism for safely trimming the log and efficient bootstrapping of new
@@ -170,6 +185,14 @@ impl WorkerOptions {
         self.max_command_batch_size.into()
     }
 
+    pub fn self_proposer_queue_capacity(&self) -> usize {
+        self.self_proposer_queue_capacity.into()
+    }
+
+    pub fn self_proposer_max_append_batch_size(&self) -> usize {
+        self.self_proposer_max_append_batch_size.into()
+    }
+
     pub fn num_timers_in_memory_limit(&self) -> Option<usize> {
         self.num_timers_in_memory_limit.map(Into::into)
     }
@@ -193,6 +216,9 @@ impl Default for WorkerOptions {
             invoker: Default::default(),
             max_command_batch_size: NonZeroUsize::new(32).expect("Non zero number"),
             max_command_batch_bytes: NonZeroByteCount::new(NonZeroUsize::new(1024 * 1024).unwrap()),
+            self_proposer_queue_capacity: NonZeroUsize::new(50).expect("non-zero queue capacity"),
+            self_proposer_max_append_batch_size: NonZeroUsize::new(5000)
+                .expect("non-zero batch size"),
             snapshots: SnapshotsOptions::default(),
             // 10 minutes delayed trimming by default to give time for followers to catch up
             // to the new durable LSN before observing the trim gap.

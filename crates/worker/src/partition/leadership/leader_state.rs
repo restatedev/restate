@@ -21,7 +21,7 @@ use futures::future::OptionFuture;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt, stream};
 use itertools::Itertools;
-use metrics::counter;
+use metrics::{counter, histogram};
 use tokio_stream::wrappers::{ReceiverStream, WatchStream};
 use tracing::{debug, error, trace};
 
@@ -56,7 +56,11 @@ use restate_worker_api::invoker::InvokerHandle;
 use restate_worker_api::resources::ReservedResources;
 use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
 
-use crate::metric_definitions::{PARTITION_HANDLE_LEADER_ACTIONS, USAGE_LEADER_ACTION_COUNT};
+use crate::metric_definitions::{
+    EFFECT_LABEL, PARTITION_HANDLE_LEADER_ACTIONS, PARTITION_LEADER_ACTION_EFFECT_DURATION_SECONDS,
+    USAGE_LEADER_ACTION_COUNT,
+};
+use crate::partition::HistogramTimer;
 use crate::partition::cleaner::{CleanerEffect, CleanerHandle};
 use crate::partition::leadership::self_proposer::SelfProposer;
 use crate::partition::leadership::{ActionEffect, Error, InvokerStream, TimerService};
@@ -359,6 +363,11 @@ impl LeaderState {
     ) -> Result<(), Error> {
         let mut arena = BytesMut::with_capacity(128 * 1024);
         for effect in action_effects {
+            let effect_duration = histogram!(
+                PARTITION_LEADER_ACTION_EFFECT_DURATION_SECONDS,
+                EFFECT_LABEL => effect.name(),
+            );
+            let _timer = HistogramTimer::new(&effect_duration);
             match effect {
                 ActionEffect::Scheduler(decisions) => {
                     let Decisions {

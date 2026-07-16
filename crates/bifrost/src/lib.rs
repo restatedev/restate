@@ -17,6 +17,7 @@ mod error;
 mod log_chain_writer;
 pub mod loglet;
 mod loglet_wrapper;
+mod metric_definitions;
 pub mod providers;
 mod read_stream;
 pub mod read_stream_registry;

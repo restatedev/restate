@@ -158,6 +158,22 @@ pub(crate) enum ActionEffect {
     AwaitingRpcSelfProposeDone,
 }
 
+impl ActionEffect {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Scheduler(_) => "scheduler",
+            Self::Invoker(_) => "invoker",
+            Self::Shuffle(_) => "shuffle",
+            Self::Timer(_) => "timer",
+            Self::Cleaner(_) => "cleaner",
+            Self::PartitionMaintenance(_) => "partition-maintenance",
+            Self::UpsertSchema(_) => "upsert-schema",
+            Self::UpsertRuleBook(_) => "upsert-rule-book",
+            Self::AwaitingRpcSelfProposeDone => "awaiting-rpc-self-propose-done",
+        }
+    }
+}
+
 enum State {
     Follower,
     Candidate {
@@ -284,6 +300,7 @@ where
         }));
 
         let mut self_proposer = SelfProposer::new(
+            ctx.partition_id(),
             ctx.log_id(),
             EpochSequenceNumber::new(leader_epoch),
             &node_ctx.bifrost,

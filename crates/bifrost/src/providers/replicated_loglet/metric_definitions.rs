@@ -18,6 +18,14 @@ pub(crate) const BIFROST_REPLICATED_READ_CACHE_FILTERED: &str =
     "restate.bifrost.replicatedloglet.read_record_cache_filtered.total";
 pub(crate) const BIFROST_REPLICATED_READ_TOTAL: &str =
     "restate.bifrost.replicatedloglet.read_record.total";
+pub(crate) const BIFROST_REPLICATED_READ_BATCH_TOTAL: &str =
+    "restate.bifrost.replicatedloglet.read_batch.total";
+pub(crate) const BIFROST_REPLICATED_READ_BATCH_SIZE: &str =
+    "restate.bifrost.replicatedloglet.read_batch_size";
+pub(crate) const BIFROST_REPLICATED_REMOTE_READ_BATCH_DURATION: &str =
+    "restate.bifrost.replicatedloglet.remote_read_batch_duration.seconds";
+pub(crate) const BIFROST_REPLICATED_READ_RETRY_TOTAL: &str =
+    "restate.bifrost.replicatedloglet.read_retry.total";
 pub(crate) const BIFROST_RECORDS_ENQUEUED_TOTAL: &str =
     "restate.bifrost.replicatedloglet.enqueued_records.total";
 pub(crate) const BIFROST_RECORDS_ENQUEUED_BYTES: &str =
@@ -53,6 +61,26 @@ pub(crate) fn describe_metrics() {
         BIFROST_REPLICATED_READ_TOTAL,
         Unit::Count,
         "Number of records read"
+    );
+    describe_counter!(
+        BIFROST_REPLICATED_READ_BATCH_TOTAL,
+        Unit::Count,
+        "Number of record batches read, labeled by source"
+    );
+    describe_histogram!(
+        BIFROST_REPLICATED_READ_BATCH_SIZE,
+        Unit::Count,
+        "Number of entries in record batches, labeled by source"
+    );
+    describe_histogram!(
+        BIFROST_REPLICATED_REMOTE_READ_BATCH_DURATION,
+        Unit::Seconds,
+        "Time to complete a logical remote read batch, including errors and retries"
+    );
+    describe_counter!(
+        BIFROST_REPLICATED_READ_RETRY_TOTAL,
+        Unit::Count,
+        "Number of replicated loglet read retries, labeled by reason"
     );
 
     describe_counter!(
