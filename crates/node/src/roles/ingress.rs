@@ -11,6 +11,7 @@
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::partitions::PartitionRouting;
 use restate_core::{TaskCenter, TaskKind};
+use restate_ingestion_client::IngestionClient;
 use restate_ingress_http::{HyperServerIngress, InvocationClientRequestDispatcher};
 use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
@@ -19,6 +20,7 @@ use restate_types::net::listener::AddressBook;
 use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::common::IngressStatus;
 use restate_types::schema::Schema;
+use restate_wal_protocol::Envelope;
 use restate_worker_api::PartitionProcessorInvocationClient;
 
 type IngressHttp<T> = HyperServerIngress<
@@ -31,6 +33,7 @@ pub struct IngressRole<T> {
 }
 
 impl<T: TransportConnect> IngressRole<T> {
+    #[allow(clippy::too_many_arguments)]
     pub fn create(
         mut ingress_options: BoxLiveLoad<IngressOptions>,
         address_book: &mut AddressBook,
@@ -39,6 +42,7 @@ impl<T: TransportConnect> IngressRole<T> {
         schema: Live<Schema>,
         partition_table: Live<PartitionTable>,
         partition_routing: PartitionRouting,
+        ingestion_client: IngestionClient<T, Envelope>,
     ) -> Self {
         let dispatcher = InvocationClientRequestDispatcher::new(
             PartitionProcessorInvocationClient::new(networking, partition_table, partition_routing),
@@ -49,7 +53,8 @@ impl<T: TransportConnect> IngressRole<T> {
             dispatcher,
             schema,
             health,
-        );
+        )
+        .with_grpc_ingestion(ingestion_client);
 
         Self { ingress_http }
     }

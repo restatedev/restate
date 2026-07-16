@@ -1,0 +1,113 @@
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
+syntax = "proto3";
+
+package restate.ingestion;
+
+// A Settings message defines the default values applied to all
+// subsequent records in the stream.
+// Each Settings message must specify every field it wants to set:
+// its fields are not merged with those of previous Settings messages.
+// Leaving an optional field unset clears any previously established
+// default, so later records must supply the value explicitly if needed.
+message Settings {
+    // required fields
+
+    // Unique producer ID for the stream. Deduplication relies on this
+    // ID being unique per ingestion stream
+    // (think Kafka cluster + topic + partition).
+    // An explicitly empty producer ID is valid but disables
+    // deduplication for the entire stream.
+    string producer_id = 1;
+
+    // optional fields
+    optional string scope = 2;
+    optional string limit_key = 3;
+    optional string service = 4;
+    optional string handler = 5;
+    map<string, string> headers = 6;
+}
+
+message Overrides {
+}
+
+message Record {
+    uint64 offset = 1;
+    // Required when the target service is a virtual object (VO).
+    optional string key = 2;
+    optional string traceparent = 3;
+    optional string tracestate = 4;
+
+    // Overrides
+    optional string scope = 5;
+    optional string limit_key = 6;
+    optional string service = 7;
+    optional string handler = 8;
+    // These headers are merged with the default headers
+    // from the Settings message.
+    map<string, string> additional_headers = 9;
+
+    bytes payload = 100;
+}
+
+message Request {
+    oneof payload {
+        Settings settings = 1;
+        Record record = 2;
+    }
+}
+
+// Application-layer flow control message.
+// It tells the client how much more it can send
+// before it must wait for the next window update.
+//
+// WindowUpdate also doubles as an explicit ack: the
+// server can send an update with a 0 increment to
+// acknowledge commits up to "Response::last_committed"
+// without changing the window size.
+message WindowUpdate {
+    uint64 increment = 1;
+}
+
+enum ErrorKind {
+    ERROR_KIND_UNKNOWN = 0;
+    // Server is shutting down and
+    // can't accept more records
+    ERROR_KIND_SHUTTING_DOWN = 1;
+    ERROR_KIND_UNKNOWN_SERVICE = 2;
+    ERROR_KIND_UNKNOWN_HANDLER = 3;
+    // add new error kinds here
+
+}
+message Error {
+    ErrorKind kind = 1;
+    string message = 2;
+}
+
+message Response {
+    // Offsets are 0-based, so last_committed must be optional
+    // to distinguish "offset 0 committed" from "nothing committed yet".
+    // This matters when an error is returned on the first
+    // ingestion message.
+    optional uint64 last_committed = 1;
+
+    oneof response {
+        WindowUpdate ack = 2;
+        Error error = 3;
+    }
+}
+
+// Service that is only reachable on nodes that are alive.
+service IngestionSvc {
+  // Opens a bidirectional node-to-node stream.
+  rpc Ingest(stream Request)
+      returns (stream Response);
+}

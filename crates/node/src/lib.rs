@@ -390,6 +390,7 @@ impl Node {
                 metadata.updateable_schema(),
                 metadata.updateable_partition_table(),
                 PartitionRouting::new(replica_set_states.clone(), tc.clone()),
+                ingestion_client.clone(),
             ))
         } else {
             None

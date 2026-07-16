@@ -11,8 +11,11 @@
 use std::convert::Infallible;
 use std::future::Future;
 use std::num::NonZeroU32;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
+use bytes::Bytes;
 use codederror::CodedError;
 use http::{Request, Response};
 use hyper::body::Incoming;
@@ -23,7 +26,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::either::Either;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
-use tower::{ServiceBuilder, ServiceExt};
+use tower::{Service, ServiceBuilder, ServiceExt};
 use tower_http::classify::ServerErrorsFailureClass;
 use tower_http::cors::CorsLayer;
 use tower_http::limit::RequestBodyLimitLayer;
@@ -31,8 +34,9 @@ use tower_http::normalize_path::NormalizePathLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{Span, debug, info, info_span, instrument};
 
-use restate_core::network::hyper_error_status;
+use restate_core::network::{TransportConnect, hyper_error_status};
 use restate_core::{TaskCenter, TaskCenterFutureExt, cancellation_token, task_center};
+use restate_ingestion_client::IngestionClient;
 use restate_types::config::IngressOptions;
 use restate_types::errors::GenericError;
 use restate_types::health::HealthStatus;
@@ -43,8 +47,10 @@ use restate_types::protobuf::common::IngressStatus;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 use restate_util_time::DurationExt;
+use restate_wal_protocol::Envelope;
 
 use super::*;
+use crate::grpc::{self, GrpcService};
 use crate::handler::Handler;
 use crate::metric_definitions::{HTTP_CONNECTION_CREATED, HTTP_CONNECTION_DROPPED};
 
@@ -64,6 +70,9 @@ pub struct HyperServerIngress<Schemas, Dispatcher> {
     // Parameters to build the layers
     schemas: Live<Schemas>,
     dispatcher: Dispatcher,
+
+    // Optional gRPC ingestion service, multiplexed onto the same port by content-type.
+    grpc_service: Option<GrpcService>,
 
     health: HealthStatus<IngressStatus>,
 }
@@ -116,8 +125,19 @@ where
             http2_max_concurrent_streams,
             schemas,
             dispatcher,
+            grpc_service: None,
             health,
         }
+    }
+
+    /// Enable the `restate.ingestion.IngestionSvc` gRPC service on the ingress port, backed by the
+    /// shared ingestion client. gRPC requests are routed by content-type; the REST path is unchanged.
+    pub fn with_grpc_ingestion<T>(mut self, ingestion_client: IngestionClient<T, Envelope>) -> Self
+    where
+        T: TransportConnect,
+    {
+        self.grpc_service = Some(grpc::build_service(ingestion_client, self.schemas.clone()));
+        self
     }
 
     #[instrument(
@@ -134,11 +154,12 @@ where
             http2_max_concurrent_streams,
             schemas,
             dispatcher,
+            grpc_service,
             health,
         } = self;
 
         // Prepare the handler
-        let service = ServiceBuilder::new()
+        let rest_service = ServiceBuilder::new()
             .layer(
                 TraceLayer::new_for_http()
                     .make_span_with(|request: &Request<_>| {
@@ -192,6 +213,14 @@ where
             .layer(layers::load_shed::LoadShedLayer::new(concurrency_limit))
             .layer(layers::tracing_context_extractor::HttpTraceContextExtractorLayer)
             .service(Handler::new(schemas, dispatcher));
+
+        // Multiplex gRPC (content-type application/grpc) and the REST ingress onto the same port.
+        // The branch sits above the REST tower layers so the request-body limit and load-shed
+        // don't throttle a long-lived gRPC `Ingest` stream.
+        let service = IngressMultiplex {
+            rest: rest_service,
+            grpc: grpc_service,
+        };
 
         // todo(azmy): `CorsLayer` should sit above `RequestBodyLimitLayer` so CORS is applied
         // as early as possible. This is currently blocked because `CorsLayer` requires the
@@ -360,6 +389,55 @@ where
         }.in_current_tc());
 
         Ok(())
+    }
+}
+
+/// Top-level connection service that routes `application/grpc` requests to the gRPC ingestion
+/// service and everything else to the REST ingress stack, unifying their response bodies.
+#[derive(Clone)]
+struct IngressMultiplex<Rest> {
+    rest: Rest,
+    grpc: Option<GrpcService>,
+}
+
+impl<Rest, RestBody, RestFut> Service<Request<Incoming>> for IngressMultiplex<Rest>
+where
+    Rest: Service<
+            Request<Incoming>,
+            Response = Response<RestBody>,
+            Error = Infallible,
+            Future = RestFut,
+        > + Clone
+        + Send
+        + 'static,
+    RestFut: Future<Output = Result<Response<RestBody>, Infallible>> + Send + 'static,
+    RestBody: http_body::Body<Data = Bytes> + Send + 'static,
+    <RestBody as http_body::Body>::Error: Into<GenericError>,
+{
+    type Response = Response<tonic::body::Body>;
+    type Error = Infallible;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Infallible>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        // Reserve capacity on the REST stack (that's where load-shed lives); gRPC is always ready.
+        self.rest.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: Request<Incoming>) -> Self::Future {
+        if grpc::is_grpc_request(&req)
+            && let Some(mut grpc) = self.grpc.clone()
+        {
+            let req = req.map(tonic::body::Body::new);
+            return Box::pin(async move { grpc.call(req).await });
+        }
+
+        // Use the clone that poll_ready readied; leave a fresh one for the next pair.
+        let clone = self.rest.clone();
+        let mut rest = std::mem::replace(&mut self.rest, clone);
+        Box::pin(async move {
+            let response = rest.call(req).await?;
+            Ok(response.map(tonic::body::Body::new))
+        })
     }
 }
 
