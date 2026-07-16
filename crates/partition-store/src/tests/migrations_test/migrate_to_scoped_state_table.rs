@@ -96,10 +96,13 @@ async fn migrate_to_scoped_state_table_moves_unscoped_state_to_scoped_table() {
     let mut arena = BytesMut::new();
     let mut unscoped_iter = rocksdb
         .partition_db()
-        .scan(PhysicalScan::from(
-            TableScan::FullScanPartitionKeyRange::<StateKey>(rocksdb.partition_key_range()),
-            &mut arena,
-        ))
+        .scan(
+            PhysicalScan::from(
+                TableScan::ScanPartitionKeyRange::<StateKey>(rocksdb.partition_key_range()),
+                &mut arena,
+            ),
+            rocksdb::ReadOptions::default(),
+        )
         .expect("scan should start");
     unscoped_iter.seek_to_first();
     assert!(
@@ -116,10 +119,13 @@ async fn migrate_to_scoped_state_table_moves_unscoped_state_to_scoped_table() {
     let mut observed: HashMap<(PartitionKey, String, String, Bytes), Bytes> = HashMap::new();
     let mut scoped_iter = rocksdb
         .partition_db()
-        .scan(PhysicalScan::from(
-            TableScan::FullScanPartitionKeyRange::<ScopedStateKey>(rocksdb.partition_key_range()),
-            &mut arena,
-        ))
+        .scan(
+            PhysicalScan::from(
+                TableScan::ScanPartitionKeyRange::<ScopedStateKey>(rocksdb.partition_key_range()),
+                &mut arena,
+            ),
+            rocksdb::ReadOptions::default(),
+        )
         .expect("scan should start");
     scoped_iter.seek_to_first();
     while scoped_iter.valid() {

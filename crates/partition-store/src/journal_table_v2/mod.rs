@@ -253,10 +253,7 @@ fn get_journal<'a, S: StorageAccess>(
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid());
 
-    let iter = storage.iterator_from(TableScan::SinglePartitionKeyPrefix(
-        invocation_id.partition_key(),
-        key,
-    ))?;
+    let iter = storage.iterator_from(TableScan::Prefix(key))?;
 
     Ok(JournalEntryIter::new(iter, journal_length))
 }
@@ -280,12 +277,9 @@ fn delete_journal<S: StorageAccess>(
         JournalNotificationIdToNotificationIndexKey::builder()
             .partition_key(invocation_id.partition_key())
             .invocation_uuid(invocation_id.invocation_uuid());
-    let notification_id_index = OwnedIterator::new(storage.iterator_from(
-        TableScan::SinglePartitionKeyPrefix(
-            invocation_id.partition_key(),
-            notification_id_to_notification_index.clone(),
-        ),
-    )?)
+    let notification_id_index = OwnedIterator::new(storage.iterator_from(TableScan::Prefix(
+        notification_id_to_notification_index.clone(),
+    ))?)
     .map(|(mut key, _)| {
         let journal_key = JournalNotificationIdToNotificationIndexKey::deserialize_from(&mut key)?;
         let (_, _, notification_id) = journal_key.split();
@@ -306,17 +300,15 @@ fn delete_journal<S: StorageAccess>(
     let completion_id_to_command_index = JournalCompletionIdToCommandIndexKey::builder()
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid());
-    let completion_id_index =
-        OwnedIterator::new(storage.iterator_from(TableScan::SinglePartitionKeyPrefix(
-            invocation_id.partition_key(),
-            completion_id_to_command_index.clone(),
-        ))?)
-        .map(|(mut key, _)| {
-            let journal_key = JournalCompletionIdToCommandIndexKey::deserialize_from(&mut key)?;
-            let (_, _, completion_id) = journal_key.split();
-            Ok(completion_id)
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let completion_id_index = OwnedIterator::new(
+        storage.iterator_from(TableScan::Prefix(completion_id_to_command_index.clone()))?,
+    )
+    .map(|(mut key, _)| {
+        let journal_key = JournalCompletionIdToCommandIndexKey::deserialize_from(&mut key)?;
+        let (_, _, completion_id) = journal_key.split();
+        Ok(completion_id)
+    })
+    .collect::<Result<Vec<_>>>()?;
     for completion_id in completion_id_index {
         storage.delete_key(
             &completion_id_to_command_index
@@ -353,7 +345,7 @@ pub fn cleanup_orphaned_completion_id_index_entries(
 
     let scan_store = storage.clone();
     let partition_key_range = scan_store.partition_key_range();
-    let scan = TableScan::FullScanPartitionKeyRange::<JournalCompletionIdToCommandIndexKeyBuilder>(
+    let scan = TableScan::ScanPartitionKeyRange::<JournalCompletionIdToCommandIndexKeyBuilder>(
         partition_key_range,
     );
     let iter = OwnedIterator::new(scan_store.iterator_from(scan)?);
@@ -415,7 +407,7 @@ fn has_journal_entries(
     let prefix = JournalKey::builder()
         .partition_key(partition_key)
         .invocation_uuid(invocation_uuid);
-    let iter = storage.iterator_from(TableScan::SinglePartitionKeyPrefix(partition_key, prefix))?;
+    let iter = storage.iterator_from(TableScan::Prefix(prefix))?;
     Ok(iter.item().is_some())
 }
 
@@ -426,10 +418,7 @@ fn get_notifications_index<S: StorageAccess>(
     let key = JournalNotificationIdToNotificationIndexKey::builder()
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid());
-    let iter = storage.iterator_from(TableScan::SinglePartitionKeyPrefix(
-        invocation_id.partition_key(),
-        key,
-    ))?;
+    let iter = storage.iterator_from(TableScan::Prefix(key))?;
     OwnedIterator::new(iter)
         .map(|(mut key, mut value)| {
             let journal_key =
@@ -591,18 +580,20 @@ impl ScanJournalTable for PartitionStore {
     ) -> Result<impl Future<Output = Result<()>> + Send> {
         let scan = match range {
             ScanJournalTableRange::PartitionKey(partition_key) => {
-                TableScan::FullScanPartitionKeyRange::<JournalKeyBuilder>(partition_key)
+                TableScan::ScanPartitionKeyRange::<JournalKeyBuilder>(partition_key)
             }
             ScanJournalTableRange::InvocationId(invocation_id) => {
+                let start_partition_key = invocation_id.start().partition_key();
+                let end_partition_key = invocation_id.end().partition_key();
                 let start = JournalKey::builder()
-                    .partition_key(invocation_id.start().partition_key())
+                    .partition_key(start_partition_key)
                     .invocation_uuid(invocation_id.start().invocation_uuid());
 
                 let end = JournalKey::builder()
-                    .partition_key(invocation_id.end().partition_key())
+                    .partition_key(end_partition_key)
                     .invocation_uuid(invocation_id.end().invocation_uuid());
 
-                TableScan::KeyRangeInclusiveInSinglePartition(self.partition_id(), start, end)
+                TableScan::RangeInclusive(start, end)
             }
         };
 

@@ -116,13 +116,9 @@ fn exclusive_start_key_range(
             .partition_id(partition_id.into())
             .timestamp(u64::MAX);
 
-        TableScan::KeyRangeInclusiveInSinglePartition(
-            partition_id,
-            lower_bound.into_builder(),
-            upper_bound,
-        )
+        TableScan::RangeInclusive(lower_bound.into_builder(), upper_bound)
     } else {
-        TableScan::SinglePartition(partition_id)
+        TableScan::Prefix(TimersKey::builder().partition_id(partition_id.into()))
     }
 }
 
@@ -452,7 +448,7 @@ mod tests {
         assert!(less_than(&key_a_bytes, &key_b_bytes));
 
         let (low, high) = match exclusive_start_key_range(PartitionId::from(1), Some(key_a)) {
-            TableScan::KeyRangeInclusiveInSinglePartition(p, low, high) if *p == 1 => (low, high),
+            TableScan::RangeInclusive(low, high) => (low, high),
             _ => panic!(""),
         };
         let low = low.serialize();

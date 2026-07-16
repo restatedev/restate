@@ -106,34 +106,31 @@ fn get_journal_events<S: StorageAccess>(
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid());
 
-    storage.for_each_key_value_in_place(
-        TableScan::SinglePartitionKeyPrefix(invocation_id.partition_key(), key),
-        move |mut k, mut v| {
-            TableScanIterationDecision::Emit(
-                JournalEventKey::deserialize_from(&mut k)
-                    .map(|k| k.split())
-                    .and_then(|k_elements| {
-                        EventWrapper::decode(&mut v).map(|value| (k_elements, value.0))
-                    })
-                    .map(
-                        |(
-                            (_, _, event_type, timestamp, _),
-                            PbEvent {
-                                content,
-                                after_journal_entry_index,
-                            },
-                        )| EventView {
-                            event: RawEvent::new(
-                                EventType::from_repr(event_type).unwrap_or(EventType::Unknown),
-                                content,
-                            ),
+    storage.for_each_key_value_in_place(TableScan::Prefix(key), move |mut k, mut v| {
+        TableScanIterationDecision::Emit(
+            JournalEventKey::deserialize_from(&mut k)
+                .map(|k| k.split())
+                .and_then(|k_elements| {
+                    EventWrapper::decode(&mut v).map(|value| (k_elements, value.0))
+                })
+                .map(
+                    |(
+                        (_, _, event_type, timestamp, _),
+                        PbEvent {
+                            content,
                             after_journal_entry_index,
-                            append_time: MillisSinceEpoch::new(timestamp),
                         },
-                    ),
-            )
-        },
-    )
+                    )| EventView {
+                        event: RawEvent::new(
+                            EventType::from_repr(event_type).unwrap_or(EventType::Unknown),
+                            content,
+                        ),
+                        after_journal_entry_index,
+                        append_time: MillisSinceEpoch::new(timestamp),
+                    },
+                ),
+        )
+    })
 }
 
 fn delete_journal_events<S: StorageAccess>(
@@ -146,10 +143,9 @@ fn delete_journal_events<S: StorageAccess>(
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid());
 
-    let keys = storage.for_each_key_value_in_place(
-        TableScan::SinglePartitionKeyPrefix(invocation_id.partition_key(), prefix_key),
-        |k, _| TableScanIterationDecision::Emit(Ok(Box::from(k))),
-    )?;
+    let keys = storage.for_each_key_value_in_place(TableScan::Prefix(prefix_key), |k, _| {
+        TableScanIterationDecision::Emit(Ok(Box::from(k)))
+    })?;
 
     for k in keys {
         let key = k?;
@@ -178,7 +174,7 @@ impl ScanJournalEventsTable for PartitionStore {
     ) -> Result<impl Future<Output = Result<()>> + Send> {
         let scan = match range {
             ScanJournalEventsTableRange::PartitionKey(partition_key) => {
-                TableScan::FullScanPartitionKeyRange::<JournalEventKeyBuilder>(partition_key)
+                TableScan::ScanPartitionKeyRange::<JournalEventKeyBuilder>(partition_key)
             }
             ScanJournalEventsTableRange::InvocationId(invocation_id) => {
                 let start = JournalEventKey::builder()
@@ -189,7 +185,7 @@ impl ScanJournalEventsTable for PartitionStore {
                     .partition_key(invocation_id.end().partition_key())
                     .invocation_uuid(invocation_id.end().invocation_uuid());
 
-                TableScan::KeyRangeInclusiveInSinglePartition(self.partition_id(), start, end)
+                TableScan::RangeInclusive(start, end)
             }
         };
 
