@@ -26,10 +26,9 @@ use strum::EnumCount;
 use restate_storage_api::vqueue_table::Stage;
 use restate_types::PartitionedResourceId;
 use restate_types::identifiers::partitioner::HashPartitioner;
-use restate_types::identifiers::{
-    InvocationId, PartitionKey, ResourceId, StateMutationId, WithPartitionKey,
-};
+use restate_types::identifiers::{InvocationId, PartitionKey, ResourceId, WithPartitionKey};
 use restate_types::sharding::KeyRange;
+use restate_types::vqueues::{VQueueEntryId, VQueueId};
 
 use crate::partition_store_scanner::ScanLocalPartitionFilter;
 
@@ -102,7 +101,31 @@ impl FirstMatchingPartitionKeyExtractor {
         T: PartitionedResourceId + ResourceId + FromStr,
         <T as FromStr>::Err: std::error::Error + Send + Sync + 'static,
     {
-        let e = MatchingColumnExtractor::new(column_name, |value: &ScalarValue| {
+        self.append(Self::create_partitioned_resource_id_extractor::<T>(
+            column_name,
+        ))
+    }
+
+    /// Adds a partitioned-resource-id extractor whose matches are grouped by Restate partition.
+    pub fn with_grouped_partitioned_resource_id<T>(self, column_name: impl Into<String>) -> Self
+    where
+        T: PartitionedResourceId + ResourceId + FromStr,
+        <T as FromStr>::Err: std::error::Error + Send + Sync + 'static,
+    {
+        self.append_with_fanout(
+            Self::create_partitioned_resource_id_extractor::<T>(column_name),
+            PointReadFanout::PerPartition,
+        )
+    }
+
+    fn create_partitioned_resource_id_extractor<T>(
+        column_name: impl Into<String>,
+    ) -> impl PartitionKeyExtractor
+    where
+        T: PartitionedResourceId + ResourceId + FromStr,
+        <T as FromStr>::Err: std::error::Error + Send + Sync + 'static,
+    {
+        MatchingColumnExtractor::new(column_name, |value: &ScalarValue| {
             let value = value
                 .try_as_str()
                 .with_context(|| format!("expected string {:?}", T::RESOURCE_TYPE))?
@@ -110,8 +133,7 @@ impl FirstMatchingPartitionKeyExtractor {
             let resource =
                 T::from_str(value).with_context(|| format!("non valid {:?}", T::RESOURCE_TYPE))?;
             Ok(resource.partition_key())
-        });
-        self.append(e)
+        })
     }
 
     pub fn with_service_key(self, column_name: impl Into<String>) -> Self {
@@ -187,23 +209,36 @@ impl FirstMatchingPartitionKeyExtractor {
     }
 
     pub fn with_vqueue_entry_id(self, column_name: impl Into<String>) -> Self {
-        let e = MatchingColumnExtractor::new(column_name, |value: &ScalarValue| {
+        self.append(Self::create_vqueue_entry_id_partition_key_extractor(
+            column_name,
+        ))
+    }
+
+    /// Adds a vqueue-entry-id extractor whose matches are grouped into a single
+    /// scan per Restate partition.
+    ///
+    /// Only use this when the table's scanner re-fetches each entry id exactly
+    /// via an exact-id filter; range-scanning tables would read every
+    /// intermediate key.
+    pub fn with_grouped_vqueue_entry_id(self, column_name: impl Into<String>) -> Self {
+        self.append_with_fanout(
+            Self::create_vqueue_entry_id_partition_key_extractor(column_name),
+            PointReadFanout::PerPartition,
+        )
+    }
+
+    fn create_vqueue_entry_id_partition_key_extractor(
+        column_name: impl Into<String>,
+    ) -> MatchingColumnExtractor<fn(&ScalarValue) -> anyhow::Result<PartitionKey>> {
+        MatchingColumnExtractor::new(column_name, |value: &ScalarValue| {
             let value = value
                 .try_as_str()
                 .context("expected string entry id")?
                 .context("unexpected null entry id")?;
 
-            if let Ok(invocation_id) = InvocationId::from_str(value) {
-                return Ok(invocation_id.partition_key());
-            }
-
-            if let Ok(state_mutation_id) = StateMutationId::from_str(value) {
-                return Ok(WithPartitionKey::partition_key(&state_mutation_id));
-            }
-
-            anyhow::bail!("non valid entry id")
-        });
-        self.append(e)
+            VQueueEntryId::extract_partition_key(value)
+                .map_err(|_| anyhow::anyhow!("non valid entry id"))
+        })
     }
 
     pub fn append(self, extractor: impl PartitionKeyExtractor) -> Self {
@@ -597,9 +632,74 @@ where
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct VQueueEntryIdFilter {
+    pub partition_keys: KeyRange,
+    pub entry_ids: Option<IdSelection<VQueueEntryId>>,
+}
+
+impl ScanLocalPartitionFilter for VQueueEntryIdFilter {
+    fn new(range: KeyRange, predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
+        if let Some(predicate) = predicate
+            && let Ok(predicate) = snapshot_physical_expr(predicate)
+        {
+            for conjunct in split_conjunction(&predicate) {
+                if let Some(entry_ids) =
+                    parse_id_selection("entry_id", range, conjunct, VQueueEntryId::partition_key)
+                {
+                    return Self {
+                        partition_keys: range,
+                        entry_ids: Some(entry_ids),
+                    };
+                }
+            }
+        }
+
+        Self {
+            partition_keys: range,
+            entry_ids: None,
+        }
+    }
+}
+
+/// Each vqueue id maps to exactly one metadata row, so an `id = / IN (...)`
+/// predicate is served via a batched multi-get (the `Set`) instead of a full
+/// partition-key-range scan. `VQueueId` is not `Copy`, but `IdSelection` only
+/// requires `Ord + Clone`.
+#[derive(Debug, Clone)]
+pub struct VQueueMetaFilter {
+    pub partition_keys: KeyRange,
+    pub ids: Option<IdSelection<VQueueId>>,
+}
+
+impl ScanLocalPartitionFilter for VQueueMetaFilter {
+    fn new(range: KeyRange, predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
+        if let Some(predicate) = predicate
+            && let Ok(predicate) = snapshot_physical_expr(predicate)
+        {
+            for conjunct in split_conjunction(&predicate) {
+                if let Some(ids) =
+                    parse_id_selection("id", range, conjunct, |id: &VQueueId| id.partition_key())
+                {
+                    return Self {
+                        partition_keys: range,
+                        ids: Some(ids),
+                    };
+                }
+            }
+        }
+
+        Self {
+            partition_keys: range,
+            ids: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::str::FromStr;
     use std::sync::Arc;
 
     use datafusion::common::ScalarValue;
@@ -612,9 +712,11 @@ mod tests {
     use restate_types::identifiers::{InvocationId, ServiceId, StateMutationId, WithPartitionKey};
     use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType};
     use restate_types::sharding::KeyRange;
+    use restate_types::vqueues::{VQueueEntryId, VQueueId};
 
     use crate::filter::{
-        FirstMatchingPartitionKeyExtractor, InvocationIdFilter, PartitionKeyExtractor, VQueueFilter,
+        FirstMatchingPartitionKeyExtractor, InvocationIdFilter, PartitionKeyExtractor,
+        VQueueEntryIdFilter, VQueueFilter, VQueueMetaFilter,
     };
     use crate::partition_store_scanner::ScanLocalPartitionFilter;
 
@@ -1141,6 +1243,76 @@ mod tests {
     }
 
     #[test]
+    fn vqueue_entry_id_filter_set_from_in_list() {
+        let id1 = make_invocation_id("key-1");
+        let id2 = make_invocation_id("key-2");
+        let predicate = in_list(
+            "entry_id",
+            vec![utf8_lit(id1.to_string()), utf8_lit(id2.to_string())],
+        );
+
+        let filter = VQueueEntryIdFilter::new(FULL_RANGE, Some(predicate));
+
+        let expected1 = VQueueEntryId::from_str(&id1.to_string()).unwrap();
+        let expected2 = VQueueEntryId::from_str(&id2.to_string()).unwrap();
+        let selection = filter.entry_ids.expect("should extract entry-id set");
+        assert_eq!(selection.ids.len(), 2);
+        assert!(selection.ids.contains(&expected1));
+        assert!(selection.ids.contains(&expected2));
+    }
+
+    #[test]
+    fn vqueue_entry_id_filter_keeps_large_in_list_as_set() {
+        let invocation_ids = (0..501)
+            .map(|id| make_invocation_id(&format!("key-{id}")))
+            .collect::<Vec<_>>();
+        let predicate = in_list(
+            "entry_id",
+            invocation_ids
+                .iter()
+                .map(|id| utf8_lit(id.to_string()))
+                .collect(),
+        );
+
+        let filter = VQueueEntryIdFilter::new(FULL_RANGE, Some(predicate));
+
+        let selection = filter.entry_ids.expect("should extract entry-id set");
+        assert_eq!(selection.ids.len(), invocation_ids.len());
+        for invocation_id in invocation_ids {
+            let expected = VQueueEntryId::from_str(&invocation_id.to_string()).unwrap();
+            assert!(selection.ids.contains(&expected));
+        }
+    }
+
+    #[test]
+    fn vqueue_entry_id_filter_excludes_out_of_range() {
+        let id = make_invocation_id("key-1");
+        let entry_id = VQueueEntryId::from_str(&id.to_string()).unwrap();
+        let pk = entry_id.partition_key();
+        let narrow_range = if pk > 0 {
+            KeyRange::new(0, pk - 1)
+        } else {
+            KeyRange::new(1, 1)
+        };
+
+        let predicate = eq(col("entry_id"), utf8_lit(id.to_string()));
+        let filter = VQueueEntryIdFilter::new(narrow_range, Some(predicate));
+
+        assert!(filter.entry_ids.is_none());
+    }
+
+    #[test]
+    fn vqueue_entry_id_filter_rejects_negated_in_list() {
+        let id = make_invocation_id("key-1");
+        let filter = VQueueEntryIdFilter::new(
+            FULL_RANGE,
+            Some(not_in_list("entry_id", vec![utf8_lit(id.to_string())])),
+        );
+
+        assert!(filter.entry_ids.is_none());
+    }
+
+    #[test]
     fn vqueue_filter_single_stage_eq() {
         let predicate = eq(col("stage"), utf8_lit("running"));
 
@@ -1214,5 +1386,67 @@ mod tests {
 
         assert!(filter.stages.is_none());
         assert_eq!(filter.partition_keys, FULL_RANGE);
+    }
+
+    #[test]
+    fn vqueue_meta_filter_set_and_rejections() {
+        let id1 = VQueueId::custom(1, "q1");
+        let id2 = VQueueId::custom(2, "q2");
+
+        // `id = / IN (...)` yields an exact set served via multi-get.
+        let filter = VQueueMetaFilter::new(
+            FULL_RANGE,
+            Some(in_list(
+                "id",
+                vec![utf8_lit(id1.to_string()), utf8_lit(id2.to_string())],
+            )),
+        );
+        let selection = filter.ids.expect("should extract vqueue-id set");
+        assert_eq!(selection.ids, BTreeSet::from([id1.clone(), id2]));
+
+        // No predicate and a negated list both fall back to a range scan.
+        assert!(VQueueMetaFilter::new(FULL_RANGE, None).ids.is_none());
+        assert!(
+            VQueueMetaFilter::new(
+                FULL_RANGE,
+                Some(not_in_list("id", vec![utf8_lit(id1.to_string())])),
+            )
+            .ids
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn vqueue_meta_filter_excludes_out_of_range() {
+        let id = VQueueId::custom(1, "q1");
+        let pk = id.partition_key();
+        let narrow_range = if pk > 0 {
+            KeyRange::new(0, pk - 1)
+        } else {
+            KeyRange::new(1, 1)
+        };
+
+        let filter =
+            VQueueMetaFilter::new(narrow_range, Some(eq(col("id"), utf8_lit(id.to_string()))));
+        assert!(filter.ids.is_none());
+    }
+
+    #[test]
+    fn vqueue_meta_filter_keeps_large_in_list_as_set() {
+        let ids = (0..501)
+            .map(|id| VQueueId::custom(id, format!("q{id}")))
+            .collect::<Vec<_>>();
+        let predicate = in_list(
+            "id",
+            ids.iter().map(|id| utf8_lit(id.to_string())).collect(),
+        );
+
+        let filter = VQueueMetaFilter::new(FULL_RANGE, Some(predicate));
+
+        let selection = filter.ids.expect("should extract vqueue-id set");
+        assert_eq!(selection.ids.len(), ids.len());
+        for id in ids {
+            assert!(selection.ids.contains(&id));
+        }
     }
 }
