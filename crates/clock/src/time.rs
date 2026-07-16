@@ -66,6 +66,9 @@ const _: () = {
 
 impl MillisSinceEpoch {
     pub const UNIX_EPOCH: Self = Self::new(0);
+    /// RESTATE_EPOCH -> (2022-01-01 00:00:00 GMT)
+    pub const RESTATE_EPOCH: Self = crate::RESTATE_EPOCH;
+
     /// The maximum representable timestamp. Note: This is `u64::MAX - 1` because
     /// `u64::MAX` cannot be represented due to the internal NonZeroU64 representation.
     /// This is ~584 million years from Unix epoch, so it's not a practical limitation.
@@ -403,6 +406,8 @@ const _: () = {
 
 impl NanosSinceEpoch {
     pub const UNIX_EPOCH: Self = Self::new(0);
+    /// RESTATE_EPOCH -> (2022-01-01 00:00:00 GMT)
+    pub const RESTATE_EPOCH: Self = Self::new(1_640_995_200_000_000_000);
     /// The maximum representable timestamp. Note: This is `u64::MAX - 1` because
     /// `u64::MAX` cannot be represented due to the internal NonZeroU64 representation.
     /// This is ~584 years from Unix epoch, so it's not a practical limitation.
@@ -832,6 +837,12 @@ mod tests {
     #[test]
     fn nanos_unix_epoch_is_zero() {
         assert_eq!(NanosSinceEpoch::UNIX_EPOCH.as_u64(), 0);
+    }
+
+    #[test]
+    fn nanos_restate_epoch_is_equivalent_in_millis() {
+        let nanos_to_millis = MillisSinceEpoch::from(NanosSinceEpoch::RESTATE_EPOCH);
+        assert_eq!(nanos_to_millis, MillisSinceEpoch::RESTATE_EPOCH);
     }
 
     #[test]

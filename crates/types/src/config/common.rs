@@ -670,6 +670,21 @@ experimental! {
     ///
     /// Since v1.7.0
     kafka_scope,
+
+    /// # Skip completed invocations during the vqueues migration
+    ///
+    /// When enabled, the vqueues migration does not migrate completed
+    /// invocations into their vqueue's `Finished` stage. Completed invocations
+    /// keep their existing status and are still cleaned up by their
+    /// `CleanInvocationStatus` timer, but they will not appear in vqueue
+    /// introspection. This can significantly speed up the migration on stores
+    /// with a large completion-retention backlog. Requires `vqueues` to also be
+    /// enabled.
+    ///
+    /// By default, all invocations (including completed ones) are migrated.
+    ///
+    /// Since v1.7.3
+    vqueues_migration_skip_completed,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");

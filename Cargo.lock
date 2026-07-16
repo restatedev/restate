@@ -9012,8 +9012,10 @@ dependencies = [
 name = "restate-vqueues"
 version = "1.7.3-dev"
 dependencies = [
+ "anyhow",
  "arrayvec",
  "bilrost",
+ "bytes",
  "criterion",
  "derive_more",
  "enum-map",
@@ -9038,6 +9040,7 @@ dependencies = [
  "restate-util-time",
  "restate-worker-api",
  "restate-workspace-hack",
+ "rust-rocksdb",
  "sha2 0.10.9",
  "slotmap",
  "smallvec",
