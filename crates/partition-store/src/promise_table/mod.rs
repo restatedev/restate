@@ -148,10 +148,9 @@ fn delete_all_promises<S: StorageAccess>(
 
         // Right now the WBWI does not support range deletions :-(
         // That's why we need to iterate over the individual promises.
-        let keys = storage.for_each_key_value_in_place(
-            TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), prefix_key),
-            |k, _| TableScanIterationDecision::Emit(Ok(Box::from(k))),
-        )?;
+        let keys = storage.for_each_key_value_in_place(TableScan::Prefix(prefix_key), |k, _| {
+            TableScanIterationDecision::Emit(Ok(Box::from(k)))
+        })?;
 
         for k in keys {
             let key = k?;
@@ -164,10 +163,9 @@ fn delete_all_promises<S: StorageAccess>(
             .service_name(&service_id.service_name)
             .service_key(service_id.key.as_bytes());
 
-        let keys = storage.for_each_key_value_in_place(
-            TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), prefix_key),
-            |k, _| TableScanIterationDecision::Emit(Ok(Box::from(k))),
-        )?;
+        let keys = storage.for_each_key_value_in_place(TableScan::Prefix(prefix_key), |k, _| {
+            TableScanIterationDecision::Emit(Ok(Box::from(k)))
+        })?;
 
         for k in keys {
             let key = k?;
@@ -211,7 +209,7 @@ impl ScanPromiseTable for PartitionStore {
                 self.iterator_for_each(
                     "df-promise",
                     Priority::Low,
-                    TableScan::FullScanPartitionKeyRange::<PromiseKey>(range),
+                    TableScan::ScanPartitionKeyRange::<PromiseKey>(range),
                     move |(mut k, mut v)| {
                         let key = break_on_err(PromiseKey::deserialize_from(&mut k))?;
                         let metadata = break_on_err(Promise::decode(&mut v))?;
@@ -242,7 +240,7 @@ impl ScanPromiseTable for PartitionStore {
             .iterator_for_each(
                 "df-promise-scoped",
                 Priority::Low,
-                TableScan::FullScanPartitionKeyRange::<ScopedPromiseKey>(range),
+                TableScan::ScanPartitionKeyRange::<ScopedPromiseKey>(range),
                 move |(mut k, mut v)| {
                     let key = break_on_err(ScopedPromiseKey::deserialize_from(&mut k))?;
                     let metadata = break_on_err(Promise::decode(&mut v))?;

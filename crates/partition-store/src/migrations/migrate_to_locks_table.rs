@@ -36,10 +36,13 @@ pub fn migrate_to_locks_table(ctx: &mut MigrationContext<'_>) -> Result<(), Stor
     let key_range = ctx.key_range;
     let mut counter = 0;
 
-    let mut iterator = ctx.partition_db.scan(PhysicalScan::from(
-        TableScan::FullScanPartitionKeyRange::<ServiceStatusKey>(key_range),
-        &mut ctx.arena,
-    ))?;
+    let mut iterator = ctx.partition_db.scan(
+        PhysicalScan::from(
+            TableScan::ScanPartitionKeyRange::<ServiceStatusKey>(key_range),
+            &mut ctx.arena,
+        ),
+        rocksdb::ReadOptions::default(),
+    )?;
     iterator.seek_to_first();
 
     // 1 MiB batches

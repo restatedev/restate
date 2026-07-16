@@ -228,7 +228,7 @@ impl ScanLocksTable for PartitionStore {
         self.iterator_for_each(
             "df-locks",
             Priority::Low,
-            TableScan::FullScanPartitionKeyRange::<LockKey>(range),
+            TableScan::ScanPartitionKeyRange::<LockKey>(range),
             move |(mut key, mut value)| {
                 let lock_key = break_on_err(LockKey::deserialize_from(&mut key))?;
                 let lock_state = break_on_err(
