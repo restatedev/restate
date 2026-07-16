@@ -8,8 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_storage_api::vqueue_table::{EntryKey, EntryValue, Stage};
-use restate_types::vqueues::VQueueId;
+use std::fmt::Display;
+
+use restate_sharding::PartitionKey;
+use restate_storage_api::vqueue_table::stats::EntryStatistics;
+use restate_storage_api::vqueue_table::{
+    EntryId, EntryKey, EntryValue, RawStatusHeaderRef, Stage, Status,
+};
+use restate_types::vqueues::{Seq, VQueueId};
 
 use super::schema::SysVqueuesBuilder;
 
@@ -21,9 +27,60 @@ pub(crate) fn append_vqueues_row<'a>(
     entry_key: &'a EntryKey,
     entry: &'a EntryValue,
 ) {
+    append_vqueues_row_inner(
+        builder,
+        qid.partition_key(),
+        qid,
+        stage,
+        entry.status,
+        entry_key.has_lock(),
+        entry_key.run_at().as_unix_millis().as_u64() as i64,
+        entry_key.seq(),
+        entry_key.entry_id(),
+        &entry.stats,
+        entry.metadata.deployment.as_deref(),
+    );
+}
+
+#[inline]
+pub(crate) fn append_vqueues_status_row(
+    builder: &mut SysVqueuesBuilder,
+    partition_key: PartitionKey,
+    entry_id: &EntryId,
+    header: &RawStatusHeaderRef<'_>,
+) {
+    append_vqueues_row_inner(
+        builder,
+        partition_key,
+        &header.qid,
+        header.stage,
+        header.status,
+        header.has_lock,
+        header.next_run_at.as_unix_millis().as_u64() as i64,
+        header.seq,
+        entry_id,
+        &header.stats,
+        header.metadata.deployment,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_vqueues_row_inner(
+    builder: &mut SysVqueuesBuilder,
+    partition_key: PartitionKey,
+    qid: impl Display,
+    stage: Stage,
+    status: Status,
+    has_lock: bool,
+    run_at: i64,
+    seq: Seq,
+    entry_id: &EntryId,
+    stats: &EntryStatistics,
+    deployment: Option<&str>,
+) {
     let mut row = builder.row();
 
-    row.partition_key(qid.partition_key());
+    row.partition_key(partition_key);
     if row.is_id_defined() {
         row.fmt_id(qid);
     }
@@ -31,73 +88,73 @@ pub(crate) fn append_vqueues_row<'a>(
         row.fmt_stage(stage);
     }
     if row.is_status_defined() {
-        row.fmt_status(entry.status);
+        row.fmt_status(status);
     }
 
     if row.is_has_lock_defined() {
-        row.has_lock(entry_key.has_lock());
+        row.has_lock(has_lock);
     }
     if matches!(stage, Stage::Inbox) && row.is_run_at_defined() {
-        row.run_at(entry_key.run_at().as_unix_millis().as_u64() as i64);
+        row.run_at(run_at);
     }
     if row.is_sequence_number_defined() {
-        row.sequence_number(entry_key.seq().as_u64());
+        row.sequence_number(seq.as_u64());
     }
 
     if row.is_entry_id_defined() {
-        row.fmt_entry_id(entry_key.entry_id().display(qid.partition_key()));
+        row.fmt_entry_id(entry_id.display(partition_key));
     }
 
     if row.is_entry_kind_defined() {
-        row.fmt_entry_kind(entry_key.kind());
+        row.fmt_entry_kind(entry_id.kind());
     }
 
     if row.is_created_at_defined() {
-        row.created_at(entry.stats.created_at.to_unix_millis().as_u64() as i64);
+        row.created_at(stats.created_at.to_unix_millis().as_u64() as i64);
     }
 
     if row.is_transitioned_at_defined() {
-        row.transitioned_at(entry.stats.transitioned_at.to_unix_millis().as_u64() as i64);
+        row.transitioned_at(stats.transitioned_at.to_unix_millis().as_u64() as i64);
     }
 
     if row.is_num_attempts_defined() {
-        row.num_attempts(entry.stats.num_attempts);
+        row.num_attempts(stats.num_attempts);
     }
 
     if row.is_num_errors_defined() {
-        row.num_errors(entry.stats.num_errors);
+        row.num_errors(stats.num_errors);
     }
 
     if row.is_num_pauses_defined() {
-        row.num_pauses(entry.stats.num_paused);
+        row.num_pauses(stats.num_paused);
     }
 
     if row.is_num_suspensions_defined() {
-        row.num_suspensions(entry.stats.num_suspensions);
+        row.num_suspensions(stats.num_suspensions);
     }
 
     if row.is_num_yields_defined() {
-        row.num_yields(entry.stats.num_yields);
+        row.num_yields(stats.num_yields);
     }
 
     if row.is_first_attempt_at_defined()
-        && let Some(first_attempt_at) = entry.stats.first_attempt_at
+        && let Some(first_attempt_at) = stats.first_attempt_at
     {
         row.first_attempt_at(first_attempt_at.to_unix_millis().as_u64() as i64);
     }
 
     if row.is_latest_attempt_at_defined()
-        && let Some(latest_attempt_at) = entry.stats.latest_attempt_at
+        && let Some(latest_attempt_at) = stats.latest_attempt_at
     {
         row.latest_attempt_at(latest_attempt_at.to_unix_millis().as_u64() as i64);
     }
 
     if row.is_first_runnable_at_defined() {
-        row.first_runnable_at(entry.stats.first_runnable_at.as_u64() as i64);
+        row.first_runnable_at(stats.first_runnable_at.as_u64() as i64);
     }
 
     if row.is_deployment_defined()
-        && let Some(deployment) = &entry.metadata.deployment
+        && let Some(deployment) = deployment
     {
         row.fmt_deployment(deployment);
     }

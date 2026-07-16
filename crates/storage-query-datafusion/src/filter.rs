@@ -479,23 +479,27 @@ fn extract_column_literal<'a>(
 pub struct VQueueFilter {
     pub partition_keys: KeyRange,
     pub stages: Option<BTreeSet<Stage>>,
+    pub entry_ids: Option<IdSelection<VQueueEntryId>>,
 }
 
 impl ScanLocalPartitionFilter for VQueueFilter {
     fn new(range: KeyRange, predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
         let mut stages: Option<BTreeSet<Stage>> = None;
+        let mut entry_ids = None;
 
         if let Some(predicate) = predicate
             && let Ok(predicate) = snapshot_physical_expr(predicate)
         {
             for conjunct in split_conjunction(&predicate) {
-                let Some(conjunct_stages) = parse_vqueue_stages("stage", conjunct) else {
-                    continue;
-                };
+                if let Some(conjunct_stages) = parse_vqueue_stages("stage", conjunct) {
+                    stages = Some(match stages {
+                        Some(current) => current.intersection(&conjunct_stages).copied().collect(),
+                        None => conjunct_stages,
+                    });
+                }
 
-                stages = Some(match stages {
-                    Some(current) => current.intersection(&conjunct_stages).copied().collect(),
-                    None => conjunct_stages,
+                entry_ids = entry_ids.or_else(|| {
+                    parse_id_selection("entry_id", range, conjunct, VQueueEntryId::partition_key)
                 });
             }
         }
@@ -503,6 +507,7 @@ impl ScanLocalPartitionFilter for VQueueFilter {
         Self {
             partition_keys: range,
             stages,
+            entry_ids,
         }
     }
 }
@@ -1385,7 +1390,39 @@ mod tests {
         let filter = VQueueFilter::new(FULL_RANGE, None);
 
         assert!(filter.stages.is_none());
+        assert!(filter.entry_ids.is_none());
         assert_eq!(filter.partition_keys, FULL_RANGE);
+    }
+
+    #[test]
+    fn vqueue_filter_extracts_entry_ids_and_rejects_negated_list() {
+        let id1 = make_invocation_id("key-1");
+        let id2 = make_invocation_id("key-2");
+        let filter = VQueueFilter::new(
+            FULL_RANGE,
+            Some(and(
+                in_list(
+                    "entry_id",
+                    vec![utf8_lit(id1.to_string()), utf8_lit(id2.to_string())],
+                ),
+                eq(col("stage"), utf8_lit("running")),
+            )),
+        );
+
+        assert_eq!(
+            filter.entry_ids.expect("should extract entry ids").ids,
+            BTreeSet::from([
+                VQueueEntryId::from_str(&id1.to_string()).unwrap(),
+                VQueueEntryId::from_str(&id2.to_string()).unwrap(),
+            ])
+        );
+        assert_eq!(filter.stages, Some(BTreeSet::from([Stage::Running])));
+
+        let filter = VQueueFilter::new(
+            FULL_RANGE,
+            Some(not_in_list("entry_id", vec![utf8_lit(id1.to_string())])),
+        );
+        assert!(filter.entry_ids.is_none());
     }
 
     #[test]
