@@ -79,10 +79,13 @@ fn count_legacy_state(store: &crate::PartitionStore) -> usize {
     let mut arena = BytesMut::new();
     let mut it = store
         .partition_db()
-        .scan(PhysicalScan::from(
-            TableScan::FullScanPartitionKeyRange::<StateKey>(store.partition_key_range()),
-            &mut arena,
-        ))
+        .scan(
+            PhysicalScan::from(
+                TableScan::ScanPartitionKeyRange::<StateKey>(store.partition_key_range()),
+                &mut arena,
+            ),
+            rocksdb::ReadOptions::default(),
+        )
         .expect("scan legacy state");
     it.seek_to_first();
     let mut n = 0;
@@ -97,10 +100,13 @@ fn count_legacy_promise(store: &crate::PartitionStore) -> usize {
     let mut arena = BytesMut::new();
     let mut it = store
         .partition_db()
-        .scan(PhysicalScan::from(
-            TableScan::FullScanPartitionKeyRange::<PromiseKey>(store.partition_key_range()),
-            &mut arena,
-        ))
+        .scan(
+            PhysicalScan::from(
+                TableScan::ScanPartitionKeyRange::<PromiseKey>(store.partition_key_range()),
+                &mut arena,
+            ),
+            rocksdb::ReadOptions::default(),
+        )
         .expect("scan legacy promise");
     it.seek_to_first();
     let mut n = 0;
@@ -115,10 +121,13 @@ fn count_scoped_state(store: &crate::PartitionStore) -> usize {
     let mut arena = BytesMut::new();
     let mut it = store
         .partition_db()
-        .scan(PhysicalScan::from(
-            TableScan::FullScanPartitionKeyRange::<ScopedStateKey>(store.partition_key_range()),
-            &mut arena,
-        ))
+        .scan(
+            PhysicalScan::from(
+                TableScan::ScanPartitionKeyRange::<ScopedStateKey>(store.partition_key_range()),
+                &mut arena,
+            ),
+            rocksdb::ReadOptions::default(),
+        )
         .expect("scan scoped state");
     it.seek_to_first();
     let mut n = 0;
@@ -137,10 +146,13 @@ fn count_scoped_promise(store: &crate::PartitionStore) -> usize {
     let mut arena = BytesMut::new();
     let mut it = store
         .partition_db()
-        .scan(PhysicalScan::from(
-            TableScan::FullScanPartitionKeyRange::<ScopedPromiseKey>(store.partition_key_range()),
-            &mut arena,
-        ))
+        .scan(
+            PhysicalScan::from(
+                TableScan::ScanPartitionKeyRange::<ScopedPromiseKey>(store.partition_key_range()),
+                &mut arena,
+            ),
+            rocksdb::ReadOptions::default(),
+        )
         .expect("scan scoped promise");
     it.seek_to_first();
     let mut n = 0;

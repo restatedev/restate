@@ -43,10 +43,9 @@ define_table_key!(
 );
 
 fn any_inbox_entry_in_range<S: StorageAccess>(storage: &mut S, range: KeyRange) -> Result<bool> {
-    storage.get_first_blocking(
-        TableScan::FullScanPartitionKeyRange::<InboxKey>(range),
-        |kv| Ok(kv.is_some()),
-    )
+    storage.get_first_blocking(TableScan::ScanPartitionKeyRange::<InboxKey>(range), |kv| {
+        Ok(kv.is_some())
+    })
 }
 
 fn peek_inbox<S: StorageAccess>(
@@ -58,16 +57,13 @@ fn peek_inbox<S: StorageAccess>(
         .service_name(service_id.service_name.clone())
         .service_key(service_id.key.clone());
 
-    storage.get_first_blocking(
-        TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), key),
-        |kv| match kv {
-            Some((k, v)) => {
-                let entry = decode_inbox_key_value(k, v)?;
-                Ok(Some(entry))
-            }
-            None => Ok(None),
-        },
-    )
+    storage.get_first_blocking(TableScan::Prefix(key), |kv| match kv {
+        Some((k, v)) => {
+            let entry = decode_inbox_key_value(k, v)?;
+            Ok(Some(entry))
+        }
+        None => Ok(None),
+    })
 }
 
 fn inbox<S: StorageAccess>(
@@ -80,7 +76,7 @@ fn inbox<S: StorageAccess>(
         .service_key(service_id.key.clone());
 
     Ok(stream::iter(storage.for_each_key_value_in_place(
-        TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), key),
+        TableScan::Prefix(key),
         |k, v| {
             let inbox_entry = decode_inbox_key_value(k, v);
             TableScanIterationDecision::Emit(inbox_entry)
@@ -121,7 +117,7 @@ impl ScanInboxTable for PartitionStore {
         self.iterator_for_each(
             "df-inbox",
             Priority::Low,
-            TableScan::FullScanPartitionKeyRange::<InboxKey>(range),
+            TableScan::ScanPartitionKeyRange::<InboxKey>(range),
             move |(mut key, mut value)| {
                 let key = break_on_err(InboxKey::deserialize_from(&mut key))?;
                 let inbox_entry = break_on_err(InboxEntry::decode(&mut value))?;

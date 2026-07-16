@@ -37,10 +37,13 @@ pub fn migrate_to_scoped_promise_table(
     let key_range = ctx.key_range;
     let mut counter = 0;
 
-    let mut iterator = ctx.partition_db.scan(PhysicalScan::from(
-        TableScan::FullScanPartitionKeyRange::<PromiseKey>(key_range),
-        &mut ctx.arena,
-    ))?;
+    let mut iterator = ctx.partition_db.scan(
+        PhysicalScan::from(
+            TableScan::ScanPartitionKeyRange::<PromiseKey>(key_range),
+            &mut ctx.arena,
+        ),
+        rocksdb::ReadOptions::default(),
+    )?;
     iterator.seek_to_first();
 
     // 1 MiB batches
