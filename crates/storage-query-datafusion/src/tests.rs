@@ -541,6 +541,63 @@ async fn query_sys_invocation_status_not_in() {
     assert_eq!(got, expected);
 }
 
+/// Exercises the exact-id fast path: `id IN (...)` on `sys_invocation_status`
+/// must return exactly the requested rows.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_sys_invocation_status_in_list() {
+    use datafusion::arrow::array::Array;
+
+    let invocation_target = InvocationTarget::mock_service();
+    let mut engine = MockQueryEngine::create().await;
+
+    let mut ids = Vec::new();
+    let mut tx = engine.partition_store().transaction();
+    for i in 1..=4u128 {
+        let id = InvocationId::from_parts(0, InvocationUuid::from_u128(i));
+        tx.put_invocation_status(
+            &id,
+            &InvocationStatus::Completed(CompletedInvocation {
+                invocation_target: invocation_target.clone(),
+                ..CompletedInvocation::mock_neo()
+            }),
+        )
+        .unwrap();
+        ids.push(id.to_string());
+    }
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let wanted = format!("'{}', '{}'", ids[0], ids[2]);
+    let records = engine
+        .execute(format!(
+            "SELECT id FROM sys_invocation_status WHERE id IN ({wanted})"
+        ))
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    let mut got: Vec<String> = records
+        .column_by_name("id")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<LargeStringArray>()
+        .unwrap()
+        .iter()
+        .flatten()
+        .map(str::to_string)
+        .collect();
+    got.sort();
+
+    let mut expected = vec![ids[0].clone(), ids[2].clone()];
+    expected.sort();
+
+    assert_eq!(got, expected);
+}
+
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn query_sys_invocation_suspended_waiting() {
     let invocation_id = InvocationId::mock_random();
