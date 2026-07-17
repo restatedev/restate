@@ -30,6 +30,7 @@ pub enum StorageTaskKind {
     Shutdown,
     OpenDb,
     BackgroundIterator,
+    MultiGet,
 }
 
 impl StorageTaskKind {

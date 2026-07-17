@@ -22,8 +22,7 @@ use restate_types::errors::ConversionError;
 use restate_types::identifiers::InvocationId;
 
 use crate::context::{QueryContext, SelectPartitions};
-use crate::filter::FirstMatchingPartitionKeyExtractor;
-use crate::filter::InvocationIdFilter;
+use crate::filter::{FirstMatchingPartitionKeyExtractor, InvocationIdFilter};
 use crate::invocation_status::row::append_invocation_status_row;
 use crate::invocation_status::schema::{
     SysInvocationStatusBuilder, sys_invocation_status_sort_order,
@@ -63,7 +62,7 @@ pub(crate) fn register_self(
         remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
         FirstMatchingPartitionKeyExtractor::default()
             .with_service_key("target_service_key")
-            .with_invocation_id("id"),
+            .with_grouped_invocation_id("id"),
     )
     .with_statistics(statistics.build());
     ctx.register_partitioned_table(NAME, Arc::new(status_table))
@@ -101,10 +100,9 @@ impl ScanLocalPartition for StatusScanner {
 
 impl From<InvocationIdFilter> for ScanInvocationStatusTableRange {
     fn from(value: InvocationIdFilter) -> Self {
-        if let Some(invocation_ids) = value.invocation_ids {
-            ScanInvocationStatusTableRange::InvocationId(invocation_ids)
-        } else {
-            ScanInvocationStatusTableRange::PartitionKey(value.partition_keys)
+        match value.invocation_ids {
+            Some(selection) => ScanInvocationStatusTableRange::InvocationIdSet(selection.ids),
+            None => ScanInvocationStatusTableRange::PartitionKey(value.partition_keys),
         }
     }
 }
