@@ -226,7 +226,7 @@ mod tests {
 
     impl ScanInvocationStatusTable for MockInvocationStatusReader {
         fn for_each_invocation_status_lazy<
-            E: Into<anyhow::Error>,
+            E: Into<anyhow::Error> + 'static,
             F: for<'a> FnMut(
                     (InvocationId, &'a InvocationStatusV2Lazy<'a>),
                 ) -> std::ops::ControlFlow<std::result::Result<(), E>>
