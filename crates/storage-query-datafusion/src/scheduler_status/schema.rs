@@ -12,7 +12,7 @@ use datafusion::arrow::datatypes::DataType;
 
 use crate::table_macro::*;
 
-define_sort_order!(sys_scheduler(partition_key, id));
+define_sort_order!(sys_scheduler(partition_key));
 
 define_table!(sys_scheduler(
     /// Internal column that is used for partitioning. Can be ignored.

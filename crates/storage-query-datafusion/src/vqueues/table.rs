@@ -31,7 +31,7 @@ use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::statistics::{DEPLOYMENT_ROW_ESTIMATE, RowEstimate, TableStatisticsBuilder};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 use crate::vqueues::row::{append_vqueues_row, append_vqueues_status_row};
-use crate::vqueues::schema::{SysVqueuesBuilder, sys_vqueues_sort_order};
+use crate::vqueues::schema::SysVqueuesBuilder;
 
 const NAME: &str = "sys_vqueues";
 
@@ -57,7 +57,7 @@ pub(crate) fn register_self(
     let table = PartitionedTableProvider::new(
         partition_selector,
         schema,
-        sys_vqueues_sort_order(),
+        Vec::new(),
         remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
         FirstMatchingPartitionKeyExtractor::default()
             .with_grouped_vqueue_entry_id("entry_id")

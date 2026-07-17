@@ -12,7 +12,7 @@ use crate::table_macro::*;
 
 use datafusion::arrow::datatypes::DataType;
 
-define_sort_order!(sys_journal_events(partition_key, id));
+define_sort_order!(sys_journal_events(partition_key));
 
 define_table!(sys_journal_events (
     /// Internal column that is used for partitioning the services invocations. Can be ignored.
