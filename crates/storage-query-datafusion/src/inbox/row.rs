@@ -17,14 +17,13 @@ pub(crate) fn append_inbox_row(
     builder: &mut SysInboxBuilder,
     inbox_entry: SequenceNumberInboxEntry,
 ) {
-    let mut row = builder.row();
-
     let SequenceNumberInboxEntry {
         inbox_sequence_number,
         inbox_entry,
     } = inbox_entry;
 
     if let InboxEntry::Invocation(service_id, invocation_id) = inbox_entry {
+        let mut row = builder.row();
         row.partition_key(invocation_id.partition_key());
         row.service_name(&service_id.service_name);
         row.service_key(&service_id.key);

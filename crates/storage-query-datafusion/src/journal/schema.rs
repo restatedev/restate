@@ -12,7 +12,9 @@ use crate::table_macro::*;
 
 use datafusion::arrow::datatypes::DataType;
 
-define_sort_order!(sys_journal(partition_key, id));
+// Mixed V1/V2 journals can violate this ordering because the two scans are concatenated rather
+// than merged. We accept this compromise while the deprecated V1 journal is phased out.
+define_sort_order!(sys_journal(partition_key));
 
 define_table!(sys_journal (
     /// Internal column that is used for partitioning the services invocations. Can be ignored.
