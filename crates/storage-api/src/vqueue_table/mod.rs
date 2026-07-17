@@ -10,6 +10,7 @@
 
 mod entry;
 mod entry_status;
+pub mod filters;
 pub mod metadata;
 pub mod scheduler;
 pub mod stats;
