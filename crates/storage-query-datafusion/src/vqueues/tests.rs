@@ -27,6 +27,31 @@ use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::VQueueId;
 use restate_util_string::ToReString;
 
+async fn select_entry_ids(engine: &mut MockQueryEngine, query: &str) -> Vec<String> {
+    let records = engine
+        .execute(query.to_owned())
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    let mut ids = records
+        .column_by_name("entry_id")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<LargeStringArray>()
+        .unwrap()
+        .iter()
+        .flatten()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    ids.sort();
+    ids
+}
+
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_vqueue_entry_value_fields() {
     let mut engine = MockQueryEngine::create().await;
@@ -193,4 +218,90 @@ async fn vqueue_stage_filter_and_unfiltered_scan() {
             row!(1, { "stage" => LargeStringArray: eq("running") })
         )
     );
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn vqueue_entry_id_point_query_and_not_in_fallback() {
+    let mut engine = MockQueryEngine::create().await;
+    let qid = VQueueId::custom(3337, "df-vqueue-point-lookup");
+    let mut keys = Vec::new();
+
+    let mut tx = engine.partition_store().transaction();
+    for index in 0..6u8 {
+        let key = EntryKey::new(
+            false,
+            MillisSinceEpoch::new(1_744_002_000_000 + u64::from(index)),
+            u64::from(index),
+            EntryId::new(EntryKind::Invocation, [index + 1; 16]),
+        );
+        let stage = if index == 2 {
+            Stage::Paused
+        } else {
+            Stage::Inbox
+        };
+        let stats = EntryStatistics::new(
+            UniqueTimestamp::try_from_unix_millis(MillisSinceEpoch::new(
+                1_744_002_000_100 + u64::from(index),
+            ))
+            .unwrap(),
+            key.run_at(),
+        );
+        let value = EntryValue {
+            status: Status::Started,
+            metadata: EntryMetadata::default(),
+            stats,
+        };
+
+        if index < 4 {
+            // Point lookups must use the status index; these rows are absent
+            // from the stage table so a stage scan cannot satisfy the query.
+            tx.put_vqueue_entry_status(
+                &qid,
+                stage,
+                &key,
+                &value.metadata,
+                value.stats,
+                value.status,
+            );
+        } else {
+            // NOT IN must retain the stage-scan path; these rows are absent
+            // from the status index so an exact lookup cannot return them.
+            tx.put_vqueue_inbox(&qid, stage, &key, &value);
+        }
+        keys.push(key);
+    }
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let entry_ids = keys
+        .iter()
+        .map(|key| key.entry_id().display(qid.partition_key()).to_string())
+        .collect::<Vec<_>>();
+    let got = select_entry_ids(
+        &mut engine,
+        &format!(
+            "SELECT entry_id FROM sys_vqueues WHERE entry_id IN ('{}', '{}', '{}') AND stage = 'inbox'",
+            entry_ids[0], entry_ids[1], entry_ids[2]
+        ),
+    )
+    .await;
+
+    let mut expected = vec![entry_ids[0].clone(), entry_ids[1].clone()];
+    expected.sort();
+    assert_eq!(got, expected);
+
+    let excluded = entry_ids[0..4]
+        .iter()
+        .map(|entry_id| format!("'{entry_id}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let got = select_entry_ids(
+        &mut engine,
+        &format!("SELECT entry_id FROM sys_vqueues WHERE entry_id NOT IN ({excluded})"),
+    )
+    .await;
+
+    let mut expected = vec![entry_ids[4].clone(), entry_ids[5].clone()];
+    expected.sort();
+    assert_eq!(got, expected);
 }
