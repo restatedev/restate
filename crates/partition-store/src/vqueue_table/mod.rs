@@ -459,7 +459,7 @@ impl ScanVQueueMetaTable for PartitionStore {
         self.iterator_for_each(
             "df-vqueue-meta",
             Priority::Low,
-            TableScan::FullScanPartitionKeyRange::<MetaKey>(range),
+            TableScan::ScanPartitionKeyRange::<MetaKey>(range),
             move |(mut key, value)| {
                 let meta_key = break_on_err(MetaKey::deserialize_from(&mut key))?;
                 let meta = break_on_err(
@@ -489,7 +489,7 @@ impl ScanVQueueEntryStatusTable for PartitionStore {
         self.iterator_for_each(
             "df-vqueue-entry-status",
             Priority::Low,
-            TableScan::FullScanPartitionKeyRange::<EntryStatusKey>(range),
+            TableScan::ScanPartitionKeyRange::<EntryStatusKey>(range),
             move |(mut key, mut value)| {
                 let status_key = break_on_err(EntryStatusKey::deserialize_from(&mut key))?;
                 let (_, entry_id) = status_key.split();
@@ -545,7 +545,7 @@ where
         .iterator_for_each(
             scanner_name,
             Priority::Low,
-            TableScan::FullScanPartitionKeyRange::<K>(range),
+            TableScan::ScanPartitionKeyRange::<K>(range),
             move |(mut key, mut value)| {
                 // Skip the key-kind byte; the iterator was opened with a stage-specific
                 // prefix so every row belongs to `stage`.

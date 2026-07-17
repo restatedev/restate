@@ -205,10 +205,7 @@ fn get_journal<'a, S: StorageAccess>(
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid());
 
-    let iter = storage.iterator_from(TableScan::SinglePartitionKeyPrefix(
-        invocation_id.partition_key(),
-        key,
-    ))?;
+    let iter = storage.iterator_from(TableScan::Prefix(key))?;
 
     Ok(JournalEntryIter::new(iter, journal_length))
 }
@@ -291,18 +288,20 @@ impl ScanJournalTable for PartitionStore {
     ) -> Result<impl Future<Output = Result<()>> + Send> {
         let scan = match range {
             ScanJournalTableRange::PartitionKey(partition_key) => {
-                TableScan::FullScanPartitionKeyRange::<JournalKeyBuilder>(partition_key)
+                TableScan::ScanPartitionKeyRange::<JournalKeyBuilder>(partition_key)
             }
             ScanJournalTableRange::InvocationId(invocation_id) => {
+                let start_partition_key = invocation_id.start().partition_key();
+                let end_partition_key = invocation_id.end().partition_key();
                 let start = JournalKey::builder()
-                    .partition_key(invocation_id.start().partition_key())
+                    .partition_key(start_partition_key)
                     .invocation_uuid(invocation_id.start().invocation_uuid());
 
                 let end = JournalKey::builder()
-                    .partition_key(invocation_id.end().partition_key())
+                    .partition_key(end_partition_key)
                     .invocation_uuid(invocation_id.end().invocation_uuid());
 
-                TableScan::KeyRangeInclusiveInSinglePartition(self.partition_id(), start, end)
+                TableScan::RangeInclusive(start, end)
             }
         };
 
