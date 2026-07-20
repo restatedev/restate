@@ -93,16 +93,32 @@ impl LegacyClusterState {
         partition_id: &PartitionId,
         node_id: &PlainNodeId,
     ) -> bool {
-        self.nodes
-            .get(node_id)
-            .and_then(|node| match node {
-                NodeState::Alive(alive) => alive
-                    .partitions
-                    .get(partition_id)
-                    .map(|partition_state| partition_state.apply_stalled_since.is_some()),
-                NodeState::Dead(_) => None,
-            })
-            .unwrap_or_default()
+        self.apply_stalled_since(partition_id, node_id)
+            .flatten()
+            .is_some()
+    }
+
+    /// The tri-state read behind [`Self::is_partition_processor_stalled`], distinguishing "no
+    /// status to consult" from "status present and affirmatively not stalled". Callers that need
+    /// to tell these apart (e.g. the scheduler's `quarantine_memory`, which must never clear on
+    /// mere status absence) should use this directly instead of the bool convenience method:
+    ///
+    /// - `None`: no status to consult -- the node is reported `Dead`, is entirely unknown, or has
+    ///   no entry for this partition. Must never be treated as "not stalled".
+    /// - `Some(None)`: status present; the worker affirmatively reports no stall.
+    /// - `Some(Some(since))`: status present; quarantined since `since`.
+    pub fn apply_stalled_since(
+        &self,
+        partition_id: &PartitionId,
+        node_id: &PlainNodeId,
+    ) -> Option<Option<MillisSinceEpoch>> {
+        match self.nodes.get(node_id)? {
+            NodeState::Dead(_) => None,
+            NodeState::Alive(alive) => alive
+                .partitions
+                .get(partition_id)
+                .map(|partition_state| partition_state.apply_stalled_since),
+        }
     }
 
     /// Returns true if the given node runs the partition processor leader for the given partition
@@ -312,5 +328,67 @@ impl PartitionProcessorStatus {
 
     pub fn new() -> Self {
         Self::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bilrost::{Message, OwnedMessage};
+
+    use super::*;
+
+    /// A stand-in for the pre-`apply_stalled_since` wire shape of [`PartitionProcessorStatus`]
+    /// (tags 1-17, 8 reserved) -- a handful of representative fields is enough to pin the wire
+    /// contract, since bilrost encodes/skips fields purely by tag number, independent of any
+    /// other field on the message.
+    #[derive(Debug, Clone, PartialEq, bilrost::Message)]
+    #[bilrost(reserved_tags(8))]
+    struct OldPartitionProcessorStatusV17 {
+        #[bilrost(1)]
+        updated_at: MillisSinceEpoch,
+        #[bilrost(6)]
+        last_applied_log_lsn: Option<Lsn>,
+        #[bilrost(9)]
+        replay_status: ReplayStatus,
+    }
+
+    #[test]
+    fn mixed_version_status_roundtrip() {
+        // New (with apply_stalled_since set) -> old: the old type must decode successfully,
+        // silently skipping the unknown tag 18, with the fields it does know about intact.
+        let new_status = PartitionProcessorStatus {
+            updated_at: MillisSinceEpoch::from(1234),
+            last_applied_log_lsn: Some(Lsn::new(42)),
+            replay_status: ReplayStatus::CatchingUp,
+            apply_stalled_since: Some(MillisSinceEpoch::from(5678)),
+            ..PartitionProcessorStatus::default()
+        };
+        let encoded = new_status.encode_to_bytes();
+        let decoded_as_old = OldPartitionProcessorStatusV17::decode(encoded)
+            .expect("old type must decode a message carrying the new field");
+        assert_eq!(decoded_as_old.updated_at, new_status.updated_at);
+        assert_eq!(
+            decoded_as_old.last_applied_log_lsn,
+            new_status.last_applied_log_lsn
+        );
+        assert_eq!(decoded_as_old.replay_status, new_status.replay_status);
+
+        // Old -> new: the new type must decode a message that never had tag 18, defaulting
+        // `apply_stalled_since` to `None`, with the rest of the fields intact.
+        let old_status = OldPartitionProcessorStatusV17 {
+            updated_at: MillisSinceEpoch::from(4321),
+            last_applied_log_lsn: Some(Lsn::new(7)),
+            replay_status: ReplayStatus::Active,
+        };
+        let encoded = old_status.encode_to_bytes();
+        let decoded_as_new = PartitionProcessorStatus::decode(encoded)
+            .expect("new type must decode a message missing the new field");
+        assert_eq!(decoded_as_new.updated_at, old_status.updated_at);
+        assert_eq!(
+            decoded_as_new.last_applied_log_lsn,
+            old_status.last_applied_log_lsn
+        );
+        assert_eq!(decoded_as_new.replay_status, old_status.replay_status);
+        assert_eq!(decoded_as_new.apply_stalled_since, None);
     }
 }

@@ -12,7 +12,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
 
-use ahash::HashMap;
+use ahash::{HashMap, HashSet};
 use futures::{StreamExt, TryStreamExt};
 use tracing::{debug, info, trace};
 
@@ -40,7 +40,8 @@ use restate_types::replication::balanced_spread_selector::{
     BalancedSpreadSelector, SelectorOptions,
 };
 use restate_types::replication::{NodeSet, ReplicationProperty};
-use restate_types::{NodeId, PlainNodeId, Version, Versioned};
+use restate_types::time::MillisSinceEpoch;
+use restate_types::{GenerationalNodeId, PlainNodeId, Version, Versioned};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -158,12 +159,29 @@ struct PartitionConfigurationUpdate {
     leadership_policy: LeadershipPolicy,
 }
 
+/// A cached, in-memory derivation of the worker's durably-synthesized `apply_stalled_since`
+/// signal (see `restate-worker`'s `apply_progress_tracker` module) -- not itself a source of
+/// truth. Rebuilt from scratch from the first cluster-state refresh after any controller leader
+/// transition (a fresh `Scheduler` starts with an empty map), so there is nothing to persist.
+///
+/// Keyed by `(PartitionId, GenerationalNodeId)` rather than a plain node id and never expired on
+/// a time TTL: an entry is retained for the current generation until the worker affirmatively
+/// reports non-stalled, and is only ever removed on generation replacement or replica-set
+/// removal. A single missed/erroring refresh (the node reports `Dead`, or is simply missing from
+/// this partition's status) must never be read as "not stalled" -- see
+/// `LegacyClusterState::apply_stalled_since`.
+#[derive(Debug, Clone, Copy)]
+struct QuarantineMemo {
+    since: MillisSinceEpoch,
+}
+
 pub struct Scheduler<T> {
     metadata_writer: MetadataWriter,
     networking: Networking<T>,
     partitions: HashMap<PartitionId, PartitionState>,
     replica_set_states: PartitionReplicaSetStates,
     cluster_state: ClusterState,
+    quarantine_memory: HashMap<(PartitionId, GenerationalNodeId), QuarantineMemo>,
 }
 
 /// The scheduler is responsible for assigning partition processors to nodes and to electing
@@ -182,6 +200,7 @@ impl<T: TransportConnect> Scheduler<T> {
             partitions: HashMap::default(),
             replica_set_states,
             cluster_state: TaskCenter::with_current(|h| h.cluster_state().clone()),
+            quarantine_memory: HashMap::default(),
         }
     }
 
@@ -325,15 +344,46 @@ impl<T: TransportConnect> Scheduler<T> {
         nodes_config: &NodesConfiguration,
         partition_table: &PartitionTable,
     ) {
-        for partition_id in partition_table.iter_ids() {
+        for partition_id in partition_table.iter_ids().copied() {
+            self.refresh_quarantine_memory(partition_id, cluster_state, legacy_cluster_state);
+
             // select the leader based on the observed cluster state
             self.select_leader(
-                partition_id,
+                &partition_id,
                 cluster_state,
                 legacy_cluster_state,
                 nodes_config,
             );
         }
+    }
+
+    /// A1: rebuilds this controller's cached view of the durable `apply_stalled_since` signal for
+    /// `partition_id`'s replica set (current + next, if any). See [`QuarantineMemo`]'s doc for the
+    /// update/retention rules. The actual decision logic lives in the pure, independently
+    /// unit-tested [`update_quarantine_memory`] -- this method only assembles its inputs.
+    fn refresh_quarantine_memory(
+        &mut self,
+        partition_id: PartitionId,
+        cluster_state: &ClusterState,
+        legacy_cluster_state: &LegacyClusterState,
+    ) {
+        let Some(partition) = self.partitions.get(&partition_id) else {
+            return;
+        };
+
+        let mut relevant_nodes: HashSet<PlainNodeId> =
+            partition.current.replica_set().iter().copied().collect();
+        if let Some(next) = partition.next.as_ref() {
+            relevant_nodes.extend(next.replica_set().iter().copied());
+        }
+
+        update_quarantine_memory(
+            partition_id,
+            &relevant_nodes,
+            cluster_state,
+            legacy_cluster_state,
+            &mut self.quarantine_memory,
+        );
     }
 
     async fn ensure_valid_partition_configuration(
@@ -431,9 +481,11 @@ impl<T: TransportConnect> Scheduler<T> {
 
             if Self::should_complete_reconfiguration(
                 partition_id,
+                cluster_state,
                 nodes_config,
                 partition_state,
                 legacy_cluster_state,
+                &self.quarantine_memory,
             ) {
                 let partition_configuration_update = Self::complete_reconfiguration(
                     self.metadata_writer.raw_metadata_store_client(),
@@ -470,16 +522,19 @@ impl<T: TransportConnect> Scheduler<T> {
     /// Checks whether a pending reconfiguration should be completed. Conditions for doing this are:
     ///
     /// * All workers in the current configuration are disabled
-    /// * Any of the partition processors in the next configuration is active (== caught up)
+    /// * Any of the partition processors in the next configuration is active (== caught up) and
+    ///   not quarantined for an apply stall
     ///
     /// Note: We don't complete the reconfiguration if all current nodes are dead for some time,
     /// because we might need any of them to send a partition store snapshot to the next nodes once
     /// we support in-band snapshot exchanges and trimming based on durable lsns.
     fn should_complete_reconfiguration(
         partition_id: PartitionId,
+        cluster_state: &ClusterState,
         nodes_config: &NodesConfiguration,
         partition_state: &PartitionState,
         legacy_cluster_state: &LegacyClusterState,
+        quarantine_memory: &HashMap<(PartitionId, GenerationalNodeId), QuarantineMemo>,
     ) -> bool {
         // we can only complete the reconfiguration if a next configuration has been set
         let Some(next) = partition_state.next.as_ref() else {
@@ -493,10 +548,15 @@ impl<T: TransportConnect> Scheduler<T> {
             .all(|node_id| nodes_config.get_worker_state(node_id) == WorkerState::Disabled);
 
         // check whether we can transition from the current configuration to the next
-        // configuration, which is possible as soon as a single partition processor from the
-        // next configuration has become active
+        // configuration, which is possible as soon as a single non-quarantined partition
+        // processor from the next configuration has become active
         let any_next_pp_active = next.replica_set().iter().any(|node_id| {
             legacy_cluster_state.is_partition_processor_active(&partition_id, node_id)
+                && !cluster_state
+                    .get_node_state_and_generation(*node_id)
+                    .is_some_and(|(generational_node_id, _)| {
+                        quarantine_memory.contains_key(&(partition_id, generational_node_id))
+                    })
         });
 
         all_current_workers_disabled || any_next_pp_active
@@ -760,13 +820,9 @@ impl<T: TransportConnect> Scheduler<T> {
             .ok()
     }
 
-    /// Selects a leader based on the leadership policy, observed cluster state and replica set.
-    ///
-    /// Scores each alive replica in a single pass. Higher score wins:
-    /// - 3: matches affinity + caught up
-    /// - 2: caught up (no affinity match)
-    /// - 1: matches affinity + alive (not caught up)
-    /// - 0: alive only (baseline)
+    /// Selects a leader based on the leadership policy, observed cluster state, replica set, and
+    /// quarantine memory. Delegates the actual decision to the pure, independently unit-tested
+    /// [`choose_target_leader`] -- this method's job is only to assemble the [`CandidateView`]s.
     ///
     /// If `freeze` is set, the current target leader is kept unchanged.
     fn select_leader(
@@ -776,6 +832,7 @@ impl<T: TransportConnect> Scheduler<T> {
         legacy_cluster_state: &LegacyClusterState,
         nodes_config: &NodesConfiguration,
     ) {
+        let quarantine_memory = &self.quarantine_memory;
         let Some(partition) = self.partitions.get_mut(partition_id) else {
             return;
         };
@@ -787,36 +844,42 @@ impl<T: TransportConnect> Scheduler<T> {
 
         let affinity = partition.leadership_policy.affinity.as_ref();
 
-        let best = partition
-            .current
-            .replica_set()
-            .iter()
-            .copied()
-            .filter(|node_id| cluster_state.is_alive(NodeId::from(*node_id)))
-            .max_by_key(|node_id| {
-                let has_affinity =
-                    affinity.is_some_and(|a| matches_affinity(*node_id, a, nodes_config));
-                let is_caught_up =
-                    legacy_cluster_state.is_partition_processor_active(partition_id, node_id);
-                match (has_affinity, is_caught_up) {
-                    (true, true) => 3u8,
-                    (false, true) => 2,
-                    (true, false) => 1,
-                    (false, false) => 0,
-                }
-            });
+        let candidates =
+            partition
+                .current
+                .replica_set()
+                .iter()
+                .copied()
+                .filter_map(|plain_node_id| {
+                    let (node, state) =
+                        cluster_state.get_node_state_and_generation(plain_node_id)?;
+                    Some(CandidateView {
+                        node,
+                        alive: state.is_alive(),
+                        active: legacy_cluster_state
+                            .is_partition_processor_active(partition_id, &plain_node_id),
+                        quarantined: quarantine_memory.contains_key(&(*partition_id, node)),
+                        matches_affinity: affinity
+                            .is_some_and(|a| matches_affinity(plain_node_id, a, nodes_config)),
+                    })
+                });
 
-        if let Some(best) = best
-            && partition.target_leader != Some(best)
-        {
-            debug!(
-                "Selecting node {} as partition processor leader for partition {partition_id}",
-                best
-            );
-            partition.target_leader = Some(best);
+        match choose_target_leader(partition.target_leader, candidates) {
+            TargetDecision::Keep => {}
+            TargetDecision::Set(best) => {
+                debug!(
+                    "Selecting node {} as partition processor leader for partition {partition_id}",
+                    best
+                );
+                partition.target_leader = Some(best);
+            }
+            TargetDecision::Clear => {
+                debug!(
+                    "Clearing target leader for partition {partition_id}: every alive replica is quarantined for an apply stall"
+                );
+                partition.target_leader = None;
+            }
         }
-
-        // keep the current target leader as we couldn't find any suitable substitute
     }
 
     fn instruct_nodes(&self, legacy_cluster_state: &LegacyClusterState) -> Result<(), Error> {
@@ -926,6 +989,141 @@ impl<T: TransportConnect> Scheduler<T> {
     }
 }
 
+/// A1: applies one refresh's worth of updates to `quarantine_memory` for `partition_id`'s
+/// `relevant_nodes` (current + next replica set). Pure aside from the `quarantine_memory`
+/// out-parameter, so it's unit-testable with plain `ClusterState`/`LegacyClusterState` fixtures
+/// and no `Scheduler` at all -- see [`QuarantineMemo`]'s doc for the exact rules being applied.
+fn update_quarantine_memory(
+    partition_id: PartitionId,
+    relevant_nodes: &HashSet<PlainNodeId>,
+    cluster_state: &ClusterState,
+    legacy_cluster_state: &LegacyClusterState,
+    quarantine_memory: &mut HashMap<(PartitionId, GenerationalNodeId), QuarantineMemo>,
+) {
+    for &plain_node_id in relevant_nodes {
+        // No generation info at all -- can't form a key either way; leave any existing memory
+        // for this node untouched rather than guessing.
+        let Some((generational_node_id, _state)) =
+            cluster_state.get_node_state_and_generation(plain_node_id)
+        else {
+            continue;
+        };
+
+        match legacy_cluster_state.apply_stalled_since(&partition_id, &plain_node_id) {
+            // Status absent (Dead in legacy, or no entry for this partition): never clears --
+            // the worker is authoritative for clearing, not its absence.
+            None => {}
+            Some(None) => {
+                quarantine_memory.remove(&(partition_id, generational_node_id));
+            }
+            Some(Some(since)) => {
+                let key = (partition_id, generational_node_id);
+                if quarantine_memory
+                    .insert(key, QuarantineMemo { since })
+                    .is_none()
+                {
+                    let memo = quarantine_memory.get(&key).expect("just inserted");
+                    debug!(
+                        %partition_id, node = %generational_node_id, since = %memo.since,
+                        "Quarantining node for partition leadership: apply stall reported"
+                    );
+                }
+            }
+        }
+    }
+
+    quarantine_memory.retain(|(memo_partition_id, generational_node_id), _| {
+        if *memo_partition_id != partition_id {
+            return true;
+        }
+        let plain_node_id = generational_node_id.as_plain();
+        if !relevant_nodes.contains(&plain_node_id) {
+            return false; // no longer part of this partition's replica set
+        }
+        match cluster_state.get_node_state_and_generation(plain_node_id) {
+            // A newer generation of this node is now observed: the quarantined generation is
+            // gone for good, so the memo for it can't be affirmed non-stalled by that node
+            // ever again -- drop it.
+            Some((current, _)) => current.generation() <= generational_node_id.generation(),
+            // No generation info to disprove the stored one; keep conservatively.
+            None => true,
+        }
+    });
+}
+
+/// One replica's view for the [`choose_target_leader`] decision.
+#[derive(Debug, Clone, Copy)]
+struct CandidateView {
+    node: GenerationalNodeId,
+    alive: bool,
+    /// Caught up (`replay_status == Active`).
+    active: bool,
+    /// Quarantined for an apply stall, per the scheduler's `quarantine_memory`.
+    quarantined: bool,
+    matches_affinity: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetDecision {
+    Keep,
+    Set(PlainNodeId),
+    Clear,
+}
+
+/// The pure leader-selection decision, extracted from [`Scheduler::select_leader`] so it can be
+/// unit tested without a `Scheduler`/cluster-state harness.
+///
+/// Scores each alive, non-quarantined replica in a single pass. Higher score wins:
+/// - 3: matches affinity + caught up
+/// - 2: caught up (no affinity match)
+/// - 1: matches affinity + alive (not caught up)
+/// - 0: alive only (baseline)
+///
+/// A quarantined replica is never eligible to win, but a progressing, non-quarantined
+/// `CatchingUp` peer is (it simply scores lower than an `Active` one). If every alive replica is
+/// quarantined, `target_leader` is cleared (stops instruction generation) only when `current`
+/// itself is one of the quarantined replicas; otherwise (e.g. no alive replicas were observed at
+/// all) the existing target is left unchanged, as before this feature existed.
+fn choose_target_leader(
+    current: Option<PlainNodeId>,
+    candidates: impl Iterator<Item = CandidateView>,
+) -> TargetDecision {
+    let candidates: Vec<CandidateView> = candidates.collect();
+
+    let best = candidates
+        .iter()
+        .filter(|candidate| candidate.alive && !candidate.quarantined)
+        .max_by_key(
+            |candidate| match (candidate.matches_affinity, candidate.active) {
+                (true, true) => 3u8,
+                (false, true) => 2,
+                (true, false) => 1,
+                (false, false) => 0,
+            },
+        );
+
+    if let Some(best) = best {
+        let best_node = best.node.as_plain();
+        return if current == Some(best_node) {
+            TargetDecision::Keep
+        } else {
+            TargetDecision::Set(best_node)
+        };
+    }
+
+    let current_is_quarantined = current.is_some_and(|current_node| {
+        candidates
+            .iter()
+            .any(|candidate| candidate.node.as_plain() == current_node && candidate.quarantined)
+    });
+
+    if current_is_quarantined {
+        TargetDecision::Clear
+    } else {
+        TargetDecision::Keep
+    }
+}
+
 /// Returns `true` if the given node matches the leader affinity expression.
 fn matches_affinity(
     node_id: PlainNodeId,
@@ -942,5 +1140,382 @@ fn matches_affinity(
                     .shares_domain_with(location, location.smallest_defined_scope())
             })
             .unwrap_or(false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use restate_types::cluster::cluster_state::{
+        AliveNode, DeadNode, NodeState as LegacyNodeState, PartitionProcessorStatus, ReplayStatus,
+    };
+    use restate_types::cluster_state::NodeState as LiveNodeState;
+    use restate_types::time::MillisSinceEpoch;
+    use std::time::Duration;
+
+    fn candidate(
+        node: GenerationalNodeId,
+        alive: bool,
+        active: bool,
+        quarantined: bool,
+    ) -> CandidateView {
+        CandidateView {
+            node,
+            alive,
+            active,
+            quarantined,
+            matches_affinity: false,
+        }
+    }
+
+    #[test]
+    fn choose_target_leader_moves_off_quarantined_target_with_active_peer() {
+        let target = GenerationalNodeId::new(1, 1);
+        let peer = GenerationalNodeId::new(2, 1);
+        let candidates = vec![
+            candidate(target, true, true, true),
+            candidate(peer, true, true, false),
+        ];
+
+        let decision = choose_target_leader(Some(target.as_plain()), candidates.into_iter());
+        assert_eq!(decision, TargetDecision::Set(peer.as_plain()));
+    }
+
+    #[test]
+    fn choose_target_leader_moves_to_progressing_catching_up_peer() {
+        let target = GenerationalNodeId::new(1, 1);
+        let peer = GenerationalNodeId::new(2, 1);
+        // Peer is alive, not quarantined, but not yet caught up (CatchingUp) -- still eligible
+        // and must be elected since it's the only non-quarantined alive replica.
+        let candidates = vec![
+            candidate(target, true, true, true),
+            candidate(peer, true, false, false),
+        ];
+
+        let decision = choose_target_leader(Some(target.as_plain()), candidates.into_iter());
+        assert_eq!(decision, TargetDecision::Set(peer.as_plain()));
+    }
+
+    #[test]
+    fn choose_target_leader_clears_when_all_alive_replicas_quarantined() {
+        let target = GenerationalNodeId::new(1, 1);
+        let peer = GenerationalNodeId::new(2, 1);
+        let candidates = vec![
+            candidate(target, true, true, true),
+            candidate(peer, true, false, true),
+        ];
+
+        let decision = choose_target_leader(Some(target.as_plain()), candidates.into_iter());
+        assert_eq!(decision, TargetDecision::Clear);
+    }
+
+    #[test]
+    fn choose_target_leader_does_not_repick_once_cleared() {
+        // With no current target and every alive replica quarantined, there is nothing to elect
+        // and nothing to clear -- stays Keep (a no-op).
+        let target = GenerationalNodeId::new(1, 1);
+        let candidates = vec![candidate(target, true, false, true)];
+
+        let decision = choose_target_leader(None, candidates.into_iter());
+        assert_eq!(decision, TargetDecision::Keep);
+    }
+
+    #[test]
+    fn choose_target_leader_keeps_target_when_no_alive_replicas_observed() {
+        // No alive replicas at all (e.g. a transient gossip gap) is different from "all
+        // quarantined": we don't know enough to clear, so the existing target is left alone.
+        let target = GenerationalNodeId::new(1, 1);
+        let candidates = vec![candidate(target, false, false, false)];
+
+        let decision = choose_target_leader(Some(target.as_plain()), candidates.into_iter());
+        assert_eq!(decision, TargetDecision::Keep);
+    }
+
+    #[test]
+    fn choose_target_leader_affirmative_non_stalled_peer_is_eligible() {
+        let target = GenerationalNodeId::new(1, 1);
+        let peer = GenerationalNodeId::new(2, 1);
+        // Both alive, active, and non-quarantined -- an affirmatively-non-stalled peer must be a
+        // real candidate for the top spot, not merely tolerated: give it the higher-scoring
+        // affinity match so the decision is unambiguous.
+        let mut peer_candidate = candidate(peer, true, true, false);
+        peer_candidate.matches_affinity = true;
+        let candidates = vec![candidate(target, true, true, false), peer_candidate];
+
+        let decision = choose_target_leader(Some(target.as_plain()), candidates.into_iter());
+        assert_eq!(decision, TargetDecision::Set(peer.as_plain()));
+    }
+
+    #[test]
+    fn choose_target_leader_keeps_current_target_when_it_is_the_unambiguous_best() {
+        let target = GenerationalNodeId::new(1, 1);
+        let peer = GenerationalNodeId::new(2, 1);
+        let mut target_candidate = candidate(target, true, true, false);
+        target_candidate.matches_affinity = true;
+        let candidates = vec![target_candidate, candidate(peer, true, true, false)];
+
+        let decision = choose_target_leader(Some(target.as_plain()), candidates.into_iter());
+        assert_eq!(decision, TargetDecision::Keep);
+    }
+
+    fn cluster_state_with(nodes: &[(GenerationalNodeId, LiveNodeState)]) -> ClusterState {
+        let mut updater = ClusterState::default().updater();
+        for &(node_id, state) in nodes {
+            updater.upsert_node_state(node_id, state);
+        }
+        updater.into_cluster_state()
+    }
+
+    fn legacy_state_with(
+        partition_id: PartitionId,
+        nodes: &[(PlainNodeId, Option<Option<MillisSinceEpoch>>)],
+    ) -> LegacyClusterState {
+        let mut state = LegacyClusterState::empty();
+        for &(node_id, apply_stalled_since) in nodes {
+            let legacy_node = match apply_stalled_since {
+                None => LegacyNodeState::Dead(DeadNode {
+                    last_seen_alive: None,
+                }),
+                Some(apply_stalled_since) => LegacyNodeState::Alive(AliveNode {
+                    last_heartbeat_at: MillisSinceEpoch::now(),
+                    generational_node_id: node_id.with_generation(1),
+                    partitions: [(
+                        partition_id,
+                        PartitionProcessorStatus {
+                            apply_stalled_since,
+                            ..PartitionProcessorStatus::default()
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                    uptime: Duration::ZERO,
+                }),
+            };
+            state.nodes.insert(node_id, legacy_node);
+        }
+        state
+    }
+
+    #[test]
+    fn quarantine_rebuilt_after_controller_failover() {
+        // A1: a fresh Scheduler (empty quarantine_memory, as after a controller failover) must
+        // quarantine a node purely from the first refresh that carries `apply_stalled_since`,
+        // without needing any prior persisted state.
+        let partition_id = PartitionId::MIN;
+        let node = GenerationalNodeId::new(1, 1);
+        let relevant = HashSet::from_iter([node.as_plain()]);
+        let cluster_state = cluster_state_with(&[(node, LiveNodeState::Alive)]);
+        let legacy_state = legacy_state_with(
+            partition_id,
+            &[(node.as_plain(), Some(Some(MillisSinceEpoch::now())))],
+        );
+        let mut memory = HashMap::default();
+
+        update_quarantine_memory(
+            partition_id,
+            &relevant,
+            &cluster_state,
+            &legacy_state,
+            &mut memory,
+        );
+
+        assert!(memory.contains_key(&(partition_id, node)));
+    }
+
+    #[test]
+    fn quarantine_memory_absence_of_status_retains_entry() {
+        // Node reported Dead in the legacy view (or missing a partition entry) must never be
+        // read as "not stalled" -- the existing memo must survive untouched.
+        let partition_id = PartitionId::MIN;
+        let node = GenerationalNodeId::new(1, 1);
+        let relevant = HashSet::from_iter([node.as_plain()]);
+        let cluster_state = cluster_state_with(&[(node, LiveNodeState::Alive)]);
+        let mut memory = HashMap::default();
+        memory.insert(
+            (partition_id, node),
+            QuarantineMemo {
+                since: MillisSinceEpoch::now(),
+            },
+        );
+
+        // Node reported Dead this refresh.
+        let legacy_state = legacy_state_with(partition_id, &[(node.as_plain(), None)]);
+        update_quarantine_memory(
+            partition_id,
+            &relevant,
+            &cluster_state,
+            &legacy_state,
+            &mut memory,
+        );
+
+        assert!(
+            memory.contains_key(&(partition_id, node)),
+            "absence of status must not clear the memo"
+        );
+    }
+
+    #[test]
+    fn quarantine_memory_affirmative_non_stalled_clears_entry() {
+        let partition_id = PartitionId::MIN;
+        let node = GenerationalNodeId::new(1, 1);
+        let relevant = HashSet::from_iter([node.as_plain()]);
+        let cluster_state = cluster_state_with(&[(node, LiveNodeState::Alive)]);
+        let mut memory = HashMap::default();
+        memory.insert(
+            (partition_id, node),
+            QuarantineMemo {
+                since: MillisSinceEpoch::now(),
+            },
+        );
+
+        let legacy_state = legacy_state_with(partition_id, &[(node.as_plain(), Some(None))]);
+        update_quarantine_memory(
+            partition_id,
+            &relevant,
+            &cluster_state,
+            &legacy_state,
+            &mut memory,
+        );
+
+        assert!(!memory.contains_key(&(partition_id, node)));
+    }
+
+    #[test]
+    fn quarantine_memory_generation_replacement_drops_entry() {
+        let partition_id = PartitionId::MIN;
+        let old_generation = GenerationalNodeId::new(1, 1);
+        let new_generation = GenerationalNodeId::new(1, 2);
+        let relevant = HashSet::from_iter([old_generation.as_plain()]);
+        let mut memory = HashMap::default();
+        memory.insert(
+            (partition_id, old_generation),
+            QuarantineMemo {
+                since: MillisSinceEpoch::now(),
+            },
+        );
+
+        // The plain node id is now observed at a newer generation.
+        let cluster_state = cluster_state_with(&[(new_generation, LiveNodeState::Alive)]);
+        let legacy_state = legacy_state_with(partition_id, &[]);
+        update_quarantine_memory(
+            partition_id,
+            &relevant,
+            &cluster_state,
+            &legacy_state,
+            &mut memory,
+        );
+
+        assert!(
+            !memory.contains_key(&(partition_id, old_generation)),
+            "a superseded generation's memo must be dropped"
+        );
+    }
+
+    #[test]
+    fn quarantine_memory_replica_set_removal_drops_entry() {
+        let partition_id = PartitionId::MIN;
+        let node = GenerationalNodeId::new(1, 1);
+        let mut memory = HashMap::default();
+        memory.insert(
+            (partition_id, node),
+            QuarantineMemo {
+                since: MillisSinceEpoch::now(),
+            },
+        );
+
+        // Node is no longer part of the replica set this refresh.
+        let relevant = HashSet::default();
+        let cluster_state = cluster_state_with(&[(node, LiveNodeState::Alive)]);
+        let legacy_state = legacy_state_with(partition_id, &[]);
+        update_quarantine_memory(
+            partition_id,
+            &relevant,
+            &cluster_state,
+            &legacy_state,
+            &mut memory,
+        );
+
+        assert!(!memory.contains_key(&(partition_id, node)));
+    }
+
+    #[test]
+    fn should_complete_reconfiguration_blocked_by_quarantined_next_replica() {
+        let partition_id = PartitionId::MIN;
+        let next_node = GenerationalNodeId::new(2, 1);
+
+        let mut current_replica_set = NodeSet::new();
+        current_replica_set.insert(PlainNodeId::new(1));
+        let current = PartitionConfiguration::new(
+            ReplicationProperty::new_unchecked(1),
+            current_replica_set,
+            Default::default(),
+        );
+
+        let mut next_replica_set = NodeSet::new();
+        next_replica_set.insert(next_node.as_plain());
+        let next = PartitionConfiguration::new(
+            ReplicationProperty::new_unchecked(1),
+            next_replica_set,
+            Default::default(),
+        );
+
+        let partition_state = PartitionState::new(current, Some(next), LeadershipPolicy::default());
+
+        let nodes_config = NodesConfiguration::new_for_testing();
+        let cluster_state = cluster_state_with(&[(next_node, LiveNodeState::Alive)]);
+
+        // The next replica is Active (caught up) but quarantined.
+        let mut legacy_state = LegacyClusterState::empty();
+        legacy_state.nodes.insert(
+            next_node.as_plain(),
+            LegacyNodeState::Alive(AliveNode {
+                last_heartbeat_at: MillisSinceEpoch::now(),
+                generational_node_id: next_node,
+                partitions: [(
+                    partition_id,
+                    PartitionProcessorStatus {
+                        replay_status: ReplayStatus::Active,
+                        apply_stalled_since: Some(MillisSinceEpoch::now()),
+                        ..PartitionProcessorStatus::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                uptime: Duration::ZERO,
+            }),
+        );
+
+        let mut quarantine_memory = HashMap::default();
+        quarantine_memory.insert(
+            (partition_id, next_node),
+            QuarantineMemo {
+                since: MillisSinceEpoch::now(),
+            },
+        );
+
+        assert!(
+            !Scheduler::<restate_core::network::FailingConnector>::should_complete_reconfiguration(
+                partition_id,
+                &cluster_state,
+                &nodes_config,
+                &partition_state,
+                &legacy_state,
+                &quarantine_memory,
+            ),
+            "a quarantined next-replica must not be treated as ready to complete reconfiguration"
+        );
+
+        // Once un-quarantined, reconfiguration should be able to complete.
+        quarantine_memory.clear();
+        assert!(
+            Scheduler::<restate_core::network::FailingConnector>::should_complete_reconfiguration(
+                partition_id,
+                &cluster_state,
+                &nodes_config,
+                &partition_state,
+                &legacy_state,
+                &quarantine_memory,
+            )
+        );
     }
 }
