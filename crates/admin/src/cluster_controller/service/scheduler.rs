@@ -370,12 +370,7 @@ impl<T: TransportConnect> Scheduler<T> {
         let Some(partition) = self.partitions.get(&partition_id) else {
             return;
         };
-
-        let mut relevant_nodes: HashSet<PlainNodeId> =
-            partition.current.replica_set().iter().copied().collect();
-        if let Some(next) = partition.next.as_ref() {
-            relevant_nodes.extend(next.replica_set().iter().copied());
-        }
+        let relevant_nodes = Self::relevant_nodes(partition);
 
         update_quarantine_memory(
             partition_id,
@@ -384,6 +379,17 @@ impl<T: TransportConnect> Scheduler<T> {
             legacy_cluster_state,
             &mut self.quarantine_memory,
         );
+    }
+
+    /// The set of plain node ids `quarantine_memory` must track for `partition` (current + next
+    /// replica set, if any).
+    fn relevant_nodes(partition: &PartitionState) -> HashSet<PlainNodeId> {
+        let mut relevant_nodes: HashSet<PlainNodeId> =
+            partition.current.replica_set().iter().copied().collect();
+        if let Some(next) = partition.next.as_ref() {
+            relevant_nodes.extend(next.replica_set().iter().copied());
+        }
+        relevant_nodes
     }
 
     async fn ensure_valid_partition_configuration(
@@ -477,6 +483,20 @@ impl<T: TransportConnect> Scheduler<T> {
                 }
             };
 
+            // Finding 5 (DEFECTB review): re-refresh right before the completion predicate,
+            // *after* any reconfiguration above may have changed `current`/`next` -- a node newly
+            // added to `next` by this same pass must have its quarantine status known before
+            // `should_complete_reconfiguration` looks at it, not the pre-change memory from
+            // `ensure_valid_leaders`.
+            let relevant_nodes = Self::relevant_nodes(occupied_entry.get());
+            update_quarantine_memory(
+                partition_id,
+                &relevant_nodes,
+                cluster_state,
+                legacy_cluster_state,
+                &mut self.quarantine_memory,
+            );
+
             let partition_state = occupied_entry.get();
 
             if Self::should_complete_reconfiguration(
@@ -551,12 +571,25 @@ impl<T: TransportConnect> Scheduler<T> {
         // configuration, which is possible as soon as a single non-quarantined partition
         // processor from the next configuration has become active
         let any_next_pp_active = next.replica_set().iter().any(|node_id| {
-            legacy_cluster_state.is_partition_processor_active(&partition_id, node_id)
-                && !cluster_state
-                    .get_node_state_and_generation(*node_id)
-                    .is_some_and(|(generational_node_id, _)| {
-                        quarantine_memory.contains_key(&(partition_id, generational_node_id))
-                    })
+            if !legacy_cluster_state.is_partition_processor_active(&partition_id, node_id) {
+                return false;
+            }
+            let quarantined = match cluster_state.get_node_state_and_generation(*node_id) {
+                Some((generational_node_id, _)) => {
+                    quarantine_memory.contains_key(&(partition_id, generational_node_id))
+                }
+                // Finding 6 (DEFECTB review): no generation info available for this node in the
+                // live `ClusterState` -- fail *closed* rather than assuming not-quarantined. If
+                // `quarantine_memory` retains a memo for this (partition, plain node) under *any*
+                // generation, treat it as quarantined; only a total absence of any retained memo
+                // is read as "no reason to believe it's stalled".
+                None => quarantine_memory
+                    .keys()
+                    .any(|(memo_partition_id, memo_node_id)| {
+                        *memo_partition_id == partition_id && memo_node_id.as_plain() == *node_id
+                    }),
+            };
+            !quarantined
         });
 
         all_current_workers_disabled || any_next_pp_active
@@ -1516,6 +1549,106 @@ mod tests {
                 &legacy_state,
                 &quarantine_memory,
             )
+        );
+    }
+
+    #[test]
+    fn quarantine_memory_catches_newly_added_next_replica_before_reconfiguration_completes() {
+        // Finding 5 (DEFECTB review): a plain node added to `next` by *this same*
+        // `ensure_valid_partition_configuration` pass, and already reporting
+        // `apply_stalled_since` on its very first heartbeat, must be visible to
+        // `should_complete_reconfiguration` immediately -- a refresh against the
+        // pre-reconfiguration relevant-node set (as `ensure_valid_leaders` took earlier this
+        // tick) does not know about it yet.
+        let partition_id = PartitionId::MIN;
+        let current_node = GenerationalNodeId::new(1, 1);
+        let next_node = GenerationalNodeId::new(2, 1);
+
+        let cluster_state = cluster_state_with(&[
+            (current_node, LiveNodeState::Alive),
+            (next_node, LiveNodeState::Alive),
+        ]);
+
+        let mut legacy_state =
+            legacy_state_with(partition_id, &[(current_node.as_plain(), Some(None))]);
+        legacy_state.nodes.insert(
+            next_node.as_plain(),
+            LegacyNodeState::Alive(AliveNode {
+                last_heartbeat_at: MillisSinceEpoch::now(),
+                generational_node_id: next_node,
+                partitions: [(
+                    partition_id,
+                    PartitionProcessorStatus {
+                        replay_status: ReplayStatus::Active,
+                        apply_stalled_since: Some(MillisSinceEpoch::now()),
+                        ..PartitionProcessorStatus::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                uptime: Duration::ZERO,
+            }),
+        );
+
+        let mut quarantine_memory = HashMap::default();
+
+        // Before this pass's reconfiguration, `next_node` isn't part of the replica set yet, so
+        // a refresh against the narrower relevant-node set must not track it.
+        let relevant_before = HashSet::from_iter([current_node.as_plain()]);
+        update_quarantine_memory(
+            partition_id,
+            &relevant_before,
+            &cluster_state,
+            &legacy_state,
+            &mut quarantine_memory,
+        );
+        assert!(!quarantine_memory.contains_key(&(partition_id, next_node)));
+
+        // This pass reconfigures, adding `next_node` to `next`.
+        let mut current_replica_set = NodeSet::new();
+        current_replica_set.insert(current_node.as_plain());
+        let current = PartitionConfiguration::new(
+            ReplicationProperty::new_unchecked(1),
+            current_replica_set,
+            Default::default(),
+        );
+        let mut next_replica_set = NodeSet::new();
+        next_replica_set.insert(next_node.as_plain());
+        let next = PartitionConfiguration::new(
+            ReplicationProperty::new_unchecked(1),
+            next_replica_set,
+            Default::default(),
+        );
+        let partition_state = PartitionState::new(current, Some(next), LeadershipPolicy::default());
+
+        // Finding 5's fix: refresh again with the post-reconfiguration relevant-node set, right
+        // before the completion predicate -- this must catch `next_node`'s stall immediately.
+        let relevant_after =
+            Scheduler::<restate_core::network::FailingConnector>::relevant_nodes(&partition_state);
+        update_quarantine_memory(
+            partition_id,
+            &relevant_after,
+            &cluster_state,
+            &legacy_state,
+            &mut quarantine_memory,
+        );
+        assert!(
+            quarantine_memory.contains_key(&(partition_id, next_node)),
+            "a newly-added next replica already reporting a stall must be quarantined \
+             before reconfiguration can complete"
+        );
+
+        let nodes_config = NodesConfiguration::new_for_testing();
+        assert!(
+            !Scheduler::<restate_core::network::FailingConnector>::should_complete_reconfiguration(
+                partition_id,
+                &cluster_state,
+                &nodes_config,
+                &partition_state,
+                &legacy_state,
+                &quarantine_memory,
+            ),
+            "reconfiguration must not complete while the newly-added next replica is quarantined"
         );
     }
 }

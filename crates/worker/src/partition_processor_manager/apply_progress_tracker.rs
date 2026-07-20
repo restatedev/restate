@@ -64,11 +64,18 @@ pub enum LoopState {
 /// Tracks one partition processor's [`LoopHeartbeat`](crate::partition::processor::LoopHeartbeat)
 /// on the manager side: turns a raw `(phase, counter)` sample into a [`LoopState`] by locally
 /// timestamping counter changes (never encoding an `Instant` into the shared atomic).
+///
+/// `(InSelect, 0)` is both the real `LoopHeartbeat`'s initial value *and* this view's
+/// construction-time placeholder, so a freshly-constructed view (e.g. right after an incarnation
+/// reset) must not be read as "just observed a fresh beat" -- that would be synthetic freshness
+/// from having never actually sampled the new incarnation yet, not evidence of anything. Finding
+/// 2 (DEFECTB review): `has_observed_change` gates that distinction.
 #[derive(Debug, Clone, Copy)]
 pub struct HeartbeatView {
     last_phase: LoopPhase,
     last_counter: u64,
     changed_at: Instant,
+    has_observed_change: bool,
 }
 
 impl HeartbeatView {
@@ -77,6 +84,7 @@ impl HeartbeatView {
             last_phase: LoopPhase::InSelect,
             last_counter: 0,
             changed_at: now,
+            has_observed_change: false,
         }
     }
 
@@ -84,6 +92,7 @@ impl HeartbeatView {
     pub fn observe(&mut self, sample: (LoopPhase, u64), now: Instant) {
         if sample.1 != self.last_counter {
             self.changed_at = now;
+            self.has_observed_change = true;
         }
         self.last_phase = sample.0;
         self.last_counter = sample.1;
@@ -93,7 +102,13 @@ impl HeartbeatView {
         let age = now.saturating_duration_since(self.changed_at);
         match self.last_phase {
             LoopPhase::ApplyingBatch | LoopPhase::ControlOp => LoopState::Busy,
-            LoopPhase::InSelect if age <= cfg.heartbeat_fresh() => LoopState::ReaderIdle,
+            // Never report ReaderIdle from the construction-time placeholder alone -- only once a
+            // genuine counter change has been observed from this incarnation. Staying at the
+            // placeholder for `hard_grace` is still sound evidence of loop-death (the loop never
+            // scheduled even once), so LoopDead does not need this gate.
+            LoopPhase::InSelect if self.has_observed_change && age <= cfg.heartbeat_fresh() => {
+                LoopState::ReaderIdle
+            }
             LoopPhase::InSelect if age >= cfg.hard_grace() => LoopState::LoopDead,
             LoopPhase::InSelect => LoopState::Stale,
         }
@@ -291,6 +306,12 @@ pub struct TrackerEntry {
     incarnation: Ulid,
     last_known_lsn: Option<Lsn>,
     last_progress_at: Instant,
+    /// Finding 1 (DEFECTB review): when the *current, unbroken* streak of reader-idle + lagging
+    /// samples began, while `detect == Healthy`. Reset to `None` by any Busy/Stale sample or by
+    /// the tail no longer looking ahead -- `last_progress_at` alone is not enough, since it only
+    /// advances on real progress and can be arbitrarily old after a long legitimate `ApplyingBatch`,
+    /// which would let a single idle+lagging sample satisfy `>= grace` immediately.
+    reader_idle_since: Option<Instant>,
     detect: Detect,
     quarantine: Option<QuarantineEpisode>,
     restart_history: RestartHistory,
@@ -303,6 +324,7 @@ impl TrackerEntry {
             incarnation,
             last_known_lsn: None,
             last_progress_at: now,
+            reader_idle_since: None,
             detect: Detect::Healthy,
             quarantine: None,
             restart_history: RestartHistory::fresh(now, cfg),
@@ -329,6 +351,7 @@ impl TrackerEntry {
         self.incarnation = incarnation;
         self.last_known_lsn = None;
         self.last_progress_at = now;
+        self.reader_idle_since = None;
         self.detect = Detect::Healthy;
     }
 
@@ -359,6 +382,7 @@ impl TrackerEntry {
         {
             self.last_known_lsn = Some(lsn);
             self.last_progress_at = now;
+            self.reader_idle_since = None;
             self.detect = Detect::Healthy;
             if let Some(QuarantineEpisode::ApplyStall { bail_lsn, .. }) = self.quarantine
                 && lsn > bail_lsn
@@ -376,21 +400,17 @@ impl TrackerEntry {
         // A3: a loop-dead observation is independent evidence, evaluated before (and without
         // disturbing the kind of) any active ApplyStall episode.
         if input.loop_state == LoopState::LoopDead {
-            return self.handle_loop_dead_sample(now, cfg);
+            return self.handle_loop_dead_sample(now);
         }
 
         self.advance_lag_detection(now, input, cfg)
     }
 
-    fn handle_loop_dead_sample(
-        &mut self,
-        now: Instant,
-        cfg: &StallDetectionOptions,
-    ) -> TrackerEffect {
+    fn handle_loop_dead_sample(&mut self, now: Instant) -> TrackerEffect {
         if matches!(self.quarantine, Some(QuarantineEpisode::ApplyStall { .. })) {
             // A3: never let a loop-dead sample overwrite an active ApplyStall episode's kind.
             // It's still independent grounds to (re-)attempt a bail, subject to the same spacing.
-            return self.try_bail(now, cfg);
+            return self.propose_bail(now);
         }
 
         let (since, bails) = match self.quarantine {
@@ -398,7 +418,7 @@ impl TrackerEntry {
             _ => (MillisSinceEpoch::now(), 0),
         };
         self.quarantine = Some(QuarantineEpisode::LoopDead { since, bails });
-        self.try_bail(now, cfg)
+        self.propose_bail(now)
     }
 
     fn advance_lag_detection(
@@ -421,12 +441,21 @@ impl TrackerEntry {
                     input.replay_status,
                     ReplayStatus::Active | ReplayStatus::CatchingUp
                 );
-                if idle
+                let idle_and_lagging = idle
                     && eligible_replay
                     && self.last_known_lsn.is_some()
-                    && lagging(self.last_known_lsn)
-                    && now.saturating_duration_since(self.last_progress_at) >= cfg.grace()
-                {
+                    && lagging(self.last_known_lsn);
+
+                if !idle_and_lagging {
+                    // Finding 1: any Busy/Stale sample, or the tail no longer looking ahead,
+                    // resets the streak -- a single idle+lagging sample right after a long
+                    // legitimate `ApplyingBatch` must not satisfy the grace window instantly.
+                    self.reader_idle_since = None;
+                    return TrackerEffect::None;
+                }
+
+                let since = *self.reader_idle_since.get_or_insert(now);
+                if now.saturating_duration_since(since) >= cfg.grace() {
                     self.detect = Detect::Suspect {
                         since: now,
                         next_probe_at: now,
@@ -442,7 +471,10 @@ impl TrackerEntry {
             } => {
                 if !idle || !lagging(self.last_known_lsn) {
                     // Rule 2: any Busy/stale sample, or the tail no longer looking ahead (stale
-                    // observation expiry included), restarts the window from Healthy.
+                    // observation expiry included), restarts the window from Healthy. Clear the
+                    // idle streak too, so a stale timestamp from *before* Suspect was entered
+                    // can't let a subsequent idle+lagging sample skip the grace window (finding 1).
+                    self.reader_idle_since = None;
                     self.detect = Detect::Healthy;
                     return TrackerEffect::None;
                 }
@@ -500,7 +532,7 @@ impl TrackerEntry {
                     (since + cfg.bail_grace()).max(self.restart_history.next_permitted_bail_at);
                 if now >= bail_deadline {
                     if lagging(self.last_known_lsn) {
-                        self.try_bail(now, cfg)
+                        self.propose_bail(now)
                     } else {
                         // Revalidation failed at the moment we'd act: demote instead of bailing
                         // on stale evidence (guardrail: never act without confirmed lag).
@@ -589,12 +621,24 @@ impl TrackerEntry {
         }
     }
 
-    fn try_bail(&mut self, now: Instant, cfg: &StallDetectionOptions) -> TrackerEffect {
+    /// Rule 7 / the loop-dead bail path: proposes a bail if the spacing
+    /// (`next_permitted_bail_at`) allows one. Read-only -- does **not** mutate any state,
+    /// including `next_permitted_bail_at` itself. The manager must revalidate reader-idle (and,
+    /// for an `ApplyStall` episode, confirmed lag) immediately before calling `stop()` (finding 4,
+    /// DEFECTB review): [`Self::commit_bail`] if revalidation still holds, or nothing otherwise --
+    /// the tracker's state is untouched either way, so the next tick re-evaluates from scratch.
+    fn propose_bail(&self, now: Instant) -> TrackerEffect {
         if now < self.restart_history.next_permitted_bail_at {
-            return TrackerEffect::None;
+            TrackerEffect::None
+        } else {
+            TrackerEffect::Bail
         }
+    }
 
-        let bail_lsn = self.last_known_lsn.unwrap_or(Lsn::INVALID);
+    /// Commits a bail the manager has freshly revalidated immediately before calling `stop()`
+    /// (finding 4). Bumps the active quarantine episode's `bails` count (creating an `ApplyStall`
+    /// episode if none was active yet) and the restart-history backoff.
+    pub fn commit_bail(&mut self, now: Instant, bail_lsn: Lsn, cfg: &StallDetectionOptions) {
         self.quarantine = Some(match self.quarantine {
             Some(QuarantineEpisode::ApplyStall { since, bails, .. }) => {
                 QuarantineEpisode::ApplyStall {
@@ -619,8 +663,6 @@ impl TrackerEntry {
         self.restart_history.next_permitted_bail_at = now + self.restart_history.next_backoff;
         self.restart_history.next_backoff =
             (self.restart_history.next_backoff * 2).min(cfg.bail_backoff_cap());
-
-        TrackerEffect::Bail
     }
 
     /// A2/A4 (Option D): records a Candidate-watchdog bail. A committed-but-unapplied
@@ -735,8 +777,21 @@ mod tests {
         assert_eq!(effect, TrackerEffect::None);
         assert!(!tracker.is_quarantined());
 
-        // Now sit reader-idle + lagging for a full grace period from this point.
-        let grace_elapsed = mid_grace + cfg.grace() + Duration::from_secs(1);
+        // Finding 1 (DEFECTB review): a *single* idle+lagging sample taken long after the last
+        // progress must not immediately arm suspicion -- the grace window requires a continuous
+        // idle+lagging streak, timed from when that streak actually started, not from
+        // `last_progress_at` (which the preceding long Busy period left arbitrarily stale).
+        let idle_streak_starts = mid_grace + Duration::from_secs(1);
+        let effect = tracker.on_sample(idle_streak_starts, idle_lagging(Lsn::new(10)), &cfg);
+        assert_eq!(effect, TrackerEffect::None);
+        assert!(
+            matches!(tracker.detect, Detect::Healthy),
+            "one idle+lagging sample right after a long Busy period must not skip the grace window"
+        );
+
+        // Now sit reader-idle + lagging continuously for a full grace period from when the streak
+        // actually started.
+        let grace_elapsed = idle_streak_starts + cfg.grace() + Duration::from_secs(1);
         let effect = tracker.on_sample(grace_elapsed, idle_lagging(Lsn::new(10)), &cfg);
         assert_eq!(effect, TrackerEffect::None);
         assert!(matches!(tracker.detect, Detect::Suspect { .. }));
@@ -815,10 +870,13 @@ mod tests {
         assert_eq!(bail_lsn, Lsn::new(10));
         assert_eq!(bails, 0);
 
-        // Bail fires once bail_grace has elapsed from the Stalled entry.
+        // Bail fires once bail_grace has elapsed from the Stalled entry. `on_sample` only
+        // *proposes* the bail (finding 4, DEFECTB review); the manager must revalidate and then
+        // call `commit_bail` immediately before actually stopping the processor.
         let bail_time = stalled_time + cfg.bail_grace() + Duration::from_secs(1);
         let effect = tracker.on_sample(bail_time, idle_lagging(Lsn::new(10)), &cfg);
         assert_eq!(effect, TrackerEffect::Bail);
+        tracker.commit_bail(bail_time, Lsn::new(10), &cfg);
         let Some(QuarantineEpisode::ApplyStall {
             bail_lsn, bails, ..
         }) = tracker.quarantine()
@@ -1043,5 +1101,161 @@ mod tests {
         // A busy phase is Busy regardless of age.
         view.observe((LoopPhase::ApplyingBatch, 2), t0);
         assert_eq!(view.loop_state(dead, &cfg), LoopState::Busy);
+    }
+
+    /// Finding 2 (DEFECTB review): a freshly-constructed `HeartbeatView` -- e.g. right after an
+    /// incarnation reset -- starts at the same `(InSelect, 0)` value the real `LoopHeartbeat`
+    /// itself starts at. That must never be read as "just observed a fresh beat": no beat has
+    /// actually been observed yet, so it must classify as `Stale` (can't confirm idle or dead),
+    /// not `ReaderIdle`, until a genuine counter change is seen. Eventually staying at the
+    /// placeholder for `hard_grace` is still sound loop-death evidence.
+    #[test]
+    fn heartbeat_view_default_sample_is_not_reader_idle() {
+        let cfg = cfg();
+        let t0 = Instant::now();
+        let view = HeartbeatView::new(t0);
+
+        // Immediately at construction: not ReaderIdle (no beat observed yet).
+        assert_eq!(view.loop_state(t0, &cfg), LoopState::Stale);
+
+        // Still not ReaderIdle even once "fresh" by age alone -- there's still no observed beat.
+        let still_fresh_by_age = t0 + cfg.heartbeat_fresh() / 2;
+        assert_eq!(view.loop_state(still_fresh_by_age, &cfg), LoopState::Stale);
+
+        // But staying at the placeholder for hard_grace is still genuine loop-death evidence:
+        // the loop never scheduled even once.
+        let dead = t0 + cfg.hard_grace() + Duration::from_secs(1);
+        assert_eq!(view.loop_state(dead, &cfg), LoopState::LoopDead);
+    }
+
+    /// Finding 2: the default sample must not clear a `LoopDead` quarantine. Only a *genuinely
+    /// observed* fresh beat from the new incarnation may clear it.
+    #[test]
+    fn loop_dead_default_heartbeat_sample_does_not_clear_quarantine() {
+        let cfg = cfg();
+        let t0 = Instant::now();
+        let incarnation = Ulid::new();
+        let mut tracker = TrackerEntry::new(incarnation, t0, &cfg);
+
+        // Establish a known LSN so the loop-dead sample below isn't itself mistaken for progress
+        // (a fresh tracker's `last_known_lsn` is `None`, and rule 1 treats any `Some(lsn)` as
+        // progress against `None`).
+        tracker.on_sample(
+            t0,
+            TickInput {
+                last_applied_lsn: Some(Lsn::new(5)),
+                replay_status: ReplayStatus::Active,
+                loop_state: LoopState::ReaderIdle,
+                fresh_tail: Some(Lsn::new(6)),
+            },
+            &cfg,
+        );
+
+        // Force a LoopDead episode.
+        let dead_time = t0 + cfg.hard_grace() + Duration::from_secs(1);
+        tracker.on_sample(dead_time, loop_dead_sample(Some(Lsn::new(5))), &cfg);
+        assert!(matches!(
+            tracker.quarantine(),
+            Some(QuarantineEpisode::LoopDead { .. })
+        ));
+
+        // Simulate the restart: a fresh `HeartbeatView` for the new incarnation, sampled
+        // immediately -- this is the exact `(InSelect, 0)` construction-time placeholder, not a
+        // real observed beat.
+        let restart_time = dead_time + Duration::from_millis(1);
+        tracker.on_incarnation_started(restart_time, Ulid::new());
+        let mut fresh_view = HeartbeatView::new(restart_time);
+        let placeholder_loop_state = fresh_view.loop_state(restart_time, &cfg);
+        assert_eq!(
+            placeholder_loop_state,
+            LoopState::Stale,
+            "sanity: the construction-time placeholder must not classify as ReaderIdle"
+        );
+
+        let effect = tracker.on_sample(
+            restart_time,
+            TickInput {
+                last_applied_lsn: Some(Lsn::new(5)),
+                replay_status: ReplayStatus::Active,
+                loop_state: placeholder_loop_state,
+                fresh_tail: Some(Lsn::new(6)),
+            },
+            &cfg,
+        );
+        assert_eq!(effect, TrackerEffect::None);
+        assert!(
+            tracker.is_quarantined(),
+            "the default (InSelect, 0) sample must not clear a LoopDead quarantine"
+        );
+
+        // Once a genuine beat is observed (counter actually changes) and it's fresh, the
+        // quarantine clears as before.
+        fresh_view.observe((LoopPhase::InSelect, 1), restart_time);
+        let real_loop_state = fresh_view.loop_state(restart_time, &cfg);
+        assert_eq!(real_loop_state, LoopState::ReaderIdle);
+        let effect = tracker.on_sample(
+            restart_time,
+            TickInput {
+                last_applied_lsn: Some(Lsn::new(5)),
+                replay_status: ReplayStatus::Active,
+                loop_state: real_loop_state,
+                fresh_tail: Some(Lsn::new(6)),
+            },
+            &cfg,
+        );
+        assert_eq!(effect, TrackerEffect::None);
+        assert!(
+            !tracker.is_quarantined(),
+            "a genuinely observed fresh beat must still clear the LoopDead quarantine"
+        );
+    }
+
+    /// Finding 4 (DEFECTB review): `on_sample` returning `TrackerEffect::Bail` is only a
+    /// *proposal* -- nothing about the bail (the quarantine's `bails` count, the restart-history
+    /// backoff) is committed until the caller explicitly calls `commit_bail`, which the manager
+    /// only does after freshly revalidating reader-idle/lag immediately before `stop()`. If the
+    /// manager declines to commit, the tracker's state is untouched and the next sample can
+    /// propose again.
+    #[test]
+    fn bail_is_a_proposal_until_committed() {
+        let cfg = cfg();
+        let t0 = Instant::now();
+        let incarnation = Ulid::new();
+        let mut tracker = TrackerEntry::new(incarnation, t0, &cfg);
+        tracker.on_sample(
+            t0,
+            TickInput {
+                last_applied_lsn: Some(Lsn::new(5)),
+                replay_status: ReplayStatus::Active,
+                loop_state: LoopState::ReaderIdle,
+                fresh_tail: Some(Lsn::new(6)),
+            },
+            &cfg,
+        );
+
+        let dead_time = t0 + cfg.hard_grace() + Duration::from_secs(1);
+        let effect = tracker.on_sample(dead_time, loop_dead_sample(Some(Lsn::new(5))), &cfg);
+        assert_eq!(effect, TrackerEffect::Bail);
+        // The episode itself is established eagerly (it's evidence, not an action), but the bail
+        // itself has not been committed yet.
+        let Some(QuarantineEpisode::LoopDead { bails, .. }) = tracker.quarantine() else {
+            panic!("expected a LoopDead episode");
+        };
+        assert_eq!(
+            bails, 0,
+            "commit_bail was never called -- bails must not be bumped yet"
+        );
+
+        // The manager declines to commit (revalidation failed): calling on_sample again with the
+        // same evidence proposes again, since next_permitted_bail_at was never advanced.
+        let effect = tracker.on_sample(dead_time, loop_dead_sample(Some(Lsn::new(5))), &cfg);
+        assert_eq!(effect, TrackerEffect::Bail);
+
+        // Now the manager revalidates successfully and commits.
+        tracker.commit_bail(dead_time, Lsn::new(5), &cfg);
+        let Some(QuarantineEpisode::LoopDead { bails, .. }) = tracker.quarantine() else {
+            panic!("expected a LoopDead episode");
+        };
+        assert_eq!(bails, 1);
     }
 }

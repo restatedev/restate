@@ -106,7 +106,8 @@ use crate::metric_definitions::{
 };
 use crate::metric_definitions::{PARTITION_LABEL, PARTITION_STOP};
 use crate::partition::leadership;
-use crate::partition::{LeadershipInfo, NodeContext, ProcessorError};
+use crate::partition::{LeadershipInfo, LoopPhase, NodeContext, ProcessorError};
+use crate::partition_processor_manager::apply_progress_tracker::QuarantineEpisode;
 use crate::partition_processor_manager::processor_state::{
     LeaderEpochToken, ProcessorState, StartedProcessor,
 };
@@ -1019,7 +1020,7 @@ where
                 fresh_tail,
             };
             let effect = tracker.on_sample(now, input, &cfg);
-            self.act_on_tracker_effect(partition_id, effect);
+            self.act_on_tracker_effect(partition_id, effect, &cfg);
         }
     }
 
@@ -1047,18 +1048,79 @@ where
         }
     }
 
-    fn act_on_tracker_effect(&mut self, partition_id: PartitionId, effect: TrackerEffect) {
+    fn act_on_tracker_effect(
+        &mut self,
+        partition_id: PartitionId,
+        effect: TrackerEffect,
+        cfg: &StallDetectionOptions,
+    ) {
         match effect {
             TrackerEffect::None => {}
             TrackerEffect::IssueProbe { incarnation, nonce } => {
                 self.spawn_consistent_read_probe(partition_id, incarnation, nonce);
             }
-            TrackerEffect::Bail => {
-                warn!(%partition_id, "Apply-stall detected: cooperatively restarting the partition processor");
-                if let Some(processor_state) = self.processor_states.get_mut(&partition_id) {
-                    processor_state.stop();
-                }
-            }
+            TrackerEffect::Bail => self.revalidate_and_commit_bail(partition_id, cfg),
+        }
+    }
+
+    /// Finding 4 (DEFECTB review): the tracker's `Bail` effect is only a *proposal* based on the
+    /// sample from the top of this tick's `evaluate_trackers` pass. Immediately before actually
+    /// calling `stop()`, take a fresh heartbeat sample and re-check the tail -- if the processor
+    /// has resumed in the meantime (or the lag evidence used for an `ApplyStall` bail is no
+    /// longer fresh/confirmed), abandon the bail instead of stopping a processor that's already
+    /// making progress again. Nothing is mutated in that case; the next tick re-evaluates from
+    /// scratch (rule 6 style demotion happens naturally on the next real sample).
+    fn revalidate_and_commit_bail(
+        &mut self,
+        partition_id: PartitionId,
+        cfg: &StallDetectionOptions,
+    ) {
+        let now = Instant::now();
+
+        let Some(ProcessorState::Started {
+            processor: Some(started),
+            ..
+        }) = self.processor_states.get(&partition_id)
+        else {
+            return;
+        };
+        // A fresh phase read, independent of (and later than) the `HeartbeatView` sample the
+        // proposal was based on: confirms the loop is still parked in `select`, not busy having
+        // resumed real work.
+        let (phase, _counter) = started.heartbeat().sample();
+        let still_idle = phase == LoopPhase::InSelect;
+
+        let Some(tracker) = self.trackers.get_mut(&partition_id) else {
+            return;
+        };
+
+        // A LoopDead episode's proof is "the loop still isn't scheduling", not lag -- an
+        // ApplyStall episode (or none yet, e.g. a fresh Stalled->Bail transition) requires
+        // confirmed lag against the freshest tail observation.
+        let is_loop_dead_episode = matches!(
+            tracker.quarantine(),
+            Some(QuarantineEpisode::LoopDead { .. })
+        );
+        let still_lagging = tracker.last_known_lsn().is_some_and(|known| {
+            self.tail_observations
+                .get(&partition_id)
+                .filter(|obs| obs.is_fresh(now, cfg.tail_ttl()))
+                .is_some_and(|obs| obs.lsn().prev() > known)
+        });
+
+        if !still_idle || !(is_loop_dead_episode || still_lagging) {
+            debug!(
+                %partition_id,
+                "Apply-stall bail aborted: the processor resumed before the manager could revalidate"
+            );
+            return;
+        }
+
+        let bail_lsn = tracker.last_known_lsn().unwrap_or(Lsn::INVALID);
+        tracker.commit_bail(now, bail_lsn, cfg);
+        warn!(%partition_id, "Apply-stall detected: cooperatively restarting the partition processor");
+        if let Some(processor_state) = self.processor_states.get_mut(&partition_id) {
+            processor_state.stop();
         }
     }
 
@@ -2314,6 +2376,218 @@ mod tests {
             status.apply_stalled_since.is_some(),
             "apply_stalled_since must survive Started -> Stopped -> Starting"
         );
+
+        TaskCenter::shutdown_node("test completed", 0).await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
+    }
+
+    /// Finding 1 negative control (DEFECTB review, merge-blocking integration coverage): a
+    /// legitimately long apply (well past `grace`, with more records still sitting unapplied in
+    /// the log the whole time) must never itself be reported as a stall. Uses the test-only
+    /// slow-apply hook (`RESTATE_TEST_SLOW_APPLY_MILLIS`) so every record's application takes far
+    /// longer than `grace`, while the apply loop stays in `ApplyingBatch` throughout -- this
+    /// proves that phase, not raw elapsed time since progress, gates suspicion (the exact
+    /// distinction finding 1's fix restored; `tracker_state_machine_unit` pins the same invariant
+    /// at the pure state-machine level with explicit RED->GREEN evidence for the fix).
+    #[test(restate_core::test)]
+    async fn long_apply_negative_control() -> googletest::Result<()> {
+        use std::sync::Arc;
+
+        use restate_bifrost::ErrorRecoveryStrategy;
+        use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
+        use restate_types::cluster::cluster_state::ReplayStatus;
+        use restate_types::config::StallDetectionOptions;
+        use restate_types::identifiers::LeaderEpoch;
+        use restate_types::partitions::Partition;
+        use restate_types::sharding::KeyRange;
+        use restate_types::time::MillisSinceEpoch;
+        use restate_util_time::FriendlyDuration;
+        use restate_wal_protocol::control::UpdatePartitionDurabilityCommand;
+        use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
+
+        use crate::partition::RESTATE_TEST_SLOW_APPLY_MILLIS;
+
+        const SLOW_APPLY_MILLIS: u64 = 300;
+        const NUM_RECORDS: u64 = 4;
+
+        let mut nodes_config = NodesConfiguration::new_for_testing();
+        let node_id = GenerationalNodeId::new(45, 45);
+        let node_config = NodeConfig::builder()
+            .name("45".to_owned())
+            .current_generation(node_id)
+            .address(AdvertisedAddress::default())
+            .roles(Role::Worker | Role::Admin)
+            .binary_version(RestateVersion::current())
+            .build();
+        nodes_config.upsert_node(node_config);
+
+        let mut env_builder = TestCoreEnvBuilder::with_incoming_only_connector()
+            .set_my_node_id(node_id)
+            .set_nodes_config(nodes_config);
+        let health_status = HealthStatus::default();
+
+        RocksDbManager::init();
+
+        let bifrost_svc = BifrostService::new(env_builder.metadata_writer.clone())
+            .with_factory(memory_loglet::Factory::default());
+        let bifrost = bifrost_svc.handle();
+
+        let replica_set_states = PartitionReplicaSetStates::default();
+        let partition_store_manager = PartitionStoreManager::create(true).await?;
+
+        let ingestion_client = IngestionClient::new(
+            env_builder.networking.clone(),
+            env_builder.metadata.updateable_partition_table(),
+            PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
+            NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
+            SessionOptions::default(),
+        );
+
+        // Fast-but-real stall-detection thresholds: `grace` is well under a single record's
+        // artificial apply delay, so if phase were ignored (finding 1's bug), a single
+        // idle+lagging sample would trip suspicion almost immediately.
+        let mut configuration = Configuration::default();
+        configuration.worker.stall_detection = StallDetectionOptions {
+            grace: FriendlyDuration::from_millis(100),
+            heartbeat_fresh: FriendlyDuration::from_millis(50),
+            hard_grace: FriendlyDuration::from_secs(30),
+            ..StallDetectionOptions::default()
+        };
+
+        let metadata_writer = env_builder.metadata_writer.clone();
+        let partition_processor_manager = PartitionProcessorManager::new(
+            health_status,
+            Live::from_value(configuration),
+            metadata_writer.clone(),
+            partition_store_manager,
+            replica_set_states.clone(),
+            &mut env_builder.router_builder,
+            bifrost.clone(),
+            None,
+            ingestion_client,
+        );
+
+        let _env = env_builder.build().await;
+
+        // `bootstrap_logs_metadata` seeds each log's chain with `ProviderKind::InMemory` but
+        // leaves `Logs::configuration().default_provider` at its type default (`Replicated`).
+        // `BifrostAdmin::ensure_log_exists` -- called on every processor (re)spawn -- resolves
+        // that default provider unconditionally, even for an already-provisioned log, so with
+        // only the in-memory factory registered every incarnation would fail before ever
+        // reaching the apply loop. Not related to findings 1-6; corrected here so this test can
+        // exercise a real, running processor.
+        {
+            use restate_core::Metadata;
+            use restate_types::logs::metadata::{LogsConfiguration, ProviderConfiguration};
+
+            let logs = Metadata::with_current(|m| m.logs_snapshot());
+            let mut builder = (*logs).clone().try_into_builder().expect("valid logs");
+            builder.set_configuration(LogsConfiguration {
+                default_provider: ProviderConfiguration::InMemory,
+            });
+            metadata_writer.submit(Arc::new(builder.build()));
+        }
+
+        let processors_manager_handle = partition_processor_manager.handle();
+
+        bifrost_svc.start().await.into_test_result()?;
+        TaskCenter::spawn(
+            TaskKind::SystemService,
+            "partition-processor-manager",
+            partition_processor_manager.run(),
+        )?;
+
+        let current_replica_set = ReplicaSetState {
+            version: Version::MIN,
+            members: vec![MemberState {
+                node_id: node_id.as_plain(),
+                durable_lsn: Lsn::INVALID,
+            }],
+        };
+        replica_set_states.note_observed_membership(
+            PartitionId::MIN,
+            Default::default(),
+            &current_replica_set,
+            &None,
+        );
+
+        // Wait until the (fresh, empty-log) processor has started and caught up.
+        loop {
+            let state = processors_manager_handle.get_state().await?;
+            if state
+                .get(&PartitionId::MIN)
+                .is_some_and(|s| s.replay_status == ReplayStatus::Active)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        // Arm the slow-apply hook, then append several records so the log's tail stays ahead of
+        // the applied LSN for the whole time the (slow) batch is being applied.
+        unsafe {
+            std::env::set_var(
+                RESTATE_TEST_SLOW_APPLY_MILLIS,
+                SLOW_APPLY_MILLIS.to_string(),
+            );
+        }
+
+        let log_id = Partition::new(PartitionId::MIN, KeyRange::FULL).log_id();
+        let mut appender =
+            bifrost.create_appender::<Envelope>(log_id, ErrorRecoveryStrategy::Wait)?;
+        let mut esn = EpochSequenceNumber::new(LeaderEpoch::INVALID);
+        for _ in 0..NUM_RECORDS {
+            let header = Header {
+                dest: Destination::Processor {
+                    partition_key: KeyRange::FULL.start(),
+                    dedup: Some(DedupInformation::self_proposal(esn)),
+                },
+                source: Source::Processor {
+                    partition_key: Some(KeyRange::FULL.start()),
+                    leader_epoch: LeaderEpoch::INVALID,
+                },
+            };
+            let envelope = Envelope::new(
+                header,
+                Command::UpdatePartitionDurability(UpdatePartitionDurabilityCommand {
+                    partition_id: PartitionId::MIN,
+                    durable_point: Lsn::OLDEST,
+                    modification_time: MillisSinceEpoch::now(),
+                }),
+            );
+            appender.append(Arc::new(envelope)).await?;
+            esn = esn.next();
+        }
+
+        // Poll continuously until the whole (slow) batch has applied, asserting at every sample
+        // that the long apply was never reported as a stall.
+        loop {
+            let state = processors_manager_handle.get_state().await?;
+            let status = state
+                .get(&PartitionId::MIN)
+                .expect("partition must still be present throughout the slow apply");
+            assert!(
+                status.apply_stalled_since.is_none(),
+                "a long but legitimate apply must never be reported as a stall (finding 1)"
+            );
+            if status.last_applied_log_lsn == Some(Lsn::new(NUM_RECORDS)) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let status = processors_manager_handle
+            .get_state()
+            .await?
+            .remove(&PartitionId::MIN)
+            .expect("partition must still be present");
+        assert_eq!(status.replay_status, ReplayStatus::Active);
+        assert!(status.apply_stalled_since.is_none());
+
+        unsafe {
+            std::env::remove_var(RESTATE_TEST_SLOW_APPLY_MILLIS);
+        }
 
         TaskCenter::shutdown_node("test completed", 0).await;
         RocksDbManager::get().shutdown().await;
