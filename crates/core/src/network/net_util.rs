@@ -225,63 +225,39 @@ where
                         let tls_resolver = tls.clone();
                         let tls_mode = tls_mode.clone();
                         let service = service.clone();
-                        let graceful_shutdown = &graceful_shutdown;
+                        // Owned watcher so the connection can register with the graceful
+                        // shutdown from within its own task.
+                        let watcher = graceful_shutdown.watcher();
                         let task_name = task_name.clone();
 
-                        // Resolve TLS handshake or pass through plaintext
-                        let use_tls = match (&tls_resolver, &tls_mode) {
-                            (Some(resolver), Some(TlsMode::Strict)) => {
-                                Some(resolver.tls_acceptor())
-                            }
-                            (Some(resolver), Some(TlsMode::Optional)) => {
-                                let mut peek_buf = [0u8; 1];
-                                if let Ok(1) = tcp_stream.peek(&mut peek_buf).await {
-                                    if peek_buf[0] == 0x16 {
-                                        Some(resolver.tls_acceptor())
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => None,
-                        };
-
-                        if let Some(acceptor) = use_tls {
-                            let tls_handshake = tokio::time::timeout(
-                                Duration::from_secs(5),
-                                acceptor.accept(tcp_stream),
-                            );
-                            let connection = match tls_handshake.await {
-                                Ok(Ok(tls_stream)) => {
-                                    let io = TokioIo::new(tls_stream);
-                                    graceful_shutdown.watch(
-                                        builder.serve_connection(io, service).into_owned(),
-                                    )
-                                }
+                        // All TLS I/O (protocol sniffing and the handshake) happens inside
+                        // the per-connection task so a slow or stalled client can never
+                        // block the accept loop.
+                        TaskCenter::spawn(TaskKind::SocketHandler, task_name, async move {
+                            let established = tokio::time::timeout(
+                                TLS_HANDSHAKE_TIMEOUT,
+                                establish_tcp_connection(tcp_stream, tls_resolver, tls_mode),
+                            )
+                            .await;
+                            let stream = match established {
+                                Ok(Ok(stream)) => stream,
                                 Ok(Err(e)) => {
                                     debug!("TLS handshake failed: {e}");
-                                    continue;
+                                    return Ok(());
                                 }
                                 Err(_) => {
                                     debug!("TLS handshake timed out");
-                                    continue;
+                                    return Ok(());
                                 }
                             };
-                            TaskCenter::spawn(TaskKind::SocketHandler, task_name, async move {
-                                trace!("New TLS tcp connection accepted");
-                                serve_connection(connection).await
-                            }.instrument(socket_span))?;
-                        } else {
-                            let io = TokioIo::new(tcp_stream);
-                            let connection = graceful_shutdown
-                                .watch(builder.serve_connection(io, service).into_owned());
-                            TaskCenter::spawn(TaskKind::SocketHandler, task_name, async move {
-                                trace!("New tcp connection accepted");
-                                serve_connection(connection).await
-                            }.instrument(socket_span))?;
-                        }
+                            trace!("New tcp connection accepted");
+                            let connection = watcher.watch(
+                                builder
+                                    .serve_connection(TokioIo::new(stream), service)
+                                    .into_owned(),
+                            );
+                            serve_connection(connection).await
+                        }.instrument(socket_span))?;
                     },
                     Either::Right(unix_stream) => {
                         // UNIX SOCKET — TLS never applies to UDS
@@ -310,6 +286,40 @@ where
     }
 
     Ok(())
+}
+
+/// Upper bound on the TLS protocol sniff + handshake for a newly accepted
+/// TCP connection. This runs in the per-connection task, so it bounds resource
+/// usage per connection rather than protecting the accept loop.
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Establishes the application-layer transport on a freshly accepted TCP
+/// stream: performs the TLS handshake in strict mode, sniffs the first byte in
+/// optional mode (0x16 = TLS ClientHello) to decide between TLS and plaintext,
+/// and passes plaintext through otherwise.
+async fn establish_tcp_connection(
+    tcp_stream: tokio::net::TcpStream,
+    tls_resolver: Option<TlsCertResolver>,
+    tls_mode: Option<TlsMode>,
+) -> io::Result<Either<tokio_rustls::server::TlsStream<tokio::net::TcpStream>, tokio::net::TcpStream>>
+{
+    let acceptor = match (&tls_resolver, &tls_mode) {
+        (Some(resolver), Some(TlsMode::Strict)) => Some(resolver.tls_acceptor()),
+        (Some(resolver), Some(TlsMode::Optional)) => {
+            let mut peek_buf = [0u8; 1];
+            if matches!(tcp_stream.peek(&mut peek_buf).await, Ok(1) if peek_buf[0] == 0x16) {
+                Some(resolver.tls_acceptor())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+
+    match acceptor {
+        Some(acceptor) => Ok(Either::Left(acceptor.accept(tcp_stream).await?)),
+        None => Ok(Either::Right(tcp_stream)),
+    }
 }
 
 async fn serve_connection(
