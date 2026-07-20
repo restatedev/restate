@@ -28,6 +28,8 @@ use x509_parser::prelude::*;
 
 use restate_types::config::FabricTlsOptions;
 
+use crate::{ShutdownError, TaskCenter, TaskId, TaskKind, cancellation_watcher};
+
 /// Client-side TLS materials for outbound fabric connections: the client
 /// identity as PEM (the form tonic consumes) and the server-certificate
 /// verifier enforcing chain validation plus subject-name authorization.
@@ -67,39 +69,48 @@ impl TlsCertResolver {
     }
 
     /// Spawns a background task that periodically reloads certificates from disk.
+    /// The task is managed by the `TaskCenter` and is cancelled on system shutdown.
     pub fn spawn_reloader(
         &self,
         opts: FabricTlsOptions,
         interval: Duration,
-    ) -> tokio::task::JoinHandle<()> {
+    ) -> Result<TaskId, ShutdownError> {
         let server_config = Arc::clone(&self.server_config);
         let client_materials = Arc::clone(&self.client_materials);
 
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(interval);
-            ticker.tick().await; // skip first immediate tick
-            loop {
-                ticker.tick().await;
-                match build_server_config(&opts) {
-                    Ok(new_server) => {
-                        server_config.store(Arc::new(new_server));
-                        info!("Fabric TLS server certificates reloaded");
+        TaskCenter::spawn(
+            TaskKind::Background,
+            "fabric-tls-cert-reloader",
+            async move {
+                let mut cancelled = std::pin::pin!(cancellation_watcher());
+                let mut ticker = tokio::time::interval(interval);
+                ticker.tick().await; // skip first immediate tick
+                loop {
+                    tokio::select! {
+                        _ = &mut cancelled => return Ok(()),
+                        _ = ticker.tick() => {}
                     }
-                    Err(e) => {
-                        warn!("Failed to reload fabric TLS server certificates: {e}");
+                    match build_server_config(&opts) {
+                        Ok(new_server) => {
+                            server_config.store(Arc::new(new_server));
+                            info!("Fabric TLS server certificates reloaded");
+                        }
+                        Err(e) => {
+                            warn!("Failed to reload fabric TLS server certificates: {e}");
+                        }
+                    }
+                    match build_client_materials(&opts) {
+                        Ok(new_client) => {
+                            client_materials.store(Arc::new(new_client));
+                            info!("Fabric TLS client certificates reloaded");
+                        }
+                        Err(e) => {
+                            warn!("Failed to reload fabric TLS client certificates: {e}");
+                        }
                     }
                 }
-                match build_client_materials(&opts) {
-                    Ok(new_client) => {
-                        client_materials.store(Arc::new(new_client));
-                        info!("Fabric TLS client certificates reloaded");
-                    }
-                    Err(e) => {
-                        warn!("Failed to reload fabric TLS client certificates: {e}");
-                    }
-                }
-            }
-        })
+            },
+        )
     }
 }
 
@@ -118,8 +129,11 @@ fn build_server_config(opts: &FabricTlsOptions) -> anyhow::Result<ServerConfig> 
         }
         let webpki_verifier = WebPkiClientVerifier::builder(Arc::new(root_store)).build()?;
 
+        // Any list containing "*" matches every subject, so the verifier would
+        // be pure overhead. An empty list is rejected by validate() when client
+        // auth is on; tolerated here for direct construction in tests.
         let ca_only_trust = opts.allowed_subject_names.is_empty()
-            || (opts.allowed_subject_names.len() == 1 && opts.allowed_subject_names[0] == "*");
+            || opts.allowed_subject_names.iter().any(|s| s == "*");
         if ca_only_trust {
             builder.with_client_cert_verifier(webpki_verifier)
         } else {
