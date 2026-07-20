@@ -236,7 +236,9 @@ impl Node {
                 .expect("Invalid fabric TLS configuration");
             let resolver = restate_core::network::tls::TlsCertResolver::new(tls_opts)
                 .expect("Failed to initialize fabric TLS");
-            resolver.spawn_reloader(tls_opts.clone(), *tls_opts.refresh_interval);
+            resolver
+                .spawn_reloader(tls_opts.clone(), *tls_opts.refresh_interval)
+                .expect("to spawn fabric TLS cert reloader");
             resolver
         });
 
