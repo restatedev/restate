@@ -36,6 +36,10 @@ pub struct Status {
     /// The time point when the processor is considered to have started
     started_at: Instant,
     last_lsn_applied_at: Option<MillisSinceEpoch>,
+    /// Monotonic counterpart of `last_lsn_applied_at`, set alongside it. Deadline math (e.g. the
+    /// Candidate activation watchdog) must use this, never the wall-clock stamp --
+    /// `MillisSinceEpoch::elapsed` is explicitly non-monotonic.
+    last_applied_at_instant: Option<Instant>,
     planned_run_mode: RunMode,
     replay_status: ReplayStatus,
     target_tail_lsn: Option<Lsn>,
@@ -48,6 +52,7 @@ impl Status {
         Self {
             started_at: Instant::now(),
             last_lsn_applied_at: None,
+            last_applied_at_instant: None,
             planned_run_mode: RunMode::Follower,
             replay_status: ReplayStatus::Starting,
             target_tail_lsn: None,
@@ -74,6 +79,10 @@ impl Status {
 
     pub fn last_lsn_applied_at(&self) -> Option<MillisSinceEpoch> {
         self.last_lsn_applied_at
+    }
+
+    pub fn last_applied_at_instant(&self) -> Option<Instant> {
+        self.last_applied_at_instant
     }
 
     pub fn set_planned_run_mode(&mut self, planned_run_mode: RunMode) {
@@ -116,6 +125,7 @@ impl Status {
     /// Returns true if we transitioned from CatchingUp to Active
     pub(super) fn update_last_applied_lsn(&mut self, lsn: Lsn) -> bool {
         self.last_lsn_applied_at = Some(MillisSinceEpoch::now());
+        self.last_applied_at_instant = Some(Instant::now());
         // Update replay status
         match self.replay_status {
             ReplayStatus::CatchingUp

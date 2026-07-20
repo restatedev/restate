@@ -105,6 +105,7 @@ use crate::metric_definitions::{
     PARTITION_APPLY_PHASE_STUCK, PARTITION_APPLY_STALLED, PHASE_LABEL,
 };
 use crate::metric_definitions::{PARTITION_LABEL, PARTITION_STOP};
+use crate::partition::leadership;
 use crate::partition::{LeadershipInfo, NodeContext, ProcessorError};
 use crate::partition_processor_manager::processor_state::{
     LeaderEpochToken, ProcessorState, StartedProcessor,
@@ -705,6 +706,42 @@ where
                                         gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL => partition_id.to_string(), REASON_LABEL => FLARE_REASON_SNAPSHOT_UNAVAILABLE).set(1);
                                         // configuration problem; until we have peer-to-peer state exchange we can only wait
                                         RestartDelay::MaxBackoff
+                                    }
+                                }
+                                Err(ProcessorError::ActionEffect(
+                                    leadership::Error::AnnounceNotApplied {
+                                        leader_epoch,
+                                        committed_for,
+                                        bail_lsn,
+                                    },
+                                )) => {
+                                    // A2/A4 (Option D): our own committed AnnounceLeader marker
+                                    // never applied -- authoritative lag evidence in its own
+                                    // right. Quarantine the same way an A-bail would, using the
+                                    // exact FSM LSN captured at the watchdog's deadline.
+                                    counter!(PARTITION_STOP, PARTITION_LABEL => partition_id.to_string(), TYPE_LABEL => ERROR_STOP).increment(1);
+                                    warn!(
+                                        %partition_id, %leader_epoch, committed_for = ?committed_for, %bail_lsn,
+                                        "Partition processor's committed AnnounceLeader marker was never applied; quarantining and restarting"
+                                    );
+
+                                    let now = Instant::now();
+                                    let cfg =
+                                        self.updateable_config.live_load().worker.stall_detection;
+                                    let is_first_bail = !self.is_apply_stalled(partition_id);
+                                    let tracker =
+                                        self.trackers.entry(partition_id).or_insert_with(|| {
+                                            TrackerEntry::new(Ulid::new(), now, &cfg)
+                                        });
+                                    tracker.on_announce_not_applied(now, *bail_lsn, &cfg);
+
+                                    if is_first_bail {
+                                        RestartDelay::Fixed
+                                    } else {
+                                        RestartDelay::Exponential {
+                                            start_time,
+                                            last_delay: delay,
+                                        }
                                     }
                                 }
                                 Err(err) => {
@@ -2120,6 +2157,163 @@ mod tests {
 
             version = version.next();
         }
+
+        TaskCenter::shutdown_node("test completed", 0).await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
+    }
+
+    /// Stage 3 / A2 / A4: a Candidate-watchdog (Option D) bail must establish the same
+    /// `ApplyStall` quarantine episode an A-bail would, using the exact FSM LSN captured at the
+    /// watchdog's deadline, and that episode must remain visible through `effective_status` once
+    /// the manager schedules the restart (`Started` -> `Stopped(AnnounceNotApplied)` ->
+    /// `Starting`). Drives `on_asynchronous_event` directly rather than through a full leadership
+    /// election -- the watchdog's own state machine is covered by
+    /// `partition::leadership::tests`; this test is only about the PPM-side quarantine handoff.
+    #[test(restate_core::test)]
+    async fn d_bail_establishes_quarantine() -> googletest::Result<()> {
+        use std::sync::Arc;
+
+        use tokio::sync::watch;
+        use tokio_util::sync::CancellationToken;
+
+        use crate::partition::leadership;
+        use crate::partition::{LoopHeartbeat, ProcessorError, TargetLeaderState};
+        use crate::partition_processor_manager::apply_progress_tracker::QuarantineEpisode;
+        use crate::partition_processor_manager::processor_state::{
+            LeaderState, ProcessorState, StartedProcessor,
+        };
+        use crate::partition_processor_manager::{AsynchronousEvent, EventKind};
+        use restate_core::network::ShardSender;
+        use restate_types::cluster::cluster_state::PartitionProcessorStatus;
+        use restate_types::identifiers::LeaderEpoch;
+        use restate_types::sharding::KeyRange;
+
+        let mut nodes_config = NodesConfiguration::new_for_testing();
+        let node_id = GenerationalNodeId::new(44, 44);
+        let node_config = NodeConfig::builder()
+            .name("44".to_owned())
+            .current_generation(node_id)
+            .address(AdvertisedAddress::default())
+            .roles(Role::Worker | Role::Admin)
+            .binary_version(RestateVersion::current())
+            .build();
+        nodes_config.upsert_node(node_config);
+
+        let mut env_builder = TestCoreEnvBuilder::with_incoming_only_connector()
+            .set_my_node_id(node_id)
+            .set_nodes_config(nodes_config);
+        let health_status = HealthStatus::default();
+
+        RocksDbManager::init();
+
+        let bifrost_svc = BifrostService::new(env_builder.metadata_writer.clone())
+            .with_factory(memory_loglet::Factory::default());
+        let bifrost = bifrost_svc.handle();
+
+        let replica_set_states = PartitionReplicaSetStates::default();
+        let partition_store_manager = PartitionStoreManager::create(true).await?;
+
+        let ingestion_client = IngestionClient::new(
+            env_builder.networking.clone(),
+            env_builder.metadata.updateable_partition_table(),
+            PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
+            NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
+            SessionOptions::default(),
+        );
+
+        let mut partition_processor_manager = PartitionProcessorManager::new(
+            health_status,
+            Live::from_value(Configuration::default()),
+            env_builder.metadata_writer.clone(),
+            partition_store_manager,
+            replica_set_states.clone(),
+            &mut env_builder.router_builder,
+            bifrost,
+            None,
+            ingestion_client,
+        );
+
+        let _env = env_builder.build().await;
+        bifrost_svc.start().await.into_test_result()?;
+
+        // Normally done by `run()`'s startup; needed here since this test drives the manager
+        // directly rather than through its own event loop.
+        let (_pp_rpc_control, pp_rpc_shards) =
+            partition_processor_manager.pp_rpc_svc.take().start();
+        partition_processor_manager.pp_rpc_shards = Some(pp_rpc_shards);
+
+        // This node must still be a replica of the partition, or the Stopped handler would GC
+        // the tracker this test is about to create instead of carrying it into the restart.
+        let current_replica_set = ReplicaSetState {
+            version: Version::MIN,
+            members: vec![MemberState {
+                node_id: node_id.as_plain(),
+                durable_lsn: Lsn::INVALID,
+            }],
+        };
+        replica_set_states.note_observed_membership(
+            PartitionId::MIN,
+            Default::default(),
+            &current_replica_set,
+            &None,
+        );
+
+        // Craft a `Started` processor state directly: this test only needs to exercise the
+        // D-bail handler and the quarantine overlay, not a real running partition processor.
+        let (control_tx, _control_rx) = watch::channel(TargetLeaderState::Follower);
+        let (rpc_tx, _rpc_rx) = ShardSender::new();
+        let (_watch_tx, watch_rx) = watch::channel(PartitionProcessorStatus::default());
+        let started = StartedProcessor::new(
+            CancellationToken::new(),
+            KeyRange::FULL,
+            control_tx,
+            rpc_tx,
+            watch_rx,
+            Arc::new(LoopHeartbeat::new()),
+        );
+        partition_processor_manager.processor_states.insert(
+            PartitionId::MIN,
+            ProcessorState::Started {
+                processor: Some(started),
+                leader_state: LeaderState::Follower,
+                start_time: std::time::Instant::now(),
+                delay: None,
+            },
+        );
+
+        let bail_lsn = Lsn::new(42);
+        partition_processor_manager.on_asynchronous_event(AsynchronousEvent {
+            partition_id: PartitionId::MIN,
+            inner: EventKind::Stopped(Err(ProcessorError::ActionEffect(
+                leadership::Error::AnnounceNotApplied {
+                    leader_epoch: LeaderEpoch::from(1),
+                    committed_for: Duration::from_secs(1),
+                    bail_lsn,
+                },
+            ))),
+        });
+
+        let quarantine = partition_processor_manager
+            .trackers
+            .get(&PartitionId::MIN)
+            .and_then(|tracker| tracker.quarantine())
+            .expect("D-bail must establish a quarantine episode");
+        assert!(matches!(
+            quarantine,
+            QuarantineEpisode::ApplyStall {
+                bail_lsn: lsn,
+                ..
+            } if lsn == bail_lsn
+        ));
+
+        let status = partition_processor_manager
+            .effective_status(PartitionId::MIN)
+            .expect("status must remain visible across the restart");
+        assert!(
+            status.apply_stalled_since.is_some(),
+            "apply_stalled_since must survive Started -> Stopped -> Starting"
+        );
 
         TaskCenter::shutdown_node("test completed", 0).await;
         RocksDbManager::get().shutdown().await;

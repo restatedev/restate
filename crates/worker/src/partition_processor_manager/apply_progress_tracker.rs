@@ -622,6 +622,44 @@ impl TrackerEntry {
 
         TrackerEffect::Bail
     }
+
+    /// A2/A4 (Option D): records a Candidate-watchdog bail. A committed-but-unapplied
+    /// `AnnounceLeader` marker is itself authoritative lag evidence -- a second legitimate birth
+    /// site for `ApplyStall`, so this always creates or promotes to `ApplyStall` (unlike a
+    /// loop-dead bail, which preserves whatever episode kind was already active). Uses the exact
+    /// FSM-captured `bail_lsn` the caller hands in, never a possibly-stale tracker sample (A4).
+    ///
+    /// Unlike [`Self::try_bail`], there is no `next_permitted_bail_at` gate here: the partition
+    /// processor has already exited by the time this runs (the watchdog's deadline firing *is*
+    /// the bail), so this only records the episode and restart-history bookkeeping for the
+    /// manager's restart-delay decision and any future bail.
+    pub fn on_announce_not_applied(
+        &mut self,
+        now: Instant,
+        bail_lsn: Lsn,
+        cfg: &StallDetectionOptions,
+    ) {
+        let bails = match self.quarantine {
+            Some(QuarantineEpisode::ApplyStall { bails, .. }) => bails,
+            Some(QuarantineEpisode::LoopDead { bails, .. }) => bails,
+            None => 0,
+        };
+        let since = match self.quarantine {
+            Some(QuarantineEpisode::ApplyStall { since, .. }) => since,
+            _ => MillisSinceEpoch::now(),
+        };
+        self.quarantine = Some(QuarantineEpisode::ApplyStall {
+            since,
+            bail_lsn,
+            bails: bails + 1,
+        });
+
+        self.restart_history.count += 1;
+        self.restart_history.bail_lsn = Some(bail_lsn);
+        self.restart_history.next_permitted_bail_at = now + self.restart_history.next_backoff;
+        self.restart_history.next_backoff =
+            (self.restart_history.next_backoff * 2).min(cfg.bail_backoff_cap());
+    }
 }
 
 #[cfg(test)]

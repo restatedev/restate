@@ -18,7 +18,7 @@
 
 mod cleaner;
 pub mod invoker_storage_reader;
-mod leadership;
+pub(crate) mod leadership;
 pub mod node;
 mod processor;
 mod rpc;
@@ -535,6 +535,8 @@ where
             let config = self.node_ctx.config.live_load();
             let max_batching_size = config.worker.max_command_batch_size();
             let bytes_limit = config.worker.max_command_batch_bytes.as_usize();
+            let candidate_activation_timeout =
+                config.worker.stall_detection.candidate_activation_timeout();
 
             // Marks the top of every loop iteration as "parked in select" for the apply-stall
             // detector. Every other branch below either beats a more specific phase on entry, or
@@ -640,7 +642,7 @@ where
                     self.ctx.release_applied_lsn();
                     self.leadership_state.handle_actions(&mut self.ctx, action_collector.drain(..))?;
                 },
-                result = self.leadership_state.run(&mut self.ctx) => {
+                result = self.leadership_state.run(&mut self.ctx, candidate_activation_timeout) => {
                     self.heartbeat.beat(LoopPhase::ControlOp);
                     let action_effects = result?;
                     // We process the action_effects not directly in the run future because it

@@ -332,6 +332,13 @@ pub struct StallDetectionOptions {
     /// manager raises a flare for external supervision (it never spawns a second processor over
     /// the same store, so this is observability only).
     pub stop_stuck_timeout: FriendlyDuration,
+
+    /// # Candidate activation timeout
+    ///
+    /// How long a leader-elect may sit with its own committed `AnnounceLeader` marker unapplied
+    /// before it self-bails (Option D). The window is measured from commit, extended by any
+    /// further apply progress (a candidate catching up on backlog is not stuck).
+    pub candidate_activation_timeout: FriendlyDuration,
 }
 
 impl Default for StallDetectionOptions {
@@ -351,6 +358,7 @@ impl Default for StallDetectionOptions {
             bail_backoff_cap: FriendlyDuration::from_secs(10 * 60),
             hard_grace: FriendlyDuration::from_secs(120),
             stop_stuck_timeout: FriendlyDuration::from_secs(5 * 60),
+            candidate_activation_timeout: FriendlyDuration::from_secs(30),
         }
     }
 }
@@ -406,6 +414,10 @@ impl StallDetectionOptions {
 
     pub fn stop_stuck_timeout(&self) -> Duration {
         self.stop_stuck_timeout.into()
+    }
+
+    pub fn candidate_activation_timeout(&self) -> Duration {
+        self.candidate_activation_timeout.into()
     }
 }
 

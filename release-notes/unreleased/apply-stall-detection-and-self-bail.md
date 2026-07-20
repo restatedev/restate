@@ -34,6 +34,14 @@ When a stall is confirmed:
 A healthy but idle partition processor -- caught up with the log and simply waiting for new work --
 is never touched by this detection.
 
+A second, faster-acting watchdog covers a leader-elect specifically: if a candidate's own
+`AnnounceLeader` marker commits to the log but is never applied within
+`candidate-activation-timeout` (default 30s from commit, extended for as long as the candidate
+keeps making apply progress on other backlog), it self-bails immediately rather than waiting on the
+slower general detector. This is quarantined the same way -- the committed-but-unapplied marker is
+itself authoritative evidence of a stall, so the partition is marked `apply_stalled_since` and
+excluded from leader candidacy until real progress is observed.
+
 ### Why This Matters
 Previously, a wedged partition processor could silently report itself as healthy while making no
 progress, hiding the problem from monitoring and requiring manual intervention to recover. This

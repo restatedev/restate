@@ -21,11 +21,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::{StreamExt, TryStreamExt};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, instrument, warn};
 
+use restate_bifrost::CommitToken;
 use restate_core::network::{Oneshot, Reciprocal, TransportConnect};
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskKind};
 use restate_errors::NotRunningError;
@@ -52,7 +53,7 @@ use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionId};
 use restate_types::identifiers::{PartitionKey, PartitionProcessorRpcRequestId};
 use restate_types::invocation::FencingToken;
 use restate_types::live::LiveLoadExt;
-use restate_types::logs::Keys;
+use restate_types::logs::{Keys, Lsn};
 use restate_types::message::MessageIndex;
 use restate_types::net::ingest::IngestRecord;
 use restate_types::net::partition_processor::{
@@ -119,6 +120,20 @@ pub(crate) enum Error {
         name: &'static str,
         cause: TaskTermination,
     },
+    /// Option D: the Candidate activation watchdog's deadline fired -- our own `AnnounceLeader`
+    /// marker committed to the log (the commit token resolved `Ok(())`) but was never applied
+    /// within `candidate_activation_timeout`. This is authoritative lag evidence (A2): the PPM's
+    /// `Stopped` handler quarantines this partition for an apply stall using `bail_lsn`, the exact
+    /// live FSM applied LSN captured at the deadline (A4).
+    #[error(
+        "committed AnnounceLeader marker for leader epoch {leader_epoch} was not applied within \
+         {committed_for:?} of commit; bailing (applied lsn at deadline: {bail_lsn})"
+    )]
+    AnnounceNotApplied {
+        leader_epoch: LeaderEpoch,
+        committed_for: Duration,
+        bail_lsn: Lsn,
+    },
 }
 
 impl Error {
@@ -158,11 +173,26 @@ pub(crate) enum ActionEffect {
     AwaitingRpcSelfProposeDone,
 }
 
+/// Option D: tracks the commit/apply lifecycle of a Candidate's self-proposed `AnnounceLeader`
+/// marker, driving the activation watchdog in [`LeadershipState::run`].
+enum CommitState {
+    /// Commit token outstanding; the marker has not yet committed to the log.
+    Pending(CommitToken),
+    /// The marker committed at this (monotonic) instant. The watchdog now sleeps until
+    /// `candidate_activation_timeout` past this (or later, if the FSM keeps catching up).
+    CommittedAt(Instant),
+    /// The commit notifier was dropped (`Err(RecvError)`) without ever resolving `Ok(())`. This
+    /// disarms the watchdog -- it never means the marker committed, and it must never transition
+    /// to `CommittedAt`. The appender's own death still surfaces separately via `join_on_err`.
+    NotifierLost,
+}
+
 enum State {
     Follower,
     Candidate {
         at: Instant,
         leader_epoch: LeaderEpoch,
+        commit: CommitState,
         // to be able to move out of it
         self_proposer: Option<SelfProposer>,
     },
@@ -289,13 +319,14 @@ where
             &node_ctx.bifrost,
         )?;
 
-        self_proposer
-            .self_propose(ctx.key_range().start(), announce_leader)
+        let commit_token = self_proposer
+            .self_propose_with_notification(ctx.key_range().start(), announce_leader)
             .await?;
 
         self.state = State::Candidate {
             at: Instant::now(),
             leader_epoch,
+            commit: CommitState::Pending(commit_token),
             self_proposer: Some(self_proposer),
         };
 
@@ -464,6 +495,7 @@ where
             at,
             leader_epoch,
             self_proposer,
+            ..
         }
         | State::BecomingLeader {
             at,
@@ -827,18 +859,94 @@ where
     /// * Leader: Await action effects and monitor appender task
     pub async fn run(
         &mut self,
-        ctx: impl Processor + HasVQueues,
+        ctx: impl Processor + HasVQueues + HasStatus,
+        candidate_activation_timeout: Duration,
     ) -> Result<Vec<ActionEffect>, Error> {
         match &mut self.state {
             State::Follower => Ok(futures::future::pending::<Vec<_>>().await),
-            State::Candidate { self_proposer, .. }
-            | State::BecomingLeader { self_proposer, .. } => Err(self_proposer
+            State::Candidate {
+                self_proposer,
+                commit,
+                leader_epoch,
+                ..
+            } => {
+                Self::run_candidate(
+                    self_proposer.as_mut().expect("must be present"),
+                    commit,
+                    *leader_epoch,
+                    ctx,
+                    candidate_activation_timeout,
+                )
+                .await
+            }
+            State::BecomingLeader { self_proposer, .. } => Err(self_proposer
                 .as_mut()
                 .expect("must be present")
                 .join_on_err()
                 .await
                 .expect_err("never should never be returned")),
             State::Leader(leader_state) => leader_state.run(ctx).await,
+        }
+    }
+
+    /// Option D: the Candidate activation watchdog. Cancellation-safe -- on token resolution it
+    /// only mutates `commit` and returns `Ok(vec![])`; the actual deadline transition happens on
+    /// the *next* call (the outer PP loop always re-enters `run()`), so this must never be called
+    /// from anywhere but the top of `run`'s `Candidate` arm. See the module doc / DEFECTB Stage 3
+    /// for the full design.
+    async fn run_candidate(
+        self_proposer: &mut SelfProposer,
+        commit: &mut CommitState,
+        leader_epoch: LeaderEpoch,
+        ctx: impl HasStatus + HasFsm,
+        candidate_activation_timeout: Duration,
+    ) -> Result<Vec<ActionEffect>, Error> {
+        match commit {
+            CommitState::Pending(commit_token) => {
+                tokio::select! {
+                    err = self_proposer.join_on_err() => Err(err.expect_err("never should never be returned")),
+                    result = commit_token => {
+                        *commit = Self::commit_state_after_token(result);
+                        Ok(Vec::new())
+                    }
+                }
+            }
+            CommitState::CommittedAt(committed_at) => {
+                let committed_at = *committed_at;
+                // The FSM catching up on backlog after commit keeps extending the deadline --
+                // only a candidate that's both committed *and* stopped applying entirely times out.
+                let deadline = committed_at.max(
+                    ctx.status()
+                        .last_applied_at_instant()
+                        .unwrap_or(committed_at),
+                ) + candidate_activation_timeout;
+                tokio::select! {
+                    err = self_proposer.join_on_err() => Err(err.expect_err("never should never be returned")),
+                    _ = tokio::time::sleep_until(deadline) => Err(Error::AnnounceNotApplied {
+                        leader_epoch,
+                        committed_for: committed_at.elapsed(),
+                        // A4: the exact live FSM applied LSN, not a possibly-stale tracker sample.
+                        bail_lsn: ctx.fsm().last_applied_lsn(),
+                    }),
+                }
+            }
+            CommitState::NotifierLost => Err(self_proposer
+                .join_on_err()
+                .await
+                .expect_err("never should never be returned")),
+        }
+    }
+
+    /// Only `Ok(())` means the marker committed. `Err(RecvError)` means the notifier channel was
+    /// dropped without ever confirming a commit -- never treat that as `CommittedAt`; the
+    /// appender's own death still surfaces separately via `join_on_err`. Split out from
+    /// [`Self::run_candidate`] so the transition is unit-testable without a live `CommitToken`
+    /// (`CommitToken`'s `Output` is exactly `Result<(), oneshot::error::RecvError>`, so a plain
+    /// `oneshot::channel` exercises the identical transition).
+    fn commit_state_after_token(result: Result<(), oneshot::error::RecvError>) -> CommitState {
+        match result {
+            Ok(()) => CommitState::CommittedAt(Instant::now()),
+            Err(_) => CommitState::NotifierLost,
         }
     }
 
@@ -1035,6 +1143,7 @@ impl shuffle::OutboxReader for OutboxReader {
 mod tests {
     use std::num::NonZeroUsize;
     use std::sync::Arc;
+    use std::time::Duration;
 
     use test_log::test;
     use tokio_stream::StreamExt;
@@ -1044,8 +1153,10 @@ mod tests {
     use restate_core::partitions::PartitionRouting;
     use restate_core::{TaskCenter, TestCoreEnv};
     use restate_ingestion_client::{IngestionClient, SessionOptions};
-    use restate_partition_store::PartitionStoreManager;
+    use restate_partition_store::{PartitionStore, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
+    use restate_storage_api::Transaction;
+    use restate_storage_api::deduplication_table::{DedupSequenceNumber, EpochSequenceNumber};
     use restate_types::config::Configuration;
     use restate_types::identifiers::{LeaderEpoch, PartitionId};
     use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
@@ -1055,11 +1166,12 @@ mod tests {
     };
     use restate_types::sharding::KeyRange;
     use restate_types::{GenerationalNodeId, Version};
-    use restate_wal_protocol::Command;
-    use restate_wal_protocol::Envelope;
+    use restate_wal_protocol::control::UpdatePartitionDurabilityCommand;
+    use restate_wal_protocol::{Command, Destination, Envelope};
     use restate_worker_api::invoker::capacity::InvokerCapacity;
 
-    use crate::partition::leadership::{LeadershipState, State};
+    use crate::partition::leadership::self_proposer::SelfProposer;
+    use crate::partition::leadership::{CommitState, Error, LeadershipState, State};
     use crate::partition::processor::ProcessorRawContext;
     use crate::partition::{LeadershipInfo, NodeContext};
     use crate::partition_processor_manager::PartitionLeaderHandlesRegistry;
@@ -1183,5 +1295,294 @@ mod tests {
             .await;
         RocksDbManager::get().shutdown().await;
         Ok(())
+    }
+
+    /// Shared setup for the Candidate activation watchdog tests: builds a fresh in-memory
+    /// bifrost + node context and drives `LeadershipState` up to (but not through)
+    /// `run_for_leader`, mirroring `become_leader_then_step_down`'s preamble.
+    async fn setup_candidate() -> googletest::Result<(
+        NodeContext,
+        ProcessorRawContext,
+        LeadershipState<restate_core::network::FailingConnector>,
+        PartitionStore,
+    )> {
+        let env = TestCoreEnv::create_with_single_node(0, 0).await;
+
+        RocksDbManager::init();
+        let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
+        let replica_set_states = PartitionReplicaSetStates::default();
+
+        let partition_store_manager = PartitionStoreManager::create(true).await?;
+
+        let ingress = IngestionClient::new(
+            env.networking.clone(),
+            env.metadata.updateable_partition_table(),
+            PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
+            NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
+            SessionOptions::default(),
+        );
+
+        let node_ctx = NodeContext::new(
+            NODE_ID,
+            Configuration::live(),
+            replica_set_states.clone(),
+            RuleBookCacheHandle::detached(),
+            bifrost.clone(),
+            InvokerCapacity::new_unlimited(),
+            PartitionLeaderHandlesRegistry::default(),
+        );
+
+        let partition_store = partition_store_manager.open(&PARTITION, None).await?;
+        let ctx = ProcessorRawContext::new(Arc::new(PARTITION), PersistedFeatures::default());
+
+        let (leader_query_tx, _leader_query_rx) = restate_worker_api::channel();
+        let state = LeadershipState::new(PARTITION_ID, ingress, leader_query_tx);
+
+        Ok((node_ctx, ctx, state, partition_store))
+    }
+
+    async fn become_candidate(
+        state: &mut LeadershipState<restate_core::network::FailingConnector>,
+        node_ctx: &NodeContext,
+        ctx: &mut ProcessorRawContext,
+        leader_epoch: LeaderEpoch,
+    ) -> googletest::Result<()> {
+        let leadership_info = LeadershipInfo {
+            version: Version::MIN,
+            leader_epoch,
+            current_config: PartitionConfiguration::default().into(),
+            next_config: None,
+        };
+        state
+            .run_for_leader(ctx, node_ctx, Box::new(leadership_info))
+            .await?;
+        assert!(matches!(state.state, State::Candidate { .. }));
+        Ok(())
+    }
+
+    #[test(restate_core::test(start_paused = true))]
+    async fn candidate_watchdog_bails() -> googletest::Result<()> {
+        let (node_ctx, mut ctx, mut state, _partition_store) = setup_candidate().await?;
+        let leader_epoch = LeaderEpoch::from(1);
+        become_candidate(&mut state, &node_ctx, &mut ctx, leader_epoch).await?;
+
+        let candidate_activation_timeout = Duration::from_secs(30);
+
+        // Never deliver `on_announce_leader`. First poll drains the real (already-enqueued)
+        // commit notification: Pending -> CommittedAt.
+        let effects = state.run(&mut ctx, candidate_activation_timeout).await?;
+        assert!(effects.is_empty());
+        assert!(matches!(
+            state.state,
+            State::Candidate {
+                commit: CommitState::CommittedAt(_),
+                ..
+            }
+        ));
+
+        // Nothing else can make progress, so paused time auto-advances straight to the deadline.
+        let err = state
+            .run(&mut ctx, candidate_activation_timeout)
+            .await
+            .expect_err("must bail once the deadline elapses with the marker unapplied");
+        assert!(matches!(
+            err,
+            Error::AnnounceNotApplied { leader_epoch: e, .. } if e == leader_epoch
+        ));
+
+        TaskCenter::current()
+            .shutdown_node("test_completed", 0)
+            .await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
+    }
+
+    #[test(restate_core::test(start_paused = true))]
+    async fn candidate_watchdog_late_commit() -> googletest::Result<()> {
+        let (node_ctx, mut ctx, mut state, _partition_store) = setup_candidate().await?;
+        let leader_epoch = LeaderEpoch::from(1);
+        become_candidate(&mut state, &node_ctx, &mut ctx, leader_epoch).await?;
+
+        let candidate_activation_timeout = Duration::from_secs(30);
+
+        // Let a long time pass before ever polling the commit token -- simulating a commit
+        // that resolves long after the Candidate campaign started (`at`). The real append
+        // already completed in the background (it doesn't depend on virtual time), so the
+        // first poll below observes `Ok(())` immediately and stamps `CommittedAt` at *now*.
+        tokio::time::advance(candidate_activation_timeout + Duration::from_secs(10)).await;
+        state.run(&mut ctx, candidate_activation_timeout).await?;
+
+        // If the deadline were (wrongly) measured from Candidate `at` instead of the commit
+        // resolution, it would already be elapsed. Advancing by just under the full timeout
+        // from *now* must not bail yet.
+        tokio::time::advance(candidate_activation_timeout - Duration::from_secs(1)).await;
+        let result = tokio::time::timeout(
+            Duration::from_millis(1),
+            state.run(&mut ctx, candidate_activation_timeout),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "deadline must be measured from commit resolution, not from Candidate `at`"
+        );
+
+        // Advancing past the full timeout from the (late) commit must bail.
+        tokio::time::advance(Duration::from_secs(2)).await;
+        let err = state
+            .run(&mut ctx, candidate_activation_timeout)
+            .await
+            .expect_err("must bail once the full window has elapsed since the late commit");
+        assert!(matches!(err, Error::AnnounceNotApplied { .. }));
+
+        TaskCenter::current()
+            .shutdown_node("test_completed", 0)
+            .await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
+    }
+
+    #[test(restate_core::test(start_paused = true))]
+    async fn candidate_watchdog_catchup_extends() -> googletest::Result<()> {
+        let (node_ctx, mut ctx, mut state, mut partition_store) = setup_candidate().await?;
+        let leader_epoch = LeaderEpoch::from(1);
+        become_candidate(&mut state, &node_ctx, &mut ctx, leader_epoch).await?;
+
+        let candidate_activation_timeout = Duration::from_secs(30);
+        state.run(&mut ctx, candidate_activation_timeout).await?;
+
+        // Advance partway toward the deadline, then record real apply progress -- this must
+        // push the deadline out from the new instant, not the original commit time.
+        tokio::time::advance(candidate_activation_timeout / 2).await;
+        let mut txn = partition_store.transaction();
+        ctx.update_last_applied_lsn(&mut txn, Lsn::new(1))?;
+        txn.commit().await?;
+
+        // Advance past what would have been the *original* deadline (commit + timeout). Since
+        // the deadline now extends from the more recent apply progress, this must not bail.
+        tokio::time::advance(candidate_activation_timeout / 2 + Duration::from_millis(500)).await;
+        let result = tokio::time::timeout(
+            Duration::from_millis(1),
+            state.run(&mut ctx, candidate_activation_timeout),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "must not bail: catch-up progress must extend the deadline"
+        );
+
+        // Advance past the (extended) deadline and confirm it does bail.
+        tokio::time::advance(candidate_activation_timeout / 2 + Duration::from_secs(1)).await;
+        let err = state
+            .run(&mut ctx, candidate_activation_timeout)
+            .await
+            .expect_err("must eventually bail once apply progress also stops");
+        assert!(matches!(err, Error::AnnounceNotApplied { .. }));
+
+        TaskCenter::current()
+            .shutdown_node("test_completed", 0)
+            .await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
+    }
+
+    #[test(restate_core::test(start_paused = true))]
+    async fn candidate_activates_before_deadline() -> googletest::Result<()> {
+        let (mut node_ctx, mut ctx, mut state, mut partition_store) = setup_candidate().await?;
+        let leader_epoch = LeaderEpoch::from(1);
+        become_candidate(&mut state, &node_ctx, &mut ctx, leader_epoch).await?;
+
+        let candidate_activation_timeout = Duration::from_secs(30);
+        state.run(&mut ctx, candidate_activation_timeout).await?;
+
+        // Deliver the announce well before the deadline: the marker applied, so the campaign
+        // must win instead of the watchdog ever firing.
+        state
+            .on_announce_leader(&mut node_ctx, &mut ctx, &mut partition_store, leader_epoch)
+            .await?;
+        assert!(matches!(state.state, State::BecomingLeader { .. }));
+
+        TaskCenter::current()
+            .shutdown_node("test_completed", 0)
+            .await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
+    }
+
+    #[test(restate_core::test)]
+    async fn self_propose_with_notification_carries_dedup() -> googletest::Result<()> {
+        let env = TestCoreEnv::create_with_single_node(0, 0).await;
+        RocksDbManager::init();
+        let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
+
+        let leader_epoch = LeaderEpoch::from(1);
+        let mut self_proposer = SelfProposer::new(
+            PARTITION.log_id(),
+            EpochSequenceNumber::new(leader_epoch),
+            &bifrost,
+        )?;
+
+        let commit_token = self_proposer
+            .self_propose_with_notification(
+                PARTITION_KEY_RANGE.start(),
+                Command::UpdatePartitionDurability(UpdatePartitionDurabilityCommand {
+                    partition_id: PARTITION_ID,
+                    durable_point: Lsn::OLDEST,
+                    modification_time: restate_types::time::MillisSinceEpoch::now(),
+                }),
+            )
+            .await?;
+        commit_token.await.expect("commit token resolves");
+
+        let mut reader = bifrost
+            .create_reader(PARTITION_ID.into(), KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)
+            .expect("valid reader");
+        let record = reader.next().await.unwrap()?;
+        let envelope = record.try_decode::<Envelope>().unwrap()?;
+
+        let_assert!(
+            Destination::Processor {
+                dedup: Some(dedup),
+                ..
+            } = envelope.header.dest
+        );
+        assert!(
+            matches!(dedup.sequence_number, DedupSequenceNumber::Esn(_)),
+            "self_propose_with_notification must carry ESN dedup, same as self_propose"
+        );
+
+        TaskCenter::current()
+            .shutdown_node("test_completed", 0)
+            .await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
+    }
+
+    #[test(tokio::test)]
+    async fn commit_token_err_disarms() {
+        // `CommitToken`'s `Output` is exactly `Result<(), oneshot::error::RecvError>` -- a plain
+        // `oneshot::channel` whose sender is dropped exercises the identical transition
+        // `run_candidate` applies to a real `CommitToken` (see `commit_state_after_token`'s doc:
+        // forcing a genuine dropped-notifier through the public bifrost API deterministically
+        // would require injecting a hard, unrecoverable append failure, which isn't reachable
+        // through `SelfProposer`/`AppenderHandle`'s graceful-only cancellation surface).
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        drop(tx);
+        let result = rx.await;
+        assert!(result.is_err());
+
+        let commit_state =
+            LeadershipState::<restate_core::network::FailingConnector>::commit_state_after_token(
+                result,
+            );
+        assert!(matches!(commit_state, CommitState::NotifierLost));
+
+        // The success path, for contrast: never transitions to NotifierLost.
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tx.send(()).expect("receiver still alive");
+        let commit_state =
+            LeadershipState::<restate_core::network::FailingConnector>::commit_state_after_token(
+                rx.await,
+            );
+        assert!(matches!(commit_state, CommitState::CommittedAt(_)));
     }
 }
