@@ -1651,4 +1651,93 @@ mod tests {
             "reconfiguration must not complete while the newly-added next replica is quarantined"
         );
     }
+
+    /// Finding 6 (DEFECTB review): when the live `ClusterState` has no generation info for a
+    /// next-replica node (e.g. a gossip gap), and `quarantine_memory` still retains a memo for
+    /// that (partition, plain node) under *some* generation, the missing generation must not be
+    /// read as "not quarantined" -- fail closed.
+    #[test]
+    fn should_complete_reconfiguration_fails_closed_on_missing_generation_with_quarantine_memo() {
+        let partition_id = PartitionId::MIN;
+        let next_node = GenerationalNodeId::new(2, 1);
+
+        let mut current_replica_set = NodeSet::new();
+        current_replica_set.insert(PlainNodeId::new(1));
+        let current = PartitionConfiguration::new(
+            ReplicationProperty::new_unchecked(1),
+            current_replica_set,
+            Default::default(),
+        );
+        let mut next_replica_set = NodeSet::new();
+        next_replica_set.insert(next_node.as_plain());
+        let next = PartitionConfiguration::new(
+            ReplicationProperty::new_unchecked(1),
+            next_replica_set,
+            Default::default(),
+        );
+        let partition_state = PartitionState::new(current, Some(next), LeadershipPolicy::default());
+
+        let nodes_config = NodesConfiguration::new_for_testing();
+        // Deliberately omit `next_node` from `cluster_state`, so
+        // `get_node_state_and_generation(next_node.as_plain())` returns `None` -- the "no
+        // generation info available" case this finding addresses.
+        let cluster_state = cluster_state_with(&[]);
+
+        let mut legacy_state = LegacyClusterState::empty();
+        legacy_state.nodes.insert(
+            next_node.as_plain(),
+            LegacyNodeState::Alive(AliveNode {
+                last_heartbeat_at: MillisSinceEpoch::now(),
+                generational_node_id: next_node,
+                partitions: [(
+                    partition_id,
+                    PartitionProcessorStatus {
+                        replay_status: ReplayStatus::Active,
+                        ..PartitionProcessorStatus::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                uptime: Duration::ZERO,
+            }),
+        );
+
+        // A retained memo under an *older* generation of the same plain node -- the live
+        // `ClusterState` doesn't know this node's current generation, but `quarantine_memory`
+        // still has a reason to distrust it.
+        let mut quarantine_memory = HashMap::default();
+        quarantine_memory.insert(
+            (partition_id, GenerationalNodeId::new(2, 0)),
+            QuarantineMemo {
+                since: MillisSinceEpoch::now(),
+            },
+        );
+
+        assert!(
+            !Scheduler::<restate_core::network::FailingConnector>::should_complete_reconfiguration(
+                partition_id,
+                &cluster_state,
+                &nodes_config,
+                &partition_state,
+                &legacy_state,
+                &quarantine_memory,
+            ),
+            "missing generation info must fail closed when a quarantine memo exists for this node"
+        );
+
+        // With no retained memo for this plain node under any generation, the missing generation
+        // info is read as "no reason to believe it's stalled" -- reconfiguration may complete.
+        quarantine_memory.clear();
+        assert!(
+            Scheduler::<restate_core::network::FailingConnector>::should_complete_reconfiguration(
+                partition_id,
+                &cluster_state,
+                &nodes_config,
+                &partition_state,
+                &legacy_state,
+                &quarantine_memory,
+            ),
+            "missing generation info with no retained memo must not block reconfiguration"
+        );
+    }
 }

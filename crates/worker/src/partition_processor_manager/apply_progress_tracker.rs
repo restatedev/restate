@@ -121,6 +121,13 @@ impl HeartbeatView {
     pub fn phase_age(&self, now: Instant) -> Duration {
         now.saturating_duration_since(self.changed_at)
     }
+
+    /// The raw `(phase, counter)` this view last observed. Lets a caller detect "has anything
+    /// happened since this specific sample" by comparing against a fresh raw read, independent of
+    /// `loop_state`'s freshness/gating logic (finding 4, DEFECTB re-review).
+    pub fn last_sample(&self) -> (LoopPhase, u64) {
+        (self.last_phase, self.last_counter)
+    }
 }
 
 /// A single tail observation, fed by both the 1s `Fast` poller and the mandatory `ConsistentRead`
