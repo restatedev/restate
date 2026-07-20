@@ -21,6 +21,7 @@ restate-workspace-hack = { workspace = true }
 restate-bifrost = { workspace = true, features = ["memory-loglet", "local-loglet"] }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-errors = { workspace = true }
+restate-memory = { workspace = true }
 restate-metadata-server = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-test-util = { workspace = true }
