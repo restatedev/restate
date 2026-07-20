@@ -95,7 +95,8 @@ use self::processor::commands::{
 use self::processor::*;
 use self::state_machine::StateMachine;
 use crate::metric_definitions::{
-    LEADER_LABEL, LEADER_LABEL_LEADER, PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
+    LEADER_LABEL, LEADER_LABEL_LEADER, PARTITION_PROCESSOR_LOOP_DURATION_SECONDS,
+    PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
 };
 use crate::partition::leadership::LeadershipState;
 use crate::partition::processor::leadership::LeadershipContext;
@@ -493,6 +494,7 @@ where
         // Note: we didn't remove the leader label to avoid breaking existing dashboards. This can
         // be removed in the future if deemed necessary.
         let leader_record_write_to_read_latency = histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, LEADER_LABEL => LEADER_LABEL_LEADER);
+        let loop_duration = histogram!(PARTITION_PROCESSOR_LOOP_DURATION_SECONDS);
 
         // Start reading after the last applied lsn
         let mut record_stream = std::pin::pin!(
@@ -524,6 +526,7 @@ where
         let mut txn = cloned_partition_store.transaction();
 
         loop {
+            let loop_started_at = Instant::now();
             let config = self.node_ctx.config.live_load();
             let max_batching_size = config.worker.max_command_batch_size();
             let bytes_limit = config.worker.max_command_batch_bytes.as_usize();
@@ -635,6 +638,7 @@ where
                     self.on_leader_query(leader_query_cmd);
                 }
             }
+            loop_duration.record(loop_started_at.elapsed());
             // Allow other tasks on this thread to run, but only if we have exhausted the coop
             // budget.
             tokio::task::consume_budget().await;
