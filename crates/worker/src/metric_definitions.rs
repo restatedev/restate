@@ -28,6 +28,7 @@ pub const LEADER_LABEL_FOLLOWER: &str = "0";
 //                     not configured.
 pub const PARTITION_BLOCKED_FLARE: &str = "restate.partition.blocked_flare";
 pub const FLARE_REASON_VERSION_BARRIER: &str = "version_barrier";
+pub const FLARE_REASON_MIGRATION_BARRIER: &str = "migration_barrier";
 pub const FLARE_REASON_SNAPSHOT_UNAVAILABLE: &str = "snapshot-unavailable";
 
 pub const PARTITION_APPLY_COMMAND: &str = "restate.partition.apply_command_duration.seconds";
@@ -58,8 +59,8 @@ pub const PARTITION_IS_EFFECTIVE_LEADER: &str = "restate.partition.is_effective_
 pub const PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS: &str =
     "restate.partition.record_committed_to_read_latency.seconds";
 
-pub const PARTITION_SHUFFLE_MESSAGE_COUNT: &str = "restate.partition.shuffle.message.count";
-pub const PARTITION_SHUFFLE_INFLIGHT_COUNT: &str = "restate.partition.shuffle.inflight.count";
+pub const PARTITION_SHUFFLE_MESSAGE_COUNT: &str = "restate.partition.shuffle.message.total";
+pub const PARTITION_SHUFFLE_INFLIGHT_RECORDS: &str = "restate.partition.shuffle.inflight";
 
 pub(crate) fn describe_metrics() {
     describe_gauge!(
@@ -150,8 +151,8 @@ pub(crate) fn describe_metrics() {
         "Number of records shuffled by source partition",
     );
 
-    describe_histogram!(
-        PARTITION_SHUFFLE_INFLIGHT_COUNT,
+    describe_gauge!(
+        PARTITION_SHUFFLE_INFLIGHT_RECORDS,
         Unit::Count,
         "Number of inflight records by source partition"
     );

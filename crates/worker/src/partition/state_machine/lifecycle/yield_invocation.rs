@@ -20,8 +20,10 @@ use restate_types::identifiers::InvocationId;
 use restate_types::sharding::WithPartitionKey;
 use restate_types::vqueues::EntryId;
 use restate_vqueues::VQueue;
+use restate_vqueues::context::HasVQueuesMut;
 
 use crate::debug_if_leader;
+use crate::partition::processor::Processor;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 /// Yields an invocation from the running stage back to the inbox stage the vqueue it belongs to.
@@ -34,12 +36,13 @@ pub struct YieldInvocationCommand<'e> {
     pub resume_at: Option<RoughTimestamp>,
 }
 
-impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
+impl<'e, 'ctx: 'e, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
     for YieldInvocationCommand<'e>
 where
     S: WriteVQueueTable + ReadVQueueTable + WriteLockTable + ReadVQueueTable,
+    P: Processor + HasVQueuesMut,
 {
-    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
+    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
         debug_if_leader!(ctx.is_leader, "Effect: Yield");
 
         // From scheduler's yield
@@ -71,7 +74,7 @@ where
         VQueue::get(
             header.vqueue_id(),
             ctx.storage,
-            ctx.vqueues_cache,
+            ctx.processor.vqueues_mut(),
             ctx.is_leader.then_some(ctx.action_collector),
         )
         .await?

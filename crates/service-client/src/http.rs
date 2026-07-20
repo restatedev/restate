@@ -354,8 +354,8 @@ impl Body for ResponseBody {
 pub enum HttpError {
     #[error(transparent)]
     Http(#[from] http::Error),
-    #[error("server possibly supports only HTTP1.1, consider discovery with --use-http1.1.\nReason: {}", FormatHyperError(.0))]
-    PossibleHTTP11Only(#[source] hyper_util::client::legacy::Error),
+    #[error("server possibly supports only HTTP1.1, consider discovery with --use-http1.1.")]
+    PossibleHTTP11Only,
     #[error("server possibly supports only HTTP/2, consider discovering without --use-http1.1.\nReason: {}", FormatHyperError(.0))]
     PossibleHTTP2Only(#[source] hyper_util::client::legacy::Error),
     #[error("unable to reach the remote endpoint.\nReason: {}", FormatHyperError(.0))]
@@ -363,7 +363,21 @@ pub enum HttpError {
     #[error("{}", FormatHyperError(.0))]
     Hyper(#[source] hyper_util::client::legacy::Error),
     #[error("h2 pool connection error: {0}")]
-    PoolError(#[from] pool::Error),
+    PoolError(pool::Error),
+}
+
+impl From<pool::Error> for HttpError {
+    fn from(value: pool::Error) -> Self {
+        match &value {
+            pool::Error::H2(err)
+                if let Some(reason) = err.reason()
+                    && reason == h2::Reason::FRAME_SIZE_ERROR =>
+            {
+                HttpError::PossibleHTTP11Only
+            }
+            _ => HttpError::PoolError(value),
+        }
+    }
 }
 
 impl HttpError {
@@ -373,7 +387,7 @@ impl HttpError {
         match self {
             HttpError::Hyper(err) => err.is_retryable(),
             HttpError::Http(err) => err.is_retryable(),
-            HttpError::PossibleHTTP11Only(_) => false,
+            HttpError::PossibleHTTP11Only => false,
             HttpError::PossibleHTTP2Only(_) => false,
             HttpError::Connect(_) => true,
             HttpError::PoolError(_) => true,
@@ -429,7 +443,7 @@ impl HttpError {
 impl From<hyper_util::client::legacy::Error> for HttpError {
     fn from(err: hyper_util::client::legacy::Error) -> Self {
         if Self::is_possible_h11_only_error(&err) {
-            Self::PossibleHTTP11Only(err)
+            Self::PossibleHTTP11Only
         } else if Self::is_possible_h2_only_error(&err) {
             Self::PossibleHTTP2Only(err)
         } else if err.is_connect() {

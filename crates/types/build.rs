@@ -112,6 +112,10 @@ fn build_restate_proto(out_dir: &Path) -> std::io::Result<()> {
         .enum_attribute("LogServerStatus", "#[derive(::serde::Serialize)]")
         .enum_attribute("WorkerStatus", "#[derive(::serde::Serialize)]")
         .enum_attribute("MetadataServerStatus", "#[derive(::serde::Serialize)]")
+        .enum_attribute(
+            "DetailedRunMode",
+            "#[derive(::strum::Display, ::restate_encoding::NetSerde, ::bilrost::Enumeration)]",
+        )
         .btree_map([
             ".restate.cluster.ClusterState",
             ".restate.cluster.AliveNode",

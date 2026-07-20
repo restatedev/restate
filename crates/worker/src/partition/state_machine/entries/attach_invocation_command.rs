@@ -8,24 +8,27 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::outbox_table::{OutboxMessage, WriteOutboxTable};
 use restate_storage_api::timer_table::WriteTimerTable;
 use restate_types::invocation::{AttachInvocationRequest, ServiceInvocationResponseSink};
 use restate_types::journal_v2::AttachInvocationCommand;
 
+use crate::partition::processor::ProcessorContext;
+use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
+
 pub(super) type ApplyAttachInvocationCommand<'e> =
     ApplyJournalCommandEffect<'e, AttachInvocationCommand>;
 
-impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
+impl<'e, 'ctx: 'e, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
     for ApplyAttachInvocationCommand<'e>
 where
     S: WriteTimerTable + WriteOutboxTable + WriteFsmTable,
+    P: ProcessorContext,
 {
-    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
-        ctx.handle_outgoing_message(OutboxMessage::AttachInvocation(AttachInvocationRequest {
+    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
+        ctx.do_enqueue_into_outbox(OutboxMessage::AttachInvocation(AttachInvocationRequest {
             invocation_query: self.entry.target.into(),
             block_on_inflight: true,
             response_sink: ServiceInvocationResponseSink::partition_processor(

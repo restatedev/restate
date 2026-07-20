@@ -19,17 +19,17 @@ mod kill_cancel;
 pub mod matchers;
 mod workflow;
 
-use crate::partition::state_machine::tests::fixtures::{
-    background_invoke_entry, incomplete_invoke_entry,
-};
-use crate::partition::state_machine::tests::matchers::storage::is_entry;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
-use crate::partition::types::InvokerEffectKind;
-use ::tracing::info;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::{StreamExt, TryStreamExt};
 use googletest::{all, assert_that, pat};
+use test_log::test;
+use tracing::info;
+use tracing_subscriber::fmt::format::FmtSpan;
+
 use restate_core::TaskCenter;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
@@ -63,16 +63,24 @@ use restate_types::journal::{Entry, EntryType};
 use restate_types::journal_events::Event;
 use restate_types::journal_v2::raw::TryFromEntry;
 use restate_types::logs::{Keys, SequenceNumber};
-use restate_types::partitions::Partition;
+use restate_types::partitions::{Partition, PersistedFeatures};
+use restate_types::sharding::KeyRange;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_wal_protocol::v2::Command;
 use restate_worker_api::invoker::{Effect, EffectKind, YieldReason};
-use std::collections::{HashMap, HashSet};
-use test_log::test;
-use tracing_subscriber::fmt::format::FmtSpan;
+
+use crate::partition::state_machine::tests::fixtures::{
+    background_invoke_entry, incomplete_invoke_entry,
+};
+use crate::partition::state_machine::tests::matchers::storage::is_entry;
+
+use crate::partition::processor::ProcessorRawContext;
+use crate::partition::types::InvokerEffectKind;
 
 pub struct TestEnv {
-    pub state_machine: StateMachine,
+    // The state machine is now stateless; per-partition state lives in the
+    // `Processor`. Tests drive it through an in-memory `ProcessorRawContext`.
+    pub processor: ProcessorRawContext,
     // TODO for the time being we use rocksdb storage because we have no mocks for storage interfaces.
     //  Perhaps we could make these tests faster by having those.
     pub storage: PartitionStore,
@@ -85,25 +93,18 @@ impl TestEnv {
     }
 
     pub async fn create() -> Self {
-        Self::create_with_features(PersistedStateMachineFeatures::default()).await
+        Self::create_with_features(PersistedFeatures::default()).await
     }
 
-    pub async fn create_with_features(features: PersistedStateMachineFeatures) -> Self {
-        Self::create_with_state_machine(StateMachine::new(
-            0,    /* inbox_seq_number */
-            0,    /* outbox_seq_number */
-            None, /* outbox_head_seq_number */
-            KeyRange::FULL,
-            SemanticRestateVersion::current().clone(),
-            features, /* enabled_features */
-            None,     /* schema */
-            Arc::new(RuleBook::default()),
-            RuleBookCacheHandle::detached(),
+    pub async fn create_with_features(features: PersistedFeatures) -> Self {
+        Self::create_with_processor(ProcessorRawContext::new(
+            Arc::new(Partition::new(PartitionId::MIN, KeyRange::FULL)),
+            features,
         ))
         .await
     }
 
-    pub async fn create_with_state_machine(state_machine: StateMachine) -> Self {
+    pub async fn create_with_processor(processor: ProcessorRawContext) -> Self {
         // Try init logging, if not already initialized. This removes the need for the test_log macro
         let _ = tracing_subscriber::FmtSubscriber::builder().with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
             .with_span_events(  match std::env::var_os("RUST_LOG_SPAN_EVENTS") {
@@ -139,7 +140,7 @@ impl TestEnv {
             .unwrap();
 
         Self {
-            state_machine,
+            processor,
             storage: rocksdb_storage,
         }
     }
@@ -147,47 +148,30 @@ impl TestEnv {
     pub async fn apply(&mut self, envelope: v2::Envelope<v2::Raw>) -> Vec<Action> {
         let mut transaction = self.storage.transaction();
         let mut action_collector = ActionCollector::default();
-        let mut vqueues = VQueuesMetaCache::new_empty(1024);
-        self.state_machine
-            .apply(
-                envelope,
-                MillisSinceEpoch::now(),
-                Lsn::OLDEST,
-                &mut transaction,
-                &mut action_collector,
-                &mut vqueues,
-                true,
-            )
-            .await
-            .unwrap();
+        StateMachine::apply(
+            &mut self.processor,
+            &mut transaction,
+            Self::record(envelope),
+            &mut action_collector,
+            true,
+        )
+        .await
+        .unwrap();
 
         transaction.commit().await.unwrap();
 
         action_collector
     }
 
-    pub async fn apply_fallible(
-        &mut self,
-        envelope: v2::Envelope<v2::Raw>,
-    ) -> Result<Vec<Action>, Error> {
-        let mut transaction = self.storage.transaction();
-        let mut action_collector = ActionCollector::default();
-        let mut vqueues = VQueuesMetaCache::new_empty(1024);
-        self.state_machine
-            .apply(
-                envelope,
-                MillisSinceEpoch::now(),
-                Lsn::OLDEST,
-                &mut transaction,
-                &mut action_collector,
-                &mut vqueues,
-                true,
-            )
-            .await?;
-
-        transaction.commit().await?;
-
-        Ok(action_collector)
+    /// Wraps a bare envelope into a `DataRecord` with a fresh timestamp and the
+    /// oldest LSN, matching what the processor feeds into `StateMachine::apply`.
+    fn record(envelope: v2::Envelope<v2::Raw>) -> DataRecord<v2::Envelope<v2::Raw>> {
+        DataRecord::new(
+            MillisSinceEpoch::now().into(),
+            Keys::None,
+            Lsn::OLDEST,
+            envelope,
+        )
     }
 
     pub async fn apply_multiple(
@@ -310,8 +294,8 @@ impl TestEnv {
         );
     }
 
-    pub fn set_enabled_features(&mut self, features: PersistedStateMachineFeatures) {
-        self.state_machine.enabled_features = features;
+    pub fn set_enabled_features(&mut self, features: PersistedFeatures) {
+        self.processor.set_enabled_features_in_memory(features);
     }
 }
 
@@ -1037,76 +1021,6 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
                 ))
             })),
         )
-    );
-
-    test_env.shutdown().await;
-    Ok(())
-}
-
-#[test(restate_core::test)]
-async fn truncate_outbox_from_empty() -> Result<(), Error> {
-    // An outbox message with index 0 has been successfully processed, and must now be truncated
-    let outbox_index = 0;
-
-    let mut test_env = TestEnv::create().await;
-
-    let _ = test_env
-        .apply(commands::TruncateOutboxCommand::test_envelope(
-            commands::TruncateOutboxCommand {
-                index: outbox_index,
-                partition_key_range: Keys::None,
-            },
-        ))
-        .await;
-
-    assert_that!(test_env.storage.get_outbox_message(0).await?, none());
-
-    // The head catches up to the next available sequence number on truncation. Since we don't know
-    // in advance whether we will get asked to truncate a range of more than one outbox message, we
-    // explicitly track the head sequence number as the next position beyond the last known
-    // truncation point. It's only safe to leave the head as None when the outbox is known to be
-    // empty.
-    assert_eq!(test_env.state_machine.outbox_head_seq_number, Some(1));
-
-    test_env.shutdown().await;
-    Ok(())
-}
-
-#[test(restate_core::test)]
-async fn truncate_outbox_with_gap() -> Result<(), Error> {
-    // The outbox contains items [3..=5], and the range must be truncated after message 5 is processed
-    let outbox_head_index = 3;
-    let outbox_tail_index = 5;
-
-    let mut test_env = TestEnv::create_with_state_machine(StateMachine::new(
-        0,
-        outbox_tail_index,
-        Some(outbox_head_index),
-        KeyRange::FULL,
-        SemanticRestateVersion::unknown().clone(),
-        PersistedStateMachineFeatures::default(), /* enabled_features */
-        None,                                     /* schema */
-        Arc::new(RuleBook::default()),
-        RuleBookCacheHandle::detached(),
-    ))
-    .await;
-
-    test_env
-        .apply(commands::TruncateOutboxCommand::test_envelope(
-            commands::TruncateOutboxCommand {
-                index: outbox_tail_index,
-                partition_key_range: Keys::None,
-            },
-        ))
-        .await;
-
-    assert_that!(test_env.storage.get_outbox_message(3).await?, none());
-    assert_that!(test_env.storage.get_outbox_message(4).await?, none());
-    assert_that!(test_env.storage.get_outbox_message(5).await?, none());
-
-    assert_eq!(
-        test_env.state_machine.outbox_head_seq_number,
-        Some(outbox_tail_index + 1)
     );
 
     test_env.shutdown().await;

@@ -20,6 +20,7 @@ use restate_types::invocation::client::PauseInvocationResponse;
 use restate_types::journal_events::raw::RawEvent;
 use restate_types::journal_events::{Event, PausedEvent};
 
+use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::lifecycle::pause_invocation;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
@@ -35,7 +36,7 @@ pub struct OnManualPauseCommand {
     pub response_sink: Option<InvocationMutationResponseSink>,
 }
 
-impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
+impl<'ctx, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
     for OnManualPauseCommand
 where
     S: ReadInvocationStatusTable
@@ -44,8 +45,9 @@ where
         + WriteVQueueTable
         + ReadVQueueTable
         + WriteLockTable,
+    P: ProcessorContext,
 {
-    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
+    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
         let OnManualPauseCommand {
             invocation_id,
             response_sink,

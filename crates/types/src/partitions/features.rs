@@ -31,7 +31,16 @@ use crate::{RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, SemanticRestateVersion
 ///
 /// *Since v1.7.0*
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, strum::FromRepr, strum::EnumString, strum::Display,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    strum::FromRepr,
+    strum::EnumString,
+    strum::IntoStaticStr,
+    strum::Display,
 )]
 #[strum(ascii_case_insensitive)]
 #[repr(u16)]
@@ -70,7 +79,7 @@ impl PartitionFeatureChange {
 
     /// Apply this change to the persisted feature set. Returns true if the feature
     /// change had an effect on the state machine features.
-    pub fn apply_to(self, features: &mut PersistedStateMachineFeatures) -> bool {
+    pub fn apply_to(self, features: &mut PersistedFeatures) -> bool {
         match self {
             Self::EnableJournalV2 => !std::mem::replace(&mut features.journal_v2, true),
             Self::EnableVqueues => !std::mem::replace(&mut features.vqueues, true),
@@ -89,7 +98,7 @@ impl PartitionFeatureChange {
 /// `false`).
 ///
 /// # Important
-/// When adding new fields to this struct, update [`PersistedStateMachineFeatures::enabled_names`]
+/// When adding new fields to this struct, update [`PersistedFeatures::enabled_names`]
 /// accordingly.
 ///
 /// *Since v1.7.0*
@@ -105,7 +114,7 @@ impl PartitionFeatureChange {
     serde::Serialize,
     serde::Deserialize,
 )]
-pub struct PersistedStateMachineFeatures {
+pub struct PersistedFeatures {
     /// Journal v2 should be used by this partition.
     ///
     /// *Since v1.7.0*
@@ -123,7 +132,7 @@ pub struct PersistedStateMachineFeatures {
     pub unique_random_seeds: bool,
 }
 
-impl PersistedStateMachineFeatures {
+impl PersistedFeatures {
     /// Names of features currently enabled, in declaration order.
     ///
     /// Adding a new feature requires adding one entry here.
@@ -138,7 +147,7 @@ impl PersistedStateMachineFeatures {
     }
 }
 
-impl StorageEncode for PersistedStateMachineFeatures {
+impl StorageEncode for PersistedFeatures {
     fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {
         encode::encode_bilrost(self, buf)
     }
@@ -148,7 +157,7 @@ impl StorageEncode for PersistedStateMachineFeatures {
     }
 }
 
-impl StorageDecode for PersistedStateMachineFeatures {
+impl StorageDecode for PersistedFeatures {
     fn decode<B: bytes::Buf>(
         buf: &mut B,
         kind: StorageCodecKind,
@@ -161,7 +170,7 @@ impl StorageDecode for PersistedStateMachineFeatures {
     }
 }
 
-impl FromIterator<PartitionFeatureChange> for PersistedStateMachineFeatures {
+impl FromIterator<PartitionFeatureChange> for PersistedFeatures {
     fn from_iter<I: IntoIterator<Item = PartitionFeatureChange>>(iter: I) -> Self {
         let mut features = Self::default();
         for change in iter {
@@ -188,7 +197,7 @@ mod tests {
 
     #[test]
     fn apply_to_sets_field() {
-        let mut features = PersistedStateMachineFeatures::default();
+        let mut features = PersistedFeatures::default();
         assert!(!features.vqueues);
         assert!(!features.unique_random_seeds);
         PartitionFeatureChange::EnableVqueues.apply_to(&mut features);
@@ -199,7 +208,7 @@ mod tests {
 
     #[test]
     fn enabled_names_reflects_set_flags() {
-        let mut features = PersistedStateMachineFeatures::default();
+        let mut features = PersistedFeatures::default();
         assert_eq!(
             features.enabled_names().collect::<Vec<_>>(),
             Vec::<&str>::new()

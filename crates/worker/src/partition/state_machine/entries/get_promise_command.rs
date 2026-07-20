@@ -8,10 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::debug_if_leader;
-use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use bytes::Bytes;
+use tracing::warn;
+
 use restate_storage_api::promise_table::{
     Promise, PromiseState, ReadPromiseTable, WritePromiseTable,
 };
@@ -19,16 +18,24 @@ use restate_types::invocation::JournalCompletionTarget;
 use restate_types::journal_v2::{
     EntryMetadata, GetPromiseCommand, GetPromiseCompletion, GetPromiseResult,
 };
-use tracing::warn;
+
+use crate::debug_if_leader;
+use crate::partition::processor::Processor;
+use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub(super) type ApplyGetPromiseCommand<'e> = ApplyJournalCommandEffect<'e, GetPromiseCommand>;
 
-impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
+impl<'e, 'ctx: 'e, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
     for ApplyGetPromiseCommand<'e>
 where
     S: ReadPromiseTable + WritePromiseTable,
+    P: Processor,
 {
-    async fn apply(mut self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
+    async fn apply(
+        mut self,
+        ctx: &'ctx mut StateMachineApplyContext<'s, S, P>,
+    ) -> Result<(), Error> {
         let invocation_metadata = self
             .invocation_status
             .get_invocation_metadata()

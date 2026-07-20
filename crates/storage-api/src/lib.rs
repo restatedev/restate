@@ -138,4 +138,7 @@ pub trait Transaction:
     + Send
 {
     fn commit(&mut self) -> impl Future<Output = Result<()>> + Send;
+
+    /// Returns the estimated size of the write transaction in bytes.
+    fn estimated_size_in_bytes(&self) -> usize;
 }

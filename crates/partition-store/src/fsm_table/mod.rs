@@ -24,7 +24,7 @@ use restate_types::identifiers::PartitionId;
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
 use restate_types::partitions::StorageVersion;
-use restate_types::partitions::features::PersistedStateMachineFeatures;
+use restate_types::partitions::features::PersistedFeatures;
 use restate_types::schema::Schema;
 use restate_types::storage::{StorageCodec, StorageDecode};
 
@@ -200,7 +200,7 @@ pub(crate) fn append_storage_version_to_wb(
     Ok(())
 }
 
-pub(crate) fn is_jc_orphan_cleanup_done<S: StorageAccess>(
+pub(crate) async fn is_jc_orphan_cleanup_done<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
 ) -> Result<bool> {
@@ -208,7 +208,7 @@ pub(crate) fn is_jc_orphan_cleanup_done<S: StorageAccess>(
         .map(|opt| opt.is_some())
 }
 
-pub(crate) fn put_jc_orphan_cleanup_done<S: StorageAccess>(
+pub(crate) async fn put_jc_orphan_cleanup_done<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
 ) -> Result<()> {
@@ -297,7 +297,7 @@ impl ReadFsmTable for PartitionDb {
         get_storage_codec_from_partition_db(self, fsm_variable::RULE_BOOK)
     }
 
-    async fn get_state_machine_features(&mut self) -> Result<PersistedStateMachineFeatures> {
+    async fn get_state_machine_features(&mut self) -> Result<PersistedFeatures> {
         get_storage_codec_from_partition_db(self, fsm_variable::STATE_MACHINE_FEATURES)
             .map(|opt| opt.unwrap_or_default())
     }
@@ -351,7 +351,7 @@ impl ReadFsmTable for PartitionStore {
         self.get_value_storage_codec(key)
     }
 
-    async fn get_state_machine_features(&mut self) -> Result<PersistedStateMachineFeatures> {
+    async fn get_state_machine_features(&mut self) -> Result<PersistedFeatures> {
         let key = create_key(self.partition_id(), fsm_variable::STATE_MACHINE_FEATURES);
         self.get_value_storage_codec(key)
             .map(|opt| opt.unwrap_or_default())
@@ -419,10 +419,7 @@ impl WriteFsmTable for PartitionStoreTransaction<'_> {
         self.put_kv_storage_codec(key, rule_book)
     }
 
-    fn put_state_machine_features(
-        &mut self,
-        features: &PersistedStateMachineFeatures,
-    ) -> Result<()> {
+    fn put_state_machine_features(&mut self, features: &PersistedFeatures) -> Result<()> {
         let key = create_key(self.partition_id(), fsm_variable::STATE_MACHINE_FEATURES);
         self.put_kv_storage_codec(key, features)
     }

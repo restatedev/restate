@@ -479,6 +479,68 @@ async fn query_sys_invocation_status_completed() {
     );
 }
 
+/// Regression: `NOT IN (> 3 values)` must not be used to build a lookup range
+/// from the excluded invocation IDs. Four values is the smallest list that
+/// survives DataFusion's inline-list simplifier as a negated `InListExpr`.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_sys_invocation_status_not_in() {
+    use datafusion::arrow::array::Array;
+
+    let invocation_target = InvocationTarget::mock_service();
+    let mut engine = MockQueryEngine::create().await;
+
+    let mut ids = Vec::new();
+    let mut tx = engine.partition_store().transaction();
+    for i in 1..=6u64 {
+        let id = InvocationId::from_parts(i, InvocationUuid::from_u128(i as u128));
+        tx.put_invocation_status(
+            &id,
+            &InvocationStatus::Completed(CompletedInvocation {
+                invocation_target: invocation_target.clone(),
+                ..CompletedInvocation::mock_neo()
+            }),
+        )
+        .unwrap();
+        ids.push(id.to_string());
+    }
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let excluded = ids[0..4]
+        .iter()
+        .map(|id| format!("'{id}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let records = engine
+        .execute(format!(
+            "SELECT id FROM sys_invocation_status WHERE id NOT IN ({excluded})"
+        ))
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    let mut got: Vec<String> = records
+        .column_by_name("id")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<LargeStringArray>()
+        .unwrap()
+        .iter()
+        .flatten()
+        .map(str::to_string)
+        .collect();
+    got.sort();
+
+    let mut expected = vec![ids[4].clone(), ids[5].clone()];
+    expected.sort();
+
+    assert_eq!(got, expected);
+}
+
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn query_sys_invocation_suspended_waiting() {
     let invocation_id = InvocationId::mock_random();

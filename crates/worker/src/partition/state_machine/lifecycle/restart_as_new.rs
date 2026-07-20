@@ -38,6 +38,7 @@ use restate_types::journal_v2::{CommandMetadata, EntryMetadata, EntryType, Notif
 use restate_vqueues::VQueue;
 
 use crate::debug_if_leader;
+use crate::partition::processor::*;
 use crate::partition::state_machine::{Action, CommandHandler, Error, StateMachineApplyContext};
 
 pub struct OnRestartAsNewInvocationCommand {
@@ -48,7 +49,7 @@ pub struct OnRestartAsNewInvocationCommand {
     pub response_sink: Option<InvocationMutationResponseSink>,
 }
 
-impl<'ctx, 's: 'ctx, S> StateMachineApplyContext<'s, S> {
+impl<'ctx, 's: 'ctx, S, P> StateMachineApplyContext<'s, S, P> {
     fn reply(
         &'ctx mut self,
         response_sink: Option<InvocationMutationResponseSink>,
@@ -70,7 +71,7 @@ impl<'ctx, 's: 'ctx, S> StateMachineApplyContext<'s, S> {
     }
 }
 
-impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
+impl<'ctx, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
     for OnRestartAsNewInvocationCommand
 where
     S: ReadJournalTable
@@ -87,8 +88,9 @@ where
         + journal_table_v1::WriteJournalTable
         + journal_table_v2::WriteJournalTable
         + ReadVQueueTable,
+    P: ProcessorContext,
 {
-    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
+    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
         let OnRestartAsNewInvocationCommand {
             invocation_id,
             new_invocation_id,
@@ -264,7 +266,12 @@ where
             // We're restarting from prefix, we must retain the same random seed to ensure that decisions in the prefix that depend on the random seed are replayable (does not cause non-determinism problems).
             completed_invocation.random_seed
         } else {
-            if ctx.enabled_features.unique_random_seeds {
+            if ctx
+                .processor
+                .fsm()
+                .features()
+                .is_unique_random_seeds_enabled()
+            {
                 // Generate a new random seed for an invocation restarting from beginning
                 Some(
                     new_invocation_id
@@ -339,7 +346,7 @@ mod tests {
         CommandType, CompletionType, NotificationType, OutputCommand, OutputResult, Signal,
         SignalId, SignalResult, SleepCommand,
     };
-    use restate_types::partitions::{PartitionFeatureChange, PersistedStateMachineFeatures};
+    use restate_types::partitions::{PartitionFeatureChange, PersistedFeatures};
     use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_types::time::MillisSinceEpoch;
     use restate_wal_protocol::timer::TimerKeyValue;
@@ -423,11 +430,10 @@ mod tests {
     async fn restart_killed_invocation() {
         // This works only when using journal table v2 as default!
         // The corner case with journal table v1 is handled by the rpc handler instead.
-        let mut test_env =
-            TestEnv::create_with_features(PersistedStateMachineFeatures::from_iter([
-                PartitionFeatureChange::EnableJournalV2,
-            ]))
-            .await;
+        let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([
+            PartitionFeatureChange::EnableJournalV2,
+        ]))
+        .await;
 
         // Start invocation, then kill it
         let invocation_target = InvocationTarget::mock_virtual_object();

@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use assert2::let_assert;
+
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::invocation_status_table::InFlightInvocationMetadata;
@@ -20,20 +20,24 @@ use restate_types::journal_v2::Entry;
 use restate_types::journal_v2::command::InputCommand;
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 
+use crate::partition::processor::Processor;
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
+
 pub struct VerifyOrMigrateJournalTableToV2Command<'e> {
     pub invocation_id: InvocationId,
     pub metadata: &'e mut InFlightInvocationMetadata,
 }
 
-impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
+impl<'e, 'ctx: 'e, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
     for VerifyOrMigrateJournalTableToV2Command<'e>
 where
     S: journal_table_v1::WriteJournalTable
         + journal_table_v1::ReadJournalTable
         + journal_table_v2::WriteJournalTable
         + journal_table_v2::ReadJournalTable,
+    P: Processor,
 {
-    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
+    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
         // Check if we need to perform journal table migrations!
         if self.metadata.journal_metadata.length == 1 {
             // This contains only the input entry, we can run a migration

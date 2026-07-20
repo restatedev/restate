@@ -13,6 +13,7 @@ use restate_storage_api::journal_events::{EventView, WriteJournalEventsTable};
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_events::raw::RawEvent;
 
+use crate::partition::processor::Processor;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub struct ApplyEventCommand<'e> {
@@ -21,10 +22,10 @@ pub struct ApplyEventCommand<'e> {
     pub event: RawEvent,
 }
 
-impl<'e, 'ctx: 'e, 's: 'ctx, S: WriteJournalEventsTable>
-    CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>> for ApplyEventCommand<'e>
+impl<'e, 'ctx: 'e, 's: 'ctx, S: WriteJournalEventsTable, P: Processor>
+    CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>> for ApplyEventCommand<'e>
 {
-    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
+    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
         let Some(journal_metadata) = self.invocation_status.get_journal_metadata() else {
             // No journal, no events
             return Ok(());

@@ -21,7 +21,7 @@ use restate_core::protobuf::cluster_ctrl_svc::{ClusterStateRequest, new_cluster_
 use restate_types::logs::Lsn;
 use restate_types::nodes_config::Role;
 use restate_types::protobuf::cluster::{
-    DeadNode, PartitionProcessorStatus, ReplayStatus, RunMode, node_state,
+    DeadNode, DetailedRunMode, PartitionProcessorStatus, ReplayStatus, RunMode, node_state,
 };
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 
@@ -177,6 +177,7 @@ pub async fn list_partitions(
                 Cell::new(processor.host_node),
                 render_mode(
                     processor.status.planned_mode(),
+                    processor.status.detailed_effective_mode(),
                     processor.status.effective_mode(),
                     outdated_leadership_epoch,
                 ),
@@ -285,15 +286,25 @@ pub async fn list_partitions(
     Ok(())
 }
 
-fn render_mode(planned: RunMode, effective: RunMode, outdated_leadership_epoch: bool) -> Cell {
-    match (planned, planned == effective, outdated_leadership_epoch) {
+fn render_mode(
+    planned: RunMode,
+    detailed_mode: DetailedRunMode,
+    effective: RunMode,
+    outdated_leadership_epoch: bool,
+) -> Cell {
+    let detailed: DetailedRunMode = match detailed_mode {
+        DetailedRunMode::Unknown => effective.into(),
+        other => other,
+    };
+
+    match (planned, detailed == planned, outdated_leadership_epoch) {
         (RunMode::Leader, true, false) => Cell::new("Leader")
             .fg(Color::Blue)
             .add_attribute(Attribute::Bold),
         (RunMode::Leader, true, true) => Cell::new("Leader").fg(Color::Red),
         (RunMode::Follower, true, _) => Cell::new("Follower"),
-        (_, false, false) => Cell::new(format!("{effective}->{planned}")).fg(Color::Magenta),
-        (_, false, true) => Cell::new(format!("{effective}->{planned}")).fg(Color::Red),
+        (_, false, false) => Cell::new(format!("{detailed}->{planned}")).fg(Color::Magenta),
+        (_, false, true) => Cell::new(format!("{detailed}->{planned}")).fg(Color::Red),
         (RunMode::Unknown, _, _) => Cell::new("UNKNOWN").fg(Color::Red),
     }
 }

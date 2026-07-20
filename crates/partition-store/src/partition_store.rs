@@ -26,7 +26,8 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, trace};
+use tokio_util::sync::CancellationToken;
+use tracing::{info, trace};
 
 use restate_core::ShutdownError;
 use restate_rocksdb::{IoMode, IterAction, Priority, RocksDb, RocksError};
@@ -44,11 +45,13 @@ use restate_types::storage::StorageEncode;
 
 use restate_types::partitions::StorageVersion;
 
+use crate::fsm_table::put_storage_version;
 use crate::fsm_table::{
     get_locally_durable_lsn, get_storage_version_from_partition_db, is_jc_orphan_cleanup_done,
-    put_jc_orphan_cleanup_done, put_storage_version,
+    put_jc_orphan_cleanup_done,
 };
 use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
+use crate::migrations::MigrationError;
 use crate::migrations::run_migrations_up_to;
 use crate::partition_db::PartitionDb;
 use crate::scan::PhysicalScan;
@@ -667,22 +670,28 @@ impl PartitionStore {
 
     /// Returns `true` if the one-time cleanup of orphaned `jc` index entries has not yet been
     /// performed on this partition store.
-    pub fn needs_jc_orphan_cleanup(&mut self) -> Result<bool> {
-        is_jc_orphan_cleanup_done(self, self.partition_id()).map(|done| !done)
+    pub async fn needs_jc_orphan_cleanup(&mut self) -> Result<bool> {
+        is_jc_orphan_cleanup_done(self, self.partition_id())
+            .await
+            .map(|done| !done)
     }
 
     /// Marks the one-time `jc` orphan cleanup as complete so it won't run again.
-    pub fn mark_jc_orphan_cleanup_done(&mut self) -> Result<()> {
-        put_jc_orphan_cleanup_done(self, self.partition_id())
+    pub async fn mark_jc_orphan_cleanup_done(&mut self) -> Result<()> {
+        put_jc_orphan_cleanup_done(self, self.partition_id()).await
     }
 
-    pub async fn verify_and_run_migrations(&mut self) -> Result<()> {
+    pub async fn verify_and_run_migrations(
+        &mut self,
+        cancel: CancellationToken,
+        config: &Configuration,
+    ) -> Result<(), MigrationError> {
         // The target schema version is gated by the operator opt-in. Without
         // the flag we leave the partition at `V1_5` so a downgrade to a
         // pre-`ScopedStateAndPromise` binary stays possible. With the flag
         // enabled we migrate the unscoped state and promise tables into their
         // scoped variants and bump to `ScopedStateAndPromise`.
-        let target = if Configuration::pinned()
+        let target = if config
             .common
             .experimental
             .is_migrate_scoped_tables_enabled()
@@ -697,10 +706,10 @@ impl PartitionStore {
         // also updates the applied lsn field.
         let is_empty = self.get_applied_lsn().await?.is_none();
         if is_empty {
-            put_storage_version(self, self.partition_id(), target as u16).await?;
+            put_storage_version(self, self.partition().id(), target as u16).await?;
             // A fresh partition store cannot have orphaned jc index entries, so mark the
             // cleanup as already done to avoid a needless scan on first startup.
-            put_jc_orphan_cleanup_done(self, self.partition_id())?;
+            put_jc_orphan_cleanup_done(self, self.partition().id()).await?;
             self.set_storage_version(target);
             return Ok(());
         }
@@ -712,14 +721,16 @@ impl PartitionStore {
         let mut storage_version = get_storage_version_from_partition_db(self.partition_db())?;
         if storage_version < target {
             // We need to run some migrations!
-            debug!(
-                "Running storage migration from {:?} to {:?}",
-                storage_version, target
-            );
-            storage_version = run_migrations_up_to(storage_version, target, self).await?;
+            if !is_empty {
+                info!(
+                    "Running storage migration from {:?} to {:?}",
+                    storage_version, target
+                );
+            }
+            storage_version =
+                run_migrations_up_to(storage_version, target, self, cancel, config).await?;
         }
         self.set_storage_version(storage_version);
-
         Ok(())
     }
 }
@@ -1025,6 +1036,13 @@ impl Transaction for PartitionStoreTransaction<'_> {
         );
         self.write_batch_with_index.as_mut().unwrap().clear();
         Ok(())
+    }
+
+    fn estimated_size_in_bytes(&self) -> usize {
+        self.write_batch_with_index
+            .as_ref()
+            .map(|wbwi| wbwi.size_in_bytes())
+            .unwrap_or_default()
     }
 }
 

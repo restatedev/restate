@@ -10,6 +10,7 @@
 
 use std::collections::VecDeque;
 use std::task::Poll;
+use std::time::Duration;
 
 use slotmap::SecondaryMap;
 use slotmap::secondary::Entry;
@@ -28,6 +29,16 @@ use super::vqueue_state::VQueueState;
 use crate::VQueuesMeta;
 use crate::cache::VQueueHandle;
 use crate::scheduler::vqueue_state::Eligibility;
+
+/// Tokio's `DelayQueue` timer wheel panics with `invalid deadline` if an entry
+/// is scheduled more than `(1 << 36) - 1` ms (~2.1 years) into the future.
+///
+/// When a vqueue head is scheduled beyond that horizon, we park the timer at
+/// this cap instead of the real delay. This should be safe because when the
+/// vqueue is dequeued from the ready ring, we'll notice that it's still not
+/// eligible and just reschedule it. Now, if this is ever to happen,
+/// I applaud your server's uptime.
+const MAX_PARK: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 
 #[derive(Debug, Copy, Clone)]
 pub(super) struct WakeUp {
@@ -158,8 +169,11 @@ impl EligibilityTracker {
                         }
                         Poll::Ready(Ok(Eligibility::EligibleAt(ts))) => {
                             let ts = ts.as_unix_millis();
-                            let duration = ts.duration_since(SchedulerClock.now_millis());
-                            let timer_key = self.delayed_eligibility.insert(handle, duration);
+                            let timer_key = self.delayed_eligibility.insert(
+                                handle,
+                                // Cap the parked delay. See`MAX_PARK`.
+                                ts.duration_since(SchedulerClock.now_millis()).min(MAX_PARK),
+                            );
                             *current_state = State::Scheduled {
                                 wake_up: WakeUp { ts, timer_key },
                             };
@@ -315,7 +329,10 @@ impl EligibilityTracker {
                         if eligible_at_ts != wake_up.ts {
                             self.delayed_eligibility.reset(
                                 &wake_up.timer_key,
-                                eligible_at_ts.duration_since(SchedulerClock.now_millis()),
+                                // Cap the parked delay. See `MAX_PARK`.
+                                eligible_at_ts
+                                    .duration_since(SchedulerClock.now_millis())
+                                    .min(MAX_PARK),
                             );
 
                             occupied_entry.insert(State::Scheduled {
