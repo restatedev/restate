@@ -7803,7 +7803,6 @@ dependencies = [
  "restate-util-time",
  "restate-workspace-hack",
  "rustls",
- "rustls-pemfile",
  "serde",
  "serde_with",
  "static_assertions",
@@ -7824,6 +7823,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-test",
+ "wildmatch",
  "x509-parser",
 ]
 
@@ -9299,6 +9299,7 @@ dependencies = [
  "derive_more",
  "derive_more-impl",
  "digest 0.10.7",
+ "displaydoc",
  "either",
  "enum-map",
  "errno",
@@ -9362,7 +9363,6 @@ dependencies = [
  "ring",
  "rustix",
  "rustls",
- "rustls-pki-types",
  "rustls-webpki",
  "schemars 1.2.1",
  "security-framework-sys",
@@ -9642,15 +9642,6 @@ dependencies = [
  "rustls-pki-types",
  "schannel",
  "security-framework",
-]
-
-[[package]]
-name = "rustls-pemfile"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dce314e5fee3f39953d46bb63bb8a46d40c2f8fb7cc5a3b6cab2bde9721d6e50"
-dependencies = [
- "rustls-pki-types",
 ]
 
 [[package]]
@@ -11780,6 +11771,12 @@ name = "widestring"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
+
+[[package]]
+name = "wildmatch"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29333c3ea1ba8b17211763463ff24ee84e41c78224c16b001cd907e663a38c68"
 
 [[package]]
 name = "winapi"

@@ -9,18 +9,19 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
+use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, UnixTime};
 use rustls::server::WebPkiClientVerifier;
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use rustls::{ClientConfig, DistinguishedName, RootCertStore, ServerConfig, SignatureScheme};
 use tokio_rustls::TlsAcceptor;
 use tracing::{info, warn};
+use wildmatch::WildMatchPattern;
 use x509_parser::prelude::*;
 
 use restate_types::config::FabricTlsOptions;
@@ -237,32 +238,8 @@ impl ClientCertVerifier for SubjectNameVerifier {
 }
 
 fn glob_match(pattern: &str, value: &str) -> bool {
-    let parts: Vec<&str> = pattern.split('*').collect();
-    if parts.len() == 1 {
-        return pattern == value;
-    }
-
-    let mut pos = 0;
-    for (i, part) in parts.iter().enumerate() {
-        if part.is_empty() {
-            continue;
-        }
-        match value[pos..].find(part) {
-            Some(idx) => {
-                if i == 0 && idx != 0 {
-                    return false;
-                }
-                pos += idx + part.len();
-            }
-            None => return false,
-        }
-    }
-
-    if !pattern.ends_with('*') {
-        return pos == value.len();
-    }
-
-    true
+    // `?` is disabled as a wildcard so only `*` has special meaning in patterns.
+    WildMatchPattern::<'*', '\0'>::new(pattern).matches(value)
 }
 
 fn build_client_config(opts: &FabricTlsOptions) -> anyhow::Result<ClientConfig> {
@@ -286,10 +263,8 @@ fn build_client_config(opts: &FabricTlsOptions) -> anyhow::Result<ClientConfig> 
 }
 
 fn load_certs(path: &Path) -> anyhow::Result<Vec<CertificateDer<'static>>> {
-    let file = std::fs::File::open(path)
-        .map_err(|e| anyhow::anyhow!("Failed to open cert file '{}': {e}", path.display()))?;
-    let mut reader = BufReader::new(file);
-    let certs: Vec<_> = rustls_pemfile::certs(&mut reader)
+    let certs: Vec<_> = CertificateDer::pem_file_iter(path)
+        .map_err(|e| anyhow::anyhow!("Failed to open cert file '{}': {e}", path.display()))?
         .collect::<Result<_, _>>()
         .map_err(|e| anyhow::anyhow!("Failed to parse certs from '{}': {e}", path.display()))?;
     if certs.is_empty() {
@@ -299,11 +274,8 @@ fn load_certs(path: &Path) -> anyhow::Result<Vec<CertificateDer<'static>>> {
 }
 
 fn load_private_key(path: &Path) -> anyhow::Result<PrivateKeyDer<'static>> {
-    let file = std::fs::File::open(path)
-        .map_err(|e| anyhow::anyhow!("Failed to open key file '{}': {e}", path.display()))?;
-    let mut reader = BufReader::new(file);
-    rustls_pemfile::private_key(&mut reader)?
-        .ok_or_else(|| anyhow::anyhow!("No private key found in '{}'", path.display()))
+    PrivateKeyDer::from_pem_file(path)
+        .map_err(|e| anyhow::anyhow!("No private key found in '{}': {e}", path.display()))
 }
 
 #[cfg(test)]
@@ -383,7 +355,7 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
     fn load_private_key_missing_file() {
         let result = load_private_key(Path::new("/nonexistent/key.pem"));
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Failed to open"));
+        assert!(result.unwrap_err().to_string().contains("No private key"));
     }
 
     #[test]
@@ -455,6 +427,22 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
             "spiffe://*.pin220.com/restate-agents/*",
             "spiffe://svc.pin220.com/restate-agents/staging/admin"
         ));
+    }
+
+    #[test]
+    fn glob_match_requires_backtracking() {
+        // The wildcard must be able to "give back" characters: `*` matches "bc"
+        // so that the literal "bc" tail still matches. A greedy matcher without
+        // backtracking rejects these.
+        assert!(glob_match("a*bc", "abcbc"));
+        assert!(glob_match(
+            "spiffe://domain/*/admin",
+            "spiffe://domain/admin/team/admin"
+        ));
+        assert!(!glob_match("a*bc", "abcb"));
+        // `?` must have no special meaning in subject-name patterns
+        assert!(glob_match("node?1", "node?1"));
+        assert!(!glob_match("node?1", "node-1"));
     }
 
     fn generate_cert(cn: &str, san_uris: &[&str], san_dns: &[&str]) -> CertificateDer<'static> {
