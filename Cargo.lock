@@ -1104,6 +1104,7 @@ dependencies = [
  "restate-bifrost",
  "restate-core",
  "restate-errors",
+ "restate-memory",
  "restate-metadata-server",
  "restate-rocksdb",
  "restate-test-util",

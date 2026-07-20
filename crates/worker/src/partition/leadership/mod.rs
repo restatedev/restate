@@ -158,7 +158,6 @@ pub(crate) enum LeaderEvent {
     PartitionMaintenance(UpdatePartitionDurabilityCommand),
     UpsertSchema(Schema),
     UpsertRuleBook(Arc<restate_limiter::RuleBook>),
-    AwaitingRpcSelfProposeDone,
     NetworkService(NetworkServiceEvent),
 }
 
@@ -314,9 +313,7 @@ where
             &node_ctx.bifrost,
         )?;
 
-        self_proposer
-            .self_propose(ctx.key_range().start(), announce_leader)
-            .await?;
+        self_proposer.self_propose(ctx.key_range().start(), announce_leader)?;
 
         self.state = State::Candidate {
             at: Instant::now(),
@@ -573,17 +570,15 @@ where
                         .collect::<Vec<_>>()
                         .join(", ")
                 );
-                self_proposer
-                    .self_propose(
-                        processor.key_range().start(),
-                        Command::VersionBarrier(VersionBarrierCommand {
-                            version: barrier_version,
-                            partition_key_range: Keys::RangeInclusive(processor.key_range().into()),
-                            human_reason: Some("Apply state-machine feature changes".to_owned()),
-                            feature_changes: feature_changes.into_iter().map(|c| c.id()).collect(),
-                        }),
-                    )
-                    .await?;
+                self_proposer.self_propose(
+                    processor.key_range().start(),
+                    Command::VersionBarrier(VersionBarrierCommand {
+                        version: barrier_version,
+                        partition_key_range: Keys::RangeInclusive(processor.key_range().into()),
+                        human_reason: Some("Apply state-machine feature changes".to_owned()),
+                        feature_changes: feature_changes.into_iter().map(|c| c.id()).collect(),
+                    }),
+                )?;
 
                 // Switch to BecomingLeader state until we finish any pending tasks to enable the
                 // new features. We will transition us to an effective leader when the state
@@ -850,12 +845,9 @@ where
     /// * Follower: Nothing to do
     /// * Candidate: Monitor appender task
     /// * Leader: Await events and monitor appender task
-    pub async fn run(
-        &mut self,
-        ctx: impl Processor + HasVQueues,
-    ) -> Result<Vec<LeaderEvent>, Error> {
+    pub async fn run(&mut self, ctx: impl Processor + HasVQueues) -> Result<(), Error> {
         match &mut self.state {
-            State::Follower => Ok(futures::future::pending::<Vec<_>>().await),
+            State::Follower => futures::future::pending().await,
             State::Candidate { self_proposer, .. }
             | State::BecomingLeader { self_proposer, .. } => Err(self_proposer
                 .as_mut()
@@ -865,20 +857,6 @@ where
                 .expect_err("never should never be returned")),
             State::Leader(leader_state) => leader_state.run(ctx).await,
         }
-    }
-
-    pub async fn handle_events(
-        &mut self,
-        events: impl IntoIterator<Item = LeaderEvent>,
-    ) -> Result<(), Error> {
-        match &mut self.state {
-            State::Follower | State::Candidate { .. } | State::BecomingLeader { .. } => {
-                // nothing to do :-)
-            }
-            State::Leader(leader_state) => leader_state.handle_events(events).await?,
-        }
-
-        Ok(())
     }
 
     // This is returned only if we're leaders (otherwise there's no messages to be sent to the invoker)
