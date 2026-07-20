@@ -40,7 +40,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use futures::{FutureExt, StreamExt};
-use metrics::histogram;
+use metrics::{Histogram, histogram};
 use tokio::sync::watch;
 use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{debug, error, instrument, trace, warn};
@@ -95,11 +95,32 @@ use self::processor::commands::{
 use self::processor::*;
 use self::state_machine::StateMachine;
 use crate::metric_definitions::{
-    LEADER_LABEL, LEADER_LABEL_LEADER, PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
+    LEADER_LABEL, LEADER_LABEL_LEADER, PARTITION_PROCESSOR_LOOP_DURATION_SECONDS,
+    PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
 };
 use crate::partition::leadership::LeadershipState;
 use crate::partition::processor::leadership::LeadershipContext;
 use crate::partition::state_machine::ActionCollector;
+
+struct HistogramTimer<'a> {
+    histogram: &'a Histogram,
+    started_at: Instant,
+}
+
+impl<'a> HistogramTimer<'a> {
+    fn new(histogram: &'a Histogram) -> Self {
+        Self {
+            histogram,
+            started_at: Instant::now(),
+        }
+    }
+}
+
+impl Drop for HistogramTimer<'_> {
+    fn drop(&mut self) {
+        self.histogram.record(self.started_at.elapsed());
+    }
+}
 
 /// Information needed to run as leader, including the epoch and partition configurations.
 #[derive(Clone, Debug)]
@@ -493,6 +514,9 @@ where
         // Note: we didn't remove the leader label to avoid breaking existing dashboards. This can
         // be removed in the future if deemed necessary.
         let leader_record_write_to_read_latency = histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, LEADER_LABEL => LEADER_LABEL_LEADER);
+        // Add this timer inside select arms that can block while handling ready work, such as on
+        // RocksDB reads or writes and other awaits. Do not time the select wait itself.
+        let loop_duration = histogram!(PARTITION_PROCESSOR_LOOP_DURATION_SECONDS);
 
         // Start reading after the last applied lsn
         let mut record_stream = std::pin::pin!(
@@ -530,17 +554,20 @@ where
 
             tokio::select! {
                 _ = self.target_leader_state_rx.changed() => {
+                    let _timer = HistogramTimer::new(&loop_duration);
                     let target_leader_state = self.target_leader_state_rx.borrow_and_update().clone();
                     self.on_target_leader_state(target_leader_state).await.context("failed handling target leader state change")?;
                     self.refresh_status(&mut durable_lsn_watch)?;
                 }
                 Ok(()) = watch_leader_changes.changed() => {
+                    let _timer = HistogramTimer::new(&loop_duration);
                     // cloning to avoid holding the underlying RwLock.
                     let new_state = *watch_leader_changes.borrow_and_update();
                     self.leadership_state.maybe_step_down(&mut self.ctx, new_state.current_leader_epoch, new_state.current_leader).await;
                     self.refresh_status(&mut durable_lsn_watch)?;
                 }
                 Some(msg) = self.network_leader_svc_rx.next(), if self.leadership_state.should_process_rpc() => {
+                    let _timer = HistogramTimer::new(&loop_duration);
                     // todo: replace the live schema with the leader's consistent schema
                     self.on_rpc(msg, live_schemas.live_load(), &last_applied_lsn_watch).await;
                 }
@@ -553,6 +580,7 @@ where
                 // Subsequent records are drained synchronously below (`now_or_never`), so the
                 // applied-but-uncommitted records can never be lost to select cancellation.
                 maybe_first = record_stream.next() => {
+                    let _timer = HistogramTimer::new(&loop_duration);
                     let Some(first) = maybe_first else {
                         return Err(ProcessorError::LogReadStreamTerminated);
                     };
@@ -625,6 +653,7 @@ where
                     self.leadership_state.handle_actions(&mut self.ctx, action_collector.drain(..))?;
                 },
                 result = self.leadership_state.run(&mut self.ctx) => {
+                    let _timer = HistogramTimer::new(&loop_duration);
                     let action_effects = result?;
                     // We process the action_effects not directly in the run future because it
                     // requires the run future to be cancellation safe. In the future this could be
