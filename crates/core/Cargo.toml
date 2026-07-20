@@ -66,7 +66,7 @@ tokio = { workspace = true, features = ["tracing"] }
 tokio-rustls = { workspace = true }
 tokio-stream = { workspace = true, features = ["net"] }
 tokio-util = { workspace = true, features = ["net"] }
-tonic = { workspace = true, features = ["transport", "codegen", "gzip", "zstd", "router"] }
+tonic = { workspace = true, features = ["transport", "codegen", "gzip", "zstd", "router", "tls-ring"] }
 rustls = { workspace = true }
 wildmatch = { workspace = true }
 x509-parser = { workspace = true }

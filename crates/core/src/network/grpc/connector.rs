@@ -11,14 +11,12 @@
 use futures::Stream;
 use http::Uri;
 use hyper_util::rt::TokioIo;
-use rustls::pki_types::ServerName;
 use tokio::io;
 use tokio::net::UnixStream;
-use tokio_rustls::TlsConnector;
 use tokio_stream::StreamExt;
 use tonic::codec::CompressionEncoding;
-use tonic::transport::Endpoint;
 use tonic::transport::channel::Channel;
+use tonic::transport::{ClientTlsConfig, Endpoint, Identity};
 use tracing::{debug, warn};
 
 use restate_types::config::{Configuration, NetworkingOptions};
@@ -107,7 +105,7 @@ fn create_channel<P: ListenerPort + GrpcPort>(
         PeerNetAddress::Http(uri) => Channel::builder(uri.clone()).executor(TaskCenterExecutor),
     };
 
-    let endpoint = endpoint
+    let mut endpoint = endpoint
         .user_agent(format!(
             "restate/{}",
             option_env!("CARGO_PKG_VERSION").unwrap_or("dev")
@@ -122,37 +120,32 @@ fn create_channel<P: ListenerPort + GrpcPort>(
         .keep_alive_while_idle(true)
         .tcp_nodelay(true);
 
+    if use_tls {
+        // Reading the materials here (per connection attempt) rather than once at
+        // startup is what makes certificate hot-reload effective for new connections.
+        let materials = tls.as_ref().unwrap().client_materials();
+        let identity = Identity::from_pem(&materials.cert_pem, &materials.key_pem);
+        let mut tls_config = ClientTlsConfig::new().identity(identity);
+        // tonic derives the rustls ServerName from uri.host(), which is bracketed
+        // for IPv6 authorities (e.g. "[::1]") and not a valid ServerName. Strip
+        // the brackets via an explicit domain name.
+        if let PeerNetAddress::Http(uri) = &address
+            && let Some(host) = uri.host()
+            && let Some(unbracketed) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']'))
+        {
+            tls_config = tls_config.domain_name(unbracketed);
+        }
+        endpoint = endpoint
+            .tls_config_with_verifier(tls_config, materials.verifier.clone())
+            .expect("valid TLS configuration for fabric peer");
+    }
+
     match address {
         PeerNetAddress::Uds(uds_path) => {
             endpoint.connect_with_connector_lazy(tower::service_fn(move |_: Uri| {
                 let uds_path = uds_path.clone();
                 async move {
                     Ok::<_, io::Error>(TokioIo::new(UnixStream::connect(uds_path).await?))
-                }
-            }))
-        }
-        PeerNetAddress::Http(uri) if use_tls => {
-            let resolver = tls.as_ref().unwrap().clone();
-            endpoint.connect_with_connector_lazy(tower::service_fn(move |_: Uri| {
-                let resolver = resolver.clone();
-                let host = uri.host().unwrap_or("localhost").to_owned();
-                let port = uri.port_u16().unwrap_or(5122);
-                async move {
-                    let addr = format!("{host}:{port}");
-                    let tcp_stream = tokio::net::TcpStream::connect(&addr).await?;
-                    tcp_stream.set_nodelay(true)?;
-
-                    let client_config = resolver.client_config();
-                    let connector = TlsConnector::from(client_config);
-                    // Strip brackets from IPv6 addresses (e.g., "[::1]" -> "::1")
-                    let host_for_sni = host
-                        .strip_prefix('[')
-                        .and_then(|h| h.strip_suffix(']'))
-                        .unwrap_or(&host);
-                    let server_name = ServerName::try_from(host_for_sni.to_owned())
-                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-                    let tls_stream = connector.connect(server_name, tcp_stream).await?;
-                    Ok::<_, io::Error>(TokioIo::new(tls_stream))
                 }
             }))
         }

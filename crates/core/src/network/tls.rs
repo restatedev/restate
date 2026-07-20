@@ -14,11 +14,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
+use rustls::client::WebPkiServerVerifier;
+use rustls::client::danger::{ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, UnixTime};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::server::WebPkiClientVerifier;
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
-use rustls::{ClientConfig, DistinguishedName, RootCertStore, ServerConfig, SignatureScheme};
+use rustls::{DistinguishedName, RootCertStore, ServerConfig, SignatureScheme};
 use tokio_rustls::TlsAcceptor;
 use tracing::{info, warn};
 use wildmatch::WildMatchPattern;
@@ -26,20 +28,29 @@ use x509_parser::prelude::*;
 
 use restate_types::config::FabricTlsOptions;
 
+/// Client-side TLS materials for outbound fabric connections: the client
+/// identity as PEM (the form tonic consumes) and the server-certificate
+/// verifier enforcing chain validation plus subject-name authorization.
+pub struct ClientTlsMaterials {
+    pub cert_pem: Vec<u8>,
+    pub key_pem: Vec<u8>,
+    pub verifier: Arc<dyn ServerCertVerifier>,
+}
+
 /// Holds hot-swappable TLS configurations for both server and client roles.
 #[derive(Clone)]
 pub struct TlsCertResolver {
     server_config: Arc<ArcSwap<ServerConfig>>,
-    client_config: Arc<ArcSwap<ClientConfig>>,
+    client_materials: Arc<ArcSwap<ClientTlsMaterials>>,
 }
 
 impl TlsCertResolver {
     pub fn new(opts: &FabricTlsOptions) -> anyhow::Result<Self> {
         let server = build_server_config(opts)?;
-        let client = build_client_config(opts)?;
+        let client = build_client_materials(opts)?;
         Ok(Self {
             server_config: Arc::new(ArcSwap::from_pointee(server)),
-            client_config: Arc::new(ArcSwap::from_pointee(client)),
+            client_materials: Arc::new(ArcSwap::from_pointee(client)),
         })
     }
 
@@ -47,8 +58,8 @@ impl TlsCertResolver {
         self.server_config.load_full()
     }
 
-    pub fn client_config(&self) -> Arc<ClientConfig> {
-        self.client_config.load_full()
+    pub fn client_materials(&self) -> Arc<ClientTlsMaterials> {
+        self.client_materials.load_full()
     }
 
     pub fn tls_acceptor(&self) -> TlsAcceptor {
@@ -62,7 +73,7 @@ impl TlsCertResolver {
         interval: Duration,
     ) -> tokio::task::JoinHandle<()> {
         let server_config = Arc::clone(&self.server_config);
-        let client_config = Arc::clone(&self.client_config);
+        let client_materials = Arc::clone(&self.client_materials);
 
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
@@ -78,9 +89,9 @@ impl TlsCertResolver {
                         warn!("Failed to reload fabric TLS server certificates: {e}");
                     }
                 }
-                match build_client_config(&opts) {
+                match build_client_materials(&opts) {
                     Ok(new_client) => {
-                        client_config.store(Arc::new(new_client));
+                        client_materials.store(Arc::new(new_client));
                         info!("Fabric TLS client certificates reloaded");
                     }
                     Err(e) => {
@@ -126,6 +137,53 @@ fn build_server_config(opts: &FabricTlsOptions) -> anyhow::Result<ServerConfig> 
     Ok(config)
 }
 
+/// Returns true if the certificate's Subject Common Name (CN) or any Subject
+/// Alternative Name (DNS/URI) matches at least one allowed glob pattern.
+fn cert_subject_matches(cert_der: &CertificateDer<'_>, allowed_patterns: &[String]) -> bool {
+    let Ok((_, cert)) = X509Certificate::from_der(cert_der.as_ref()) else {
+        return false;
+    };
+
+    // Check Subject CN
+    if let Some(cn) = cert.subject().iter_common_name().next()
+        && let Ok(cn_str) = cn.as_str()
+    {
+        for pattern in allowed_patterns {
+            if glob_match(pattern, cn_str) {
+                return true;
+            }
+        }
+    }
+
+    // Check SANs (DNS names and URIs)
+    let Some(san_ext) = cert
+        .extensions()
+        .iter()
+        .find(|e| e.oid == oid_registry::OID_X509_EXT_SUBJECT_ALT_NAME)
+    else {
+        return false;
+    };
+
+    let ParsedExtension::SubjectAlternativeName(san) = san_ext.parsed_extension() else {
+        return false;
+    };
+
+    for name in &san.general_names {
+        let value = match name {
+            GeneralName::DNSName(dns) => *dns,
+            GeneralName::URI(uri) => *uri,
+            _ => continue,
+        };
+        for pattern in allowed_patterns {
+            if glob_match(pattern, value) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 /// Wraps a standard certificate verifier and additionally checks that the peer
 /// certificate's Subject Common Name (CN) or Subject Alternative Names (DNS/URI)
 /// match at least one allowed pattern. This provides authorization on top of mTLS.
@@ -137,48 +195,7 @@ struct SubjectNameVerifier {
 
 impl SubjectNameVerifier {
     fn cert_subject_matches(&self, cert_der: &CertificateDer<'_>) -> bool {
-        let Ok((_, cert)) = X509Certificate::from_der(cert_der.as_ref()) else {
-            return false;
-        };
-
-        // Check Subject CN
-        if let Some(cn) = cert.subject().iter_common_name().next()
-            && let Ok(cn_str) = cn.as_str()
-        {
-            for pattern in &self.allowed_patterns {
-                if glob_match(pattern, cn_str) {
-                    return true;
-                }
-            }
-        }
-
-        // Check SANs (DNS names and URIs)
-        let Some(san_ext) = cert
-            .extensions()
-            .iter()
-            .find(|e| e.oid == oid_registry::OID_X509_EXT_SUBJECT_ALT_NAME)
-        else {
-            return false;
-        };
-
-        let ParsedExtension::SubjectAlternativeName(san) = san_ext.parsed_extension() else {
-            return false;
-        };
-
-        for name in &san.general_names {
-            let value = match name {
-                GeneralName::DNSName(dns) => *dns,
-                GeneralName::URI(uri) => *uri,
-                _ => continue,
-            };
-            for pattern in &self.allowed_patterns {
-                if glob_match(pattern, value) {
-                    return true;
-                }
-            }
-        }
-
-        false
+        cert_subject_matches(cert_der, &self.allowed_patterns)
     }
 }
 
@@ -242,24 +259,117 @@ fn glob_match(pattern: &str, value: &str) -> bool {
     WildMatchPattern::<'*', '\0'>::new(pattern).matches(value)
 }
 
-fn build_client_config(opts: &FabricTlsOptions) -> anyhow::Result<ClientConfig> {
+/// Verifies server certificates for outbound fabric connections. Chain
+/// validation is delegated to [`WebPkiServerVerifier`]; endpoint identity is
+/// established by matching the server certificate's CN/SANs against
+/// `allowed-subject-names` instead of strict hostname verification. This is
+/// required for SPIFFE-style certificates (URI SANs only), where the dialed
+/// host never matches a SAN, and gives the client the same authorization
+/// guarantee the server side has: a peer holding a certificate from a shared
+/// CA but with a foreign identity is rejected.
+#[derive(Debug)]
+struct SubjectNameServerVerifier {
+    inner: Arc<WebPkiServerVerifier>,
+    allowed_patterns: Vec<String>,
+}
+
+impl ServerCertVerifier for SubjectNameServerVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp_response: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        let result = match self.inner.verify_server_cert(
+            end_entity,
+            intermediates,
+            server_name,
+            ocsp_response,
+            now,
+        ) {
+            Ok(result) => result,
+            // Hostname mismatch is expected when certificates carry identity
+            // in URI SANs (e.g. SPIFFE); the subject-name check below is the
+            // endpoint-identity check in that case. All other errors
+            // (untrusted chain, expiry, revocation) remain fatal.
+            Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::NotValidForName
+                | rustls::CertificateError::NotValidForNameContext { .. },
+            )) => ServerCertVerified::assertion(),
+            Err(e) => return Err(e),
+        };
+
+        if !cert_subject_matches(end_entity, &self.allowed_patterns) {
+            return Err(rustls::Error::General(
+                "server certificate subject does not match any allowed pattern".into(),
+            ));
+        }
+
+        Ok(result)
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.inner.supported_verify_schemes()
+    }
+}
+
+fn build_client_materials(opts: &FabricTlsOptions) -> anyhow::Result<ClientTlsMaterials> {
     let mut root_store = RootCertStore::empty();
     for ca_path in opts.client_ca_files() {
         for cert in load_certs(ca_path)? {
             root_store.add(cert)?;
         }
     }
+    let webpki_verifier = WebPkiServerVerifier::builder(Arc::new(root_store)).build()?;
 
-    let builder = ClientConfig::builder().with_root_certificates(root_store);
+    let ca_only_trust = opts.allowed_subject_names.iter().any(|s| s == "*");
+    let verifier: Arc<dyn ServerCertVerifier> =
+        if ca_only_trust || opts.allowed_subject_names.is_empty() {
+            webpki_verifier
+        } else {
+            Arc::new(SubjectNameServerVerifier {
+                inner: webpki_verifier,
+                allowed_patterns: opts.allowed_subject_names.clone(),
+            })
+        };
 
     let cert_file = opts.client_cert_file();
     let key_file = opts.client_key_file();
 
-    let certs = load_certs(cert_file)?;
-    let key = load_private_key(key_file)?;
-    let config = builder.with_client_auth_cert(certs, key)?;
+    // Validate that the PEM files parse before handing them to tonic.
+    load_certs(cert_file)?;
+    load_private_key(key_file)?;
 
-    Ok(config)
+    let cert_pem = std::fs::read(cert_file)
+        .map_err(|e| anyhow::anyhow!("Failed to read cert file '{}': {e}", cert_file.display()))?;
+    let key_pem = std::fs::read(key_file)
+        .map_err(|e| anyhow::anyhow!("Failed to read key file '{}': {e}", key_file.display()))?;
+
+    Ok(ClientTlsMaterials {
+        cert_pem,
+        key_pem,
+        verifier,
+    })
 }
 
 fn load_certs(path: &Path) -> anyhow::Result<Vec<CertificateDer<'static>>> {
@@ -551,5 +661,69 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
 
         let bad_cert = generate_cert("kafka-broker-1", &[], &[]);
         assert!(!verifier.cert_subject_matches(&bad_cert));
+    }
+
+    /// End-to-end test of the client-side server-cert verifier with a real
+    /// CA-signed chain: a SPIFFE-style cert (URI SAN only, no hostname match)
+    /// must be accepted when its subject matches an allowed pattern, and
+    /// rejected when it does not — even though it chains to a trusted CA.
+    #[test]
+    fn server_verifier_enforces_subject_patterns_with_spiffe_certs() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        ca_params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "test-ca");
+        let ca_key = rcgen::KeyPair::generate().unwrap();
+        let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+
+        let sign_leaf = |spiffe_id: &str| -> CertificateDer<'static> {
+            let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+            params.subject_alt_names = vec![rcgen::SanType::URI(spiffe_id.try_into().unwrap())];
+            let key = rcgen::KeyPair::generate().unwrap();
+            params
+                .signed_by(&key, &ca_cert, &ca_key)
+                .unwrap()
+                .der()
+                .clone()
+        };
+
+        let mut root_store = RootCertStore::empty();
+        root_store.add(ca_cert.der().clone()).unwrap();
+        let verifier = SubjectNameServerVerifier {
+            inner: WebPkiServerVerifier::builder(Arc::new(root_store))
+                .build()
+                .unwrap(),
+            allowed_patterns: vec!["spiffe://domain/restate/*".to_owned()],
+        };
+
+        let server_name = ServerName::try_from("192.168.1.1").unwrap();
+        let now = UnixTime::now();
+
+        // Trusted chain + matching subject → accepted despite hostname mismatch
+        let good = sign_leaf("spiffe://domain/restate/node-1");
+        assert!(
+            verifier
+                .verify_server_cert(&good, &[], &server_name, &[], now)
+                .is_ok()
+        );
+
+        // Trusted chain + non-matching subject → rejected (shared-CA scenario)
+        let bad = sign_leaf("spiffe://domain/other-service/node-1");
+        assert!(
+            verifier
+                .verify_server_cert(&bad, &[], &server_name, &[], now)
+                .is_err()
+        );
+
+        // Untrusted chain (self-signed) → rejected regardless of subject
+        let self_signed = generate_cert("x", &["spiffe://domain/restate/node-1"], &[]);
+        assert!(
+            verifier
+                .verify_server_cert(&self_signed, &[], &server_name, &[], now)
+                .is_err()
+        );
     }
 }
