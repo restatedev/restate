@@ -144,7 +144,9 @@ impl Restate {
 
         // fabric
         push_advertised(
-            self.config.common.advertised_address(address_book),
+            self.config
+                .common
+                .advertised_address(address_book, self.config.networking.tls.is_some()),
             &mut addresses,
         );
 

@@ -817,7 +817,7 @@ fn create_initial_nodes_configuration(
     );
     initial_nodes_configuration.set_features(features);
     let my_advertised_address = TaskCenter::with_current(|tc| {
-        common_opts.advertised_address_with_tls(tc.address_book(), fabric_tls)
+        common_opts.advertised_address(tc.address_book(), fabric_tls)
     });
 
     let node_config = NodeConfig::builder()

@@ -181,9 +181,10 @@ impl Member {
         networking.register_address(
             my_member_id.node_id,
             TaskCenter::with_current(|tc| {
-                Configuration::pinned()
+                let config = Configuration::pinned();
+                config
                     .common
-                    .advertised_address(tc.address_book())
+                    .advertised_address(tc.address_book(), config.networking.tls.is_some())
             }),
         );
 
