@@ -347,7 +347,9 @@ fn print_address_book(address_book: &AddressBook, config: &Configuration) {
         let _ = writeln!(&mut stdout, "HTTP Ingress: {address}");
     }
 
-    let address = config.common.advertised_address(address_book);
+    let address = config
+        .common
+        .advertised_address(address_book, config.networking.tls.is_some());
     let _ = writeln!(&mut stdout, "Message Fabric: {address}");
     let _ = writeln!(&mut stdout);
 }

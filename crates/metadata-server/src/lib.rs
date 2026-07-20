@@ -230,7 +230,11 @@ pub async fn create_metadata_server_and_client(
             // make sure we include our own address in the list of addresses if we are hosting
             // a metadata server ourselves.
             if config.common.roles.contains(Role::MetadataServer) {
-                addresses.push(config.common.advertised_address(address_book));
+                addresses.push(
+                    config
+                        .common
+                        .advertised_address(address_book, config.networking.tls.is_some()),
+                );
             }
             (
                 server.boxed(),
@@ -650,7 +654,9 @@ fn nodes_configuration_for_metadata_cluster_seed(
         };
 
         let advertised_address = TaskCenter::with_current(|tc| {
-            configuration.common.advertised_address(tc.address_book())
+            configuration
+                .common
+                .advertised_address(tc.address_book(), configuration.networking.tls.is_some())
         });
 
         let node_config = NodeConfig::builder()

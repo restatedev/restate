@@ -398,8 +398,11 @@ impl MetadataStore for GrpcMetadataServerClient {
         // from the configuration and not from the NodesConfiguration.
         let config = Configuration::pinned();
 
-        let advertised_address =
-            TaskCenter::with_current(|tc| config.common.advertised_address(tc.address_book()));
+        let advertised_address = TaskCenter::with_current(|tc| {
+            config
+                .common
+                .advertised_address(tc.address_book(), config.networking.tls.is_some())
+        });
         if !config.common.roles.contains(Role::MetadataServer) {
             return Err(ProvisionError::NotSupported(format!(
                 "Node '{}' does not run the metadata-server role. Try to provision a different node.",

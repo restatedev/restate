@@ -18,10 +18,12 @@ use tempfile::TempDir;
 use tracing::info;
 
 use restate_local_cluster_runner::{
-    cluster::Cluster,
+    cluster::{Cluster, StartedCluster},
     node::{BinarySource, NodeSpec},
 };
 use restate_types::config::{Configuration, FabricTlsOptions, TlsMode};
+use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
+use restate_types::nodes_config::NodesConfiguration;
 use restate_types::replication::ReplicationProperty;
 
 mod common;
@@ -42,7 +44,15 @@ fn generate_node_cert(
     ca_key: &KeyPair,
     node_name: &str,
 ) -> (rcgen::Certificate, KeyPair) {
-    let mut params = CertificateParams::new(vec![node_name.to_owned()]).unwrap();
+    // Test nodes bind and advertise loopback addresses, so the cert must carry
+    // matching SANs for server-certificate hostname verification to succeed.
+    let mut params = CertificateParams::new(vec![
+        node_name.to_owned(),
+        "localhost".to_owned(),
+        "127.0.0.1".to_owned(),
+        "::1".to_owned(),
+    ])
+    .unwrap();
     params
         .distinguished_name
         .push(rcgen::DnType::CommonName, node_name);
@@ -108,6 +118,35 @@ fn configure_tls_nodes(
     nodes
 }
 
+/// Assert that every node registered in the cluster's nodes configuration
+/// advertises an `https://` fabric address. This is what makes peers dial each
+/// other with TLS — a node registered with `http://` would be dialed in
+/// plaintext regardless of its own TLS config.
+async fn assert_all_nodes_advertise_tls(
+    cluster: &StartedCluster,
+    expected_nodes: usize,
+) -> googletest::Result<()> {
+    let nodes_config = cluster.nodes[0]
+        .metadata_client()
+        .get::<NodesConfiguration>(NODES_CONFIG_KEY.clone())
+        .await
+        .expect("can read nodes configuration")
+        .expect("nodes configuration must exist after provisioning");
+
+    let addresses: Vec<_> = nodes_config
+        .iter()
+        .map(|(node_id, node_config)| (node_id, node_config.address.to_string()))
+        .collect();
+    assert_eq!(addresses.len(), expected_nodes);
+    for (node_id, address) in addresses {
+        assert!(
+            address.starts_with("https://"),
+            "node {node_id} must advertise an https:// fabric address, got '{address}'"
+        );
+    }
+    Ok(())
+}
+
 #[test_log::test(restate_core::test)]
 async fn fabric_tls_strict_cluster() -> googletest::Result<()> {
     let tls_dir = TempDir::new().unwrap();
@@ -147,6 +186,8 @@ async fn fabric_tls_strict_cluster() -> googletest::Result<()> {
 
     info!("Waiting for cluster to become healthy over mTLS");
     cluster.wait_healthy(Duration::from_secs(30)).await?;
+
+    assert_all_nodes_advertise_tls(&cluster, 3).await?;
 
     info!("Cluster is healthy with strict mTLS — test passed");
     Ok(())
@@ -191,6 +232,8 @@ async fn fabric_tls_optional_mode() -> googletest::Result<()> {
 
     info!("Waiting for cluster to become healthy (optional mode)");
     cluster.wait_healthy(Duration::from_secs(30)).await?;
+
+    assert_all_nodes_advertise_tls(&cluster, 3).await?;
 
     info!("Cluster is healthy with optional TLS mode — test passed");
     Ok(())

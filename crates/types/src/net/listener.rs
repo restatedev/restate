@@ -271,26 +271,24 @@ impl AddressBook {
     pub fn guess_advertised_address<P: ListenerPort + 'static>(
         &self,
         advertised_host: Option<&str>,
-    ) -> AdvertisedAddress<P> {
-        self.guess_advertised_address_with_tls(advertised_host, false)
-    }
-
-    pub fn guess_advertised_address_with_tls<P: ListenerPort + 'static>(
-        &self,
-        advertised_host: Option<&str>,
         tls: bool,
     ) -> AdvertisedAddress<P> {
         let Some(addresses) = self.bound_addr.get(&std::any::TypeId::of::<P>()) else {
             return AdvertisedAddress::default();
         };
         if let Some(tcp_address) = addresses.tcp_bind_address {
-            AdvertisedAddress::derive_from_bind_address_with_tls(
+            AdvertisedAddress::derive_from_bind_address(
                 SocketAddress::Socket(tcp_address),
                 advertised_host,
                 tls,
             )
         } else if let Some(uds_path) = &addresses.uds_path {
-            AdvertisedAddress::derive_from_bind_address(SocketAddress::Uds(uds_path.clone()), None)
+            // TLS never applies to unix sockets
+            AdvertisedAddress::derive_from_bind_address(
+                SocketAddress::Uds(uds_path.clone()),
+                None,
+                false,
+            )
         } else {
             AdvertisedAddress::default()
         }

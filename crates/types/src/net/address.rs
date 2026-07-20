@@ -364,11 +364,7 @@ impl<P: ListenerPort> Default for AdvertisedAddress<P> {
 }
 
 impl<P: ListenerPort> AdvertisedAddress<P> {
-    pub fn derive_from_bind_address(address: SocketAddress, advertised_host: Option<&str>) -> Self {
-        Self::derive_from_bind_address_with_tls(address, advertised_host, false)
-    }
-
-    pub fn derive_from_bind_address_with_tls(
+    pub fn derive_from_bind_address(
         address: SocketAddress,
         advertised_host: Option<&str>,
         tls: bool,
@@ -780,22 +776,18 @@ mod tests {
     }
 
     #[test]
-    fn derive_from_bind_address_with_tls() {
+    fn derive_from_bind_address_tls_scheme() {
         let socket = SocketAddress::Socket("192.168.1.1:5122".parse().unwrap());
 
         // Without TLS — should produce http://
-        let addr = AdvertisedAddress::<FabricPort>::derive_from_bind_address_with_tls(
-            socket.clone(),
-            None,
-            false,
-        );
+        let addr =
+            AdvertisedAddress::<FabricPort>::derive_from_bind_address(socket.clone(), None, false);
         let peer = addr.into_address().unwrap();
         assert!(!peer.is_tls());
         assert!(peer.to_string().starts_with("http://"));
 
         // With TLS — should produce https://
-        let addr =
-            AdvertisedAddress::<FabricPort>::derive_from_bind_address_with_tls(socket, None, true);
+        let addr = AdvertisedAddress::<FabricPort>::derive_from_bind_address(socket, None, true);
         let peer = addr.into_address().unwrap();
         assert!(peer.is_tls());
         assert!(peer.to_string().starts_with("https://"));
