@@ -16,7 +16,7 @@ use restate_limiter::RuleBook;
 use restate_types::identifiers::LeaderEpoch;
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
-use restate_types::partitions::features::PersistedStateMachineFeatures;
+use restate_types::partitions::features::PersistedFeatures;
 use restate_types::partitions::state::ReplicaSetState;
 use restate_types::replication::ReplicationProperty;
 use restate_types::schema::Schema;
@@ -58,13 +58,13 @@ pub trait ReadFsmTable {
     fn get_rule_book(&mut self) -> impl Future<Output = Result<Option<RuleBook>>> + Send + '_;
 
     /// The set of state-machine features enabled for this partition. Defaults to
-    /// [`PersistedStateMachineFeatures::default`] (all features disabled) when the
+    /// [`PersistedFeatures::default`] (all features disabled) when the
     /// partition has not yet applied a [`VersionBarrierCommand`] carrying feature
     /// changes.
     /// *Since v1.7.0*
     fn get_state_machine_features(
         &mut self,
-    ) -> impl Future<Output = Result<PersistedStateMachineFeatures>> + Send + '_;
+    ) -> impl Future<Output = Result<PersistedFeatures>> + Send + '_;
 }
 
 pub trait WriteFsmTable {
@@ -88,10 +88,7 @@ pub trait WriteFsmTable {
 
     /// Persist the set of state-machine features enabled for this partition.
     /// *Since v1.7.0*
-    fn put_state_machine_features(
-        &mut self,
-        features: &PersistedStateMachineFeatures,
-    ) -> Result<()>;
+    fn put_state_machine_features(&mut self, features: &PersistedFeatures) -> Result<()>;
 }
 
 #[derive(Debug, Clone, Copy, derive_more::From, derive_more::Into)]

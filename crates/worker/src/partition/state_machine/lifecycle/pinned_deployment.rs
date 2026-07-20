@@ -34,6 +34,7 @@ use restate_vqueues::VQueue;
 
 use super::VerifyOrMigrateJournalTableToV2Command;
 use crate::debug_if_leader;
+use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub struct OnPinnedDeploymentCommand {
@@ -42,7 +43,7 @@ pub struct OnPinnedDeploymentCommand {
     pub pinned_deployment: PinnedDeployment,
 }
 
-impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
+impl<'ctx, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
     for OnPinnedDeploymentCommand
 where
     S: journal_table_v1::WriteJournalTable
@@ -64,8 +65,9 @@ where
         + WriteVQueueTable
         + WriteLockTable
         + WritePromiseTable,
+    P: ProcessorContext,
 {
-    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
+    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
         let mut in_flight_invocation_metadata = self
             .invocation_status
             .into_invocation_metadata()
@@ -110,7 +112,7 @@ where
             VQueue::get(
                 vqueue_id,
                 ctx.storage,
-                ctx.vqueues_cache,
+                ctx.processor.vqueues_mut(),
                 ctx.is_leader.then_some(ctx.action_collector),
             )
             .await?

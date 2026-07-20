@@ -17,6 +17,7 @@ use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::journal_v2::CANCEL_NOTIFICATION_ID;
 use restate_types::journal_v2::raw::RawNotification;
 
+use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::lifecycle::ResumeInvocationCommand;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
@@ -27,12 +28,13 @@ pub(super) struct ApplyNotificationCommand<'e> {
     pub(super) entry_index: EntryIndex,
 }
 
-impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
+impl<'e, 'ctx: 'e, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
     for ApplyNotificationCommand<'e>
 where
     S: WriteVQueueTable + ReadVQueueTable + WriteLockTable,
+    P: ProcessorContext,
 {
-    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
+    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
         // If we're suspended, let's figure out if we need to resume
         match self.invocation_status {
             InvocationStatus::Suspended { awaiting_on, .. } => {
@@ -98,7 +100,7 @@ mod tests {
         BuiltInSignal, CommandType, Entry, EntryType, Failure, FailureMetadata, NotificationId,
         Signal, SignalId, SignalResult, SleepCommand, SleepCompletion,
     };
-    use restate_types::partitions::{PartitionFeatureChange, PersistedStateMachineFeatures};
+    use restate_types::partitions::{PartitionFeatureChange, PersistedFeatures};
     use restate_types::time::MillisSinceEpoch;
     use restate_wal_protocol::timer::TimerKeyValue;
     use restate_wal_protocol::v2::{Command, commands};
@@ -148,23 +150,18 @@ mod tests {
 
     #[restate_core::test]
     async fn notify_signal_received_before_pinned_deployment() {
-        run_notify_signal_received_before_pinned_deployment(
-            PersistedStateMachineFeatures::default(),
-        )
-        .await;
+        run_notify_signal_received_before_pinned_deployment(PersistedFeatures::default()).await;
     }
 
     #[restate_core::test]
     async fn notify_signal_received_before_pinned_deployment_journal_v2_enabled() {
-        run_notify_signal_received_before_pinned_deployment(
-            PersistedStateMachineFeatures::from_iter([PartitionFeatureChange::EnableJournalV2]),
-        )
+        run_notify_signal_received_before_pinned_deployment(PersistedFeatures::from_iter([
+            PartitionFeatureChange::EnableJournalV2,
+        ]))
         .await;
     }
 
-    async fn run_notify_signal_received_before_pinned_deployment(
-        features: PersistedStateMachineFeatures,
-    ) {
+    async fn run_notify_signal_received_before_pinned_deployment(features: PersistedFeatures) {
         let mut test_env = TestEnv::create_with_features(features).await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
 

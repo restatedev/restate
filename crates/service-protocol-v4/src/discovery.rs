@@ -136,7 +136,7 @@ impl CodedError for DiscoveryError {
             // special code for possible http1.1 errors
             DiscoveryError::Client(ServiceClientError::Http(
                 _,
-                restate_service_client::HttpError::PossibleHTTP11Only(_),
+                restate_service_client::HttpError::PossibleHTTP11Only,
             )) => Some(&META0014),
             DiscoveryError::Client(_) => Some(&META0003),
             DiscoveryError::UnsupportedServiceProtocol { .. } => Some(&META0012),

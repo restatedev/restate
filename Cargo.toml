@@ -236,7 +236,6 @@ rocksdb = { version = "0.51.0", package = "rust-rocksdb", features = [
 ], git = "https://github.com/restatedev/rust-rocksdb", rev = "c9ce6e982362da2b2bb783c28056b2603aba50df" }
 rstest = "0.26.1"
 rustls = { version = "0.23.35", default-features = false, features = ["ring"] }
-rustls-pemfile = "2"
 rustyline = { version = "14.0.0" }
 schemars = { version = "1.2", features = ["bytes1"] }
 semver = { version = "1.0", features = ["serde"] }
@@ -293,6 +292,7 @@ utoipa = { version = "5.4" }
 utoipa-axum = "0.2"
 uuid = { version = "1.19.0", features = ["v7", "serde"] }
 vergen = { version = "8.0.0", default-features = false }
+wildmatch = "2.6.1"
 x509-parser = "0.16"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zstd = { version = "0.13" }

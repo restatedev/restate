@@ -24,7 +24,6 @@ mod purge_journal;
 mod restart_as_new;
 mod resume;
 mod suspend;
-mod version_barrier;
 mod yield_invocation;
 
 pub(super) use cancel::OnCancelCommand;
@@ -44,5 +43,4 @@ pub(super) use purge_journal::OnPurgeJournalCommand;
 pub(super) use restart_as_new::OnRestartAsNewInvocationCommand;
 pub(super) use resume::ResumeInvocationCommand;
 pub(super) use suspend::OnSuspendCommand;
-pub(super) use version_barrier::OnVersionBarrierCommand;
 pub(super) use yield_invocation::YieldInvocationCommand;

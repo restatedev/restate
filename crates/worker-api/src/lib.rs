@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 pub mod invoker;
+pub mod processor;
 pub mod resources;
 
 mod leader_query;

@@ -46,6 +46,7 @@ use restate_types::net::partition_processor::{
 use restate_types::sharding::KeyRange;
 use restate_types::{RESTATE_VERSION_1_7_0, SemanticRestateVersion, Version, Versioned, vqueues};
 use restate_vqueues::VQueueEvent;
+use restate_vqueues::context::HasVQueues;
 use restate_vqueues::scheduler::Decisions;
 use restate_vqueues::{SchedulerService, VQueuesMeta};
 use restate_wal_protocol::Command;
@@ -59,9 +60,10 @@ use crate::metric_definitions::{PARTITION_HANDLE_LEADER_ACTIONS, USAGE_LEADER_AC
 use crate::partition::cleaner::{CleanerEffect, CleanerHandle};
 use crate::partition::leadership::self_proposer::SelfProposer;
 use crate::partition::leadership::{ActionEffect, Error, InvokerStream, TimerService};
+use crate::partition::processor::{FsmAccess, Processor};
 use crate::partition::shuffle;
 use crate::partition::shuffle::HintSender;
-use crate::partition::state_machine::{Action, StateMachine};
+use crate::partition::state_machine::Action;
 use crate::partition_processor_manager::LeaderQueryGuard;
 
 use super::durability_tracker::DurabilityTracker;
@@ -194,8 +196,7 @@ impl LeaderState {
     /// arm!
     pub async fn run(
         &mut self,
-        state_machine: &StateMachine,
-        vqueue_metas: VQueuesMeta<'_>,
+        ctx: impl Processor + HasVQueues,
     ) -> Result<Vec<ActionEffect>, Error> {
         let timer_stream = std::pin::pin!(stream::unfold(
             &mut self.timer_service,
@@ -204,6 +205,7 @@ impl LeaderState {
                 Some((ActionEffect::Timer(timer_value), timer_service))
             }
         ));
+        let vqueue_metas = ctx.vqueues();
 
         // todo(asoli): consider adding the scheduler pick_next() directly to the tokio::select!
         // if we have problems with latency
@@ -220,11 +222,7 @@ impl LeaderState {
 
         let schema_stream = (&mut self.schema_stream).filter_map(|_| {
             // only upsert schema iff version is newer than current version
-            let current_version = state_machine
-                .schema
-                .as_ref()
-                .map(|schema| schema.version())
-                .unwrap_or_else(Version::invalid);
+            let current_version = ctx.fsm().schema_version();
 
             std::future::ready(
                 Some(Metadata::with_current(|m| m.schema()))
@@ -236,7 +234,7 @@ impl LeaderState {
         let rule_book_stream = (&mut self.rule_book_stream).filter_map(|book| {
             // Only propose iff the cache holds a rule book that's
             // newer than the partition's current in-memory book.
-            let current_version = state_machine.rule_book.version();
+            let current_version = ctx.fsm().rule_book().version();
             std::future::ready(
                 (book.version() > current_version).then(|| ActionEffect::UpsertRuleBook(book)),
             )
@@ -643,7 +641,7 @@ impl LeaderState {
 
     pub fn handle_actions(
         &mut self,
-        vqueues: VQueuesMeta<'_>,
+        processor: impl Processor + HasVQueues,
         actions: impl Iterator<Item = Action>,
     ) -> Result<(), Error> {
         for action in actions {
@@ -659,7 +657,7 @@ impl LeaderState {
             )
             .increment(1);
 
-            self.handle_action(vqueues, action)?;
+            self.handle_action(&processor, action)?;
         }
 
         Ok(())
@@ -675,7 +673,11 @@ impl LeaderState {
         token
     }
 
-    fn handle_action(&mut self, metas: VQueuesMeta<'_>, action: Action) -> Result<(), Error> {
+    fn handle_action(
+        &mut self,
+        processor: &(impl Processor + HasVQueues),
+        action: Action,
+    ) -> Result<(), Error> {
         match action {
             Action::Invoke {
                 invocation_id,
@@ -837,7 +839,7 @@ impl LeaderState {
                 }
             }
             Action::VQEvent(inbox_event) => {
-                self.handle_vqueue_inbox_event(metas, inbox_event);
+                self.handle_vqueue_inbox_event(processor.vqueues(), inbox_event);
             }
             Action::VQInvoke {
                 vq_handle,
@@ -845,6 +847,7 @@ impl LeaderState {
                 invocation_target,
                 idempotency_key,
             } => {
+                let metas = processor.vqueues();
                 let slot = metas.get(vq_handle).expect("vqueue meta must be in cache");
                 // state mutations should not create Invoke actions. At least for now.
                 assert!(matches!(key.kind(), vqueues::EntryKind::Invocation));

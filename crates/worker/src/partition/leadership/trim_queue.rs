@@ -27,6 +27,24 @@ use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::time::MillisSinceEpoch;
 use restate_util_time::DurationExt;
 
+pub trait HasTrimQueue {
+    fn trim_queue(&self) -> &TrimQueue;
+}
+
+impl<P: HasTrimQueue> HasTrimQueue for &P {
+    #[inline]
+    fn trim_queue(&self) -> &TrimQueue {
+        (**self).trim_queue()
+    }
+}
+
+impl<P: HasTrimQueue> HasTrimQueue for &mut P {
+    #[inline]
+    fn trim_queue(&self) -> &TrimQueue {
+        (**self).trim_queue()
+    }
+}
+
 /// A task that trims the log by removing durable LSNs from the log.
 pub struct LogTrimmer {
     bifrost: Bifrost,

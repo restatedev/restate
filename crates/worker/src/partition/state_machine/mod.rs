@@ -16,13 +16,13 @@ mod utils;
 pub use actions::{Action, ActionCollector};
 // Re-exported so the resume RPC handler can resolve deployments the same way the apply path does.
 pub(crate) use lifecycle::resolve_pinned_deployment;
+use restate_worker_api::processor::PartitionFeatures;
 
 use std::collections::HashSet;
 use std::fmt;
-use std::fmt::{Debug, Formatter};
-use std::ops::{RangeBounds, RangeInclusive};
+use std::fmt::Debug;
+use std::ops::RangeBounds;
 use std::str::FromStr;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use assert2::let_assert;
@@ -32,11 +32,10 @@ use futures::{StreamExt, TryStreamExt};
 use metrics::{counter, histogram};
 use tracing::{Instrument, debug, error, info, trace, warn};
 
+// `pub` so external drivers (e.g. pp-bench) can build the records `apply` consumes.
+pub use restate_bifrost::DataRecord;
 use restate_clock::RoughTimestamp;
 use restate_limiter::LimitKey;
-use restate_limiter::RuleBook;
-
-use crate::rule_book_cache::RuleBookCacheHandle;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::WriteFsmTable;
@@ -68,6 +67,7 @@ use restate_storage_api::vqueue_table::{EntryStatusHeader, ReadVQueueTable, Writ
 use restate_storage_api::{Result as StorageResult, journal_table};
 use restate_storage_api::{StorageError, journal_table_v2};
 use restate_tracing_instrumentation as instrumentation;
+use restate_types::RestateVersion;
 use restate_types::clock::UniqueTimestamp;
 use restate_types::errors::{
     ALREADY_COMPLETED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, GenericError, InvocationError,
@@ -99,6 +99,7 @@ use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader,
 };
 use restate_types::journal::raw::{EntryHeader, RawEntryCodec, RawEntryCodecError};
+use restate_types::journal::*;
 use restate_types::journal_v2;
 use restate_types::journal_v2::command::{OutputCommand, OutputResult};
 use restate_types::journal_v2::raw::RawEntry;
@@ -108,22 +109,17 @@ use restate_types::journal_v2::{
 };
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
-use restate_types::partitions::features::{PartitionFeatureChange, PersistedStateMachineFeatures};
-use restate_types::schema::Schema;
 use restate_types::service_protocol::ServiceProtocolVersion;
-use restate_types::sharding::KeyRange;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::state_mut::StateMutationVersion;
 use restate_types::storage::{StorageDecodeError, StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::{self, EntryId, VQueueId};
-use restate_types::{RestateVersion, SemanticRestateVersion};
-use restate_types::{Versioned, journal::*};
 use restate_util_string::ReString;
-use restate_vqueues::{VQueue, VQueueHandle, VQueuesMetaCache};
+use restate_vqueues::{VQueue, VQueueHandle};
 use restate_wal_protocol::timer::TimerKeyDisplay;
 use restate_wal_protocol::timer::TimerKeyValue;
-use restate_wal_protocol::v2;
+use restate_wal_protocol::v2::{self};
 use restate_wal_protocol::v2::{CommandKind, commands};
 use restate_worker_api::invoker::Effect;
 
@@ -132,146 +128,16 @@ use crate::metric_definitions::{
     LEADER_LABEL, LEADER_LABEL_FOLLOWER, LEADER_LABEL_LEADER, PARTITION_APPLY_COMMAND,
     USAGE_LEADER_JOURNAL_ENTRY_COUNT,
 };
+use crate::partition::processor::*;
 use crate::partition::state_machine::lifecycle::OnCancelCommand;
 use crate::partition::types::{InvokerEffectKind, OutboxMessageExt};
 
-/// Read-only view of the state-machine features currently enabled for a partition.
-///
-/// Each feature is gated either on the partition's persisted minimum Restate-server version
-/// (`min_restate_version`) or on its persisted opt-in feature set
-/// ([`PersistedStateMachineFeatures`]), depending on what the feature requires. See each method's
-/// doc-comment for the specific gate.
-pub(crate) trait StateMachineFeatures {
-    /// Write to journal v2 instead of journal v1 by default. This is a preparational step for
-    /// removing the journal v1 after enabling this feature and migrating all unpinned invocations
-    /// from journal v1 to journal v2.
-    fn use_journal_v2_as_default(&self) -> bool;
+use super::processor::{FsmAccess, OutboxAccess, OutboxMut};
 
-    /// Whether vqueue-related code paths are active on this partition.
-    ///
-    /// *Since v1.7.0*
-    fn is_vqueues_enabled(&self) -> bool;
-
-    /// Whether new invocations should persist a unique random seed
-    /// (invocation_id + record_created_at entropy). When off, SDKs derive the
-    /// seed from `InvocationId::to_random_seed()` at invoke time.
-    ///
-    /// *Since v1.7.0*
-    fn is_unique_random_seeds_enabled(&self) -> bool;
-}
-
-impl<T: StateMachineFeatures> StateMachineFeatures for &T {
-    fn use_journal_v2_as_default(&self) -> bool {
-        (*self).use_journal_v2_as_default()
-    }
-
-    fn is_vqueues_enabled(&self) -> bool {
-        (*self).is_vqueues_enabled()
-    }
-
-    fn is_unique_random_seeds_enabled(&self) -> bool {
-        (*self).is_unique_random_seeds_enabled()
-    }
-}
-
-impl StateMachineFeatures for StateMachine {
-    fn use_journal_v2_as_default(&self) -> bool {
-        self.enabled_features.journal_v2
-    }
-
-    fn is_vqueues_enabled(&self) -> bool {
-        self.enabled_features.vqueues
-    }
-
-    fn is_unique_random_seeds_enabled(&self) -> bool {
-        self.enabled_features.unique_random_seeds
-    }
-}
-
-impl<S> StateMachineFeatures for StateMachineApplyContext<'_, S> {
-    fn use_journal_v2_as_default(&self) -> bool {
-        self.enabled_features.journal_v2
-    }
-
-    fn is_vqueues_enabled(&self) -> bool {
-        self.enabled_features.vqueues
-    }
-
-    fn is_unique_random_seeds_enabled(&self) -> bool {
-        self.enabled_features.unique_random_seeds
-    }
-}
-
-pub struct StateMachine {
-    // initialized from persistent storage
-    pub(crate) inbox_seq_number: MessageIndex,
-    /// First outbox message index.
-    pub(crate) outbox_head_seq_number: Option<MessageIndex>,
-    /// The minimum version of restate server that we currently support
-    pub(crate) min_restate_version: SemanticRestateVersion,
-    /// Set of state-machine features currently enabled on this partition.
-    /// Mutated via `VersionBarrierCommand` entries carrying feature changes.
-    /// *Since v1.7.0*
-    pub(crate) enabled_features: PersistedStateMachineFeatures,
-    /// Sequence number of the next outbox message to be appended.
-    pub(crate) outbox_seq_number: MessageIndex,
-    /// Consistent schema
-    pub(crate) schema: Option<Schema>,
-    /// Cluster-global rule book, kept consistent across replicas via
-    /// `Command::UpsertRuleBook` log entries. `Arc` because the apply
-    /// path also pushes the same value into the node-level
-    /// `RuleBookCache` (one allocation, cheap clones).
-    pub(crate) rule_book: Arc<RuleBook>,
-    /// Handle into the node-level rule-book cache. The apply path
-    /// notifies the cache when it learns about a newer book from
-    /// Bifrost replay, so leader-state subscribers on the same node
-    /// see it without waiting for the next metadata-store poll.
-    pub(crate) rule_book_cache: RuleBookCacheHandle,
-
-    pub(crate) partition_key_range: KeyRange,
-}
-
-impl Debug for StateMachine {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("StateMachine")
-            .field("inbox_seq_number", &self.inbox_seq_number)
-            .field("outbox_head_seq_number", &self.outbox_head_seq_number)
-            .field("outbox_seq_number", &self.outbox_seq_number)
-            .field("min_restate_version", &self.min_restate_version)
-            .field("enabled_features", &self.enabled_features)
-            .finish()
-    }
-}
+pub struct StateMachine;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error(
-        "partition is blocked; requires an upgrade to restate-server version \
-        {required_min_version} or higher; reason='{barrier_reason}'; feature changes={feature_changes:?}"
-    )]
-    VersionBarrier {
-        required_min_version: SemanticRestateVersion,
-        barrier_reason: String,
-        feature_changes: Vec<u16>,
-    },
-    /// *Since v1.7.0*
-    #[error(
-        "partition is blocked; restate-server does not recognize feature change IDs {unknown_ids:?}; reason='{barrier_reason}'"
-    )]
-    UnknownFeatureFlags {
-        unknown_ids: Vec<u16>,
-        required_min_version: SemanticRestateVersion,
-        barrier_reason: String,
-    },
-    /// *Since v1.7.0*
-    #[error(
-        "partition is blocked; pre-existing in-flight data must be migrated before applying \
-         feature changes {features:?}; consult the Restate documentation for the server version \
-         that supports this migration"
-    )]
-    MigrationRequired {
-        features: Vec<PartitionFeatureChange>,
-    },
     #[error("failed to deserialize entry: {0}")]
     Codec(#[from] RawEntryCodecError),
     #[error(transparent)]
@@ -330,48 +196,12 @@ macro_rules! info_span_if_leader {
     }};
 }
 
-impl StateMachine {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        inbox_seq_number: MessageIndex,
-        outbox_seq_number: MessageIndex,
-        outbox_head_seq_number: Option<MessageIndex>,
-        partition_key_range: KeyRange,
-        min_restate_version: SemanticRestateVersion,
-        enabled_features: PersistedStateMachineFeatures,
-        schema: Option<Schema>,
-        rule_book: Arc<RuleBook>,
-        rule_book_cache: RuleBookCacheHandle,
-    ) -> Self {
-        Self {
-            inbox_seq_number,
-            outbox_seq_number,
-            outbox_head_seq_number,
-            partition_key_range,
-            min_restate_version,
-            enabled_features,
-            schema,
-            rule_book,
-            rule_book_cache,
-        }
-    }
-}
-
-pub(crate) struct StateMachineApplyContext<'a, S> {
+pub(crate) struct StateMachineApplyContext<'a, S, P> {
+    processor: P,
     storage: &'a mut S,
     record_created_at: MillisSinceEpoch,
     record_lsn: Lsn,
     action_collector: &'a mut ActionCollector,
-    vqueues_cache: &'a mut VQueuesMetaCache,
-    inbox_seq_number: &'a mut MessageIndex,
-    outbox_seq_number: &'a mut MessageIndex,
-    outbox_head_seq_number: &'a mut Option<MessageIndex>,
-    min_restate_version: &'a mut SemanticRestateVersion,
-    enabled_features: &'a mut PersistedStateMachineFeatures,
-    schema: &'a mut Option<Schema>,
-    rule_book: &'a mut Arc<RuleBook>,
-    rule_book_cache: &'a RuleBookCacheHandle,
-    partition_key_range: KeyRange,
     is_leader: bool,
 }
 
@@ -380,44 +210,29 @@ trait CommandHandler<CTX> {
 }
 
 impl StateMachine {
-    // todo(soli):
-    // - This should accept `LsnEnvelope` instead of `Command` to get access to created_at, header,
-    // and lsn.
-    // - Accept `LsnEnvelope` by reference.
-    #[allow(clippy::too_many_arguments)]
     pub async fn apply<TransactionType: restate_storage_api::Transaction + Send>(
-        &mut self,
-        envelope: v2::Envelope<v2::Raw>,
-        record_created_at: MillisSinceEpoch,
-        record_lsn: Lsn,
-        transaction: &mut TransactionType,
+        processor: impl ProcessorContext,
+        txn: &mut TransactionType,
+        envelope: DataRecord<v2::Envelope<v2::Raw>>,
         action_collector: &mut ActionCollector,
-        vqueues_cache: &mut VQueuesMetaCache,
         is_leader: bool,
     ) -> Result<(), Error> {
-        let span = utils::state_machine_apply_command_span(is_leader, envelope.kind());
+        let span = utils::state_machine_apply_command_span(is_leader, envelope.inner().kind());
         async {
             let start = Instant::now();
             // Apply the command
-            let record_kind: &'static str = envelope.kind().into();
+            let record_kind: &'static str = envelope.inner().kind().into();
+            let record_created_at = envelope.created_at().into();
+            let record_lsn = envelope.seq();
             let res = StateMachineApplyContext {
-                storage: transaction,
+                processor,
+                storage: txn,
                 record_created_at,
                 record_lsn,
                 action_collector,
-                inbox_seq_number: &mut self.inbox_seq_number,
-                outbox_seq_number: &mut self.outbox_seq_number,
-                outbox_head_seq_number: &mut self.outbox_head_seq_number,
-                min_restate_version: &mut self.min_restate_version,
-                enabled_features: &mut self.enabled_features,
-                vqueues_cache,
-                schema: &mut self.schema,
-                rule_book: &mut self.rule_book,
-                rule_book_cache: &self.rule_book_cache,
-                partition_key_range: self.partition_key_range,
                 is_leader,
             }
-            .on_apply(envelope)
+            .on_apply(envelope.into_inner())
             .await;
             histogram!(PARTITION_APPLY_COMMAND, "command" => record_kind, LEADER_LABEL => if is_leader { LEADER_LABEL_LEADER } else { LEADER_LABEL_FOLLOWER }).record(start.elapsed());
             res
@@ -427,7 +242,7 @@ impl StateMachine {
     }
 }
 
-impl<S> StateMachineApplyContext<'_, S> {
+impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     async fn get_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
@@ -575,9 +390,15 @@ impl<S> StateMachineApplyContext<'_, S> {
     {
         match envelope.kind() {
             CommandKind::Unknown => Err(Error::UnknownCommandKind),
-            CommandKind::AnnounceLeader | CommandKind::UpdatePartitionDurability => {
-                // no-op
-                Ok(())
+            CommandKind::AnnounceLeader
+            | CommandKind::UpdatePartitionDurability
+            | CommandKind::UpsertRuleBook
+            | CommandKind::UpsertSchema
+            | CommandKind::TruncateOutbox
+            | CommandKind::VersionBarrier => {
+                panic!(
+                    "Partition-wide commands must be processed by the processor's apply_partition_command path"
+                );
             }
             CommandKind::VQSchedulerDecisions => {
                 let scheduler_decisions = envelope
@@ -613,53 +434,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                 }
 
                 Ok(())
-            }
-            CommandKind::VersionBarrier => {
-                let barrier = envelope
-                    .into_typed::<commands::VersionBarrierCommand>()
-                    .into_inner()?;
-                // We have versions in play:
-                // - Our binary's version (this process)
-                // - `min_restate_version` coming from the FSM
-                // - `barrier.version` from bifrost.
-                //
-                // If we can process this command, we update the FSM.
-                //
-                // We can process this command if our own version is at or higher than the barrier
-                // version as indicated by the message. We'll apply the change to the FSM only
-                // if the new barrier version is higher than what the FSM already has.
-                //
-                // If we can't, then what?
-                //
-                // In v1.4 we crash the PP but tell a good message. This is not the best solution
-                // but it'll make clear what's going on. The issue with this approach is that we
-                // will probably continue restarting PP on the same node leading to unavailability.
-                //
-                // [todo] What's the ideal scenario?
-                // - Ideal scenario is that we inform the operator (flare).
-                // - We mark this node *generational* as a bad candidate (not to take leadership
-                //   or run follower again).
-                // - Through gossip, this node broadcasts its partition block-list so it won't be
-                //   considered for leadership until a new generation pops up.
-                //   Noting that the blocklist for a generational node can only increase/grow until
-                //   the daemon is restarted (higher generation).
-                // - Controller attempts to reconfigure or selects a different leader
-                //   that's not blocking this partition if such replacement exists.
-                // - Peers will not pick this node as leader candidate when performing
-                //   adhoc failovers.
-                if SemanticRestateVersion::current().is_equal_or_newer_than(&barrier.version) {
-                    // Feels amazing to be running a new version of restate!
-                    lifecycle::OnVersionBarrierCommand { barrier }
-                        .apply(self)
-                        .await?;
-                    Ok(())
-                } else {
-                    Err(Error::VersionBarrier {
-                        required_min_version: barrier.version,
-                        barrier_reason: barrier.human_reason.unwrap_or_default(),
-                        feature_changes: barrier.feature_changes,
-                    })
-                }
             }
             CommandKind::Invoke => {
                 let service_invocation = envelope
@@ -697,7 +471,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 let inner = envelope
                     .into_typed::<commands::ProxyThroughCommand>()
                     .into_inner()?;
-                self.handle_outgoing_message(OutboxMessage::ServiceInvocation(Box::new(
+                self.do_enqueue_into_outbox(OutboxMessage::ServiceInvocation(Box::new(
                     inner.invocation.into(),
                 )))?;
                 Ok(())
@@ -713,20 +487,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                     .into_typed::<commands::InvokerEffectCommand>()
                     .into_inner()?;
                 self.try_invoker_effect(inner.into()).await
-            }
-            CommandKind::TruncateOutbox => {
-                let index = envelope
-                    .into_typed::<commands::TruncateOutboxCommand>()
-                    .into_inner()?
-                    .index;
-
-                self.do_truncate_outbox(RangeInclusive::new(
-                    (*self.outbox_head_seq_number).unwrap_or(index),
-                    index,
-                ))
-                .await?;
-                *self.outbox_head_seq_number = Some(index + 1);
-                Ok(())
             }
             CommandKind::Timer => {
                 let inner = envelope
@@ -861,77 +621,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                     .await?;
                 Ok(())
             }
-            CommandKind::UpsertSchema => {
-                let upsert = envelope
-                    .into_typed::<commands::UpsertSchemaCommand>()
-                    .into_inner()?;
-
-                trace!(
-                    "Upsert schema record to version '{}'",
-                    upsert.schema.version()
-                );
-                if self
-                    .schema
-                    .as_ref()
-                    .map(|current| current.version() < upsert.schema.version())
-                    .unwrap_or(true)
-                {
-                    // only update if schema is none or has a smaller version
-                    debug!("Schema updated to version '{}'", upsert.schema.version());
-                    self.storage.put_schema(&upsert.schema)?;
-                    *self.schema = Some(upsert.schema);
-                }
-
-                Ok(())
-            }
-            CommandKind::UpsertRuleBook => {
-                let upsert = envelope
-                    .into_typed::<commands::UpsertRuleBookCommand>()
-                    .into_inner()?;
-
-                let new_book = upsert.rule_book;
-
-                let current_version = self.rule_book.version();
-
-                if new_book.version() <= current_version {
-                    trace!(
-                        "Skipping UpsertRuleBook to version {} (current: {})",
-                        new_book.version(),
-                        current_version,
-                    );
-                    return Ok(());
-                }
-
-                debug!(
-                    "Rule book updated from version {} to {}",
-                    current_version,
-                    new_book.version(),
-                );
-
-                // Persist within the apply transaction.
-                self.storage.put_rule_book(&new_book)?;
-
-                // only leaders need to update the rules in the scheduler
-                if self.is_leader {
-                    let diff = new_book.diff(self.rule_book);
-                    // Emit action for the leader to forward to UserLimiter
-                    // (followers ignore — no live limiter to notify).
-                    if !diff.is_empty() {
-                        self.action_collector.push(Action::RulesUpdated(diff));
-                    }
-                }
-
-                // Push the freshly-applied book into the node-level
-                // cache so other PP-leaders on this node see the new
-                // version on their next watch tick — without waiting
-                // for the metadata-store poll cadence.
-                self.rule_book_cache.notify_observed(&new_book);
-
-                // Update in-memory state.
-                *self.rule_book = new_book;
-
-                Ok(())
-            }
             CommandKind::VQueuesPause => {
                 let pause = envelope
                     .into_typed::<commands::VQueuesPauseCommand>()
@@ -941,7 +630,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     let Some(mut vqueue) = VQueue::get(
                         qid,
                         self.storage,
-                        self.vqueues_cache,
+                        self.processor.vqueues_mut(),
                         self.is_leader.then_some(self.action_collector),
                     )
                     .await?
@@ -963,7 +652,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     let Some(mut vqueue) = VQueue::get(
                         qid,
                         self.storage,
-                        self.vqueues_cache,
+                        self.processor.vqueues_mut(),
                         self.is_leader.then_some(self.action_collector),
                     )
                     .await?
@@ -1000,11 +689,12 @@ impl<S> StateMachineApplyContext<'_, S> {
     {
         let invocation_id = service_invocation.invocation_id;
         debug_assert!(
-            self.partition_key_range
+            self.processor
+                .key_range()
                 .contains(&service_invocation.partition_key()),
             "Service invocation with partition key '{}' has been delivered to a partition processor with key range '{:?}'. This indicates a bug.",
             service_invocation.partition_key(),
-            self.partition_key_range
+            self.processor.key_range(),
         );
 
         {
@@ -1035,14 +725,22 @@ impl<S> StateMachineApplyContext<'_, S> {
             "limit_key set without scope — this should have been rejected at the ingress"
         );
 
-        let random_seed = self.is_unique_random_seeds_enabled().then(|| {
-            invocation_id.to_random_seed_with_wal_record_time(self.record_created_at.as_u64())
-        });
+        let random_seed = self
+            .processor
+            .fsm()
+            .features()
+            .is_unique_random_seeds_enabled()
+            .then(|| {
+                invocation_id.to_random_seed_with_wal_record_time(self.record_created_at.as_u64())
+            });
 
         // Prepare PreFlightInvocationMetadata structure
         let submit_notification_sink = service_invocation.submit_notification_sink.take();
 
         let qid = self
+            .processor
+            .fsm()
+            .features()
             .is_vqueues_enabled()
             .then_some(VQueue::infer_vqueue_id_from_invocation(
                 service_invocation.partition_key(),
@@ -1091,7 +789,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         // have a journal v2 created. To handle already existing invocations for which we didn't
         // create the journal yet, there is a separate path in init_journal to create the journal
         // v2. This change has been introduced with v1.6
-        if self.use_journal_v2_as_default()
+        if self.processor.fsm().features().use_journal_v2_as_default()
             && let PreFlightInvocationArgument::Input(PreFlightInvocationInput {
                 argument,
                 headers,
@@ -1238,7 +936,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             qid,
             &metadata.invocation_target,
             self.storage,
-            self.vqueues_cache,
+            self.processor.vqueues_mut(),
             self.is_leader.then_some(self.action_collector),
             &metadata.limit_key,
         )
@@ -1614,7 +1312,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         // the journal v2 by default (setting the min Restate version to v1.6.0). For invocations
         // that are created afterwards, Restate will create the journal in
         // [`StateMachineApplyContext::on_pre_flight_invocation`].
-        if self.use_journal_v2_as_default() {
+        if self.processor.fsm().features().use_journal_v2_as_default() {
             // Prepare the new entry
             let new_entry: journal_v2::Entry = InputCommand {
                 headers: invocation_input.headers,
@@ -1720,7 +1418,7 @@ impl<S> StateMachineApplyContext<'_, S> {
     where
         S: WriteInboxTable + WriteFsmTable,
     {
-        let seq_number = *self.inbox_seq_number;
+        let seq_number = self.processor.fsm().inbox_seq_number();
         debug_if_leader!(
             self.is_leader,
             restate.inbox.seq = seq_number,
@@ -1730,11 +1428,11 @@ impl<S> StateMachineApplyContext<'_, S> {
         self.storage
             .put_inbox_entry(seq_number, &inbox_entry)
             .map_err(Error::Storage)?;
+
         // need to store the next inbox sequence number
-        self.storage
-            .put_inbox_seq_number(seq_number + 1)
-            .map_err(Error::Storage)?;
-        *self.inbox_seq_number += 1;
+        self.processor
+            .fsm_mut()
+            .set_inbox_seq_number(self.storage, seq_number + 1);
         Ok(seq_number)
     }
 
@@ -1753,7 +1451,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteLockTable
             + ReadVQueueTable,
     {
-        if self.is_vqueues_enabled() {
+        if self.processor.fsm().features().is_vqueues_enabled() {
             self.vqueue_enqueue_state_mutation(mutation).await?;
         } else {
             let service_status = self
@@ -2112,7 +1810,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 VQueue::get(
                     &vqueue_id,
                     self.storage,
-                    self.vqueues_cache,
+                    self.processor.vqueues_mut(),
                     self.is_leader.then_some(self.action_collector),
                 )
                 .await?
@@ -2222,7 +1920,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 VQueue::get(
                     &vqueue_id,
                     self.storage,
-                    self.vqueues_cache,
+                    self.processor.vqueues_mut(),
                     self.is_leader.then_some(self.action_collector),
                 )
                 .await?
@@ -2406,7 +2104,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         };
 
         for invocation_id in invocation_ids_to_kill {
-            self.handle_outgoing_message(OutboxMessage::InvocationTermination(
+            self.do_enqueue_into_outbox(OutboxMessage::InvocationTermination(
                 InvocationTermination {
                     invocation_id,
                     flavor: TerminationFlavor::Kill,
@@ -2460,7 +2158,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 } => {
                     // For calls, we don't immediately complete the call entry with cancelled,
                     // but we let the cancellation result propagate from the callee.
-                    self.handle_outgoing_message(OutboxMessage::InvocationTermination(
+                    self.do_enqueue_into_outbox(OutboxMessage::InvocationTermination(
                         InvocationTermination {
                             invocation_id: enrichment_result.invocation_id,
                             flavor: TerminationFlavor::Cancel,
@@ -3147,7 +2845,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             VQueue::get(
                 &vqueue_id,
                 self.storage,
-                self.vqueues_cache,
+                self.processor.vqueues_mut(),
                 self.is_leader.then_some(self.action_collector),
             )
             .await?
@@ -3182,12 +2880,10 @@ impl<S> StateMachineApplyContext<'_, S> {
         for response_sink in response_sinks {
             match response_sink {
                 ServiceInvocationResponseSink::PartitionProcessor(target) => self
-                    .handle_outgoing_message(OutboxMessage::ServiceResponse(
-                        InvocationResponse {
-                            target,
-                            result: result.clone(),
-                        },
-                    ))?,
+                    .do_enqueue_into_outbox(OutboxMessage::ServiceResponse(InvocationResponse {
+                        target,
+                        result: result.clone(),
+                    }))?,
                 ServiceInvocationResponseSink::Ingress { request_id } => self
                     .send_ingress_response(
                     request_id,
@@ -3301,7 +2997,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 VQueue::get(
                     qid,
                     self.storage,
-                    self.vqueues_cache,
+                    self.processor.vqueues_mut(),
                     self.is_leader.then_some(self.action_collector),
                 )
                 .await?
@@ -3406,7 +3102,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             let mut vqueue = VQueue::get(
                 qid,
                 self.storage,
-                self.vqueues_cache,
+                self.processor.vqueues_mut(),
                 self.is_leader.then_some(self.action_collector),
             )
             .await?
@@ -3434,26 +3130,6 @@ impl<S> StateMachineApplyContext<'_, S> {
         match status {
             InvocationStatus::Scheduled(ScheduledInvocation { metadata, .. })
             | InvocationStatus::Inboxed(InboxedInvocation { metadata, .. }) => {
-                // Validate that if VO, that it's not locked already.
-                let invocation_target = &metadata.invocation_target;
-                if matches!(
-                    invocation_target.invocation_target_ty(),
-                    InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
-                ) {
-                    let keyed_service_id = invocation_target.as_keyed_service_id().expect(
-                        "When the handler type is Exclusive, the invocation target must have a key",
-                    );
-                    // Lock the service in the old status table.
-                    // Obsolete: Remove in lieu of using Locks when service status table is fully migrated to
-                    // locks table.
-                    self.storage
-                        .put_virtual_object_status(
-                            &keyed_service_id,
-                            &VirtualObjectStatus::Locked(invocation_id),
-                        )
-                        .map_err(Error::Storage)?;
-                }
-
                 let (metadata, invocation_input) =
                     InFlightInvocationMetadata::from_pre_flight_invocation_metadata(
                         metadata,
@@ -3463,7 +3139,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 let mut vqueue = VQueue::get(
                     qid,
                     self.storage,
-                    self.vqueues_cache,
+                    self.processor.vqueues_mut(),
                     self.is_leader.then_some(self.action_collector),
                 )
                 .await?
@@ -3851,7 +3527,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                             }) => {
                                 // Send response to listeners
                                 for listener in listeners {
-                                    self.handle_outgoing_message(OutboxMessage::ServiceResponse(
+                                    self.do_enqueue_into_outbox(OutboxMessage::ServiceResponse(
                                         InvocationResponse {
                                             target: listener,
                                             result: completion.clone().into(),
@@ -3951,7 +3627,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                         restate_version: RestateVersion::current(),
                     });
 
-                    self.handle_outgoing_message(OutboxMessage::ServiceInvocation(
+                    self.do_enqueue_into_outbox(OutboxMessage::ServiceInvocation(
                         service_invocation,
                     ))?;
                 } else {
@@ -4002,7 +3678,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     restate_version: RestateVersion::current(),
                 });
 
-                self.handle_outgoing_message(OutboxMessage::ServiceInvocation(service_invocation))?;
+                self.do_enqueue_into_outbox(OutboxMessage::ServiceInvocation(service_invocation))?;
             }
             EnrichedEntryHeader::Awakeable { is_completed, .. } => {
                 debug_assert!(!is_completed, "Awakeable entry must not be completed.");
@@ -4038,14 +3714,14 @@ impl<S> StateMachineApplyContext<'_, S> {
 
                 // Check is this is old or new awakeable id
                 if AwakeableIdentifier::from_str(&entry.id).is_ok() {
-                    self.handle_outgoing_message(OutboxMessage::from_awakeable_completion(
+                    self.do_enqueue_into_outbox(OutboxMessage::from_awakeable_completion(
                         *invocation_id,
                         *entry_index,
                         entry.result.into(),
                     ))?;
                 } else if let Ok(new_awk_id) = ExternalSignalIdentifier::from_str(&entry.id) {
                     let (invocation_id, signal_id) = new_awk_id.into_inner();
-                    self.handle_outgoing_message(OutboxMessage::NotifySignal(
+                    self.do_enqueue_into_outbox(OutboxMessage::NotifySignal(
                         NotifySignalRequest {
                             invocation_id,
                             signal: Signal::new(
@@ -4133,7 +3809,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                         )
                         .await?
                     {
-                        self.handle_outgoing_message(OutboxMessage::AttachInvocation(
+                        self.do_enqueue_into_outbox(OutboxMessage::AttachInvocation(
                             AttachInvocationRequest {
                                 invocation_query,
                                 block_on_inflight: true,
@@ -4160,7 +3836,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                         )
                         .await?
                     {
-                        self.handle_outgoing_message(OutboxMessage::AttachInvocation(
+                        self.do_enqueue_into_outbox(OutboxMessage::AttachInvocation(
                             AttachInvocationRequest {
                                 invocation_query,
                                 block_on_inflight: false,
@@ -4220,7 +3896,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         };
 
         if let Some(target_invocation_id) = target_invocation_id {
-            self.handle_outgoing_message(OutboxMessage::InvocationTermination(
+            self.do_enqueue_into_outbox(OutboxMessage::InvocationTermination(
                 InvocationTermination {
                     invocation_id: target_invocation_id,
                     flavor: TerminationFlavor::Cancel,
@@ -4523,28 +4199,6 @@ impl<S> StateMachineApplyContext<'_, S> {
         }
     }
 
-    fn handle_outgoing_message(&mut self, message: OutboxMessage) -> Result<(), Error>
-    where
-        S: WriteOutboxTable + WriteFsmTable,
-    {
-        // TODO Here we could add an optimization to immediately execute outbox message command
-        //  for partition_key within the range of this PP, but this is problematic due to how we tie
-        //  the effects buffer with tracing. Once we solve that, we could implement that by roughly uncommenting this code :)
-        //  if self.partition_key_range.contains(&message.partition_key()) {
-        //             // We can process this now!
-        //             let command = message.to_command();
-        //             return self.on_apply(
-        //                 command,
-        //                 effects,
-        //                 state
-        //             ).await
-        //         }
-
-        self.do_enqueue_into_outbox(*self.outbox_seq_number, message)?;
-        *self.outbox_seq_number += 1;
-        Ok(())
-    }
-
     async fn handle_attach_invocation_request(
         &mut self,
         attach_invocation_request: AttachInvocationRequest,
@@ -4556,11 +4210,12 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteFsmTable,
     {
         debug_assert!(
-            self.partition_key_range
+            self.processor
+                .key_range()
                 .contains(&attach_invocation_request.partition_key()),
             "Attach invocation request with partition key '{}' has been delivered to a partition processor with key range '{:?}'. This indicates a bug.",
             attach_invocation_request.partition_key(),
-            self.partition_key_range
+            self.processor.key_range()
         );
 
         let invocation_id = attach_invocation_request
@@ -4887,7 +4542,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             VQueue::get(
                 header.vqueue_id(),
                 self.storage,
-                self.vqueues_cache,
+                self.processor.vqueues_mut(),
                 self.is_leader.then_some(self.action_collector),
             )
             .await?
@@ -4969,91 +4624,90 @@ impl<S> StateMachineApplyContext<'_, S> {
         Ok(())
     }
 
-    fn do_enqueue_into_outbox(
-        &mut self,
-        seq_number: MessageIndex,
-        message: OutboxMessage,
-    ) -> Result<(), Error>
+    fn do_enqueue_into_outbox(&mut self, message: OutboxMessage) -> Result<(), Error>
     where
         S: WriteOutboxTable + WriteFsmTable,
     {
-        match &message {
-            OutboxMessage::ServiceInvocation(service_invocation) => {
-                debug_if_leader!(
-                    self.is_leader,
-                    rpc.service = %service_invocation.invocation_target.service_name(),
-                    rpc.method = %service_invocation.invocation_target.handler_name(),
-                    restate.invocation.id = %service_invocation.invocation_id,
-                    restate.invocation.target = %service_invocation.invocation_target,
-                    restate.outbox.seq = seq_number,
-                    "Effect: Send service invocation to partition processor"
-                )
-            }
-            OutboxMessage::ServiceResponse(InvocationResponse {
-                result: ResponseResult::Success(_),
-                target,
-            }) => {
-                debug_if_leader!(
-                    self.is_leader,
-                    restate.invocation.id = %target.caller_id,
-                    restate.outbox.seq = seq_number,
-                    "Effect: Send success response to another invocation for completion id {}",
-                    target.caller_completion_id
-                )
-            }
-            OutboxMessage::InvocationTermination(invocation_termination) => {
-                debug_if_leader!(
-                    self.is_leader,
-                    restate.invocation.id = %invocation_termination.invocation_id,
-                    restate.outbox.seq = seq_number,
-                    "Effect: Send invocation termination command '{:?}' to partition processor",
-                    invocation_termination.flavor
-                )
-            }
-            OutboxMessage::ServiceResponse(InvocationResponse {
-                result: ResponseResult::Failure(e),
-                target,
-            }) => {
-                debug_if_leader!(
-                    self.is_leader,
-                    restate.invocation.id = %target.caller_id,
-                    restate.outbox.seq = seq_number,
-                    "Effect: Send failure '{}' response to another invocation for completion id {}",
-                    e,
-                    target.caller_completion_id
-                )
-            }
-            OutboxMessage::AttachInvocation(AttachInvocationRequest {
-                invocation_query, ..
-            }) => {
-                debug_if_leader!(
-                    self.is_leader,
-                    restate.outbox.seq = seq_number,
-                    "Effect: Enqueuing attach invocation request to '{:?}'",
+        let seq_number = self.processor.outbox().outbox_tail();
+        // TODO Here we could add an optimization to immediately execute outbox message command
+        //  for partition_key within the range of this PP, but this is problematic due to how we tie
+        //  the effects buffer with tracing. Once we solve that, we could implement that by roughly uncommenting this code :)
+        //  if self.partition_key_range.contains(&message.partition_key()) {
+        //             // We can process this now!
+        //             let command = message.to_command();
+        //             return self.on_apply(
+        //                 command,
+        //                 effects,
+        //                 state
+        //             ).await
+        //         }
+        if self.is_leader {
+            match &message {
+                OutboxMessage::ServiceInvocation(service_invocation) => {
+                    debug!(
+                        rpc.service = %service_invocation.invocation_target.service_name(),
+                        rpc.method = %service_invocation.invocation_target.handler_name(),
+                        restate.invocation.id = %service_invocation.invocation_id,
+                        restate.invocation.target = %service_invocation.invocation_target,
+                        restate.outbox.seq = seq_number,
+                        "Effect: Send service invocation to partition processor"
+                    )
+                }
+                OutboxMessage::ServiceResponse(InvocationResponse {
+                    result: ResponseResult::Success(_),
+                    target,
+                }) => {
+                    debug!(
+                        restate.invocation.id = %target.caller_id,
+                        restate.outbox.seq = seq_number,
+                        "Effect: Send success response to another invocation for completion id {}",
+                        target.caller_completion_id
+                    )
+                }
+                OutboxMessage::InvocationTermination(invocation_termination) => {
+                    debug!(
+                        restate.invocation.id = %invocation_termination.invocation_id,
+                        restate.outbox.seq = seq_number,
+                        "Effect: Send invocation termination command '{:?}' to partition processor",
+                        invocation_termination.flavor
+                    )
+                }
+                OutboxMessage::ServiceResponse(InvocationResponse {
+                    result: ResponseResult::Failure(e),
+                    target,
+                }) => {
+                    debug!(
+                        restate.invocation.id = %target.caller_id,
+                        restate.outbox.seq = seq_number,
+                        "Effect: Send failure '{}' response to another invocation for completion id {}",
+                        e,
+                        target.caller_completion_id
+                    )
+                }
+                OutboxMessage::AttachInvocation(AttachInvocationRequest {
                     invocation_query,
-                )
+                    ..
+                }) => {
+                    debug!(
+                        restate.outbox.seq = seq_number,
+                        "Effect: Enqueuing attach invocation request to '{:?}'", invocation_query,
+                    )
+                }
+                OutboxMessage::NotifySignal(NotifySignalRequest {
+                    invocation_id,
+                    signal,
+                }) => {
+                    debug!(
+                        restate.outbox.seq = seq_number,
+                        "Notifying signal to {invocation_id} with signal id {:?}", signal.id,
+                    )
+                }
             }
-            OutboxMessage::NotifySignal(NotifySignalRequest {
-                invocation_id,
-                signal,
-            }) => {
-                debug_if_leader!(
-                    self.is_leader,
-                    restate.outbox.seq = seq_number,
-                    "Notifying signal to {invocation_id} with signal id {:?}",
-                    signal.id,
-                )
-            }
-        };
+        }
 
-        self.storage
-            .put_outbox_message(seq_number, &message)
-            .map_err(Error::Storage)?;
-        // need to store the next outbox sequence number
-        self.storage
-            .put_outbox_seq_number(seq_number + 1)
-            .map_err(Error::Storage)?;
-
+        self.processor
+            .outbox_mut()
+            .enqueue(self.storage, &message)?;
         self.action_collector.push(Action::NewOutboxMessage {
             seq_number,
             message,
@@ -5242,23 +4896,6 @@ impl<S> StateMachineApplyContext<'_, S> {
         };
         WriteJournalEventsTable::delete_journal_events(self.storage, invocation_id)
             .map_err(Error::Storage)?;
-        Ok(())
-    }
-
-    async fn do_truncate_outbox(&mut self, range: RangeInclusive<MessageIndex>) -> Result<(), Error>
-    where
-        S: WriteOutboxTable,
-    {
-        trace!(
-            restate.outbox.seq_from = range.start(),
-            restate.outbox.seq_to = range.end(),
-            "Effect: Truncate outbox"
-        );
-
-        self.storage
-            .truncate_outbox(range)
-            .map_err(Error::Storage)?;
-
         Ok(())
     }
 
@@ -5519,7 +5156,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         let mut vqueue = VQueue::get(
             qid,
             self.storage,
-            self.vqueues_cache,
+            self.processor.vqueues_mut(),
             self.is_leader.then_some(self.action_collector),
         )
         .await?
@@ -5601,7 +5238,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         let mut vqueue = VQueue::get(
             qid,
             self.storage,
-            self.vqueues_cache,
+            self.processor.vqueues_mut(),
             self.is_leader.then_some(self.action_collector),
         )
         .await?
@@ -5647,7 +5284,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             &qid,
             &target,
             self.storage,
-            self.vqueues_cache,
+            self.processor.vqueues_mut(),
             self.is_leader.then_some(self.action_collector),
             &limit_key,
         )

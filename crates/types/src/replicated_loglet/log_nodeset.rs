@@ -56,7 +56,7 @@ impl LogNodeSetExt for NodeSet {
         // Shuffle nodes
         new_nodeset.shuffle(&mut rand::rng());
 
-        let has_my_node_idx = self.iter().position(|&x| x == my_node_id);
+        let has_my_node_idx = new_nodeset.iter().position(|&x| x == my_node_id);
 
         // put my node at the end if it's there
         if let Some(idx) = has_my_node_idx {
@@ -105,5 +105,22 @@ impl EffectiveNodeSet {
                 .filter(|node_id| !nodes_config.get_log_server_storage_state(node_id).empty())
                 .collect(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::PlainNodeId;
+    use crate::replication::NodeSet;
+
+    use super::LogNodeSetExt;
+
+    #[test]
+    fn shuffle_for_reads_puts_own_node_id_last() {
+        let my_node_id = PlainNodeId::from(1);
+        let node_set = NodeSet::from([1, 2, 3]);
+
+        let shuffled_node_set = node_set.shuffle_for_reads(my_node_id);
+        assert_eq!(shuffled_node_set.last(), Some(&my_node_id));
     }
 }

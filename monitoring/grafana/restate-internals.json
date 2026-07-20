@@ -4005,7 +4005,7 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "rate(restate_partition_shuffle_message_count{cluster_name=\"$cluster\", node_name=~\"$node\", partition=~\"$partition\"}[$__rate_interval])",
+          "expr": "rate(restate_partition_shuffle_message_total{cluster_name=\"$cluster\", node_name=~\"$node\", partition=~\"$partition\"}[$__rate_interval])",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "legendFormat": "{{node_name}}/p{{partition}}",

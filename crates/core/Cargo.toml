@@ -68,7 +68,7 @@ tokio-stream = { workspace = true, features = ["net"] }
 tokio-util = { workspace = true, features = ["net"] }
 tonic = { workspace = true, features = ["transport", "codegen", "gzip", "zstd", "router"] }
 rustls = { workspace = true }
-rustls-pemfile = { workspace = true }
+wildmatch = { workspace = true }
 x509-parser = { workspace = true }
 tonic-prost = { workspace = true }
 tonic-reflection = { workspace = true }

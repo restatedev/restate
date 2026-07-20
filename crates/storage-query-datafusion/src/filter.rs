@@ -221,7 +221,9 @@ where
                 continue;
             };
 
-            if inlist.col.name() != self.column_name {
+            // A negated list (`NOT IN`/`!=`) enumerates excluded values, so it
+            // cannot narrow the partition scan.
+            if inlist.col.name() != self.column_name || inlist.negated {
                 continue;
             }
 
@@ -481,7 +483,9 @@ fn parse_invocation_id_range(
 ) -> Option<RangeInclusive<InvocationId>> {
     let in_list = InList::parse(predicate, 5)?;
 
-    if in_list.col.name() != column_name {
+    // A negated list (`NOT IN`/`!=`) enumerates excluded IDs; using it to build
+    // a lookup range would fetch exactly the rows that must be filtered out.
+    if in_list.col.name() != column_name || in_list.negated {
         return None;
     }
 
@@ -556,9 +560,21 @@ mod tests {
     }
 
     fn in_list(col_name: &str, list: Vec<Arc<dyn PhysicalExpr>>) -> Arc<dyn PhysicalExpr> {
+        make_in_list(col_name, list, false)
+    }
+
+    fn not_in_list(col_name: &str, list: Vec<Arc<dyn PhysicalExpr>>) -> Arc<dyn PhysicalExpr> {
+        make_in_list(col_name, list, true)
+    }
+
+    fn make_in_list(
+        col_name: &str,
+        list: Vec<Arc<dyn PhysicalExpr>>,
+        negated: bool,
+    ) -> Arc<dyn PhysicalExpr> {
         use datafusion::arrow::datatypes::{DataType, Field, Schema};
         let schema = Schema::new(vec![Field::new(col_name, DataType::LargeUtf8, true)]);
-        Arc::new(InListExpr::try_new(col(col_name), list, false, &schema).expect("valid in-list"))
+        Arc::new(InListExpr::try_new(col(col_name), list, negated, &schema).expect("valid in-list"))
     }
 
     fn and(left: Arc<dyn PhysicalExpr>, right: Arc<dyn PhysicalExpr>) -> Arc<dyn PhysicalExpr> {
@@ -988,6 +1004,29 @@ mod tests {
         let predicate = eq(col("id"), utf8_lit("not-a-valid-invocation-id"));
 
         let filter = InvocationIdFilter::new(FULL_RANGE, Some(predicate));
+        assert!(filter.invocation_ids.is_none());
+    }
+
+    #[test]
+    fn partition_key_extractor_rejects_negated_in_list() {
+        let extractor =
+            FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
+
+        let got = extractor
+            .try_extract(&[not_in_list("service_key", vec![utf8_lit("key-1")])])
+            .expect("extract");
+
+        assert_eq!(None, got);
+    }
+
+    #[test]
+    fn invocation_id_filter_rejects_negated_in_list() {
+        let id = make_invocation_id("key-1");
+        let filter = InvocationIdFilter::new(
+            FULL_RANGE,
+            Some(not_in_list("id", vec![utf8_lit(id.to_string())])),
+        );
+
         assert!(filter.invocation_ids.is_none());
     }
 

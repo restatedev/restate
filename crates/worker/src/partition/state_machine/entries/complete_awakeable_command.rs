@@ -16,6 +16,7 @@ use restate_types::journal_v2::{
     CompleteAwakeableCommand, CompleteAwakeableId, CompleteAwakeableResult, Signal, SignalResult,
 };
 
+use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use crate::partition::types::OutboxMessageExt;
@@ -23,13 +24,14 @@ use crate::partition::types::OutboxMessageExt;
 pub(super) type ApplyCompleteAwakeableCommand<'e> =
     ApplyJournalCommandEffect<'e, CompleteAwakeableCommand>;
 
-impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
+impl<'e, 'ctx: 'e, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
     for ApplyCompleteAwakeableCommand<'e>
 where
     S: WriteStateTable + WriteOutboxTable + WriteFsmTable,
+    P: ProcessorContext,
 {
-    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
-        ctx.handle_outgoing_message(match self.entry.id {
+    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
+        ctx.do_enqueue_into_outbox(match self.entry.id {
             CompleteAwakeableId::Old(old_awakeable_id) => {
                 let (invocation_id, entry_index) = old_awakeable_id.into_inner();
                 OutboxMessage::from_awakeable_completion(
