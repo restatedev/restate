@@ -83,6 +83,28 @@ impl LegacyClusterState {
             .unwrap_or_default()
     }
 
+    /// Returns true if the given node's partition processor is quarantined for an apply stall
+    /// (`apply_stalled_since` is set). Absence of a status entry (e.g. the node is reported
+    /// `Dead`) is never treated as "not stalled" by callers of this method -- see the
+    /// scheduler's `quarantine_memory`, which retains its own record independently of this
+    /// instantaneous view.
+    pub fn is_partition_processor_stalled(
+        &self,
+        partition_id: &PartitionId,
+        node_id: &PlainNodeId,
+    ) -> bool {
+        self.nodes
+            .get(node_id)
+            .and_then(|node| match node {
+                NodeState::Alive(alive) => alive
+                    .partitions
+                    .get(partition_id)
+                    .map(|partition_state| partition_state.apply_stalled_since.is_some()),
+                NodeState::Dead(_) => None,
+            })
+            .unwrap_or_default()
+    }
+
     /// Returns true if the given node runs the partition processor leader for the given partition
     /// id. The decision is based on the partition processor reporting as their effective_mode
     /// `RunMode::Leader`.
@@ -211,6 +233,15 @@ pub struct PartitionProcessorStatus {
     /// Since v1.7.3 (if Unknown, use effective_mode)
     #[bilrost(17)]
     pub detailed_effective_mode: DetailedRunMode,
+
+    /// Set while the partition processor manager has quarantined this partition processor
+    /// because its apply loop is stalled with work available (or, for a candidate, a committed
+    /// `AnnounceLeader` marker that never got applied). Sticky: synthesized into the reported
+    /// status across `Starting`/`Started`/`Stopping` until the worker observes real progress
+    /// past the applied LSN recorded at quarantine time.
+    /// *Since v1.8.0*
+    #[bilrost(18)]
+    pub apply_stalled_since: Option<MillisSinceEpoch>,
 }
 
 impl PartitionProcessorStatus {
@@ -269,6 +300,7 @@ impl Default for PartitionProcessorStatus {
             last_applied_schema_version: None,
             enabled_features: PersistedFeatures::default(),
             storage_version: None,
+            apply_stalled_since: None,
         }
     }
 }

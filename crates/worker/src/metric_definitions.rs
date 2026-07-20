@@ -62,6 +62,14 @@ pub const PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS: &str =
 pub const PARTITION_SHUFFLE_MESSAGE_COUNT: &str = "restate.partition.shuffle.message.total";
 pub const PARTITION_SHUFFLE_INFLIGHT_RECORDS: &str = "restate.partition.shuffle.inflight";
 
+// contains `partition` label
+pub const PARTITION_APPLY_STALLED: &str = "restate.partition.apply_stalled";
+// contains `partition` and `phase` labels
+pub const PARTITION_APPLY_PHASE_STUCK: &str = "restate.partition.apply_phase_stuck";
+pub const PHASE_LABEL: &str = "phase";
+// contains `partition` label
+pub const PARTITION_STOP_STUCK: &str = "restate.partition.stop_stuck";
+
 pub(crate) fn describe_metrics() {
     describe_gauge!(
         PARTITION_BLOCKED_FLARE,
@@ -155,5 +163,23 @@ pub(crate) fn describe_metrics() {
         PARTITION_SHUFFLE_INFLIGHT_RECORDS,
         Unit::Count,
         "Number of inflight records by source partition"
+    );
+
+    describe_gauge!(
+        PARTITION_APPLY_STALLED,
+        Unit::Count,
+        "Set to 1 while the partition processor's apply loop is confirmed stalled with work available"
+    );
+
+    describe_gauge!(
+        PARTITION_APPLY_PHASE_STUCK,
+        Unit::Count,
+        "Set to 1 while the apply loop has been busy in a single phase (applying a batch or a control operation) for an unusually long time; observability only, never triggers a restart"
+    );
+
+    describe_gauge!(
+        PARTITION_STOP_STUCK,
+        Unit::Count,
+        "Set to 1 when a partition processor has remained in Stopping past the configured stop-stuck timeout after a self-bail"
     );
 }

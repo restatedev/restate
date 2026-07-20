@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::sync::watch;
@@ -21,7 +22,7 @@ use restate_types::identifiers::LeaderEpoch;
 use restate_types::net::partition_processor::PartitionLeaderService;
 use restate_types::sharding::KeyRange;
 
-use crate::partition::{LeadershipInfo, TargetLeaderState};
+use crate::partition::{LeadershipInfo, LoopHeartbeat, TargetLeaderState};
 
 pub type LeaderEpochToken = Ulid;
 
@@ -328,6 +329,7 @@ pub struct StartedProcessor {
     control_tx: watch::Sender<TargetLeaderState>,
     rpc_shard_tx: ShardSender<PartitionLeaderService>,
     watch_rx: watch::Receiver<PartitionProcessorStatus>,
+    heartbeat: Arc<LoopHeartbeat>,
 }
 
 impl StartedProcessor {
@@ -337,6 +339,7 @@ impl StartedProcessor {
         control_tx: watch::Sender<TargetLeaderState>,
         rpc_shard_tx: ShardSender<PartitionLeaderService>,
         watch_rx: watch::Receiver<PartitionProcessorStatus>,
+        heartbeat: Arc<LoopHeartbeat>,
     ) -> Self {
         Self {
             cancellation_token,
@@ -344,7 +347,12 @@ impl StartedProcessor {
             control_tx,
             rpc_shard_tx,
             watch_rx,
+            heartbeat,
         }
+    }
+
+    pub fn heartbeat(&self) -> &Arc<LoopHeartbeat> {
+        &self.heartbeat
     }
 
     fn cancel(&self) {

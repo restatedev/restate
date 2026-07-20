@@ -93,6 +93,9 @@ message PartitionProcessorStatus {
   // Partition-store on-disk storage version (StorageVersion discriminant).
   optional uint32 storage_version = 16;
   DetailedRunMode detailed_effective_mode = 17;
+  // Set while the partition processor manager has quarantined this partition processor for an
+  // apply stall. Sticky until the worker observes real progress.
+  optional google.protobuf.Timestamp apply_stalled_since = 18;
 }
 
 message ReplicationProperty { string replication_property = 1; }

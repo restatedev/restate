@@ -88,6 +88,8 @@ use restate_wal_protocol::v2::CommandScope;
 use restate_wal_protocol::{Envelope, v2};
 use restate_worker_api::{LeaderQueryCommand, LeaderQueryReceiver};
 
+pub use self::processor::{LoopHeartbeat, LoopPhase};
+
 use self::processor::commands::{
     AnnounceLeaderContext, ApplyPartitionCommand, NextStep, TruncateOutboxContext,
     UpdateDurabilityContext, UpsertRuleBookContext, UpsertSchemaContext, VersionBarrierContext,
@@ -136,6 +138,7 @@ pub(super) struct PartitionProcessorBuilder {
     network_svc_rx: ServiceStream<PartitionLeaderService>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
     node_ctx: NodeContext,
+    heartbeat: Arc<LoopHeartbeat>,
 }
 
 impl PartitionProcessorBuilder {
@@ -144,12 +147,14 @@ impl PartitionProcessorBuilder {
         network_svc_rx: ServiceStream<PartitionLeaderService>,
         status_watch_tx: watch::Sender<PartitionProcessorStatus>,
         node_ctx: NodeContext,
+        heartbeat: Arc<LoopHeartbeat>,
     ) -> Self {
         Self {
             target_leader_state_rx,
             network_svc_rx,
             status_watch_tx,
             node_ctx,
+            heartbeat,
         }
     }
 
@@ -166,6 +171,7 @@ impl PartitionProcessorBuilder {
             network_svc_rx: rpc_rx,
             status_watch_tx,
             node_ctx,
+            heartbeat,
         } = self;
 
         let mut partition_store = PartitionStore::from(partition_db);
@@ -205,6 +211,7 @@ impl PartitionProcessorBuilder {
             network_leader_svc_rx: rpc_rx,
             status_watch_tx,
             leader_query_rx,
+            heartbeat,
         })
     }
 }
@@ -218,6 +225,7 @@ pub struct PartitionProcessor<T> {
     network_leader_svc_rx: ServiceStream<PartitionLeaderService>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
     leader_query_rx: LeaderQueryReceiver,
+    heartbeat: Arc<LoopHeartbeat>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -528,8 +536,15 @@ where
             let max_batching_size = config.worker.max_command_batch_size();
             let bytes_limit = config.worker.max_command_batch_bytes.as_usize();
 
+            // Marks the top of every loop iteration as "parked in select" for the apply-stall
+            // detector. Every other branch below either beats a more specific phase on entry, or
+            // (status timer, rpc, leader query) is expected to be quick enough not to need one --
+            // see `LoopHeartbeat`'s doc for why a beat here is a sound loop-liveness proof.
+            self.heartbeat.beat(LoopPhase::InSelect);
+
             tokio::select! {
                 _ = self.target_leader_state_rx.changed() => {
+                    self.heartbeat.beat(LoopPhase::ControlOp);
                     let target_leader_state = self.target_leader_state_rx.borrow_and_update().clone();
                     self.on_target_leader_state(target_leader_state).await.context("failed handling target leader state change")?;
                     self.refresh_status(&mut durable_lsn_watch)?;
@@ -553,6 +568,7 @@ where
                 // Subsequent records are drained synchronously below (`now_or_never`), so the
                 // applied-but-uncommitted records can never be lost to select cancellation.
                 maybe_first = record_stream.next() => {
+                    self.heartbeat.beat(LoopPhase::ApplyingBatch);
                     let Some(first) = maybe_first else {
                         return Err(ProcessorError::LogReadStreamTerminated);
                     };
@@ -625,6 +641,7 @@ where
                     self.leadership_state.handle_actions(&mut self.ctx, action_collector.drain(..))?;
                 },
                 result = self.leadership_state.run(&mut self.ctx) => {
+                    self.heartbeat.beat(LoopPhase::ControlOp);
                     let action_effects = result?;
                     // We process the action_effects not directly in the run future because it
                     // requires the run future to be cancellation safe. In the future this could be

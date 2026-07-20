@@ -8,18 +8,24 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod apply_progress_tracker;
 mod introspection;
 mod processor_state;
 mod spawn_processor_task;
 
 pub use introspection::{LeaderQueryGuard, PartitionLeaderHandlesRegistry};
 
+use apply_progress_tracker::{
+    HeartbeatView, LoopState, ProbeResult, TailObservation, TickInput, TrackerEffect, TrackerEntry,
+    pick_next_consistent_read_sweep_target,
+};
+
 use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
 use std::ops::Add;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use ahash::{HashMap, HashSet};
 use anyhow::{Context, bail};
@@ -32,8 +38,9 @@ use rand::seq::SliceRandom;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
-use tokio::time::MissedTickBehavior;
+use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{debug, error, info, info_span, instrument, trace, warn};
+use ulid::Ulid;
 
 use restate_bifrost::Bifrost;
 use restate_bifrost::loglet::FindTailOptions;
@@ -58,7 +65,7 @@ use restate_partition_store::{SnapshotError, SnapshotErrorKind};
 use restate_types::GenerationalNodeId;
 use restate_types::cluster::cluster_state::ReplayStatus;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
-use restate_types::config::Configuration;
+use restate_types::config::{Configuration, StallDetectionOptions};
 use restate_types::epoch::EpochMetadata;
 use restate_types::health::HealthStatus;
 use restate_types::identifiers::PartitionId;
@@ -78,12 +85,14 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::partitions::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
+use restate_types::time::MillisSinceEpoch;
 use restate_util_string::format_restring;
 use restate_util_time::DurationExt;
 use restate_wal_protocol::Envelope;
 use restate_worker_api::invoker::capacity::InvokerCapacity;
 use restate_worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 
+use crate::metric_definitions::PARTITION_STOP_STUCK;
 use crate::metric_definitions::{
     ERROR_STOP, FLARE_REASON_MIGRATION_BARRIER, FLARE_REASON_SNAPSHOT_UNAVAILABLE,
     FLARE_REASON_VERSION_BARRIER, GAP_STOP, PARTITION_BLOCKED_FLARE, PARTITION_IS_EFFECTIVE_LEADER,
@@ -92,6 +101,9 @@ use crate::metric_definitions::{
 use crate::metric_definitions::{NORMAL_STOP, PARTITION_TIME_SINCE_LAST_STATUS_UPDATE};
 use crate::metric_definitions::{NUM_ACTIVE_PARTITIONS, PARTITION_APPLIED_LSN_LAG};
 use crate::metric_definitions::{NUM_PARTITIONS, SNAPSHOT_AGE};
+use crate::metric_definitions::{
+    PARTITION_APPLY_PHASE_STUCK, PARTITION_APPLY_STALLED, PHASE_LABEL,
+};
 use crate::metric_definitions::{PARTITION_LABEL, PARTITION_STOP};
 use crate::partition::{LeadershipInfo, NodeContext, ProcessorError};
 use crate::partition_processor_manager::processor_state::{
@@ -115,8 +127,20 @@ pub struct PartitionProcessorManager<T> {
     tx: mpsc::Sender<ProcessorsManagerCommand>,
 
     replica_set_states: PartitionReplicaSetStates,
-    target_tail_lsns: HashMap<PartitionId, Lsn>,
+    tail_observations: HashMap<PartitionId, TailObservation>,
     leader_handles_registry: PartitionLeaderHandlesRegistry,
+
+    /// Apply-stall detection (see `apply_progress_tracker`): per-partition tracker state, plus
+    /// the local view of each partition's `LoopHeartbeat`. Both are sticky across incarnations by
+    /// design and are only dropped once a partition both stops running here and leaves this
+    /// node's replica set (rule 9 in the design doc).
+    trackers: HashMap<PartitionId, TrackerEntry>,
+    heartbeat_views: HashMap<PartitionId, HeartbeatView>,
+    /// At most one `ConsistentRead` sweep probe in flight node-wide at a time.
+    consistent_read_sweep_inflight: bool,
+    /// When each currently-`Stopping` partition was first observed in that state, for the
+    /// `stop_stuck_timeout` flare. Never spawns a second processor -- observability only.
+    stopping_since: HashMap<PartitionId, Instant>,
 
     asynchronous_operations: JoinSet<AsynchronousEvent>,
 
@@ -151,7 +175,10 @@ enum RestartDelay {
     Immediate,
     Fixed,
     Exponential {
-        start_time: Instant,
+        // `ProcessorState::start_time` (processor_state.rs) is std::time::Instant; kept as such
+        // here too rather than the tokio::time::Instant used for the apply-stall tracker's
+        // paused-clock-aware deadline math below.
+        start_time: std::time::Instant,
         last_delay: Option<Duration>,
     },
     MaxBackoff,
@@ -260,8 +287,12 @@ where
             rx,
             tx,
             replica_set_states,
-            target_tail_lsns: HashMap::default(),
+            tail_observations: HashMap::default(),
             leader_handles_registry: PartitionLeaderHandlesRegistry::default(),
+            trackers: HashMap::default(),
+            heartbeat_views: HashMap::default(),
+            consistent_read_sweep_inflight: false,
+            stopping_since: HashMap::default(),
             asynchronous_operations: JoinSet::default(),
             pending_snapshots: HashMap::default(),
             latest_snapshots: HashMap::default(),
@@ -315,6 +346,24 @@ where
         let mut update_target_tail_lsns = tokio::time::interval(Duration::from_secs(1));
         update_target_tail_lsns.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
+        // Explicit deadline driver for the apply-progress tracker: fires all time-based
+        // transitions (grace, recovery window, bail, probe backoff) even if tail queries stop
+        // completing entirely -- the 1s Fast poller above only ever *launches* queries.
+        let mut tracker_tick = tokio::time::interval(Duration::from_millis(500));
+        tracker_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+        // Mandatory ConsistentRead sweep (A5 fairness): the Fast poller above can be looking at
+        // a frozen cached tail forever once its background refresher exits, which would hide a
+        // stall from detection indefinitely -- see the apply_progress_tracker module doc.
+        let mut consistent_read_sweep = tokio::time::interval(
+            self.updateable_config
+                .live_load()
+                .worker
+                .stall_detection
+                .sweep_interval(),
+        );
+        consistent_read_sweep.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
         let mut ppm_svc_rx = self.ppm_svc_rx.take().start();
         let (mut pp_rpc_control, pp_rpc_shards) = self.pp_rpc_svc.take().start();
         self.pp_rpc_shards = Some(pp_rpc_shards);
@@ -339,6 +388,12 @@ where
                 }
                 _ = update_target_tail_lsns.tick() => {
                     self.update_target_tail_lsns();
+                }
+                _ = tracker_tick.tick(), if self.updateable_config.live_load().worker.stall_detection.enabled => {
+                    self.evaluate_trackers();
+                }
+                _ = consistent_read_sweep.tick(), if self.updateable_config.live_load().worker.stall_detection.enabled && !self.consistent_read_sweep_inflight => {
+                    self.spawn_consistent_read_sweep();
                 }
                 Some(op) = ppm_svc_rx.next() => {
                     self.handle_ppm_service_op(op);
@@ -536,6 +591,7 @@ where
                                     }
 
                                     *processor_state = new_state;
+                                    self.on_processor_incarnation_started(partition_id);
 
                                     self.await_runtime_task_result(partition_id, runtime_handle);
                                 }
@@ -571,10 +627,12 @@ where
                         // todo: metrics
                         info!(%partition_id, %err, "Partition processor failed to start");
                         self.processor_states.remove(&partition_id);
-                        self.restart_partition_processor_if_replica(
+                        if !self.restart_partition_processor_if_replica(
                             partition_id,
                             RestartDelay::Fixed,
-                        );
+                        ) {
+                            self.gc_tracker(partition_id);
+                        }
                     }
                 }
                 gauge!(NUM_ACTIVE_PARTITIONS).set(self.processor_states.len() as f64);
@@ -678,6 +736,9 @@ where
 
                 if !self.restart_partition_processor_if_replica(partition_id, delay) {
                     debug!("Partition processor stopped: {result:?}");
+                    // No longer a replica for this partition: safe to forget its apply-progress
+                    // tracker (rule 9 -- retained until both conditions hold).
+                    self.gc_tracker(partition_id);
                 }
 
                 gauge!(NUM_ACTIVE_PARTITIONS).set(self.processor_states.len() as f64);
@@ -709,19 +770,58 @@ where
             }
             EventKind::NewTargetTail { tail } => {
                 let Some(tail_lsn) = tail else {
-                    self.target_tail_lsns.remove(&partition_id);
+                    self.tail_observations.remove(&partition_id);
                     return;
                 };
 
-                match self.target_tail_lsns.entry(partition_id) {
-                    Entry::Occupied(mut o) => {
-                        if *o.get() < tail_lsn {
-                            o.insert(tail_lsn);
-                        }
-                    }
+                let now = Instant::now();
+                match self.tail_observations.entry(partition_id) {
+                    Entry::Occupied(mut o) => o.get_mut().observe_fast(tail_lsn, now),
                     Entry::Vacant(v) => {
-                        v.insert(tail_lsn);
+                        v.insert(TailObservation::new(tail_lsn, now));
                     }
+                }
+            }
+            EventKind::ConsistentReadSweepCompleted { probed, result } => {
+                self.consistent_read_sweep_inflight = false;
+                let now = Instant::now();
+                let Some(probed) = probed else {
+                    // Nothing running to sweep this round.
+                    return;
+                };
+                let Some(obs) = self.tail_observations.get_mut(&probed) else {
+                    return;
+                };
+                match result {
+                    Some(tail_lsn) => obs.observe_consistent(tail_lsn, now),
+                    None => obs.mark_consistent_attempt(now),
+                }
+            }
+            EventKind::ConsistentReadProbeCompleted {
+                incarnation,
+                nonce,
+                result,
+            } => {
+                let now = Instant::now();
+                if let Some(obs) = self.tail_observations.get_mut(&partition_id)
+                    && let Some(tail_lsn) = result.as_ref().and_then(|r| match r {
+                        ProbeResult::Confirmed { tail_lsn } => Some(*tail_lsn),
+                        _ => None,
+                    })
+                {
+                    obs.observe_consistent(tail_lsn, now);
+                } else if let Some(obs) = self.tail_observations.get_mut(&partition_id) {
+                    obs.mark_consistent_attempt(now);
+                }
+                if let Some(tracker) = self.trackers.get_mut(&partition_id) {
+                    let cfg = self.updateable_config.live_load().worker.stall_detection;
+                    tracker.on_probe_result(
+                        now,
+                        incarnation,
+                        nonce,
+                        result.unwrap_or(ProbeResult::Failed),
+                        &cfg,
+                    );
                 }
             }
             EventKind::SnapshotStatusUpdated { snapshot_status } => {
@@ -793,6 +893,256 @@ where
         }
     }
 
+    /// Rule 8: a fresh processor incarnation started running for `partition_id`. Creates a new
+    /// apply-progress tracker on first start, or resets live detection (retaining the sticky
+    /// quarantine and restart history) on every subsequent restart.
+    fn on_processor_incarnation_started(&mut self, partition_id: PartitionId) {
+        let now = Instant::now();
+        let cfg = self.updateable_config.live_load().worker.stall_detection;
+        let incarnation = Ulid::new();
+        match self.trackers.entry(partition_id) {
+            Entry::Occupied(mut e) => e.get_mut().on_incarnation_started(now, incarnation),
+            Entry::Vacant(v) => {
+                v.insert(TrackerEntry::new(incarnation, now, &cfg));
+            }
+        }
+        self.heartbeat_views
+            .insert(partition_id, HeartbeatView::new(now));
+    }
+
+    /// Rule 9 (GC): forget a partition's apply-progress tracker once it has both stopped running
+    /// here and left this node's replica set. Called only from that combined condition.
+    fn gc_tracker(&mut self, partition_id: PartitionId) {
+        self.trackers.remove(&partition_id);
+        self.heartbeat_views.remove(&partition_id);
+        self.tail_observations.remove(&partition_id);
+    }
+
+    /// The explicit deadline driver for the apply-progress tracker (`tracker_tick`): evaluates
+    /// every running partition's tracker against its current status, tail observation, and
+    /// heartbeat, and acts on the resulting effect (issue a confirmation probe, or bail).
+    fn evaluate_trackers(&mut self) {
+        let now = Instant::now();
+        let cfg = self.updateable_config.live_load().worker.stall_detection;
+
+        self.evaluate_stop_stuck(now, &cfg);
+
+        let partition_ids: Vec<PartitionId> = self.processor_states.keys().cloned().collect();
+        for partition_id in partition_ids {
+            let Some(ProcessorState::Started {
+                processor: Some(started),
+                ..
+            }) = self.processor_states.get(&partition_id)
+            else {
+                continue;
+            };
+
+            let Some(status) = self
+                .processor_states
+                .get(&partition_id)
+                .and_then(ProcessorState::partition_processor_status)
+            else {
+                continue;
+            };
+
+            let heartbeat_view = self
+                .heartbeat_views
+                .entry(partition_id)
+                .or_insert_with(|| HeartbeatView::new(now));
+            heartbeat_view.observe(started.heartbeat().sample(), now);
+            let loop_state = heartbeat_view.loop_state(now, &cfg);
+
+            let phase_age = heartbeat_view.phase_age(now);
+            gauge!(
+                PARTITION_APPLY_PHASE_STUCK,
+                PARTITION_LABEL => partition_id.to_string(),
+                PHASE_LABEL => format!("{:?}", heartbeat_view.phase())
+            )
+            .set(
+                if loop_state == LoopState::Busy && phase_age >= cfg.hard_grace() {
+                    1.0
+                } else {
+                    0.0
+                },
+            );
+
+            let fresh_tail = self
+                .tail_observations
+                .get(&partition_id)
+                .filter(|obs| obs.is_fresh(now, cfg.tail_ttl()))
+                .map(TailObservation::lsn);
+
+            let Some(tracker) = self.trackers.get_mut(&partition_id) else {
+                continue;
+            };
+            let input = TickInput {
+                last_applied_lsn: status.last_applied_log_lsn,
+                replay_status: status.replay_status,
+                loop_state,
+                fresh_tail,
+            };
+            let effect = tracker.on_sample(now, input, &cfg);
+            self.act_on_tracker_effect(partition_id, effect);
+        }
+    }
+
+    /// Flares `restate.partition.stop_stuck` for a partition that has been `Stopping` for longer
+    /// than `stop_stuck_timeout`. Observability only: per the builder guardrails, this never
+    /// spawns a second processor over the same store or forces a process exit -- a genuinely
+    /// wedged cooperative shutdown needs external supervision.
+    fn evaluate_stop_stuck(&mut self, now: Instant, cfg: &StallDetectionOptions) {
+        let stopping: HashSet<PartitionId> = self
+            .processor_states
+            .iter()
+            .filter(|(_, state)| matches!(state, ProcessorState::Stopping { .. }))
+            .map(|(id, _)| *id)
+            .collect();
+
+        self.stopping_since.retain(|id, _| stopping.contains(id));
+        for &partition_id in &stopping {
+            let since = *self.stopping_since.entry(partition_id).or_insert(now);
+            let stuck = now.saturating_duration_since(since) >= cfg.stop_stuck_timeout();
+            let labels = [(PARTITION_LABEL, partition_id.to_string())];
+            gauge!(PARTITION_STOP_STUCK, &labels).set(if stuck { 1.0 } else { 0.0 });
+            if stuck {
+                error!(%partition_id, "Partition processor has been Stopping for longer than stop_stuck_timeout; it may require external supervision");
+            }
+        }
+    }
+
+    fn act_on_tracker_effect(&mut self, partition_id: PartitionId, effect: TrackerEffect) {
+        match effect {
+            TrackerEffect::None => {}
+            TrackerEffect::IssueProbe { incarnation, nonce } => {
+                self.spawn_consistent_read_probe(partition_id, incarnation, nonce);
+            }
+            TrackerEffect::Bail => {
+                warn!(%partition_id, "Apply-stall detected: cooperatively restarting the partition processor");
+                if let Some(processor_state) = self.processor_states.get_mut(&partition_id) {
+                    processor_state.stop();
+                }
+            }
+        }
+    }
+
+    /// Spawns the confirmation probe a suspected partition's tracker requested. Bounded by
+    /// `probe_timeout`; a timeout is reported as a probe failure, matching the guardrail that no
+    /// action may ever be taken on unconfirmed evidence.
+    fn spawn_consistent_read_probe(
+        &mut self,
+        partition_id: PartitionId,
+        incarnation: Ulid,
+        nonce: u64,
+    ) {
+        let bifrost = self.bifrost.clone();
+        let probe_timeout = self
+            .updateable_config
+            .live_load()
+            .worker
+            .stall_detection
+            .probe_timeout();
+
+        self.asynchronous_operations.spawn(
+            async move {
+                let log_id = Metadata::with_current(|m| {
+                    m.partition_table_ref()
+                        .get(&partition_id)
+                        .map(Partition::log_id)
+                });
+                let result = match log_id {
+                    Some(log_id) => {
+                        match tokio::time::timeout(
+                            probe_timeout,
+                            bifrost.find_tail(log_id, FindTailOptions::ConsistentRead),
+                        )
+                        .await
+                        {
+                            Ok(Ok(tail)) => Some(ProbeResult::Confirmed {
+                                tail_lsn: tail.offset(),
+                            }),
+                            Ok(Err(_)) | Err(_) => Some(ProbeResult::Failed),
+                        }
+                    }
+                    None => Some(ProbeResult::Failed),
+                };
+
+                AsynchronousEvent {
+                    partition_id,
+                    inner: EventKind::ConsistentReadProbeCompleted {
+                        incarnation,
+                        nonce,
+                        result,
+                    },
+                }
+            }
+            .in_current_tc(),
+        );
+    }
+
+    /// The mandatory `ConsistentRead` sweep (A5): picks the running partition with the oldest
+    /// `last_consistent_attempt_at` (fairness over *attempts*, not successes) and probes it, at
+    /// most one such sweep probe in flight node-wide at a time. This is what reveals lag that a
+    /// frozen `Fast` cache would otherwise hide indefinitely -- see the module doc.
+    fn spawn_consistent_read_sweep(&mut self) {
+        let running: Vec<PartitionId> = self
+            .processor_states
+            .iter()
+            .filter(|(_, state)| matches!(state, ProcessorState::Started { .. }))
+            .map(|(id, _)| *id)
+            .collect();
+        let now = Instant::now();
+        for partition_id in &running {
+            self.tail_observations
+                .entry(*partition_id)
+                .or_insert_with(|| TailObservation::new(Lsn::INVALID, now));
+        }
+
+        let Some(target) = pick_next_consistent_read_sweep_target(
+            running
+                .iter()
+                .filter_map(|id| self.tail_observations.get(id).map(|obs| (*id, obs))),
+        ) else {
+            return;
+        };
+
+        self.consistent_read_sweep_inflight = true;
+        let bifrost = self.bifrost.clone();
+        let probe_timeout = self
+            .updateable_config
+            .live_load()
+            .worker
+            .stall_detection
+            .probe_timeout();
+
+        self.asynchronous_operations.spawn(
+            async move {
+                let log_id = Metadata::with_current(|m| {
+                    m.partition_table_ref().get(&target).map(Partition::log_id)
+                });
+                let result = match log_id {
+                    Some(log_id) => tokio::time::timeout(
+                        probe_timeout,
+                        bifrost.find_tail(log_id, FindTailOptions::ConsistentRead),
+                    )
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .map(|tail| tail.offset()),
+                    None => None,
+                };
+
+                AsynchronousEvent {
+                    partition_id: target,
+                    inner: EventKind::ConsistentReadSweepCompleted {
+                        probed: Some(target),
+                        result,
+                    },
+                }
+            }
+            .in_current_tc(),
+        );
+    }
+
     fn obtain_new_leader_epoch(
         partition_id: PartitionId,
         leader_epoch_token: LeaderEpochToken,
@@ -814,12 +1164,15 @@ where
             .expect("spawn obtain leader epoch task");
     }
 
-    /// Collect enriched processor status from all running partitions
+    /// Collect enriched processor status from all running partitions. Routed through
+    /// `effective_status` so the apply-stall overlay (downgraded replay status,
+    /// `apply_stalled_since`) is applied uniformly, including for a quarantined processor that is
+    /// currently `Stopping` (which otherwise reports no status at all).
     fn get_state(&self) -> BTreeMap<PartitionId, PartitionProcessorStatus> {
         self.processor_states
-            .iter()
-            .filter_map(|(partition_id, processor_state)| {
-                let mut status = processor_state.partition_processor_status()?;
+            .keys()
+            .filter_map(|partition_id| {
+                let mut status = self.effective_status(*partition_id)?;
                 let labels = [(PARTITION_LABEL, partition_id.to_string())];
 
                 gauge!(PARTITION_TIME_SINCE_LAST_STATUS_UPDATE, &labels)
@@ -833,13 +1186,24 @@ where
                     },
                 );
 
+                gauge!(PARTITION_APPLY_STALLED, &labels).set(
+                    if self.is_apply_stalled(*partition_id) {
+                        1.0
+                    } else {
+                        0.0
+                    },
+                );
+
                 // todo: PartitionProcessorStatus struct is shared across PP and PPM, consider splitting it
                 status.last_archived_log_lsn = self
                     .latest_snapshots
                     .get(partition_id)
                     .map(|s| s.archived_lsn);
 
-                let current_tail_lsn = self.target_tail_lsns.get(partition_id).cloned();
+                let current_tail_lsn = self
+                    .tail_observations
+                    .get(partition_id)
+                    .map(TailObservation::lsn);
                 let target_tail_lsn = if current_tail_lsn > status.target_tail_lsn {
                     current_tail_lsn
                 } else {
@@ -867,6 +1231,62 @@ where
                 Some((*partition_id, status))
             })
             .collect()
+    }
+
+    /// Single source of effective status: `Started`/`Starting` return their live status enriched
+    /// with the apply-stall overlay (downgraded replay status, `apply_stalled_since`);
+    /// `Stopping` -- which normally reports no status -- synthesizes a minimal one whenever the
+    /// partition is quarantined, so the quarantine signal never drops out during a self-bail's
+    /// restart cycle. See the `apply_progress_tracker` module doc.
+    fn effective_status(&self, partition_id: PartitionId) -> Option<PartitionProcessorStatus> {
+        let processor_state = self.processor_states.get(&partition_id)?;
+        let quarantine = self
+            .trackers
+            .get(&partition_id)
+            .and_then(TrackerEntry::quarantine);
+
+        match processor_state {
+            ProcessorState::Stopping { .. } => {
+                let quarantine = quarantine?;
+                let last_applied_log_lsn = self
+                    .trackers
+                    .get(&partition_id)
+                    .and_then(TrackerEntry::last_known_lsn);
+                Some(PartitionProcessorStatus {
+                    replay_status: ReplayStatus::CatchingUp,
+                    last_applied_log_lsn,
+                    apply_stalled_since: Some(quarantine.since()),
+                    updated_at: MillisSinceEpoch::now(),
+                    ..Default::default()
+                })
+            }
+            _ => {
+                let mut status = processor_state.partition_processor_status()?;
+                if let Some(quarantine) = quarantine {
+                    status.apply_stalled_since = Some(quarantine.since());
+                    if status.replay_status == ReplayStatus::Active {
+                        status.replay_status = ReplayStatus::CatchingUp;
+                    }
+                }
+                Some(status)
+            }
+        }
+    }
+
+    fn is_apply_stalled(&self, partition_id: PartitionId) -> bool {
+        self.trackers
+            .get(&partition_id)
+            .is_some_and(TrackerEntry::is_quarantined)
+    }
+
+    /// A partition processor is eligible to publish snapshots when its underlying processor
+    /// reports `Active` *and* it isn't currently quarantined for an apply stall (the overlay would
+    /// otherwise leave a stale, non-advancing snapshot target).
+    fn should_publish_snapshots(&self, partition_id: PartitionId) -> bool {
+        self.processor_states
+            .get(&partition_id)
+            .is_some_and(ProcessorState::should_publish_snapshots)
+            && !self.is_apply_stalled(partition_id)
     }
 
     fn on_command(&mut self, command: ProcessorsManagerCommand) {
@@ -927,16 +1347,13 @@ where
         min_target_lsn: Option<Lsn>,
         sender: oneshot::Sender<SnapshotResult>,
     ) {
-        let processor_state = match self.processor_states.get(&partition_id) {
-            Some(state) => state,
-            None => {
-                let _ = sender.send(Err(SnapshotError {
-                    partition_id,
-                    kind: SnapshotErrorKind::PartitionNotFound,
-                }));
-                return;
-            }
-        };
+        if !self.processor_states.contains_key(&partition_id) {
+            let _ = sender.send(Err(SnapshotError {
+                partition_id,
+                kind: SnapshotErrorKind::PartitionNotFound,
+            }));
+            return;
+        }
 
         let snapshot_repository = self.snapshot_repository.clone();
         let Some(snapshot_repository) = snapshot_repository else {
@@ -947,7 +1364,7 @@ where
             return;
         };
 
-        if !processor_state.should_publish_snapshots() {
+        if !self.should_publish_snapshots(partition_id) {
             let _ = sender.send(Err(SnapshotError {
                 partition_id,
                 kind: SnapshotErrorKind::InvalidState,
@@ -1026,11 +1443,10 @@ where
         // Partitions with a status suitable for taking a snapshot without a running snapshot task
         let candidate_partitions = self
             .processor_states
-            .iter()
-            .filter(|(partition_id, _)| !self.pending_snapshots.contains_key(partition_id))
-            .filter_map(|(partition_id, state)| {
-                state
-                    .partition_processor_status()
+            .keys()
+            .filter(|partition_id| !self.pending_snapshots.contains_key(partition_id))
+            .filter_map(|partition_id| {
+                self.effective_status(*partition_id)
                     .filter(|status| {
                         status.effective_mode == RunMode::Leader
                             && status.replay_status == ReplayStatus::Active
@@ -1550,6 +1966,18 @@ enum EventKind {
     },
     NewTargetTail {
         tail: Option<Lsn>,
+    },
+    /// The mandatory node-wide `ConsistentRead` sweep probe completed (or there was nothing to
+    /// probe this round).
+    ConsistentReadSweepCompleted {
+        probed: Option<PartitionId>,
+        result: Option<Lsn>,
+    },
+    /// A `ConsistentRead` probe issued on behalf of a suspected partition's tracker completed.
+    ConsistentReadProbeCompleted {
+        incarnation: Ulid,
+        nonce: u64,
+        result: Option<ProbeResult>,
     },
     SnapshotStatusUpdated {
         snapshot_status: PartitionSnapshotStatus,

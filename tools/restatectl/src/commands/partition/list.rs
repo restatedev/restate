@@ -185,6 +185,7 @@ pub async fn list_partitions(
                     processor.status.effective_mode(),
                     processor.status.replay_status(),
                     processor.status.target_tail_lsn.map(Into::into),
+                    processor.status.apply_stalled_since,
                 ),
                 Cell::new(
                     processor
@@ -309,7 +310,24 @@ fn render_mode(
     }
 }
 
-fn render_replay_status(effective: RunMode, status: ReplayStatus, target_lsn: Option<Lsn>) -> Cell {
+fn render_replay_status(
+    effective: RunMode,
+    status: ReplayStatus,
+    target_lsn: Option<Lsn>,
+    apply_stalled_since: Option<prost_types::Timestamp>,
+) -> Cell {
+    if apply_stalled_since.is_some() {
+        // The apply-stall detector already downgrades the underlying replay status to
+        // CatchingUp, but call it out explicitly so it isn't mistaken for ordinary catch-up.
+        return Cell::new(format!(
+            "Stalled ({})",
+            target_lsn
+                .map(|x| x.to_string())
+                .unwrap_or_else(|| "-".to_owned())
+        ))
+        .fg(Color::Red);
+    }
+
     match (status, effective) {
         (ReplayStatus::Unknown, _) => Cell::new("UNKNOWN").fg(Color::Red),
         (ReplayStatus::Starting, _) => Cell::new("Starting").fg(Color::Yellow),

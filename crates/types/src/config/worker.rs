@@ -154,6 +154,15 @@ pub struct WorkerOptions {
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub use_multi_db_layout: bool,
+
+    /// # Partition apply-stall detection
+    ///
+    /// Detects a partition processor whose apply loop is stalled with work available (the log
+    /// has records past the last applied LSN but the processor isn't advancing), downgrades its
+    /// reported replay status, and safely restarts it if the stall persists.
+    /// *Since v1.8.0*
+    #[serde(default)]
+    pub stall_detection: StallDetectionOptions,
 }
 
 impl WorkerOptions {
@@ -217,7 +226,186 @@ impl Default for WorkerOptions {
             ),
             rule_book_poll_interval: NonZeroFriendlyDuration::from_secs_unchecked(30),
             use_multi_db_layout: false,
+            stall_detection: StallDetectionOptions::default(),
         }
+    }
+}
+
+/// # Apply-stall detection options
+///
+/// Tuning for the partition processor manager's apply-progress tracker: how quickly a lagging,
+/// reader-idle partition processor is suspected, confirmed via an authoritative tail check,
+/// downgraded in its reported status, and -- if the stall persists -- restarted.
+#[serde_as]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, derive_builder::Builder)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "schemars",
+    schemars(rename = "StallDetectionOptions", default)
+)]
+#[serde(rename_all = "kebab-case")]
+#[builder(default)]
+pub struct StallDetectionOptions {
+    /// # Enable apply-stall detection
+    ///
+    /// When disabled, partition processors are never downgraded or restarted for an apply stall.
+    pub enabled: bool,
+
+    /// # Suspicion grace period
+    ///
+    /// How long a partition processor may sit reader-idle with the log tail ahead of its last
+    /// applied LSN before it is suspected of being stalled.
+    pub grace: FriendlyDuration,
+
+    /// # Heartbeat freshness
+    ///
+    /// How recently the apply loop must have beaten while parked in `select` (i.e. genuinely
+    /// reader-idle, not busy applying or handling a control operation) for a sample to count
+    /// towards suspicion.
+    pub heartbeat_fresh: FriendlyDuration,
+
+    /// # Tail observation freshness
+    ///
+    /// How old a tail observation (fast or consistent) may be and still be used to decide that
+    /// the log has records past the last applied LSN.
+    pub tail_ttl: FriendlyDuration,
+
+    /// # ConsistentRead sweep interval
+    ///
+    /// How often the manager issues one authoritative `ConsistentRead` tail probe, round-robined
+    /// across running partitions by longest-since-last-attempt. This is mandatory (in addition to
+    /// the existing 1s `Fast` tail poller) because a `Fast` tail can be a stale cached value that
+    /// looks fresh forever once its background refresher has exited.
+    pub sweep_interval: FriendlyDuration,
+
+    /// # Probe timeout
+    ///
+    /// Maximum time to wait for a `ConsistentRead` tail probe used to confirm suspected lag.
+    pub probe_timeout: FriendlyDuration,
+
+    /// # Probe retry backoff (base)
+    ///
+    /// Initial backoff before retrying a `ConsistentRead` confirmation probe after a failure or
+    /// timeout.
+    pub probe_backoff_base: FriendlyDuration,
+
+    /// # Probe retry backoff (cap)
+    ///
+    /// Maximum backoff between `ConsistentRead` confirmation probe retries within one suspicion
+    /// episode.
+    pub probe_backoff_cap: FriendlyDuration,
+
+    /// # Recovery window
+    ///
+    /// After a confirmation probe observes lag, how long the original reader is given to resume
+    /// on its own (a `ConsistentRead` probe can itself heal a wedged reader by sealing/repairing
+    /// the chain) before the processor is declared stalled.
+    pub recovery_window: FriendlyDuration,
+
+    /// # Bail grace period
+    ///
+    /// How long a partition processor may remain in the `Stalled` state (confirmed lag, no
+    /// progress, reader-idle) before it is cooperatively stopped and restarted.
+    pub bail_grace: FriendlyDuration,
+
+    /// # Bail restart backoff (base)
+    ///
+    /// Initial spacing between repeated self-bails of the same partition processor incarnation
+    /// history.
+    pub bail_backoff_base: FriendlyDuration,
+
+    /// # Bail restart backoff (cap)
+    ///
+    /// Maximum spacing between repeated self-bails.
+    pub bail_backoff_cap: FriendlyDuration,
+
+    /// # Loop-dead threshold
+    ///
+    /// How long the apply loop may sit in `InSelect` with no heartbeat at all before it is
+    /// considered dead (as opposed to merely reader-idle). Sound because the processor's status
+    /// timer guarantees a heartbeat well within this window whenever the loop can run at all.
+    pub hard_grace: FriendlyDuration,
+
+    /// # Stuck-stop flare timeout
+    ///
+    /// How long a partition processor may remain in `Stopping` after a self-bail before the
+    /// manager raises a flare for external supervision (it never spawns a second processor over
+    /// the same store, so this is observability only).
+    pub stop_stuck_timeout: FriendlyDuration,
+}
+
+impl Default for StallDetectionOptions {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            grace: FriendlyDuration::from_secs(30),
+            heartbeat_fresh: FriendlyDuration::from_secs(3),
+            tail_ttl: FriendlyDuration::from_secs(10),
+            sweep_interval: FriendlyDuration::from_secs(5),
+            probe_timeout: FriendlyDuration::from_secs(5),
+            probe_backoff_base: FriendlyDuration::from_secs(10),
+            probe_backoff_cap: FriendlyDuration::from_secs(60),
+            recovery_window: FriendlyDuration::from_secs(10),
+            bail_grace: FriendlyDuration::from_secs(60),
+            bail_backoff_base: FriendlyDuration::from_secs(60),
+            bail_backoff_cap: FriendlyDuration::from_secs(10 * 60),
+            hard_grace: FriendlyDuration::from_secs(120),
+            stop_stuck_timeout: FriendlyDuration::from_secs(5 * 60),
+        }
+    }
+}
+
+impl StallDetectionOptions {
+    pub fn grace(&self) -> Duration {
+        self.grace.into()
+    }
+
+    pub fn heartbeat_fresh(&self) -> Duration {
+        self.heartbeat_fresh.into()
+    }
+
+    pub fn tail_ttl(&self) -> Duration {
+        self.tail_ttl.into()
+    }
+
+    pub fn sweep_interval(&self) -> Duration {
+        self.sweep_interval.into()
+    }
+
+    pub fn probe_timeout(&self) -> Duration {
+        self.probe_timeout.into()
+    }
+
+    pub fn probe_backoff_base(&self) -> Duration {
+        self.probe_backoff_base.into()
+    }
+
+    pub fn probe_backoff_cap(&self) -> Duration {
+        self.probe_backoff_cap.into()
+    }
+
+    pub fn recovery_window(&self) -> Duration {
+        self.recovery_window.into()
+    }
+
+    pub fn bail_grace(&self) -> Duration {
+        self.bail_grace.into()
+    }
+
+    pub fn bail_backoff_base(&self) -> Duration {
+        self.bail_backoff_base.into()
+    }
+
+    pub fn bail_backoff_cap(&self) -> Duration {
+        self.bail_backoff_cap.into()
+    }
+
+    pub fn hard_grace(&self) -> Duration {
+        self.hard_grace.into()
+    }
+
+    pub fn stop_stuck_timeout(&self) -> Duration {
+        self.stop_stuck_timeout.into()
     }
 }
 
