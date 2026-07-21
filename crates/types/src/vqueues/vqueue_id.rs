@@ -256,6 +256,10 @@ impl FromStr for VQueueId {
             // the version of the encoded string.
             let rest: u128 = decoder.cursor.decode_next()?;
             buf.put_u128(rest);
+
+            if decoder.cursor.remaining() != 0 {
+                return Err(IdDecodeError::Length);
+            }
         }
 
         Ok(Self(buf))

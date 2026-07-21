@@ -95,11 +95,21 @@ impl FromStr for VQueueEntryId {
             InvocationId::RESOURCE_TYPE => {
                 let partition_key: PartitionKey = decoder.cursor.decode_next()?;
                 let raw: [u8; REMAINDER_LEN] = decoder.cursor.decode_next::<u128>()?.to_be_bytes();
+
+                if decoder.cursor.remaining() != 0 {
+                    return Err(IdDecodeError::Length);
+                }
+
                 Ok(Self::Invocation(partition_key, raw))
             }
             StateMutationId::RESOURCE_TYPE => {
                 let partition_key: PartitionKey = decoder.cursor.decode_next()?;
                 let raw: [u8; REMAINDER_LEN] = decoder.cursor.decode_next::<u128>()?.to_be_bytes();
+
+                if decoder.cursor.remaining() != 0 {
+                    return Err(IdDecodeError::Length);
+                }
+
                 Ok(Self::StateMutation(partition_key, raw))
             }
             _ => Err(IdDecodeError::TypeMismatch),
