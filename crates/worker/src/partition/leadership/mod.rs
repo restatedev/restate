@@ -11,6 +11,7 @@
 mod durability_tracker;
 mod leader_state;
 mod self_proposer;
+mod self_proposer_scheduler;
 pub mod trim_queue;
 
 use std::cmp::Ordering;
@@ -145,20 +146,6 @@ pub(crate) enum TaskTermination {
     Unexpected,
     #[display("{}", _0)]
     Failure(GenericError),
-}
-
-#[derive(Debug)]
-#[allow(clippy::large_enum_variant)]
-pub(crate) enum LeaderEvent {
-    Scheduler(scheduler::Decisions),
-    Invoker(InvokerEffect),
-    Shuffle(shuffle::OutboxTruncation),
-    Timer(TimerKeyValue),
-    Cleaner(cleaner::CleanerEffect),
-    PartitionMaintenance(UpdatePartitionDurabilityCommand),
-    UpsertSchema(Schema),
-    UpsertRuleBook(Arc<restate_limiter::RuleBook>),
-    NetworkService(NetworkServiceEvent),
 }
 
 #[derive(derive_more::Debug)]

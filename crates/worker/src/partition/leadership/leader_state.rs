@@ -19,7 +19,7 @@ use std::task::{Context, Poll, ready};
 use bytes::BytesMut;
 use futures::future::OptionFuture;
 use futures::stream::FuturesUnordered;
-use futures::{FutureExt, StreamExt, stream};
+use futures::{FutureExt, StreamExt};
 use itertools::Itertools;
 use metrics::counter;
 use tokio_stream::wrappers::{ReceiverStream, WatchStream};
@@ -62,7 +62,7 @@ use crate::metric_definitions::{PARTITION_HANDLE_LEADER_ACTIONS, USAGE_LEADER_AC
 use crate::partition::cleaner::{CleanerEffect, CleanerHandle};
 use crate::partition::leadership::self_proposer::SelfProposer;
 use crate::partition::leadership::{
-    Error, InvokerStream, LeaderEvent, NetworkServiceEvent, RpcReciprocal, TimerService,
+    Error, InvokerStream, NetworkServiceEvent, RpcReciprocal, TimerService,
 };
 use crate::partition::processor::{FsmAccess, Processor};
 use crate::partition::rpc::{ReplyOn, RpcProposal};
@@ -73,9 +73,8 @@ use crate::partition::types::InvokerEffect;
 use crate::partition_processor_manager::LeaderQueryGuard;
 
 use super::durability_tracker::DurabilityTracker;
+use super::self_proposer_scheduler::{SelfProposerScheduler, SelfProposerSchedulerFlow};
 
-// One ready event is the admission unit allowed to put the self-proposal queue into overdraft.
-const BATCH_READY_UP_TO: usize = 1;
 const NETWORK_EVENTS_BUFFER_SIZE: usize = 1;
 
 pub struct LeaderState {
@@ -122,6 +121,7 @@ pub struct LeaderState {
     // the partition processor's select! is willing to serve scheduler queries.
     _leader_query_guard: LeaderQueryGuard,
     encoding_arena: BytesMut,
+    self_proposer_scheduler: SelfProposerScheduler,
 }
 
 impl LeaderState {
@@ -179,6 +179,7 @@ impl LeaderState {
             network_events_stream: ReceiverStream::new(network_events_rx),
             _leader_query_guard: leader_query_guard,
             encoding_arena: BytesMut::with_capacity(128 * 1024),
+            self_proposer_scheduler: SelfProposerScheduler::new(),
         }
     }
 
@@ -234,118 +235,184 @@ impl LeaderState {
             durability_tracker,
             network_events_stream,
             encoding_arena,
+            self_proposer_scheduler,
             ..
         } = self;
-        let partition_key_range = *partition_key_range;
 
-        let timer_stream = std::pin::pin!(stream::unfold(timer_service, |timer_service| async {
-            let timer_value = timer_service.as_mut().next_timer().await;
-            Some((LeaderEvent::Timer(timer_value), timer_service))
-        }));
-        let vqueue_metas = ctx.vqueues();
+        std::future::poll_fn(|cx| {
+            // watch the shuffle task in case it crashed
+            if let Poll::Ready(result) =
+                shuffle_task_handle.as_mut().expect("is set").poll_unpin(cx)
+            {
+                // it's not possible to await the shuffler handle
+                // if it returns an error. Hence we take it here.
+                // run() should then never be called again.
+                shuffle_task_handle.take();
+                return Poll::Ready(match result {
+                    Ok(Ok(_)) => Err(Error::task_terminated_unexpectedly("shuffle")),
+                    Ok(Err(err)) => Err(Error::task_failed("shuffle", err)),
+                    Err(shutdown_error) => Err(Error::Shutdown(shutdown_error)),
+                });
+            }
 
-        // todo(asoli): consider adding the scheduler pick_next() directly to the tokio::select!
-        // if we have problems with latency
-        let scheduler_stream = std::pin::pin!(stream::unfold(scheduler, |scheduler| async {
-            match scheduler.schedule_next(vqueue_metas).await {
-                Ok(decisions) => Some((LeaderEvent::Scheduler(decisions), scheduler)),
-                Err(e) => {
-                    error!("Fatal error when polling scheduler: {e}");
-                    None
+            if let Poll::Ready(result) =
+                invoker_task_handle.as_mut().expect("is set").poll_unpin(cx)
+            {
+                invoker_task_handle.take();
+                return Poll::Ready(match result {
+                    Ok(()) => Err(Error::task_terminated_unexpectedly("invoker")),
+                    Err(shutdown_error) => Err(Error::Shutdown(shutdown_error)),
+                });
+            }
+
+            if let Poll::Ready(result) = std::pin::pin!(self_proposer.join_on_err()).poll_unpin(cx)
+            {
+                return Poll::Ready(Err(result.expect_err("never should never be returned")));
+            }
+
+            let mut made_progress = false;
+            // Join the inflight commit notification futures
+            if let Poll::Ready(Some(_)) = awaiting_rpc_self_propose.next().poll_unpin(cx) {
+                // we're not going to return here so that we can make progress on the events
+                // but we'll need to set `made_progress` to true so that we can return Poll::Ready
+                // later on.
+                made_progress = true;
+            }
+
+            if !self_proposer.has_capacity()
+                && std::pin::pin!(self_proposer.wait_for_capacity())
+                    .poll_unpin(cx)
+                    .is_pending()
+            {
+                return Poll::Pending;
+            }
+
+            let partition_key_range = *partition_key_range;
+            let vqueue_metas = ctx.vqueues();
+
+            let mut schema_stream = schema_stream.filter_map(|_| {
+                // only upsert schema iff version is newer than current version
+                let current_version = ctx.fsm().schema_version();
+
+                std::future::ready(
+                    Some(Metadata::with_current(|m| m.schema()))
+                        .filter(|schema| schema.version() > current_version)
+                        .map(|schema| schema.clone()),
+                )
+            });
+
+            let mut rule_book_stream = rule_book_stream.filter_map(|book| {
+                // Only propose iff the cache holds a rule book that's
+                // newer than the partition's current in-memory book.
+                let current_version = ctx.fsm().rule_book().version();
+                std::future::ready((book.version() > current_version).then_some(book))
+            });
+
+            let mut state = LeaderEventHandlerState {
+                partition_key_range,
+                self_proposer,
+                awaiting_rpc_actions,
+                awaiting_rpc_self_propose,
+                fencing_tokens,
+                arena: encoding_arena,
+            };
+
+            for event in self_proposer_scheduler.scan_order() {
+                match event {
+                    SelfProposerSchedulerFlow::Invoker => {
+                        if let Poll::Ready(Some(val)) = invoker_stream.poll_next_unpin(cx) {
+                            val.handle(&mut state)?;
+                            made_progress = true;
+                        } else {
+                            continue;
+                        }
+                    }
+                    SelfProposerSchedulerFlow::Timer => {
+                        if let Poll::Ready(val) =
+                            std::pin::pin!(timer_service.as_mut().next_timer()).poll_unpin(cx)
+                        {
+                            val.handle(&mut state)?;
+                            made_progress = true;
+                        } else {
+                            continue;
+                        }
+                    }
+                    SelfProposerSchedulerFlow::Shuffle => {
+                        if let Poll::Ready(Some(val)) = shuffle_stream.poll_next_unpin(cx) {
+                            val.handle(&mut state)?;
+                            made_progress = true;
+                        } else {
+                            continue;
+                        }
+                    }
+                    SelfProposerSchedulerFlow::Cleaner => {
+                        if let Poll::Ready(Some(val)) = cleaner_handle.effects().poll_next_unpin(cx)
+                        {
+                            val.handle(&mut state)?;
+                            made_progress = true;
+                        } else {
+                            continue;
+                        }
+                    }
+                    SelfProposerSchedulerFlow::UpsertSchema => {
+                        if let Poll::Ready(Some(val)) = schema_stream.poll_next_unpin(cx) {
+                            val.handle(&mut state)?;
+                            made_progress = true;
+                            continue;
+                        } else {
+                            // ..
+                        }
+                    }
+                    SelfProposerSchedulerFlow::UpsertRuleBook => {
+                        if let Poll::Ready(Some(val)) = rule_book_stream.poll_next_unpin(cx) {
+                            val.handle(&mut state)?;
+                            made_progress = true;
+                        } else {
+                            continue;
+                        }
+                    }
+                    SelfProposerSchedulerFlow::NetworkService => {
+                        if let Poll::Ready(Some(val)) = network_events_stream.poll_next_unpin(cx) {
+                            val.handle(&mut state)?;
+                            made_progress = true;
+                        } else {
+                            continue;
+                        }
+                    }
+                    SelfProposerSchedulerFlow::PartitionMaintenance => {
+                        if let Poll::Ready(Some(val)) = durability_tracker.poll_next_unpin(cx) {
+                            val.handle(&mut state)?;
+                            made_progress = true;
+                        } else {
+                            continue;
+                        }
+                    }
+                    SelfProposerSchedulerFlow::Scheduler => {
+                        if let Poll::Ready(val) =
+                            std::pin::pin!(scheduler.schedule_next(vqueue_metas)).poll_unpin(cx)
+                        {
+                            match val {
+                                Ok(decisions) => decisions.handle(&mut state)?,
+                                Err(e) => {
+                                    error!("Fatal error when polling scheduler: {e}");
+                                    continue;
+                                }
+                            }
+                            made_progress = true;
+                        } else {
+                            continue;
+                        }
+                    }
                 }
             }
-        }));
 
-        let schema_stream = schema_stream.filter_map(|_| {
-            // only upsert schema iff version is newer than current version
-            let current_version = ctx.fsm().schema_version();
-
-            std::future::ready(
-                Some(Metadata::with_current(|m| m.schema()))
-                    .filter(|schema| schema.version() > current_version)
-                    .map(|schema| LeaderEvent::UpsertSchema(schema.clone())),
-            )
-        });
-
-        let rule_book_stream = rule_book_stream.filter_map(|book| {
-            // Only propose iff the cache holds a rule book that's
-            // newer than the partition's current in-memory book.
-            let current_version = ctx.fsm().rule_book().version();
-            std::future::ready(
-                (book.version() > current_version).then(|| LeaderEvent::UpsertRuleBook(book)),
-            )
-        });
-
-        let invoker_stream = invoker_stream.map(LeaderEvent::Invoker);
-        let shuffle_stream = shuffle_stream.map(LeaderEvent::Shuffle);
-        let cleaner_stream = cleaner_handle.effects().map(LeaderEvent::Cleaner);
-
-        let dur_tracker_stream = durability_tracker.map(LeaderEvent::PartitionMaintenance);
-        let network_events_stream = network_events_stream.map(LeaderEvent::NetworkService);
-
-        let all_streams = futures::stream_select!(
-            scheduler_stream,
-            invoker_stream,
-            shuffle_stream,
-            timer_stream,
-            cleaner_stream,
-            dur_tracker_stream,
-            schema_stream,
-            rule_book_stream,
-            network_events_stream
-        );
-        let mut ready_events = all_streams.ready_chunks(BATCH_READY_UP_TO);
-
-        let events = loop {
-            let events = tokio::select! {
-                // watch the shuffle task in case it crashed
-                result = &mut *shuffle_task_handle.as_mut().expect("is set") => {
-                    // it's not possible to await the shuffler handle
-                    // if it returns an error. Hence we take it here.
-                    // run() should then never be called again.
-                    shuffle_task_handle.take();
-                    return match result {
-                        Ok(Ok(_)) => Err(Error::task_terminated_unexpectedly("shuffle")),
-                        Ok(Err(err)) => Err(Error::task_failed("shuffle", err)),
-                        Err(shutdown_error) => Err(Error::Shutdown(shutdown_error))
-                    }
-                }
-                result = &mut *invoker_task_handle.as_mut().expect("is set") => {
-                    invoker_task_handle.take();
-                    return match result {
-                        Ok(()) => Err(Error::task_terminated_unexpectedly("invoker")),
-                        Err(shutdown_error) => Err(Error::Shutdown(shutdown_error)),
-                    }
-                }
-                Some(events) = ready_events.next(), if self_proposer.has_capacity() => {
-                    events
-                },
-                _ = self_proposer.wait_for_capacity(), if !self_proposer.has_capacity() => {
-                    continue;
-                },
-                // Joining the inflight commit notification futures
-                Some(_) = awaiting_rpc_self_propose.next() => {
-                    continue;
-                },
-                result = self_proposer.join_on_err() => {
-                    return Err(result.expect_err("never should never be returned"))
-                }
-            };
-            break events;
-        };
-
-        let mut state = LeaderEventHandlerState {
-            partition_key_range,
-            self_proposer,
-            awaiting_rpc_actions,
-            awaiting_rpc_self_propose,
-            fencing_tokens,
-            arena: encoding_arena,
-        };
-        for event in events {
-            handle_event(event, &mut state)?;
-        }
-        Ok(())
+            if made_progress {
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
+        })
+        .await
     }
 
     /// Stops all leader relevant tasks.
@@ -583,20 +650,6 @@ impl LeaderEventHandlerState<'_> {
 
 trait LeaderEventHandler {
     fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<(), Error>;
-}
-
-fn handle_event(event: LeaderEvent, state: &mut LeaderEventHandlerState<'_>) -> Result<(), Error> {
-    match event {
-        LeaderEvent::Scheduler(event) => event.handle(state),
-        LeaderEvent::PartitionMaintenance(event) => event.handle(state),
-        LeaderEvent::Invoker(event) => event.handle(state),
-        LeaderEvent::Shuffle(event) => event.handle(state),
-        LeaderEvent::Timer(event) => event.handle(state),
-        LeaderEvent::Cleaner(event) => event.handle(state),
-        LeaderEvent::UpsertSchema(event) => event.handle(state),
-        LeaderEvent::UpsertRuleBook(event) => event.handle(state),
-        LeaderEvent::NetworkService(event) => event.handle(state),
-    }
 }
 
 impl LeaderEventHandler for Decisions {
