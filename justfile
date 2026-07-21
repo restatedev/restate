@@ -185,16 +185,22 @@ docker-debug:
     # podman builds do not work without --platform set, even though it claims to default to host arch
     docker buildx build . --platform linux/{{ _docker_arch }} --file docker/debug.Dockerfile --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}' --build-arg RESTATE_FEATURES={{ features }} --load
 
-docker-local-fedora:
+[arg("profile", long)]
+docker-local-fedora profile="dev":
     #!/usr/bin/env bash
     set -euo pipefail
     # Build the restate-server binary locally
-    just arch={{ _arch }} features={{ features }} build -p restate-server
+    just arch={{ _arch }} features={{ features }} build --profile="$1" -p restate-server
     # Stage the binary in a temp dir inside the build context.
     # Hard-link to avoid copying the (large) binary.
     mkdir -p ./.docker-local-cache
     trap 'rm -rf "./.docker-local-cache"' EXIT
-    cp -l target/debug/restate-server "./.docker-local-cache/restate-server" 2>/dev/null || cp target/debug/restate-server "./.docker-local-cache/restate-server"
+    case "$1" in
+      dev|test) profile_dir=debug ;;
+      release|bench) profile_dir=release ;;
+      *) profile_dir="$1" ;;
+    esac
+    cp -l "target/$profile_dir/restate-server" "./.docker-local-cache/restate-server" 2>/dev/null || cp "target/$profile_dir/restate-server" "./.docker-local-cache/restate-server"
     # Build the Docker image using the local.Dockerfile
     docker buildx build . --platform linux/{{ _docker_arch }} --file docker/local-fedora.Dockerfile --build-arg RESTATE_BINARY_PATH="./.docker-local-cache/restate-server" --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}' --load
 
