@@ -8,17 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::assert_matches;
+
+use restate_clock::UniqueTimestamp;
+use restate_vqueues::context::HasVQueuesMut;
 use tracing::debug;
 
 use restate_bifrost::DataRecord;
-use restate_partition_store::PartitionStoreTransaction;
+use restate_core::cancellation_token;
+use restate_partition_store::migrations::MigrationContext;
+use restate_partition_store::{PartitionDb, PartitionStoreTransaction};
 use restate_storage_api::Transaction;
-use restate_storage_api::inbox_table::ReadInboxTable;
-use restate_storage_api::invocation_status_table::ReadInvocationStatusTable;
 use restate_types::SemanticRestateVersion;
 use restate_types::partitions::features::PartitionFeatureChange;
 use restate_types::protobuf::cluster::DetailedRunMode;
-use restate_types::sharding::KeyRange;
 use restate_wal_protocol::control::VersionBarrierCommand;
 use restate_wal_protocol::v2::{CommandScope, Envelope};
 
@@ -32,6 +35,7 @@ use crate::partition::{NodeContext, ProcessorError};
 pub struct VersionBarrierContext<'a, 'b, L> {
     pub txn: &'a mut PartitionStoreTransaction<'b>,
     pub node_ctx: &'a mut NodeContext,
+    pub partition_db: PartitionDb,
     pub processor: &'a mut ProcessorRawContext,
     pub leadership: &'a mut L,
 }
@@ -73,6 +77,7 @@ impl<L: LeaderPromotion> ApplyPartitionCommand<VersionBarrierCommand>
         // - Peers will not pick this node as leader candidate when performing
         //   adhoc failovers.
         let lsn = command.seq();
+        let created_at = command.created_at();
         let (header, barrier) = command.into_inner().split()?;
 
         if !SemanticRestateVersion::current().is_equal_or_newer_than(&barrier.version) {
@@ -104,31 +109,6 @@ impl<L: LeaderPromotion> ApplyPartitionCommand<VersionBarrierCommand>
             });
         }
 
-        // Determine which known changes actually flip a feature off->on. Only those
-        // need to run the migration probe; re-applying an already-enabled barrier
-        // stays cheap and idempotent.
-        let mut updated = *self.processor.enabled_features();
-        let flip_on_changes: Vec<PartitionFeatureChange> = known_changes
-            .iter()
-            .copied()
-            .filter(|change| change.apply_to(&mut updated))
-            .collect();
-
-        // Per-feature migration gate. Atomicity: if any flip-on change requires
-        // migration, the whole barrier fails and the transaction rolls back so no
-        // partial state (incl. min_restate_version) is persisted.
-        let mut needs_migration = Vec::new();
-        for &change in &flip_on_changes {
-            if requires_migration_for(change, self.txn, self.processor.key_range()).await? {
-                needs_migration.push(change);
-            }
-        }
-        if !needs_migration.is_empty() {
-            return Err(ProcessorError::MigrationRequired {
-                features: needs_migration,
-            });
-        }
-
         if self
             .processor
             .fsm_mut()
@@ -140,6 +120,64 @@ impl<L: LeaderPromotion> ApplyPartitionCommand<VersionBarrierCommand>
             );
             // todo: Migrate invocations from journal v1 to journal v2 once bumping the min Restate version to v1.6.0
             //  if it is not prohibitively expensive
+        }
+
+        // Per-feature migration gate. Atomicity: if any flip-on change requires
+        // migration, the whole barrier fails and the transaction rolls back so no
+        // partial state (incl. min_restate_version) is persisted.
+        let mut updated = *self.processor.enabled_features();
+
+        if !known_changes.is_empty() {
+            // Commit all in-flight changes before running any migrations
+            self.txn.commit().await?;
+        }
+
+        // let's enable feature by feature
+        for change in known_changes.iter() {
+            if change.apply_to(&mut updated) {
+                // Turn on the feature.
+                match change {
+                    // Inbox entries (invocations and state mutations) and any non-Completed
+                    // invocation status (which transitively covers held virtual-object locks
+                    // and scheduled-invocation timers via the `InvocationStatus::Scheduled`
+                    // source-of-truth) must be migrated to vqueue form before vqueues is
+                    // enabled.
+                    PartitionFeatureChange::EnableVqueues => {
+                        // if we are in "Leader" mode, then something is wrong!
+                        assert_matches!(
+                            self.leadership.current_mode(),
+                            DetailedRunMode::Follower
+                                | DetailedRunMode::BecomingLeader
+                                | DetailedRunMode::Candidate
+                        );
+                        let config = self.node_ctx.config.live_load();
+                        let skip_completed = config
+                            .common
+                            .experimental
+                            .is_vqueues_migration_skip_completed_enabled();
+                        let partition_db = &self.partition_db;
+                        let mut ctx = MigrationContext::new(
+                            config,
+                            partition_db,
+                            self.processor.key_range(),
+                            cancellation_token(),
+                        );
+
+                        restate_vqueues::migrations::migrate_to_vqueues(
+                            &mut ctx,
+                            self.processor.vqueues_mut(),
+                            UniqueTimestamp::from_unix_millis_unchecked(created_at.into()),
+                            skip_completed,
+                        )
+                        .await?;
+                    }
+                    PartitionFeatureChange::EnableJournalV2 => {}
+                    // Flipping unique-random-seeds on only affects invocations created after the apply
+                    // point. Pre-existing invocations without a stored random seed keep working via the
+                    // `to_random_seed()` fallback in `invoker_storage_reader.rs`.
+                    PartitionFeatureChange::EnableUniqueRandomSeeds => {}
+                }
+            }
         }
 
         if self
@@ -178,50 +216,8 @@ impl<L: LeaderPromotion> ApplyPartitionCommand<VersionBarrierCommand>
     }
 }
 
-/// Returns `true` if applying `change` to a partition that holds pre-existing
-/// in-flight data would leave that data inconsistent and therefore requires a
-/// migration step which is not provided by this binary.
-async fn requires_migration_for<S>(
-    change: PartitionFeatureChange,
-    storage: &mut S,
-    partition_key_range: KeyRange,
-) -> Result<bool, restate_storage_api::StorageError>
-where
-    S: ReadInboxTable + ReadInvocationStatusTable,
-{
-    match change {
-        PartitionFeatureChange::EnableVqueues => {
-            // Inbox entries (invocations and state mutations) and any non-Completed
-            // invocation status (which transitively covers held virtual-object locks
-            // and scheduled-invocation timers via the `InvocationStatus::Scheduled`
-            // source-of-truth) must be migrated to vqueue form before vqueues is
-            // enabled. The 1.7.0 binary lacks the migration code; a later server
-            // version provides it.
-            if storage
-                .any_inbox_entry_in_range(partition_key_range)
-                .await?
-            {
-                return Ok(true);
-            }
-            if storage
-                .any_non_completed_invocation_in_range(partition_key_range)
-                .await?
-            {
-                return Ok(true);
-            }
-            Ok(false)
-        }
-        PartitionFeatureChange::EnableJournalV2 => Ok(false),
-        // Flipping unique-random-seeds on only affects invocations created after the apply
-        // point. Pre-existing invocations without a stored random seed keep working via the
-        // `to_random_seed()` fallback in `invoker_storage_reader.rs`.
-        PartitionFeatureChange::EnableUniqueRandomSeeds => Ok(false),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::sync::Arc;
 
     use googletest::prelude::*;
@@ -232,21 +228,14 @@ mod tests {
     use restate_rocksdb::RocksDbManager;
     use restate_storage_api::Transaction;
     use restate_storage_api::fsm_table::ReadFsmTable;
-    use restate_storage_api::inbox_table::{InboxEntry, WriteInboxTable};
-    use restate_storage_api::invocation_status_table::{
-        CompletedInvocation, InFlightInvocationMetadata, InvocationStatus,
-        WriteInvocationStatusTable,
-    };
     use restate_types::config::Configuration;
-    use restate_types::identifiers::{InvocationId, PartitionId, PartitionKey, ServiceId};
-    use restate_types::invocation::InvocationTarget;
+    use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::logs::{Keys, Lsn, SequenceNumber};
     use restate_types::partitions::Partition;
     use restate_types::partitions::features::{PartitionFeatureChange, PersistedFeatures};
     use restate_types::partitions::state::PartitionReplicaSetStates;
     use restate_types::protobuf::cluster::DetailedRunMode;
     use restate_types::sharding::KeyRange;
-    use restate_types::state_mut::ExternalStateMutation;
     use restate_types::time::NanosSinceEpoch;
     use restate_types::{GenerationalNodeId, SemanticRestateVersion};
     use restate_vqueues::context::HasVQueuesMut;
@@ -328,16 +317,18 @@ mod tests {
     ) -> std::result::Result<(), ProcessorError> {
         let envelope = VersionBarrierCommand::test_envelope(command);
         let record = DataRecord::new(
-            NanosSinceEpoch::UNIX_EPOCH,
+            NanosSinceEpoch::RESTATE_EPOCH,
             Keys::None,
             Lsn::OLDEST,
             envelope,
         );
 
+        let partition_db = storage.partition_db().clone();
         let mut txn = storage.transaction();
         let mut leadership = NoLeadershipPromotion;
         let next_step = VersionBarrierContext {
             txn: &mut txn,
+            partition_db,
             node_ctx,
             processor,
             leadership: &mut leadership,
@@ -356,41 +347,6 @@ mod tests {
 
         txn.commit().await.unwrap();
         Ok(())
-    }
-
-    async fn seed_inbox_state_mutation(storage: &mut PartitionStore) {
-        let mut tx = storage.transaction();
-        tx.put_inbox_entry(
-            0,
-            &InboxEntry::StateMutation(ExternalStateMutation {
-                service_id: ServiceId::new(None, "MyService", "MyKey"),
-                version: None,
-                state: HashMap::default(),
-            }),
-        )
-        .unwrap();
-        tx.commit().await.unwrap();
-    }
-
-    async fn seed_invoked_status(storage: &mut PartitionStore) {
-        let mut tx = storage.transaction();
-        tx.put_invocation_status(
-            &InvocationId::mock_random(),
-            &InvocationStatus::Invoked(InFlightInvocationMetadata::mock()),
-        )
-        .unwrap();
-        tx.commit().await.unwrap();
-    }
-
-    async fn seed_completed_status(storage: &mut PartitionStore) {
-        let invocation_id = InvocationId::generate(&InvocationTarget::mock_virtual_object(), None);
-        let mut tx = storage.transaction();
-        tx.put_invocation_status(
-            &invocation_id,
-            &InvocationStatus::Completed(CompletedInvocation::mock_neo()),
-        )
-        .unwrap();
-        tx.commit().await.unwrap();
     }
 
     #[restate_core::test]
@@ -534,162 +490,6 @@ mod tests {
                 eq(true)
             );
         }
-    }
-
-    #[restate_core::test]
-    async fn migration_required_when_inbox_non_empty() {
-        let env = TestCoreEnv::create_with_single_node(1, 0).await;
-        let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
-        let mut storage = open_store().await;
-        let mut processor = processor(PersistedFeatures::default());
-        seed_inbox_state_mutation(&mut storage).await;
-
-        let mut node_ctx = NodeContext::new(
-            GenerationalNodeId::new(1, 0),
-            Configuration::live(),
-            PartitionReplicaSetStates::default(),
-            RuleBookCacheHandle::detached(),
-            bifrost,
-            InvokerCapacity::new_unlimited(),
-            PartitionLeaderHandlesRegistry::default(),
-        );
-
-        let result = apply_barrier(
-            &mut node_ctx,
-            &mut processor,
-            &mut storage,
-            barrier(
-                SemanticRestateVersion::current().clone(),
-                vec![PartitionFeatureChange::EnableVqueues.id()],
-            ),
-        )
-        .await;
-
-        assert_that!(
-            result,
-            err(pat!(ProcessorError::MigrationRequired {
-                features: eq(vec![PartitionFeatureChange::EnableVqueues]),
-            }))
-        );
-        // The feature flag must remain off — the apply transaction rolled back.
-        assert_that!(
-            storage.get_state_machine_features().await.unwrap().vqueues,
-            eq(false)
-        );
-    }
-
-    #[restate_core::test]
-    async fn migration_required_when_non_completed_invocation_present() {
-        let env = TestCoreEnv::create_with_single_node(1, 0).await;
-        let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
-        let mut storage = open_store().await;
-        let mut processor = processor(PersistedFeatures::default());
-        seed_invoked_status(&mut storage).await;
-
-        let mut node_ctx = NodeContext::new(
-            GenerationalNodeId::new(1, 0),
-            Configuration::live(),
-            PartitionReplicaSetStates::default(),
-            RuleBookCacheHandle::detached(),
-            bifrost,
-            InvokerCapacity::new_unlimited(),
-            PartitionLeaderHandlesRegistry::default(),
-        );
-
-        let result = apply_barrier(
-            &mut node_ctx,
-            &mut processor,
-            &mut storage,
-            barrier(
-                SemanticRestateVersion::current().clone(),
-                vec![PartitionFeatureChange::EnableVqueues.id()],
-            ),
-        )
-        .await;
-
-        assert_that!(
-            result,
-            err(pat!(ProcessorError::MigrationRequired {
-                features: eq(vec![PartitionFeatureChange::EnableVqueues]),
-            }))
-        );
-        assert_that!(
-            storage.get_state_machine_features().await.unwrap().vqueues,
-            eq(false)
-        );
-    }
-
-    #[restate_core::test]
-    async fn only_completed_invocation_does_not_block_enable() {
-        let env = TestCoreEnv::create_with_single_node(1, 0).await;
-        let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
-        let mut storage = open_store().await;
-        let mut processor = processor(PersistedFeatures::default());
-        seed_completed_status(&mut storage).await;
-
-        let mut node_ctx = NodeContext::new(
-            GenerationalNodeId::new(1, 0),
-            Configuration::live(),
-            PartitionReplicaSetStates::default(),
-            RuleBookCacheHandle::detached(),
-            bifrost,
-            InvokerCapacity::new_unlimited(),
-            PartitionLeaderHandlesRegistry::default(),
-        );
-
-        apply_barrier(
-            &mut node_ctx,
-            &mut processor,
-            &mut storage,
-            barrier(
-                SemanticRestateVersion::current().clone(),
-                vec![PartitionFeatureChange::EnableVqueues.id()],
-            ),
-        )
-        .await
-        .expect("completed invocations do not block enabling vqueues");
-        assert_that!(
-            storage.get_state_machine_features().await.unwrap().vqueues,
-            eq(true)
-        );
-    }
-
-    #[restate_core::test]
-    async fn no_op_reapply_skips_probe() {
-        let env = TestCoreEnv::create_with_single_node(1, 0).await;
-        let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
-        // Start with vqueues already enabled, then seed an inbox entry that would
-        // normally trip the gate. The barrier re-apply must succeed because the
-        // change does not flip a feature off->on.
-        let mut storage = open_store().await;
-        let mut processor = processor(PersistedFeatures {
-            journal_v2: false,
-            vqueues: true,
-            unique_random_seeds: false,
-        });
-        seed_inbox_state_mutation(&mut storage).await;
-
-        let mut node_ctx = NodeContext::new(
-            GenerationalNodeId::new(1, 0),
-            Configuration::live(),
-            PartitionReplicaSetStates::default(),
-            RuleBookCacheHandle::detached(),
-            bifrost,
-            InvokerCapacity::new_unlimited(),
-            PartitionLeaderHandlesRegistry::default(),
-        );
-
-        apply_barrier(
-            &mut node_ctx,
-            &mut processor,
-            &mut storage,
-            barrier(
-                SemanticRestateVersion::current().clone(),
-                vec![PartitionFeatureChange::EnableVqueues.id()],
-            ),
-        )
-        .await
-        .expect("already-enabled feature skips the migration probe");
     }
 
     #[restate_core::test]

@@ -11,7 +11,7 @@
 use std::future::Future;
 
 use async_channel::{TryRecvError, TrySendError};
-use metrics::{counter, histogram};
+use metrics::{counter, gauge};
 use tokio::sync::mpsc;
 use tracing::debug;
 
@@ -25,7 +25,7 @@ use restate_types::message::MessageIndex;
 use restate_wal_protocol::{Destination, Envelope, Header, Source};
 
 use crate::metric_definitions::{
-    PARTITION_LABEL, PARTITION_SHUFFLE_INFLIGHT_COUNT, PARTITION_SHUFFLE_MESSAGE_COUNT,
+    PARTITION_LABEL, PARTITION_SHUFFLE_INFLIGHT_RECORDS, PARTITION_SHUFFLE_MESSAGE_COUNT,
 };
 use crate::partition::types::OutboxMessageExt;
 
@@ -238,13 +238,13 @@ where
             PARTITION_LABEL => self.metadata.partition_id.to_string(),
         );
 
-        let inflight_count = histogram!(
-            PARTITION_SHUFFLE_INFLIGHT_COUNT,
+        let inflight_records = gauge!(
+            PARTITION_SHUFFLE_INFLIGHT_RECORDS,
             PARTITION_LABEL => self.metadata.partition_id.to_string(),
         );
 
         loop {
-            inflight_count.record(inflight.len() as f64);
+            inflight_records.set(inflight.len() as f64);
             let head = OptionFuture::from(inflight.front_mut());
             tokio::select! {
                 commit_token = state_machine.shuffle_next_message() => {

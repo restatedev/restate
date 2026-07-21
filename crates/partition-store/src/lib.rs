@@ -21,7 +21,7 @@ pub mod keys;
 pub mod locks_table;
 mod memory;
 mod metric_definitions;
-mod migrations;
+pub mod migrations;
 pub mod outbox_table;
 mod owned_iter;
 mod partition_db;
@@ -40,7 +40,7 @@ mod tests;
 
 pub use error::*;
 pub use journal_table_v2::{OrphanCleanupResult, cleanup_orphaned_completion_id_index_entries};
-pub use migrations::MigrationError;
+pub use migrations::{MigrationError, migrate_to_locks_table};
 pub use partition_db::PartitionDb;
 pub use partition_store::*;
 pub use partition_store_manager::*;
@@ -48,6 +48,33 @@ pub use partition_store_manager::*;
 pub use restate_rocksdb::Priority;
 
 use crate::scan::TableScan;
+
+// FixedPrefixTransform requires seek keys to be at least as long as its configured prefix.
+// Shorter prefixes must bypass prefix seeking and its bloom filters.
+fn configure_prefix_iterator_opts<B: Into<Vec<u8>>>(opts: &mut rocksdb::ReadOptions, prefix: B) {
+    let prefix = prefix.into();
+    if prefix.len() >= DB_PREFIX_LENGTH {
+        opts.set_prefix_same_as_start(true);
+        opts.set_total_order_seek(false);
+    } else {
+        opts.set_prefix_same_as_start(false);
+        opts.set_total_order_seek(true);
+    }
+    opts.set_iterate_range(rocksdb::PrefixRange(prefix));
+}
+
+fn configure_range_iterator_opts<S, E>(
+    opts: &mut rocksdb::ReadOptions,
+    scan_mode: ScanMode,
+    start: S,
+    end: E,
+) where
+    S: Into<Vec<u8>>,
+    E: Into<Vec<u8>>,
+{
+    opts.set_total_order_seek(scan_mode == ScanMode::TotalOrder);
+    opts.set_iterate_range(start.into()..end.into());
+}
 
 // Optimized for modern CPU branch predictors
 #[inline]

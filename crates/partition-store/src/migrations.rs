@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod migrate_to_locks_table;
+pub mod migrate_to_locks_table;
 mod migrate_to_scoped_promise_table;
 mod migrate_to_scoped_state_table;
 
@@ -154,11 +154,11 @@ async fn do_migration(
 
 #[allow(dead_code)]
 pub struct MigrationContext<'a> {
-    clock: HlcClock<WallClock, Arc<AtomicStorage>>,
-    arena: BytesMut,
-    partition_db: &'a PartitionDb,
-    key_range: KeyRange,
-    cancel: CancellationToken,
+    pub clock: HlcClock<WallClock, Arc<AtomicStorage>>,
+    pub arena: BytesMut,
+    pub partition_db: &'a PartitionDb,
+    pub key_range: KeyRange,
+    pub cancel: CancellationToken,
 }
 
 #[allow(dead_code)]

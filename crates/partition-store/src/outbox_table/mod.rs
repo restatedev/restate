@@ -53,17 +53,14 @@ fn get_outbox_head_seq_number<S: StorageAccess>(
         .partition_id(partition_id.into())
         .message_index(u64::MAX);
 
-    storage.get_first_blocking(
-        TableScan::KeyRangeInclusiveInSinglePartition(partition_id, start, end),
-        |kv| {
-            if let Some((mut k, _)) = kv {
-                let key = OutboxKey::deserialize_from(&mut k)?;
-                Ok(Some(key.message_index))
-            } else {
-                Ok(None)
-            }
-        },
-    )
+    storage.get_first_blocking(TableScan::RangeInclusive(start, end), |kv| {
+        if let Some((mut k, _)) = kv {
+            let key = OutboxKey::deserialize_from(&mut k)?;
+            Ok(Some(key.message_index))
+        } else {
+            Ok(None)
+        }
+    })
 }
 
 fn get_next_outbox_message<S: StorageAccess>(
@@ -80,17 +77,14 @@ fn get_next_outbox_message<S: StorageAccess>(
         .partition_id(partition_id.into())
         .message_index(u64::MAX);
 
-    storage.get_first_blocking(
-        TableScan::KeyRangeInclusiveInSinglePartition(partition_id, start, end),
-        |kv| {
-            if let Some((k, v)) = kv {
-                let t = decode_key_value(k, v)?;
-                Ok(Some(t))
-            } else {
-                Ok(None)
-            }
-        },
-    )
+    storage.get_first_blocking(TableScan::RangeInclusive(start, end), |kv| {
+        if let Some((k, v)) = kv {
+            let t = decode_key_value(k, v)?;
+            Ok(Some(t))
+        } else {
+            Ok(None)
+        }
+    })
 }
 
 fn get_outbox_message<S: StorageAccess>(

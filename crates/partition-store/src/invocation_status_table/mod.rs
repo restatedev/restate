@@ -25,7 +25,7 @@ use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, Wit
 use restate_types::sharding::KeyRange;
 use restate_util_string::format_restring;
 
-use crate::TableScan::FullScanPartitionKeyRange;
+use crate::TableScan::ScanPartitionKeyRange;
 use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
 use crate::scan::TableScan;
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind, break_on_err};
@@ -95,7 +95,7 @@ fn any_non_completed_invocation_in_range<S: StorageAccess>(
     storage: &S,
     range: KeyRange,
 ) -> Result<bool> {
-    let mut iterator = storage.iterator_from(TableScan::FullScanPartitionKeyRange::<
+    let mut iterator = storage.iterator_from(TableScan::ScanPartitionKeyRange::<
         InvocationStatusKey,
     >(range))?;
 
@@ -155,7 +155,7 @@ impl ScanInvocationStatusTable for PartitionStore {
         self.iterator_filter_map(
             "scan-all-invoked",
             Priority::High,
-            FullScanPartitionKeyRange::<InvocationStatusKey>(self.partition_key_range()),
+            ScanPartitionKeyRange::<InvocationStatusKey>(self.partition_key_range()),
             read_invoked_full_invocation_id,
         )
         .map_err(|_| StorageError::OperationalError)
@@ -176,7 +176,7 @@ impl ScanInvocationStatusTable for PartitionStore {
     ) -> Result<impl Future<Output = Result<()>> + Send> {
         let scan = match range {
             ScanInvocationStatusTableRange::PartitionKey(partition_key) => {
-                TableScan::FullScanPartitionKeyRange::<InvocationStatusKeyBuilder>(partition_key)
+                TableScan::ScanPartitionKeyRange::<InvocationStatusKeyBuilder>(partition_key)
             }
             ScanInvocationStatusTableRange::InvocationId(invocation_id) => {
                 let start = InvocationStatusKey::builder()
@@ -187,7 +187,7 @@ impl ScanInvocationStatusTable for PartitionStore {
                     .partition_key(invocation_id.end().partition_key())
                     .invocation_uuid(invocation_id.end().invocation_uuid());
 
-                TableScan::KeyRangeInclusiveInSinglePartition(self.partition_id(), start, end)
+                TableScan::RangeInclusive(start, end)
             }
         };
 
@@ -254,7 +254,7 @@ impl ScanInvocationStatusTable for PartitionStore {
             .iterator_filter_map(
                 "df-filter-map-invocation-status",
                 Priority::Low,
-                TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(
+                TableScan::ScanPartitionKeyRange::<InvocationStatusKey>(
                     self.partition_key_range(),
                 ),
                 {

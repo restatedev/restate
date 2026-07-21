@@ -119,6 +119,10 @@ enum State {
         safe_known_tail: Option<Lsn>,
         #[pin]
         tail_watch: Option<BoxStream<'static, TailState>>,
+        /// Logs version at which we last confirmed `read_pointer` still falls in a live
+        /// segment. A prefix-trim always bumps the version, so we only re-scan the chain when
+        /// this lags. Reset to [`Version::INVALID`] on entry so the check runs once per substream.
+        trim_checked_version: Version,
     },
     /// Chain reconfiguration has been detected, we'll update our view of the chain.
     AwaitingReconfiguration,
@@ -155,6 +159,7 @@ impl State {
         Self::Reading {
             safe_known_tail: Some(tail_lsn),
             tail_watch: None,
+            trim_checked_version: Version::INVALID,
         }
     }
 }
@@ -354,6 +359,7 @@ impl Stream for LogReadStream {
                     this.state.set(State::Reading {
                         safe_known_tail,
                         tail_watch,
+                        trim_checked_version: Version::INVALID,
                     });
                 }
 
@@ -361,6 +367,7 @@ impl Stream for LogReadStream {
                 StateProj::Reading {
                     safe_known_tail,
                     tail_watch,
+                    trim_checked_version,
                 } => {
                     // Continue driving the substream
                     //
@@ -369,6 +376,23 @@ impl Stream for LogReadStream {
                     let Some(substream) = this.substream.as_mut().as_pin_mut() else {
                         panic!("substream must be set at this point");
                     };
+
+                    // A prefix-trim may have dropped the segment under our read_pointer from
+                    // the chain while we were parked here; a substream on a sealed tail won't
+                    // surface that, so we consult the chain directly, as the other stalled
+                    // states do via `check_chain`.
+                    if *trim_checked_version != logs.version() {
+                        match chain.find_segment_for_lsn(*this.read_pointer) {
+                            MaybeSegment::Trim { next_base_lsn } => {
+                                let gap = deliver_trim_gap(&mut this, next_base_lsn, bifrost_inner);
+                                update_shared_state(&this);
+                                return Poll::Ready(Some(Ok(gap)));
+                            }
+                            MaybeSegment::Some(_) => {
+                                *trim_checked_version = logs.version();
+                            }
+                        }
+                    }
 
                     // If the loglet's `tail_lsn` is known, this is the tail we should always respect.
                     match substream.tail_lsn() {
@@ -1430,6 +1454,80 @@ mod tests {
                 eq(format!("record-{i}"))
             );
         }
+
+        Ok(())
+    }
+
+    #[restate_core::test(start_paused = true)]
+    async fn readstream_reading_state_observes_chain_trim() -> anyhow::Result<()> {
+        const LOG_ID: LogId = LogId::new(0);
+
+        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
+            .set_provider_kind(ProviderKind::Local)
+            .build()
+            .await;
+        let config = Constant::new(LocalLogletOptions::default()).boxed();
+        RocksDbManager::init();
+        let svc = BifrostService::new(node_env.metadata_writer.clone())
+            .enable_local_loglet(config)
+            .enable_in_memory_loglet();
+        let bifrost = svc.handle();
+        svc.start().await.expect("loglet must start");
+
+        let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::Wait)?;
+        for i in 1..=10 {
+            let lsn = appender.append(format!("record-{i}")).await?;
+            assert_eq!(Lsn::from(i), lsn);
+        }
+
+        let new_segment_params = new_single_node_loglet_params(ProviderKind::InMemory);
+        bifrost
+            .admin()
+            .seal_and_extend_chain(
+                LOG_ID,
+                None,
+                Version::MIN,
+                ProviderKind::InMemory,
+                new_segment_params,
+            )
+            .await?;
+
+        let mut reader = bifrost.create_reader(LOG_ID, KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)?;
+        for i in 1..=5 {
+            let record = reader.next().await.expect("to stay alive")?;
+            assert_that!(record.sequence_number(), eq(Lsn::new(i)));
+        }
+        assert_eq!(Lsn::from(6), reader.read_pointer());
+
+        // Trim only the chain (not the loglet) so records 6..=10 remain physically
+        // present in the substream. This isolates the Reading-state bug: the substream
+        // still has a known sealed tail > read_pointer, so it never re-checks the chain
+        // for a trim before polling for the next record.
+        let metadata = Metadata::current();
+        let old_version = metadata.logs_version();
+        let mut builder = metadata
+            .logs_ref()
+            .clone()
+            .try_into_builder()
+            .expect("can create builder");
+        let mut chain_builder = builder.chain(LOG_ID).unwrap();
+        chain_builder.trim_prefix(Lsn::new(11));
+        let new_metadata = builder.build();
+        let new_version = new_metadata.version();
+        assert_eq!(new_version, old_version.next());
+        node_env
+            .metadata_writer
+            .global_metadata()
+            .put(
+                new_metadata.into(),
+                Precondition::MatchesVersion(old_version),
+            )
+            .await?;
+
+        let record = reader.next().await.expect("reader must not hang")?;
+        assert_that!(record.sequence_number(), eq(Lsn::new(6)));
+        assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(10))));
+        assert_eq!(Lsn::from(11), reader.read_pointer());
 
         Ok(())
     }

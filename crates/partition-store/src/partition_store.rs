@@ -18,7 +18,7 @@ use bytes::Bytes;
 use bytes::BytesMut;
 use enum_map::Enum;
 use rocksdb::{
-    BoundColumnFamily, DBPinnableSlice, DBRawIteratorWithThreadMode, PrefixRange, ReadOptions,
+    BoundColumnFamily, DBPinnableSlice, DBRawIteratorWithThreadMode, ReadOptions,
     SnapshotWithThreadMode,
 };
 use static_assertions::const_assert_eq;
@@ -57,11 +57,9 @@ use crate::partition_db::PartitionDb;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
 use crate::snapshots::{LocalPartitionSnapshot, SnapshotDir};
+use crate::{configure_prefix_iterator_opts, configure_range_iterator_opts};
 
 pub type DB = rocksdb::DB;
-
-pub type DBIterator<'b> = DBRawIteratorWithThreadMode<'b, DB>;
-pub type DBIteratorTransaction<'b> = DBRawIteratorWithThreadMode<'b, rocksdb::Transaction<'b, DB>>;
 
 // Key prefix is 10 bytes (KeyKind(2) + PartitionKey/Id(8))
 pub(crate) const DB_PREFIX_LENGTH: usize =
@@ -293,34 +291,6 @@ impl PartitionStore {
         self.db.table_cf_handle(table_kind)
     }
 
-    fn new_prefix_iterator_opts(&self, _key_kind: KeyKind, prefix: Bytes) -> ReadOptions {
-        let mut opts = ReadOptions::default();
-        opts.set_prefix_same_as_start(true);
-        opts.set_iterate_range(PrefixRange(prefix));
-        opts.set_async_io(true);
-        opts.set_total_order_seek(false);
-        opts
-    }
-
-    fn new_range_iterator_opts(&self, scan_mode: ScanMode, from: Bytes, to: Bytes) -> ReadOptions {
-        let mut opts = ReadOptions::default();
-        // todo: use auto_prefix_mode, at the moment, rocksdb doesn't expose this through the C
-        // binding.
-        opts.set_total_order_seek(scan_mode == ScanMode::TotalOrder);
-        opts.set_iterate_range(from..to);
-        opts.set_async_io(true);
-        opts
-    }
-
-    #[track_caller]
-    pub(super) fn iterator_from<K: EncodeTableKeyPrefix>(
-        &self,
-        scan: TableScan<K>,
-    ) -> Result<DBRawIteratorWithThreadMode<'_, DB>> {
-        let scan: PhysicalScan = scan.into();
-        self.db.scan(scan)
-    }
-
     #[allow(clippy::type_complexity)]
     fn iterator_step_map<O: Send + 'static>(
         tx: mpsc::Sender<Result<O>>,
@@ -435,7 +405,9 @@ impl PartitionStore {
     ) -> Result<impl Future<Output = Result<()>>, ShutdownError> {
         let (tx, rx) = oneshot::channel();
         let on_iter = Self::iterator_step_for_each(tx, f);
-        self.run_iterator_internal(name, priority, scan, on_iter)?;
+        let mut opts = ReadOptions::default();
+        opts.set_async_io(true);
+        self.run_iterator_internal(name, priority, opts, scan, on_iter)?;
         Ok(async {
             match rx.await {
                 Ok(storage_err) => Err(storage_err),
@@ -456,7 +428,9 @@ impl PartitionStore {
     ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
         let (tx, rx) = mpsc::channel(8);
         let on_iter = Self::iterator_step_map(tx, f);
-        self.run_iterator_internal(name, priority, scan, on_iter)?;
+        let mut opts = ReadOptions::default();
+        opts.set_async_io(true);
+        self.run_iterator_internal(name, priority, opts, scan, on_iter)?;
         Ok(ReceiverStream::new(rx))
     }
 
@@ -469,7 +443,9 @@ impl PartitionStore {
     ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
         let (tx, rx) = mpsc::channel(8);
         let on_iter = Self::iterator_step_filter_map(tx, f);
-        self.run_iterator_internal(name, priority, scan, on_iter)?;
+        let mut opts = ReadOptions::default();
+        opts.set_async_io(true);
+        self.run_iterator_internal(name, priority, opts, scan, on_iter)?;
         Ok(ReceiverStream::new(rx))
     }
 
@@ -477,15 +453,15 @@ impl PartitionStore {
         &self,
         name: &'static str,
         priority: Priority,
+        mut opts: ReadOptions,
         scan: TableScan<K>,
         on_iter: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
     ) -> Result<(), ShutdownError> {
-        let scan: PhysicalScan = scan.into();
+        let scan: PhysicalScan<Bytes> = scan.into();
         match scan {
-            PhysicalScan::Prefix(table, key_kind, prefix) => {
+            PhysicalScan::Prefix(table, prefix) => {
                 assert!(table.has_key_kind(&prefix));
-                let prefix = prefix.freeze();
-                let opts = self.new_prefix_iterator_opts(key_kind, prefix.clone());
+                configure_prefix_iterator_opts(&mut opts, prefix.as_ref());
                 self.db.rocksdb().clone().run_background_iterator(
                     // todo(asoli): Pass an owned cf handle instead of name
                     self.db.partition().cf_name().into(),
@@ -496,39 +472,11 @@ impl PartitionStore {
                     on_iter,
                 )?;
             }
-            PhysicalScan::RangeExclusive(table, _key_kind, scan_mode, start, end) => {
+            PhysicalScan::RangeExclusive(table, scan_mode, start, end) => {
                 assert!(table.has_key_kind(&start));
-                let start = start.freeze();
-                let end = end.freeze();
-                let opts = self.new_range_iterator_opts(scan_mode, start.clone(), end);
+                configure_range_iterator_opts(&mut opts, scan_mode, start.clone(), end);
                 self.db.rocksdb().clone().run_background_iterator(
                     self.db.partition().cf_name().as_ref().into(),
-                    name,
-                    priority,
-                    IterAction::Seek(start),
-                    opts,
-                    on_iter,
-                )?;
-            }
-            PhysicalScan::RangeOpen(_table, _key_kind, start) => {
-                // We delayed the generate the synthetic iterator upper bound until this point
-                // because we might have different prefix length requirements based on the
-                // table+key_kind combination and we should keep this knowledge as low-level as
-                // possible.
-                //
-                // make the end has the same length as all prefixes to ensure rocksdb key
-                // comparator can leverage bloom filters when applicable
-                // (if auto_prefix_mode is enabled)
-                let mut end = BytesMut::zeroed(DB_PREFIX_LENGTH);
-                // We want to ensure that Range scans fall within the same key kind.
-                // So, we limit the iterator to the upper bound of this prefix
-                let kind_upper_bound = K::KEY_KIND.exclusive_upper_bound();
-                end[..kind_upper_bound.len()].copy_from_slice(&kind_upper_bound);
-                let start = start.freeze();
-                let end = end.freeze();
-                let opts = self.new_range_iterator_opts(ScanMode::TotalOrder, start.clone(), end);
-                self.db.rocksdb().clone().run_background_iterator(
-                    self.db.partition().cf_name().into(),
                     name,
                     priority,
                     IterAction::Seek(start),
@@ -756,7 +704,9 @@ impl StorageAccess for PartitionStore {
         &self,
         scan: TableScan<K>,
     ) -> Result<DBRawIteratorWithThreadMode<'_, Self::DBAccess<'_>>> {
-        self.iterator_from(scan)
+        let mut opts = ReadOptions::default();
+        opts.set_async_io(true);
+        self.db.scan(scan.into(), opts)
     }
 
     #[inline]
@@ -839,6 +789,24 @@ pub enum ScanMode {
     TotalOrder,
 }
 
+impl ScanMode {
+    // Deduces the scan mode from whether the start and end keys share a prefix.
+    pub(crate) fn from_range<S, E>(start: S, end: E) -> Self
+    where
+        S: AsRef<[u8]>,
+        E: AsRef<[u8]>,
+    {
+        let start_prefix = start.as_ref().first_chunk::<DB_PREFIX_LENGTH>();
+        let end_prefix = end.as_ref().first_chunk::<DB_PREFIX_LENGTH>();
+
+        if start_prefix.is_some() && start_prefix == end_prefix {
+            ScanMode::WithinPrefix
+        } else {
+            ScanMode::TotalOrder
+        }
+    }
+}
+
 pub struct PartitionStoreTransaction<'a> {
     meta: &'a Arc<Partition>,
     write_batch_with_index: Option<rocksdb::WriteBatchWithIndex>,
@@ -912,61 +880,6 @@ impl PartitionStoreTransaction<'_> {
             .single_delete_cf(self.data_cf_handle, key);
     }
 
-    pub(crate) fn prefix_iterator(
-        &self,
-        table: TableKind,
-        _key_kind: KeyKind,
-        prefix: Bytes,
-    ) -> Result<DBIterator<'_>> {
-        let table = self.table_handle(table);
-        let mut opts = self.read_options();
-        opts.set_iterate_range(PrefixRange(prefix.clone()));
-        opts.set_prefix_same_as_start(true);
-        opts.set_total_order_seek(false);
-
-        let it = self
-            .rocksdb
-            .inner()
-            .as_raw_db()
-            .raw_iterator_cf_opt(table, opts);
-        let mut it = self
-            .write_batch_with_index
-            .as_ref()
-            .expect("transaction valid")
-            .iterator_with_base_cf(it, table);
-        it.seek(prefix);
-        Ok(it)
-    }
-
-    pub(crate) fn range_iterator(
-        &self,
-        table: TableKind,
-        _key_kind: KeyKind,
-        scan_mode: ScanMode,
-        from: Bytes,
-        to: Bytes,
-    ) -> Result<DBIterator<'_>> {
-        let table = self.table_handle(table);
-        let mut opts = self.read_options();
-        // todo: use auto_prefix_mode, at the moment, rocksdb doesn't expose this through the C
-        // binding.
-        opts.set_total_order_seek(scan_mode == ScanMode::TotalOrder);
-        opts.set_iterate_range(from.clone()..to);
-
-        let it = self
-            .rocksdb
-            .inner()
-            .as_raw_db()
-            .raw_iterator_cf_opt(table, opts);
-        let mut it = self
-            .write_batch_with_index
-            .as_ref()
-            .expect("transaction valid")
-            .iterator_with_base_cf(it, table);
-        it.seek(from);
-        Ok(it)
-    }
-
     pub(crate) fn table_handle(&self, _table_kind: TableKind) -> &Arc<BoundColumnFamily<'_>> {
         // Right now, everything is in one cf, return a reference and save CPU.
         self.data_cf_handle
@@ -1037,6 +950,13 @@ impl Transaction for PartitionStoreTransaction<'_> {
         self.write_batch_with_index.as_mut().unwrap().clear();
         Ok(())
     }
+
+    fn estimated_size_in_bytes(&self) -> usize {
+        self.write_batch_with_index
+            .as_ref()
+            .map(|wbwi| wbwi.size_in_bytes())
+            .unwrap_or_default()
+    }
 }
 
 impl StorageAccess for PartitionStoreTransaction<'_> {
@@ -1049,37 +969,33 @@ impl StorageAccess for PartitionStoreTransaction<'_> {
         &self,
         scan: TableScan<K>,
     ) -> Result<DBRawIteratorWithThreadMode<'_, Self::DBAccess<'_>>> {
-        let scan: PhysicalScan = scan.into();
-        match scan {
-            PhysicalScan::Prefix(table, key_kind, prefix) => {
-                self.prefix_iterator(table, key_kind, prefix.freeze())
+        let scan: PhysicalScan<Bytes> = scan.into();
+        let (table, start, opts) = match scan {
+            PhysicalScan::Prefix(table, prefix) => {
+                let mut opts = self.read_options();
+                configure_prefix_iterator_opts(&mut opts, prefix.as_ref());
+                (table, prefix, opts)
             }
-            PhysicalScan::RangeExclusive(table, key_kind, scan_mode, start, end) => {
-                self.range_iterator(table, key_kind, scan_mode, start.freeze(), end.freeze())
+            PhysicalScan::RangeExclusive(table, scan_mode, start, end) => {
+                let mut opts = self.read_options();
+                configure_range_iterator_opts(&mut opts, scan_mode, start.as_ref(), end);
+                (table, start, opts)
             }
-            PhysicalScan::RangeOpen(table, key_kind, start) => {
-                // We delayed the generate the synthetic iterator upper bound until this point
-                // because we might have different prefix length requirements based on the
-                // table+key_kind combination and we should keep this knowledge as low-level as
-                // possible.
-                //
-                // make the end has the same length as all prefixes to ensure rocksdb key
-                // comparator can leverage bloom filters when applicable
-                // (if auto_prefix_mode is enabled)
-                let mut end = BytesMut::zeroed(DB_PREFIX_LENGTH);
-                // We want to ensure that Range scans fall within the same key kind.
-                // So, we limit the iterator to the upper bound of this prefix
-                let kind_upper_bound = K::KEY_KIND.exclusive_upper_bound();
-                end[..kind_upper_bound.len()].copy_from_slice(&kind_upper_bound);
-                self.range_iterator(
-                    table,
-                    key_kind,
-                    ScanMode::TotalOrder,
-                    start.freeze(),
-                    end.freeze(),
-                )
-            }
-        }
+        };
+
+        let table = self.table_handle(table);
+        let base = self
+            .rocksdb
+            .inner()
+            .as_raw_db()
+            .raw_iterator_cf_opt(table, opts);
+        let mut iterator = self
+            .write_batch_with_index
+            .as_ref()
+            .expect("transaction valid")
+            .iterator_with_base_cf(base, table);
+        iterator.seek(start);
+        Ok(iterator)
     }
 
     #[inline]
