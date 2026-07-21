@@ -533,7 +533,6 @@ pub enum Action {
     #[bilrost(tag(5))]
     /// An item or have been removed from the (stage)
     RemoveEntry {
-        #[bilrost(encoding(fixed))]
         stage: Stage,
     },
 }
