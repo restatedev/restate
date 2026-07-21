@@ -532,9 +532,7 @@ pub enum Action {
     ResumeVQueue {},
     #[bilrost(tag(5))]
     /// An item or have been removed from the (stage)
-    RemoveEntry {
-        stage: Stage,
-    },
+    RemoveEntry { stage: Stage },
 }
 
 #[derive(Debug, Clone, bilrost::Message)]
