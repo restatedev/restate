@@ -189,12 +189,12 @@ docker-local-fedora:
     #!/usr/bin/env bash
     set -euo pipefail
     # Build the restate-server binary locally
-    just arch={{ _arch }} features={{ features }} build -p restate-server
+    just arch={{ _arch }} features={{ features }} build -p restate-server --profile release-lite
     # Stage the binary in a temp dir inside the build context.
     # Hard-link to avoid copying the (large) binary.
     mkdir -p ./.docker-local-cache
     trap 'rm -rf "./.docker-local-cache"' EXIT
-    cp -l target/debug/restate-server "./.docker-local-cache/restate-server" 2>/dev/null || cp target/debug/restate-server "./.docker-local-cache/restate-server"
+    cp -l target/release-lite/restate-server "./.docker-local-cache/restate-server" 2>/dev/null || cp target/release-lite/restate-server "./.docker-local-cache/restate-server"
     # Build the Docker image using the local.Dockerfile
     docker buildx build . --platform linux/{{ _docker_arch }} --file docker/local-fedora.Dockerfile --build-arg RESTATE_BINARY_PATH="./.docker-local-cache/restate-server" --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}' --load
 
