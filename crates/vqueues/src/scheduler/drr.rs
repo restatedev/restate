@@ -354,6 +354,9 @@ impl<S: VQueueStore> DRRScheduler<S> {
                 }
             }
         }
+
+        // The event may have made a queue eligible after the scheduler returned Pending.
+        self.waker.wake_by_ref();
     }
 
     fn release_lock(&mut self, scope: &Option<Scope>, lock_name: &LockName) {
@@ -423,7 +426,9 @@ impl<S: VQueueStore> DRRScheduler<S> {
 #[cfg(test)]
 mod tests {
     use std::num::{NonZeroU16, NonZeroU32, NonZeroUsize};
-    use std::task::Poll;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::{Context, Poll, Wake, Waker};
 
     use restate_clock::RoughTimestamp;
     use restate_clock::time::MillisSinceEpoch;
@@ -458,6 +463,14 @@ mod tests {
     use super::*;
 
     const BASE_RUN_AT_MS: u64 = 1_744_000_000_000;
+
+    struct TestWaker(Arc<AtomicBool>);
+
+    impl Wake for TestWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
 
     fn test_qid(partition_key: u64) -> VQueueId {
         VQueueId::custom(partition_key, "1")
@@ -716,17 +729,37 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn empty_scheduler_returns_pending() {
-        let rocksdb = storage_test_environment().await;
+    async fn inbox_event_wakes_pending_scheduler() {
+        let mut rocksdb = storage_test_environment().await;
         let db = rocksdb.partition_db();
-        let cache = VQueuesMetaCache::create(db.clone(), TEST_VQUEUES_CAPACITY)
+        let mut cache = VQueuesMetaCache::create(db.clone(), TEST_VQUEUES_CAPACITY)
             .await
             .unwrap();
 
         let mut scheduler = create_scheduler(db, &cache).await;
+        let was_woken = Arc::new(AtomicBool::new(false));
+        let waker = Waker::from(Arc::new(TestWaker(Arc::clone(&was_woken))));
+        let mut cx = Context::from_waker(&waker);
+        assert!(matches!(
+            Pin::new(&mut scheduler).poll_schedule_next(cache.view(), &mut cx),
+            Poll::Pending
+        ));
+
+        let qid = test_qid(1);
+        let mut events = Vec::new();
+        let mut txn = rocksdb.transaction();
+        enqueue_entry(&mut txn, &mut cache, &qid, 1, 0, Some(&mut events)).await;
+        txn.commit().await.expect("commit should succeed");
+        drop(txn);
+
+        for event in events {
+            scheduler.on_inbox_event(cache.view(), event);
+        }
+
+        assert!(was_woken.load(Ordering::Relaxed));
         assert!(matches!(
             poll_scheduler(Pin::new(&mut scheduler), cache.view()),
-            Poll::Pending
+            Poll::Ready(Ok(_))
         ));
     }
 
