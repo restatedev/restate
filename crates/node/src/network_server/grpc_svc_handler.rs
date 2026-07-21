@@ -28,16 +28,17 @@ use restate_types::net::connect_opts::GrpcConnectionOptions;
 use restate_core::network::net_util::{DNSResolution, create_tonic_channel};
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::{NodeCtlSvc, NodeCtlSvcServer};
 use restate_core::protobuf::node_ctl_svc::{
-    ClusterHealthResponse, DatabaseCompactionResult, EmbeddedMetadataClusterHealth,
-    GetMetadataRequest, GetMetadataResponse, IdentResponse, ProvisionClusterRequest,
+    ClusterHealthResponse, DatabaseCompactionResult, DrainHttpIngressRequest,
+    DrainHttpIngressResponse, EmbeddedMetadataClusterHealth, GetMetadataRequest,
+    GetMetadataResponse, HttpIngressDrainStatus, IdentResponse, ProvisionClusterRequest,
     ProvisionClusterResponse, TriggerCompactionRequest, TriggerCompactionResponse,
     cluster_features_from_proto,
 };
 use restate_core::{Identification, MetadataWriter};
 use restate_core::{Metadata, MetadataKind};
+use restate_ingress_http::{IngressDrainHandle, IngressDrainStatus};
 use restate_metadata_store::{MetadataStoreClient, ReadError, WriteError};
 use restate_rocksdb::RocksDbManager;
-use restate_types::Version;
 use restate_types::config::{Configuration, NetworkingOptions};
 use restate_types::errors::{ConversionError, MaybeRetryableError};
 use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration};
@@ -47,16 +48,21 @@ use restate_types::protobuf::cluster::ClusterConfiguration as ProtoClusterConfig
 use restate_types::protobuf::common::DatabaseKind;
 use restate_types::replication::ReplicationProperty;
 use restate_types::storage::StorageCodec;
+use restate_types::{GenerationalNodeId, NodeId, Version};
 
 use crate::{ClusterConfiguration, provision_cluster_metadata};
 
 pub struct NodeCtlSvcHandler {
     metadata_writer: MetadataWriter,
+    ingress_drain: Option<IngressDrainHandle>,
 }
 
 impl NodeCtlSvcHandler {
-    pub fn new(metadata_writer: MetadataWriter) -> Self {
-        Self { metadata_writer }
+    pub fn new(metadata_writer: MetadataWriter, ingress_drain: Option<IngressDrainHandle>) -> Self {
+        Self {
+            metadata_writer,
+            ingress_drain,
+        }
     }
 
     pub fn into_server(self, config: &NetworkingOptions) -> NodeCtlSvcServer<Self> {
@@ -325,6 +331,65 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
 
         Ok(Response::new(TriggerCompactionResponse { results }))
     }
+
+    async fn drain_http_ingress(
+        &self,
+        request: Request<DrainHttpIngressRequest>,
+    ) -> Result<Response<DrainHttpIngressResponse>, Status> {
+        let expected_node_id: GenerationalNodeId = request
+            .into_inner()
+            .expected_node_id
+            .ok_or_else(|| Status::invalid_argument("expected_node_id is required"))?
+            .into();
+
+        let actual_node_id =
+            ensure_node_generation(expected_node_id, Identification::get().node_id)?;
+
+        let (status, in_flight_requests, in_flight_connections) =
+            if let Some(ingress_drain) = &self.ingress_drain {
+                let progress = ingress_drain.drain().await;
+                (
+                    match progress.status {
+                        IngressDrainStatus::Active => HttpIngressDrainStatus::Active,
+                        IngressDrainStatus::Draining => HttpIngressDrainStatus::Draining,
+                        IngressDrainStatus::Drained => HttpIngressDrainStatus::Drained,
+                    },
+                    progress.in_flight_requests,
+                    progress.in_flight_connections,
+                )
+            } else {
+                (HttpIngressDrainStatus::NotPresent, 0, 0)
+            };
+
+        Ok(Response::new(DrainHttpIngressResponse {
+            node_id: Some(actual_node_id.into()),
+            status: status.into(),
+            in_flight_requests,
+            in_flight_connections,
+        }))
+    }
+}
+
+fn ensure_node_generation(
+    expected_node_id: GenerationalNodeId,
+    actual_node_id: Option<NodeId>,
+) -> Result<GenerationalNodeId, Status> {
+    let actual_node_id = match actual_node_id {
+        Some(NodeId::Generational(node_id)) => node_id,
+        Some(NodeId::Plain(_)) | None => {
+            return Err(Status::unavailable(
+                "this node does not have a generational node id yet",
+            ));
+        }
+    };
+
+    if expected_node_id != actual_node_id {
+        return Err(Status::failed_precondition(format!(
+            "expected node generation {expected_node_id}, but connected to {actual_node_id}"
+        )));
+    }
+
+    Ok(actual_node_id)
 }
 
 pub struct MetadataProxySvcHandler {
@@ -460,7 +525,12 @@ fn write_err_to_status(err: WriteError) -> Status {
 
 #[cfg(test)]
 mod tests {
+    use tonic::Code;
+
     use restate_types::protobuf::common::DatabaseKind;
+    use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
+
+    use super::ensure_node_generation;
 
     #[test]
     fn database_kind_db_names() {
@@ -471,5 +541,25 @@ mod tests {
         );
         assert_eq!(DatabaseKind::LocalLoglet.db_name(), "local-loglet");
         assert_eq!(DatabaseKind::PartitionStore.db_name(), "db");
+    }
+
+    #[test]
+    fn ingress_drain_is_fenced_by_node_generation() {
+        let expected = GenerationalNodeId::new(1, 9);
+        assert_eq!(
+            ensure_node_generation(expected, Some(NodeId::Generational(expected))).unwrap(),
+            expected
+        );
+
+        let mismatch = ensure_node_generation(
+            expected,
+            Some(NodeId::Generational(GenerationalNodeId::new(1, 10))),
+        )
+        .unwrap_err();
+        assert_eq!(mismatch.code(), Code::FailedPrecondition);
+
+        let not_initialized =
+            ensure_node_generation(expected, Some(NodeId::Plain(PlainNodeId::new(1)))).unwrap_err();
+        assert_eq!(not_initialized.code(), Code::Unavailable);
     }
 }

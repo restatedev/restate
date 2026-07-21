@@ -8,12 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod drain;
 mod handler;
 mod layers;
 mod metric_definitions;
 mod rpc_request_dispatcher;
 mod server;
 
+pub use drain::{IngressDrainHandle, IngressDrainProgress, IngressDrainStatus};
 pub use rpc_request_dispatcher::InvocationClientRequestDispatcher;
 pub use server::{HyperServerIngress, IngressServerError};
 

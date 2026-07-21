@@ -33,6 +33,14 @@ service NodeCtlSvc {
   // Trigger manual compaction of RocksDB databases on this node.
   rpc TriggerCompaction(TriggerCompactionRequest)
       returns (TriggerCompactionResponse);
+
+  // Stops accepting new HTTP ingress traffic and reports drain progress. The
+  // first call returns after listeners are closed and graceful shutdown has
+  // been initiated on every accepted connection. Repeat calls poll for the
+  // DRAINED state. The transition is scoped to the current node generation and
+  // is irreversible until the process restarts.
+  rpc DrainHttpIngress(DrainHttpIngressRequest)
+      returns (DrainHttpIngressResponse);
 }
 
 enum ClusterFeature {
@@ -133,6 +141,27 @@ message TriggerCompactionRequest {
 
 message TriggerCompactionResponse {
   repeated DatabaseCompactionResult results = 1;
+}
+
+message DrainHttpIngressRequest {
+  // The node process that the caller intends to drain. The request is rejected
+  // if this does not match the currently running generation.
+  restate.common.GenerationalNodeId expected_node_id = 1;
+}
+
+enum HttpIngressDrainStatus {
+  HTTP_INGRESS_DRAIN_STATUS_UNSPECIFIED = 0;
+  HTTP_INGRESS_DRAIN_STATUS_NOT_PRESENT = 1;
+  HTTP_INGRESS_DRAIN_STATUS_ACTIVE = 2;
+  HTTP_INGRESS_DRAIN_STATUS_DRAINING = 3;
+  HTTP_INGRESS_DRAIN_STATUS_DRAINED = 4;
+}
+
+message DrainHttpIngressResponse {
+  restate.common.GenerationalNodeId node_id = 1;
+  HttpIngressDrainStatus status = 2;
+  uint64 in_flight_requests = 3;
+  uint64 in_flight_connections = 4;
 }
 
 message DatabaseCompactionResult {

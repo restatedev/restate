@@ -11,7 +11,9 @@
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::partitions::PartitionRouting;
 use restate_core::{TaskCenter, TaskKind};
-use restate_ingress_http::{HyperServerIngress, InvocationClientRequestDispatcher};
+use restate_ingress_http::{
+    HyperServerIngress, IngressDrainHandle, InvocationClientRequestDispatcher,
+};
 use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::{BoxLiveLoad, Live};
@@ -62,5 +64,9 @@ impl<T: TransportConnect> IngressRole<T> {
         )?;
 
         Ok(())
+    }
+
+    pub fn drain_handle(&self) -> IngressDrainHandle {
+        self.ingress_http.drain_handle()
     }
 }

@@ -468,6 +468,7 @@ impl Node {
 
         let metadata_writer = self.metadata_manager.writer();
         let metadata = Metadata::current();
+        let ingress_drain = self.ingress_role.as_ref().map(IngressRole::drain_handle);
 
         // Start metadata manager
         spawn_metadata_manager(self.metadata_manager)?;
@@ -482,6 +483,7 @@ impl Node {
                     self.server_builder,
                     metadata_writer,
                     self.prometheus,
+                    ingress_drain,
                 )
                 .await?;
                 Ok(())

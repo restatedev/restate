@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 pub mod disable_node_checker;
+mod drain_http_ingress;
 pub mod list_nodes;
 mod remove_nodes;
 mod storage_state;
@@ -39,6 +40,11 @@ pub enum Nodes {
     SetStorageState(storage_state::SetOpts),
     /// Sets the state of a worker
     SetWorkerState(worker_state::SetOpts),
+    /// Stops accepting new HTTP ingress traffic on a node and reports drain progress.
+    ///
+    /// Use `--single-address http://127.0.0.1:5122` to address the local node directly without
+    /// reading the nodes configuration. This is the recommended mode for a preStop hook.
+    DrainHttpIngress(drain_http_ingress::DrainHttpIngressOpts),
 }
 
 /// Updates the state in the [`NodeConfig`] specified by `state_mut` to the target state
