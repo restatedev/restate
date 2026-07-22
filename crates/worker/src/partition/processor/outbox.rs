@@ -92,6 +92,11 @@ impl OutboxMut for Outbox {
     where
         S: WriteOutboxTable + WriteFsmTable,
     {
+        // If head seq is not set (meaning the outbox was empty on startup), let's set it to the
+        // first enqueued message.
+        if self.outbox_head_seq.is_none() {
+            self.outbox_head_seq = Some(self.outbox_tail_seq);
+        }
         txn.put_outbox_message(self.outbox_tail_seq, message)?;
         // need to store the next outbox sequence number
         self.outbox_tail_seq += 1;
