@@ -38,6 +38,7 @@ metrics = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 pin-project-lite = { workspace = true }
+prost = { workspace = true }
 serde = { workspace = true }
 serde_with = { workspace = true }
 serde_json = { workspace = true }
@@ -46,6 +47,8 @@ tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true, features = ["rt"] }
+tonic = { workspace = true, features = ["codegen", "server"] }
+tonic-prost = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 tower-http = { workspace = true, features = ["cors", "normalize-path", "trace", "limit"] }
 ulid = { workspace = true }
@@ -63,6 +66,9 @@ hyper-util = { workspace = true, features = ["full"] }
 mockall = { workspace = true }
 tempfile = { workspace = true }
 tracing-test = { workspace = true }
+
+[build-dependencies]
+tonic-prost-build = { workspace = true }
 
 [lints]
 workspace = true
