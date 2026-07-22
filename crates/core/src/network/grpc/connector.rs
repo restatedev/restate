@@ -15,8 +15,8 @@ use tokio::io;
 use tokio::net::UnixStream;
 use tokio_stream::StreamExt;
 use tonic::codec::CompressionEncoding;
+use tonic::transport::Endpoint;
 use tonic::transport::channel::Channel;
-use tonic::transport::{ClientTlsConfig, Endpoint, Identity};
 use tracing::{debug, warn};
 
 use restate_types::config::{Configuration, NetworkingOptions};
@@ -24,6 +24,7 @@ use restate_types::net::address::{AdvertisedAddress, GrpcPort, ListenerPort, Pee
 use restate_types::net::connect_opts::GrpcConnectionOptions;
 
 use crate::network::grpc::DEFAULT_GRPC_COMPRESSION;
+use crate::network::net_util::apply_fabric_tls;
 use crate::network::protobuf::core_node_svc::core_node_svc_client::CoreNodeSvcClient;
 use crate::network::protobuf::network::Message;
 use crate::network::tls::TlsCertResolver;
@@ -120,24 +121,8 @@ fn create_channel<P: ListenerPort + GrpcPort>(
         .keep_alive_while_idle(true)
         .tcp_nodelay(true);
 
-    if use_tls {
-        // Reading the materials here (per connection attempt) rather than once at
-        // startup is what makes certificate hot-reload effective for new connections.
-        let materials = tls.as_ref().unwrap().client_materials();
-        let identity = Identity::from_pem(&materials.cert_pem, &materials.key_pem);
-        let mut tls_config = ClientTlsConfig::new().identity(identity);
-        // tonic derives the rustls ServerName from uri.host(), which is bracketed
-        // for IPv6 authorities (e.g. "[::1]") and not a valid ServerName. Strip
-        // the brackets via an explicit domain name.
-        if let PeerNetAddress::Http(uri) = &address
-            && let Some(host) = uri.host()
-            && let Some(unbracketed) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']'))
-        {
-            tls_config = tls_config.domain_name(unbracketed);
-        }
-        endpoint = endpoint
-            .tls_config_with_verifier(tls_config, materials.verifier.clone())
-            .expect("valid TLS configuration for fabric peer");
+    if use_tls && let PeerNetAddress::Http(uri) = &address {
+        endpoint = apply_fabric_tls(endpoint, uri, tls.as_ref().unwrap());
     }
 
     match address {

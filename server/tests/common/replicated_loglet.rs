@@ -174,13 +174,14 @@ where
 
     // join a new node to the cluster solely to act as a bifrost client
     // it will have node id log_server_count+2
-    let (bifrost, loglet, metadata_writer, metadata_store_client) = replicated_loglet_client(
-        base_config,
-        &cluster,
-        PlainNodeId::new(log_server_count + 2),
-        logs.version(),
-    )
-    .await?;
+    let (bifrost, loglet, metadata_writer, metadata_store_client) =
+        Box::pin(replicated_loglet_client(
+            base_config,
+            &cluster,
+            PlainNodeId::new(log_server_count + 2),
+            logs.version(),
+        ))
+        .await?;
 
     info!("Starting test");
 

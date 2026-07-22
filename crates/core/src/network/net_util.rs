@@ -43,6 +43,27 @@ pub enum DNSResolution {
     Headless,
 }
 
+/// Applies the fabric client TLS materials to an endpoint that dials an
+/// `https://` fabric peer. Reads the materials per call (rather than once at
+/// startup) so certificate hot-reload takes effect for new connections.
+/// Without this, tonic rejects `https://` URIs with `HttpsUriWithoutTlsSupport`.
+pub fn apply_fabric_tls(endpoint: Endpoint, uri: &Uri, resolver: &TlsCertResolver) -> Endpoint {
+    let materials = resolver.client_materials();
+    let identity = tonic::transport::Identity::from_pem(&materials.cert_pem, &materials.key_pem);
+    let mut tls_config = tonic::transport::ClientTlsConfig::new().identity(identity);
+    // tonic derives the rustls ServerName from uri.host(), which is bracketed
+    // for IPv6 authorities (e.g. "[::1]") and not a valid ServerName. Strip
+    // the brackets via an explicit domain name.
+    if let Some(host) = uri.host()
+        && let Some(unbracketed) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']'))
+    {
+        tls_config = tls_config.domain_name(unbracketed);
+    }
+    endpoint
+        .tls_config_with_verifier(tls_config, materials.verifier.clone())
+        .expect("valid TLS configuration for fabric peer")
+}
+
 pub fn create_tonic_channel<
     T: CommonClientConnectionOptions + Send + Sync + ?Sized,
     P: ListenerPort + GrpcPort,
@@ -60,7 +81,17 @@ pub fn create_tonic_channel<
         PeerNetAddress::Http(uri) => Channel::builder(uri.clone()),
     };
 
-    let endpoint = apply_options(endpoint, options);
+    let mut endpoint = apply_options(endpoint, options);
+
+    // Fabric peers that advertise https:// require the fabric client TLS
+    // identity regardless of which channel factory dials them (metadata-store,
+    // raft, control channels all go through here).
+    if address.is_tls()
+        && let Some(resolver) = TlsCertResolver::global()
+        && let PeerNetAddress::Http(uri) = &address
+    {
+        endpoint = apply_fabric_tls(endpoint, uri, resolver);
+    }
 
     match address {
         PeerNetAddress::Uds(uds_path) => {
