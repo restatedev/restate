@@ -12,7 +12,7 @@ use std::future::Future;
 
 use async_channel::{TryRecvError, TrySendError};
 use metrics::{counter, histogram};
-use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tracing::debug;
 
 use restate_core::cancellation_token;
@@ -44,7 +44,7 @@ impl NewOutboxMessage {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct OutboxTruncation(MessageIndex);
 
 impl OutboxTruncation {
@@ -168,7 +168,7 @@ pub(crate) struct Shuffle<T, OR> {
     outbox_reader: OR,
     ingestion_client: IngestionClient<T, Envelope>,
     // used to tell partition processor about outbox truncations
-    truncation_tx: mpsc::Sender<OutboxTruncation>,
+    truncation_tx: watch::Sender<Option<OutboxTruncation>>,
     hint_rx: async_channel::Receiver<NewOutboxMessage>,
     // used to create the senders into the shuffle
     hint_tx: async_channel::Sender<NewOutboxMessage>,
@@ -182,7 +182,7 @@ where
     pub fn new(
         metadata: ShuffleMetadata,
         outbox_reader: OR,
-        truncation_tx: mpsc::Sender<OutboxTruncation>,
+        truncation_tx: watch::Sender<Option<OutboxTruncation>>,
         channel_size: usize,
         ingestion_client: IngestionClient<T, Envelope>,
     ) -> Self {
@@ -252,10 +252,17 @@ where
                     inflight.push_back(commit_token);
                 }
                 Some(committed) = head => {
-                    let message_index = committed?;
+                    let new_message_index = committed?;
                     _ = inflight.pop_front();
                     ingested_counter.increment(1);
-                    let _ = truncation_tx.try_send(OutboxTruncation::new(message_index));
+                    let _ = truncation_tx.send_if_modified(|current| {
+                        if current.as_ref().is_none_or(|idx| new_message_index > idx.0) {
+                            *current = Some(OutboxTruncation::new(new_message_index));
+                            true
+                        } else {
+                            false
+                        }
+                    });
                 }
             }
         }
@@ -433,7 +440,7 @@ mod ingestion_client_tests {
     use restate_types::partitions::state::{LeadershipState, PartitionReplicaSetStates};
     use restate_types::storage::StorageCodec;
     use test_log::test;
-    use tokio::sync::mpsc;
+    use tokio::sync::watch;
 
     use restate_core::network::{
         BackPressureMode, FailingConnector, ServiceMessage, ServiceStream,
@@ -655,7 +662,7 @@ mod ingestion_client_tests {
             SessionOptions::default(),
         );
 
-        let (truncation_tx, _truncation_rx) = mpsc::channel(1);
+        let (truncation_tx, _truncation_rx) = watch::channel(None);
 
         let shuffle = Shuffle::new(metadata, outbox_reader, truncation_tx, 1, ingestion.clone());
 
