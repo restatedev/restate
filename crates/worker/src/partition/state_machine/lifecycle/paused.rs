@@ -22,8 +22,10 @@ use restate_types::identifiers::{InvocationId, WithPartitionKey as _};
 use restate_types::journal_events::raw::RawEvent;
 use restate_types::vqueues::EntryId;
 use restate_vqueues::VQueue;
+use restate_vqueues::context::HasVQueuesMut;
 
 use crate::debug_if_leader;
+use crate::partition::processor::{Processor, ProcessorContext};
 use crate::partition::state_machine::lifecycle::event::ApplyEventCommand;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
@@ -32,7 +34,7 @@ pub struct OnPausedCommand<'a> {
     pub paused_event: RawEvent,
 }
 
-impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
+impl<'ctx, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
     for OnPausedCommand<'_>
 where
     S: ReadInvocationStatusTable
@@ -41,8 +43,9 @@ where
         + WriteVQueueTable
         + WriteLockTable
         + ReadVQueueTable,
+    P: ProcessorContext,
 {
-    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
+    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
         let OnPausedCommand {
             invocation_id,
             paused_event,
@@ -73,8 +76,8 @@ where
 /// Shared by the invoker-initiated pause ([`OnPausedCommand`]) and the manual/persisted pause
 /// ([`super::OnManualPauseCommand`]). It does **not** abort the invoker — callers that drive the
 /// pause externally (the manual path) are responsible for that.
-pub(crate) async fn pause_invocation<'ctx, 's: 'ctx, S>(
-    ctx: &'ctx mut StateMachineApplyContext<'s, S>,
+pub(crate) async fn pause_invocation<'ctx, 's: 'ctx, S, P>(
+    ctx: &'ctx mut StateMachineApplyContext<'s, S, P>,
     invocation_id: &InvocationId,
     metadata: InFlightInvocationMetadata,
     paused_event: RawEvent,
@@ -85,6 +88,7 @@ where
         + WriteVQueueTable
         + WriteLockTable
         + ReadVQueueTable,
+    P: Processor + HasVQueuesMut,
 {
     debug_if_leader!(ctx.is_leader, "Paused the invocation");
 
@@ -106,7 +110,7 @@ where
         VQueue::get(
             header.vqueue_id(),
             ctx.storage,
-            ctx.vqueues_cache,
+            ctx.processor.vqueues_mut(),
             ctx.is_leader.then_some(ctx.action_collector),
         )
         .await?

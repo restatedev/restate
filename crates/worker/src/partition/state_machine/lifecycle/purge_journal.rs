@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
@@ -25,7 +26,7 @@ pub struct OnPurgeJournalCommand<'a> {
     pub response_sink: Option<InvocationMutationResponseSink>,
 }
 
-impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
+impl<'ctx, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
     for OnPurgeJournalCommand<'_>
 where
     S: WriteJournalTable
@@ -33,8 +34,9 @@ where
         + WriteInvocationStatusTable
         + journal_table::WriteJournalTable
         + WriteJournalEventsTable,
+    P: ProcessorContext,
 {
-    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
+    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
         let OnPurgeJournalCommand {
             invocation_id,
             response_sink,

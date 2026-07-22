@@ -213,10 +213,9 @@ fn delete_all_user_state<S: StorageAccess>(
 
         // Right now the WBWI does not support range deletions :-(
         // That's why we need to iterate over the individual state entries.
-        let keys = storage.for_each_key_value_in_place(
-            TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), prefix_key),
-            |k, _| TableScanIterationDecision::Emit(Ok(Bytes::copy_from_slice(k))),
-        )?;
+        let keys = storage.for_each_key_value_in_place(TableScan::Prefix(prefix_key), |k, _| {
+            TableScanIterationDecision::Emit(Ok(Bytes::copy_from_slice(k)))
+        })?;
 
         for k in keys {
             let key = k?;
@@ -228,10 +227,9 @@ fn delete_all_user_state<S: StorageAccess>(
             .service_name(service_id.service_name.clone())
             .service_key(service_id.key.clone());
 
-        let keys = storage.for_each_key_value_in_place(
-            TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), prefix_key),
-            |k, _| TableScanIterationDecision::Emit(Ok(Bytes::copy_from_slice(k))),
-        )?;
+        let keys = storage.for_each_key_value_in_place(TableScan::Prefix(prefix_key), |k, _| {
+            TableScanIterationDecision::Emit(Ok(Bytes::copy_from_slice(k)))
+        })?;
 
         for k in keys {
             let key = k?;
@@ -290,10 +288,7 @@ fn get_all_user_states_for_service<'a, S: StorageAccess>(
             .service_name(&service_name)
             .service_key(&service_key);
 
-        let iter = storage.iterator_from(TableScan::SinglePartitionKeyPrefix(
-            service_id.partition_key(),
-            key,
-        ))?;
+        let iter = storage.iterator_from(TableScan::Prefix(key))?;
         Ok(StateEntryIter::new(iter))
     } else {
         let key = StateKey::builder()
@@ -301,10 +296,7 @@ fn get_all_user_states_for_service<'a, S: StorageAccess>(
             .service_name(service_id.service_name.clone())
             .service_key(service_id.key.clone());
 
-        let iter = storage.iterator_from(TableScan::SinglePartitionKeyPrefix(
-            service_id.partition_key(),
-            key,
-        ))?;
+        let iter = storage.iterator_from(TableScan::Prefix(key))?;
         Ok(StateEntryIter::new(iter))
     }
 }
@@ -370,7 +362,7 @@ impl ScanStateTable for PartitionStore {
                 self.iterator_for_each(
                     "df-user-state",
                     Priority::Low,
-                    TableScan::FullScanPartitionKeyRange::<StateKey>(range),
+                    TableScan::ScanPartitionKeyRange::<StateKey>(range),
                     move |(mut key, value)| {
                         let row_key = break_on_err(StateKey::deserialize_from(&mut key))?;
                         let (partition_key, service_name, service_key, state_key) = row_key.split();
@@ -388,7 +380,7 @@ impl ScanStateTable for PartitionStore {
             .iterator_for_each(
                 "df-user-state-scoped",
                 Priority::Low,
-                TableScan::FullScanPartitionKeyRange::<ScopedStateKey>(range),
+                TableScan::ScanPartitionKeyRange::<ScopedStateKey>(range),
                 move |(mut key, value)| {
                     let row_key = break_on_err(ScopedStateKey::deserialize_from(&mut key))?;
                     let (_partition_key, scope, service_name, service_key, state_key) =

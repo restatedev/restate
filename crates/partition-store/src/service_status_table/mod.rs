@@ -100,7 +100,7 @@ impl ScanVirtualObjectStatusTable for PartitionStore {
         self.iterator_for_each(
             "df-vo-status",
             Priority::Low,
-            TableScan::FullScanPartitionKeyRange::<ServiceStatusKey>(range),
+            TableScan::ScanPartitionKeyRange::<ServiceStatusKey>(range),
             move |(mut key, mut value)| {
                 let state_key = break_on_err(ServiceStatusKey::deserialize_from(&mut key))?;
                 let state_value = break_on_err(VirtualObjectStatus::decode(&mut value))?;

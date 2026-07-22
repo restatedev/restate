@@ -27,7 +27,7 @@ pub(crate) fn append_partition_row(
     row.fmt_gen_node_id(node_id);
     row.fmt_target_mode(state.planned_mode);
 
-    row.fmt_effective_mode(state.effective_mode);
+    row.fmt_effective_mode(state.effective_mode());
 
     row.updated_at(state.updated_at.as_u64() as i64);
     if let Some(epoch) = state.last_observed_leader_epoch {

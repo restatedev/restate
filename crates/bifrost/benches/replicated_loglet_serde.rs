@@ -139,7 +139,7 @@ where
         dest: Destination::Processor {
             partition_key,
             dedup: Some(DedupInformation {
-                producer_id: ProducerId::self_producer(),
+                producer_id: ProducerId::self_producer().clone(),
                 sequence_number: restate_storage_api::deduplication_table::DedupSequenceNumber::Esn(
                     EpochSequenceNumber {
                         leader_epoch: LeaderEpoch::from(random::<u64>()),

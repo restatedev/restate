@@ -12,25 +12,25 @@ use super::*;
 
 use restate_storage_api::inbox_table::ReadInboxTable;
 use restate_types::invocation::SubmitNotificationSink;
-use restate_types::partitions::PartitionFeatureChange;
+use restate_types::partitions::{PartitionFeatureChange, PersistedFeatures};
 use restate_types::time::MillisSinceEpoch;
 use std::time::{Duration, SystemTime};
 use test_log::test;
 
 #[restate_core::test]
 async fn send_with_delay() {
-    run_send_with_delay(PersistedStateMachineFeatures::default()).await
+    run_send_with_delay(PersistedFeatures::default()).await
 }
 
 #[restate_core::test]
 async fn send_with_delay_journal_v2_enabled() {
-    run_send_with_delay(PersistedStateMachineFeatures::from_iter([
+    run_send_with_delay(PersistedFeatures::from_iter([
         PartitionFeatureChange::EnableJournalV2,
     ]))
     .await
 }
 
-async fn run_send_with_delay(features: PersistedStateMachineFeatures) {
+async fn run_send_with_delay(features: PersistedFeatures) {
     let mut test_env = TestEnv::create_with_features(features).await;
 
     let invocation_target = InvocationTarget::mock_service();
@@ -126,7 +126,7 @@ async fn send_with_delay_where_experimental_feature_journal_table_v2_is_enabled_
     );
 
     // Now let's update the features
-    test_env.set_enabled_features(PersistedStateMachineFeatures::from_iter([
+    test_env.set_enabled_features(PersistedFeatures::from_iter([
         PartitionFeatureChange::EnableJournalV2,
     ]));
 

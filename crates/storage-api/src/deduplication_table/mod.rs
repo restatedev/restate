@@ -11,10 +11,10 @@
 use std::cmp::Ordering;
 
 use bytestring::ByteString;
+use serde::{Deserialize, Serialize};
 
 use restate_types::identifiers::{LeaderEpoch, PartitionId};
 use restate_types::message::MessageIndex;
-use serde::{Deserialize, Serialize};
 
 use crate::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
@@ -35,7 +35,7 @@ impl DedupInformation {
 
     pub fn self_proposal(esn: EpochSequenceNumber) -> Self {
         DedupInformation {
-            producer_id: ProducerId::self_producer(),
+            producer_id: ProducerId::self_producer().clone(),
             sequence_number: DedupSequenceNumber::Esn(esn),
         }
     }
@@ -56,7 +56,7 @@ impl DedupInformation {
     }
 }
 
-static SELF_PRODUCER: ByteString = ByteString::from_static("SELF");
+static SELF_PRODUCER_ID: ProducerId = ProducerId::Other(ByteString::from_static("SELF"));
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ProducerId {
@@ -66,8 +66,12 @@ pub enum ProducerId {
 }
 
 impl ProducerId {
-    pub fn self_producer() -> Self {
-        ProducerId::Other(SELF_PRODUCER.clone())
+    pub fn is_self_producer(&self) -> bool {
+        self == Self::self_producer()
+    }
+
+    pub const fn self_producer() -> &'static Self {
+        &SELF_PRODUCER_ID
     }
 }
 

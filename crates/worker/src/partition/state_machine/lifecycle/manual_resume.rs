@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use tracing::trace;
+
 use restate_clock::RoughTimestamp;
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, ReadInvocationStatusTable,
@@ -19,8 +21,8 @@ use restate_types::identifiers::{DeploymentId, InvocationId};
 use restate_types::invocation::InvocationMutationResponseSink;
 use restate_types::invocation::client::{PatchDeploymentId, ResumeInvocationResponse};
 use restate_types::schema::deployment::DeploymentResolver;
-use tracing::trace;
 
+use crate::partition::processor::{FsmAccess, ProcessorContext};
 use crate::partition::state_machine::lifecycle::ResumeInvocationCommand;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
@@ -100,7 +102,7 @@ pub(crate) fn resolve_pinned_deployment<R: DeploymentResolver>(
     }
 }
 
-impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
+impl<'ctx, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
     for OnManualResumeCommand
 where
     S: ReadInvocationStatusTable
@@ -108,8 +110,9 @@ where
         + WriteVQueueTable
         + WriteLockTable
         + ReadVQueueTable,
+    P: ProcessorContext,
 {
-    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
+    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
         let OnManualResumeCommand {
             invocation_id,
             update_deployment_id,
@@ -131,12 +134,13 @@ where
                     // Resolve the (optional) deployment patch against the current status; a serial
                     // pause+resume may land here as Invoked, so we honor the intent rather than
                     // dropping it.
-                    let resolved = match resolve_pinned_deployment(
+                    let resolved = resolve_pinned_deployment(
                         update_deployment_id.as_ref(),
                         update_pinned_deployment_id,
                         &metadata,
-                        ctx.schema.as_ref(),
-                    ) {
+                        ctx.processor.fsm().schema(),
+                    );
+                    let resolved = match resolved {
                         Ok(resolved) => resolved,
                         Err(response) => {
                             ctx.reply_to_resume_invocation(response_sink, response);
@@ -183,12 +187,16 @@ where
             mut is @ InvocationStatus::Suspended { .. } | mut is @ InvocationStatus::Paused(_) => {
                 // Resolve + validate the deployment patch here (rather than at RPC time) so the
                 // decision uses the status as of this log position.
-                let resolved = match resolve_pinned_deployment(
+                // Evaluate in its own statement so the `impl FsmAccess` temporary from
+                // `ctx.processor.fsm()` (which borrows `ctx`) is dropped at the `;` below,
+                // instead of living across the `match` arms where we need `&mut ctx`.
+                let resolved = resolve_pinned_deployment(
                     update_deployment_id.as_ref(),
                     update_pinned_deployment_id,
                     is.get_invocation_metadata().unwrap(),
-                    ctx.schema.as_ref(),
-                ) {
+                    ctx.processor.fsm().schema(),
+                );
+                let resolved = match resolved {
                     Ok(resolved) => resolved,
                     Err(response) => {
                         ctx.reply_to_resume_invocation(response_sink, response);

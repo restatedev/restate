@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
+use std::collections::VecDeque;
+
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::invocation_status_table::InvocationStatus;
@@ -20,16 +20,20 @@ use restate_types::journal_v2::command::{CallCommand, CallRequest, OneWayCallCom
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::journal_v2::{CallInvocationIdCompletion, CompletionId, Entry};
 use restate_types::time::MillisSinceEpoch;
-use std::collections::VecDeque;
+
+use crate::partition::processor::ProcessorContext;
+use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub(super) type ApplyCallCommand<'e> = ApplyJournalCommandEffect<'e, CallCommand>;
 
-impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
+impl<'e, 'ctx: 'e, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
     for ApplyJournalCommandEffect<'e, CallCommand>
 where
     S: WriteOutboxTable + WriteFsmTable,
+    P: ProcessorContext,
 {
-    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
+    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
         _ApplyCallCommand {
             caller_invocation_id: self.invocation_id,
             caller_invocation_status: self.invocation_status,
@@ -46,12 +50,13 @@ where
 
 pub(super) type ApplyOneWayCallCommand<'e> = ApplyJournalCommandEffect<'e, OneWayCallCommand>;
 
-impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
+impl<'e, 'ctx: 'e, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
     for ApplyJournalCommandEffect<'e, OneWayCallCommand>
 where
     S: WriteOutboxTable + WriteFsmTable,
+    P: ProcessorContext,
 {
-    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
+    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
         let execution_time = if self.entry.invoke_time == MillisSinceEpoch::UNIX_EPOCH {
             None
         } else {
@@ -81,12 +86,13 @@ struct _ApplyCallCommand<'e> {
     completions_to_process: &'e mut VecDeque<RawEntry>,
 }
 
-impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
+impl<'e, 'ctx: 'e, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
     for _ApplyCallCommand<'e>
 where
     S: WriteOutboxTable + WriteFsmTable,
+    P: ProcessorContext,
 {
-    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
+    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
         let caller_invocation_metadata = self
             .caller_invocation_status
             .get_invocation_metadata()
@@ -130,7 +136,7 @@ where
             )
         };
 
-        ctx.handle_outgoing_message(OutboxMessage::ServiceInvocation(Box::new(
+        ctx.do_enqueue_into_outbox(OutboxMessage::ServiceInvocation(Box::new(
             service_invocation,
         )))?;
 

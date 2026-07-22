@@ -27,7 +27,7 @@ define_table!(
         /// Observed target run mode of partition (LEADER, FOLLOWER)
         target_mode: DataType::Utf8,
 
-        /// Effective partition run mode of partition (LEADER, FOLLOWER)
+        /// Effective partition run mode of partition (LEADER, BECOMING_LEADING, FOLLOWER)
         effective_mode: DataType::Utf8,
 
         /// Last updated

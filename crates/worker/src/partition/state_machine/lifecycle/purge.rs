@@ -32,6 +32,7 @@ use restate_types::sharding::WithPartitionKey;
 use restate_types::vqueues::EntryId;
 use restate_vqueues::VQueue;
 
+use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub struct OnPurgeCommand<'a> {
@@ -39,7 +40,7 @@ pub struct OnPurgeCommand<'a> {
     pub response_sink: Option<InvocationMutationResponseSink>,
 }
 
-impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
+impl<'ctx, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
     for OnPurgeCommand<'_>
 where
     S: WriteJournalTable
@@ -52,8 +53,9 @@ where
         + journal_table::WriteJournalTable
         + WritePromiseTable
         + WriteJournalEventsTable,
+    P: ProcessorContext,
 {
-    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
+    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
         let OnPurgeCommand {
             invocation_id,
             response_sink,
@@ -86,7 +88,7 @@ where
                     VQueue::get(
                         vqueue_id,
                         ctx.storage,
-                        ctx.vqueues_cache,
+                        ctx.processor.vqueues_mut(),
                         ctx.is_leader.then_some(ctx.action_collector),
                     )
                     .await?

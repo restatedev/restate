@@ -14,6 +14,7 @@ use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_types::identifiers::InvocationId;
 
 use crate::debug_if_leader;
+use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::{Action, CommandHandler, Error, StateMachineApplyContext};
 
 pub struct ResumeInvocationCommand<'e> {
@@ -21,12 +22,13 @@ pub struct ResumeInvocationCommand<'e> {
     pub invocation_status: &'e mut InvocationStatus,
 }
 
-impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
+impl<'e, 'ctx: 'e, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
     for ResumeInvocationCommand<'e>
 where
     S: WriteVQueueTable + ReadVQueueTable + WriteLockTable,
+    P: ProcessorContext,
 {
-    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
+    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
         let Some(metadata) = self.invocation_status.get_invocation_metadata_mut() else {
             return Ok(());
         };

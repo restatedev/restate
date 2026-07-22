@@ -86,8 +86,9 @@ impl ScanLocalPartition for JournalEventsScanner {
 
 impl From<InvocationIdFilter> for ScanJournalEventsTableRange {
     fn from(value: InvocationIdFilter) -> Self {
-        if let Some(invocation_ids) = value.invocation_ids {
-            ScanJournalEventsTableRange::InvocationId(invocation_ids)
+        if let Some(selection) = value.invocation_ids {
+            let (start, last) = selection.bounds();
+            ScanJournalEventsTableRange::InvocationId(start..=last)
         } else {
             ScanJournalEventsTableRange::PartitionKey(value.partition_keys)
         }

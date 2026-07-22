@@ -16,7 +16,6 @@ use std::time::Instant;
 use tokio::sync::watch;
 use tracing::{debug, info, instrument, warn};
 
-use restate_bifrost::Bifrost;
 use restate_core::network::{ShardSender, TransportConnect};
 use restate_core::{RuntimeTaskHandle, TaskCenter, TaskKind, cancellation_token};
 use restate_ingestion_client::IngestionClient;
@@ -25,57 +24,41 @@ use restate_platform::prelude::ReString;
 use restate_types::cluster::cluster_state::PartitionProcessorStatus;
 use restate_types::logs::Lsn;
 use restate_types::partitions::Partition;
-use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_wal_protocol::Envelope;
-use restate_worker_api::invoker::capacity::InvokerCapacity;
 
 use crate::PartitionProcessorBuilder;
+use crate::partition::NodeContext;
 use crate::partition::{ProcessorError, TargetLeaderState};
-use crate::partition_processor_manager::PartitionLeaderHandlesRegistry;
 use crate::partition_processor_manager::processor_state::StartedProcessor;
-use crate::rule_book_cache::RuleBookCacheHandle;
 
 pub struct SpawnPartitionProcessorTask<T> {
+    node_ctx: NodeContext,
     task_name: ReString,
     partition: Partition,
-    bifrost: Bifrost,
-    replica_set_states: PartitionReplicaSetStates,
     partition_store_manager: Arc<PartitionStoreManager>,
     fast_forward_lsn: Option<Lsn>,
-    invoker_capacity: InvokerCapacity,
     ingestion_client: IngestionClient<T, Envelope>,
-    leader_handles_registry: PartitionLeaderHandlesRegistry,
-    rule_book_cache: RuleBookCacheHandle,
 }
 
 impl<T> SpawnPartitionProcessorTask<T>
 where
     T: TransportConnect,
 {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
+        node_ctx: NodeContext,
         task_name: ReString,
         partition: Partition,
-        bifrost: Bifrost,
-        replica_set_states: PartitionReplicaSetStates,
         partition_store_manager: Arc<PartitionStoreManager>,
         fast_forward_lsn: Option<Lsn>,
-        invoker_capacity: InvokerCapacity,
         ingestion_client: IngestionClient<T, Envelope>,
-        leader_handles_registry: PartitionLeaderHandlesRegistry,
-        rule_book_cache: RuleBookCacheHandle,
     ) -> Self {
         Self {
+            node_ctx,
             task_name,
             partition,
-            bifrost,
-            replica_set_states,
             partition_store_manager,
             fast_forward_lsn,
-            invoker_capacity,
             ingestion_client,
-            leader_handles_registry,
-            rule_book_cache,
         }
     }
 
@@ -95,32 +78,19 @@ where
         RuntimeTaskHandle<Result<(), ProcessorError>>,
     )> {
         let Self {
+            node_ctx,
             task_name,
             partition,
-            bifrost,
-            replica_set_states,
             partition_store_manager,
             fast_forward_lsn,
-            invoker_capacity,
             ingestion_client,
-            leader_handles_registry,
-            rule_book_cache,
         } = self;
 
         let (control_tx, control_rx) = watch::channel(TargetLeaderState::Follower);
         let (net_tx, net_rx) = ShardSender::new();
-        let status = PartitionProcessorStatus::new();
-        let (watch_tx, watch_rx) = watch::channel(status.clone());
+        let (watch_tx, watch_rx) = watch::channel(PartitionProcessorStatus::default());
 
-        let pp_builder = PartitionProcessorBuilder::new(
-            status,
-            control_rx,
-            net_rx,
-            watch_tx,
-            invoker_capacity,
-            leader_handles_registry,
-            rule_book_cache,
-        );
+        let pp_builder = PartitionProcessorBuilder::new(control_rx, net_rx, watch_tx, node_ctx);
 
         let key_range = partition.key_range;
 
@@ -155,6 +125,7 @@ where
                         return Ok(());
                     };
 
+
                     let mut partition_store = partition_store?;
 
                     // One-time background cleanup of orphaned jc index entries left behind
@@ -162,7 +133,7 @@ where
                     // Runs on a blocking thread so it doesn't starve the tokio runtime.
                     // The child task is bound to the partition processor's lifecycle and
                     // will be cancelled if the processor shuts down (e.g. due to trim gap).
-                    let cleanup_task = if partition_store.needs_jc_orphan_cleanup()? {
+                    let cleanup_task = if partition_store.needs_jc_orphan_cleanup().await? {
                         let mut cleanup_store = partition_store.clone();
                         let cleanup_partition_id = partition_store.partition_id();
                         let cleanup_task = TaskCenter::spawn_unmanaged_child(
@@ -208,7 +179,7 @@ where
                                                 "No orphaned journal completion-id index entries found"
                                             );
                                         }
-                                        if !outcome.cancelled && let Err(err) = cleanup_store.mark_jc_orphan_cleanup_done()
+                                        if !outcome.cancelled && let Err(err) = cleanup_store.mark_jc_orphan_cleanup_done().await
                                             {
                                                 warn!(
                                                     partition_id = %cleanup_partition_id,
@@ -233,18 +204,12 @@ where
                     } else {
                         None
                     };
+                    let db = partition_store.into_inner();
 
                     let run_result = async move {
                         let pp = pp_builder
-                            .build(
-                                bifrost,
-                                ingestion_client,
-                                partition_store,
-                                replica_set_states,
-                            )
-                            .await
-                            .map_err(ProcessorError::from)?;
-                        Box::pin(pp.run()).await
+                            .build(ingestion_client, db).await?;
+                        pp.run().await
                     }
                     .await;
 

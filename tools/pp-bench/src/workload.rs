@@ -24,26 +24,23 @@
 //! with the apply loop for thread time, which can perturb measurements
 //! slightly compared to the isolated production runtime.
 
-use std::sync::Arc;
 use std::time::Instant;
 
 use hdrhistogram::Histogram;
 
 use restate_cli_util::{c_println, c_success};
-use restate_limiter::RuleBook;
 use restate_partition_store::PartitionStoreManager;
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_types::SemanticRestateVersion;
 use restate_types::identifiers::PartitionId;
-use restate_types::logs::{Lsn, SequenceNumber};
-use restate_types::partitions::{Partition, PersistedStateMachineFeatures};
+use restate_types::logs::{Keys, Lsn, SequenceNumber};
+use restate_types::partitions::Partition;
 use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
 use restate_util_time::FriendlyDuration;
-use restate_vqueues::VQueuesMetaCache;
-use restate_worker::RuleBookCacheHandle;
-use restate_worker::partition::state_machine::{ActionCollector, StateMachine};
+use restate_worker::partition::ProcessorRawContext;
+use restate_worker::partition::state_machine::{ActionCollector, DataRecord, StateMachine};
 
 use crate::RunOpts;
 use crate::command_gen;
@@ -101,22 +98,12 @@ pub async fn run(
         .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
         .await?;
 
-    let mut state_machine = StateMachine::new(
-        0,    /* inbox_seq_number */
-        0,    /* outbox_seq_number */
-        None, /* outbox_head_seq_number */
-        KeyRange::FULL,
-        SemanticRestateVersion::unknown(),
-        PersistedStateMachineFeatures::default(), /* enabled_features */
-        None,                                     /* schema */
-        Arc::new(RuleBook::default()),
-        RuleBookCacheHandle::detached(),
-    );
-
-    // Initialize the vqueue cache from the (empty) partition store — this follows
-    // the production init path and avoids requiring test-util features.
-    let mut vq_cache =
-        VQueuesMetaCache::create(partition_store.partition_db().clone(), 100_000).await?;
+    // The state machine is stateless; per-partition state lives in the processor
+    // context. Build it via the production init path, which hydrates the FSM,
+    // dedup, outbox, and vqueue caches from the (empty) partition store.
+    let mut processor =
+        ProcessorRawContext::create(SemanticRestateVersion::current(), &mut partition_store)
+            .await?;
 
     let workload_name = format!("{:?}", opts.spec.workload);
     let batch_size = opts.batch_size;
@@ -150,17 +137,14 @@ pub async fn run(
             let batch_cmds = (batch_size as u64).min(warmup - cmds_applied);
             for _ in 0..batch_cmds {
                 let (cmd, _real_lsn) = pool.next_envelope();
-                state_machine
-                    .apply(
-                        cmd,
-                        MillisSinceEpoch::now(),
-                        lsn,
-                        &mut txn,
-                        &mut action_collector,
-                        &mut vq_cache,
-                        false,
-                    )
-                    .await?;
+                StateMachine::apply(
+                    &mut processor,
+                    &mut txn,
+                    DataRecord::new(MillisSinceEpoch::now().into(), Keys::None, lsn, cmd),
+                    &mut action_collector,
+                    false,
+                )
+                .await?;
                 lsn = lsn.next();
             }
             txn.commit().await?;
@@ -188,17 +172,14 @@ pub async fn run(
         let mut txn = partition_store.transaction();
         for _ in 0..batch_cmds {
             let (cmd, _real_lsn) = pool.next_envelope();
-            state_machine
-                .apply(
-                    cmd,
-                    MillisSinceEpoch::now(),
-                    lsn,
-                    &mut txn,
-                    &mut action_collector,
-                    &mut vq_cache,
-                    false,
-                )
-                .await?;
+            StateMachine::apply(
+                &mut processor,
+                &mut txn,
+                DataRecord::new(MillisSinceEpoch::now().into(), Keys::None, lsn, cmd),
+                &mut action_collector,
+                false,
+            )
+            .await?;
             lsn = lsn.next();
         }
         txn.commit().await?;

@@ -19,6 +19,8 @@
 mod cleaner;
 pub mod invoker_storage_reader;
 mod leadership;
+pub mod node;
+mod processor;
 mod rpc;
 pub mod shuffle;
 #[cfg(feature = "expose-internals")]
@@ -27,46 +29,41 @@ pub mod state_machine;
 mod state_machine;
 pub mod types;
 
+pub use self::node::NodeContext;
+// Re-exported so external drivers (e.g. pp-bench) can build a context to drive `StateMachine::apply`.
+#[cfg(feature = "expose-internals")]
+pub use self::processor::ProcessorRawContext;
+
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use assert2::let_assert;
 use futures::{FutureExt, StreamExt};
-use metrics::{gauge, histogram};
+use metrics::histogram;
 use tokio::sync::watch;
 use tokio::time::{Instant, MissedTickBehavior};
-use tracing::{Span, debug, error, info, instrument, trace, warn};
+use tracing::{debug, error, instrument, trace, warn};
 
 use restate_bifrost::loglet::FindTailOptions;
-use restate_bifrost::{Bifrost, LogEntry, MaybeRecord};
+use restate_bifrost::{DataRecord, DataRecordError, LogEntry};
 use restate_core::network::{
     Incoming, Oneshot, Reciprocal, Rpc, ServiceMessage, ServiceStream, TransportConnect, Verdict,
 };
-use restate_core::{
-    Metadata, ShutdownError, TaskCenter, TaskKind, cancellation_watcher, my_node_id,
-};
+use restate_core::{Metadata, ShutdownError, TaskCenter, TaskKind, cancellation_token};
 use restate_ingestion_client::IngestionClient;
-use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
+use restate_partition_store::{
+    MigrationError, PartitionDb, PartitionStore, PartitionStoreTransaction,
+};
 use restate_platform::memory::EstimatedMemorySize;
 use restate_storage_api::deduplication_table::{
-    DedupInformation, DedupSequenceNumber, ProducerId, ReadDeduplicationTable,
-    WriteDeduplicationTable,
+    DedupSequenceNumber, ProducerId, ReadDeduplicationTable,
 };
-use restate_storage_api::fsm_table::{
-    CachedEpochMetadata, PartitionDurability, ReadFsmTable, WriteFsmTable,
-};
-use restate_storage_api::outbox_table::ReadOutboxTable;
 use restate_storage_api::{StorageError, Transaction};
-use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
-use restate_types::config::Configuration;
+use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::LeaderEpoch;
-use restate_types::live::Live;
-use restate_types::logs::{
-    KeyFilter, Keys, Lsn, MatchKeyQuery, Record, RecordDecodeError, SequenceNumber,
-};
+use restate_types::logs::{self, Lsn, RecordDecodeError, SequenceNumber};
 use restate_types::net::ingest::{
     DedupSequenceNrQueryRequest, DedupSequenceNrQueryResponse, ReceivedIngestRequest,
     ResponseStatus,
@@ -77,37 +74,32 @@ use restate_types::net::partition_processor::{
 };
 use restate_types::net::{RpcRequest, ingest};
 use restate_types::partitions::PartitionFeatureChange;
-use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::Schema;
-use restate_types::storage::StorageDecodeError;
-use restate_types::time::{MillisSinceEpoch, NanosSinceEpoch};
-use restate_types::{GenerationalNodeId, SemanticRestateVersion, Version, Versioned};
-use restate_util_string::{ReString, ToReString};
-use restate_util_time::DurationExt;
-use restate_vqueues::{VQueuesMeta, VQueuesMetaCache};
-use restate_wal_protocol::control::{
-    AnnounceLeaderCommand, CurrentReplicaSetConfiguration, NextReplicaSetConfiguration,
+use restate_types::storage::{
+    PolyBytes, StorageCodec, StorageDecode, StorageDecodeError, StorageEncode,
 };
-use restate_wal_protocol::v2::commands;
+use restate_types::time::MillisSinceEpoch;
+use restate_types::{GenerationalNodeId, SemanticRestateVersion, Version};
+use restate_util_time::DurationExt;
+use restate_vqueues::context::HasVQueues;
+use restate_wal_protocol::control::{CurrentReplicaSetConfiguration, NextReplicaSetConfiguration};
+use restate_wal_protocol::v2::CommandScope;
 use restate_wal_protocol::{Envelope, v2};
-use restate_worker_api::invoker::capacity::InvokerCapacity;
 use restate_worker_api::{LeaderQueryCommand, LeaderQueryReceiver};
 
-use self::leadership::trim_queue::TrimQueue;
+use self::processor::commands::{
+    AnnounceLeaderContext, ApplyPartitionCommand, NextStep, TruncateOutboxContext,
+    UpdateDurabilityContext, UpsertRuleBookContext, UpsertSchemaContext, VersionBarrierContext,
+};
+use self::processor::*;
+use self::state_machine::StateMachine;
 use crate::metric_definitions::{
-    FLARE_REASON_VERSION_BARRIER, LEADER_LABEL, LEADER_LABEL_LEADER, PARTITION_BLOCKED_FLARE,
-    PARTITION_LABEL, PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, REASON_LABEL,
+    LEADER_LABEL, LEADER_LABEL_LEADER, PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
 };
 use crate::partition::leadership::LeadershipState;
-use crate::partition::state_machine::{ActionCollector, StateMachine};
-use crate::partition_processor_manager::PartitionLeaderHandlesRegistry;
-use crate::rule_book_cache::RuleBookCacheHandle;
-
-// Soft cap for the in-memory vqueue cache; once reached, inactive
-// entries are evicted at insert time. The cache will still grow past
-// this if compaction frees nothing.
-const VQUEUE_CACHE_CAPACITY: usize = 10_000;
+use crate::partition::processor::leadership::LeadershipContext;
+use crate::partition::state_machine::ActionCollector;
 
 /// Information needed to run as leader, including the epoch and partition configurations.
 #[derive(Clone, Debug)]
@@ -140,44 +132,32 @@ pub enum TargetLeaderState {
 }
 
 pub(super) struct PartitionProcessorBuilder {
-    status: PartitionProcessorStatus,
     target_leader_state_rx: watch::Receiver<TargetLeaderState>,
     network_svc_rx: ServiceStream<PartitionLeaderService>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
-    invoker_capacity: InvokerCapacity,
-    leader_handles_registry: PartitionLeaderHandlesRegistry,
-    rule_book_cache: RuleBookCacheHandle,
+    node_ctx: NodeContext,
 }
 
 impl PartitionProcessorBuilder {
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
-        status: PartitionProcessorStatus,
         target_leader_state_rx: watch::Receiver<TargetLeaderState>,
         network_svc_rx: ServiceStream<PartitionLeaderService>,
         status_watch_tx: watch::Sender<PartitionProcessorStatus>,
-        invoker_capacity: InvokerCapacity,
-        leader_handles_registry: PartitionLeaderHandlesRegistry,
-        rule_book_cache: RuleBookCacheHandle,
+        node_ctx: NodeContext,
     ) -> Self {
         Self {
-            status,
             target_leader_state_rx,
             network_svc_rx,
             status_watch_tx,
-            invoker_capacity,
-            leader_handles_registry,
-            rule_book_cache,
+            node_ctx,
         }
     }
 
     pub async fn build<T>(
         self,
-        bifrost: Bifrost,
         ingestion_client: IngestionClient<T, Envelope>,
-        mut partition_store: PartitionStore,
-        replica_set_states: PartitionReplicaSetStates,
-    ) -> Result<PartitionProcessor<T>, state_machine::Error>
+        partition_db: PartitionDb,
+    ) -> Result<PartitionProcessor<T>, ProcessorError>
     where
         T: TransportConnect,
     {
@@ -185,169 +165,59 @@ impl PartitionProcessorBuilder {
             target_leader_state_rx,
             network_svc_rx: rpc_rx,
             status_watch_tx,
-            mut status,
-            invoker_capacity,
-            leader_handles_registry,
-            rule_book_cache,
+            node_ctx,
         } = self;
 
-        let partition_id_str = partition_store.partition_id().to_restring();
-        let state_machine =
-            Self::create_state_machine(&mut partition_store, rule_book_cache.clone()).await?;
+        let mut partition_store = PartitionStore::from(partition_db);
 
-        let trim_queue = TrimQueue::default();
-        if let Some(ref partition_durability) = partition_store.get_partition_durability().await? {
-            trim_queue.push(partition_durability);
-        }
-
-        let last_seen_leader_epoch = partition_store
-            .get_dedup_sequence_number(&ProducerId::self_producer())
-            .await?
-            .map(|dedup| {
-                let_assert!(
-                    DedupSequenceNumber::Esn(esn) = dedup,
-                    "self producer must store epoch sequence numbers!"
-                );
-                esn.leader_epoch
-            });
-
-        // Load persisted partition configuration state (since v1.6)
-        let cached_epoch_metadata = partition_store.get_partition_config_state().await?;
-
-        if let Some(last_leader_epoch) = last_seen_leader_epoch {
-            replica_set_states.note_observed_leader(
-                partition_store.partition_id(),
-                restate_types::partitions::state::LeadershipState {
-                    current_leader_epoch: last_leader_epoch,
-                    // we don't know the old leader node-id, another node might update it
-                    current_leader: GenerationalNodeId::INVALID,
-                },
-            );
-        }
-
-        // Yes, I know how awkward this looks. This is temporary until the scheduler
-        // is taskified. The scheduler will respond to its status queries directly
-        // instead of piping this through the partition processor's main select!
-        let (leader_query_tx, leader_query_rx) = restate_worker_api::channel();
-
-        let leadership_state = LeadershipState::new(
-            Arc::clone(partition_store.partition()),
-            invoker_capacity,
-            ingestion_client,
-            bifrost.clone(),
-            last_seen_leader_epoch,
-            trim_queue.clone(),
-            leader_query_tx,
-            leader_handles_registry,
-            rule_book_cache,
-        );
-
-        let last_applied_log_lsn_watch = watch::Sender::new(Lsn::INVALID);
-        // The storage version does not change after having opened the partition store
-        status.storage_version = Some(partition_store.storage_version());
-
-        Ok(PartitionProcessor {
-            key_filter: KeyFilter::Within(partition_store.partition_key_range().into()),
-            partition_id_str,
-            leadership_state,
-            state_machine,
-            partition_store,
-            bifrost,
-            target_leader_state_rx,
-            network_leader_svc_rx: rpc_rx,
-            config: Configuration::live(),
-            status_watch_tx,
-            leader_query_rx,
-            status,
-            replica_set_states,
-            trim_queue,
-            last_applied_log_lsn_watch,
-            cached_epoch_metadata,
-        })
-    }
-
-    async fn create_state_machine(
-        partition_store: &mut PartitionStore,
-        rule_book_cache: RuleBookCacheHandle,
-    ) -> Result<StateMachine, state_machine::Error> {
-        let inbox_seq_number = partition_store.get_inbox_seq_number().await?;
-        let outbox_seq_number = partition_store.get_outbox_seq_number().await?;
-        let outbox_head_seq_number = partition_store.get_outbox_head_seq_number().await?;
-        let min_restate_version = partition_store.get_min_restate_version().await?;
-        let mut enabled_features = partition_store.get_state_machine_features().await?;
-
-        // for backward compatibility because PartitionFeatureChanges were only introduced with v1.7,
-        // we need to enable journal v2 if the min restate version is >= v1.6.0
-        if !enabled_features.journal_v2
-            && min_restate_version.is_equal_or_newer_than(
-                PartitionFeatureChange::EnableJournalV2.min_required_version(),
-            )
-        {
-            PartitionFeatureChange::EnableJournalV2.apply_to(&mut enabled_features);
-
-            // update the internal storage
-            let mut txn = partition_store.transaction();
-            txn.put_state_machine_features(&enabled_features)?;
-            txn.commit().await?;
-        }
-
-        let schema = partition_store.get_schema().await?;
-        let rule_book = Arc::new(partition_store.get_rule_book().await?.unwrap_or_default());
-
-        if !SemanticRestateVersion::current().is_equal_or_newer_than(&min_restate_version) {
-            gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL =>
-                partition_store.partition_id().to_string(),
-                REASON_LABEL => FLARE_REASON_VERSION_BARRIER
-            )
-            .set(1);
-            return Err(state_machine::Error::VersionBarrier {
-                required_min_version: min_restate_version,
-                barrier_reason: String::new(),
-                feature_changes: Vec::default(),
-            });
-        }
+        let ctx =
+            ProcessorRawContext::create(SemanticRestateVersion::current(), &mut partition_store)
+                .await?;
 
         // Seed the cache with whatever we just loaded from the FSM
         // table, so a freshly-restarted PP doesn't briefly serve the
         // empty default to subscribers between PP boot and the first
         // metadata-store poll.
-        rule_book_cache.notify_observed(&rule_book);
+        node_ctx
+            .rule_book_cache
+            .notify_observed(ctx.fsm().rule_book());
 
-        let state_machine = StateMachine::new(
-            inbox_seq_number,
-            outbox_seq_number,
-            outbox_head_seq_number,
-            partition_store.partition_key_range(),
-            min_restate_version,
-            enabled_features,
-            schema,
-            rule_book,
-            rule_book_cache,
+        node_ctx.replica_set_states.note_observed_leader(
+            ctx.partition_id(),
+            restate_types::partitions::state::LeadershipState {
+                current_leader_epoch: ctx.current_leader_epoch(),
+                // if we don't know the old leader node-id, another node will announce it
+                current_leader: GenerationalNodeId::INVALID,
+            },
         );
 
-        Ok(state_machine)
+        let (leader_query_tx, leader_query_rx) = restate_worker_api::channel();
+
+        let leadership_state =
+            LeadershipState::new(ctx.partition_id(), ingestion_client, leader_query_tx);
+
+        Ok(PartitionProcessor {
+            partition_store,
+            ctx,
+            node_ctx,
+            leadership_state,
+            target_leader_state_rx,
+            network_leader_svc_rx: rpc_rx,
+            status_watch_tx,
+            leader_query_rx,
+        })
     }
 }
 
 pub struct PartitionProcessor<T> {
-    partition_id_str: ReString,
+    partition_store: PartitionStore,
+    ctx: ProcessorRawContext,
+    node_ctx: NodeContext,
     leadership_state: LeadershipState<T>,
-    state_machine: StateMachine,
-    bifrost: Bifrost,
     target_leader_state_rx: watch::Receiver<TargetLeaderState>,
     network_leader_svc_rx: ServiceStream<PartitionLeaderService>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
     leader_query_rx: LeaderQueryReceiver,
-    status: PartitionProcessorStatus,
-    replica_set_states: PartitionReplicaSetStates,
-    config: Live<Configuration>,
-
-    partition_store: PartitionStore,
-    trim_queue: TrimQueue,
-
-    last_applied_log_lsn_watch: watch::Sender<Lsn>,
-    cached_epoch_metadata: Option<CachedEpochMetadata>,
-    key_filter: KeyFilter,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -375,6 +245,15 @@ pub enum ProcessorError {
         partition_applied_lsn: Lsn,
         log_tail_lsn: Lsn,
     },
+    #[error(
+        "partition is blocked; requires an upgrade to restate-server version \
+        {required_min_version} or higher; reason='{barrier_reason}'; feature changes={feature_changes:?}"
+    )]
+    VersionBarrier {
+        required_min_version: SemanticRestateVersion,
+        barrier_reason: String,
+        feature_changes: Vec<u16>,
+    },
     #[error(transparent)]
     Storage(#[from] StorageError),
     #[error(transparent)]
@@ -385,6 +264,29 @@ pub enum ProcessorError {
     StoreOpen(#[from] restate_partition_store::OpenError),
     #[error(transparent)]
     StateMachine(#[from] state_machine::Error),
+    /// *Since v1.7.0*
+    #[error(
+        "partition is blocked; restate-server does not recognize feature change IDs {unknown_ids:?}; reason='{barrier_reason}'"
+    )]
+    UnknownFeatureFlags {
+        unknown_ids: Vec<u16>,
+        required_min_version: SemanticRestateVersion,
+        barrier_reason: String,
+    },
+    /// *Since v1.7.0*
+    #[allow(unused)]
+    #[error(
+        "partition is blocked; pre-existing in-flight data must be migrated before applying \
+         feature changes {features:?}; consult the Restate documentation for the server version \
+         that supports this migration"
+    )]
+    MigrationRequired {
+        features: Vec<PartitionFeatureChange>,
+    },
+    #[error(
+        "partition is blocked; restate-server cannot perform data migration. reason='{reason}'"
+    )]
+    MigrationBarrier { reason: String },
     #[error(transparent)]
     ActionEffect(#[from] leadership::Error),
     #[error(transparent)]
@@ -393,13 +295,6 @@ pub enum ProcessorError {
     LogReadStreamTerminated,
     #[error(transparent)]
     Other(#[from] anyhow::Error),
-}
-
-struct LsnEnvelope {
-    pub lsn: Lsn,
-    pub keys: Keys,
-    pub created_at: NanosSinceEpoch,
-    pub envelope: Arc<v2::Envelope<v2::Raw>>,
 }
 
 /// OrderedOperations are scheduled operations that
@@ -418,33 +313,51 @@ where
 {
     #[instrument(
         level = "error", skip_all,
-        fields(partition_id = %self.partition_store.partition_id())
+        fields(partition_id = %self.ctx.partition_id())
     )]
     pub async fn run(mut self) -> Result<(), ProcessorError> {
         debug!("Starting the partition processor.");
 
-        let res = tokio::select! {
-            res = self.run_inner() => {
-                match res.as_ref() {
-                    // run_inner never returns normally
-                    Ok(_) => warn!("Shutting partition processor down because it stopped unexpectedly."),
-                    Err(ProcessorError::TrimGapEncountered { trim_gap_end, read_pointer }) =>
-                        info!(
-                            %read_pointer,
-                            %trim_gap_end,
-                            "Shutting partition processor down because it encountered a trim gap in the log."
-                        ),
-                    Err(ProcessorError::StateMachine(state_machine::Error::VersionBarrier { .. })) => {
-                        gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL => self.partition_id_str, REASON_LABEL => FLARE_REASON_VERSION_BARRIER).set(1);
-                    }
-                    Err(err) => warn!("Shutting partition processor down because of error: {err}"),
-                }
-                res
-            },
-            _ = cancellation_watcher() => {
+        let cancel = cancellation_token();
+        // Run migrations first.
+        //
+        // Important to note: This only runs the migration for the given partition store. In a setup,
+        // where not every node runs every partition, it can happen that partition data remains
+        // untouched when going from one version to the next.
+        // todo https://github.com/restatedev/restate/issues/4175.
+        //
+        // This will fail with StorageError::MigrationCancelled if the current task was cancelled
+        // during the migration phase.
+        match self
+            .partition_store
+            .verify_and_run_migrations(cancel.clone(), self.node_ctx.config.live_load())
+            .await
+        {
+            Ok(()) => {}
+            Err(MigrationError::MigrationCancelled) => {
+                debug!(
+                    "Shutting partition processor during data migration because it was cancelled."
+                );
+                return Ok(());
+            }
+            Err(MigrationError::MigrationBarrier(reason)) => {
+                return Err(ProcessorError::MigrationBarrier { reason });
+            }
+            Err(MigrationError::StorageError(err)) => {
+                warn!(
+                    "Shutting partition processor during data migration down because of error: {err}"
+                );
+                return Err(err.into());
+            }
+        }
+
+        // Note: Boxing because it's a rather large future (>35KiB)
+        let res = match cancel.run_until_cancelled(Box::pin(self.run_inner())).await {
+            Some(res) => res,
+            None => {
                 debug!("Shutting partition processor down because it was cancelled.");
                 Ok(())
-            },
+            }
         };
 
         // clean up pending rpcs and stop child tasks
@@ -462,60 +375,60 @@ where
 
     /// Decode record tries to decode the record first as v2 Envelope, if it failed,
     /// it decodes as v1 Envelope then converts into v2.
-    fn decode_record(record: Record) -> Result<Arc<v2::Envelope<v2::Raw>>, StorageDecodeError> {
-        let envelope = match record.decode_arc::<v2::Envelope<v2::Raw>>() {
-            Ok(envelope) => envelope,
+    fn decode_record(
+        record: DataRecord<PolyBytes>,
+    ) -> Result<DataRecord<v2::Envelope<v2::Raw>>, StorageDecodeError> {
+        fn decode_payload<T: StorageDecode + StorageEncode + Clone>(
+            payload: PolyBytes,
+        ) -> Result<T, RecordDecodeError> {
+            match payload {
+                PolyBytes::Bytes(slice) => {
+                    let mut buf = std::io::Cursor::new(slice);
+                    Ok(StorageCodec::decode(&mut buf)?)
+                }
+                PolyBytes::Typed(value) | PolyBytes::Both(value, _) => {
+                    let cached = value
+                        .downcast_arc()
+                        .map_err(RecordDecodeError::TypedValueMismatch)?;
+                    Ok(Arc::unwrap_or_clone(cached))
+                }
+            }
+        }
+
+        record.try_map(|payload| {
+           match decode_payload::<v2::Envelope<v2::Raw>>(payload) {
+                Ok(envelope) => Ok(envelope),
             Err(RecordDecodeError::TypedValueMismatch(v1_envelope)) => {
                 let v1_envelope: Arc<Envelope> = v1_envelope
                     .downcast_arc()
                     .map_err(|_| StorageDecodeError::DecodeValue("Type mismatch. Record value in PolyBytes::Typed does not match requested type".into()))?;
 
-                let v1_envelope = match Arc::try_unwrap(v1_envelope) {
-                    Ok(v1_envelope) => v1_envelope,
-                    Err(arc) => arc.as_ref().clone(),
-                };
+                let v1_envelope = Arc::unwrap_or_clone(v1_envelope);
 
                 let envelope: v2::Envelope<v2::Raw> = v1_envelope
                     .try_into()
                     .map_err(|err: anyhow::Error| StorageDecodeError::DecodeValue(err.into()))?;
-
-                Arc::new(envelope)
+                Ok(envelope)
             }
-            Err(RecordDecodeError::StorageDecodeError(err)) => return Err(err),
-        };
-
-        Ok(envelope)
+            Err(RecordDecodeError::StorageDecodeError(e)) => Err(e),
+           }
+        })
     }
 
     async fn run_inner(&mut self) -> Result<(), ProcessorError> {
-        let mut partition_store = self.partition_store.clone();
+        let last_applied_lsn_watch = self.ctx.subscribe_to_last_applied_lsn();
 
-        // Important to note: This only runs the migration for the given partition store. In a setup,
-        // where not every node runs every partition, it can happen that partition data remains
-        // untouched when going from one version to the next.
-        // todo https://github.com/restatedev/restate/issues/4175.
-        partition_store.verify_and_run_migrations().await?;
+        let log_id = self.ctx.log_id();
+        let partition_id = self.ctx.partition_id();
+        let my_node = self.node_ctx.my_node_id().as_plain();
 
-        let last_applied_lsn = partition_store
-            .get_applied_lsn()
-            .await?
-            .unwrap_or(Lsn::INVALID);
-
-        self.last_applied_log_lsn_watch
-            .send_replace(last_applied_lsn);
-        let last_applied_lsn_watch = self.last_applied_log_lsn_watch.subscribe();
-
-        let log_id = self.partition_store.partition().log_id();
-        let partition_id = self.partition_store.partition_id();
-        let my_node = my_node_id().as_plain();
-
-        self.status.last_applied_log_lsn = Some(last_applied_lsn);
         let mut durable_lsn_watch = self.partition_store.get_durable_lsn().await?;
         let durable_lsn = durable_lsn_watch
             .borrow_and_update()
             .unwrap_or(Lsn::INVALID);
-        self.status.durable_lsn = Some(durable_lsn);
-        self.replica_set_states
+
+        self.node_ctx
+            .replica_set_states
             .note_durable_lsn(partition_id, my_node, durable_lsn);
 
         // If the underlying log is not provisioned, now is the time to provision it.
@@ -530,7 +443,13 @@ where
             Some(Duration::from_secs(5)),
         )
         .into_iter();
-        while let Err(e) = self.bifrost.admin().ensure_log_exists(log_id).await {
+        while let Err(e) = self
+            .node_ctx
+            .bifrost
+            .admin()
+            .ensure_log_exists(log_id)
+            .await
+        {
             // We cannot provision the log for this partition
             if let Some(dur) = retries.next() {
                 debug!(
@@ -546,34 +465,27 @@ where
         debug!("Finding tail for partition",);
         // propagate errors and let the PPM handle error retries
         let current_tail = self
+            .node_ctx
             .bifrost
             .find_tail(log_id, FindTailOptions::ConsistentRead)
             .await?;
 
         // If our `last_applied_lsn` is at or beyond the tail, this is a strong indicator
         // that the log has reverted backwards.
-        if last_applied_lsn >= current_tail.offset() {
+        if self.ctx.fsm().last_applied_lsn() >= current_tail.offset() {
             return Err(ProcessorError::PartitionAheadOfLog {
-                partition_applied_lsn: last_applied_lsn,
+                partition_applied_lsn: self.ctx.fsm().last_applied_lsn(),
                 log_tail_lsn: current_tail.offset(),
             });
         }
 
+        self.ctx.status_mut().set_started_at(Instant::now());
+        self.ctx.set_catchup_lsn(current_tail.offset());
         debug!(
-            last_applied_lsn = %last_applied_lsn,
+            last_applied_lsn = %self.ctx.fsm().last_applied_lsn(),
             current_log_tail = %current_tail,
             "Partition creating log reader",
         );
-        if current_tail.offset() == last_applied_lsn.next() {
-            if self.status.replay_status != ReplayStatus::Active {
-                self.status.target_tail_lsn = None;
-                self.status.replay_status = ReplayStatus::Active;
-            }
-        } else {
-            // catching up.
-            self.status.target_tail_lsn = Some(current_tail.offset());
-            self.status.replay_status = ReplayStatus::CatchingUp;
-        }
 
         let mut live_schemas = Metadata::with_current(|m| m.updateable_schema());
 
@@ -584,11 +496,12 @@ where
 
         // Start reading after the last applied lsn
         let mut record_stream = std::pin::pin!(
-            self.bifrost
+            self.node_ctx
+                .bifrost
                 .create_reader(
                     log_id,
-                    KeyFilter::Within(self.partition_store.partition_key_range().into()),
-                    last_applied_lsn.next(),
+                    logs::KeyFilter::Within(self.ctx.key_range().into()),
+                    self.ctx.fsm().last_applied_lsn().next(),
                     Lsn::MAX,
                 )?
                 .peekable()
@@ -599,76 +512,41 @@ where
             tokio::time::interval(Duration::from_millis(500).add_jitter(0.5));
         status_update_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-        let mut vqueues = VQueuesMetaCache::create(
-            partition_store.partition_db().clone(),
-            VQUEUE_CACHE_CAPACITY,
-        )
-        .await?;
-
         let mut action_collector = ActionCollector::default();
 
-        let mut watch_leader_changes = self.replica_set_states.watch_leadership_state(partition_id);
+        let mut watch_leader_changes = self
+            .node_ctx
+            .replica_set_states
+            .watch_leadership_state(partition_id);
         watch_leader_changes.mark_changed();
 
-        let started_at = Instant::now();
-        if self.status.replay_status == ReplayStatus::CatchingUp {
-            let catchup_len = current_tail.offset().as_u64() - last_applied_lsn.next().as_u64();
-            info!(
-                "Partition {partition_id} started. Replaying {catchup_len} record(s) in range: [{}..{}]",
-                last_applied_lsn.next(),
-                current_tail.offset().prev()
-            );
-        } else {
-            info!("Partition {partition_id} started");
-        }
-
-        let mut partition_store_cloned = partition_store.clone();
-        let mut transaction = partition_store_cloned.transaction();
+        let mut cloned_partition_store = self.partition_store.clone();
+        let mut txn = cloned_partition_store.transaction();
 
         loop {
-            let config = self.config.live_load();
+            let config = self.node_ctx.config.live_load();
+            let max_batching_size = config.worker.max_command_batch_size();
+            let bytes_limit = config.worker.max_command_batch_bytes.as_usize();
+
             tokio::select! {
                 _ = self.target_leader_state_rx.changed() => {
                     let target_leader_state = self.target_leader_state_rx.borrow_and_update().clone();
                     self.on_target_leader_state(target_leader_state).await.context("failed handling target leader state change")?;
+                    self.refresh_status(&mut durable_lsn_watch)?;
                 }
                 Ok(()) = watch_leader_changes.changed() => {
                     // cloning to avoid holding the underlying RwLock.
                     let new_state = *watch_leader_changes.borrow_and_update();
-                    if self.status.last_observed_leader_epoch.is_none_or(|last| last < new_state.current_leader_epoch) {
-                        self.status.last_observed_leader_epoch = Some(new_state.current_leader_epoch);
-                        if new_state.current_leader.is_valid() {
-                            self.status.last_observed_leader_node = Some(new_state.current_leader);
-                        }
-                    }
-                    self.leadership_state.maybe_step_down(new_state.current_leader_epoch, new_state.current_leader).await;
-                    self.status.effective_mode = self.leadership_state.effective_mode();
+                    self.leadership_state.maybe_step_down(&mut self.ctx, new_state.current_leader_epoch, new_state.current_leader).await;
+                    self.refresh_status(&mut durable_lsn_watch)?;
                 }
-                Some(msg) = self.network_leader_svc_rx.next() => {
-                    self.on_rpc(msg, &mut partition_store, live_schemas.live_load(), &last_applied_lsn_watch).await;
+                Some(msg) = self.network_leader_svc_rx.next(), if self.leadership_state.should_process_rpc() => {
+                    // todo: replace the live schema with the leader's consistent schema
+                    self.on_rpc(msg, live_schemas.live_load(), &last_applied_lsn_watch).await;
                 }
                 _ = status_update_timer.tick() => {
-                    if durable_lsn_watch.has_changed().map_err(|e| ProcessorError::Other(e.into()))? {
-                        let durable_lsn = durable_lsn_watch
-                                .borrow_and_update()
-                                .unwrap_or(Lsn::INVALID);
-                        self.status.durable_lsn = Some(durable_lsn);
-                        self.replica_set_states.note_durable_lsn(
-                            partition_id,
-                            my_node,
-                            durable_lsn,
-                        );
-                    }
-                    let rule_book_version = self.state_machine.rule_book.version();
-                    self.status.last_applied_rule_book_version =
-                        (rule_book_version >= Version::MIN).then_some(rule_book_version);
-                    self.status.last_applied_schema_version =
-                        self.state_machine.schema.as_ref().map(Versioned::version);
-                    self.status.enabled_features = self.state_machine.enabled_features;
-                    self.status_watch_tx.send_modify(|old| {
-                        old.clone_from(&self.status);
-                        old.updated_at = MillisSinceEpoch::now();
-                    });
+                    // Update the status to ensure changes are observable
+                    self.refresh_status(&mut durable_lsn_watch)?;
                 }
                 // Awaiting the first record is the only stream `.await` and is cancellation-safe:
                 // if this branch is dropped before a record is ready, nothing has been consumed.
@@ -680,14 +558,9 @@ where
                     };
                     let first = first?;
 
-                    transaction.clear();
+                    txn.clear();
                     // clear buffers used when applying the next record
                     action_collector.clear();
-
-                    let max_batching_size = config.worker.max_command_batch_size();
-                    // This is a sanity check. max_command_batch is in fact, non-zero usize.
-                    debug_assert!(max_batching_size > 0);
-                    let bytes_limit = config.worker.max_command_batch_bytes.as_usize();
 
                     // Apply the batch one record at a time, seeded with the record we just awaited.
                     // The first record is always applied, which guarantees forward progress even
@@ -699,15 +572,25 @@ where
                     while let Some(entry) = next_entry.take() {
                         accumulated_bytes += entry.estimated_memory_size();
                         count += 1;
-                        self.apply_log_entry(
+                        match self.apply_log_entry(
                             entry,
-                            &mut transaction,
+                            &mut txn,
                             &mut action_collector,
-                            &mut vqueues,
-                            &started_at,
                             &leader_record_write_to_read_latency,
                         )
-                        .await?;
+                        .await? {
+                            NextStep::AdvanceLastAppliedLsn { lsn, ref dedup, scope } => {
+                                self.ctx.dedup_mut().store_dedup_information(&mut txn, dedup)?;
+                                self.ctx.update_last_applied_lsn(&mut txn, lsn)?;
+                                if matches!(scope, CommandScope::PartitionScoped) {
+                                    // Update the status to ensure changes are observable
+                                    self.refresh_status(&mut durable_lsn_watch)?;
+                                }
+                            },
+                            NextStep::SkipUntil(lsn) => {
+                                self.ctx.update_last_applied_lsn(&mut txn, lsn)?;
+                            }
+                        }
 
                         if count >= max_batching_size {
                             break;
@@ -737,14 +620,11 @@ where
                     }
 
                     // Commit our changes and notify actuators about actions if we are the leader
-                    transaction.commit().await?;
-                    // Notify all lsn watchers that the lsn has been committed
-                    if let Some(lsn) = &self.status.last_applied_log_lsn {
-                        self.last_applied_log_lsn_watch.send_replace(*lsn);
-                    }
-                    self.leadership_state.handle_actions(vqueues.view(), action_collector.drain(..))?;
+                    txn.commit().await?;
+                    self.ctx.release_applied_lsn();
+                    self.leadership_state.handle_actions(&mut self.ctx, action_collector.drain(..))?;
                 },
-                result = self.leadership_state.run(&self.state_machine, vqueues.view()) => {
+                result = self.leadership_state.run(&mut self.ctx) => {
                     let action_effects = result?;
                     // We process the action_effects not directly in the run future because it
                     // requires the run future to be cancellation safe. In the future this could be
@@ -752,7 +632,7 @@ where
                     self.leadership_state.handle_action_effects(action_effects).await?;
                 }
                 Some(leader_query_cmd) = self.leader_query_rx.recv() => {
-                    self.on_leader_query(vqueues.view(), leader_query_cmd);
+                    self.on_leader_query(leader_query_cmd);
                 }
             }
             // Allow other tasks on this thread to run, but only if we have exhausted the coop
@@ -767,25 +647,25 @@ where
     ) -> anyhow::Result<()> {
         match target_leader_state {
             TargetLeaderState::Leader(leadership_info) => {
-                self.status.planned_mode = RunMode::Leader;
                 self.leadership_state
-                    .run_for_leader(leadership_info)
+                    .run_for_leader(&mut self.ctx, &self.node_ctx, leadership_info)
                     .await
                     .context("failed handling RunForLeader command")?;
             }
             TargetLeaderState::Follower => {
-                self.status.planned_mode = RunMode::Follower;
+                self.ctx
+                    .status_mut()
+                    .set_planned_run_mode(RunMode::Follower);
                 self.leadership_state.step_down().await;
-                self.status.effective_mode = RunMode::Follower;
             }
         }
 
         Ok(())
     }
 
-    fn on_leader_query(&mut self, metas: VQueuesMeta<'_>, leader_query_cmd: LeaderQueryCommand) {
+    fn on_leader_query(&mut self, leader_query_cmd: LeaderQueryCommand) {
         self.leadership_state
-            .handle_leader_query(metas, leader_query_cmd);
+            .handle_leader_query(self.ctx.vqueues(), leader_query_cmd);
     }
 
     async fn on_pp_rpc_request(
@@ -794,21 +674,55 @@ where
             Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
         >,
         body: PartitionProcessorRpcRequest,
-        partition_store: &mut PartitionStore,
         schemas: &Schema,
     ) {
         let _ = rpc::RpcHandler::handle(
-            rpc::RpcContext::new(&mut self.leadership_state, schemas, partition_store),
+            rpc::RpcContext::new(
+                &mut self.leadership_state,
+                schemas,
+                &mut self.partition_store,
+            ),
             body,
             rpc::Replier::new(response_tx),
         )
         .await;
     }
 
+    fn refresh_status(
+        &mut self,
+        durable_lsn_watch: &mut watch::Receiver<Option<Lsn>>,
+    ) -> Result<(), ProcessorError> {
+        let durable_lsn = if durable_lsn_watch
+            .has_changed()
+            .map_err(|e| ProcessorError::Other(e.into()))?
+        {
+            let durable_lsn = durable_lsn_watch
+                .borrow_and_update()
+                .unwrap_or(Lsn::INVALID);
+            self.node_ctx.replica_set_states.note_durable_lsn(
+                self.ctx.partition_id(),
+                self.node_ctx.my_node_id().as_plain(),
+                durable_lsn,
+            );
+            durable_lsn
+        } else {
+            durable_lsn_watch.borrow().unwrap_or(Lsn::INVALID)
+        };
+        self.status_watch_tx.send_modify(|old| {
+            self.ctx.merge_with_status(old);
+            old.durable_lsn = Some(durable_lsn);
+            old.storage_version = Some(self.partition_store.storage_version());
+            old.effective_mode = self.leadership_state.detailed_effective_mode().into();
+            old.detailed_effective_mode = self.leadership_state.detailed_effective_mode();
+            old.updated_at = MillisSinceEpoch::now();
+        });
+
+        Ok(())
+    }
+
     async fn on_rpc(
         &mut self,
         msg: ServiceMessage<PartitionLeaderService>,
-        partition_store: &mut PartitionStore,
         schemas: &Schema,
         last_applied_lsn_watch: &watch::Receiver<Lsn>,
     ) {
@@ -817,8 +731,7 @@ where
                 let msg = msg.into_typed::<PartitionProcessorRpcRequest>();
                 // note: split() decodes the payload
                 let (response_tx, body) = msg.split();
-                self.on_pp_rpc_request(response_tx, body, partition_store, schemas)
-                    .await;
+                self.on_pp_rpc_request(response_tx, body, schemas).await;
             }
             ServiceMessage::Rpc(msg) if msg.msg_type() == ReceivedIngestRequest::TYPE => {
                 self.on_pp_ingest_request(msg.into_typed()).await;
@@ -850,8 +763,8 @@ where
         last_applied_lsn_watch: &watch::Receiver<Lsn>,
         ordered_op: OrderedOp,
     ) {
-        let bifrost = self.bifrost.clone();
-        let log_id = self.partition_store.partition().log_id();
+        let bifrost = self.node_ctx.bifrost.clone();
+        let log_id = self.ctx.log_id();
         let mut last_applied_lsn_watch = last_applied_lsn_watch.clone();
         let mut partition_store = self.partition_store.clone();
 
@@ -942,312 +855,168 @@ where
             .await;
     }
 
-    fn maybe_advance<'a>(
-        &mut self,
-        maybe_record: LogEntry,
-        transaction: &mut PartitionStoreTransaction<'a>,
-        started_at: &Instant,
-    ) -> Result<Option<(Lsn, Record)>, ProcessorError> {
-        trace!(
-            "Processing {} record at lsn {}",
-            maybe_record.kind(),
-            maybe_record.sequence_number()
-        );
-
-        let (mut lsn, maybe_record) = maybe_record.dissolve();
-        let maybe_envelope = match maybe_record {
-            MaybeRecord::TrimGap(gap) => {
-                return Err(ProcessorError::TrimGapEncountered {
-                    trim_gap_end: gap.to,
-                    read_pointer: lsn,
-                });
-            }
-            MaybeRecord::Filtered(gap) => {
-                // We advance our applied lsn to the end of the filtered gap
-                lsn = gap.to;
-                None
-            }
-            MaybeRecord::DataLoss(gap) => {
-                let log_id = self.partition_store.partition().log_id();
-                error!(%log_id, "Encountered a data-loss gap in the log: [{lsn}..{}]", gap.to);
-                return Err(ProcessorError::DataLossGapEncountered {
-                    data_loss_gap_end: gap.to,
-                    read_pointer: lsn,
-                });
-            }
-            MaybeRecord::Data(record) => Some((lsn, record)),
-        };
-
-        // make sure we advance the FSM, even if it's a filtered gap.
-        transaction.put_applied_lsn(lsn)?;
-        // Update replay status
-        self.status.last_applied_log_lsn = Some(lsn);
-        self.status.last_record_applied_at = Some(MillisSinceEpoch::now());
-        match self.status.replay_status {
-            ReplayStatus::CatchingUp
-                if self
-                    .status
-                    .target_tail_lsn
-                    .is_some_and(|tail| lsn.next() >= tail) =>
-            {
-                // finished catching up
-                self.status.replay_status = ReplayStatus::Active;
-                self.status.target_tail_lsn = None;
-                info!(
-                    "Partition {} caught up in {}!",
-                    self.partition_id_str,
-                    started_at.elapsed().friendly()
-                );
-            }
-            _ => {}
-        };
-
-        Ok(maybe_envelope)
-    }
-
     // --- Apply new commands/records
-
-    async fn apply_record(
-        &mut self,
-        record: LsnEnvelope,
-        transaction: &mut PartitionStoreTransaction<'_>,
-        action_collector: &mut ActionCollector,
-        vqueues_cache: &mut VQueuesMetaCache,
-    ) -> Result<Option<Box<AnnounceLeaderCommand>>, state_machine::Error> {
-        trace!(lsn = %record.lsn, "Processing bifrost record for '{}': {:?}", record.envelope.kind(), record.envelope.header());
-
-        if !self.is_targeted_to_me(&record.keys) {
-            self.status.num_skipped_records += 1;
-            debug!(
-                "Ignore message which is not targeted to me Partition Range: {:?} Key: {:?}, Header: {:?}",
-                self.key_filter,
-                record.keys,
-                record.envelope.header()
-            );
-            return Ok(None);
-        }
-
-        // todo(azmy): use dedup() directly without first converting to DedupInformation
-        let dedup_information: Option<DedupInformation> = record.envelope.dedup().clone().into();
-
-        // deduplicate if deduplication information has been provided
-        if let Some(dedup_information) = dedup_information {
-            if Self::is_outdated_or_duplicate(&dedup_information, transaction).await? {
-                debug!(
-                    "Ignoring outdated or duplicate message: {:?}",
-                    record.envelope.header()
-                );
-                return Ok(None);
-            }
-            transaction
-                .put_dedup_seq_number(
-                    dedup_information.producer_id.clone(),
-                    &dedup_information.sequence_number,
-                )
-                .map_err(state_machine::Error::Storage)?;
-        }
-
-        // todo: redesign to pass the arc (or reference) further down
-        let record_created_at = record.created_at;
-        let record_lsn = record.lsn;
-        // note: v2 envelope is cheaply clonable since it holds either `Bytes` or
-        // Arc of the payload record.
-        let envelope = Arc::unwrap_or_clone(record.envelope);
-
-        match envelope.kind() {
-            v2::CommandKind::AnnounceLeader => {
-                let envelope = envelope.into_typed::<commands::AnnounceLeaderCommand>();
-                let announce_leader = envelope.into_inner()?;
-                return Ok(Some(Box::new(announce_leader)));
-            }
-            v2::CommandKind::UpdatePartitionDurability => {
-                let envelope = envelope.into_typed::<commands::UpdatePartitionDurabilityCommand>();
-                let partition_durability = envelope.into_inner()?;
-                if partition_durability.partition_id != self.partition_store.partition_id() {
-                    self.status.num_skipped_records += 1;
-                    trace!(
-                        "Ignore update-partition-durability message which is not targeted to me. Message is for {} but I'm {}",
-                        partition_durability.partition_id,
-                        self.partition_store.partition_id()
-                    );
-                    return Ok(None);
-                }
-
-                let partition_durability = PartitionDurability {
-                    modification_time: partition_durability.modification_time,
-                    durable_point: partition_durability.durable_point,
-                };
-                if self.trim_queue.push(&partition_durability) {
-                    transaction.put_partition_durability(&partition_durability)?;
-                }
-            }
-            _ => {
-                self.state_machine
-                    .apply(
-                        envelope,
-                        record_created_at.into(),
-                        record_lsn,
-                        transaction,
-                        action_collector,
-                        vqueues_cache,
-                        self.leadership_state.is_leader(),
-                    )
-                    .await?;
-            }
-        }
-
-        Ok(None)
-    }
-
-    fn is_targeted_to_me(&self, keys: &Keys) -> bool {
-        keys.matches_key_query(&self.key_filter)
-    }
-
-    async fn is_outdated_or_duplicate(
-        dedup_information: &DedupInformation,
-        dedup_resolver: &mut PartitionStoreTransaction<'_>,
-    ) -> Result<bool, StorageError> {
-        let last_dsn = dedup_resolver
-            .get_dedup_sequence_number(&dedup_information.producer_id)
-            .await?;
-
-        // Check whether we have seen this message before
-        let is_duplicate = if let Some(last_dsn) = last_dsn {
-            match (last_dsn, &dedup_information.sequence_number) {
-                (DedupSequenceNumber::Esn(last_esn), DedupSequenceNumber::Esn(esn)) => {
-                    last_esn >= *esn
-                }
-                (DedupSequenceNumber::Sn(last_sn), DedupSequenceNumber::Sn(sn)) => last_sn >= *sn,
-                (last_dsn, dsn) => panic!(
-                    "sequence number types do not match: last sequence number '{last_dsn:?}', received sequence number '{dsn:?}'"
-                ),
-            }
-        } else {
-            false
-        };
-
-        Ok(is_duplicate)
-    }
 
     /// Applies a single log entry to the in-flight `transaction`, advancing the FSM and, when the
     /// entry announces a new leader, committing the batch so far and reacting to the leadership
     /// change. Filtered gaps only advance the applied LSN and return without applying a record.
-    #[allow(clippy::too_many_arguments)]
     async fn apply_log_entry(
         &mut self,
         entry: LogEntry,
         txn: &mut PartitionStoreTransaction<'_>,
         action_collector: &mut ActionCollector,
-        vqueues: &mut VQueuesMetaCache,
-        started_at: &Instant,
         leader_record_write_to_read_latency: &metrics::Histogram,
-    ) -> Result<(), ProcessorError> {
-        let Some((lsn, record)) = self.maybe_advance(entry, txn, started_at)? else {
-            // this happens when we are reading a filtered gap
-            return Ok(());
+    ) -> Result<NextStep, ProcessorError> {
+        trace!(
+            "Processing {} record at lsn {}",
+            entry.kind(),
+            entry.sequence_number()
+        );
+
+        let record = match DataRecord::try_from(entry) {
+            Ok(record) => record,
+            Err(DataRecordError::Trimmed { from, to }) => {
+                return Err(ProcessorError::TrimGapEncountered {
+                    trim_gap_end: to,
+                    read_pointer: from,
+                });
+            }
+            Err(DataRecordError::Filtered { to, .. }) => {
+                // We advance our applied lsn to the end of the filtered gap
+                // Update replay status
+                return Ok(NextStep::SkipUntil(to));
+            }
+            Err(DataRecordError::DataLoss { from, to }) => {
+                let log_id = self.ctx.log_id();
+                error!(%log_id, "Encountered a data-loss gap in the log: [{from}..{to}]");
+                return Err(ProcessorError::DataLossGapEncountered {
+                    data_loss_gap_end: to,
+                    read_pointer: from,
+                });
+            }
         };
 
         if self.leadership_state.is_leader() {
+            // todo: move to leadership state
             leader_record_write_to_read_latency.record(record.created_at().elapsed());
         }
 
-        let record = LsnEnvelope {
-            lsn,
-            keys: record.keys().clone(),
-            created_at: record.created_at(),
-            envelope: Self::decode_record(record)?,
-        };
+        let lsn = record.seq();
+        let envelope = Self::decode_record(record)?;
+        trace!(lsn = %lsn, "Processing bifrost record for '{}': {:?}", envelope.as_ref().kind(), envelope.as_ref().header());
 
-        let maybe_announce_leader = self
-            .apply_record(record, txn, action_collector, vqueues)
-            .await?;
-
-        if let Some(announce_leader) = maybe_announce_leader {
-            let partition_id = self.partition_store.partition_id();
-
-            // update partition store with latest epoch metadata
-            if let Some(current_config) = &announce_leader.current_config {
-                let announced = CachedEpochMetadata {
-                    version: announce_leader.epoch_version.unwrap(),
-                    leader_node_id: announce_leader.node_id,
-                    leader_epoch: announce_leader.leader_epoch,
-                    current: current_config.to_current_replica_set_state(),
-                    next: announce_leader
-                        .next_config
-                        .as_ref()
-                        .map(|v| v.to_next_replica_set_state()),
-                };
-
-                if self
-                    .cached_epoch_metadata
-                    .as_ref()
-                    .is_none_or(|c| c.version < announced.version)
-                {
-                    txn.put_partition_config_state(&announced)?;
-                    self.cached_epoch_metadata = Some(announced);
-                }
-            };
-
-            // commit all changes so far, this is important so that the actuators see all changes
-            // when becoming leader.
-            txn.commit().await?;
-            // Notify all lsn watchers that the lsn has been committed
-
-            self.last_applied_log_lsn_watch.send_replace(lsn);
-
-            // We can ignore all actions collected so far because as a new leader we have to instruct the
-            // actuators afresh.
-            action_collector.clear();
-
-            self.status.last_observed_leader_epoch = Some(announce_leader.leader_epoch);
-            self.status.last_observed_leader_node = Some(announce_leader.node_id);
-
-            self.replica_set_states.note_observed_leader(
-                partition_id,
-                restate_types::partitions::state::LeadershipState {
-                    current_leader_epoch: announce_leader.leader_epoch,
-                    current_leader: announce_leader.node_id,
-                },
+        // if this is a duplicate record, skip and move on.
+        if self
+            .ctx
+            .dedup()
+            .is_duplicate(envelope.as_ref().dedup(), txn)
+            .await?
+        {
+            debug!(
+                lsn = %lsn,
+                "Ignoring outdated or duplicate message: {:?}",
+                envelope.as_ref().header()
             );
-
-            let is_leader = self
-                .leadership_state
-                .on_announce_leader(
-                    &announce_leader,
-                    self.partition_store.clone(),
-                    &self.replica_set_states,
-                    self.config.live_load(),
-                    vqueues,
-                    &self.state_machine.rule_book,
-                    &self.state_machine,
-                    &self.state_machine.min_restate_version,
-                )
-                .await?;
-
-            Span::current().record("is_leader", is_leader);
-
-            if is_leader {
-                if let Some(cached) = &self.cached_epoch_metadata {
-                    self.replica_set_states.note_observed_membership(
-                        partition_id,
-                        restate_types::partitions::state::LeadershipState {
-                            current_leader_epoch: cached.leader_epoch,
-                            current_leader: cached.leader_node_id,
-                        },
-                        &cached.current.replica_set,
-                        &cached.next.as_ref().map(|c| &c.replica_set).cloned(),
-                    );
-                }
-                self.status.effective_mode = RunMode::Leader;
-            } else {
-                // make sure that we set our effective_mode to follower also when
-                // not being explicitly asked by the PPM
-                self.status.effective_mode = RunMode::Follower;
-            }
-
-            txn.clear();
+            return Ok(NextStep::SkipUntil(lsn));
         }
 
-        Ok(())
+        let scope = envelope.as_ref().scope();
+        match scope {
+            CommandScope::PartitionScoped => {
+                self.apply_partition_command(envelope, txn, action_collector)
+                    .await
+            }
+            CommandScope::KeyScoped => {
+                let dedup = envelope.as_ref().dedup().clone();
+                StateMachine::apply(
+                    &mut self.ctx,
+                    txn,
+                    envelope,
+                    action_collector,
+                    self.leadership_state.is_leader(),
+                )
+                .await?;
+                Ok(NextStep::AdvanceLastAppliedLsn { lsn, dedup, scope })
+            }
+        }
+    }
+
+    async fn apply_partition_command<'a, 'b>(
+        &'a mut self,
+        record: DataRecord<v2::Envelope<v2::Raw>>,
+        txn: &'a mut PartitionStoreTransaction<'b>,
+        action_collector: &'a mut ActionCollector,
+    ) -> Result<NextStep, ProcessorError> {
+        match record.as_ref().kind() {
+            v2::CommandKind::AnnounceLeader => {
+                AnnounceLeaderContext {
+                    txn,
+                    node_ctx: &mut self.node_ctx,
+                    processor: &mut self.ctx,
+                    partition_store: &mut self.partition_store,
+                    action_collector,
+                    leadership: &mut self.leadership_state,
+                }
+                .apply(record.map(v2::Envelope::into_typed))
+                .await
+            }
+            v2::CommandKind::UpdatePartitionDurability => {
+                UpdateDurabilityContext {
+                    txn,
+                    processor: &mut self.ctx,
+                }
+                .apply(record.map(v2::Envelope::into_typed))
+                .await
+            }
+            v2::CommandKind::UpsertRuleBook => {
+                UpsertRuleBookContext {
+                    txn,
+                    node_ctx: &self.node_ctx,
+                    processor: &mut self.ctx,
+                    leadership: &mut self.leadership_state,
+                    action_collector,
+                }
+                .apply(record.map(v2::Envelope::into_typed))
+                .await
+            }
+            v2::CommandKind::VersionBarrier => {
+                let partition_db = self.partition_store.partition_db().clone();
+                let mut leadership = LeadershipContext {
+                    partition_store: &mut self.partition_store,
+                    leadership: &mut self.leadership_state,
+                };
+                VersionBarrierContext {
+                    txn,
+                    node_ctx: &mut self.node_ctx,
+                    partition_db,
+                    processor: &mut self.ctx,
+                    leadership: &mut leadership,
+                }
+                .apply(record.map(v2::Envelope::into_typed))
+                .await
+            }
+            v2::CommandKind::UpsertSchema => {
+                UpsertSchemaContext {
+                    txn,
+                    processor: &mut self.ctx,
+                }
+                .apply(record.map(v2::Envelope::into_typed))
+                .await
+            }
+            v2::CommandKind::TruncateOutbox => {
+                TruncateOutboxContext {
+                    txn,
+                    processor: &mut self.ctx,
+                }
+                .apply(record.map(v2::Envelope::into_typed))
+                .await
+            }
+            e => {
+                error!("Unsupported command kind {:?}", e);
+                Err(ProcessorError::StateMachine(
+                    state_machine::Error::UnknownCommandKind,
+                ))
+            }
+        }
     }
 }

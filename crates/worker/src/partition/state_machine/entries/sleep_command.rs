@@ -8,20 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::timer_table::WriteTimerTable;
 use restate_types::journal_v2::command::SleepCommand;
 use restate_wal_protocol::timer::TimerKeyValue;
 
+use crate::partition::processor::ProcessorContext;
+use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
+
 pub(super) type ApplySleepCommand<'e> = ApplyJournalCommandEffect<'e, SleepCommand>;
 
-impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
+impl<'e, 'ctx: 'e, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
     for ApplySleepCommand<'e>
 where
     S: WriteTimerTable,
+    P: ProcessorContext,
 {
-    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
+    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
         let invocation_metadata = self
             .invocation_status
             .get_invocation_metadata()

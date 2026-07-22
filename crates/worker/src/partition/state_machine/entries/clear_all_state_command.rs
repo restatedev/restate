@@ -8,21 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::debug_if_leader;
-use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
+use tracing::warn;
+
 use restate_storage_api::state_table::WriteStateTable;
 use restate_types::journal_v2::{ClearAllStateCommand, EntryMetadata};
-use tracing::warn;
+
+use crate::debug_if_leader;
+use crate::partition::processor::Processor;
+use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub(super) type ApplyClearAllStateCommand<'e> = ApplyJournalCommandEffect<'e, ClearAllStateCommand>;
 
-impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
+impl<'e, 'ctx: 'e, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
     for ApplyClearAllStateCommand<'e>
 where
     S: WriteStateTable,
+    P: Processor,
 {
-    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
+    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
         let invocation_metadata = self
             .invocation_status
             .get_invocation_metadata()

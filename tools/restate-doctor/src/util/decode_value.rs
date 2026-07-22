@@ -34,7 +34,7 @@ use restate_storage_api::timer_table::Timer;
 use restate_storage_api::vqueue_table::EntryValue;
 use restate_storage_api::vqueue_table::metadata::VQueueMeta;
 use restate_types::SemanticRestateVersion;
-use restate_types::partitions::features::PersistedStateMachineFeatures;
+use restate_types::partitions::features::PersistedFeatures;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::storage::{StorageCodec, StorageCodecKind, StorageDecode};
 use restate_types::vqueues::EntryKind;
@@ -444,7 +444,7 @@ fn decode_fsm_value(key: &[u8], value: &[u8]) -> DecodedValue {
         }
         fsm_variable::RULE_BOOK => decode_fsm_storage_codec::<RuleBook>(value, codec, payload_size),
         fsm_variable::STATE_MACHINE_FEATURES => {
-            decode_fsm_storage_codec::<PersistedStateMachineFeatures>(value, codec, payload_size)
+            decode_fsm_storage_codec::<PersistedFeatures>(value, codec, payload_size)
         }
         unknown => DecodedValue::decoded(
             codec,
@@ -582,7 +582,7 @@ mod tests {
     fn decodes_new_fsm_variables() {
         // StorageCodec(Bilrost)-wrapped value
         let mut buf = BytesMut::new();
-        StorageCodec::encode(&PersistedStateMachineFeatures::default(), &mut buf).unwrap();
+        StorageCodec::encode(&PersistedFeatures::default(), &mut buf).unwrap();
         let decoded = decode_value(
             KeyKind::Fsm,
             &fsm_key(fsm_variable::STATE_MACHINE_FEATURES),

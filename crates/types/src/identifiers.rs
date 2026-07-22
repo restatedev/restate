@@ -76,6 +76,10 @@ impl LeaderEpoch {
     pub fn next(self) -> Self {
         LeaderEpoch(self.0 + 1)
     }
+
+    pub fn is_valid(&self) -> bool {
+        self.0 > Self::INVALID.0
+    }
 }
 
 impl Default for LeaderEpoch {
