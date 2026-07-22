@@ -15,6 +15,7 @@ use futures::never::Never;
 use restate_bifrost::{
     Bifrost, EnqueueError, EnqueueWithNotificationResult, ErrorRecoveryStrategy, InputRecord,
 };
+use restate_memory::PollMemoryPool;
 use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
 use restate_types::{
     config::Configuration, identifiers::PartitionKey, logs::LogId, net::ingest::IngestRecord,
@@ -217,11 +218,8 @@ impl SelfProposer {
         })
     }
 
-    pub fn has_capacity(&self) -> bool {
-        self.bifrost_appender.sender_ref().has_capacity()
-    }
-
-    pub fn wait_for_capacity(&self) -> impl std::future::Future<Output = ()> + 'static {
-        self.bifrost_appender.sender_ref().wait_for_capacity()
+    /// Returns a poll-style watcher over the appender's memory-pool capacity.
+    pub fn capacity_poller(&self) -> PollMemoryPool {
+        self.bifrost_appender.sender_ref().capacity_poller()
     }
 }
