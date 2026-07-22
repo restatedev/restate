@@ -1,0 +1,177 @@
+// Copyright (c) 2026 - Restate Software, Inc., Restate GmbH
+//
+// This file is part of the Restate service protocol, which is
+// released under the MIT license.
+//
+// You can find a copy of the license in file LICENSE in the root
+// directory of this repository or package, or at
+// https://github.com/restatedev/proto/blob/main/LICENSE
+
+syntax = "proto3";
+
+package dev.restate.ingress.ingestion;
+
+// Version negotiation:
+// When opening a stream, the client advertises the
+// protocol versions it supports via the
+// `x-restate-accept-ingestion-version` header
+// (a comma-separated list, e.g. `1, 2, 3`).
+// The server picks a supported version and echoes it
+// back in the `x-ingestion-version` header (e.g. `1`).
+// If no common version can be agreed on, the server
+// immediately closes the stream with a gRPC error.
+// The current protocol version is 1.
+
+
+// Required.
+// A Start frame must be sent before any Settings or
+// Invocation frame.
+// Sending a Start frame again during the lifetime of
+// the stream is illegal: the server will return an
+// error and terminate the stream.
+//
+// Invalid Start message will cause an error
+// to be returned immediately, and stream to be teared down
+// immediately
+message Start {
+    // Unique producer ID for the stream. Deduplication relies on this
+    // ID being unique per ingestion stream
+    // (think Kafka cluster + topic + partition).
+    // An explicitly empty producer ID is valid but disables
+    // deduplication for the entire stream.
+    string producer_id = 1;
+    // Integration identification in format `name/version`
+    string integration = 2;
+    // Initial settings for the stream, letting the client
+    // establish its defaults up front instead of following
+    // the Start frame with a separate Settings frame.
+    // Clients can still send further Settings frames later
+    // to update these defaults during the stream.
+    Settings settings = 3;
+}
+
+// A Settings message defines the default values applied to all
+// subsequent records in the stream.
+// Each Settings message must specify every field it wants to set:
+// its fields are not merged with those of previous Settings messages.
+// Leaving an optional field unset clears any previously established
+// default, so later records must supply the value explicitly if needed.
+//
+// It's okay to send settings more than once to tweak and change the defaults
+// during the life time of the stream.
+message Settings {
+    // optional fields
+    optional string scope = 2;
+    optional string limit_key = 3;
+    optional string service = 4;
+    optional string handler = 5;
+    optional string key = 6;
+    optional string idempotency_key = 7;
+    map<string, string> headers = 8;
+}
+
+message Invocation {
+    uint64 offset = 1;
+
+    // Overrides
+    optional string scope = 2;
+    optional string limit_key = 3;
+    optional string service = 4;
+    optional string handler = 5;
+    // Required when the target service is a virtual object (VO).
+    // or workflow. This can also be set via the Settings request.
+    optional string key = 6;
+    optional string idempotency_key = 7;
+    map<string, string> additional_headers = 8;
+
+    // delay_ms and invoke_time_ts are mutually
+    // exclusive.
+    optional uint64 delay_ms = 9;
+    // starttime timestamp in ms.
+    optional uint64 invoke_time_ts_ms = 10;
+
+    // This uses the w3c tracecontext format
+    // https://www.w3.org/TR/trace-context/
+    optional string traceparent = 11;
+    optional string tracestate = 12;
+
+    bytes payload = 13;
+}
+
+message Request {
+    oneof payload {
+        Start start = 1;
+        Settings settings = 2;
+        Invocation invocation = 3;
+    }
+}
+
+// Application-layer flow-control message.
+// It tells the client how many more bytes it can send
+// before it must wait for the next window update.
+//
+// WindowUpdate also doubles as an explicit ack: the
+// server can send an update with a 0 increment to
+// acknowledge commits up to `Response.last_committed`
+// without changing the window size.
+//
+// If the next invocation is bigger than the available
+// window, it's legal to send it anyway (letting the
+// window go negative) so the client doesn't block. Once
+// the window reaches 0 (or less) it's illegal to send
+// more requests until the next window update; sending
+// more invocations while the window is depleted can
+// result in a GO_AWAY error.
+message WindowUpdate {
+    uint64 increment_bytes = 1;
+}
+
+enum ErrorKind {
+    ERROR_KIND_UNKNOWN = 0;
+    // The server is shutting down and can't accept more
+    // records. The caller must switch to a new ingress
+    // node and respect the reported last_committed.
+    ERROR_KIND_SHUTTING_DOWN = 1;
+    // A protocol violation, for example sending another
+    // Start message after the initial one or not
+    // respecting the send window.
+    ERROR_KIND_GO_AWAY = 2;
+    // The invocation target was not found (unknown
+    // service or handler).
+    ERROR_KIND_NOT_FOUND = 3;
+    // Covers a wide range of client errors, including:
+    // - unexpected key
+    // - missing key
+    // - invalid scope format
+    // and similar errors. The `Error.message` should
+    // carry more details.
+    ERROR_KIND_BAD_REQUEST = 4;
+}
+
+message Error {
+    // if set, the error is associated
+    // with the invocation with that offset
+    optional uint64 invocation_offset = 1;
+    ErrorKind kind = 2;
+    string message = 3;
+}
+
+message Response {
+    // Offsets are 0-based, so last_committed must be optional
+    // to distinguish "offset 0 committed" from "nothing committed yet".
+    // This matters when an error is returned on the first
+    // ingestion message.
+    optional uint64 last_committed = 1;
+
+    oneof response {
+        WindowUpdate ack = 2;
+        Error error = 3;
+    }
+}
+
+// Service that is only reachable on nodes that are alive.
+service IngestionSvc {
+  // Opens a bidirectional node-to-node stream.
+  rpc Ingest(stream Request)
+      returns (stream Response);
+}
