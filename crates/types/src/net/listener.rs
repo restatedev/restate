@@ -24,7 +24,7 @@ use tracing::{debug, info};
 use crate::config::{Configuration, ListenerOptions};
 use crate::nodes_config::Role;
 
-use super::address::{AdvertisedAddress, BindAddress, ListenerPort, SocketAddress};
+use super::address::{AdvertisedAddress, BindAddress, FabricPort, ListenerPort, SocketAddress};
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 pub enum ListenError {
@@ -53,6 +53,10 @@ pub struct AddressBook {
     data_dir: PathBuf,
     bound_addr: HashMap<std::any::TypeId, AddressesErased, BuildHasherDefault<IdHasher>>,
     listeners: HashMap<std::any::TypeId, ListenersErased, BuildHasherDefault<IdHasher>>,
+    /// Whether the fabric port is served with TLS ([`networking.tls`] is
+    /// configured). Captured at bind time so advertised fabric addresses carry
+    /// the `https://` scheme without every caller threading the flag through.
+    fabric_tls: bool,
 }
 
 impl AddressBook {
@@ -61,6 +65,7 @@ impl AddressBook {
             data_dir,
             listeners: HashMap::with_hasher(BuildHasherDefault::new()),
             bound_addr: HashMap::with_hasher(BuildHasherDefault::new()),
+            fabric_tls: false,
         }
     }
 
@@ -104,6 +109,7 @@ impl AddressBook {
         // Message Fabric
         self.bind(config.common.fabric_listener_options(), &mut listenfd)
             .await?;
+        self.fabric_tls = config.networking.tls.is_some();
         // todo: add NodeCtl port
 
         Ok(())
@@ -271,8 +277,11 @@ impl AddressBook {
     pub fn guess_advertised_address<P: ListenerPort + 'static>(
         &self,
         advertised_host: Option<&str>,
-        tls: bool,
     ) -> AdvertisedAddress<P> {
+        // TLS only applies to the fabric port; other listeners (admin, ingress,
+        // ...) are not served by the fabric TLS acceptor.
+        let tls =
+            self.fabric_tls && std::any::TypeId::of::<P>() == std::any::TypeId::of::<FabricPort>();
         let Some(addresses) = self.bound_addr.get(&std::any::TypeId::of::<P>()) else {
             return AdvertisedAddress::default();
         };

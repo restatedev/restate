@@ -218,16 +218,6 @@ where
     let graceful_shutdown = GracefulShutdown::new();
     let task_name: Arc<str> = Arc::from(format!("{server_name}-socket"));
 
-    let tls_mode = tls.as_ref().map(|_| {
-        configuration
-            .live_load()
-            .networking
-            .tls
-            .as_ref()
-            .map(|t| t.mode.clone())
-            .unwrap_or(TlsMode::Strict)
-    });
-
     loop {
         tokio::select! {
             biased;
@@ -241,6 +231,15 @@ where
                 let socket_span = error_span!("SocketHandler", ?peer_addr);
 
                 let network_options = &configuration.live_load().networking;
+                // live-loaded so the strict/optional enforcement mode can be
+                // changed at runtime without restarting the server
+                let tls_mode = tls.as_ref().map(|_| {
+                    network_options
+                        .tls
+                        .as_ref()
+                        .map(|t| t.mode.clone())
+                        .unwrap_or(TlsMode::Strict)
+                });
                 let mut builder = hyper_util::server::conn::auto::Builder::new(TaskCenterExecutor);
                 builder
                     .http2()
@@ -254,7 +253,6 @@ where
                 match stream {
                     Either::Left(tcp_stream) => {
                         let tls_resolver = tls.clone();
-                        let tls_mode = tls_mode.clone();
                         let service = service.clone();
                         // Owned watcher so the connection can register with the graceful
                         // shutdown from within its own task.

@@ -230,20 +230,21 @@ impl Node {
         let mut router_builder = MessageRouterBuilder::with_default_pool(default_pool);
 
         // Initialize fabric TLS if configured
-        let tls_resolver = config.networking.tls.as_ref().map(|tls_opts| {
-            tls_opts
-                .validate()
-                .expect("Invalid fabric TLS configuration");
-            let resolver = restate_core::network::tls::TlsCertResolver::new(tls_opts)
-                .expect("Failed to initialize fabric TLS");
-            resolver
-                .spawn_reloader(tls_opts.clone(), *tls_opts.refresh_interval)
-                .expect("to spawn fabric TLS cert reloader");
-            // register process-wide so channels created via create_tonic_channel
-            // (metadata-store, raft, control) can dial https:// fabric peers
-            resolver.set_global();
-            resolver
-        });
+        let tls_resolver = config
+            .networking
+            .tls
+            .as_ref()
+            .map(|tls_opts| {
+                tls_opts.validate()?;
+                let resolver = restate_core::network::tls::TlsCertResolver::new(tls_opts)?;
+                resolver.spawn_reloader(tls_opts.clone(), *tls_opts.refresh_interval)?;
+                // register process-wide so channels created via create_tonic_channel
+                // (metadata-store, raft, control) can dial https:// fabric peers
+                resolver.set_global();
+                Ok(resolver)
+            })
+            .transpose()
+            .map_err(BuildError::InvalidConfiguration)?;
 
         server_builder.set_tls(tls_resolver.clone());
         let networking = Networking::with_grpc_connector(tls_resolver);
@@ -813,7 +814,6 @@ async fn provision_cluster_metadata(
 fn create_initial_nodes_configuration(
     common_opts: &CommonOptions,
     features: EnumSet<ClusterFeature>,
-    fabric_tls: bool,
 ) -> NodesConfiguration {
     let mut initial_nodes_configuration = NodesConfiguration::new(
         Version::MIN,
@@ -821,9 +821,8 @@ fn create_initial_nodes_configuration(
         ClusterFingerprint::generate(),
     );
     initial_nodes_configuration.set_features(features);
-    let my_advertised_address = TaskCenter::with_current(|tc| {
-        common_opts.advertised_address(tc.address_book(), fabric_tls)
-    });
+    let my_advertised_address =
+        TaskCenter::with_current(|tc| common_opts.advertised_address(tc.address_book()));
 
     let node_config = NodeConfig::builder()
         .name(common_opts.node_name().to_owned())
@@ -859,9 +858,7 @@ fn generate_initial_metadata(
         cluster_configuration.bifrost_provider.clone(),
     ));
 
-    let fabric_tls = Configuration::pinned().networking.tls.is_some();
-    let initial_nodes_configuration =
-        create_initial_nodes_configuration(common_opts, features, fabric_tls);
+    let initial_nodes_configuration = create_initial_nodes_configuration(common_opts, features);
 
     (
         initial_nodes_configuration,

@@ -170,9 +170,7 @@ fn collect_advertised_addresses(
 
     // fabric
     push_advertised(
-        config
-            .common
-            .advertised_address(address_book, config.networking.tls.is_some()),
+        config.common.advertised_address(address_book),
         &mut addresses,
     );
 
