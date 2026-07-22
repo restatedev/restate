@@ -4,10 +4,12 @@
 
 ### What Changed
 
-`restatectl nodes drain-http-ingress --node <generational-node-id>` can now place one running
-node's HTTP ingress role into an irreversible drain for the lifetime of that process. Draining
-closes its listeners, sends graceful shutdown notifications to existing connections, and reports
-the outstanding request and connection counts. Existing requests remain active until normal node
+`restatectl --single-address http://127.0.0.1:5122 nodes drain-http-ingress --current --json` can
+now place the local running node's HTTP ingress role into an irreversible drain for the lifetime
+of that process. `--current` resolves the local node's exact generation before draining, while
+`--node <generational-node-id>` remains available for an explicitly targeted node. Draining closes
+listeners, sends graceful shutdown notifications to existing connections, and reports the
+outstanding request and connection counts. Existing requests remain active until normal node
 shutdown applies its bounded final deadline.
 
 ### Why This Matters

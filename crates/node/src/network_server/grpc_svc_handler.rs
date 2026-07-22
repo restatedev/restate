@@ -561,5 +561,8 @@ mod tests {
         let not_initialized =
             ensure_node_generation(expected, Some(NodeId::Plain(PlainNodeId::new(1)))).unwrap_err();
         assert_eq!(not_initialized.code(), Code::Unavailable);
+
+        let not_initialized = ensure_node_generation(expected, None).unwrap_err();
+        assert_eq!(not_initialized.code(), Code::Unavailable);
     }
 }
