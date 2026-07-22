@@ -11,6 +11,7 @@
 mod builder;
 mod consumer_task;
 mod metric_definitions;
+mod oauth;
 mod subscription_controller;
 
 use rdkafka::error::KafkaError;

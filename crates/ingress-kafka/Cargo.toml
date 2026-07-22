@@ -14,6 +14,9 @@ options_schema = []
 # fails with "SSL certificate OpenSSL verify result: unable to get local issuer certificate (20) (-1)" when trying to
 # obtain the OIDC token.
 oidc = ["rdkafka/curl-static", "rdkafka/gssapi-vendored"]
+# support for AWS MSK IAM authentication via SASL/OAUTHBEARER (provider=msk-iam). Pulls in the AWS SDK, so it is gated
+# behind a feature to avoid bloating builds that do not need MSK IAM.
+msk-iam = ["dep:aws-config", "dep:aws-msk-iam-sasl-signer"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
@@ -46,6 +49,10 @@ tokio = { workspace = true, features = ["sync", "rt"] }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 xxhash-rust = { workspace = true, features = ["xxh3", "std"] }
+
+# AWS MSK IAM Auth (for OAUTHBEARER with provider=msk-iam); enabled by the `msk-iam` feature.
+aws-config = { workspace = true, optional = true }
+aws-msk-iam-sasl-signer = { workspace = true, optional = true }
 
 [dev-dependencies]
 restate-types = { workspace = true, features = ["test-util"] }

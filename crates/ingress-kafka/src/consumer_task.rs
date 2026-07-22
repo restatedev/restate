@@ -96,6 +96,7 @@ where
             ingestion: self.ingestion.clone(),
             builder: self.builder.clone(),
             consumer_group_id,
+            tokio_handle: tokio::runtime::Handle::current(),
         };
         let consumer: Arc<MessageConsumer<T>> =
             Arc::new(self.client_config.create_with_context(rebalance_context)?);
@@ -170,12 +171,17 @@ struct RebalanceContext<T: TransportConnect> {
     ingestion: IngestionClient<T, Envelope>,
     builder: EnvelopeBuilder,
     consumer_group_id: String,
+    /// Handle to the tokio runtime for blocking on async operations (e.g., MSK IAM token generation)
+    tokio_handle: tokio::runtime::Handle,
 }
 
 impl<T> ClientContext for RebalanceContext<T>
 where
     T: TransportConnect,
 {
+    /// Enable OAuth token refresh for OAUTHBEARER authentication (e.g., MSK IAM)
+    const ENABLE_REFRESH_OAUTH_TOKEN: bool = true;
+
     fn stats(&self, statistics: Statistics) {
         for topic in statistics.topics {
             for partition in topic.1.partitions {
@@ -189,6 +195,13 @@ where
                 .set(lag);
             }
         }
+    }
+
+    fn generate_oauth_token(
+        &self,
+        oauthbearer_config: Option<&str>,
+    ) -> Result<rdkafka::client::OAuthToken, Box<dyn std::error::Error + 'static>> {
+        crate::oauth::generate_oauth_token(&self.tokio_handle, oauthbearer_config)
     }
 }
 

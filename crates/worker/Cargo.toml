@@ -19,6 +19,7 @@ options_schema = [
   "restate-timer/options_schema",
 ]
 kafka-oidc = ["restate-ingress-kafka/oidc"]
+msk-iam = ["restate-ingress-kafka/msk-iam"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
