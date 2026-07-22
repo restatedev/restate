@@ -121,11 +121,12 @@ fn configure_tls_nodes(
 /// Assert that every node registered in the cluster's nodes configuration
 /// advertises an `https://` fabric address. This is what makes peers dial each
 /// other with TLS — a node registered with `http://` would be dialed in
-/// plaintext regardless of its own TLS config.
+/// plaintext regardless of its own TLS config. Returns the `host:port`
+/// authorities so callers can probe the fabric ports directly.
 async fn assert_all_nodes_advertise_tls(
     cluster: &StartedCluster,
     expected_nodes: usize,
-) -> googletest::Result<()> {
+) -> googletest::Result<Vec<String>> {
     let nodes_config = cluster.nodes[0]
         .metadata_client()
         .get::<NodesConfiguration>(NODES_CONFIG_KEY.clone())
@@ -138,13 +139,46 @@ async fn assert_all_nodes_advertise_tls(
         .map(|(node_id, node_config)| (node_id, node_config.address.to_string()))
         .collect();
     assert_eq!(addresses.len(), expected_nodes);
+    let mut authorities = Vec::with_capacity(addresses.len());
     for (node_id, address) in addresses {
         assert!(
             address.starts_with("https://"),
             "node {node_id} must advertise an https:// fabric address, got '{address}'"
         );
+        authorities.push(
+            address
+                .trim_start_matches("https://")
+                .trim_end_matches('/')
+                .to_owned(),
+        );
     }
-    Ok(())
+    Ok(authorities)
+}
+
+/// Probes a fabric TCP port with a plaintext HTTP/2 connection and returns
+/// whether the server answered in plaintext. In strict mode the first bytes
+/// reach the TLS acceptor, the handshake fails, and the server closes the
+/// connection without responding; in optional mode the protocol sniff routes
+/// the connection to the plaintext HTTP/2 server, which answers the preface
+/// with a SETTINGS frame.
+async fn plaintext_http2_accepted(authority: &str) -> bool {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut stream = tokio::net::TcpStream::connect(authority)
+        .await
+        .expect("fabric TCP port is reachable");
+    stream
+        .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+        .await
+        .expect("can write HTTP/2 preface");
+
+    let mut buf = [0u8; 16];
+    match tokio::time::timeout(Duration::from_secs(10), stream.read(&mut buf)).await {
+        // read of 0 bytes = server closed the connection (TLS handshake failed)
+        Ok(Ok(n)) => n > 0,
+        Ok(Err(_)) => false,
+        Err(_) => panic!("timed out waiting for a response on {authority}"),
+    }
 }
 
 #[test_log::test(restate_core::test)]
@@ -187,7 +221,15 @@ async fn fabric_tls_strict_cluster() -> googletest::Result<()> {
     info!("Waiting for cluster to become healthy over mTLS");
     cluster.wait_healthy(Duration::from_secs(30)).await?;
 
-    assert_all_nodes_advertise_tls(&cluster, 3).await?;
+    let authorities = assert_all_nodes_advertise_tls(&cluster, 3).await?;
+
+    // strict mode must reject plaintext connections on the fabric port
+    for authority in &authorities {
+        assert!(
+            !plaintext_http2_accepted(authority).await,
+            "strict mode must reject plaintext connections on {authority}"
+        );
+    }
 
     info!("Cluster is healthy with strict mTLS — test passed");
     Ok(())
@@ -233,7 +275,15 @@ async fn fabric_tls_optional_mode() -> googletest::Result<()> {
     info!("Waiting for cluster to become healthy (optional mode)");
     cluster.wait_healthy(Duration::from_secs(30)).await?;
 
-    assert_all_nodes_advertise_tls(&cluster, 3).await?;
+    let authorities = assert_all_nodes_advertise_tls(&cluster, 3).await?;
+
+    // optional mode must still accept plaintext connections (rolling upgrades)
+    for authority in &authorities {
+        assert!(
+            plaintext_http2_accepted(authority).await,
+            "optional mode must accept plaintext connections on {authority}"
+        );
+    }
 
     info!("Cluster is healthy with optional TLS mode — test passed");
     Ok(())

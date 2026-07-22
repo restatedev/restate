@@ -169,12 +169,9 @@ impl<P: ListenerPort + 'static> ListenerOptions<P> {
         })
     }
 
-    /// Advertised address for listeners that never speak fabric TLS (admin, ingress, ...).
-    /// The fabric listener goes through [`CommonOptions::advertised_address`], which is
-    /// TLS-aware.
     pub fn advertised_address(&self, address_book: &AddressBook) -> AdvertisedAddress<P> {
         self.advertised_address.clone().unwrap_or_else(|| {
-            address_book.guess_advertised_address(self.advertised_host.as_deref(), false)
+            address_book.guess_advertised_address(self.advertised_host.as_deref())
         })
     }
 }
@@ -731,22 +728,12 @@ impl CommonOptions {
         self.fabric_listener_options.bind_address()
     }
 
-    /// The fabric advertised address. `tls` must reflect whether fabric TLS is enabled
-    /// (`networking.tls.is_some()`), so that peers dial back with the right scheme.
-    pub fn advertised_address(
-        &self,
-        address_book: &AddressBook,
-        tls: bool,
-    ) -> AdvertisedAddress<FabricPort> {
-        self.fabric_listener_options
-            .advertised_address
-            .clone()
-            .unwrap_or_else(|| {
-                address_book.guess_advertised_address(
-                    self.fabric_listener_options.advertised_host.as_deref(),
-                    tls,
-                )
-            })
+    /// The fabric advertised address. When fabric TLS is enabled, the address
+    /// book (which captures the TLS flag at bind time) derives an `https://`
+    /// scheme so peers dial back with TLS.
+    pub fn advertised_address(&self, address_book: &AddressBook) -> AdvertisedAddress<FabricPort> {
+        self.fabric_listener_options()
+            .advertised_address(address_book)
     }
 
     #[cfg(feature = "unsafe-mutable-config")]

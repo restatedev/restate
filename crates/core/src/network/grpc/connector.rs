@@ -96,7 +96,6 @@ fn create_channel<P: ListenerPort + GrpcPort>(
     tls: &Option<TlsCertResolver>,
 ) -> Channel {
     let address = address.into_address().expect("valid address");
-    let use_tls = address.is_tls() && tls.is_some();
 
     let endpoint = match &address {
         PeerNetAddress::Uds(_) => {
@@ -121,8 +120,11 @@ fn create_channel<P: ListenerPort + GrpcPort>(
         .keep_alive_while_idle(true)
         .tcp_nodelay(true);
 
-    if use_tls && let PeerNetAddress::Http(uri) = &address {
-        endpoint = apply_fabric_tls(endpoint, uri, tls.as_ref().unwrap());
+    if let Some(tls) = tls
+        && address.is_tls()
+        && let PeerNetAddress::Http(uri) = &address
+    {
+        endpoint = apply_fabric_tls(endpoint, uri, tls);
     }
 
     match address {

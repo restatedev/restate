@@ -189,9 +189,8 @@ impl<'a> NodeInit<'a> {
 
         let common = &config.common;
 
-        let my_advertised_address = TaskCenter::with_current(|tc| {
-            common.advertised_address(tc.address_book(), config.networking.tls.is_some())
-        });
+        let my_advertised_address =
+            TaskCenter::with_current(|tc| common.advertised_address(tc.address_book()));
 
         metadata_store_client
             .read_modify_write::<NodesConfiguration, _, _>(
@@ -358,7 +357,7 @@ mod tests {
             .address(
                 Configuration::pinned()
                     .common
-                    .advertised_address(&address_book, false),
+                    .advertised_address(&address_book),
             )
             .roles(EnumSet::default())
             .binary_version(RestateVersion::current())

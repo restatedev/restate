@@ -258,8 +258,10 @@ impl ClientCertVerifier for SubjectNameVerifier {
             .verify_client_cert(end_entity, intermediates, now)?;
 
         if !self.cert_subject_matches(end_entity) {
-            return Err(rustls::Error::General(
-                "peer certificate subject does not match any allowed pattern".into(),
+            // maps to an AccessDenied alert: the chain is valid but the
+            // peer's identity is not authorized
+            return Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::ApplicationVerificationFailure,
             ));
         }
 
@@ -341,8 +343,10 @@ impl ServerCertVerifier for SubjectNameServerVerifier {
         // that carry neither a CN nor SANs.
         let ca_only = self.allowed_patterns.iter().any(|s| s == "*");
         if !ca_only && !cert_subject_matches(end_entity, &self.allowed_patterns) {
-            return Err(rustls::Error::General(
-                "server certificate subject does not match any allowed pattern".into(),
+            // maps to an AccessDenied alert: the chain is valid but the
+            // peer's identity is not authorized
+            return Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::ApplicationVerificationFailure,
             ));
         }
 
@@ -438,18 +442,7 @@ mod tests {
 
     use super::*;
 
-    // Self-signed test CA certificate + key (generated offline, EC P-256)
-    const TEST_CA_CERT: &str = r#"-----BEGIN CERTIFICATE-----
-MIIBdjCCAR2gAwIBAgIUY5f5X5X5X5X5X5X5X5X5X5X5X5UwCgYIKoZIzj0E
-AwIwEjEQMA4GA1UEAwwHdGVzdC1jYTAeFw0yNDA0MzAwMDAwMDBaFw0zNDA0Mjgw
-MDAwMDBaMBIxEDAOBgNVBAMMB3Rlc3QtY2EwWTATBgcqhkjOPQIBBggqhkjOPQMB
-BwNCAAR7RpJNfPmVIb4y3tAM3qVvfR8nBHHqLmNGFnHlMHDFfh3Zv5Kx7Jm0wkE
-n0N5U9G8dAiRp0GC5K2JD0VBo1MwUTAdBgNVHQ4EFgQU0Lv0JIqOAEJMp7AZFY0
-Gz9H5WowHwYDVR0jBBgwFoAU0Lv0JIqOAEJMp7AZFY0Gz9H5WowDwYDVR0TAQH/
-BAUwAwEB/zAKBggqhkjOPQQDAgNHADBEAiBgR1hy5OMmR1J9KZNQP3v5N3EOJX3S
-lg7INz/ZPD1vxwIgGFZ1P3im+K5H6rDdBq4e3IkUq4YbuqvT0M5M2BDxIo=
------END CERTIFICATE-----"#;
-
+    // Self-signed test certificate + key (generated offline, EC P-256)
     const TEST_CERT: &str = r#"-----BEGIN CERTIFICATE-----
 MIIBdTCCARqgAwIBAgIUAQIDBAUGBwgJCgsMDQ4PEBESExQwCgYIKoZIzj0EAwIw
 EjEQMA4GA1UEAwwHdGVzdC1jYTAeFw0yNDA0MzAwMDAwMDBaFw0zNDA0MjgwMDAw
@@ -523,9 +516,19 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
         // Install crypto provider for rustls in test context
         let _ = rustls::crypto::ring::default_provider().install_default();
 
-        let cert_file = write_temp_file(TEST_CERT);
-        let key_file = write_temp_file(TEST_KEY);
-        let ca_file = write_temp_file(TEST_CA_CERT);
+        let ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        let ca_key = rcgen::KeyPair::generate().unwrap();
+        let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+
+        let node_params = rcgen::CertificateParams::new(vec!["node".to_owned()]).unwrap();
+        let node_key = rcgen::KeyPair::generate().unwrap();
+        let node_cert = node_params.self_signed(&node_key).unwrap();
+        // a different keypair than the one the certificate was issued for
+        let wrong_key = rcgen::KeyPair::generate().unwrap();
+
+        let cert_file = write_temp_file(&node_cert.pem());
+        let key_file = write_temp_file(&wrong_key.serialize_pem());
+        let ca_file = write_temp_file(&ca_cert.pem());
 
         let opts = FabricTlsOptions {
             mode: restate_types::config::TlsMode::Strict,
@@ -538,10 +541,16 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
             client: None,
         };
 
-        // Our test cert and key are not a matching pair, so this should fail
-        // during ServerConfig construction. This validates error handling.
-        let result = TlsCertResolver::new(&opts);
-        assert!(result.is_err());
+        // The cert and key are not a matching pair, so ServerConfig
+        // construction must fail — and for that reason, not e.g. file I/O.
+        let Err(err) = TlsCertResolver::new(&opts) else {
+            panic!("mismatched cert/key pair must be rejected");
+        };
+        let err = err.to_string().to_lowercase();
+        assert!(
+            err.contains("key"),
+            "expected a private-key/certificate mismatch error, got: {err}"
+        );
     }
 
     #[test]
@@ -645,8 +654,15 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
     #[test]
     fn subject_verifier_accepts_matching_cn() {
         let verifier = make_verifier(&["restate-*"]);
+        // CN-only cert (no SANs)
         let cert = generate_cert("restate-admin", &[], &[]);
         assert!(verifier.cert_subject_matches(&cert));
+        // CN still matches when non-matching SANs are present
+        let cert = generate_cert("restate-admin", &["spiffe://other/id"], &[]);
+        assert!(verifier.cert_subject_matches(&cert));
+        // neither CN nor SANs match
+        let cert = generate_cert("kafka-broker-1", &[], &[]);
+        assert!(!verifier.cert_subject_matches(&cert));
     }
 
     #[test]
@@ -693,16 +709,6 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
         assert!(verifier.cert_subject_matches(&admin_cert));
         assert!(verifier.cert_subject_matches(&worker_cert));
         assert!(!verifier.cert_subject_matches(&other_cert));
-    }
-
-    #[test]
-    fn subject_verifier_cn_fallback_when_no_san() {
-        let verifier = make_verifier(&["restate-node-*"]);
-        let cert = generate_cert("restate-node-1", &[], &[]);
-        assert!(verifier.cert_subject_matches(&cert));
-
-        let bad_cert = generate_cert("kafka-broker-1", &[], &[]);
-        assert!(!verifier.cert_subject_matches(&bad_cert));
     }
 
     /// End-to-end test of the client-side server-cert verifier with a real
