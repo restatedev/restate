@@ -162,6 +162,11 @@ enum State {
     Follower,
     Candidate {
         at: Instant,
+        /// When this node started campaigning for leadership. Unlike `at`, which is reset on
+        /// each state transition to time the current phase, this is preserved across a
+        /// `BecomingLeader` detour so the readiness event can report the full
+        /// candidacy-to-effective-leadership duration.
+        campaign_started_at: Instant,
         leader_epoch: LeaderEpoch,
         // to be able to move out of it
         self_proposer: Option<SelfProposer>,
@@ -170,11 +175,23 @@ enum State {
     /// From the perspective of other nodes, it's the effective leader of the partition.
     BecomingLeader {
         at: Instant,
+        campaign_started_at: Instant,
         leader_epoch: LeaderEpoch,
         // to be able to move out of it
         self_proposer: Option<SelfProposer>,
     },
     Leader(Box<LeaderState>),
+}
+
+/// Readiness recorded when `become_leader` installs `State::Leader`: the epoch it became
+/// leader for, and how long it took to get there, measured from when this node started
+/// campaigning for leadership until it reached effective leadership. This spans the
+/// `AnnounceLeader` log round-trip and, on feature-enabling transitions, the intervening
+/// `BecomingLeader` version-barrier round-trip. It excludes only the leader-epoch acquisition
+/// that precedes the campaign.
+pub(crate) struct EffectiveLeadershipReadiness {
+    pub(crate) leader_epoch: LeaderEpoch,
+    pub(crate) time_to_effective_leadership: Duration,
 }
 
 impl State {
@@ -194,6 +211,11 @@ pub(crate) struct LeadershipState<T> {
     partition_id: PartitionId,
     ingestion_client: IngestionClient<T, Envelope>,
     leader_query_tx: LeaderQuerySender,
+
+    /// Set when `become_leader` installs `State::Leader`, cleared by
+    /// `take_effective_leadership_readiness` once the enclosing batch has been successfully
+    /// committed locally and the readiness log can be safely emitted.
+    became_effective_leader: Option<EffectiveLeadershipReadiness>,
 }
 
 impl<T> LeadershipState<T>
@@ -210,11 +232,26 @@ where
             partition_id,
             ingestion_client,
             leader_query_tx,
+            became_effective_leader: None,
         }
     }
 
     pub(crate) fn is_leader(&self) -> bool {
         matches!(self.state, State::Leader(_) | State::BecomingLeader { .. })
+    }
+
+    pub(crate) fn is_effective_leader(&self) -> bool {
+        matches!(self.state, State::Leader(_))
+    }
+
+    /// Returns and consumes the readiness recorded when `become_leader` installed
+    /// `State::Leader`, but only if the processor is still an effective leader. The token is
+    /// consumed even after a same-batch step-down, so it can never be observed twice.
+    pub(crate) fn take_effective_leadership_readiness(
+        &mut self,
+    ) -> Option<EffectiveLeadershipReadiness> {
+        let readiness = self.became_effective_leader.take()?;
+        self.is_effective_leader().then_some(readiness)
     }
 
     pub(crate) fn partition_id(&self) -> PartitionId {
@@ -272,6 +309,7 @@ where
         ctx: impl Processor,
         node_ctx: &NodeContext,
     ) -> Result<(), Error> {
+        let campaign_started_at = Instant::now();
         let leader_epoch = leadership_info.leader_epoch;
 
         let announce_leader = Command::AnnounceLeader(Box::new(AnnounceLeaderCommand {
@@ -295,6 +333,7 @@ where
 
         self.state = State::Candidate {
             at: Instant::now(),
+            campaign_started_at,
             leader_epoch,
             self_proposer: Some(self_proposer),
         };
@@ -462,11 +501,13 @@ where
 
         if let State::Candidate {
             at,
+            campaign_started_at,
             leader_epoch,
             self_proposer,
         }
         | State::BecomingLeader {
             at,
+            campaign_started_at,
             leader_epoch,
             self_proposer,
         } = &mut self.state
@@ -579,6 +620,7 @@ where
 
                 self.state = State::BecomingLeader {
                     at: Instant::now(),
+                    campaign_started_at: *campaign_started_at,
                     leader_epoch: *leader_epoch,
                     self_proposer: Some(self_proposer),
                 };
@@ -715,9 +757,11 @@ where
                 at.elapsed().friendly(),
             );
 
+            let leader_epoch = *leader_epoch;
+            let campaign_started_at = *campaign_started_at;
             self.state = State::Leader(Box::new(LeaderState::new(
                 processor.partition_id(),
-                *leader_epoch,
+                leader_epoch,
                 processor.key_range(),
                 shuffle_task_handle,
                 cleaner_handle,
@@ -736,6 +780,11 @@ where
                 leader_query_guard,
                 node_ctx.rule_book_cache.subscribe(),
             )));
+
+            self.became_effective_leader = Some(EffectiveLeadershipReadiness {
+                leader_epoch,
+                time_to_effective_leadership: campaign_started_at.elapsed(),
+            });
 
             Ok(())
         } else {
@@ -1152,6 +1201,7 @@ mod tests {
         // the journal-v2 default; the processor stays `BecomingLeader` until that barrier
         // is applied.
         assert!(matches!(state.state, State::BecomingLeader { .. }));
+        assert!(!state.is_effective_leader());
 
         let record = reader.next().await.unwrap()?;
         let envelope = record.try_decode::<Envelope>().unwrap()?;
@@ -1173,6 +1223,19 @@ mod tests {
             .await?;
 
         assert!(matches!(state.state, State::Leader(_)));
+        assert!(state.is_effective_leader());
+
+        // become_leader() only records the transition; the caller (the partition
+        // processor's run loop) is responsible for emitting the readiness log, and only
+        // after the enclosing batch has been successfully committed locally.
+        let readiness = state
+            .take_effective_leadership_readiness()
+            .expect("become_leader records the transition to effective leadership");
+        assert_eq!(readiness.leader_epoch, leader_epoch);
+        // Measured from candidacy, so it spans the AnnounceLeader and BecomingLeader
+        // round-trips this test walked through, not just the final become_leader body.
+        assert!(!readiness.time_to_effective_leadership.is_zero());
+        assert!(state.take_effective_leadership_readiness().is_none());
 
         state.step_down().await;
 

@@ -43,7 +43,7 @@ use futures::{FutureExt, StreamExt};
 use metrics::histogram;
 use tokio::sync::watch;
 use tokio::time::{Instant, MissedTickBehavior};
-use tracing::{debug, error, instrument, trace, warn};
+use tracing::{debug, error, info, instrument, trace, warn};
 
 use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{DataRecord, DataRecordError, LogEntry};
@@ -633,6 +633,15 @@ where
                     // compact while applying the WAL commands as this could remove vqueue meta entries
                     // which are required by the scheduler when applying the scheduler events.
                     self.ctx.vqueues_mut().try_compact();
+
+                    if let Some(readiness) = self.leadership_state.take_effective_leadership_readiness() {
+                        info!(
+                            partition_id = %self.ctx.partition_id(),
+                            leader_epoch = %readiness.leader_epoch,
+                            time_to_effective_leadership_seconds = readiness.time_to_effective_leadership.as_secs_f64(),
+                            "Partition processor reached effective leadership"
+                        );
+                    }
                 },
                 result = self.leadership_state.run(&mut self.ctx) => {
                     let action_effects = result?;
