@@ -239,6 +239,9 @@ impl Node {
             resolver
                 .spawn_reloader(tls_opts.clone(), *tls_opts.refresh_interval)
                 .expect("to spawn fabric TLS cert reloader");
+            // register process-wide so channels created via create_tonic_channel
+            // (metadata-store, raft, control) can dial https:// fabric peers
+            resolver.set_global();
             resolver
         });
 

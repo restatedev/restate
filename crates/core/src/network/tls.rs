@@ -26,9 +26,19 @@ use tracing::{info, warn};
 use wildmatch::WildMatchPattern;
 use x509_parser::prelude::*;
 
+use std::sync::OnceLock;
+
 use restate_types::config::FabricTlsOptions;
 
 use crate::{ShutdownError, TaskCenter, TaskId, TaskKind, cancellation_watcher};
+
+/// The process-wide fabric TLS resolver, set once at node startup when
+/// `[networking.tls]` is configured. Fabric TLS configuration is process-global
+/// (like [`restate_types::config::Configuration`]), and channels to fabric
+/// peers are created from many places that dial advertised addresses directly
+/// (metadata-store client, raft networking, control channels) — they all pick
+/// up the client identity and server verifier through this handle.
+static GLOBAL_RESOLVER: OnceLock<TlsCertResolver> = OnceLock::new();
 
 /// Client-side TLS materials for outbound fabric connections: the client
 /// identity as PEM (the form tonic consumes) and the server-certificate
@@ -66,6 +76,17 @@ impl TlsCertResolver {
 
     pub fn tls_acceptor(&self) -> TlsAcceptor {
         TlsAcceptor::from(self.server_config())
+    }
+
+    /// Registers this resolver as the process-wide fabric TLS resolver.
+    /// Returns false if one was already set.
+    pub fn set_global(&self) -> bool {
+        GLOBAL_RESOLVER.set(self.clone()).is_ok()
+    }
+
+    /// The process-wide fabric TLS resolver, if fabric TLS is configured.
+    pub fn global() -> Option<&'static TlsCertResolver> {
+        GLOBAL_RESOLVER.get()
     }
 
     /// Spawns a background task that periodically reloads certificates from disk.
@@ -315,7 +336,11 @@ impl ServerCertVerifier for SubjectNameServerVerifier {
             Err(e) => return Err(e),
         };
 
-        if !cert_subject_matches(end_entity, &self.allowed_patterns) {
+        // "*" is the documented CA-only trust opt-in: chain validation only,
+        // no identity check. Skipping cert_subject_matches also covers certs
+        // that carry neither a CN nor SANs.
+        let ca_only = self.allowed_patterns.iter().any(|s| s == "*");
+        if !ca_only && !cert_subject_matches(end_entity, &self.allowed_patterns) {
             return Err(rustls::Error::General(
                 "server certificate subject does not match any allowed pattern".into(),
             ));
@@ -356,16 +381,19 @@ fn build_client_materials(opts: &FabricTlsOptions) -> anyhow::Result<ClientTlsMa
     }
     let webpki_verifier = WebPkiServerVerifier::builder(Arc::new(root_store)).build()?;
 
-    let ca_only_trust = opts.allowed_subject_names.iter().any(|s| s == "*");
-    let verifier: Arc<dyn ServerCertVerifier> =
-        if ca_only_trust || opts.allowed_subject_names.is_empty() {
-            webpki_verifier
-        } else {
-            Arc::new(SubjectNameServerVerifier {
-                inner: webpki_verifier,
-                allowed_patterns: opts.allowed_subject_names.clone(),
-            })
-        };
+    // Unlike the server side, the wildcard cannot short-circuit to the raw
+    // webpki verifier here: webpki enforces hostname matching, which fails for
+    // SPIFFE URI-only or CN-only node certificates. CA-only trust ("*") means
+    // chain validation without endpoint-identity checking, which is exactly
+    // what SubjectNameServerVerifier does when the wildcard is present.
+    let verifier: Arc<dyn ServerCertVerifier> = if opts.allowed_subject_names.is_empty() {
+        webpki_verifier
+    } else {
+        Arc::new(SubjectNameServerVerifier {
+            inner: webpki_verifier,
+            allowed_patterns: opts.allowed_subject_names.clone(),
+        })
+    };
 
     let cert_file = opts.client_cert_file();
     let key_file = opts.client_key_file();
@@ -736,6 +764,25 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
         let self_signed = generate_cert("x", &["spiffe://domain/restate/node-1"], &[]);
         assert!(
             verifier
+                .verify_server_cert(&self_signed, &[], &server_name, &[], now)
+                .is_err()
+        );
+
+        // Wildcard = CA-only trust: any identity from the trusted CA is
+        // accepted despite the hostname mismatch, but chain validation still
+        // applies (self-signed remains rejected).
+        let ca_only = SubjectNameServerVerifier {
+            inner: verifier.inner,
+            allowed_patterns: vec!["*".to_owned()],
+        };
+        let foreign = sign_leaf("spiffe://domain/other-service/node-1");
+        assert!(
+            ca_only
+                .verify_server_cert(&foreign, &[], &server_name, &[], now)
+                .is_ok()
+        );
+        assert!(
+            ca_only
                 .verify_server_cert(&self_signed, &[], &server_name, &[], now)
                 .is_err()
         );
