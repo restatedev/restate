@@ -9,18 +9,7 @@
 
 syntax = "proto3";
 
-package dev.restate.ingress.ingestion;
-
-// Version negotiation:
-// When opening a stream, the client advertises the
-// protocol versions it supports via the
-// `x-restate-accept-ingestion-version` header
-// (a comma-separated list, e.g. `1, 2, 3`).
-// The server picks a supported version and echoes it
-// back in the `x-ingestion-version` header (e.g. `1`).
-// If no common version can be agreed on, the server
-// immediately closes the stream with a gRPC error.
-// The current protocol version is 1.
+package dev.restate.ingress.integration.v1;
 
 
 // Required.
@@ -164,13 +153,13 @@ message Response {
     optional uint64 last_committed = 1;
 
     oneof response {
-        WindowUpdate ack = 2;
+        WindowUpdate window_update = 2;
         Error error = 3;
     }
 }
 
 // Service that is only reachable on nodes that are alive.
-service IngestionSvc {
+service IntegrationSvc {
   // Opens a bidirectional node-to-node stream.
   rpc Ingest(stream Request)
       returns (stream Response);
