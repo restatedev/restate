@@ -744,6 +744,7 @@ where
                         self.last_applied_log_lsn_watch.send_replace(*lsn);
                     }
                     self.leadership_state.handle_actions(vqueues.view(), action_collector.drain(..))?;
+                    vqueues.try_compact();
                 },
                 result = self.leadership_state.run(&self.state_machine, vqueues.view()) => {
                     let action_effects = result?;

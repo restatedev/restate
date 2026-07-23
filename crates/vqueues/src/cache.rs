@@ -120,6 +120,9 @@ pub struct VQueuesMetaCache {
     /// this number. The slab/hashmap will still grow past this if compaction
     /// frees nothing.
     target_capacity: usize,
+    /// True if the meta cache is above it's target capacity and possibly contains compactable
+    /// entries.
+    should_run_compaction: bool,
 }
 
 impl VQueuesMetaCache {
@@ -166,12 +169,36 @@ impl VQueuesMetaCache {
         evicted
     }
 
+    /// Runs compaction if the cache exceeds its target capacity and the cache contains possibly
+    /// compactable entries. Returns the number of compacted entries.
+    pub fn try_compact(&mut self) -> usize {
+        if self.should_run_compaction {
+            // disarm to prevent running compactions again until we are compactable again
+            self.should_run_compaction = false;
+
+            let evicted = self.compact();
+            if evicted == 0 {
+                trace!(
+                    "vqueue cache at {} entries with no inactive queues to evict; cache will grow past target_capacity={}",
+                    self.slab.len(),
+                    self.target_capacity,
+                );
+            } else {
+                trace!("vqueue cache compaction freed {evicted} entries");
+            }
+            evicted
+        } else {
+            0
+        }
+    }
+
     #[cfg(any(test, feature = "test-util"))]
     pub fn new_empty(target_capacity: usize) -> Self {
         Self {
             slab: SlotMap::with_capacity_and_key(target_capacity),
             queues: HashMap::with_capacity(target_capacity),
             target_capacity,
+            should_run_compaction: false,
         }
     }
 
@@ -212,6 +239,7 @@ impl VQueuesMetaCache {
             slab,
             queues,
             target_capacity,
+            should_run_compaction: false,
         })
     }
 
@@ -231,20 +259,11 @@ impl VQueuesMetaCache {
     }
 
     /// Inserts a vqueue metadata unconditionally to the cache. The single point
-    /// of entry into the cache; runs compaction when occupancy reaches the
-    /// configured `target_capacity`.
+    /// of entry into the cache; marks the cache as compactable occupancy reaches the
+    /// configured `target_capacity`. Compaction only runs via [`self.try_compact`]
     pub(super) fn insert(&mut self, qid: VQueueId, meta: VQueueMeta) -> VQueueHandle {
         if self.slab.len() >= self.target_capacity {
-            let evicted = self.compact();
-            if evicted == 0 {
-                tracing::trace!(
-                    "vqueue cache at {} entries with no inactive queues to evict; cache will grow past target_capacity={}",
-                    self.slab.len(),
-                    self.target_capacity,
-                );
-            } else {
-                trace!("vqueue cache compaction freed {evicted} entries");
-            }
+            self.should_run_compaction = true;
         }
         let key = self.slab.insert(Slot {
             qid: qid.clone(),
@@ -363,9 +382,9 @@ mod tests {
     }
 
     #[test]
-    fn insert_auto_compacts_when_capacity_hit() {
+    fn insert_marks_cache_as_compactable() {
         let now = ts(1_744_000_000_000);
-        // Tiny cap so we can drive the auto-compact path in two steps.
+        // Tiny cap so we can drive the compact path in two steps.
         let mut cache = VQueuesMetaCache::new_empty(3);
 
         // Fill with 3 inactive entries.
@@ -374,12 +393,22 @@ mod tests {
         }
         assert_eq!(cache.len(), 3);
 
-        // The next insert should observe `len >= target_capacity` and compact
-        // the inactive ones before adding the new entry.
+        // As long as the cache is not marked as compactable, running compactions should be a no-op.
+        assert!(!cache.should_run_compaction);
+        assert_eq!(cache.try_compact(), 0);
+        assert_eq!(cache.len(), 3);
+
+        // The next insert should observe `len >= target_capacity` and mark the cache
+        // as compactable.
         let mut active_meta = empty_meta(now);
         enqueue_to_inbox(&mut active_meta, now);
         cache.insert(VQueueId::custom(99, "fresh"), active_meta);
 
+        assert!(cache.should_run_compaction);
+
+        // Try compaction should compact the cache now
+        cache.try_compact();
+        assert!(!cache.should_run_compaction);
         assert_eq!(cache.len(), 1);
         assert!(
             cache
