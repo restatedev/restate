@@ -9,13 +9,14 @@ now place the local running node's HTTP ingress role into an irreversible drain 
 of that process. `--current` resolves the local node's exact generation before draining, while
 `--node <generational-node-id>` remains available for an explicitly targeted node. Draining closes
 listeners, sends graceful shutdown notifications to existing connections, and reports the
-outstanding request and connection counts. Existing requests remain active until normal node
-shutdown applies its bounded final deadline.
+outstanding request and connection counts. Existing accepted HTTP requests and connections remain
+active until normal node shutdown applies its bounded final deadline.
 
 ### Why This Matters
 
-Operators can stop new ingress traffic early in a planned node termination and wait for the HTTP
-role to become quiescent before proceeding with the rest of the shutdown sequence.
+Operators can stop new ingress traffic early in a planned node termination and observe when the
+HTTP role has become quiescent. This status is an HTTP admission and connection signal only: it is
+not sufficient by itself to decide that a process or its worker roles are safe to terminate.
 
 ### Impact on Users
 

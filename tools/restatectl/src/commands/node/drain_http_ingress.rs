@@ -27,7 +27,9 @@ use crate::util::grpc_channel;
 /// Starts or polls the lifetime-scoped HTTP ingress drain on one node.
 ///
 /// Use `--single-address http://127.0.0.1:5122` to address the local node directly without
-/// reading the nodes configuration. This is the recommended mode for a preStop hook.
+/// reading the nodes configuration.
+/// A `drained` result reports HTTP admission and connection quiescence only; it must not by
+/// itself be used as the condition to terminate a process or its worker roles.
 pub struct DrainHttpIngressOpts {
     /// The exact node generation to drain (for example N1:9)
     #[arg(long, required_unless_present = "current", conflicts_with = "current")]
