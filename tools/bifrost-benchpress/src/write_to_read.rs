@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroUsize;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -18,6 +19,7 @@ use tracing::info;
 
 use restate_bifrost::{Bifrost, ErrorRecoveryStrategy};
 use restate_core::{Metadata, TaskCenter, TaskHandle, TaskKind};
+use restate_memory::NonZeroByteCount;
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber, WithKeys};
 
 use crate::Arguments;
@@ -31,10 +33,10 @@ pub struct WriteToReadOpts {
     #[clap(long, default_value = "2000")]
     max_batch_size: usize,
 
-    /// Number of records that can be buffered in background appender before back-pressure kicks
-    /// in.
-    #[clap(long, default_value = "5000")]
-    write_buffer_size: usize,
+    /// Number of bytes that can be buffered in the background appender before back-pressure
+    /// kicks in.
+    #[clap(long, default_value = "2500000")]
+    write_buffer_size: NonZeroUsize,
 
     /// The number of records to write during this test
     #[clap(long, default_value = "400000")]
@@ -93,15 +95,17 @@ pub async fn run(_common_args: &Arguments, args: &WriteToReadOpts, bifrost: Bifr
             let blob = BytesMut::zeroed(args.payload_size).freeze();
             async move {
                 let mut append_latency = Histogram::<u64>::new(3)?;
+                let memory_limit = NonZeroByteCount::new(args.write_buffer_size);
                 let mut appender_handle = bifrost
                     .create_background_appender(
                         LOG_ID,
                         ErrorRecoveryStrategy::ExtendChainPreferred,
-                        args.write_buffer_size,
+                        Some(memory_limit),
                         args.max_batch_size,
                     )?
                     .start("writer")?;
                 let sender = appender_handle.sender();
+                let mut capacity_poller = sender.capacity_poller();
                 let start = Instant::now();
                 for counter in 1..=args.num_records {
                     let start = Instant::now();
@@ -109,7 +113,9 @@ pub async fn run(_common_args: &Arguments, args: &WriteToReadOpts, bifrost: Bifr
                         precise_ts: clock.raw(),
                         blob: blob.clone(),
                     };
-                    sender.enqueue(record.with_no_keys()).await.unwrap();
+                    // enqueue() never blocks; apply back-pressure when the buffer is exhausted
+                    std::future::poll_fn(|cx| capacity_poller.poll_available(cx)).await;
+                    sender.enqueue(record.with_no_keys()).unwrap();
                     append_latency.record(start.elapsed().as_nanos() as u64)?;
                     if counter % 10000 == 0 {
                         info!("Appended {} records", counter);

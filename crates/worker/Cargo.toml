@@ -60,6 +60,7 @@ bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
 derive_more = { workspace = true, features = ["debug", "display", "from"] }
+enum-map = { workspace = true }
 futures = { workspace = true }
 itertools = { workspace = true }
 metrics = { workspace = true }
@@ -88,7 +89,6 @@ restate-vqueues = { workspace = true, features = ["test-util"] }
 restate-wal-protocol = { workspace = true, features = ["test-util"] }
 
 googletest = { workspace = true }
-mockall = { workspace = true }
 prost = { workspace = true }
 rstest = { workspace = true }
 test-log = { workspace = true }
