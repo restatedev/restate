@@ -251,19 +251,19 @@ where
                         let tls_mode = network_options.tls_mode();
 
                         TaskCenter::spawn(TaskKind::SocketHandler, task_name.clone(), async move {
-                            let established = tokio::time::timeout(
-                                TLS_HANDSHAKE_TIMEOUT,
-                                establish_tcp_connection(tcp_stream, tls, tls_mode),
+                            let negotiated = tokio::time::timeout(
+                                TLS_NEGOTIATION_TIMEOUT,
+                                negotiate_tcp_transport(tcp_stream, tls, tls_mode),
                             )
                             .await;
-                            let stream = match established {
+                            let stream = match negotiated {
                                 Ok(Ok(stream)) => stream,
                                 Ok(Err(e)) => {
-                                    debug!("TLS handshake failed: {e}");
+                                    debug!("TCP transport negotiation failed: {e}");
                                     return Ok(());
                                 }
                                 Err(_) => {
-                                    debug!("TLS handshake timed out");
+                                    debug!("TCP transport negotiation timed out");
                                     return Ok(());
                                 }
                             };
@@ -307,13 +307,13 @@ where
 /// Upper bound on the TLS protocol sniff + handshake for a newly accepted
 /// TCP connection. This runs in the per-connection task, so it bounds resource
 /// usage per connection rather than protecting the accept loop.
-const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+const TLS_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Establishes the application-layer transport on a freshly accepted TCP
 /// stream: performs the TLS handshake in `require` mode; in `allow`/`prefer`
 /// modes, sniffs the first byte (0x16 = TLS ClientHello) to decide between TLS
 /// and plaintext; passes plaintext through otherwise.
-async fn establish_tcp_connection(
+async fn negotiate_tcp_transport(
     tcp_stream: tokio::net::TcpStream,
     tls_config: Option<TlsServerConfig>,
     tls_mode: TlsMode,
