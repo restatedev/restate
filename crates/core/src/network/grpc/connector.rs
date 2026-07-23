@@ -27,7 +27,7 @@ use crate::network::grpc::DEFAULT_GRPC_COMPRESSION;
 use crate::network::net_util::apply_fabric_tls;
 use crate::network::protobuf::core_node_svc::core_node_svc_client::CoreNodeSvcClient;
 use crate::network::protobuf::network::Message;
-use crate::network::tls::TlsCertResolver;
+use crate::network::tls::TlsClientConfig;
 use crate::network::transport_connector::find_node;
 use crate::network::{ConnectError, Destination, Swimlane, TransportConnect};
 use crate::{Metadata, TaskCenter, TaskKind};
@@ -124,11 +124,12 @@ fn create_channel<P: ListenerPort + GrpcPort>(
     if address.is_tls()
         && let PeerNetAddress::Http(uri) = &address
     {
-        if let Some(resolver) = TlsCertResolver::global() {
-            endpoint = apply_fabric_tls(endpoint, uri, resolver);
+        if let Some(config) = TlsClientConfig::global() {
+            endpoint = apply_fabric_tls(endpoint, uri, config);
         } else {
             return Err(ConnectError::Transport(
-                "no tls resolver configured, but peer is advertising a tls address".to_owned(),
+                "no tls client configuration available, but peer is advertising a tls address"
+                    .to_owned(),
             ));
         }
     }

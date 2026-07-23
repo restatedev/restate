@@ -24,7 +24,7 @@ use tokio::net::UnixStream;
 use tokio::task::JoinHandle;
 use tokio_util::either::Either;
 use tonic::transport::{Channel, Endpoint};
-use tracing::{Instrument, Span, debug, error_span, info, instrument, trace, warn};
+use tracing::{Instrument, Span, debug, error_span, info, instrument, trace};
 
 use restate_types::config::{Configuration, TlsMode};
 use restate_types::errors::GenericError;
@@ -33,7 +33,7 @@ use restate_types::net::address::{ListenerPort, PeerNetAddress};
 use restate_types::net::connect_opts::CommonClientConnectionOptions;
 use restate_types::net::listener::Listeners;
 
-use crate::network::tls::TlsCertResolver;
+use crate::network::tls::{TlsClientConfig, TlsServerConfig};
 use crate::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
 
 pub enum DNSResolution {
@@ -47,8 +47,8 @@ pub enum DNSResolution {
 /// `https://` fabric peer. Reads the materials per call (rather than once at
 /// startup) so certificate hot-reload takes effect for new connections.
 /// Without this, tonic rejects `https://` URIs with `HttpsUriWithoutTlsSupport`.
-pub fn apply_fabric_tls(endpoint: Endpoint, uri: &Uri, resolver: &TlsCertResolver) -> Endpoint {
-    let materials = resolver.client_materials();
+pub fn apply_fabric_tls(endpoint: Endpoint, uri: &Uri, config: &TlsClientConfig) -> Endpoint {
+    let materials = config.client_materials();
     let identity = tonic::transport::Identity::from_pem(&materials.cert_pem, &materials.key_pem);
     let mut tls_config = tonic::transport::ClientTlsConfig::new().identity(identity);
     // tonic derives the rustls ServerName from uri.host(), which is bracketed
@@ -87,10 +87,10 @@ pub fn create_tonic_channel<
     // identity regardless of which channel factory dials them (metadata-store,
     // raft, control channels all go through here).
     if address.is_tls()
-        && let Some(resolver) = TlsCertResolver::global()
+        && let Some(config) = TlsClientConfig::global()
         && let PeerNetAddress::Http(uri) = &address
     {
-        endpoint = apply_fabric_tls(endpoint, uri, resolver);
+        endpoint = apply_fabric_tls(endpoint, uri, config);
     }
 
     match address {
@@ -163,7 +163,7 @@ pub async fn run_hyper_server<P: ListenerPort, S, B>(
     listeners: Listeners<P>,
     service: S,
     on_stop: impl Fn(),
-    tls: Option<TlsCertResolver>,
+    tls: Option<TlsServerConfig>,
 ) -> Result<(), Error>
 where
     S: hyper::service::Service<http::Request<Incoming>, Response = hyper::Response<B>>
@@ -202,7 +202,7 @@ async fn run_listener_loop<P: ListenerPort, S, B>(
     mut listeners: Listeners<P>,
     service: S,
     server_name: &'static str,
-    tls: Option<TlsCertResolver>,
+    tls: Option<TlsServerConfig>,
 ) -> Result<(), Error>
 where
     S: hyper::service::Service<http::Request<Incoming>, Response = hyper::Response<B>>
@@ -315,23 +315,23 @@ const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// and plaintext; passes plaintext through otherwise.
 async fn establish_tcp_connection(
     tcp_stream: tokio::net::TcpStream,
-    tls_resolver: Option<TlsCertResolver>,
+    tls_config: Option<TlsServerConfig>,
     tls_mode: TlsMode,
 ) -> Result<
     Either<tokio_rustls::server::TlsStream<tokio::net::TcpStream>, tokio::net::TcpStream>,
     Error,
 > {
-    let acceptor = match (&tls_resolver, &tls_mode) {
-        (Some(resolver), TlsMode::Require) => Some(resolver.tls_acceptor()),
+    let acceptor = match (&tls_config, &tls_mode) {
+        (Some(config), TlsMode::Require) => Some(config.tls_acceptor()),
         (None, TlsMode::Require) => {
             return Err(Error::Configuration(
                 "TLS is in required mode, but no TLS configuration is present. Rejecting the connection.".to_owned(),
             ));
         }
-        (Some(resolver), TlsMode::Allow | TlsMode::Prefer) => {
+        (Some(config), TlsMode::Allow | TlsMode::Prefer) => {
             let mut peek_buf = [0u8; 1];
             if matches!(tcp_stream.peek(&mut peek_buf).await, Ok(1) if peek_buf[0] == 0x16) {
-                Some(resolver.tls_acceptor())
+                Some(config.tls_acceptor())
             } else {
                 None
             }

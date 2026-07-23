@@ -22,14 +22,14 @@ use restate_types::net::listener::{AddressBook, Listeners};
 use restate_types::protobuf::common::NodeRpcStatus;
 
 use super::net_util::run_hyper_server;
-use super::tls::TlsCertResolver;
+use super::tls::TlsServerConfig;
 
 pub struct NetworkServerBuilder {
     grpc_descriptors: Vec<&'static [u8]>,
     grpc_routes: Option<Routes>,
     axum_router: Option<axum::routing::Router>,
     listeners: Listeners<FabricPort>,
-    tls: Option<TlsCertResolver>,
+    tls: Option<TlsServerConfig>,
 }
 
 impl NetworkServerBuilder {
@@ -43,7 +43,7 @@ impl NetworkServerBuilder {
         }
     }
 
-    pub fn set_tls(&mut self, tls: Option<TlsCertResolver>) {
+    pub fn set_tls(&mut self, tls: Option<TlsServerConfig>) {
         self.tls = tls;
     }
 

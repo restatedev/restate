@@ -9,8 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
@@ -26,19 +27,17 @@ use tracing::{info, warn};
 use wildmatch::WildMatchPattern;
 use x509_parser::prelude::*;
 
-use std::sync::OnceLock;
-
 use restate_types::config::FabricTlsOptions;
 
 use crate::{ShutdownError, TaskCenter, TaskId, TaskKind, cancellation_watcher};
 
-/// The process-wide fabric TLS resolver, set once at node startup when
+/// The process-wide fabric TLS client configuration, set once at node startup when
 /// `[networking.tls]` is configured. Fabric TLS configuration is process-global
 /// (like [`restate_types::config::Configuration`]), and channels to fabric
 /// peers are created from many places that dial advertised addresses directly
 /// (metadata-store client, raft networking, control channels) — they all pick
 /// up the client identity and server verifier through this handle.
-static GLOBAL_RESOLVER: OnceLock<TlsCertResolver> = OnceLock::new();
+static GLOBAL_CLIENT_CONFIG: OnceLock<TlsClientConfig> = OnceLock::new();
 
 /// Client-side TLS materials for outbound fabric connections: the client
 /// identity as PEM (the form tonic consumes) and the server-certificate
@@ -49,20 +48,61 @@ pub struct ClientTlsMaterials {
     pub verifier: Arc<dyn ServerCertVerifier>,
 }
 
-/// Holds hot-swappable TLS configurations for both server and client roles.
+/// Holds hot-swappable TLS material for outbound fabric connections.
 #[derive(Clone)]
-pub struct TlsCertResolver {
-    server_config: Arc<ArcSwap<ServerConfig>>,
+pub struct TlsClientConfig {
     client_materials: Arc<ArcSwap<ClientTlsMaterials>>,
 }
 
-impl TlsCertResolver {
+impl TlsClientConfig {
+    pub fn new<S: AsRef<str>>(
+        cert_file: &Path,
+        key_file: &Path,
+        ca_files: &[PathBuf],
+        allowed_subject_names: &[S],
+    ) -> anyhow::Result<Self> {
+        let client = build_client_materials(cert_file, key_file, ca_files, allowed_subject_names)?;
+        Ok(Self {
+            client_materials: Arc::new(ArcSwap::from_pointee(client)),
+        })
+    }
+
+    pub fn from_fabric_options(opts: &FabricTlsOptions) -> anyhow::Result<Self> {
+        Self::new(
+            opts.client_cert_file(),
+            opts.client_key_file(),
+            opts.client_ca_files(),
+            &opts.allowed_subject_names,
+        )
+    }
+
+    pub fn client_materials(&self) -> Arc<ClientTlsMaterials> {
+        self.client_materials.load_full()
+    }
+
+    /// Registers this configuration as the process-wide fabric TLS client configuration.
+    /// Returns false if one was already set.
+    pub fn set_global(&self) -> bool {
+        GLOBAL_CLIENT_CONFIG.set(self.clone()).is_ok()
+    }
+
+    /// The process-wide fabric TLS client configuration, if fabric TLS is configured.
+    pub fn global() -> Option<&'static TlsClientConfig> {
+        GLOBAL_CLIENT_CONFIG.get()
+    }
+}
+
+/// Holds a hot-swappable TLS configuration for inbound fabric connections.
+#[derive(Clone)]
+pub struct TlsServerConfig {
+    server_config: Arc<ArcSwap<ServerConfig>>,
+}
+
+impl TlsServerConfig {
     pub fn new(opts: &FabricTlsOptions) -> anyhow::Result<Self> {
         let server = build_server_config(opts)?;
-        let client = build_client_materials(opts)?;
         Ok(Self {
             server_config: Arc::new(ArcSwap::from_pointee(server)),
-            client_materials: Arc::new(ArcSwap::from_pointee(client)),
         })
     }
 
@@ -70,69 +110,61 @@ impl TlsCertResolver {
         self.server_config.load_full()
     }
 
-    pub fn client_materials(&self) -> Arc<ClientTlsMaterials> {
-        self.client_materials.load_full()
-    }
-
     pub fn tls_acceptor(&self) -> TlsAcceptor {
         TlsAcceptor::from(self.server_config())
     }
+}
 
-    /// Registers this resolver as the process-wide fabric TLS resolver.
-    /// Returns false if one was already set.
-    pub fn set_global(&self) -> bool {
-        GLOBAL_RESOLVER.set(self.clone()).is_ok()
-    }
+/// Spawns a background task that periodically reloads the client and server
+/// TLS configurations from disk. The task is managed by the `TaskCenter` and
+/// is cancelled on system shutdown.
+pub fn spawn_reloader(
+    opts: FabricTlsOptions,
+    server_config: &TlsServerConfig,
+    client_config: &TlsClientConfig,
+    interval: Duration,
+) -> Result<TaskId, ShutdownError> {
+    let server_config = Arc::clone(&server_config.server_config);
+    let client_materials = Arc::clone(&client_config.client_materials);
 
-    /// The process-wide fabric TLS resolver, if fabric TLS is configured.
-    pub fn global() -> Option<&'static TlsCertResolver> {
-        GLOBAL_RESOLVER.get()
-    }
-
-    /// Spawns a background task that periodically reloads certificates from disk.
-    /// The task is managed by the `TaskCenter` and is cancelled on system shutdown.
-    pub fn spawn_reloader(
-        &self,
-        opts: FabricTlsOptions,
-        interval: Duration,
-    ) -> Result<TaskId, ShutdownError> {
-        let server_config = Arc::clone(&self.server_config);
-        let client_materials = Arc::clone(&self.client_materials);
-
-        TaskCenter::spawn(
-            TaskKind::Background,
-            "fabric-tls-cert-reloader",
-            async move {
-                let mut cancelled = std::pin::pin!(cancellation_watcher());
-                let mut ticker = tokio::time::interval(interval);
-                ticker.tick().await; // skip first immediate tick
-                loop {
-                    tokio::select! {
-                        _ = &mut cancelled => return Ok(()),
-                        _ = ticker.tick() => {}
+    TaskCenter::spawn(
+        TaskKind::Background,
+        "fabric-tls-cert-reloader",
+        async move {
+            let mut cancelled = std::pin::pin!(cancellation_watcher());
+            let mut ticker = tokio::time::interval(interval);
+            ticker.tick().await; // skip first immediate tick
+            loop {
+                tokio::select! {
+                    _ = &mut cancelled => return Ok(()),
+                    _ = ticker.tick() => {}
+                }
+                match build_server_config(&opts) {
+                    Ok(new_server) => {
+                        server_config.store(Arc::new(new_server));
+                        info!("Fabric TLS server certificates reloaded");
                     }
-                    match build_server_config(&opts) {
-                        Ok(new_server) => {
-                            server_config.store(Arc::new(new_server));
-                            info!("Fabric TLS server certificates reloaded");
-                        }
-                        Err(e) => {
-                            warn!("Failed to reload fabric TLS server certificates: {e}");
-                        }
-                    }
-                    match build_client_materials(&opts) {
-                        Ok(new_client) => {
-                            client_materials.store(Arc::new(new_client));
-                            info!("Fabric TLS client certificates reloaded");
-                        }
-                        Err(e) => {
-                            warn!("Failed to reload fabric TLS client certificates: {e}");
-                        }
+                    Err(e) => {
+                        warn!("Failed to reload fabric TLS server certificates: {e}");
                     }
                 }
-            },
-        )
-    }
+                match build_client_materials(
+                    opts.client_cert_file(),
+                    opts.client_key_file(),
+                    opts.client_ca_files(),
+                    &opts.allowed_subject_names,
+                ) {
+                    Ok(new_client) => {
+                        client_materials.store(Arc::new(new_client));
+                        info!("Fabric TLS client certificates reloaded");
+                    }
+                    Err(e) => {
+                        warn!("Failed to reload fabric TLS client certificates: {e}");
+                    }
+                }
+            }
+        },
+    )
 }
 
 fn build_server_config(opts: &FabricTlsOptions) -> anyhow::Result<ServerConfig> {
@@ -377,9 +409,14 @@ impl ServerCertVerifier for SubjectNameServerVerifier {
     }
 }
 
-fn build_client_materials(opts: &FabricTlsOptions) -> anyhow::Result<ClientTlsMaterials> {
+fn build_client_materials<S: AsRef<str>>(
+    cert_file: &Path,
+    key_file: &Path,
+    ca_files: &[PathBuf],
+    allowed_subject_names: &[S],
+) -> anyhow::Result<ClientTlsMaterials> {
     let mut root_store = RootCertStore::empty();
-    for ca_path in opts.client_ca_files() {
+    for ca_path in ca_files {
         for cert in load_certs(ca_path)? {
             root_store.add(cert)?;
         }
@@ -391,17 +428,17 @@ fn build_client_materials(opts: &FabricTlsOptions) -> anyhow::Result<ClientTlsMa
     // SPIFFE URI-only or CN-only node certificates. CA-only trust ("*") means
     // chain validation without endpoint-identity checking, which is exactly
     // what SubjectNameServerVerifier does when the wildcard is present.
-    let verifier: Arc<dyn ServerCertVerifier> = if opts.allowed_subject_names.is_empty() {
+    let verifier: Arc<dyn ServerCertVerifier> = if allowed_subject_names.is_empty() {
         webpki_verifier
     } else {
         Arc::new(SubjectNameServerVerifier {
             inner: webpki_verifier,
-            allowed_patterns: opts.allowed_subject_names.clone(),
+            allowed_patterns: allowed_subject_names
+                .iter()
+                .map(|name| name.as_ref().to_owned())
+                .collect(),
         })
     };
-
-    let cert_file = opts.client_cert_file();
-    let key_file = opts.client_key_file();
 
     // Validate the client certificate and key as a *pair* (not just that each
     // PEM parses): tonic consumes them much later, when the first outbound TLS
@@ -504,22 +541,24 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
     }
 
     #[test]
-    fn tls_cert_resolver_rejects_mismatched_cert_and_key() {
+    fn client_and_server_tls_configs_are_independent() {
         // Install crypto provider for rustls in test context
         let _ = rustls::crypto::ring::default_provider().install_default();
 
-        let ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
         let ca_key = rcgen::KeyPair::generate().unwrap();
         let ca_cert = ca_params.self_signed(&ca_key).unwrap();
 
         let node_params = rcgen::CertificateParams::new(vec!["node".to_owned()]).unwrap();
         let node_key = rcgen::KeyPair::generate().unwrap();
-        let node_cert = node_params.self_signed(&node_key).unwrap();
+        let node_cert = node_params.signed_by(&node_key, &ca_cert, &ca_key).unwrap();
         // a different keypair than the one the certificate was issued for
         let wrong_key = rcgen::KeyPair::generate().unwrap();
 
         let cert_file = write_temp_file(&node_cert.pem());
         let key_file = write_temp_file(&wrong_key.serialize_pem());
+        let client_key_file = write_temp_file(&node_key.serialize_pem());
         let ca_file = write_temp_file(&ca_cert.pem());
 
         let opts = FabricTlsOptions {
@@ -530,12 +569,20 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
             require_client_auth: true,
             refresh_interval: restate_util_time::NonZeroFriendlyDuration::from_secs_unchecked(3600),
             allowed_subject_names: vec![],
-            client: None,
+            client: Some(restate_types::config::FabricTlsClientOptions {
+                cert_file: Some(cert_file.path().to_path_buf()),
+                key_file: Some(client_key_file.path().to_path_buf()),
+                root_ca_files: None,
+            }),
         };
 
-        // The cert and key are not a matching pair, so ServerConfig
-        // construction must fail — and for that reason, not e.g. file I/O.
-        let Err(err) = TlsCertResolver::new(&opts) else {
+        TlsClientConfig::from_fabric_options(&opts)
+            .expect("valid client config should be accepted");
+
+        // The server cert and key are not a matching pair, so ServerConfig
+        // construction must fail without preventing construction of the
+        // independently configured client.
+        let Err(err) = TlsServerConfig::new(&opts) else {
             panic!("mismatched cert/key pair must be rejected");
         };
         let err = err.to_string().to_lowercase();
@@ -549,7 +596,7 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
     /// must fail at startup, not later when the first outbound channel is
     /// built (where tonic would panic in `apply_fabric_tls`).
     #[test]
-    fn tls_cert_resolver_rejects_mismatched_client_override() {
+    fn tls_client_config_rejects_mismatched_client_override() {
         let _ = rustls::crypto::ring::default_provider().install_default();
 
         let params = rcgen::CertificateParams::new(vec!["node".to_owned()]).unwrap();
@@ -578,7 +625,7 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
             }),
         };
 
-        let Err(err) = TlsCertResolver::new(&opts) else {
+        let Err(err) = TlsClientConfig::from_fabric_options(&opts) else {
             panic!("mismatched client cert/key override must be rejected at startup");
         };
         assert!(

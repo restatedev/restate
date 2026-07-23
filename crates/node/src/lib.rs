@@ -205,22 +205,31 @@ impl Node {
         // Initialize fabric TLS if configured. This must happen before any
         // channel to a fabric peer is created (including the metadata-store
         // client below, which eagerly builds its initial channels): channels
-        // pick up the client identity/verifier via the process-wide resolver.
-        let tls_resolver = config
+        // pick up the identity/verifier via the process-wide client config.
+        let tls_server_config = config
             .networking
             .fabric_tls()
             .map(|tls_opts| {
+                use restate_core::network::tls::{
+                    TlsClientConfig, TlsServerConfig, spawn_reloader,
+                };
                 tls_opts.validate()?;
-                let resolver = restate_core::network::tls::TlsCertResolver::new(tls_opts)?;
-                resolver.spawn_reloader(tls_opts.clone(), *tls_opts.refresh_interval)?;
+                let server_config = TlsServerConfig::new(tls_opts)?;
+                let client_config = TlsClientConfig::from_fabric_options(tls_opts)?;
+                spawn_reloader(
+                    tls_opts.clone(),
+                    &server_config,
+                    &client_config,
+                    *tls_opts.refresh_interval,
+                )?;
                 // register process-wide so channels created via create_tonic_channel
                 // (metadata-store, raft, control) can dial https:// fabric peers
-                resolver.set_global();
-                Ok(resolver)
+                client_config.set_global();
+                Ok(server_config)
             })
             .transpose()
             .map_err(BuildError::InvalidConfiguration)?;
-        server_builder.set_tls(tls_resolver.clone());
+        server_builder.set_tls(tls_server_config);
 
         let (metadata_store_role, metadata_store_client) = if config.has_role(Role::MetadataServer)
         {
