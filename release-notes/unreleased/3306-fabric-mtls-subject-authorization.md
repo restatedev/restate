@@ -13,7 +13,7 @@ mode = "require"               # off | allow | prefer | require
 cert-file = "/certs/node.crt"
 key-file = "/certs/node.key"
 ca-files = ["/certs/ca.crt"]
-require-client-auth = true     # default: mTLS enabled
+require-client-auth = true     # enable mTLS
 refresh-interval = "1h"        # hot-reload certs from disk
 
 # Authorization: required when require-client-auth is true.
@@ -34,35 +34,23 @@ root-ca-files = ["/certs/client-ca.crt"]
   certificate's Subject CN and SANs (DNS and URI, including SPIFFE IDs) against
   `allowed-subject-names` glob patterns. This prevents unauthorized services holding a
   certificate from a shared CA from connecting.
-- **Rolling enablement**: the mode decouples certificate distribution from advertising
-  TLS from requiring it (modeled after MongoDB's `tlsMode`):
-  - `off` — TLS disabled; the section may be staged on disk without effect
-  - `allow` — certs loaded, TLS and plaintext accepted, still advertises `http://`
-  - `prefer` — TLS and plaintext accepted, advertises `https://` so peers dial TLS
-  - `require` (default) — only TLS accepted, advertises `https://`
-- Nodes in `prefer`/`require` mode advertise `https://` fabric addresses; peers use
-  the scheme to decide the connection type.
+- **Rolling enablement**: different enforcement modes for gradual rollout:
+  - `off` (default) — TLS disabled; the section may be staged on disk without effect
+  - `allow` — certs loaded, TLS and plaintext accepted, nodes still advertise `http://`
+  - `prefer` — TLS and plaintext accepted, nodes advertises `https://` so peers dial TLS
+  - `require` — only TLS accepted, advertises `https://`
 
 ### Why This Matters
 
 Previously the fabric port had no transport security and users were expected to secure
 it via the network layer (e.g. Kubernetes NetworkPolicy), which many production
-environments cannot use. This brings Restate to parity with other distributed systems
-(etcd, CockroachDB, Consul) that offer built-in inter-node TLS.
+environments cannot use. This feature adds native support for TLS in restate.
 
 ### Impact on Users
 
 - **Existing deployments**: no change — without `[networking.tls]`, behavior is
   identical to today (plaintext).
 - **New deployments**: opt in via `[networking.tls]`.
-- **Fail-safe validation**: `allowed-subject-names` must be non-empty when
-  `require-client-auth = true`; the node refuses to start otherwise. Use `["*"]` to
-  explicitly opt into CA-only trust (chain validation without identity checking).
-- **restatectl**: in `require` mode, plaintext connections to port 5122 are rejected.
-  `restatectl` can present a client certificate via the `RESTATECTL_TLS_CA_FILE`,
-  `RESTATECTL_TLS_CERT_FILE`, and `RESTATECTL_TLS_KEY_FILE` environment variables
-  (or the corresponding `--tls-*` flags) until the internal/external port split
-  (#3583) lands.
 
 ### Migration Guidance
 
@@ -84,4 +72,3 @@ out before any node moves to `prefer`.
 ### Related Issues
 
 - Issue #3306: Support mTLS for cross-node communication
-- Issue #3583: Split internal/external gRPC services on port 5122 (related follow-up)
