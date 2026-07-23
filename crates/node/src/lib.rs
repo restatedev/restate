@@ -202,6 +202,26 @@ impl Node {
             )));
         };
 
+        // Initialize fabric TLS if configured. This must happen before any
+        // channel to a fabric peer is created (including the metadata-store
+        // client below, which eagerly builds its initial channels): channels
+        // pick up the client identity/verifier via the process-wide resolver.
+        let tls_resolver = config
+            .networking
+            .fabric_tls()
+            .map(|tls_opts| {
+                tls_opts.validate()?;
+                let resolver = restate_core::network::tls::TlsCertResolver::new(tls_opts)?;
+                resolver.spawn_reloader(tls_opts.clone(), *tls_opts.refresh_interval)?;
+                // register process-wide so channels created via create_tonic_channel
+                // (metadata-store, raft, control) can dial https:// fabric peers
+                resolver.set_global();
+                Ok(resolver)
+            })
+            .transpose()
+            .map_err(BuildError::InvalidConfiguration)?;
+        server_builder.set_tls(tls_resolver.clone());
+
         let (metadata_store_role, metadata_store_client) = if config.has_role(Role::MetadataServer)
         {
             restate_metadata_server::create_metadata_server_and_client(
@@ -229,24 +249,6 @@ impl Node {
         });
         let mut router_builder = MessageRouterBuilder::with_default_pool(default_pool);
 
-        // Initialize fabric TLS if configured
-        let tls_resolver = config
-            .networking
-            .tls
-            .as_ref()
-            .map(|tls_opts| {
-                tls_opts.validate()?;
-                let resolver = restate_core::network::tls::TlsCertResolver::new(tls_opts)?;
-                resolver.spawn_reloader(tls_opts.clone(), *tls_opts.refresh_interval)?;
-                // register process-wide so channels created via create_tonic_channel
-                // (metadata-store, raft, control) can dial https:// fabric peers
-                resolver.set_global();
-                Ok(resolver)
-            })
-            .transpose()
-            .map_err(BuildError::InvalidConfiguration)?;
-
-        server_builder.set_tls(tls_resolver.clone());
         let networking = Networking::with_grpc_connector(tls_resolver);
         metadata_manager.register_in_message_router(&mut router_builder);
         let replica_set_states = PartitionReplicaSetStates::default();

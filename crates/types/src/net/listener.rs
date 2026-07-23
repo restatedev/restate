@@ -109,7 +109,12 @@ impl AddressBook {
         // Message Fabric
         self.bind(config.common.fabric_listener_options(), &mut listenfd)
             .await?;
-        self.fabric_tls = config.networking.tls.is_some();
+        // in `allow` mode certs are loaded but the node keeps advertising a
+        // plaintext address until the whole cluster can dial TLS
+        self.fabric_tls = config
+            .networking
+            .fabric_tls()
+            .is_some_and(|tls| tls.mode.advertises_tls());
         // todo: add NodeCtl port
 
         Ok(())
