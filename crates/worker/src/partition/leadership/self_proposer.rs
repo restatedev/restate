@@ -134,6 +134,31 @@ impl SelfProposer {
         Ok(())
     }
 
+    /// Self-propose a single command to Bifrost, attaching ESN-based dedup information, and
+    /// return a [`CommitToken`] resolved once the record is committed.
+    ///
+    /// Unlike [`Self::append_with_notification`], this preserves the dedup information
+    /// `AnnounceLeader` fencing depends on (`announce_leader.rs:45-48`) -- callers that need a
+    /// commit notification for a self-proposed command (e.g. the Candidate activation watchdog)
+    /// must use this, not `append_with_notification`.
+    pub async fn self_propose_with_notification(
+        &mut self,
+        partition_key: PartitionKey,
+        cmd: Command,
+    ) -> Result<CommitToken, Error> {
+        let header = self.create_self_propose_header(partition_key);
+        let envelope = Envelope::new(header, cmd);
+
+        let commit_token = self
+            .bifrost_appender
+            .sender()
+            .enqueue_with_notification(Arc::new(envelope))
+            .await
+            .map_err(|e| Error::SelfProposer(e.to_string()))?;
+
+        Ok(commit_token)
+    }
+
     /// Append a command to Bifrost **without** dedup information, returning a [`CommitToken`].
     ///
     /// Unlike [`Self::self_propose`], this does not attach an epoch sequence number. Records

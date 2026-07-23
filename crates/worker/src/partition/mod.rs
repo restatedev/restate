@@ -18,7 +18,7 @@
 
 mod cleaner;
 pub mod invoker_storage_reader;
-mod leadership;
+pub(crate) mod leadership;
 pub mod node;
 mod processor;
 mod rpc;
@@ -89,6 +89,8 @@ use restate_wal_protocol::{Envelope, v2};
 use restate_worker_api::invoker::InvokerHandle;
 use restate_worker_api::{LeaderQueryCommand, LeaderQueryReceiver};
 
+pub use self::processor::{LoopHeartbeat, LoopPhase};
+
 use self::processor::commands::{
     AnnounceLeaderContext, ApplyPartitionCommand, NextStep, TruncateOutboxContext,
     UpdateDurabilityContext, UpsertRuleBookContext, UpsertSchemaContext, VersionBarrierContext,
@@ -137,6 +139,7 @@ pub(super) struct PartitionProcessorBuilder {
     network_svc_rx: ServiceStream<PartitionLeaderService>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
     node_ctx: NodeContext,
+    heartbeat: Arc<LoopHeartbeat>,
 }
 
 impl PartitionProcessorBuilder {
@@ -145,12 +148,14 @@ impl PartitionProcessorBuilder {
         network_svc_rx: ServiceStream<PartitionLeaderService>,
         status_watch_tx: watch::Sender<PartitionProcessorStatus>,
         node_ctx: NodeContext,
+        heartbeat: Arc<LoopHeartbeat>,
     ) -> Self {
         Self {
             target_leader_state_rx,
             network_svc_rx,
             status_watch_tx,
             node_ctx,
+            heartbeat,
         }
     }
 
@@ -167,6 +172,7 @@ impl PartitionProcessorBuilder {
             network_svc_rx: rpc_rx,
             status_watch_tx,
             node_ctx,
+            heartbeat,
         } = self;
 
         let mut partition_store = PartitionStore::from(partition_db);
@@ -206,6 +212,7 @@ impl PartitionProcessorBuilder {
             network_leader_svc_rx: rpc_rx,
             status_watch_tx,
             leader_query_rx,
+            heartbeat,
         })
     }
 }
@@ -219,6 +226,7 @@ pub struct PartitionProcessor<T> {
     network_leader_svc_rx: ServiceStream<PartitionLeaderService>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
     leader_query_rx: LeaderQueryReceiver,
+    heartbeat: Arc<LoopHeartbeat>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -307,6 +315,46 @@ enum OrderedOp {
         request: Incoming<Rpc<DedupSequenceNrQueryRequest>>,
     },
 }
+
+/// Test-only seam (DEFECTB): when set, the `record_stream.next()` branch is never selected, so the
+/// loop parks in `InSelect` forever regardless of records available on the log -- simulating a
+/// wedged reader for the apply-progress-tracker integration tests. Gated out of production builds
+/// entirely; read fresh on every poll so a test can reopen the gate mid-run (e.g. to simulate
+/// recovery). Named/exposed the same way as the existing
+/// `RESTATE_INTERNAL_STATE_MACHINE_FEATURES` internal-testing knob.
+#[cfg(any(test, feature = "test-util"))]
+pub(crate) const RESTATE_TEST_FREEZE_RECORD_STREAM: &str = "RESTATE_TEST_FREEZE_RECORD_STREAM";
+
+#[cfg(any(test, feature = "test-util"))]
+fn test_record_stream_gate_open() -> bool {
+    !std::env::var(RESTATE_TEST_FREEZE_RECORD_STREAM).is_ok_and(|v| v == "1")
+}
+
+#[cfg(not(any(test, feature = "test-util")))]
+#[inline(always)]
+fn test_record_stream_gate_open() -> bool {
+    true
+}
+
+/// Test-only seam (DEFECTB): an artificial per-entry apply delay, so a test can simulate a
+/// legitimately long (but eventually completing) apply -- the `long_apply_negative_control`
+/// scenario finding 1 needed a real reproduction of. Gated out of production builds entirely.
+#[cfg(any(test, feature = "test-util"))]
+pub(crate) const RESTATE_TEST_SLOW_APPLY_MILLIS: &str = "RESTATE_TEST_SLOW_APPLY_MILLIS";
+
+#[cfg(any(test, feature = "test-util"))]
+async fn test_only_slow_apply_delay() {
+    if let Some(millis) = std::env::var(RESTATE_TEST_SLOW_APPLY_MILLIS)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        tokio::time::sleep(Duration::from_millis(millis)).await;
+    }
+}
+
+#[cfg(not(any(test, feature = "test-util")))]
+#[inline(always)]
+async fn test_only_slow_apply_delay() {}
 
 impl<T> PartitionProcessor<T>
 where
@@ -528,20 +576,38 @@ where
             let config = self.node_ctx.config.live_load();
             let max_batching_size = config.worker.max_command_batch_size();
             let bytes_limit = config.worker.max_command_batch_bytes.as_usize();
+            let candidate_activation_timeout =
+                config.worker.stall_detection.candidate_activation_timeout();
+
+            // Marks the top of every loop iteration as "parked in select" for the apply-stall
+            // detector. Every branch below that may await meaningful work (not just the status
+            // timer, which is a bounded, non-blocking watch send) beats a more specific phase on
+            // entry -- see `LoopHeartbeat`'s doc for why a beat here is a sound loop-liveness
+            // proof, and finding 3 (DEFECTB review) for why every such branch needs one, not just
+            // target-leader-state/leader-run.
+            self.heartbeat.beat(LoopPhase::InSelect);
 
             tokio::select! {
                 _ = self.target_leader_state_rx.changed() => {
+                    self.heartbeat.beat(LoopPhase::ControlOp);
                     let target_leader_state = self.target_leader_state_rx.borrow_and_update().clone();
                     self.on_target_leader_state(target_leader_state).await.context("failed handling target leader state change")?;
                     self.refresh_status(&mut durable_lsn_watch)?;
                 }
                 Ok(()) = watch_leader_changes.changed() => {
+                    // Finding 3 (DEFECTB review): `maybe_step_down` can await a full leader
+                    // step-down (invoker/scheduler/cleaner teardown) -- beat before it so a long
+                    // teardown reads as ControlOp, not a stale InSelect that could trip LoopDead.
+                    self.heartbeat.beat(LoopPhase::ControlOp);
                     // cloning to avoid holding the underlying RwLock.
                     let new_state = *watch_leader_changes.borrow_and_update();
                     self.leadership_state.maybe_step_down(&mut self.ctx, new_state.current_leader_epoch, new_state.current_leader).await;
                     self.refresh_status(&mut durable_lsn_watch)?;
                 }
                 Some(msg) = self.network_leader_svc_rx.next(), if self.leadership_state.should_process_rpc() => {
+                    // Finding 3: an RPC/ingest request can do real storage/network work; beat
+                    // before dispatching it so a long one reads as ControlOp, not stale InSelect.
+                    self.heartbeat.beat(LoopPhase::ControlOp);
                     // todo: replace the live schema with the leader's consistent schema
                     self.on_rpc(msg, live_schemas.live_load(), &last_applied_lsn_watch).await;
                 }
@@ -553,7 +619,8 @@ where
                 // if this branch is dropped before a record is ready, nothing has been consumed.
                 // Subsequent records are drained synchronously below (`now_or_never`), so the
                 // applied-but-uncommitted records can never be lost to select cancellation.
-                maybe_first = record_stream.next() => {
+                maybe_first = record_stream.next(), if test_record_stream_gate_open() => {
+                    self.heartbeat.beat(LoopPhase::ApplyingBatch);
                     let Some(first) = maybe_first else {
                         return Err(ProcessorError::LogReadStreamTerminated);
                     };
@@ -625,7 +692,8 @@ where
                     self.ctx.release_applied_lsn();
                     self.leadership_state.handle_actions(&mut self.ctx, action_collector.drain(..))?;
                 },
-                result = self.leadership_state.run(&mut self.ctx) => {
+                result = self.leadership_state.run(&mut self.ctx, candidate_activation_timeout) => {
+                    self.heartbeat.beat(LoopPhase::ControlOp);
                     let action_effects = result?;
                     // We process the action_effects not directly in the run future because it
                     // requires the run future to be cancellation safe. In the future this could be
@@ -633,6 +701,9 @@ where
                     self.leadership_state.handle_action_effects(action_effects).await?;
                 }
                 Some(leader_query_cmd) = self.leader_query_rx.recv() => {
+                    // Finding 3: defensive -- handling is synchronous today, but beat before it
+                    // in case that ever changes, matching every other branch here.
+                    self.heartbeat.beat(LoopPhase::ControlOp);
                     self.on_leader_query(leader_query_cmd);
                 }
             }
@@ -914,6 +985,8 @@ where
         action_collector: &mut ActionCollector,
         leader_record_write_to_read_latency: &metrics::Histogram,
     ) -> Result<NextStep, ProcessorError> {
+        test_only_slow_apply_delay().await;
+
         trace!(
             "Processing {} record at lsn {}",
             entry.kind(),

@@ -8,18 +8,24 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod apply_progress_tracker;
 mod introspection;
 mod processor_state;
 mod spawn_processor_task;
 
 pub use introspection::{LeaderQueryGuard, PartitionLeaderHandlesRegistry};
 
+use apply_progress_tracker::{
+    HeartbeatView, LoopState, ProbeResult, TailObservation, TickInput, TrackerEffect, TrackerEntry,
+    pick_next_consistent_read_sweep_target,
+};
+
 use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
 use std::ops::Add;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use ahash::{HashMap, HashSet};
 use anyhow::{Context, bail};
@@ -32,8 +38,9 @@ use rand::seq::SliceRandom;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
-use tokio::time::MissedTickBehavior;
+use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{debug, error, info, info_span, instrument, trace, warn};
+use ulid::Ulid;
 
 use restate_bifrost::Bifrost;
 use restate_bifrost::loglet::FindTailOptions;
@@ -58,7 +65,7 @@ use restate_partition_store::{SnapshotError, SnapshotErrorKind};
 use restate_types::GenerationalNodeId;
 use restate_types::cluster::cluster_state::ReplayStatus;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
-use restate_types::config::Configuration;
+use restate_types::config::{Configuration, StallDetectionOptions};
 use restate_types::epoch::EpochMetadata;
 use restate_types::health::HealthStatus;
 use restate_types::identifiers::PartitionId;
@@ -78,12 +85,14 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::partitions::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
+use restate_types::time::MillisSinceEpoch;
 use restate_util_string::format_restring;
 use restate_util_time::DurationExt;
 use restate_wal_protocol::Envelope;
 use restate_worker_api::invoker::capacity::InvokerCapacity;
 use restate_worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 
+use crate::metric_definitions::PARTITION_STOP_STUCK;
 use crate::metric_definitions::{
     ERROR_STOP, FLARE_REASON_MIGRATION_BARRIER, FLARE_REASON_SNAPSHOT_UNAVAILABLE,
     FLARE_REASON_VERSION_BARRIER, GAP_STOP, PARTITION_BLOCKED_FLARE, PARTITION_IS_EFFECTIVE_LEADER,
@@ -92,8 +101,13 @@ use crate::metric_definitions::{
 use crate::metric_definitions::{NORMAL_STOP, PARTITION_TIME_SINCE_LAST_STATUS_UPDATE};
 use crate::metric_definitions::{NUM_ACTIVE_PARTITIONS, PARTITION_APPLIED_LSN_LAG};
 use crate::metric_definitions::{NUM_PARTITIONS, SNAPSHOT_AGE};
+use crate::metric_definitions::{
+    PARTITION_APPLY_PHASE_STUCK, PARTITION_APPLY_STALLED, PHASE_LABEL,
+};
 use crate::metric_definitions::{PARTITION_LABEL, PARTITION_STOP};
-use crate::partition::{LeadershipInfo, NodeContext, ProcessorError};
+use crate::partition::leadership;
+use crate::partition::{LeadershipInfo, LoopPhase, NodeContext, ProcessorError};
+use crate::partition_processor_manager::apply_progress_tracker::QuarantineEpisode;
 use crate::partition_processor_manager::processor_state::{
     LeaderEpochToken, ProcessorState, StartedProcessor,
 };
@@ -115,8 +129,20 @@ pub struct PartitionProcessorManager<T> {
     tx: mpsc::Sender<ProcessorsManagerCommand>,
 
     replica_set_states: PartitionReplicaSetStates,
-    target_tail_lsns: HashMap<PartitionId, Lsn>,
+    tail_observations: HashMap<PartitionId, TailObservation>,
     leader_handles_registry: PartitionLeaderHandlesRegistry,
+
+    /// Apply-stall detection (see `apply_progress_tracker`): per-partition tracker state, plus
+    /// the local view of each partition's `LoopHeartbeat`. Both are sticky across incarnations by
+    /// design and are only dropped once a partition both stops running here and leaves this
+    /// node's replica set (rule 9 in the design doc).
+    trackers: HashMap<PartitionId, TrackerEntry>,
+    heartbeat_views: HashMap<PartitionId, HeartbeatView>,
+    /// At most one `ConsistentRead` sweep probe in flight node-wide at a time.
+    consistent_read_sweep_inflight: bool,
+    /// When each currently-`Stopping` partition was first observed in that state, for the
+    /// `stop_stuck_timeout` flare. Never spawns a second processor -- observability only.
+    stopping_since: HashMap<PartitionId, Instant>,
 
     asynchronous_operations: JoinSet<AsynchronousEvent>,
 
@@ -151,7 +177,10 @@ enum RestartDelay {
     Immediate,
     Fixed,
     Exponential {
-        start_time: Instant,
+        // `ProcessorState::start_time` (processor_state.rs) is std::time::Instant; kept as such
+        // here too rather than the tokio::time::Instant used for the apply-stall tracker's
+        // paused-clock-aware deadline math below.
+        start_time: std::time::Instant,
         last_delay: Option<Duration>,
     },
     MaxBackoff,
@@ -260,8 +289,12 @@ where
             rx,
             tx,
             replica_set_states,
-            target_tail_lsns: HashMap::default(),
+            tail_observations: HashMap::default(),
             leader_handles_registry: PartitionLeaderHandlesRegistry::default(),
+            trackers: HashMap::default(),
+            heartbeat_views: HashMap::default(),
+            consistent_read_sweep_inflight: false,
+            stopping_since: HashMap::default(),
             asynchronous_operations: JoinSet::default(),
             pending_snapshots: HashMap::default(),
             latest_snapshots: HashMap::default(),
@@ -315,6 +348,24 @@ where
         let mut update_target_tail_lsns = tokio::time::interval(Duration::from_secs(1));
         update_target_tail_lsns.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
+        // Explicit deadline driver for the apply-progress tracker: fires all time-based
+        // transitions (grace, recovery window, bail, probe backoff) even if tail queries stop
+        // completing entirely -- the 1s Fast poller above only ever *launches* queries.
+        let mut tracker_tick = tokio::time::interval(Duration::from_millis(500));
+        tracker_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+        // Mandatory ConsistentRead sweep (A5 fairness): the Fast poller above can be looking at
+        // a frozen cached tail forever once its background refresher exits, which would hide a
+        // stall from detection indefinitely -- see the apply_progress_tracker module doc.
+        let mut consistent_read_sweep = tokio::time::interval(
+            self.updateable_config
+                .live_load()
+                .worker
+                .stall_detection
+                .sweep_interval(),
+        );
+        consistent_read_sweep.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
         let mut ppm_svc_rx = self.ppm_svc_rx.take().start();
         let (mut pp_rpc_control, pp_rpc_shards) = self.pp_rpc_svc.take().start();
         self.pp_rpc_shards = Some(pp_rpc_shards);
@@ -339,6 +390,12 @@ where
                 }
                 _ = update_target_tail_lsns.tick() => {
                     self.update_target_tail_lsns();
+                }
+                _ = tracker_tick.tick(), if self.updateable_config.live_load().worker.stall_detection.enabled => {
+                    self.evaluate_trackers();
+                }
+                _ = consistent_read_sweep.tick(), if self.updateable_config.live_load().worker.stall_detection.enabled && !self.consistent_read_sweep_inflight => {
+                    self.spawn_consistent_read_sweep();
                 }
                 Some(op) = ppm_svc_rx.next() => {
                     self.handle_ppm_service_op(op);
@@ -536,6 +593,7 @@ where
                                     }
 
                                     *processor_state = new_state;
+                                    self.on_processor_incarnation_started(partition_id);
 
                                     self.await_runtime_task_result(partition_id, runtime_handle);
                                 }
@@ -571,10 +629,12 @@ where
                         // todo: metrics
                         info!(%partition_id, %err, "Partition processor failed to start");
                         self.processor_states.remove(&partition_id);
-                        self.restart_partition_processor_if_replica(
+                        if !self.restart_partition_processor_if_replica(
                             partition_id,
                             RestartDelay::Fixed,
-                        );
+                        ) {
+                            self.gc_tracker(partition_id);
+                        }
                     }
                 }
                 gauge!(NUM_ACTIVE_PARTITIONS).set(self.processor_states.len() as f64);
@@ -649,6 +709,42 @@ where
                                         RestartDelay::MaxBackoff
                                     }
                                 }
+                                Err(ProcessorError::ActionEffect(
+                                    leadership::Error::AnnounceNotApplied {
+                                        leader_epoch,
+                                        committed_for,
+                                        bail_lsn,
+                                    },
+                                )) => {
+                                    // A2/A4 (Option D): our own committed AnnounceLeader marker
+                                    // never applied -- authoritative lag evidence in its own
+                                    // right. Quarantine the same way an A-bail would, using the
+                                    // exact FSM LSN captured at the watchdog's deadline.
+                                    counter!(PARTITION_STOP, PARTITION_LABEL => partition_id.to_string(), TYPE_LABEL => ERROR_STOP).increment(1);
+                                    warn!(
+                                        %partition_id, %leader_epoch, committed_for = ?committed_for, %bail_lsn,
+                                        "Partition processor's committed AnnounceLeader marker was never applied; quarantining and restarting"
+                                    );
+
+                                    let now = Instant::now();
+                                    let cfg =
+                                        self.updateable_config.live_load().worker.stall_detection;
+                                    let is_first_bail = !self.is_apply_stalled(partition_id);
+                                    let tracker =
+                                        self.trackers.entry(partition_id).or_insert_with(|| {
+                                            TrackerEntry::new(Ulid::new(), now, &cfg)
+                                        });
+                                    tracker.on_announce_not_applied(now, *bail_lsn, &cfg);
+
+                                    if is_first_bail {
+                                        RestartDelay::Fixed
+                                    } else {
+                                        RestartDelay::Exponential {
+                                            start_time,
+                                            last_delay: delay,
+                                        }
+                                    }
+                                }
                                 Err(err) => {
                                     let next_delay = RestartDelay::Exponential {
                                         start_time,
@@ -678,6 +774,9 @@ where
 
                 if !self.restart_partition_processor_if_replica(partition_id, delay) {
                     debug!("Partition processor stopped: {result:?}");
+                    // No longer a replica for this partition: safe to forget its apply-progress
+                    // tracker (rule 9 -- retained until both conditions hold).
+                    self.gc_tracker(partition_id);
                 }
 
                 gauge!(NUM_ACTIVE_PARTITIONS).set(self.processor_states.len() as f64);
@@ -709,19 +808,58 @@ where
             }
             EventKind::NewTargetTail { tail } => {
                 let Some(tail_lsn) = tail else {
-                    self.target_tail_lsns.remove(&partition_id);
+                    self.tail_observations.remove(&partition_id);
                     return;
                 };
 
-                match self.target_tail_lsns.entry(partition_id) {
-                    Entry::Occupied(mut o) => {
-                        if *o.get() < tail_lsn {
-                            o.insert(tail_lsn);
-                        }
-                    }
+                let now = Instant::now();
+                match self.tail_observations.entry(partition_id) {
+                    Entry::Occupied(mut o) => o.get_mut().observe_fast(tail_lsn, now),
                     Entry::Vacant(v) => {
-                        v.insert(tail_lsn);
+                        v.insert(TailObservation::new(tail_lsn, now));
                     }
+                }
+            }
+            EventKind::ConsistentReadSweepCompleted { probed, result } => {
+                self.consistent_read_sweep_inflight = false;
+                let now = Instant::now();
+                let Some(probed) = probed else {
+                    // Nothing running to sweep this round.
+                    return;
+                };
+                let Some(obs) = self.tail_observations.get_mut(&probed) else {
+                    return;
+                };
+                match result {
+                    Some(tail_lsn) => obs.observe_consistent(tail_lsn, now),
+                    None => obs.mark_consistent_attempt(now),
+                }
+            }
+            EventKind::ConsistentReadProbeCompleted {
+                incarnation,
+                nonce,
+                result,
+            } => {
+                let now = Instant::now();
+                if let Some(obs) = self.tail_observations.get_mut(&partition_id)
+                    && let Some(tail_lsn) = result.as_ref().and_then(|r| match r {
+                        ProbeResult::Confirmed { tail_lsn } => Some(*tail_lsn),
+                        _ => None,
+                    })
+                {
+                    obs.observe_consistent(tail_lsn, now);
+                } else if let Some(obs) = self.tail_observations.get_mut(&partition_id) {
+                    obs.mark_consistent_attempt(now);
+                }
+                if let Some(tracker) = self.trackers.get_mut(&partition_id) {
+                    let cfg = self.updateable_config.live_load().worker.stall_detection;
+                    tracker.on_probe_result(
+                        now,
+                        incarnation,
+                        nonce,
+                        result.unwrap_or(ProbeResult::Failed),
+                        &cfg,
+                    );
                 }
             }
             EventKind::SnapshotStatusUpdated { snapshot_status } => {
@@ -793,6 +931,344 @@ where
         }
     }
 
+    /// Rule 8: a fresh processor incarnation started running for `partition_id`. Creates a new
+    /// apply-progress tracker on first start, or resets live detection (retaining the sticky
+    /// quarantine and restart history) on every subsequent restart.
+    fn on_processor_incarnation_started(&mut self, partition_id: PartitionId) {
+        let now = Instant::now();
+        let cfg = self.updateable_config.live_load().worker.stall_detection;
+        let incarnation = Ulid::new();
+        match self.trackers.entry(partition_id) {
+            Entry::Occupied(mut e) => e.get_mut().on_incarnation_started(now, incarnation),
+            Entry::Vacant(v) => {
+                v.insert(TrackerEntry::new(incarnation, now, &cfg));
+            }
+        }
+        self.heartbeat_views
+            .insert(partition_id, HeartbeatView::new(now));
+    }
+
+    /// Rule 9 (GC): forget a partition's apply-progress tracker once it has both stopped running
+    /// here and left this node's replica set. Called only from that combined condition.
+    fn gc_tracker(&mut self, partition_id: PartitionId) {
+        self.trackers.remove(&partition_id);
+        self.heartbeat_views.remove(&partition_id);
+        self.tail_observations.remove(&partition_id);
+    }
+
+    /// The explicit deadline driver for the apply-progress tracker (`tracker_tick`): evaluates
+    /// every running partition's tracker against its current status, tail observation, and
+    /// heartbeat, and acts on the resulting effect (issue a confirmation probe, or bail).
+    fn evaluate_trackers(&mut self) {
+        let now = Instant::now();
+        let cfg = self.updateable_config.live_load().worker.stall_detection;
+
+        self.evaluate_stop_stuck(now, &cfg);
+
+        let partition_ids: Vec<PartitionId> = self.processor_states.keys().cloned().collect();
+        for partition_id in partition_ids {
+            let Some(ProcessorState::Started {
+                processor: Some(started),
+                ..
+            }) = self.processor_states.get(&partition_id)
+            else {
+                continue;
+            };
+
+            let Some(status) = self
+                .processor_states
+                .get(&partition_id)
+                .and_then(ProcessorState::partition_processor_status)
+            else {
+                continue;
+            };
+
+            let heartbeat_view = self
+                .heartbeat_views
+                .entry(partition_id)
+                .or_insert_with(|| HeartbeatView::new(now));
+            heartbeat_view.observe(started.heartbeat().sample(), now);
+            let loop_state = heartbeat_view.loop_state(now, &cfg);
+
+            let phase_age = heartbeat_view.phase_age(now);
+            gauge!(
+                PARTITION_APPLY_PHASE_STUCK,
+                PARTITION_LABEL => partition_id.to_string(),
+                PHASE_LABEL => format!("{:?}", heartbeat_view.phase())
+            )
+            .set(
+                if loop_state == LoopState::Busy && phase_age >= cfg.hard_grace() {
+                    1.0
+                } else {
+                    0.0
+                },
+            );
+
+            let fresh_tail = self
+                .tail_observations
+                .get(&partition_id)
+                .filter(|obs| obs.is_fresh(now, cfg.tail_ttl()))
+                .map(TailObservation::lsn);
+
+            let Some(tracker) = self.trackers.get_mut(&partition_id) else {
+                continue;
+            };
+            let input = TickInput {
+                last_applied_lsn: status.last_applied_log_lsn,
+                replay_status: status.replay_status,
+                loop_state,
+                fresh_tail,
+            };
+            let effect = tracker.on_sample(now, input, &cfg);
+            self.act_on_tracker_effect(partition_id, effect, &cfg);
+        }
+    }
+
+    /// Flares `restate.partition.stop_stuck` for a partition that has been `Stopping` for longer
+    /// than `stop_stuck_timeout`. Observability only: per the builder guardrails, this never
+    /// spawns a second processor over the same store or forces a process exit -- a genuinely
+    /// wedged cooperative shutdown needs external supervision.
+    fn evaluate_stop_stuck(&mut self, now: Instant, cfg: &StallDetectionOptions) {
+        let stopping: HashSet<PartitionId> = self
+            .processor_states
+            .iter()
+            .filter(|(_, state)| matches!(state, ProcessorState::Stopping { .. }))
+            .map(|(id, _)| *id)
+            .collect();
+
+        self.stopping_since.retain(|id, _| stopping.contains(id));
+        for &partition_id in &stopping {
+            let since = *self.stopping_since.entry(partition_id).or_insert(now);
+            let stuck = now.saturating_duration_since(since) >= cfg.stop_stuck_timeout();
+            let labels = [(PARTITION_LABEL, partition_id.to_string())];
+            gauge!(PARTITION_STOP_STUCK, &labels).set(if stuck { 1.0 } else { 0.0 });
+            if stuck {
+                error!(%partition_id, "Partition processor has been Stopping for longer than stop_stuck_timeout; it may require external supervision");
+            }
+        }
+    }
+
+    fn act_on_tracker_effect(
+        &mut self,
+        partition_id: PartitionId,
+        effect: TrackerEffect,
+        cfg: &StallDetectionOptions,
+    ) {
+        match effect {
+            TrackerEffect::None => {}
+            TrackerEffect::IssueProbe { incarnation, nonce } => {
+                self.spawn_consistent_read_probe(partition_id, incarnation, nonce);
+            }
+            TrackerEffect::Bail => self.revalidate_and_commit_bail(partition_id, cfg),
+        }
+    }
+
+    /// Finding 4 (DEFECTB review): the tracker's `Bail` effect is only a *proposal* based on the
+    /// sample from the top of this tick's `evaluate_trackers` pass. Immediately before actually
+    /// calling `stop()`, take a fresh heartbeat sample and re-check the tail -- if the processor
+    /// has resumed in the meantime (or the lag evidence used for an `ApplyStall` bail is no
+    /// longer fresh/confirmed), abandon the bail instead of stopping a processor that's already
+    /// making progress again. Nothing is mutated in that case; the next tick re-evaluates from
+    /// scratch (rule 6 style demotion happens naturally on the next real sample).
+    fn revalidate_and_commit_bail(
+        &mut self,
+        partition_id: PartitionId,
+        cfg: &StallDetectionOptions,
+    ) {
+        let now = Instant::now();
+
+        let Some(ProcessorState::Started {
+            processor: Some(started),
+            ..
+        }) = self.processor_states.get(&partition_id)
+        else {
+            return;
+        };
+        // A fresh raw heartbeat read, independent of (and later than) the sample
+        // `evaluate_trackers` used to propose this bail.
+        let fresh_sample = started.heartbeat().sample();
+
+        let Some(sampled_at_proposal) = self
+            .heartbeat_views
+            .get(&partition_id)
+            .map(HeartbeatView::last_sample)
+        else {
+            return;
+        };
+        let fresh_last_applied_lsn = self
+            .processor_states
+            .get(&partition_id)
+            .and_then(ProcessorState::partition_processor_status)
+            .and_then(|status| status.last_applied_log_lsn);
+
+        let Some(tracker) = self.trackers.get_mut(&partition_id) else {
+            return;
+        };
+
+        // Finding 4 (DEFECTB re-review): merely confirming the loop is *currently* `InSelect`
+        // isn't enough -- a loop that went `ApplyingBatch` and back to `InSelect` between the
+        // proposal and this revalidation looks identical to one that never moved. Requiring the
+        // raw `(phase, counter)` to be unchanged since the proposal's sample catches that, and
+        // re-reading `last_applied_lsn` catches progress that already landed but hasn't cycled
+        // the heartbeat again yet.
+        let still_idle = fresh_sample.0 == LoopPhase::InSelect;
+        let heartbeat_unchanged = fresh_sample == sampled_at_proposal;
+        let no_new_progress = tracker
+            .last_known_lsn()
+            .is_none_or(|known| fresh_last_applied_lsn.is_none_or(|fresh| fresh <= known));
+
+        // A LoopDead episode's proof is "the loop still isn't scheduling", not lag -- an
+        // ApplyStall episode (or none yet, e.g. a fresh Stalled->Bail transition) requires
+        // confirmed lag against the freshest tail observation.
+        let is_loop_dead_episode = matches!(
+            tracker.quarantine(),
+            Some(QuarantineEpisode::LoopDead { .. })
+        );
+        let still_lagging = tracker.last_known_lsn().is_some_and(|known| {
+            self.tail_observations
+                .get(&partition_id)
+                .filter(|obs| obs.is_fresh(now, cfg.tail_ttl()))
+                .is_some_and(|obs| obs.lsn().prev() > known)
+        });
+
+        if !still_idle
+            || !heartbeat_unchanged
+            || !no_new_progress
+            || !(is_loop_dead_episode || still_lagging)
+        {
+            debug!(
+                %partition_id,
+                "Apply-stall bail aborted: the processor resumed before the manager could revalidate"
+            );
+            return;
+        }
+
+        let bail_lsn = tracker.last_known_lsn().unwrap_or(Lsn::INVALID);
+        tracker.commit_bail(now, bail_lsn, cfg);
+        warn!(%partition_id, "Apply-stall detected: cooperatively restarting the partition processor");
+        if let Some(processor_state) = self.processor_states.get_mut(&partition_id) {
+            processor_state.stop();
+        }
+    }
+
+    /// Spawns the confirmation probe a suspected partition's tracker requested. Bounded by
+    /// `probe_timeout`; a timeout is reported as a probe failure, matching the guardrail that no
+    /// action may ever be taken on unconfirmed evidence.
+    fn spawn_consistent_read_probe(
+        &mut self,
+        partition_id: PartitionId,
+        incarnation: Ulid,
+        nonce: u64,
+    ) {
+        let bifrost = self.bifrost.clone();
+        let probe_timeout = self
+            .updateable_config
+            .live_load()
+            .worker
+            .stall_detection
+            .probe_timeout();
+
+        self.asynchronous_operations.spawn(
+            async move {
+                let log_id = Metadata::with_current(|m| {
+                    m.partition_table_ref()
+                        .get(&partition_id)
+                        .map(Partition::log_id)
+                });
+                let result = match log_id {
+                    Some(log_id) => {
+                        match tokio::time::timeout(
+                            probe_timeout,
+                            bifrost.find_tail(log_id, FindTailOptions::ConsistentRead),
+                        )
+                        .await
+                        {
+                            Ok(Ok(tail)) => Some(ProbeResult::Confirmed {
+                                tail_lsn: tail.offset(),
+                            }),
+                            Ok(Err(_)) | Err(_) => Some(ProbeResult::Failed),
+                        }
+                    }
+                    None => Some(ProbeResult::Failed),
+                };
+
+                AsynchronousEvent {
+                    partition_id,
+                    inner: EventKind::ConsistentReadProbeCompleted {
+                        incarnation,
+                        nonce,
+                        result,
+                    },
+                }
+            }
+            .in_current_tc(),
+        );
+    }
+
+    /// The mandatory `ConsistentRead` sweep (A5): picks the running partition with the oldest
+    /// `last_consistent_attempt_at` (fairness over *attempts*, not successes) and probes it, at
+    /// most one such sweep probe in flight node-wide at a time. This is what reveals lag that a
+    /// frozen `Fast` cache would otherwise hide indefinitely -- see the module doc.
+    fn spawn_consistent_read_sweep(&mut self) {
+        let running: Vec<PartitionId> = self
+            .processor_states
+            .iter()
+            .filter(|(_, state)| matches!(state, ProcessorState::Started { .. }))
+            .map(|(id, _)| *id)
+            .collect();
+        let now = Instant::now();
+        for partition_id in &running {
+            self.tail_observations
+                .entry(*partition_id)
+                .or_insert_with(|| TailObservation::new(Lsn::INVALID, now));
+        }
+
+        let Some(target) = pick_next_consistent_read_sweep_target(
+            running
+                .iter()
+                .filter_map(|id| self.tail_observations.get(id).map(|obs| (*id, obs))),
+        ) else {
+            return;
+        };
+
+        self.consistent_read_sweep_inflight = true;
+        let bifrost = self.bifrost.clone();
+        let probe_timeout = self
+            .updateable_config
+            .live_load()
+            .worker
+            .stall_detection
+            .probe_timeout();
+
+        self.asynchronous_operations.spawn(
+            async move {
+                let log_id = Metadata::with_current(|m| {
+                    m.partition_table_ref().get(&target).map(Partition::log_id)
+                });
+                let result = match log_id {
+                    Some(log_id) => tokio::time::timeout(
+                        probe_timeout,
+                        bifrost.find_tail(log_id, FindTailOptions::ConsistentRead),
+                    )
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .map(|tail| tail.offset()),
+                    None => None,
+                };
+
+                AsynchronousEvent {
+                    partition_id: target,
+                    inner: EventKind::ConsistentReadSweepCompleted {
+                        probed: Some(target),
+                        result,
+                    },
+                }
+            }
+            .in_current_tc(),
+        );
+    }
+
     fn obtain_new_leader_epoch(
         partition_id: PartitionId,
         leader_epoch_token: LeaderEpochToken,
@@ -814,12 +1290,15 @@ where
             .expect("spawn obtain leader epoch task");
     }
 
-    /// Collect enriched processor status from all running partitions
+    /// Collect enriched processor status from all running partitions. Routed through
+    /// `effective_status` so the apply-stall overlay (downgraded replay status,
+    /// `apply_stalled_since`) is applied uniformly, including for a quarantined processor that is
+    /// currently `Stopping` (which otherwise reports no status at all).
     fn get_state(&self) -> BTreeMap<PartitionId, PartitionProcessorStatus> {
         self.processor_states
-            .iter()
-            .filter_map(|(partition_id, processor_state)| {
-                let mut status = processor_state.partition_processor_status()?;
+            .keys()
+            .filter_map(|partition_id| {
+                let mut status = self.effective_status(*partition_id)?;
                 let labels = [(PARTITION_LABEL, partition_id.to_string())];
 
                 gauge!(PARTITION_TIME_SINCE_LAST_STATUS_UPDATE, &labels)
@@ -833,13 +1312,24 @@ where
                     },
                 );
 
+                gauge!(PARTITION_APPLY_STALLED, &labels).set(
+                    if self.is_apply_stalled(*partition_id) {
+                        1.0
+                    } else {
+                        0.0
+                    },
+                );
+
                 // todo: PartitionProcessorStatus struct is shared across PP and PPM, consider splitting it
                 status.last_archived_log_lsn = self
                     .latest_snapshots
                     .get(partition_id)
                     .map(|s| s.archived_lsn);
 
-                let current_tail_lsn = self.target_tail_lsns.get(partition_id).cloned();
+                let current_tail_lsn = self
+                    .tail_observations
+                    .get(partition_id)
+                    .map(TailObservation::lsn);
                 let target_tail_lsn = if current_tail_lsn > status.target_tail_lsn {
                     current_tail_lsn
                 } else {
@@ -867,6 +1357,62 @@ where
                 Some((*partition_id, status))
             })
             .collect()
+    }
+
+    /// Single source of effective status: `Started`/`Starting` return their live status enriched
+    /// with the apply-stall overlay (downgraded replay status, `apply_stalled_since`);
+    /// `Stopping` -- which normally reports no status -- synthesizes a minimal one whenever the
+    /// partition is quarantined, so the quarantine signal never drops out during a self-bail's
+    /// restart cycle. See the `apply_progress_tracker` module doc.
+    fn effective_status(&self, partition_id: PartitionId) -> Option<PartitionProcessorStatus> {
+        let processor_state = self.processor_states.get(&partition_id)?;
+        let quarantine = self
+            .trackers
+            .get(&partition_id)
+            .and_then(TrackerEntry::quarantine);
+
+        match processor_state {
+            ProcessorState::Stopping { .. } => {
+                let quarantine = quarantine?;
+                let last_applied_log_lsn = self
+                    .trackers
+                    .get(&partition_id)
+                    .and_then(TrackerEntry::last_known_lsn);
+                Some(PartitionProcessorStatus {
+                    replay_status: ReplayStatus::CatchingUp,
+                    last_applied_log_lsn,
+                    apply_stalled_since: Some(quarantine.since()),
+                    updated_at: MillisSinceEpoch::now(),
+                    ..Default::default()
+                })
+            }
+            _ => {
+                let mut status = processor_state.partition_processor_status()?;
+                if let Some(quarantine) = quarantine {
+                    status.apply_stalled_since = Some(quarantine.since());
+                    if status.replay_status == ReplayStatus::Active {
+                        status.replay_status = ReplayStatus::CatchingUp;
+                    }
+                }
+                Some(status)
+            }
+        }
+    }
+
+    fn is_apply_stalled(&self, partition_id: PartitionId) -> bool {
+        self.trackers
+            .get(&partition_id)
+            .is_some_and(TrackerEntry::is_quarantined)
+    }
+
+    /// A partition processor is eligible to publish snapshots when its underlying processor
+    /// reports `Active` *and* it isn't currently quarantined for an apply stall (the overlay would
+    /// otherwise leave a stale, non-advancing snapshot target).
+    fn should_publish_snapshots(&self, partition_id: PartitionId) -> bool {
+        self.processor_states
+            .get(&partition_id)
+            .is_some_and(ProcessorState::should_publish_snapshots)
+            && !self.is_apply_stalled(partition_id)
     }
 
     fn on_command(&mut self, command: ProcessorsManagerCommand) {
@@ -927,16 +1473,13 @@ where
         min_target_lsn: Option<Lsn>,
         sender: oneshot::Sender<SnapshotResult>,
     ) {
-        let processor_state = match self.processor_states.get(&partition_id) {
-            Some(state) => state,
-            None => {
-                let _ = sender.send(Err(SnapshotError {
-                    partition_id,
-                    kind: SnapshotErrorKind::PartitionNotFound,
-                }));
-                return;
-            }
-        };
+        if !self.processor_states.contains_key(&partition_id) {
+            let _ = sender.send(Err(SnapshotError {
+                partition_id,
+                kind: SnapshotErrorKind::PartitionNotFound,
+            }));
+            return;
+        }
 
         let snapshot_repository = self.snapshot_repository.clone();
         let Some(snapshot_repository) = snapshot_repository else {
@@ -947,7 +1490,7 @@ where
             return;
         };
 
-        if !processor_state.should_publish_snapshots() {
+        if !self.should_publish_snapshots(partition_id) {
             let _ = sender.send(Err(SnapshotError {
                 partition_id,
                 kind: SnapshotErrorKind::InvalidState,
@@ -1026,11 +1569,10 @@ where
         // Partitions with a status suitable for taking a snapshot without a running snapshot task
         let candidate_partitions = self
             .processor_states
-            .iter()
-            .filter(|(partition_id, _)| !self.pending_snapshots.contains_key(partition_id))
-            .filter_map(|(partition_id, state)| {
-                state
-                    .partition_processor_status()
+            .keys()
+            .filter(|partition_id| !self.pending_snapshots.contains_key(partition_id))
+            .filter_map(|partition_id| {
+                self.effective_status(*partition_id)
                     .filter(|status| {
                         status.effective_mode == RunMode::Leader
                             && status.replay_status == ReplayStatus::Active
@@ -1551,6 +2093,18 @@ enum EventKind {
     NewTargetTail {
         tail: Option<Lsn>,
     },
+    /// The mandatory node-wide `ConsistentRead` sweep probe completed (or there was nothing to
+    /// probe this round).
+    ConsistentReadSweepCompleted {
+        probed: Option<PartitionId>,
+        result: Option<Lsn>,
+    },
+    /// A `ConsistentRead` probe issued on behalf of a suspected partition's tracker completed.
+    ConsistentReadProbeCompleted {
+        incarnation: Ulid,
+        nonce: u64,
+        result: Option<ProbeResult>,
+    },
     SnapshotStatusUpdated {
         snapshot_status: PartitionSnapshotStatus,
     },
@@ -1691,6 +2245,935 @@ mod tests {
             }
 
             version = version.next();
+        }
+
+        TaskCenter::shutdown_node("test completed", 0).await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
+    }
+
+    /// Stage 3 / A2 / A4: a Candidate-watchdog (Option D) bail must establish the same
+    /// `ApplyStall` quarantine episode an A-bail would, using the exact FSM LSN captured at the
+    /// watchdog's deadline, and that episode must remain visible through `effective_status` once
+    /// the manager schedules the restart (`Started` -> `Stopped(AnnounceNotApplied)` ->
+    /// `Starting`). Drives `on_asynchronous_event` directly rather than through a full leadership
+    /// election -- the watchdog's own state machine is covered by
+    /// `partition::leadership::tests`; this test is only about the PPM-side quarantine handoff.
+    #[test(restate_core::test)]
+    async fn d_bail_establishes_quarantine() -> googletest::Result<()> {
+        use std::sync::Arc;
+
+        use tokio::sync::watch;
+        use tokio_util::sync::CancellationToken;
+
+        use crate::partition::leadership;
+        use crate::partition::{LoopHeartbeat, ProcessorError, TargetLeaderState};
+        use crate::partition_processor_manager::apply_progress_tracker::QuarantineEpisode;
+        use crate::partition_processor_manager::processor_state::{
+            LeaderState, ProcessorState, StartedProcessor,
+        };
+        use crate::partition_processor_manager::{AsynchronousEvent, EventKind};
+        use restate_core::network::ShardSender;
+        use restate_types::cluster::cluster_state::PartitionProcessorStatus;
+        use restate_types::identifiers::LeaderEpoch;
+        use restate_types::sharding::KeyRange;
+
+        let mut nodes_config = NodesConfiguration::new_for_testing();
+        let node_id = GenerationalNodeId::new(44, 44);
+        let node_config = NodeConfig::builder()
+            .name("44".to_owned())
+            .current_generation(node_id)
+            .address(AdvertisedAddress::default())
+            .roles(Role::Worker | Role::Admin)
+            .binary_version(RestateVersion::current())
+            .build();
+        nodes_config.upsert_node(node_config);
+
+        let mut env_builder = TestCoreEnvBuilder::with_incoming_only_connector()
+            .set_my_node_id(node_id)
+            .set_nodes_config(nodes_config);
+        let health_status = HealthStatus::default();
+
+        RocksDbManager::init();
+
+        let bifrost_svc = BifrostService::new(env_builder.metadata_writer.clone())
+            .with_factory(memory_loglet::Factory::default());
+        let bifrost = bifrost_svc.handle();
+
+        let replica_set_states = PartitionReplicaSetStates::default();
+        let partition_store_manager = PartitionStoreManager::create(true).await?;
+
+        let ingestion_client = IngestionClient::new(
+            env_builder.networking.clone(),
+            env_builder.metadata.updateable_partition_table(),
+            PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
+            NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
+            SessionOptions::default(),
+        );
+
+        let mut partition_processor_manager = PartitionProcessorManager::new(
+            health_status,
+            Live::from_value(Configuration::default()),
+            env_builder.metadata_writer.clone(),
+            partition_store_manager,
+            replica_set_states.clone(),
+            &mut env_builder.router_builder,
+            bifrost,
+            None,
+            ingestion_client,
+        );
+
+        let _env = env_builder.build().await;
+        bifrost_svc.start().await.into_test_result()?;
+
+        // Normally done by `run()`'s startup; needed here since this test drives the manager
+        // directly rather than through its own event loop.
+        let (_pp_rpc_control, pp_rpc_shards) =
+            partition_processor_manager.pp_rpc_svc.take().start();
+        partition_processor_manager.pp_rpc_shards = Some(pp_rpc_shards);
+
+        // This node must still be a replica of the partition, or the Stopped handler would GC
+        // the tracker this test is about to create instead of carrying it into the restart.
+        let current_replica_set = ReplicaSetState {
+            version: Version::MIN,
+            members: vec![MemberState {
+                node_id: node_id.as_plain(),
+                durable_lsn: Lsn::INVALID,
+            }],
+        };
+        replica_set_states.note_observed_membership(
+            PartitionId::MIN,
+            Default::default(),
+            &current_replica_set,
+            &None,
+        );
+
+        // Craft a `Started` processor state directly: this test only needs to exercise the
+        // D-bail handler and the quarantine overlay, not a real running partition processor.
+        let (control_tx, _control_rx) = watch::channel(TargetLeaderState::Follower);
+        let (rpc_tx, _rpc_rx) = ShardSender::new();
+        let (_watch_tx, watch_rx) = watch::channel(PartitionProcessorStatus::default());
+        let started = StartedProcessor::new(
+            CancellationToken::new(),
+            KeyRange::FULL,
+            control_tx,
+            rpc_tx,
+            watch_rx,
+            Arc::new(LoopHeartbeat::new()),
+        );
+        partition_processor_manager.processor_states.insert(
+            PartitionId::MIN,
+            ProcessorState::Started {
+                processor: Some(started),
+                leader_state: LeaderState::Follower,
+                start_time: std::time::Instant::now(),
+                delay: None,
+            },
+        );
+
+        let bail_lsn = Lsn::new(42);
+        partition_processor_manager.on_asynchronous_event(AsynchronousEvent {
+            partition_id: PartitionId::MIN,
+            inner: EventKind::Stopped(Err(ProcessorError::ActionEffect(
+                leadership::Error::AnnounceNotApplied {
+                    leader_epoch: LeaderEpoch::from(1),
+                    committed_for: Duration::from_secs(1),
+                    bail_lsn,
+                },
+            ))),
+        });
+
+        let quarantine = partition_processor_manager
+            .trackers
+            .get(&PartitionId::MIN)
+            .and_then(|tracker| tracker.quarantine())
+            .expect("D-bail must establish a quarantine episode");
+        assert!(matches!(
+            quarantine,
+            QuarantineEpisode::ApplyStall {
+                bail_lsn: lsn,
+                ..
+            } if lsn == bail_lsn
+        ));
+
+        let status = partition_processor_manager
+            .effective_status(PartitionId::MIN)
+            .expect("status must remain visible across the restart");
+        assert!(
+            status.apply_stalled_since.is_some(),
+            "apply_stalled_since must survive Started -> Stopped -> Starting"
+        );
+
+        TaskCenter::shutdown_node("test completed", 0).await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
+    }
+
+    /// Shared rig for the `revalidate_and_commit_bail` regression tests below: a manager with one
+    /// `Started` processor (real `LoopHeartbeat`, real status watch channel) and a tracker already
+    /// quarantined (`LoopDead`) with a known `last_known_lsn`, i.e. exactly the state
+    /// `evaluate_trackers` would have left behind right after proposing a bail. Returns the
+    /// manager plus handles the test mutates to simulate what happens *after* that proposal and
+    /// *before* revalidation runs.
+    async fn bail_revalidation_rig() -> googletest::Result<(
+        PartitionProcessorManager<restate_core::network::FailingConnector>,
+        std::sync::Arc<crate::partition::LoopHeartbeat>,
+        tokio::sync::watch::Sender<restate_types::cluster::cluster_state::PartitionProcessorStatus>,
+    )> {
+        use std::sync::Arc;
+
+        use tokio::sync::watch;
+        use tokio::time::Instant;
+        use tokio_util::sync::CancellationToken;
+        use ulid::Ulid;
+
+        use crate::partition::{LoopHeartbeat, LoopPhase, TargetLeaderState};
+        use crate::partition_processor_manager::apply_progress_tracker::{
+            HeartbeatView, LoopState, QuarantineEpisode, TickInput, TrackerEffect, TrackerEntry,
+        };
+        use crate::partition_processor_manager::processor_state::{
+            LeaderState, ProcessorState, StartedProcessor,
+        };
+        use restate_core::network::ShardSender;
+        use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus};
+        use restate_types::config::StallDetectionOptions;
+        use restate_types::identifiers::PartitionId;
+        use restate_types::logs::Lsn;
+        use restate_types::sharding::KeyRange;
+
+        let mut nodes_config = NodesConfiguration::new_for_testing();
+        let node_id = GenerationalNodeId::new(47, 47);
+        let node_config = NodeConfig::builder()
+            .name("47".to_owned())
+            .current_generation(node_id)
+            .address(AdvertisedAddress::default())
+            .roles(Role::Worker | Role::Admin)
+            .binary_version(RestateVersion::current())
+            .build();
+        nodes_config.upsert_node(node_config);
+
+        let mut env_builder = TestCoreEnvBuilder::with_incoming_only_connector()
+            .set_my_node_id(node_id)
+            .set_nodes_config(nodes_config);
+        let health_status = HealthStatus::default();
+
+        RocksDbManager::init();
+
+        let bifrost_svc = BifrostService::new(env_builder.metadata_writer.clone())
+            .with_factory(memory_loglet::Factory::default());
+        let bifrost = bifrost_svc.handle();
+
+        let replica_set_states = PartitionReplicaSetStates::default();
+        let partition_store_manager = PartitionStoreManager::create(true).await?;
+
+        let ingestion_client = IngestionClient::new(
+            env_builder.networking.clone(),
+            env_builder.metadata.updateable_partition_table(),
+            PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
+            NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
+            SessionOptions::default(),
+        );
+
+        let cfg = StallDetectionOptions::default();
+        let mut partition_processor_manager = PartitionProcessorManager::new(
+            health_status,
+            Live::from_value(Configuration::default()),
+            env_builder.metadata_writer.clone(),
+            partition_store_manager,
+            replica_set_states.clone(),
+            &mut env_builder.router_builder,
+            bifrost,
+            None,
+            ingestion_client,
+        );
+
+        let _env = env_builder.build().await;
+        bifrost_svc.start().await.into_test_result()?;
+
+        let heartbeat = Arc::new(LoopHeartbeat::new());
+        // Two beats: matches the manager having already sampled this loop once mid-incarnation
+        // (i.e. `has_observed_change` would be true), landing on `(InSelect, 2)`.
+        heartbeat.beat(LoopPhase::InSelect);
+        heartbeat.beat(LoopPhase::InSelect);
+
+        let (control_tx, _control_rx) = watch::channel(TargetLeaderState::Follower);
+        let (rpc_tx, _rpc_rx) = ShardSender::new();
+        let (status_tx, status_rx) = watch::channel(PartitionProcessorStatus {
+            replay_status: ReplayStatus::Active,
+            last_applied_log_lsn: Some(Lsn::new(10)),
+            ..PartitionProcessorStatus::default()
+        });
+        let started = StartedProcessor::new(
+            CancellationToken::new(),
+            KeyRange::FULL,
+            control_tx,
+            rpc_tx,
+            status_rx,
+            heartbeat.clone(),
+        );
+        partition_processor_manager.processor_states.insert(
+            PartitionId::MIN,
+            ProcessorState::Started {
+                processor: Some(started),
+                leader_state: LeaderState::Follower,
+                start_time: std::time::Instant::now(),
+                delay: None,
+            },
+        );
+
+        // The `HeartbeatView` reflects exactly the sample `evaluate_trackers` would have taken at
+        // proposal time: `(InSelect, 2)`, matching the live heartbeat above.
+        let now = Instant::now();
+        let mut heartbeat_view = HeartbeatView::new(now);
+        heartbeat_view.observe(heartbeat.sample(), now);
+        partition_processor_manager
+            .heartbeat_views
+            .insert(PartitionId::MIN, heartbeat_view);
+
+        // Drive the tracker to a quarantined, bail-eligible state with a known `last_known_lsn`:
+        // one progress sample to establish `last_known_lsn = Some(10)`, then a loop-dead sample
+        // (independent of lag) to quarantine and propose a bail.
+        let mut tracker = TrackerEntry::new(Ulid::new(), now, &cfg);
+        let progress_effect = tracker.on_sample(
+            now,
+            TickInput {
+                last_applied_lsn: Some(Lsn::new(10)),
+                replay_status: ReplayStatus::Active,
+                loop_state: LoopState::ReaderIdle,
+                fresh_tail: None,
+            },
+            &cfg,
+        );
+        assert!(matches!(progress_effect, TrackerEffect::None));
+
+        let bail_proposal = tracker.on_sample(
+            now,
+            TickInput {
+                last_applied_lsn: Some(Lsn::new(10)),
+                replay_status: ReplayStatus::Active,
+                loop_state: LoopState::LoopDead,
+                fresh_tail: None,
+            },
+            &cfg,
+        );
+        assert!(matches!(bail_proposal, TrackerEffect::Bail));
+        assert!(matches!(
+            tracker.quarantine(),
+            Some(QuarantineEpisode::LoopDead { bails: 0, .. })
+        ));
+
+        partition_processor_manager
+            .trackers
+            .insert(PartitionId::MIN, tracker);
+
+        Ok((partition_processor_manager, heartbeat, status_tx))
+    }
+
+    /// Finding 4 (DEFECTB re-review, BLOCKER 1): the pre-stop revalidation must reject a bail
+    /// whose heartbeat has moved since the sample that proposed it -- a loop that cycled through
+    /// `ApplyingBatch` and back to `InSelect` between the proposal and this revalidation looks
+    /// `InSelect` right now too, so checking only the current phase (the old, incomplete
+    /// revalidation) would miss it. No `stop()`, no `commit_bail` (quarantine's `bails` count
+    /// stays at 0).
+    #[test(restate_core::test)]
+    async fn bail_revalidation_rejects_on_heartbeat_change_since_proposal() -> googletest::Result<()>
+    {
+        use crate::partition::LoopPhase;
+        use crate::partition_processor_manager::apply_progress_tracker::QuarantineEpisode;
+        use crate::partition_processor_manager::processor_state::ProcessorState;
+        use restate_types::config::StallDetectionOptions;
+        use restate_types::identifiers::PartitionId;
+
+        let (mut manager, heartbeat, _status_tx) = bail_revalidation_rig().await?;
+
+        // The loop cycled through a phase and back to `InSelect` between the proposal and now --
+        // the counter moves even though the phase reported right now is unchanged.
+        heartbeat.beat(LoopPhase::ApplyingBatch);
+        heartbeat.beat(LoopPhase::InSelect);
+
+        let cfg = StallDetectionOptions::default();
+        manager.revalidate_and_commit_bail(PartitionId::MIN, &cfg);
+
+        let tracker = manager
+            .trackers
+            .get(&PartitionId::MIN)
+            .expect("tracker must still be present");
+        assert!(
+            matches!(
+                tracker.quarantine(),
+                Some(QuarantineEpisode::LoopDead { bails: 0, .. })
+            ),
+            "a rejected revalidation must not advance the bail count"
+        );
+        assert!(
+            matches!(
+                manager.processor_states.get(&PartitionId::MIN),
+                Some(ProcessorState::Started { .. })
+            ),
+            "a rejected revalidation must not stop the processor"
+        );
+
+        TaskCenter::shutdown_node("test completed", 0).await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
+    }
+
+    /// Finding 4 (DEFECTB re-review, BLOCKER 1): the pre-stop revalidation must reject a bail
+    /// whose `last_applied_lsn` has advanced since the sample that proposed it, even if the
+    /// heartbeat itself happens to read identically right now (e.g. the loop is `InSelect` again
+    /// on the *next* record, having not yet cycled a new counter value). No `stop()`, no
+    /// `commit_bail`.
+    #[test(restate_core::test)]
+    async fn bail_revalidation_rejects_on_progress_since_proposal() -> googletest::Result<()> {
+        use crate::partition_processor_manager::apply_progress_tracker::QuarantineEpisode;
+        use crate::partition_processor_manager::processor_state::ProcessorState;
+        use restate_types::config::StallDetectionOptions;
+        use restate_types::identifiers::PartitionId;
+        use restate_types::logs::Lsn;
+
+        let (mut manager, _heartbeat, status_tx) = bail_revalidation_rig().await?;
+
+        status_tx.send_modify(|status| status.last_applied_log_lsn = Some(Lsn::new(11)));
+
+        let cfg = StallDetectionOptions::default();
+        manager.revalidate_and_commit_bail(PartitionId::MIN, &cfg);
+
+        let tracker = manager
+            .trackers
+            .get(&PartitionId::MIN)
+            .expect("tracker must still be present");
+        assert!(
+            matches!(
+                tracker.quarantine(),
+                Some(QuarantineEpisode::LoopDead { bails: 0, .. })
+            ),
+            "a rejected revalidation must not advance the bail count"
+        );
+        assert!(
+            matches!(
+                manager.processor_states.get(&PartitionId::MIN),
+                Some(ProcessorState::Started { .. })
+            ),
+            "a rejected revalidation must not stop the processor"
+        );
+
+        TaskCenter::shutdown_node("test completed", 0).await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
+    }
+
+    /// Positive control for the two rejection tests above: an unchanged heartbeat and unchanged
+    /// `last_applied_lsn` must still let a `LoopDead` bail commit and stop the processor -- the
+    /// stricter finding-4 revalidation must not reject a genuinely-still-stalled bail.
+    #[test(restate_core::test)]
+    async fn bail_revalidation_commits_when_still_idle_and_unchanged() -> googletest::Result<()> {
+        use crate::partition_processor_manager::apply_progress_tracker::QuarantineEpisode;
+        use crate::partition_processor_manager::processor_state::ProcessorState;
+        use restate_types::config::StallDetectionOptions;
+        use restate_types::identifiers::PartitionId;
+
+        let (mut manager, _heartbeat, _status_tx) = bail_revalidation_rig().await?;
+
+        let cfg = StallDetectionOptions::default();
+        manager.revalidate_and_commit_bail(PartitionId::MIN, &cfg);
+
+        let tracker = manager
+            .trackers
+            .get(&PartitionId::MIN)
+            .expect("tracker must still be present");
+        assert!(
+            matches!(
+                tracker.quarantine(),
+                Some(QuarantineEpisode::LoopDead { bails: 1, .. })
+            ),
+            "a still-idle, still-unchanged bail must commit"
+        );
+        assert!(
+            matches!(
+                manager.processor_states.get(&PartitionId::MIN),
+                Some(ProcessorState::Stopping { .. })
+            ),
+            "a committed bail must stop the processor"
+        );
+
+        TaskCenter::shutdown_node("test completed", 0).await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
+    }
+
+    /// Finding 1 negative control (DEFECTB review, merge-blocking integration coverage): a
+    /// legitimately long apply (well past `grace`, with more records still sitting unapplied in
+    /// the log the whole time) must never itself be reported as a stall. Uses the test-only
+    /// slow-apply hook (`RESTATE_TEST_SLOW_APPLY_MILLIS`) so every record's application takes far
+    /// longer than `grace`, while the apply loop stays in `ApplyingBatch` throughout -- this
+    /// proves that phase, not raw elapsed time since progress, gates suspicion (the exact
+    /// distinction finding 1's fix restored; `tracker_state_machine_unit` pins the same invariant
+    /// at the pure state-machine level with explicit RED->GREEN evidence for the fix).
+    ///
+    /// `NUM_RECORDS` exceeds `max_command_batch_size` (32, `config/worker.rs`) so the run crosses
+    /// at least one real batch boundary: after each batch, the loop briefly returns to `InSelect`
+    /// with the tail still ahead (the remaining, not-yet-read records) before starting the next
+    /// batch -- the same genuine idle+lagging transition finding 1's fix is about, now exercised
+    /// at the actual batch granularity the production loop uses, not just between individual
+    /// records.
+    #[test(restate_core::test)]
+    async fn long_apply_negative_control() -> googletest::Result<()> {
+        use std::sync::Arc;
+
+        use restate_bifrost::ErrorRecoveryStrategy;
+        use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
+        use restate_types::cluster::cluster_state::ReplayStatus;
+        use restate_types::config::StallDetectionOptions;
+        use restate_types::identifiers::LeaderEpoch;
+        use restate_types::partitions::Partition;
+        use restate_types::sharding::KeyRange;
+        use restate_types::time::MillisSinceEpoch;
+        use restate_util_time::FriendlyDuration;
+        use restate_wal_protocol::control::UpdatePartitionDurabilityCommand;
+        use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
+
+        use crate::partition::RESTATE_TEST_SLOW_APPLY_MILLIS;
+
+        const SLOW_APPLY_MILLIS: u64 = 50;
+        const NUM_RECORDS: u64 = 40;
+
+        let mut nodes_config = NodesConfiguration::new_for_testing();
+        let node_id = GenerationalNodeId::new(45, 45);
+        let node_config = NodeConfig::builder()
+            .name("45".to_owned())
+            .current_generation(node_id)
+            .address(AdvertisedAddress::default())
+            .roles(Role::Worker | Role::Admin)
+            .binary_version(RestateVersion::current())
+            .build();
+        nodes_config.upsert_node(node_config);
+
+        let mut env_builder = TestCoreEnvBuilder::with_incoming_only_connector()
+            .set_my_node_id(node_id)
+            .set_nodes_config(nodes_config);
+        let health_status = HealthStatus::default();
+
+        RocksDbManager::init();
+
+        let bifrost_svc = BifrostService::new(env_builder.metadata_writer.clone())
+            .with_factory(memory_loglet::Factory::default());
+        let bifrost = bifrost_svc.handle();
+
+        let replica_set_states = PartitionReplicaSetStates::default();
+        let partition_store_manager = PartitionStoreManager::create(true).await?;
+
+        let ingestion_client = IngestionClient::new(
+            env_builder.networking.clone(),
+            env_builder.metadata.updateable_partition_table(),
+            PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
+            NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
+            SessionOptions::default(),
+        );
+
+        // Fast-but-real stall-detection thresholds: `grace` is well under a single record's
+        // artificial apply delay, so if phase were ignored (finding 1's bug), a single
+        // idle+lagging sample would trip suspicion almost immediately.
+        let mut configuration = Configuration::default();
+        configuration.worker.stall_detection = StallDetectionOptions {
+            grace: FriendlyDuration::from_millis(100),
+            heartbeat_fresh: FriendlyDuration::from_millis(50),
+            hard_grace: FriendlyDuration::from_secs(30),
+            ..StallDetectionOptions::default()
+        };
+
+        let metadata_writer = env_builder.metadata_writer.clone();
+        let partition_processor_manager = PartitionProcessorManager::new(
+            health_status,
+            Live::from_value(configuration),
+            metadata_writer.clone(),
+            partition_store_manager,
+            replica_set_states.clone(),
+            &mut env_builder.router_builder,
+            bifrost.clone(),
+            None,
+            ingestion_client,
+        );
+
+        let _env = env_builder.build().await;
+
+        // `bootstrap_logs_metadata` seeds each log's chain with `ProviderKind::InMemory` but
+        // leaves `Logs::configuration().default_provider` at its type default (`Replicated`).
+        // `BifrostAdmin::ensure_log_exists` -- called on every processor (re)spawn -- resolves
+        // that default provider unconditionally, even for an already-provisioned log, so with
+        // only the in-memory factory registered every incarnation would fail before ever
+        // reaching the apply loop. Not related to findings 1-6; corrected here so this test can
+        // exercise a real, running processor.
+        {
+            use restate_core::Metadata;
+            use restate_types::logs::metadata::{LogsConfiguration, ProviderConfiguration};
+
+            let logs = Metadata::with_current(|m| m.logs_snapshot());
+            let mut builder = (*logs).clone().try_into_builder().expect("valid logs");
+            builder.set_configuration(LogsConfiguration {
+                default_provider: ProviderConfiguration::InMemory,
+            });
+            metadata_writer.submit(Arc::new(builder.build()));
+        }
+
+        let processors_manager_handle = partition_processor_manager.handle();
+
+        bifrost_svc.start().await.into_test_result()?;
+        TaskCenter::spawn(
+            TaskKind::SystemService,
+            "partition-processor-manager",
+            partition_processor_manager.run(),
+        )?;
+
+        let current_replica_set = ReplicaSetState {
+            version: Version::MIN,
+            members: vec![MemberState {
+                node_id: node_id.as_plain(),
+                durable_lsn: Lsn::INVALID,
+            }],
+        };
+        replica_set_states.note_observed_membership(
+            PartitionId::MIN,
+            Default::default(),
+            &current_replica_set,
+            &None,
+        );
+
+        // Wait until the (fresh, empty-log) processor has started and caught up.
+        loop {
+            let state = processors_manager_handle.get_state().await?;
+            if state
+                .get(&PartitionId::MIN)
+                .is_some_and(|s| s.replay_status == ReplayStatus::Active)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        // Arm the slow-apply hook, then append several records so the log's tail stays ahead of
+        // the applied LSN for the whole time the (slow) batch is being applied.
+        unsafe {
+            std::env::set_var(
+                RESTATE_TEST_SLOW_APPLY_MILLIS,
+                SLOW_APPLY_MILLIS.to_string(),
+            );
+        }
+
+        let log_id = Partition::new(PartitionId::MIN, KeyRange::FULL).log_id();
+        let mut appender =
+            bifrost.create_appender::<Envelope>(log_id, ErrorRecoveryStrategy::Wait)?;
+        let mut esn = EpochSequenceNumber::new(LeaderEpoch::INVALID);
+        for _ in 0..NUM_RECORDS {
+            let header = Header {
+                dest: Destination::Processor {
+                    partition_key: KeyRange::FULL.start(),
+                    dedup: Some(DedupInformation::self_proposal(esn)),
+                },
+                source: Source::Processor {
+                    partition_key: Some(KeyRange::FULL.start()),
+                    leader_epoch: LeaderEpoch::INVALID,
+                },
+            };
+            let envelope = Envelope::new(
+                header,
+                Command::UpdatePartitionDurability(UpdatePartitionDurabilityCommand {
+                    partition_id: PartitionId::MIN,
+                    durable_point: Lsn::OLDEST,
+                    modification_time: MillisSinceEpoch::now(),
+                }),
+            );
+            appender.append(Arc::new(envelope)).await?;
+            esn = esn.next();
+        }
+
+        // Poll continuously until the whole (slow) batch has applied, asserting at every sample
+        // that the long apply was never reported as a stall.
+        loop {
+            let state = processors_manager_handle.get_state().await?;
+            let status = state
+                .get(&PartitionId::MIN)
+                .expect("partition must still be present throughout the slow apply");
+            assert!(
+                status.apply_stalled_since.is_none(),
+                "a long but legitimate apply must never be reported as a stall (finding 1)"
+            );
+            if status.last_applied_log_lsn == Some(Lsn::new(NUM_RECORDS)) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let status = processors_manager_handle
+            .get_state()
+            .await?
+            .remove(&PartitionId::MIN)
+            .expect("partition must still be present");
+        assert_eq!(status.replay_status, ReplayStatus::Active);
+        assert!(status.apply_stalled_since.is_none());
+
+        unsafe {
+            std::env::remove_var(RESTATE_TEST_SLOW_APPLY_MILLIS);
+        }
+
+        TaskCenter::shutdown_node("test completed", 0).await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
+    }
+
+    /// BLOCKER 2 (DEFECTB re-review): the positive end-to-end scenario proving
+    /// detect -> quarantine -> bail -> restart -> recovery through the real manager, a real
+    /// partition processor's `run_inner` loop, and real bifrost -- not a hand-crafted
+    /// `TrackerEntry`/`TickInput` sequence. Uses the frozen-reader test seam
+    /// (`RESTATE_TEST_FREEZE_RECORD_STREAM`, `partition/mod.rs`) so the log genuinely has
+    /// unconsumed records the whole time, without needing a slow apply.
+    ///
+    /// The freeze gate is re-checked on every `select!` iteration, so simply unfreezing it would
+    /// let recovery happen even if the bail/restart path were silently broken and the *original*
+    /// incarnation just kept running the whole time. `ProcessorsManagerHandle` only exposes
+    /// `get_state()`, so this test can't peek at the manager's `processor_states`/`trackers`
+    /// directly (the manager is moved into its spawned `run()` task); instead it stays frozen and
+    /// polls for a bounded window comfortably longer than one full detect->confirm->bail cycle,
+    /// asserting the quarantine never spuriously clears on its own during that window (only
+    /// unfreezing the reader can produce real progress) -- then unfreezes and asserts recovery.
+    #[test(restate_core::test)]
+    async fn frozen_reader_detects_quarantines_bails_restarts_and_recovers()
+    -> googletest::Result<()> {
+        use std::sync::Arc;
+
+        use restate_bifrost::ErrorRecoveryStrategy;
+        use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
+        use restate_types::cluster::cluster_state::ReplayStatus;
+        use restate_types::config::StallDetectionOptions;
+        use restate_types::identifiers::LeaderEpoch;
+        use restate_types::partitions::Partition;
+        use restate_types::sharding::KeyRange;
+        use restate_types::time::MillisSinceEpoch;
+        use restate_util_time::FriendlyDuration;
+        use restate_wal_protocol::control::UpdatePartitionDurabilityCommand;
+        use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
+
+        use crate::partition::RESTATE_TEST_FREEZE_RECORD_STREAM;
+
+        const NUM_RECORDS: u64 = 3;
+
+        let mut nodes_config = NodesConfiguration::new_for_testing();
+        let node_id = GenerationalNodeId::new(48, 48);
+        let node_config = NodeConfig::builder()
+            .name("48".to_owned())
+            .current_generation(node_id)
+            .address(AdvertisedAddress::default())
+            .roles(Role::Worker | Role::Admin)
+            .binary_version(RestateVersion::current())
+            .build();
+        nodes_config.upsert_node(node_config);
+
+        let mut env_builder = TestCoreEnvBuilder::with_incoming_only_connector()
+            .set_my_node_id(node_id)
+            .set_nodes_config(nodes_config);
+        let health_status = HealthStatus::default();
+
+        RocksDbManager::init();
+
+        let bifrost_svc = BifrostService::new(env_builder.metadata_writer.clone())
+            .with_factory(memory_loglet::Factory::default());
+        let bifrost = bifrost_svc.handle();
+
+        let replica_set_states = PartitionReplicaSetStates::default();
+        let partition_store_manager = PartitionStoreManager::create(true).await?;
+
+        let ingestion_client = IngestionClient::new(
+            env_builder.networking.clone(),
+            env_builder.metadata.updateable_partition_table(),
+            PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
+            NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
+            SessionOptions::default(),
+        );
+
+        // Fast-but-real thresholds. `heartbeat_fresh`/`hard_grace` stay generously larger than
+        // the apply loop's own ~500ms(+/-50%) status-timer beat cadence so a frozen-but-otherwise-
+        // idle loop reads as genuinely `ReaderIdle` (not `Stale`/`LoopDead`) -- this scenario is
+        // about the `ApplyStall` detect->confirm->bail path, not loop-death.
+        let mut configuration = Configuration::default();
+        configuration.worker.stall_detection = StallDetectionOptions {
+            grace: FriendlyDuration::from_millis(300),
+            heartbeat_fresh: FriendlyDuration::from_secs(2),
+            tail_ttl: FriendlyDuration::from_secs(5),
+            sweep_interval: FriendlyDuration::from_secs(1),
+            probe_timeout: FriendlyDuration::from_secs(2),
+            probe_backoff_base: FriendlyDuration::from_millis(300),
+            probe_backoff_cap: FriendlyDuration::from_secs(1),
+            recovery_window: FriendlyDuration::from_millis(300),
+            bail_grace: FriendlyDuration::from_millis(300),
+            bail_backoff_base: FriendlyDuration::from_secs(2),
+            bail_backoff_cap: FriendlyDuration::from_secs(5),
+            hard_grace: FriendlyDuration::from_secs(10),
+            candidate_activation_timeout: FriendlyDuration::from_secs(60),
+            ..StallDetectionOptions::default()
+        };
+
+        let metadata_writer = env_builder.metadata_writer.clone();
+        let partition_processor_manager = PartitionProcessorManager::new(
+            health_status,
+            Live::from_value(configuration),
+            metadata_writer.clone(),
+            partition_store_manager,
+            replica_set_states.clone(),
+            &mut env_builder.router_builder,
+            bifrost.clone(),
+            None,
+            ingestion_client,
+        );
+
+        let _env = env_builder.build().await;
+
+        // See `long_apply_negative_control`'s identical workaround: `bootstrap_logs_metadata`
+        // leaves `Logs::configuration().default_provider` at `Replicated` even in in-memory test
+        // mode, which `ensure_log_exists` would otherwise choke on for every (re)spawn.
+        {
+            use restate_core::Metadata;
+            use restate_types::logs::metadata::{LogsConfiguration, ProviderConfiguration};
+
+            let logs = Metadata::with_current(|m| m.logs_snapshot());
+            let mut builder = (*logs).clone().try_into_builder().expect("valid logs");
+            builder.set_configuration(LogsConfiguration {
+                default_provider: ProviderConfiguration::InMemory,
+            });
+            metadata_writer.submit(Arc::new(builder.build()));
+        }
+
+        let processors_manager_handle = partition_processor_manager.handle();
+
+        bifrost_svc.start().await.into_test_result()?;
+        TaskCenter::spawn(
+            TaskKind::SystemService,
+            "partition-processor-manager",
+            partition_processor_manager.run(),
+        )?;
+
+        // Freeze the reader from the very start: with an empty log there is nothing to consume
+        // yet, so the processor still reaches `Active` immediately regardless.
+        unsafe {
+            std::env::set_var(RESTATE_TEST_FREEZE_RECORD_STREAM, "1");
+        }
+
+        let current_replica_set = ReplicaSetState {
+            version: Version::MIN,
+            members: vec![MemberState {
+                node_id: node_id.as_plain(),
+                durable_lsn: Lsn::INVALID,
+            }],
+        };
+        replica_set_states.note_observed_membership(
+            PartitionId::MIN,
+            Default::default(),
+            &current_replica_set,
+            &None,
+        );
+
+        loop {
+            let state = processors_manager_handle.get_state().await?;
+            if state
+                .get(&PartitionId::MIN)
+                .is_some_and(|s| s.replay_status == ReplayStatus::Active)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        // Append records with the reader frozen: the tail is now ahead of the applied LSN, and
+        // will stay that way until the reader is unfrozen.
+        let log_id = Partition::new(PartitionId::MIN, KeyRange::FULL).log_id();
+        let mut appender =
+            bifrost.create_appender::<Envelope>(log_id, ErrorRecoveryStrategy::Wait)?;
+        let mut esn = EpochSequenceNumber::new(LeaderEpoch::INVALID);
+        for _ in 0..NUM_RECORDS {
+            let header = Header {
+                dest: Destination::Processor {
+                    partition_key: KeyRange::FULL.start(),
+                    dedup: Some(DedupInformation::self_proposal(esn)),
+                },
+                source: Source::Processor {
+                    partition_key: Some(KeyRange::FULL.start()),
+                    leader_epoch: LeaderEpoch::INVALID,
+                },
+            };
+            let envelope = Envelope::new(
+                header,
+                Command::UpdatePartitionDurability(UpdatePartitionDurabilityCommand {
+                    partition_id: PartitionId::MIN,
+                    durable_point: Lsn::OLDEST,
+                    modification_time: MillisSinceEpoch::now(),
+                }),
+            );
+            appender.append(Arc::new(envelope)).await?;
+            esn = esn.next();
+        }
+
+        // Wait for the overlay to report detect -> quarantine: `CatchingUp` (the manager's
+        // downgraded-replay-status overlay) plus a set `apply_stalled_since`.
+        loop {
+            let state = processors_manager_handle.get_state().await?;
+            let status = state
+                .get(&PartitionId::MIN)
+                .expect("partition must still be present while frozen");
+            if status.apply_stalled_since.is_some() {
+                assert_eq!(
+                    status.replay_status,
+                    ReplayStatus::CatchingUp,
+                    "a quarantined partition must report CatchingUp via the overlay"
+                );
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // Still frozen: keep polling for a window comfortably longer than one full
+        // detect->confirm->bail cycle (grace + probe + recovery_window + bail_grace, plus the
+        // tracker-tick/tail-poller cadence), asserting the quarantine never spuriously clears.
+        // It can only clear via rule 1 (real progress past `bail_lsn`), which is impossible while
+        // frozen -- so persisting through this window is exactly what a working self-bail (stop
+        // the stuck incarnation, restart, remain quarantined since the new one is frozen too)
+        // looks like from the outside, and a hard failure otherwise would mean the reader somehow
+        // made progress without ever being unfrozen.
+        let watch_until = tokio::time::Instant::now() + Duration::from_secs(6);
+        while tokio::time::Instant::now() < watch_until {
+            let state = processors_manager_handle.get_state().await?;
+            let status = state
+                .get(&PartitionId::MIN)
+                .expect("partition must still be present across the self-bail restart cycle");
+
+            assert!(
+                status.apply_stalled_since.is_some(),
+                "apply_stalled_since cleared before the reader was ever unfrozen -- \
+                 the reader must have made progress without a bail/restart"
+            );
+
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        // Now let the (new, still-frozen-until-this-point) incarnation actually make progress.
+        unsafe {
+            std::env::remove_var(RESTATE_TEST_FREEZE_RECORD_STREAM);
+        }
+
+        let recovery_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if tokio::time::Instant::now() >= recovery_deadline {
+                panic!("never recovered to Active with a cleared quarantine after unfreezing");
+            }
+
+            let state = processors_manager_handle.get_state().await?;
+            let status = state
+                .get(&PartitionId::MIN)
+                .expect("partition must still be present after unfreezing");
+            if status.apply_stalled_since.is_none()
+                && status.replay_status == ReplayStatus::Active
+                && status.last_applied_log_lsn == Some(Lsn::new(NUM_RECORDS))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
         TaskCenter::shutdown_node("test completed", 0).await;

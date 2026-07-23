@@ -72,4 +72,8 @@ pub(crate) fn append_partition_row(
     if let Some(version) = state.storage_version {
         row.storage_version(version as u32);
     }
+
+    if let Some(ts) = state.apply_stalled_since {
+        row.apply_stalled_since(ts.as_u64() as i64);
+    }
 }

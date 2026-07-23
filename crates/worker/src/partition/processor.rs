@@ -26,6 +26,7 @@ pub mod commands;
 mod context;
 mod dedup;
 mod fsm;
+pub mod heartbeat;
 pub mod leadership;
 mod outbox;
 mod status;
@@ -33,9 +34,10 @@ mod status;
 // Re-exports
 pub use context::ProcessorRawContext;
 pub use dedup::{DedupAccess, DedupMut, HasDedup, HasDedupMut};
+pub use heartbeat::{LoopHeartbeat, LoopPhase};
 pub use restate_vqueues::context::{HasVQueues, HasVQueuesMut};
 pub use restate_worker_api::processor::*;
-pub use status::HasStatusMut;
+pub use status::{HasStatus, HasStatusMut};
 
 use self::fsm::Fsm;
 

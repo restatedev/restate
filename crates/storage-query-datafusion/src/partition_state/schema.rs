@@ -70,5 +70,11 @@ define_table!(
         /// Partition-store on-disk storage version (StorageVersion discriminant).
         /// Set once on partition open.
         storage_version: DataType::UInt32,
+
+        /// Set while the partition processor is quarantined for an apply stall (its apply loop
+        /// is lagging with work available, or a candidate's committed AnnounceLeader marker never
+        /// applied). Sticky until real progress is observed past the LSN recorded at quarantine
+        /// time.
+        apply_stalled_since: TimestampMillisecond,
     )
 );

@@ -28,7 +28,7 @@ use restate_wal_protocol::Envelope;
 
 use crate::PartitionProcessorBuilder;
 use crate::partition::NodeContext;
-use crate::partition::{ProcessorError, TargetLeaderState};
+use crate::partition::{LoopHeartbeat, ProcessorError, TargetLeaderState};
 use crate::partition_processor_manager::processor_state::StartedProcessor;
 
 pub struct SpawnPartitionProcessorTask<T> {
@@ -89,8 +89,15 @@ where
         let (control_tx, control_rx) = watch::channel(TargetLeaderState::Follower);
         let (net_tx, net_rx) = ShardSender::new();
         let (watch_tx, watch_rx) = watch::channel(PartitionProcessorStatus::default());
+        let heartbeat = Arc::new(LoopHeartbeat::new());
 
-        let pp_builder = PartitionProcessorBuilder::new(control_rx, net_rx, watch_tx, node_ctx);
+        let pp_builder = PartitionProcessorBuilder::new(
+            control_rx,
+            net_rx,
+            watch_tx,
+            node_ctx,
+            Arc::clone(&heartbeat),
+        );
 
         let key_range = partition.key_range;
 
@@ -239,6 +246,7 @@ where
             control_tx,
             net_tx,
             watch_rx,
+            heartbeat,
         );
 
         Ok((state, root_task_handle))
