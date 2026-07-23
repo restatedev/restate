@@ -112,7 +112,7 @@ pub struct LeaderState {
     next_fencing_token: FencingToken,
 
     invoker_stream: InvokerStream,
-    shuffle_stream: ReceiverStream<shuffle::OutboxTruncation>,
+    shuffle_stream: WatchStream<Option<shuffle::OutboxTruncation>>,
     schema_stream: WatchStream<Version>,
     rule_book_stream: WatchStream<Arc<RuleBook>>,
     cleaner_handle: CleanerHandle,
@@ -148,7 +148,7 @@ impl LeaderState {
         // token to mint. See `fencing_tokens` / `mint_fencing_token`.
         fencing_tokens: restate_platform::hash::HashMap<InvocationId, FencingToken>,
         next_fencing_token: FencingToken,
-        shuffle_rx: tokio::sync::mpsc::Receiver<shuffle::OutboxTruncation>,
+        shuffle_rx: tokio::sync::watch::Receiver<Option<shuffle::OutboxTruncation>>,
         durability_tracker: DurabilityTracker,
         leader_query_guard: LeaderQueryGuard,
         rule_book_rx: tokio::sync::watch::Receiver<Arc<RuleBook>>,
@@ -178,7 +178,7 @@ impl LeaderState {
             fencing_tokens,
             next_fencing_token,
             invoker_stream: invoker_rx,
-            shuffle_stream: ReceiverStream::new(shuffle_rx),
+            shuffle_stream: WatchStream::new(shuffle_rx),
             durability_tracker,
             network_events_tx,
             network_events_stream: ReceiverStream::new(network_events_rx),
