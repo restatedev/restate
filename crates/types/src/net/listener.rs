@@ -21,7 +21,7 @@ use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 use tokio_util::either::Either;
 use tracing::{debug, info};
 
-use crate::config::{Configuration, ListenerOptions};
+use crate::config::{Configuration, ListenerOptions, TlsMode};
 use crate::nodes_config::Role;
 
 use super::address::{AdvertisedAddress, BindAddress, FabricPort, ListenerPort, SocketAddress};
@@ -56,7 +56,7 @@ pub struct AddressBook {
     /// Whether the fabric port is served with TLS ([`networking.tls`] is
     /// configured). Captured at bind time so advertised fabric addresses carry
     /// the `https://` scheme without every caller threading the flag through.
-    fabric_tls: bool,
+    fabric_tls_mode: TlsMode,
 }
 
 impl AddressBook {
@@ -65,7 +65,7 @@ impl AddressBook {
             data_dir,
             listeners: HashMap::with_hasher(BuildHasherDefault::new()),
             bound_addr: HashMap::with_hasher(BuildHasherDefault::new()),
-            fabric_tls: false,
+            fabric_tls_mode: TlsMode::Off,
         }
     }
 
@@ -111,10 +111,11 @@ impl AddressBook {
             .await?;
         // in `allow` mode certs are loaded but the node keeps advertising a
         // plaintext address until the whole cluster can dial TLS
-        self.fabric_tls = config
+        self.fabric_tls_mode = config
             .networking
             .fabric_tls()
-            .is_some_and(|tls| tls.mode.advertises_tls());
+            .map(|tls| tls.mode)
+            .unwrap_or_default();
         // todo: add NodeCtl port
 
         Ok(())
@@ -283,10 +284,10 @@ impl AddressBook {
         &self,
         advertised_host: Option<&str>,
     ) -> AdvertisedAddress<P> {
-        // TLS only applies to the fabric port; other listeners (admin, ingress,
-        // ...) are not served by the fabric TLS acceptor.
-        let tls =
-            self.fabric_tls && std::any::TypeId::of::<P>() == std::any::TypeId::of::<FabricPort>();
+        // TLS is only supported for fabric port. Other listeners (admin, ingress, etc.) only support plaintext.
+        // The server should only advertise its TLS address.
+        let advertise_tls = self.fabric_tls_mode.advertises_tls()
+            && std::any::TypeId::of::<P>() == std::any::TypeId::of::<FabricPort>();
         let Some(addresses) = self.bound_addr.get(&std::any::TypeId::of::<P>()) else {
             return AdvertisedAddress::default();
         };
@@ -294,14 +295,13 @@ impl AddressBook {
             AdvertisedAddress::derive_from_bind_address(
                 SocketAddress::Socket(tcp_address),
                 advertised_host,
-                tls,
+                advertise_tls,
             )
         } else if let Some(uds_path) = &addresses.uds_path {
-            // TLS never applies to unix sockets
             AdvertisedAddress::derive_from_bind_address(
                 SocketAddress::Uds(uds_path.clone()),
                 None,
-                false,
+                false, // No Tls for unix sockets
             )
         } else {
             AdvertisedAddress::default()

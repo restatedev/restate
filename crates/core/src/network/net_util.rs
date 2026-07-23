@@ -238,7 +238,7 @@ where
                         .tls
                         .as_ref()
                         .map(|t| t.mode)
-                        .unwrap_or(TlsMode::Require)
+                        .unwrap_or_default()
                 });
                 let mut builder = hyper_util::server::conn::auto::Builder::new(TaskCenterExecutor);
                 builder
@@ -252,20 +252,13 @@ where
 
                 match stream {
                     Either::Left(tcp_stream) => {
-                        let tls_resolver = tls.clone();
+                        let tls = tls.clone();
                         let service = service.clone();
-                        // Owned watcher so the connection can register with the graceful
-                        // shutdown from within its own task.
-                        let watcher = graceful_shutdown.watcher();
-                        let task_name = task_name.clone();
-
-                        // All TLS I/O (protocol sniffing and the handshake) happens inside
-                        // the per-connection task so a slow or stalled client can never
-                        // block the accept loop.
-                        TaskCenter::spawn(TaskKind::SocketHandler, task_name, async move {
+                        let graceful_shutdown = graceful_shutdown.watcher();
+                        TaskCenter::spawn(TaskKind::SocketHandler, task_name.clone(), async move {
                             let established = tokio::time::timeout(
                                 TLS_HANDSHAKE_TIMEOUT,
-                                establish_tcp_connection(tcp_stream, tls_resolver, tls_mode),
+                                establish_tcp_connection(tcp_stream, tls, tls_mode),
                             )
                             .await;
                             let stream = match established {
@@ -280,7 +273,7 @@ where
                                 }
                             };
                             trace!("New tcp connection accepted");
-                            let connection = watcher.watch(
+                            let connection = graceful_shutdown.watch(
                                 builder
                                     .serve_connection(TokioIo::new(stream), service)
                                     .into_owned(),
@@ -289,7 +282,6 @@ where
                         }.instrument(socket_span))?;
                     },
                     Either::Right(unix_stream) => {
-                        // UNIX SOCKET — TLS never applies to UDS
                         let io = TokioIo::new(unix_stream);
                         let connection = graceful_shutdown.watch(builder
                             .serve_connection(io, service.clone()).into_owned());

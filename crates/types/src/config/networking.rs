@@ -111,7 +111,7 @@ pub struct NetworkingOptions {
     /// When set, the fabric port uses TLS for both inbound and outbound connections.
     /// Without this section, fabric communication remains plaintext (default behavior).
     ///
-    /// Since v1.3.0
+    /// Since v1.8.0
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls: Option<FabricTlsOptions>,
 }
@@ -189,7 +189,7 @@ impl Default for NetworkingOptions {
 /// requiring it. Roll the cluster forward one step at a time:
 /// `off` → `allow` → `prefer` → `require`.
 ///
-/// Since v1.3.0
+/// Since v1.8.0
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
@@ -197,6 +197,7 @@ pub enum TlsMode {
     /// TLS is disabled. Certificates are not loaded and the node behaves as if
     /// `[networking.tls]` were absent. Allows staging the TLS configuration on
     /// all nodes before activating it.
+    #[default]
     Off,
     /// Certificates are loaded; both TLS and plaintext connections are
     /// accepted, but the node still advertises a plaintext (`http://`)
@@ -209,7 +210,6 @@ pub enum TlsMode {
     Prefer,
     /// Only TLS connections are accepted; plaintext is rejected. Only move
     /// here once all nodes are in `prefer` mode.
-    #[default]
     Require,
 }
 
@@ -232,13 +232,13 @@ impl TlsMode {
 
 /// TLS configuration for fabric inter-node communication.
 ///
-/// Since v1.3.0
+/// Since v1.8.0
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct FabricTlsOptions {
     /// TLS enforcement mode: `off`, `allow`, `prefer`, or `require`.
-    /// Default: `require`. See [`TlsMode`] for the rolling-enablement sequence.
+    /// Default: `off`. See [`TlsMode`] for the rolling-enablement sequence.
     #[serde(default)]
     pub mode: TlsMode,
 
@@ -251,7 +251,7 @@ pub struct FabricTlsOptions {
     /// Paths to PEM-encoded CA certificates for verifying peer certificates.
     pub ca_files: Vec<PathBuf>,
 
-    /// Require clients to present a valid certificate (mTLS). Default: `true`.
+    /// Require clients to present a valid certificate (mTLS). Default: `false`.
     #[serde(default = "default_require_client_auth")]
     pub require_client_auth: bool,
 
@@ -268,7 +268,7 @@ pub struct FabricTlsOptions {
     /// allow any authenticated peer (CA-only trust). An empty list is a
     /// configuration error to prevent accidental fail-open.
     ///
-    /// Since v1.3.0
+    /// Since v1.8.0
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_subject_names: Vec<String>,
 
@@ -281,7 +281,7 @@ pub struct FabricTlsOptions {
 /// Separate client TLS config for outbound fabric connections.
 /// Fields that are `None` inherit from the parent [`FabricTlsOptions`].
 ///
-/// Since v1.3.0
+/// Since v1.8.0
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -331,7 +331,7 @@ impl FabricTlsOptions {
 }
 
 fn default_require_client_auth() -> bool {
-    true
+    false
 }
 
 fn default_refresh_interval() -> NonZeroFriendlyDuration {
@@ -351,11 +351,11 @@ mod tests {
         "#;
         let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
 
-        assert_eq!(opts.mode, TlsMode::Require); // default
+        assert_eq!(opts.mode, TlsMode::Off); // default
         assert_eq!(opts.cert_file, PathBuf::from("/certs/node.crt"));
         assert_eq!(opts.key_file, PathBuf::from("/certs/node.key"));
         assert_eq!(opts.ca_files, vec![PathBuf::from("/certs/ca.crt")]);
-        assert!(opts.require_client_auth); // default true
+        assert!(!opts.require_client_auth); // default false
         assert_eq!(*opts.refresh_interval, Duration::from_secs(3600)); // default 1h
         assert!(opts.client.is_none());
     }
@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn tls_config_full_parsing() {
         let toml_str = r#"
-            mode = "prefer"
+            mode = "allow"
             cert-file = "/certs/server.crt"
             key-file = "/certs/server.key"
             ca-files = ["/certs/ca1.crt", "/certs/ca2.crt"]
@@ -391,7 +391,7 @@ mod tests {
         "#;
         let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
 
-        assert_eq!(opts.mode, TlsMode::Prefer);
+        assert_eq!(opts.mode, TlsMode::Allow);
         assert!(!opts.require_client_auth);
         assert_eq!(*opts.refresh_interval, Duration::from_secs(900));
 

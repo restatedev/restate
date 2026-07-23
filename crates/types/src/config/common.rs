@@ -728,9 +728,6 @@ impl CommonOptions {
         self.fabric_listener_options.bind_address()
     }
 
-    /// The fabric advertised address. When fabric TLS is enabled, the address
-    /// book (which captures the TLS flag at bind time) derives an `https://`
-    /// scheme so peers dial back with TLS.
     pub fn advertised_address(&self, address_book: &AddressBook) -> AdvertisedAddress<FabricPort> {
         self.fabric_listener_options()
             .advertised_address(address_book)
