@@ -249,7 +249,7 @@ impl Node {
         });
         let mut router_builder = MessageRouterBuilder::with_default_pool(default_pool);
 
-        let networking = Networking::with_grpc_connector(tls_resolver);
+        let networking = Networking::with_grpc_connector();
         metadata_manager.register_in_message_router(&mut router_builder);
         let replica_set_states = PartitionReplicaSetStates::default();
 

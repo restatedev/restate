@@ -19,7 +19,7 @@ use tonic::transport::Endpoint;
 use tonic::transport::channel::Channel;
 use tracing::{debug, warn};
 
-use restate_types::config::{Configuration, NetworkingOptions};
+use restate_types::config::{Configuration, NetworkingOptions, TlsMode};
 use restate_types::net::address::{AdvertisedAddress, GrpcPort, ListenerPort, PeerNetAddress};
 use restate_types::net::connect_opts::GrpcConnectionOptions;
 
@@ -34,13 +34,7 @@ use crate::{Metadata, TaskCenter, TaskKind};
 
 #[derive(Clone, Default)]
 pub struct GrpcConnector {
-    tls: Option<TlsCertResolver>,
-}
-
-impl GrpcConnector {
-    pub fn new(tls: Option<TlsCertResolver>) -> Self {
-        Self { tls }
-    }
+    _private: (),
 }
 
 impl TransportConnect for GrpcConnector {
@@ -61,7 +55,7 @@ impl TransportConnect for GrpcConnector {
 
         debug!("Connecting to {} at {}", destination, address);
         let networking = &Configuration::pinned().networking;
-        let channel = create_channel(address, swimlane, networking, &self.tls);
+        let channel = create_channel(address, swimlane, networking)?;
 
         // Establish the connection
         let client = CoreNodeSvcClient::new(channel)
@@ -93,8 +87,7 @@ fn create_channel<P: ListenerPort + GrpcPort>(
     address: AdvertisedAddress<P>,
     _swimlane: Swimlane,
     options: &NetworkingOptions,
-    tls: &Option<TlsCertResolver>,
-) -> Channel {
+) -> Result<Channel, ConnectError> {
     let address = address.into_address().expect("valid address");
 
     let endpoint = match &address {
@@ -118,16 +111,29 @@ fn create_channel<P: ListenerPort + GrpcPort>(
         .initial_stream_window_size(options.stream_window_size())
         .initial_connection_window_size(options.connection_window_size())
         .keep_alive_while_idle(true)
+        // this true by default, but this is to guard against any change in defaults
         .tcp_nodelay(true);
 
-    if let Some(tls) = tls
-        && address.is_tls()
-        && let PeerNetAddress::Http(uri) = &address
-    {
-        endpoint = apply_fabric_tls(endpoint, uri, tls);
+    if options.tls_mode() == TlsMode::Require && address.is_http() && !address.is_tls() {
+        return Err(ConnectError::Transport(format!(
+            "tls mode required, but peer is not advertising a tls address ({})",
+            address
+        )));
     }
 
-    match address {
+    if address.is_tls()
+        && let PeerNetAddress::Http(uri) = &address
+    {
+        if let Some(resolver) = TlsCertResolver::global() {
+            endpoint = apply_fabric_tls(endpoint, uri, resolver);
+        } else {
+            return Err(ConnectError::Transport(
+                "no tls resolver configured, but peer is advertising a tls address".to_owned(),
+            ));
+        }
+    }
+
+    Ok(match address {
         PeerNetAddress::Uds(uds_path) => {
             endpoint.connect_with_connector_lazy(tower::service_fn(move |_: Uri| {
                 let uds_path = uds_path.clone();
@@ -136,8 +142,8 @@ fn create_channel<P: ListenerPort + GrpcPort>(
                 }
             }))
         }
-        PeerNetAddress::Http(_) => endpoint.connect_lazy(),
-    }
+        PeerNetAddress::Http(_) => endpoint.connect_lazy()
+    })
 }
 
 #[derive(Clone, Default)]
