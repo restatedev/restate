@@ -9097,7 +9097,6 @@ dependencies = [
  "googletest",
  "itertools 0.14.0",
  "metrics",
- "mockall",
  "opentelemetry",
  "parking_lot",
  "prost",
