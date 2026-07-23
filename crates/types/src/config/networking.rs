@@ -155,7 +155,7 @@ impl NetworkingOptions {
         self.tls.as_ref().filter(|t| t.mode.is_enabled())
     }
 
-    pub fn tls_mode(&self) -> TlsMode {
+    pub fn fabric_tls_mode(&self) -> TlsMode {
         self.tls.as_ref().map(|t| t.mode).unwrap_or_default()
     }
 }

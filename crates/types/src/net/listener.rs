@@ -24,7 +24,7 @@ use tracing::{debug, info};
 use crate::config::{Configuration, ListenerOptions, TlsMode};
 use crate::nodes_config::Role;
 
-use super::address::{AdvertisedAddress, BindAddress, FabricPort, ListenerPort, SocketAddress};
+use super::address::{AdvertisedAddress, BindAddress, ListenerPort, SocketAddress};
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 pub enum ListenError {
@@ -109,7 +109,7 @@ impl AddressBook {
         // Message Fabric
         self.bind(config.common.fabric_listener_options(), &mut listenfd)
             .await?;
-        self.fabric_tls_mode = config.networking.tls_mode();
+        self.fabric_tls_mode = config.networking.fabric_tls_mode();
         // todo: add NodeCtl port
 
         Ok(())
@@ -280,8 +280,7 @@ impl AddressBook {
     ) -> AdvertisedAddress<P> {
         // TLS is only supported for fabric port. Other listeners (admin, ingress, etc.) only support plaintext.
         // The server should only advertise its TLS address.
-        let advertise_tls = self.fabric_tls_mode.advertises_tls()
-            && std::any::TypeId::of::<P>() == std::any::TypeId::of::<FabricPort>();
+        let advertise_tls = self.fabric_tls_mode.advertises_tls() && P::SUPPORTS_TLS;
         let Some(addresses) = self.bound_addr.get(&std::any::TypeId::of::<P>()) else {
             return AdvertisedAddress::default();
         };

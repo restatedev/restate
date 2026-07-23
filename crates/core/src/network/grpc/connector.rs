@@ -114,7 +114,7 @@ fn create_channel<P: ListenerPort + GrpcPort>(
         // this true by default, but this is to guard against any change in defaults
         .tcp_nodelay(true);
 
-    if options.tls_mode() == TlsMode::Require && address.is_http() && !address.is_tls() {
+    if options.fabric_tls_mode() == TlsMode::Require && address.is_http() && !address.is_tls() {
         return Err(ConnectError::Transport(format!(
             "tls mode required, but peer is not advertising a tls address ({})",
             address

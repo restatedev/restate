@@ -248,7 +248,11 @@ where
                         let tls = tls.clone();
                         let service = service.clone();
                         let graceful_shutdown = graceful_shutdown.watcher();
-                        let tls_mode = network_options.tls_mode();
+                        let tls_mode = if P::SUPPORTS_TLS {
+                            network_options.fabric_tls_mode()
+                        } else {
+                            TlsMode::Off
+                        };
 
                         TaskCenter::spawn(TaskKind::SocketHandler, task_name.clone(), async move {
                             let negotiated = tokio::time::timeout(

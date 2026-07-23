@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 pub trait ListenerPort: Clone + PartialEq + Eq {
     const NAME: &'static str;
     const DEFAULT_PORT: u16;
+    const SUPPORTS_TLS: bool = false;
 
     const UDS_NAME: &'static str;
     /// Whether this port allows binding on an anonymous unix-socket or not.
@@ -89,6 +90,7 @@ pub struct FabricPort;
 impl ListenerPort for FabricPort {
     const NAME: &'static str = "message-fabric-server";
     const DEFAULT_PORT: u16 = 5122;
+    const SUPPORTS_TLS: bool = true;
     const UDS_NAME: &'static str = "fabric.sock";
     // this is disallowed for the message fabric since we must be able to acquire a
     // non-anonymous socket address to allow server-to-server communication.
