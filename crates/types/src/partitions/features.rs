@@ -54,6 +54,11 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.7.0*
     EnableScopeInheritance = 4,
+    /// Scoped child invocations without an explicit limit key derive
+    /// `limit_key = <target service name>` (per-service sub-bulkheads).
+    ///
+    /// *Since v1.7.0*
+    EnableLimitKeyDerivation = 5,
 }
 
 impl PartitionFeatureChange {
@@ -71,6 +76,7 @@ impl PartitionFeatureChange {
             Self::EnableVqueues => &RESTATE_VERSION_1_7_0,
             Self::EnableUniqueRandomSeeds => &RESTATE_VERSION_1_7_0,
             Self::EnableScopeInheritance => &RESTATE_VERSION_1_7_0,
+            Self::EnableLimitKeyDerivation => &RESTATE_VERSION_1_7_0,
         }
     }
 
@@ -85,6 +91,9 @@ impl PartitionFeatureChange {
             }
             Self::EnableScopeInheritance => {
                 !std::mem::replace(&mut features.scope_inheritance, true)
+            }
+            Self::EnableLimitKeyDerivation => {
+                !std::mem::replace(&mut features.limit_key_derivation, true)
             }
         }
     }
@@ -135,6 +144,11 @@ pub struct PersistedFeatures {
     /// *Since v1.7.0*
     #[bilrost(tag(4))]
     pub scope_inheritance: bool,
+    /// Scoped children derive their limit key from the target service name.
+    ///
+    /// *Since v1.7.0*
+    #[bilrost(tag(5))]
+    pub limit_key_derivation: bool,
 }
 
 impl PersistedFeatures {
@@ -147,6 +161,7 @@ impl PersistedFeatures {
             self.vqueues.then_some("vqueues"),
             self.unique_random_seeds.then_some("unique_random_seeds"),
             self.scope_inheritance.then_some("scope_inheritance"),
+            self.limit_key_derivation.then_some("limit_key_derivation"),
         ]
         .into_iter()
         .flatten()

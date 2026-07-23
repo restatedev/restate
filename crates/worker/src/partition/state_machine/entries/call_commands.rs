@@ -114,6 +114,32 @@ where
             invocation_target = invocation_target.with_scope(Some(scope.clone()));
         }
 
+        // A scoped child without an explicit limit key derives one from its
+        // target service name, so per-service sub-bulkhead rules bind without
+        // SDK changes. Names that don't fit the restricted-value charset/length
+        // skip derivation and stay under the scope umbrella.
+        let limit_key = if ctx.is_limit_key_derivation_enabled()
+            && limit_key.is_empty()
+            && invocation_target.scope().is_some()
+        {
+            match invocation_target.service_name().parse() {
+                Ok(l1) => restate_types::limit_key::LimitKey::l1(l1),
+                Err(err) => {
+                    // Name exceeds the restricted-value charset/length (36):
+                    // the child silently stays under the scope umbrella — log
+                    // so a future rename crossing the limit is noticeable.
+                    tracing::debug!(
+                        service = %invocation_target.service_name(),
+                        %err,
+                        "limit-key derivation skipped: service name not a valid limit key"
+                    );
+                    limit_key
+                }
+            }
+        } else {
+            limit_key
+        };
+
         // Prepare the service invocation to propose
         let service_invocation = ServiceInvocation {
             argument: parameter,

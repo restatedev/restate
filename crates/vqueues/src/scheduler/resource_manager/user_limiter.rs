@@ -161,9 +161,11 @@
 use std::collections::VecDeque;
 use std::fmt;
 use std::num::NonZeroU32;
+use std::time::Duration;
 
 use arrayvec::ArrayVec;
 use hashbrown::HashMap;
+use tokio::time::Instant;
 
 use restate_limiter::{
     Level, Limit, LimitKey, Pattern, RuleHandle, RulePattern, Rules, StructuredLimits,
@@ -175,6 +177,7 @@ use restate_worker_api::UserLimitCounterEntry;
 use restate_worker_api::resources::{RuleUpdate, UserLimits};
 
 use crate::scheduler::VQueueHandle;
+use crate::scheduler::resource_manager::gradient2::{Gradient2Controller, UpdateOutcome};
 
 #[derive(Clone, Copy, Debug)]
 pub enum LimitKind {
@@ -208,13 +211,22 @@ impl Usage {
 pub struct UserLimiter {
     state: State,
     rules: Rules<ReString, UserLimits>,
+    /// One Gradient2 controller per adaptive rule. A controller exists only
+    /// while the rule has `adaptive_concurrency` set and no static
+    /// `concurrency` (static takes precedence).
+    adaptive: HashMap<RuleHandle, Gradient2Controller>,
+    /// Metric label distinguishing this partition's series (many partitions
+    /// share one process-global metrics registry).
+    partition_label: String,
 }
 
 impl UserLimiter {
-    pub fn create() -> Self {
+    pub fn create(partition_label: String) -> Self {
         Self {
             rules: Rules::default(),
             state: Default::default(),
+            adaptive: HashMap::new(),
+            partition_label,
         }
     }
 
@@ -223,14 +235,60 @@ impl UserLimiter {
     /// Returns a [`CapacityResult`] that the caller can inspect, log, or store.
     /// Use [`CapacityResult::has_capacity`] or [`CapacityResult::narrowest_blocked`] to
     /// determine the outcome.
+    /// Acquire-path entry: feeds the sojourn observation to the adaptive
+    /// controllers, then delegates to the capacity check.
+    pub(super) fn check_concurrency_capacity_observing(
+        &mut self,
+        scope: &Scope,
+        limit_key: &LimitKey<ReString>,
+        sojourn: Duration,
+    ) -> CapacityResult {
+        if !self.adaptive.is_empty() {
+            let targets: ArrayVec<RuleHandle, { Level::COUNT }> = {
+                let limits = self.rules.lookup(scope.as_str(), limit_key);
+                [Level::Level2, Level::Level1, Level::Scope]
+                    .into_iter()
+                    .filter_map(|level| match limits.limit_at(level) {
+                        Limit::Defined(handle, _) if self.adaptive.contains_key(handle) => {
+                            Some(*handle)
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            };
+            let now = Instant::now();
+            for handle in targets {
+                if let Some(controller) = self.adaptive.get_mut(&handle) {
+                    controller.on_sojourn(sojourn, now);
+                }
+            }
+        }
+        self.check_concurrency_capacity(scope, limit_key)
+    }
+
+    /// Capacity check with the adaptive overlay applied (no sojourn feed —
+    /// used by the observing acquire-path entry above and by tests).
     pub(super) fn check_concurrency_capacity(
         &self,
         scope: &Scope,
         limit_key: &LimitKey<ReString>,
     ) -> CapacityResult {
         let limits = self.rules.lookup(scope.as_str(), limit_key);
-        self.state
-            .check_capacity(scope, limit_key, LimitKind::Concurrency, &limits)
+        let mut result =
+            self.state
+                .check_capacity(scope, limit_key, LimitKind::Concurrency, &limits);
+        // Adaptive overlay: a controller only exists for rules without a
+        // static concurrency, so overwriting the (then-None) value is safe.
+        if !self.adaptive.is_empty() {
+            for level in &mut result.levels {
+                if let Some(handle) = level.rule_handle
+                    && let Some(controller) = self.adaptive.get(&handle)
+                {
+                    level.limit_value = Some(controller.current_limit());
+                }
+            }
+        }
+        result
     }
 
     /// Increments usage counters at all levels along the path (scope → l1 → l2).
@@ -253,6 +311,69 @@ impl UserLimiter {
     ) -> ArrayVec<VQueueHandle, { Level::COUNT }> {
         self.state
             .decrement_and_wake(scope, limit_key, LimitKind::Concurrency)
+    }
+
+    /// Releases a permit and, when a hold-time sample is attached, feeds it
+    /// to the deepest adaptive controller matching the permit's rule chain.
+    /// On a limit increase, up to `new_limit - usage` waiters at that rule's
+    /// level are woken (targeted wake-K — never a full drain).
+    pub(super) fn on_permit_released(
+        &mut self,
+        scope: &Scope,
+        limit_key: &LimitKey<ReString>,
+        held_for: Option<Duration>,
+    ) -> Vec<VQueueHandle> {
+        let mut woken: Vec<VQueueHandle> = self
+            .release_concurrency(scope, limit_key)
+            .into_iter()
+            .collect();
+
+        // Zero adaptive rules (the common case): skip the trie walk entirely —
+        // this branch runs on every completion, mirroring the acquire-path guard.
+        let Some(hold) = held_for else {
+            return woken;
+        };
+        if self.adaptive.is_empty() {
+            return woken;
+        }
+        // Feed the sample to every adaptive rule along the (scope, limit_key)
+        // chain: each level learns its own latency independently. Collect
+        // first so the `rules` borrow ends before mutation.
+        let targets: ArrayVec<(RuleHandle, Level), { Level::COUNT }> = {
+            let limits = self.rules.lookup(scope.as_str(), limit_key);
+            [Level::Level2, Level::Level1, Level::Scope]
+                .into_iter()
+                .filter_map(|level| match limits.limit_at(level) {
+                    Limit::Defined(handle, _) if self.adaptive.contains_key(handle) => {
+                        Some((*handle, level))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let now = Instant::now();
+        for (handle, level) in targets {
+            // usage_at reads POST-release; +1 counts this permit so the sample
+            // carries the in-flight level at completion (Netflix semantics).
+            let in_flight = self.state.usage_at(scope, limit_key, level) + 1;
+            let controller = self
+                .adaptive
+                .get_mut(&handle)
+                .expect("target selected from map");
+            let outcome = controller.on_sample(hold, in_flight, now);
+            if outcome == UpdateOutcome::Increase {
+                // Post-release usage is `in_flight - 1` (this permit is gone).
+                let headroom = controller
+                    .current_limit()
+                    .get()
+                    .saturating_sub(in_flight - 1);
+                if headroom > 0 {
+                    self.state
+                        .pop_waiters(scope, limit_key, level, headroom as usize, &mut woken);
+                }
+            }
+        }
+        woken
     }
 
     /// Adds a vqueue to the waiter list at the specified trie node.
@@ -296,11 +417,40 @@ impl UserLimiter {
             // subsequent waiter-drain pass.
             let pattern = match update {
                 RuleUpdate::Upsert { pattern, limit } => {
-                    self.rules.upsert_rule(pattern.clone(), limit);
+                    let wants_adaptive =
+                        limit.concurrency.is_none() && limit.adaptive_concurrency.is_some();
+                    let adaptive_cfg = limit.adaptive_concurrency.clone();
+                    let handle = self.rules.upsert_rule(pattern.clone(), limit);
+                    if wants_adaptive {
+                        let cfg = adaptive_cfg.expect("checked above");
+                        // Identical re-upserts (every helm redeploy re-runs the
+                        // registration job) must NOT reset the learned state.
+                        let unchanged = self
+                            .adaptive
+                            .get(&handle)
+                            .is_some_and(|c| c.config_matches(&cfg));
+                        if !unchanged {
+                            self.adaptive.insert(
+                                handle,
+                                Gradient2Controller::from_config(
+                                    &cfg,
+                                    pattern.to_string(),
+                                    self.partition_label.clone(),
+                                    Instant::now(),
+                                ),
+                            );
+                        }
+                    } else if let Some(c) = self.adaptive.remove(&handle) {
+                        c.zero_gauges();
+                    }
                     pattern
                 }
                 RuleUpdate::Remove { pattern } => {
-                    self.rules.remove_rule(&pattern);
+                    if let Some((handle, _)) = self.rules.remove_rule(&pattern)
+                        && let Some(c) = self.adaptive.remove(&handle)
+                    {
+                        c.zero_gauges();
+                    }
                     pattern
                 }
             };
@@ -583,6 +733,72 @@ impl State {
         }
 
         woken
+    }
+
+    /// Current concurrency usage at the given level along the
+    /// (scope, limit_key) chain. 0 when the node does not exist.
+    fn usage_at(&self, scope: &Scope, limit_key: &LimitKey<ReString>, level: Level) -> u32 {
+        let Some(scope_node) = self.scopes.get(scope) else {
+            return 0;
+        };
+        match level {
+            Level::Scope => scope_node.value.concurrency,
+            Level::Level1 => match limit_key {
+                LimitKey::L1(l1) | LimitKey::L2(l1, _) => {
+                    scope_node.l1.get(l1).map_or(0, |n| n.value.concurrency)
+                }
+                LimitKey::None => 0,
+            },
+            Level::Level2 => match limit_key {
+                LimitKey::L2(l1, l2) => scope_node
+                    .l1
+                    .get(l1)
+                    .and_then(|n| n.l2.get(l2))
+                    .map_or(0, |n| n.value.concurrency),
+                _ => 0,
+            },
+        }
+    }
+
+    /// Pops up to `k` waiters from the node at the given level of the
+    /// (scope, limit_key) chain (targeted wake-K on adaptive limit
+    /// increases — deliberately NOT a full drain).
+    fn pop_waiters(
+        &mut self,
+        scope: &Scope,
+        limit_key: &LimitKey<ReString>,
+        level: Level,
+        k: usize,
+        out: &mut Vec<VQueueHandle>,
+    ) {
+        let Some(scope_node) = self.scopes.get_mut(scope) else {
+            return;
+        };
+        let waiters = match level {
+            Level::Scope => Some(&mut scope_node.waiters),
+            Level::Level1 => match limit_key {
+                LimitKey::L1(l1) | LimitKey::L2(l1, _) => {
+                    scope_node.l1.get_mut(l1).map(|n| &mut n.waiters)
+                }
+                LimitKey::None => None,
+            },
+            Level::Level2 => match limit_key {
+                LimitKey::L2(l1, l2) => scope_node
+                    .l1
+                    .get_mut(l1)
+                    .and_then(|n| n.l2.get_mut(l2))
+                    .map(|n| &mut n.waiters),
+                _ => None,
+            },
+        };
+        if let Some(waiters) = waiters {
+            for _ in 0..k {
+                match waiters.pop_front() {
+                    Some(h) => out.push(h),
+                    None => break,
+                }
+            }
+        }
     }
 
     fn add_to_waiters(
@@ -1021,6 +1237,8 @@ mod tests {
         UserLimiter {
             rules,
             state: Default::default(),
+            adaptive: HashMap::new(),
+            partition_label: "test".to_string(),
         }
     }
 
@@ -1290,5 +1508,218 @@ mod tests {
             limit: limits(200),
         }]);
         assert_eq!(woken.len(), 3);
+    }
+
+    // ---- adaptive controller integration ----------------------------------
+
+    use restate_limiter::AdaptiveConcurrency;
+    use std::time::Duration;
+
+    fn adaptive_cfg(min: u32, max: u32) -> AdaptiveConcurrency {
+        AdaptiveConcurrency {
+            min: NonZeroU32::new(min),
+            max: NonZeroU32::new(max),
+            tolerance_permille: None,
+            smoothing_permille: None,
+        }
+    }
+
+    fn upsert(limiter: &mut UserLimiter, pattern: &str, limit: UserLimits) {
+        limiter.apply_rule_updates([RuleUpdate::Upsert {
+            pattern: pattern.parse().unwrap(),
+            limit,
+        }]);
+    }
+
+    /// Effective scope-level limit as the acquire path sees it (post-overlay).
+    fn effective_scope_limit(limiter: &UserLimiter, s: &str) -> Option<u32> {
+        limiter
+            .check_concurrency_capacity(&scope(s), &LimitKey::None)
+            .iter()
+            .next()
+            .and_then(|l| l.limit_value)
+            .map(NonZeroU32::get)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn adaptive_rule_creates_controller_and_overlays_limit() {
+        let mut limiter = limiter_with_rules(&[]);
+        upsert(
+            &mut limiter,
+            "payment",
+            UserLimits::new(None).with_adaptive_concurrency(Some(adaptive_cfg(4, 300))),
+        );
+        // cold start: min + (max-min)/4 = 78 replaces the (None) static limit
+        assert_eq!(effective_scope_limit(&limiter, "payment"), Some(78));
+
+        // removal drops the controller and the limit becomes unlimited again
+        limiter.apply_rule_updates([RuleUpdate::Remove {
+            pattern: "payment".parse().unwrap(),
+        }]);
+        assert!(limiter.adaptive.is_empty());
+        assert_eq!(effective_scope_limit(&limiter, "payment"), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn static_concurrency_takes_precedence_over_adaptive() {
+        let mut limiter = limiter_with_rules(&[]);
+        upsert(
+            &mut limiter,
+            "payment",
+            UserLimits::new(NonZeroU32::new(50))
+                .with_adaptive_concurrency(Some(adaptive_cfg(4, 300))),
+        );
+        // static set -> no controller, static limit enforced
+        assert!(limiter.adaptive.is_empty());
+        assert_eq!(effective_scope_limit(&limiter, "payment"), Some(50));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn identical_reupsert_preserves_learned_state() {
+        let mut limiter = limiter_with_rules(&[]);
+        let rule = UserLimits::new(None).with_adaptive_concurrency(Some(adaptive_cfg(4, 300)));
+        upsert(&mut limiter, "payment", rule.clone());
+
+        // learn something: healthy fast samples grow the limit. Keep ~60
+        // permits in flight so the app-limited guard (in_flight >= limit/2)
+        // sees real demand.
+        for _ in 0..60 {
+            limiter.increment_all(&scope("payment"), &LimitKey::None, LimitKind::Concurrency);
+        }
+        for _ in 0..50 {
+            tokio::time::advance(Duration::from_millis(1050)).await;
+            limiter.increment_all(&scope("payment"), &LimitKey::None, LimitKind::Concurrency);
+            limiter.on_permit_released(
+                &scope("payment"),
+                &LimitKey::None,
+                Some(Duration::from_millis(100)),
+            );
+        }
+        let learned = effective_scope_limit(&limiter, "payment").unwrap();
+        assert!(learned > 78, "should have grown, got {learned}");
+
+        // identical re-upsert (helm redeploy) must NOT reset to cold start
+        upsert(&mut limiter, "payment", rule);
+        assert_eq!(effective_scope_limit(&limiter, "payment"), Some(learned));
+
+        // changed config DOES reset
+        upsert(
+            &mut limiter,
+            "payment",
+            UserLimits::new(None).with_adaptive_concurrency(Some(adaptive_cfg(8, 300))),
+        );
+        assert_eq!(
+            effective_scope_limit(&limiter, "payment"),
+            Some(8 + (300 - 8) / 4)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sample_feeds_all_matching_adaptive_levels() {
+        let mut limiter = limiter_with_rules(&[]);
+        upsert(
+            &mut limiter,
+            "payment",
+            UserLimits::new(None).with_adaptive_concurrency(Some(adaptive_cfg(4, 300))),
+        );
+        upsert(
+            &mut limiter,
+            "payment/sepa",
+            UserLimits::new(None).with_adaptive_concurrency(Some(adaptive_cfg(4, 100))),
+        );
+        // release with an L1 key: BOTH controllers must receive the sample
+        // (umbrella stays a true aggregate guardrail — no cross-starvation).
+        // Keep ~60 in flight so both levels clear their app-limited guards.
+        for _ in 0..60 {
+            limiter.increment_all(
+                &scope("payment"),
+                &limit_key("sepa"),
+                LimitKind::Concurrency,
+            );
+        }
+        for _ in 0..30 {
+            tokio::time::advance(Duration::from_millis(1050)).await;
+            limiter.increment_all(
+                &scope("payment"),
+                &limit_key("sepa"),
+                LimitKind::Concurrency,
+            );
+            limiter.on_permit_released(
+                &scope("payment"),
+                &limit_key("sepa"),
+                Some(Duration::from_millis(100)),
+            );
+        }
+        let umbrella = effective_scope_limit(&limiter, "payment").unwrap();
+        let sub = limiter
+            .check_concurrency_capacity(&scope("payment"), &limit_key("sepa"))
+            .iter()
+            .find(|l| l.level == Level::Level1)
+            .and_then(|l| l.limit_value)
+            .map(NonZeroU32::get)
+            .unwrap();
+        assert!(
+            umbrella > 78,
+            "umbrella must learn from child samples: {umbrella}"
+        );
+        assert!(sub > 4 + (100 - 4) / 4, "sub-bulkhead must learn: {sub}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn adaptive_limit_blocks_admission_at_learned_value() {
+        let mut limiter = limiter_with_rules(&[]);
+        upsert(
+            &mut limiter,
+            "payment",
+            UserLimits::new(None).with_adaptive_concurrency(Some(adaptive_cfg(4, 300))),
+        );
+        let limit = effective_scope_limit(&limiter, "payment").unwrap();
+        for _ in 0..limit {
+            assert!(
+                limiter
+                    .check_concurrency_capacity(&scope("payment"), &LimitKey::None)
+                    .has_capacity()
+            );
+            limiter.increment_all(&scope("payment"), &LimitKey::None, LimitKind::Concurrency);
+        }
+        // at the learned limit: admission must block (overlay drives the decision)
+        let result = limiter.check_concurrency_capacity(&scope("payment"), &LimitKey::None);
+        assert!(!result.has_capacity());
+        assert!(result.narrowest_blocked().is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn limit_increase_wakes_up_to_headroom_waiters() {
+        let mut limiter = limiter_with_rules(&[]);
+        upsert(
+            &mut limiter,
+            "payment",
+            UserLimits::new(None).with_adaptive_concurrency(Some(adaptive_cfg(4, 300))),
+        );
+        let (_slotmap, handles) = make_handles(20);
+        for h in &handles {
+            limiter.add_to_waiters(*h, &scope("payment"), &LimitKey::None, Level::Scope);
+        }
+        // drive healthy samples until an Increase fires; the woken set must be
+        // bounded by the headroom (targeted wake-K, not a full drain of 20)
+        let mut woken_by_increase = 0usize;
+        for _ in 0..3 {
+            tokio::time::advance(Duration::from_millis(1050)).await;
+            limiter.increment_all(&scope("payment"), &LimitKey::None, LimitKind::Concurrency);
+            // keep in_flight high enough to pass the app-limited guard
+            for _ in 0..60 {
+                limiter.increment_all(&scope("payment"), &LimitKey::None, LimitKind::Concurrency);
+            }
+            let woken = limiter.on_permit_released(
+                &scope("payment"),
+                &LimitKey::None,
+                Some(Duration::from_millis(100)),
+            );
+            woken_by_increase = woken.len();
+        }
+        assert!(
+            woken_by_increase < 20,
+            "must not drain all waiters: {woken_by_increase}"
+        );
     }
 }

@@ -63,6 +63,8 @@ where
         // Flipping scope inheritance on only affects child invocations created
         // after the apply point; pre-existing invocations are untouched.
         PartitionFeatureChange::EnableScopeInheritance => Ok(false),
+        // Only affects child invocations created after the apply point.
+        PartitionFeatureChange::EnableLimitKeyDerivation => Ok(false),
     }
 }
 
@@ -472,6 +474,7 @@ mod tests {
                 vqueues: true,
                 unique_random_seeds: false,
                 scope_inheritance: false,
+                limit_key_derivation: false,
             },
             Default::default(),
             std::sync::Arc::new(RuleBook::default()),

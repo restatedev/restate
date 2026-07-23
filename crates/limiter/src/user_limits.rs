@@ -24,6 +24,61 @@ use restate_util_string::ReString;
 
 use crate::RulePattern;
 
+/// Parameters for the adaptive (Gradient2) concurrency controller.
+///
+/// All fields are optional; an empty object activates the controller with
+/// defaults. The learned limit always stays within `[min, max]`; when a static
+/// [`UserLimits::concurrency`] is also set it takes precedence.
+#[derive(Debug, Default, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "bilrost", derive(bilrost::Message))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct AdaptiveConcurrency {
+    /// Lower bound for the learned limit. Default 4 per partition: below
+    /// ~2-4 slots long-running handlers stop producing a usable latency
+    /// gradient (and throughput dies), so the controller never goes there.
+    #[cfg_attr(feature = "bilrost", bilrost(tag(1)))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<u32>, minimum = 1))]
+    pub min: Option<NonZeroU32>,
+
+    /// Upper bound for the learned limit. Default 10000 (practically open —
+    /// the node-level invoker permit pool is the real system ceiling).
+    /// Recommended: set to the previous static cap so worst-case behavior is
+    /// never worse than the static configuration.
+    #[cfg_attr(feature = "bilrost", bilrost(tag(2)))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<u32>, minimum = 1))]
+    pub max: Option<NonZeroU32>,
+
+    /// Latency tolerance in permille: how much slower than "usual" (the long
+    /// EMA) the current sample may be before the limit shrinks. 1500 = 1.5x.
+    /// Default 1500. (Integer permille keeps the wire shape `Eq`/exact.)
+    #[cfg_attr(feature = "bilrost", bilrost(tag(3)))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<u32>, minimum = 1))]
+    pub tolerance_permille: Option<NonZeroU32>,
+
+    /// Smoothing factor in permille for limit updates (200 = 0.2, bounding
+    /// shrink to ~10%/sample). Default 200.
+    #[cfg_attr(feature = "bilrost", bilrost(tag(4)))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<u32>, minimum = 1))]
+    pub smoothing_permille: Option<NonZeroU32>,
+}
+
 /// Per-rule effective limits.
 ///
 /// `None` on a field means "unlimited" (no rule constrains this dimension).
@@ -47,13 +102,9 @@ pub struct UserLimits {
     pub concurrency: Option<NonZeroU32>,
 
     /// Scheduling weight of this rule's scope in the scheduler's weighted
-    /// round-robin: a scope with weight N receives N dispatch slots per cycle
-    /// relative to weight-1 groups, regardless of how many queues it has.
-    /// `None` means the default weight of 1. Only scope-level exact patterns
-    /// are consulted. Requires the vqueues scheduler.
-    ///
-    /// Upserts replace the whole limits object: omitting this field resets
-    /// the weight (the CLI preserves it by re-reading the current rule).
+    /// round-robin: a scope with weight N receives N dispatch slots per
+    /// cycle relative to weight-1 groups. `None` means the default weight
+    /// of 1. Requires the vqueues scheduler.
     #[cfg_attr(feature = "bilrost", bilrost(tag(2)))]
     #[cfg_attr(
         feature = "serde",
@@ -61,6 +112,16 @@ pub struct UserLimits {
     )]
     #[cfg_attr(feature = "schema", schema(value_type = Option<u32>, minimum = 1))]
     pub scheduling_weight: Option<NonZeroU32>,
+
+    /// Adaptive (Gradient2) concurrency controller configuration. `None`
+    /// means no controller. Inactive while [`Self::concurrency`] is set
+    /// (static limit takes precedence — the rollback path).
+    #[cfg_attr(feature = "bilrost", bilrost(tag(3)))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub adaptive_concurrency: Option<AdaptiveConcurrency>,
 }
 
 impl UserLimits {
@@ -68,11 +129,17 @@ impl UserLimits {
         Self {
             concurrency,
             scheduling_weight: None,
+            adaptive_concurrency: None,
         }
     }
 
     pub fn with_scheduling_weight(mut self, scheduling_weight: Option<NonZeroU32>) -> Self {
         self.scheduling_weight = scheduling_weight;
+        self
+    }
+
+    pub fn with_adaptive_concurrency(mut self, adaptive: Option<AdaptiveConcurrency>) -> Self {
+        self.adaptive_concurrency = adaptive;
         self
     }
 }
@@ -124,5 +191,42 @@ mod tests {
         // decoding new writers see no unknown data)
         let new_default = UserLimits::new(NonZeroU32::new(100));
         assert_eq!(new_default.encode_to_bytes(), old_bytes);
+    }
+
+    /// Wire compatibility for tag(3): pre-adaptive encodings decode with
+    /// `adaptive_concurrency = None`; a None adaptive field encodes
+    /// byte-identical to the pre-adaptive layout; set fields round-trip
+    /// (including the all-defaults empty object).
+    #[test]
+    fn adaptive_concurrency_wire_compat() {
+        let old = UserLimits::new(NonZeroU32::new(100)).with_scheduling_weight(NonZeroU32::new(10));
+        let old_bytes = old.encode_to_bytes();
+        let decoded = <UserLimits as OwnedMessage>::decode(old_bytes.clone()).unwrap();
+        assert_eq!(decoded.adaptive_concurrency, None);
+
+        // None adaptive encodes identically to the pre-adaptive shape
+        let new_default =
+            UserLimits::new(NonZeroU32::new(100)).with_scheduling_weight(NonZeroU32::new(10));
+        assert_eq!(new_default.encode_to_bytes(), old_bytes);
+
+        // empty adaptive object (all defaults) round-trips as Some(default)
+        let empty_adaptive =
+            UserLimits::new(None).with_adaptive_concurrency(Some(AdaptiveConcurrency::default()));
+        let decoded =
+            <UserLimits as OwnedMessage>::decode(empty_adaptive.encode_to_bytes()).unwrap();
+        assert_eq!(
+            decoded.adaptive_concurrency,
+            Some(AdaptiveConcurrency::default())
+        );
+
+        // fully-populated round-trip
+        let full = UserLimits::new(None).with_adaptive_concurrency(Some(AdaptiveConcurrency {
+            min: NonZeroU32::new(8),
+            max: NonZeroU32::new(400),
+            tolerance_permille: NonZeroU32::new(1250),
+            smoothing_permille: NonZeroU32::new(300),
+        }));
+        let decoded = <UserLimits as OwnedMessage>::decode(full.encode_to_bytes()).unwrap();
+        assert_eq!(decoded, full);
     }
 }

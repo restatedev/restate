@@ -24,6 +24,24 @@ define_table!(sys_rules(
     /// scheduler. Null means the default weight of 1.
     scheduling_weight: DataType::UInt32,
 
+    /// Adaptive controller lower bound. Null when the rule is not adaptive
+    /// (or uses the default).
+    adaptive_min: DataType::UInt32,
+
+    /// Adaptive controller upper bound. Null when not adaptive/default.
+    adaptive_max: DataType::UInt32,
+
+    /// Adaptive tolerance in permille (1500 = 1.5x). Null when not
+    /// adaptive/default.
+    adaptive_tolerance_permille: DataType::UInt32,
+
+    /// Adaptive smoothing in permille (200 = 0.2). Null when not
+    /// adaptive/default.
+    adaptive_smoothing_permille: DataType::UInt32,
+
+    /// True when the rule has an adaptive concurrency controller configured.
+    adaptive: DataType::Boolean,
+
     /// Free-form description set by the operator.
     description: DataType::LargeUtf8,
 

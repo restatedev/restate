@@ -8,8 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::time::Duration;
+
 use smallvec::SmallVec;
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 
 use restate_futures_util::concurrency::Permit;
 use restate_limiter::LimitKey;
@@ -22,7 +25,14 @@ use restate_util_string::ReString;
 pub use restate_limiter::{RuleUpdate, UserLimits};
 
 pub enum ResourceManagerUpdate {
-    PermitReleased(SmallVec<[UserPermitKind; 1]>),
+    /// User permits released by a completed (or suspended) run attempt.
+    /// `held_for` is the permit hold time (acquire to release) and feeds the
+    /// adaptive concurrency controller as its latency sample. `None` is
+    /// reserved for releases without a confirmed run.
+    PermitReleased {
+        kinds: SmallVec<[UserPermitKind; 1]>,
+        held_for: Option<Duration>,
+    },
     /// A batch of rule mutations to apply in order. Carries `Vec` rather
     /// than a single `RuleUpdate` so initial seeding and bulk rule-book
     /// diffs can ship as one channel message.
@@ -77,6 +87,10 @@ pub struct ReservedResources {
     resources: SmallVec<[UserPermitKind; 1]>,
     system_permit: SystemPermit,
     manager_tx: Option<mpsc::UnboundedSender<ResourceManagerUpdate>>,
+    /// Set at permit build (run confirmation); the drop computes the permit
+    /// hold time from it. Uses `tokio::time::Instant` so tests can pause and
+    /// advance time.
+    acquired_at: Instant,
 }
 
 impl ReservedResources {
@@ -86,10 +100,11 @@ impl ReservedResources {
             resources: SmallVec::new(),
             system_permit: SystemPermit::default(),
             manager_tx: None,
+            acquired_at: Instant::now(),
         }
     }
 
-    pub const fn new(
+    pub fn new(
         metadata: EntryMetadata,
         resources: SmallVec<[UserPermitKind; 1]>,
         system_permit: SystemPermit,
@@ -100,6 +115,7 @@ impl ReservedResources {
             resources,
             system_permit,
             manager_tx: Some(manager_tx),
+            acquired_at: Instant::now(),
         }
     }
 
@@ -119,9 +135,10 @@ impl Drop for ReservedResources {
         if let Some(manager_tx) = self.manager_tx.take()
             && !self.is_empty()
         {
-            let _ = manager_tx.send(ResourceManagerUpdate::PermitReleased(
-                self.resources.drain(..).collect(),
-            ));
+            let _ = manager_tx.send(ResourceManagerUpdate::PermitReleased {
+                kinds: self.resources.drain(..).collect(),
+                held_for: Some(self.acquired_at.elapsed()),
+            });
         }
     }
 }

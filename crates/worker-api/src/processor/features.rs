@@ -39,6 +39,12 @@ pub trait PartitionFeatures {
     ///
     /// *Since v1.7.0*
     fn is_scope_inheritance_enabled(&self) -> bool;
+
+    /// Whether scoped child invocations without an explicit limit key derive
+    /// `limit_key = <target service name>`.
+    ///
+    /// *Since v1.7.0*
+    fn is_limit_key_derivation_enabled(&self) -> bool;
 }
 
 impl PartitionFeatures for PersistedFeatures {
@@ -61,6 +67,11 @@ impl PartitionFeatures for PersistedFeatures {
     fn is_scope_inheritance_enabled(&self) -> bool {
         self.scope_inheritance
     }
+
+    #[inline]
+    fn is_limit_key_derivation_enabled(&self) -> bool {
+        self.limit_key_derivation
+    }
 }
 
 // -- Boilerplate --
@@ -81,6 +92,10 @@ impl<T: PartitionFeatures> PartitionFeatures for &T {
     fn is_scope_inheritance_enabled(&self) -> bool {
         (**self).is_scope_inheritance_enabled()
     }
+
+    fn is_limit_key_derivation_enabled(&self) -> bool {
+        (**self).is_limit_key_derivation_enabled()
+    }
 }
 
 impl<T: PartitionFeatures> PartitionFeatures for &mut T {
@@ -98,5 +113,9 @@ impl<T: PartitionFeatures> PartitionFeatures for &mut T {
 
     fn is_scope_inheritance_enabled(&self) -> bool {
         (**self).is_scope_inheritance_enabled()
+    }
+
+    fn is_limit_key_derivation_enabled(&self) -> bool {
+        (**self).is_limit_key_derivation_enabled()
     }
 }

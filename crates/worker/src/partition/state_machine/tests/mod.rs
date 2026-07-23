@@ -1402,3 +1402,89 @@ async fn run_call_child_scope_check(feature_on: bool) -> TestResult {
     test_env.shutdown().await;
     Ok(())
 }
+
+/// With scope-inheritance + limit-key-derivation on, a scoped child without an
+/// explicit limit key gets `limit_key = <target service name>` (per-service
+/// sub-bulkheads without SDK changes).
+#[test(restate_core::test)]
+async fn call_child_derives_limit_key_from_service_name() -> TestResult {
+    run_call_child_limit_key_check(true).await
+}
+
+/// Without the derivation feature the child keeps an empty limit key
+/// (regression guard).
+#[test(restate_core::test)]
+async fn call_child_keeps_empty_limit_key_without_feature() -> TestResult {
+    run_call_child_limit_key_check(false).await
+}
+
+async fn run_call_child_limit_key_check(derivation_on: bool) -> TestResult {
+    use restate_types::Scope;
+    use restate_types::limit_key::LimitKey;
+    use restate_types::partitions::PartitionFeatureChange;
+
+    let features = if derivation_on {
+        PersistedFeatures::from_iter([
+            PartitionFeatureChange::EnableScopeInheritance,
+            PartitionFeatureChange::EnableLimitKeyDerivation,
+        ])
+    } else {
+        PersistedFeatures::from_iter([PartitionFeatureChange::EnableScopeInheritance])
+    };
+    let mut test_env = TestEnv::create_with_features(features).await;
+
+    let scope = Scope::try_non_interned("payment").unwrap();
+    let caller_target =
+        InvocationTarget::service("ScopedCaller", "run").with_scope(Some(scope.clone()));
+    let invocation_id =
+        fixtures::mock_start_invocation_with_invocation_target(&mut test_env, caller_target).await;
+
+    let callee_service_id = ServiceId::new(None, "SepaService", "k");
+    let actions = test_env
+        .apply(commands::InvokerEffectCommand::test_envelope(Effect {
+            invocation_id,
+            kind: InvokerEffectKind::JournalEntry {
+                entry_index: 1,
+                entry: ProtobufRawEntryCodec::serialize_enriched(Entry::invoke(
+                    InvokeRequest {
+                        service_name: callee_service_id.service_name,
+                        handler_name: "MyMethod".into(),
+                        parameter: Bytes::default(),
+                        headers: vec![],
+                        key: callee_service_id.key,
+                        idempotency_key: None,
+                    },
+                    None,
+                )),
+            },
+        }))
+        .await;
+
+    let outbox_child = actions
+        .iter()
+        .find_map(|action| match action {
+            Action::NewOutboxMessage {
+                message: restate_storage_api::outbox_table::OutboxMessage::ServiceInvocation(si),
+                ..
+            } => Some(si.clone()),
+            _ => None,
+        })
+        .expect("call entry must produce a child invocation");
+
+    // The child is scoped either way (inheritance is on in both variants)
+    assert_eq!(outbox_child.invocation_target.scope(), Some(&scope));
+    if derivation_on {
+        assert_eq!(
+            outbox_child.limit_key,
+            "SepaService".parse::<LimitKey<_>>().unwrap(),
+            "derivation on: limit key is the target service name"
+        );
+    } else {
+        assert!(
+            outbox_child.limit_key.is_empty(),
+            "derivation off: limit key stays empty"
+        );
+    }
+    test_env.shutdown().await;
+    Ok(())
+}

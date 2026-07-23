@@ -152,6 +152,10 @@ impl PartitionFeatures for StateMachine {
     fn is_scope_inheritance_enabled(&self) -> bool {
         self.enabled_features.scope_inheritance
     }
+
+    fn is_limit_key_derivation_enabled(&self) -> bool {
+        self.enabled_features.limit_key_derivation
+    }
 }
 
 impl<S> PartitionFeatures for StateMachineApplyContext<'_, S> {
@@ -169,6 +173,10 @@ impl<S> PartitionFeatures for StateMachineApplyContext<'_, S> {
 
     fn is_scope_inheritance_enabled(&self) -> bool {
         self.enabled_features.scope_inheritance
+    }
+
+    fn is_limit_key_derivation_enabled(&self) -> bool {
+        self.enabled_features.limit_key_derivation
     }
 }
 pub struct StateMachine {
@@ -3905,6 +3913,28 @@ impl<S> StateMachineApplyContext<'_, S> {
                             callee_invocation_target.with_scope(Some(scope.clone()));
                     }
 
+                    // Limit-key derivation (journal-v2 equivalent: call_commands.rs):
+                    // a scoped child without an explicit key derives
+                    // `limit_key = <target service name>` for per-service
+                    // sub-bulkhead rules. Deterministic, feature-gated.
+                    let derived_limit_key = if self.is_limit_key_derivation_enabled()
+                        && callee_invocation_target.scope().is_some()
+                    {
+                        match callee_invocation_target.service_name().parse() {
+                            Ok(l1) => restate_types::limit_key::LimitKey::l1(l1),
+                            Err(err) => {
+                                tracing::debug!(
+                                    service = %callee_invocation_target.service_name(),
+                                    %err,
+                                    "limit-key derivation skipped: service name not a valid limit key"
+                                );
+                                Default::default()
+                            }
+                        }
+                    } else {
+                        Default::default()
+                    };
+
                     let service_invocation = Box::new(ServiceInvocation {
                         invocation_id: *callee_invocation_id,
                         invocation_target: callee_invocation_target,
@@ -3924,7 +3954,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                             .unwrap_or_default(),
                         journal_retention_duration: Default::default(),
                         idempotency_key: request.idempotency_key,
-                        limit_key: Default::default(),
+                        limit_key: derived_limit_key,
                         submit_notification_sink: None,
                         restate_version: RestateVersion::current(),
                     });

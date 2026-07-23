@@ -492,6 +492,7 @@ where
                     self.invoker_capacity.memory_pool.clone(),
                     self.invoker_capacity.initial_invocation_memory,
                     weight_resolver.clone(),
+                    self.partition.partition_id.to_string(),
                 )
                 .await?,
                 partition_store.partition_db().clone(),
@@ -603,6 +604,14 @@ where
                 && !state_machine_features.is_scope_inheritance_enabled()
             {
                 feature_changes.push(PartitionFeatureChange::EnableScopeInheritance);
+            }
+
+            // Scoped children derive per-service limit keys so sub-bulkhead
+            // rules (e.g. tenant/OrderService) bind without SDK changes.
+            if config.common.experimental.is_limit_key_derivation_enabled()
+                && !state_machine_features.is_limit_key_derivation_enabled()
+            {
+                feature_changes.push(PartitionFeatureChange::EnableLimitKeyDerivation);
             }
 
             if !feature_changes.is_empty() {
@@ -1014,6 +1023,10 @@ mod tests {
         }
 
         fn is_scope_inheritance_enabled(&self) -> bool {
+            false
+        }
+
+        fn is_limit_key_derivation_enabled(&self) -> bool {
             false
         }
     }

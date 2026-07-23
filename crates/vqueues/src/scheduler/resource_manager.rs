@@ -19,6 +19,7 @@ pub(super) fn test_grouped_waiters(
 ) -> grouped_waiters::GroupedWaiters {
     grouped_waiters::GroupedWaiters::new(weight_resolver)
 }
+mod gradient2;
 mod invoker_memory;
 mod invoker_throttle;
 mod locks;
@@ -88,6 +89,7 @@ impl ResourceManager {
         memory_pool: MemoryPool,
         initial_invocation_memory: NonZeroByteCount,
         weight_resolver: WeightResolver,
+        partition_label: String,
     ) -> Result<Self, StorageError> {
         let locks = Locks::create(storage).await?;
 
@@ -100,7 +102,7 @@ impl ResourceManager {
             ),
             invoker_throttling: InvokerThrottlingLimiter::new(global_throttling),
             invoker_memory: InvokerMemoryLimiter::new(memory_pool, initial_invocation_memory),
-            user_limiter: UserLimiter::create(),
+            user_limiter: UserLimiter::create(partition_label),
             locks,
             rx,
             tx: _tx,
@@ -228,9 +230,15 @@ impl ResourceManager {
 
             // unscoped entries cannot acquire user limits
             if let Some(scope) = meta.scope() {
-                let capacity = self
-                    .user_limiter
-                    .check_concurrency_capacity(scope, meta.limit_key());
+                // Single-lookup path: feeds the acquire-side sojourn (time the
+                // head entry has been runnable in the durable queue) to the
+                // adaptive CoDel backstop AND checks capacity in one trie walk.
+                let sojourn = restate_clock::RoughTimestamp::now().duration_since(key.run_at());
+                let capacity = self.user_limiter.check_concurrency_capacity_observing(
+                    scope,
+                    meta.limit_key(),
+                    sojourn,
+                );
                 if let Some((blocked_level, blocked_rule)) = capacity.narrowest_blocked() {
                     trace!(
                         %scope,
@@ -313,12 +321,16 @@ impl ResourceManager {
         // drain as many updates as possible
         while let Poll::Ready(Some(update)) = self.rx.poll_recv(cx) {
             match update {
-                ResourceManagerUpdate::PermitReleased(resources) => {
-                    for resource in resources {
+                ResourceManagerUpdate::PermitReleased { kinds, held_for } => {
+                    for resource in kinds {
                         match resource {
                             UserPermitKind::LimitKeyConcurrency(scope, limit_key) => {
-                                let woken =
-                                    self.user_limiter.release_concurrency(&scope, &limit_key);
+                                // held_for feeds the adaptive controller as its
+                                // latency sample; revert-path releases carry None
+                                // and stay sample-free.
+                                let woken = self
+                                    .user_limiter
+                                    .on_permit_released(&scope, &limit_key, held_for);
                                 eligible.wake_up_queues(woken);
                             }
                         }

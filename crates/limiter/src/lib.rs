@@ -52,7 +52,7 @@ pub use rule::{ParseError as RulePatternParseError, Pattern, RuleHandle, RulePat
 #[cfg(feature = "rule-book")]
 pub use rule_book::{PersistedRule, Precondition, RuleBook, RuleBookError, RuleChange, RuleUpsert};
 pub use rule_store::{Limit, Rules, StructuredLimits};
-pub use user_limits::{RuleUpdate, UserLimits};
+pub use user_limits::{AdaptiveConcurrency, RuleUpdate, UserLimits};
 
 /// Represents the hierarchy level of counters or rules
 ///

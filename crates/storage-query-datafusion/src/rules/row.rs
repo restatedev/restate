@@ -26,6 +26,21 @@ pub(crate) fn append_rule_row(
     if let Some(weight) = rule.limits.scheduling_weight {
         row.scheduling_weight(weight.get());
     }
+    row.adaptive(rule.limits.adaptive_concurrency.is_some());
+    if let Some(adaptive) = &rule.limits.adaptive_concurrency {
+        if let Some(min) = adaptive.min {
+            row.adaptive_min(min.get());
+        }
+        if let Some(max) = adaptive.max {
+            row.adaptive_max(max.get());
+        }
+        if let Some(tol) = adaptive.tolerance_permille {
+            row.adaptive_tolerance_permille(tol.get());
+        }
+        if let Some(smo) = adaptive.smoothing_permille {
+            row.adaptive_smoothing_permille(smo.get());
+        }
+    }
     if let Some(description) = rule.description.as_deref() {
         row.description(description);
     }

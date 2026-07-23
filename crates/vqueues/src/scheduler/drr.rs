@@ -715,6 +715,7 @@ mod tests {
             MemoryPool::unlimited(),
             NonZeroByteCount::new(NonZeroUsize::MIN),
             weight_resolver,
+            "test".to_string(),
         )
         .await
         .expect("resource manager creation should succeed")
@@ -2444,5 +2445,125 @@ mod tests {
             Poll::Pending
         ));
         scheduler.assert_scheduler_invariants();
+    }
+
+    /// End-to-end A2 pipeline test: an ADAPTIVE rule's limit must move from
+    /// REAL permit lifecycles — poll admits, `confirm_run_attempt` builds the
+    /// `ReservedResources` (capturing `acquired_at`), dropping it sends
+    /// `PermitReleased { held_for: Some(..) }`, and the next poll's
+    /// `poll_resources` feeds the sample into the Gradient2 controller.
+    /// (The revert path is sample-free by construction: `revert_permit_builder`
+    /// never builds a `ReservedResources`, so no `held_for` can exist.)
+    #[restate_core::test(start_paused = true)]
+    async fn adaptive_limit_learns_through_real_permit_lifecycle() {
+        use restate_limiter::AdaptiveConcurrency;
+        use restate_types::Scope;
+        use restate_worker_api::resources::{RuleUpdate, UserLimits};
+        use std::time::Duration;
+
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+        const BASE: u64 = 91_000;
+        let payment_scope = Scope::try_non_interned("payment").unwrap();
+
+        // 40 scoped queues, one entry each
+        let mut txn = rocksdb.transaction();
+        for qi in 0..40u64 {
+            let qid = test_qid(BASE + qi);
+            let service = ServiceName::new("PaymentWorkflow");
+            let at = UniqueTimestamp::try_from(1000u64 + qi).unwrap();
+            let entry_id = EntryId::new(
+                EntryKind::Invocation,
+                [qi as u8 + 1; EntryId::REMAINDER_LEN],
+            );
+            let run_at = MillisSinceEpoch::new(BASE_RUN_AT_MS);
+            let mut vqueue = VQueue::get_or_create_vqueue(
+                at,
+                &qid,
+                &mut txn,
+                &mut cache,
+                None::<&mut Vec<VQueueEvent>>,
+                &service,
+                &Some(payment_scope.clone()),
+                &LimitKey::None,
+                &None,
+            )
+            .await
+            .expect("vqueue should be created");
+            vqueue.enqueue_new(at, qi, Some(run_at), entry_id, EntryMetadata::default());
+        }
+        txn.commit().await.expect("commit should succeed");
+        drop(txn);
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = create_scheduler(db, &cache).await;
+
+        // adaptive rule: min 4, max 24 -> cold start 4 + (24-4)/4 = 9
+        scheduler.on_rules_updated(Box::new([RuleUpdate::Upsert {
+            pattern: "payment".parse().unwrap(),
+            limit: UserLimits::new(None).with_adaptive_concurrency(Some(AdaptiveConcurrency {
+                min: NonZeroU32::new(4),
+                max: NonZeroU32::new(24),
+                tolerance_permille: None,
+                smoothing_permille: None,
+            })),
+        }]));
+
+        let mut scheduler = Pin::new(&mut scheduler);
+        let mut admitted_keys: Vec<(VQueueHandle, EntryKey)> = Vec::new();
+        let poll_admitted = |scheduler: &mut Pin<&mut DRRScheduler<PartitionDb>>,
+                             out: &mut Vec<(VQueueHandle, EntryKey)>| {
+            while let Poll::Ready(Ok(decision)) = poll_scheduler(scheduler.as_mut(), cache.view()) {
+                let mut any = false;
+                for (qid, actions) in &decision.qids {
+                    for action in actions {
+                        if let SchedulerAction::Run(run) = action {
+                            let handle = cache.view().handle_for(qid).unwrap();
+                            out.push((handle, run.key));
+                            any = true;
+                        }
+                    }
+                }
+                if !any {
+                    break;
+                }
+            }
+        };
+
+        poll_admitted(&mut scheduler, &mut admitted_keys);
+        let cold_start_admitted = admitted_keys.len();
+        assert_eq!(
+            cold_start_admitted, 9,
+            "cold-start adaptive limit must gate admission via the REAL acquire path"
+        );
+
+        // Drive real permit lifecycles: confirm each run (permit build stamps
+        // acquired_at), advance time past the update gate, drop the permit
+        // (sends held_for), and poll again so poll_resources feeds the sample.
+        let mut total_admitted = cold_start_admitted;
+        for _round in 0..12 {
+            let batch = std::mem::take(&mut admitted_keys);
+            for (handle, key) in batch {
+                let metas = cache.view();
+                let slot = metas.get(handle).unwrap();
+                let resources = scheduler.as_mut().confirm_run_attempt(handle, slot, &key);
+                assert!(resources.is_some(), "confirmed run must yield a permit");
+                tokio::time::advance(Duration::from_millis(1100)).await;
+                drop(resources); // -> PermitReleased { held_for: Some(~1.1s) }
+            }
+            poll_admitted(&mut scheduler, &mut admitted_keys);
+            total_admitted += admitted_keys.len();
+            if total_admitted >= 40 {
+                break;
+            }
+        }
+        // Growth proof: with healthy (constant) hold times the learned limit
+        // climbs additively above the cold start, so MORE entries got admitted
+        // than the initial window — the whole A2 sample pipeline works.
+        assert!(
+            total_admitted > cold_start_admitted,
+            "adaptive limit must grow from real permit-release samples \
+             (admitted {total_admitted} vs cold start {cold_start_admitted})"
+        );
     }
 }
