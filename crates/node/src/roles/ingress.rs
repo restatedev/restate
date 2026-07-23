@@ -11,6 +11,7 @@
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::partitions::PartitionRouting;
 use restate_core::{TaskCenter, TaskKind};
+use restate_ingestion_client::IngestionClient;
 use restate_ingress_http::{HyperServerIngress, InvocationClientRequestDispatcher};
 use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
@@ -19,9 +20,11 @@ use restate_types::net::listener::AddressBook;
 use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::common::IngressStatus;
 use restate_types::schema::Schema;
+use restate_wal_protocol::Envelope;
 use restate_worker_api::PartitionProcessorInvocationClient;
 
 type IngressHttp<T> = HyperServerIngress<
+    T,
     Schema,
     InvocationClientRequestDispatcher<PartitionProcessorInvocationClient<T>>,
 >;
@@ -33,6 +36,7 @@ pub struct IngressRole<T> {
 impl<T: TransportConnect> IngressRole<T> {
     pub fn create(
         mut ingress_options: BoxLiveLoad<IngressOptions>,
+        ingestion_client: IngestionClient<T, Envelope>,
         address_book: &mut AddressBook,
         health: HealthStatus<IngressStatus>,
         networking: Networking<T>,
@@ -45,6 +49,7 @@ impl<T: TransportConnect> IngressRole<T> {
         );
         let ingress_http = HyperServerIngress::from_options(
             ingress_options.live_load(),
+            ingestion_client,
             address_book.take_listeners(),
             dispatcher,
             schema,

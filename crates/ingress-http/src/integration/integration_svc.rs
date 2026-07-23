@@ -1,0 +1,522 @@
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
+//! Experimental gRPC (tonic) integration API.
+//!
+//! Exposes the bidirectional-streaming `dev.restate.ingress.integration.IntegrationSvc/Ingest`
+//! RPC (see `protobuf/integration_svc.proto`). This is a **scaffold**: the handler
+//! parses the incoming `Start`/`Settings`/`Invocation` stream and replies with an
+//! `Ack`, but does not yet write records to the log. Real ingestion (WAL `Envelope` +
+//! producer/offset deduplication via `restate_ingestion_client::IngestionClient`)
+//! is a follow-up.
+
+use std::collections::VecDeque;
+use std::hash::Hash;
+
+use futures::future::OptionFuture;
+use futures::stream::BoxStream;
+use futures::{Stream, StreamExt};
+use prost::Message;
+use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, partitioner};
+use restate_types::invocation::{
+    Header, InvocationTarget, InvocationTargetType, ServiceInvocation,
+};
+use restate_types::sharding::WithPartitionKey;
+use tonic::{Request, Response, Status, Streaming};
+
+use restate_core::network::TransportConnect;
+use restate_ingestion_client::{IngestionClient, IngestionError, RecordCommit};
+use restate_types::errors::GenericError;
+use restate_types::live::Live;
+use restate_types::schema::invocation_target::InvocationTargetResolver;
+use restate_wal_protocol::{Command, DedupInformation, Destination, Envelope};
+
+/// Generated protobuf bindings for `dev.restate.ingress.integration`
+/// (see `protobuf/integration_svc.proto`).
+pub mod proto {
+    tonic::include_proto!("dev.restate.ingress.integration.v1");
+}
+
+use proto::integration_svc_server::{IntegrationSvc, IntegrationSvcServer};
+use proto::{
+    Invocation as IngestionInvocation, Request as IngestionRequest, Response as IngestionResponse,
+    Settings, WindowUpdate, request, response,
+};
+
+/// Build the tonic integration server.
+pub(crate) fn integration_server<T, Schemas>(
+    ingestion_client: IngestionClient<T, Envelope>,
+    schemas: Live<Schemas>,
+) -> IntegrationSvcServer<IntegrationService<T, Schemas>>
+where
+    Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
+{
+    IntegrationSvcServer::new(IntegrationService::new(ingestion_client, schemas))
+}
+
+/// Scaffold implementation of the `IntegrationSvc` gRPC service.
+#[derive(Clone)]
+pub(crate) struct IntegrationService<T, Schemas> {
+    ingestion_client: IngestionClient<T, Envelope>,
+    schemas: Live<Schemas>,
+}
+
+impl<T, Schemas> IntegrationService<T, Schemas> {
+    fn new(ingestion_client: IngestionClient<T, Envelope>, schemas: Live<Schemas>) -> Self {
+        Self {
+            ingestion_client,
+            schemas,
+        }
+    }
+}
+
+#[tonic::async_trait]
+impl<T, Schemas> IntegrationSvc for IntegrationService<T, Schemas>
+where
+    T: TransportConnect,
+    Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
+{
+    type IngestStream = BoxStream<'static, Result<IngestionResponse, Status>>;
+
+    async fn ingest(
+        &self,
+        request: Request<Streaming<IngestionRequest>>,
+    ) -> Result<Response<Self::IngestStream>, Status> {
+        // Snapshot the schema once so the stream owns a `'static` resolver rather
+        // than borrowing `&self` across `.await` points.
+
+        let stream = IngestionStream::new(
+            request.into_inner(),
+            self.ingestion_client.clone(),
+            self.schemas.clone(),
+        );
+        let response = futures::stream::unfold(stream, IngestionStream::step);
+
+        Ok(Response::new(response.boxed()))
+    }
+}
+
+struct IngestionStream<T, S, Schemas> {
+    inbound: S,
+    ingestion_client: IngestionClient<T, Envelope>,
+    schemas: Live<Schemas>,
+    state: State,
+    window_size: u64,
+}
+
+enum State {
+    WaitingStart,
+    Processing { state: IngestionState },
+    Terminated,
+}
+
+impl<T, S, Schemas> IngestionStream<T, S, Schemas>
+where
+    T: TransportConnect,
+    S: Stream<Item = Result<IngestionRequest, Status>> + Unpin,
+    Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
+{
+    fn new(
+        inbound: S,
+        ingestion_client: IngestionClient<T, Envelope>,
+        schemas: Live<Schemas>,
+    ) -> Self {
+        Self {
+            inbound,
+            ingestion_client,
+            schemas,
+            state: State::WaitingStart,
+            window_size: 2 * 1024 * 1024, // 2MiB
+        }
+    }
+
+    async fn step(mut self) -> Option<(Result<IngestionResponse, Status>, Self)> {
+        loop {
+            let state = std::mem::replace(&mut self.state, State::Terminated);
+
+            match state {
+                State::Terminated => return None,
+                State::WaitingStart => {
+                    let state = match self.wait_start().await {
+                        Ok(settings) => settings,
+                        Err(err) => {
+                            self.state = State::Terminated;
+                            return Some((Err(err), self));
+                        }
+                    };
+
+                    self.state = State::Processing { state };
+                }
+                State::Processing { mut state } => {
+                    let result = match self.ingest(&mut state).await {
+                        Ok(_) => {
+                            let msg = IngestionResponse {
+                                last_committed: state.last_committed,
+                                response: Some(response::Response::WindowUpdate(WindowUpdate {
+                                    increment_bytes: self
+                                        .update_window_increment(state.current_window_size),
+                                })),
+                            };
+                            state.current_window_size = self.window_size as i64;
+                            self.state = State::Processing { state };
+                            msg
+                        }
+                        Err(err) => IngestionResponse {
+                            last_committed: state.last_committed,
+                            response: Some(response::Response::Error(err.into())),
+                        },
+                    };
+
+                    return Some((Ok(result), self));
+                }
+            }
+        }
+    }
+
+    fn update_window_increment(&self, current: i64) -> u64 {
+        if current == 0 {
+            self.window_size
+        } else if current > 0 {
+            self.window_size - current as u64
+        } else {
+            self.window_size + current.abs() as u64
+        }
+    }
+
+    async fn wait_start(&mut self) -> Result<IngestionState, Status> {
+        // todo: Add timeout waiting for the start message.
+        let first = self
+            .inbound
+            .next()
+            .await
+            .ok_or_else(|| Status::cancelled("expecting a Start message"))??;
+
+        let payload = first
+            .payload
+            .ok_or_else(|| Status::invalid_argument("payload is missing"))?;
+
+        let request::Payload::Start(start) = payload else {
+            return Err(Status::invalid_argument("expecting a Start message"));
+        };
+
+        // todo: verify settings if set
+        let settings = start.settings;
+
+        Ok(IngestionState::new(
+            start.producer_id,
+            start.integration,
+            settings.unwrap_or_default(),
+        ))
+    }
+
+    async fn ingest(&mut self, state: &mut IngestionState) -> Result<(), Error> {
+        if state.inflight.is_empty() && state.current_window_size == 0 {
+            // yielding now will send a window update message
+            // to communicate the initial server window sizes.
+            return Ok(());
+        }
+
+        loop {
+            let head = OptionFuture::from(state.inflight.front_mut());
+            tokio::select! {
+                incoming = self.inbound.next() => {
+                    let Some(incoming) = incoming else {
+                        // drain.
+                        break;
+                    };
+
+                    self.handle_incoming(state, incoming).await?;
+                }
+                Some(committed) = head => {
+                    // a record has been committed. It's now safe to
+                    state.inflight.pop_front();
+                    let offset = committed.map_err(|_| Error::Shutdown)?;
+                    state.last_committed = Some(offset);
+
+                    if state.inflight.is_empty() {
+                        // for testing just yield now here
+                        return Ok(())
+                    }
+                }
+            }
+        }
+        // todo: drain here.
+        return Ok(());
+    }
+
+    async fn handle_incoming(
+        &mut self,
+        state: &mut IngestionState,
+        request: Result<IngestionRequest, Status>,
+    ) -> Result<(), Error> {
+        let request = request.map_err(|status| Error::GoAway(GoAwayError::unknown(status)))?;
+
+        let Some(payload) = request.payload else {
+            return Err(Error::GoAway(GoAwayError::MissingRequestPayload));
+        };
+
+        match payload {
+            request::Payload::Start(_) => {
+                return Err(Error::GoAway(GoAwayError::UnexpectedStartMessage));
+            }
+            request::Payload::Settings(settings) => {
+                // todo: validate the settings message.
+                state.settings = settings;
+            }
+            request::Payload::Invocation(invocation) => {
+                if state.current_window_size < 0 {
+                    return Err(Error::GoAway(GoAwayError::WindowSizeViolation));
+                }
+
+                // it's okay if window size goes below zero for a single message
+                // but the client should not send more unless it receives a
+                // window update.
+                state.current_window_size -= invocation.encoded_len() as i64;
+                let offset = invocation.offset;
+                let envelope = build_envelope(
+                    &self.schemas,
+                    &state.settings,
+                    state.producer_id,
+                    invocation,
+                )?;
+
+                let commit = self
+                    .ingestion_client
+                    .ingest(envelope.partition_key(), envelope)
+                    .await?
+                    .map(|_| offset);
+
+                state.inflight.push_back(commit);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Build the WAL envelope for one record, mirroring `restate-ingress-kafka`'s `EnvelopeBuilder`.
+fn build_envelope<Schemas>(
+    schemas: &Live<Schemas>,
+    settings: &Settings,
+    producer_id: Option<u128>,
+    record: IngestionInvocation,
+) -> Result<Envelope, Error>
+where
+    Schemas: InvocationTargetResolver,
+{
+    let service = record
+        .service
+        .as_deref()
+        .or(settings.service.as_deref())
+        .ok_or(Error::BadRequest(
+            record.offset,
+            BadRequestError::MissingService,
+        ))?;
+    let handler = record
+        .handler
+        .as_deref()
+        .or(settings.handler.as_deref())
+        .ok_or(Error::BadRequest(
+            record.offset,
+            BadRequestError::MissingHandler,
+        ))?;
+
+    let schemas = schemas.pinned();
+    let target_meta = schemas
+        .resolve_latest_invocation_target(service, handler)
+        .ok_or_else(|| {
+            if schemas.resolve_latest_service_type(service).is_none() {
+                Error::NotFound(
+                    record.offset,
+                    NotFoundError::UnknownService {
+                        service: service.to_owned(),
+                    },
+                )
+            } else {
+                Error::NotFound(
+                    record.offset,
+                    NotFoundError::UnknownHandler {
+                        service: service.to_owned(),
+                        handler: handler.to_owned(),
+                    },
+                )
+            }
+        })?;
+
+    let invocation_target = match target_meta.target_ty {
+        InvocationTargetType::Service => InvocationTarget::service(service, handler),
+        InvocationTargetType::VirtualObject(handler_ty) => {
+            let key = record
+                .key
+                .as_deref()
+                .or(settings.key.as_deref())
+                .ok_or_else(|| Error::BadRequest(record.offset, BadRequestError::MissingKey))?;
+            InvocationTarget::virtual_object(service, key, handler, handler_ty)
+        }
+        InvocationTargetType::Workflow(handler_ty) => {
+            let key = record
+                .key
+                .as_deref()
+                .or(settings.key.as_deref())
+                .ok_or_else(|| Error::BadRequest(record.offset, BadRequestError::MissingKey))?;
+            InvocationTarget::workflow(service, key, handler, handler_ty)
+        }
+    };
+
+    let idempotency_key = record
+        .idempotency_key
+        .as_deref()
+        .or(settings.idempotency_key.as_deref());
+
+    let invocation_retention = target_meta.compute_retention(idempotency_key.is_some());
+
+    // The default Settings headers plus this record's own headers plus W3C trace context.
+    let mut headers = Vec::with_capacity(settings.headers.len() + record.additional_headers.len());
+    for (name, value) in &settings.headers {
+        headers.push(Header::new(name.as_str(), value.as_str()));
+    }
+    for (name, value) in &record.additional_headers {
+        headers.push(Header::new(name.as_str(), value.as_str()));
+    }
+    if let Some(traceparent) = &record.traceparent {
+        headers.push(Header::new("traceparent", traceparent.as_str()));
+    }
+    if let Some(tracestate) = &record.tracestate {
+        headers.push(Header::new("tracestate", tracestate.as_str()));
+    }
+
+    let invocation_id = InvocationId::generate_or_else(&invocation_target, None, || {
+        partitioner::HashPartitioner::compute_partition_key(&record.offset)
+    });
+
+    let mut invocation = Box::new(ServiceInvocation::initialize(
+        invocation_id,
+        invocation_target,
+        restate_types::invocation::Source::Ingress(PartitionProcessorRpcRequestId::default()),
+    ));
+    invocation.argument = record.payload;
+    invocation.headers = headers;
+    invocation.idempotency_key = idempotency_key.map(Into::into);
+    invocation.with_retention(invocation_retention);
+
+    let dedup = producer_id.map(|producer| DedupInformation::producer(producer, record.offset));
+    let header = restate_wal_protocol::Header {
+        source: restate_wal_protocol::Source::Ingress {},
+        dest: Destination::Processor {
+            partition_key: invocation.partition_key(),
+            dedup,
+        },
+    };
+
+    Ok(Envelope::new(header, Command::Invoke(invocation)))
+}
+
+type CommittedOffset = u64;
+
+#[derive(Debug, thiserror::Error)]
+enum Error {
+    #[error("Ingress is shutting down")]
+    Shutdown,
+    #[error("Protocol violation: {0}")]
+    GoAway(GoAwayError),
+    #[error("Invocation target not found for invocation at offset {0}: {1}")]
+    NotFound(u64, NotFoundError),
+    #[error("Bad request for invocation at offset {0}: {1}")]
+    BadRequest(u64, BadRequestError),
+    #[error("Internal ingestion error: {0}")]
+    IngestionError(#[from] IngestionError),
+}
+
+impl From<Error> for proto::Error {
+    fn from(value: Error) -> Self {
+        let (invocation_offset, kind) = match value {
+            Error::Shutdown => (None, proto::ErrorKind::ShuttingDown),
+            Error::GoAway(_) => (None, proto::ErrorKind::GoAway),
+            Error::IngestionError(_) => (None, proto::ErrorKind::Unknown),
+            Error::NotFound(offset, _) => (Some(offset), proto::ErrorKind::NotFound),
+            Error::BadRequest(offset, _) => (Some(offset), proto::ErrorKind::BadRequest),
+        };
+
+        Self {
+            invocation_offset,
+            kind: kind.into(),
+            message: value.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum GoAwayError {
+    #[error("Unexpected Start message")]
+    UnexpectedStartMessage,
+    #[error("window size violation")]
+    WindowSizeViolation,
+    #[error("Missing request payload")]
+    MissingRequestPayload,
+    #[error(transparent)]
+    Unknown(#[from] GenericError),
+}
+
+impl GoAwayError {
+    fn unknown(err: impl Into<GenericError>) -> Self {
+        Self::Unknown(err.into())
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum BadRequestError {
+    #[error("Missing service key")]
+    MissingService,
+    #[error("Missing service handler")]
+    MissingHandler,
+    #[error("Missing required key")]
+    MissingKey,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum NotFoundError {
+    #[error("Unknown service {service}")]
+    UnknownService { service: String },
+    #[error("Unknown service handler {service}/{handler}")]
+    UnknownHandler { service: String, handler: String },
+}
+
+struct IngestionState {
+    producer_id: Option<u128>,
+    integration: String,
+    settings: Settings,
+    last_committed: Option<CommittedOffset>,
+    current_window_size: i64,
+    inflight: VecDeque<RecordCommit<u64>>,
+}
+
+impl IngestionState {
+    fn new(
+        producer_id: impl AsRef<str>,
+        integration: impl Into<String>,
+        settings: Settings,
+    ) -> Self {
+        let producer_id = producer_id.as_ref();
+        Self {
+            producer_id: if producer_id.is_empty() {
+                None
+            } else {
+                let mut hasher = xxhash_rust::xxh3::Xxh3::default();
+                producer_id.hash(&mut hasher);
+                Some(hasher.digest128())
+            },
+            integration: integration.into(),
+            settings: settings,
+            last_committed: None,
+            current_window_size: 0,
+            inflight: VecDeque::default(),
+        }
+    }
+}

@@ -31,8 +31,9 @@ use tower_http::normalize_path::NormalizePathLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{Span, debug, info, info_span, instrument};
 
-use restate_core::network::hyper_error_status;
+use restate_core::network::{TransportConnect, hyper_error_status};
 use restate_core::{TaskCenter, TaskCenterFutureExt, cancellation_token, task_center};
+use restate_ingestion_client::IngestionClient;
 use restate_types::config::IngressOptions;
 use restate_types::errors::GenericError;
 use restate_types::health::HealthStatus;
@@ -43,6 +44,7 @@ use restate_types::protobuf::common::IngressStatus;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 use restate_util_time::DurationExt;
+use restate_wal_protocol::Envelope;
 
 use super::*;
 use crate::handler::Handler;
@@ -55,12 +57,12 @@ pub enum IngressServerError {
     Running(#[from] hyper::Error),
 }
 
-pub struct HyperServerIngress<Schemas, Dispatcher> {
+pub struct HyperServerIngress<T, Schemas, Dispatcher> {
     listeners: Listeners<HttpIngressPort>,
     concurrency_limit: usize,
     request_size_limit: usize,
     http2_max_concurrent_streams: Option<NonZeroU32>,
-
+    ingestion_client: IngestionClient<T, Envelope>,
     // Parameters to build the layers
     schemas: Live<Schemas>,
     dispatcher: Dispatcher,
@@ -68,21 +70,24 @@ pub struct HyperServerIngress<Schemas, Dispatcher> {
     health: HealthStatus<IngressStatus>,
 }
 
-impl<Schemas, Dispatcher> HyperServerIngress<Schemas, Dispatcher>
+impl<T, Schemas, Dispatcher> HyperServerIngress<T, Schemas, Dispatcher>
 where
+    T: TransportConnect,
     Schemas: ServiceMetadataResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
     Dispatcher: RequestDispatcher + Clone + Send + Sync + 'static,
 {
     pub fn from_options(
         ingress_options: &IngressOptions,
+        ingestion_client: IngestionClient<T, Envelope>,
         listeners: Listeners<HttpIngressPort>,
         dispatcher: Dispatcher,
         schemas: Live<Schemas>,
         health: HealthStatus<IngressStatus>,
-    ) -> HyperServerIngress<Schemas, Dispatcher> {
+    ) -> Self {
         crate::metric_definitions::describe_metrics();
         HyperServerIngress::new(
             listeners,
+            ingestion_client,
             ingress_options.concurrent_api_requests_limit(),
             ingress_options.request_size_limit().get(),
             ingress_options.http2_max_concurrent_streams(),
@@ -93,13 +98,15 @@ where
     }
 }
 
-impl<Schemas, Dispatcher> HyperServerIngress<Schemas, Dispatcher>
+impl<T, Schemas, Dispatcher> HyperServerIngress<T, Schemas, Dispatcher>
 where
+    T: TransportConnect,
     Schemas: ServiceMetadataResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
     Dispatcher: RequestDispatcher + Clone + Send + Sync + 'static,
 {
     pub(crate) fn new(
         listeners: Listeners<HttpIngressPort>,
+        ingestion_client: IngestionClient<T, Envelope>,
         concurrency_limit: usize,
         request_size_limit: usize,
         http2_max_concurrent_streams: Option<NonZeroU32>,
@@ -111,6 +118,7 @@ where
 
         Self {
             listeners,
+            ingestion_client,
             concurrency_limit,
             request_size_limit,
             http2_max_concurrent_streams,
@@ -129,6 +137,7 @@ where
     pub async fn run(self) -> anyhow::Result<()> {
         let HyperServerIngress {
             mut listeners,
+            ingestion_client,
             concurrency_limit,
             request_size_limit,
             http2_max_concurrent_streams,
@@ -191,7 +200,11 @@ where
             .layer(CorsLayer::very_permissive())
             .layer(layers::load_shed::LoadShedLayer::new(concurrency_limit))
             .layer(layers::tracing_context_extractor::HttpTraceContextExtractorLayer)
-            .service(Handler::new(schemas, dispatcher));
+            .service(Handler::new(schemas.clone(), dispatcher));
+
+        // Route the gRPC integration path to its own service; everything else keeps
+        // flowing through the layered handler above.
+        let service = integration::IntegrationRouter::new(service, ingestion_client, schemas);
 
         // todo(azmy): `CorsLayer` should sit above `RequestBodyLimitLayer` so CORS is applied
         // as early as possible. This is currently blocked because `CorsLayer` requires the
@@ -273,10 +286,10 @@ where
         return Ok(());
     }
 
-    fn handle_connection<S, T, F, B>(
+    fn handle_connection<S, H, F, B>(
         stream: S,
         remote_peer: SocketAddress,
-        handler: T,
+        handler: H,
         http2_max_concurrent_streams: Option<NonZeroU32>,
         drain: CancellationToken,
         force_shutdown: CancellationToken,
@@ -288,7 +301,7 @@ where
         B: http_body::Body + Send + 'static,
         <B as http_body::Body>::Data: Send + 'static,
         <B as http_body::Body>::Error: Into<GenericError>,
-        T: tower::Service<
+        H: tower::Service<
                 Request<Incoming>,
                 Response = Response<B>,
                 Error = Infallible,
@@ -411,15 +424,19 @@ mod tests {
     use hyper_util::client::legacy::Client;
     use hyper_util::rt::TokioExecutor;
     use restate_core::TestCoreEnv;
+    use restate_core::partitions::PartitionRouting;
     use restate_core::{TaskCenter, TaskKind};
     use restate_hyper_uds::UnixSocketConnector;
+    use restate_ingestion_client::SessionOptions;
     use restate_test_util::assert_eq;
     use restate_types::health::Health;
     use restate_types::identifiers::WithInvocationId;
     use restate_types::invocation::InvocationTarget;
     use restate_types::invocation::client::InvocationOutputResponse;
+    use restate_types::partitions::state::PartitionReplicaSetStates;
     use serde::{Deserialize, Serialize};
     use std::future::ready;
+    use std::num::NonZeroUsize;
     use std::sync::Arc;
     use tokio::sync::Semaphore;
     use tracing_test::traced_test;
@@ -508,12 +525,23 @@ mod tests {
         listeners: Listeners<HttpIngressPort>,
         mock_request_dispatcher: MockRequestDispatcher,
     ) {
-        let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let env = TestCoreEnv::create_with_single_node(1, 1).await;
         let health = Health::default();
+
+        let replica_set_states = PartitionReplicaSetStates::default();
+
+        let ingestion_client = IngestionClient::new(
+            env.networking.clone(),
+            env.metadata.updateable_partition_table(),
+            PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
+            NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
+            SessionOptions::default(),
+        );
 
         // Create the ingress and start it
         let ingress = HyperServerIngress::new(
             listeners,
+            ingestion_client,
             Semaphore::MAX_PERMITS,
             10 * 1024 * 1024, // 10MB
             None,
