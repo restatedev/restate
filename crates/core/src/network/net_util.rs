@@ -24,7 +24,7 @@ use tokio::net::UnixStream;
 use tokio::task::JoinHandle;
 use tokio_util::either::Either;
 use tonic::transport::{Channel, Endpoint};
-use tracing::{Instrument, Span, debug, error_span, info, instrument, trace};
+use tracing::{Instrument, Span, debug, error_span, info, instrument, trace, warn};
 
 use restate_types::config::{Configuration, TlsMode};
 use restate_types::errors::GenericError;
@@ -149,6 +149,8 @@ pub enum Error {
     HandlingConnection(#[from] GenericError),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
+    #[error("configuration error: {0}")]
+    Configuration(String),
 }
 
 #[instrument(
@@ -231,15 +233,6 @@ where
                 let socket_span = error_span!("SocketHandler", ?peer_addr);
 
                 let network_options = &configuration.live_load().networking;
-                // live-loaded so the enforcement mode can be changed at
-                // runtime without restarting the server
-                let tls_mode = tls.as_ref().map(|_| {
-                    network_options
-                        .tls
-                        .as_ref()
-                        .map(|t| t.mode)
-                        .unwrap_or_default()
-                });
                 let mut builder = hyper_util::server::conn::auto::Builder::new(TaskCenterExecutor);
                 builder
                     .http2()
@@ -255,6 +248,8 @@ where
                         let tls = tls.clone();
                         let service = service.clone();
                         let graceful_shutdown = graceful_shutdown.watcher();
+                        let tls_mode = network_options.tls_mode();
+
                         TaskCenter::spawn(TaskKind::SocketHandler, task_name.clone(), async move {
                             let established = tokio::time::timeout(
                                 TLS_HANDSHAKE_TIMEOUT,
@@ -321,13 +316,19 @@ const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 async fn establish_tcp_connection(
     tcp_stream: tokio::net::TcpStream,
     tls_resolver: Option<TlsCertResolver>,
-    tls_mode: Option<TlsMode>,
-) -> io::Result<Either<tokio_rustls::server::TlsStream<tokio::net::TcpStream>, tokio::net::TcpStream>>
-{
+    tls_mode: TlsMode,
+) -> Result<
+    Either<tokio_rustls::server::TlsStream<tokio::net::TcpStream>, tokio::net::TcpStream>,
+    Error,
+> {
     let acceptor = match (&tls_resolver, &tls_mode) {
-        (Some(_), Some(TlsMode::Off)) | (None, _) | (_, None) => None,
-        (Some(resolver), Some(TlsMode::Require)) => Some(resolver.tls_acceptor()),
-        (Some(resolver), Some(TlsMode::Allow | TlsMode::Prefer)) => {
+        (Some(resolver), TlsMode::Require) => Some(resolver.tls_acceptor()),
+        (None, TlsMode::Require) => {
+            return Err(Error::Configuration(
+                "TLS is in required mode, but no TLS configuration is present. Rejecting the connection.".to_owned(),
+            ));
+        }
+        (Some(resolver), TlsMode::Allow | TlsMode::Prefer) => {
             let mut peek_buf = [0u8; 1];
             if matches!(tcp_stream.peek(&mut peek_buf).await, Ok(1) if peek_buf[0] == 0x16) {
                 Some(resolver.tls_acceptor())
@@ -335,6 +336,7 @@ async fn establish_tcp_connection(
                 None
             }
         }
+        _ => None,
     };
 
     match acceptor {

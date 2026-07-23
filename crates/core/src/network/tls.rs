@@ -168,7 +168,8 @@ fn build_server_config(opts: &FabricTlsOptions) -> anyhow::Result<ServerConfig> 
         builder.with_no_client_auth()
     };
 
-    let config = builder.with_single_cert(certs, key)?;
+    let mut config = builder.with_single_cert(certs, key)?;
+    config.alpn_protocols = vec![b"h2".to_vec()];
     Ok(config)
 }
 
@@ -479,47 +480,27 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
     }
 
     #[test]
-    fn load_certs_valid_pem() {
+    fn pem_loading() {
         let cert_file = write_temp_file(TEST_CERT);
         let certs = load_certs(cert_file.path()).unwrap();
         assert_eq!(certs.len(), 1);
-    }
 
-    #[test]
-    fn load_certs_missing_file() {
-        let result = load_certs(Path::new("/nonexistent/cert.pem"));
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Failed to open"));
-    }
+        let err = load_certs(Path::new("/nonexistent/cert.pem")).unwrap_err();
+        assert!(err.to_string().contains("Failed to open"));
 
-    #[test]
-    fn load_certs_empty_file() {
         let empty_file = write_temp_file("");
-        let result = load_certs(empty_file.path());
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No certificates"));
-    }
+        let err = load_certs(empty_file.path()).unwrap_err();
+        assert!(err.to_string().contains("No certificates"));
 
-    #[test]
-    fn load_private_key_valid_pem() {
         let key_file = write_temp_file(TEST_KEY);
-        let key = load_private_key(key_file.path());
-        assert!(key.is_ok());
-    }
+        load_private_key(key_file.path()).unwrap();
 
-    #[test]
-    fn load_private_key_missing_file() {
-        let result = load_private_key(Path::new("/nonexistent/key.pem"));
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No private key"));
-    }
+        let err = load_private_key(Path::new("/nonexistent/key.pem")).unwrap_err();
+        assert!(err.to_string().contains("No private key"));
 
-    #[test]
-    fn load_private_key_no_key_in_file() {
         let no_key_file = write_temp_file("not a pem file at all\n");
-        let result = load_private_key(no_key_file.path());
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No private key"));
+        let err = load_private_key(no_key_file.path()).unwrap_err();
+        assert!(err.to_string().contains("No private key"));
     }
 
     #[test]
@@ -607,56 +588,41 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
     }
 
     #[test]
-    fn glob_match_exact() {
-        assert!(glob_match("restate-node", "restate-node"));
-        assert!(!glob_match("restate-node", "other-node"));
-    }
-
-    #[test]
-    fn glob_match_trailing_wildcard() {
-        assert!(glob_match("spiffe://domain/*", "spiffe://domain/admin"));
-        assert!(glob_match(
-            "spiffe://domain/*",
-            "spiffe://domain/worker/staging"
-        ));
-        assert!(!glob_match("spiffe://domain/*", "spiffe://other/admin"));
-    }
-
-    #[test]
-    fn glob_match_middle_wildcard() {
-        assert!(glob_match("spiffe://*/admin", "spiffe://domain/admin"));
-        assert!(!glob_match("spiffe://*/admin", "spiffe://domain/worker"));
-    }
-
-    #[test]
-    fn glob_match_prefix() {
-        assert!(glob_match("restate-*", "restate-admin"));
-        assert!(glob_match("restate-*", "restate-worker"));
-        assert!(!glob_match("restate-*", "other-admin"));
-    }
-
-    #[test]
-    fn glob_match_multiple_wildcards() {
-        assert!(glob_match(
-            "spiffe://*.pin220.com/restate-agents/*",
-            "spiffe://svc.pin220.com/restate-agents/staging/admin"
-        ));
-    }
-
-    #[test]
-    fn glob_match_requires_backtracking() {
-        // The wildcard must be able to "give back" characters: `*` matches "bc"
-        // so that the literal "bc" tail still matches. A greedy matcher without
-        // backtracking rejects these.
-        assert!(glob_match("a*bc", "abcbc"));
-        assert!(glob_match(
-            "spiffe://domain/*/admin",
-            "spiffe://domain/admin/team/admin"
-        ));
-        assert!(!glob_match("a*bc", "abcb"));
-        // `?` must have no special meaning in subject-name patterns
-        assert!(glob_match("node?1", "node?1"));
-        assert!(!glob_match("node?1", "node-1"));
+    fn glob_matching() {
+        for (pattern, value, expected) in [
+            ("restate-node", "restate-node", true),
+            ("restate-node", "other-node", false),
+            ("spiffe://domain/*", "spiffe://domain/admin", true),
+            ("spiffe://domain/*", "spiffe://domain/worker/staging", true),
+            ("spiffe://domain/*", "spiffe://other/admin", false),
+            ("spiffe://*/admin", "spiffe://domain/admin", true),
+            ("spiffe://*/admin", "spiffe://domain/worker", false),
+            ("restate-*", "restate-admin", true),
+            ("restate-*", "restate-worker", true),
+            ("restate-*", "other-admin", false),
+            (
+                "spiffe://*.pin220.com/restate-agents/*",
+                "spiffe://svc.pin220.com/restate-agents/staging/admin",
+                true,
+            ),
+            // `*` must backtrack so the literal suffix can still match.
+            ("a*bc", "abcbc", true),
+            (
+                "spiffe://domain/*/admin",
+                "spiffe://domain/admin/team/admin",
+                true,
+            ),
+            ("a*bc", "abcb", false),
+            // `?` has no special meaning in subject-name patterns.
+            ("node?1", "node?1", true),
+            ("node?1", "node-1", false),
+        ] {
+            assert_eq!(
+                glob_match(pattern, value),
+                expected,
+                "pattern '{pattern}' against '{value}'"
+            );
+        }
     }
 
     fn generate_cert(cn: &str, san_uris: &[&str], san_dns: &[&str]) -> CertificateDer<'static> {
@@ -687,62 +653,40 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
     }
 
     #[test]
-    fn subject_verifier_accepts_matching_san_uri() {
-        let verifier = make_verifier(&["spiffe://svc.pin220.com/restate-agents/*"]);
-        let cert = generate_cert(
+    fn subject_verifier_matches_allowed_identities() {
+        let spiffe_verifier = make_verifier(&["spiffe://svc.pin220.com/restate-agents/*"]);
+        let matching_uri = generate_cert(
             "irrelevant-cn",
             &["spiffe://svc.pin220.com/restate-agents/staging/admin"],
             &[],
         );
-        assert!(verifier.cert_subject_matches(&cert));
-    }
-
-    #[test]
-    fn subject_verifier_accepts_matching_san_dns() {
-        let verifier = make_verifier(&["restate-*.internal"]);
-        let cert = generate_cert("irrelevant-cn", &[], &["restate-node1.internal"]);
-        assert!(verifier.cert_subject_matches(&cert));
-    }
-
-    #[test]
-    fn subject_verifier_accepts_matching_cn() {
-        let verifier = make_verifier(&["restate-*"]);
-        // CN-only cert (no SANs)
-        let cert = generate_cert("restate-admin", &[], &[]);
-        assert!(verifier.cert_subject_matches(&cert));
-        // CN still matches when non-matching SANs are present
-        let cert = generate_cert("restate-admin", &["spiffe://other/id"], &[]);
-        assert!(verifier.cert_subject_matches(&cert));
-        // neither CN nor SANs match
-        let cert = generate_cert("kafka-broker-1", &[], &[]);
-        assert!(!verifier.cert_subject_matches(&cert));
-    }
-
-    #[test]
-    fn subject_verifier_rejects_non_matching() {
-        let verifier = make_verifier(&["spiffe://svc.pin220.com/restate-agents/*"]);
-        let cert = generate_cert(
+        let non_matching_uri = generate_cert(
             "other-service",
             &["spiffe://svc.pin220.com/other-service/staging/worker"],
             &[],
         );
-        assert!(!verifier.cert_subject_matches(&cert));
-    }
+        let no_matching_identity = generate_cert("unrelated-cn", &[], &[]);
+        assert!(spiffe_verifier.cert_subject_matches(&matching_uri));
+        assert!(!spiffe_verifier.cert_subject_matches(&non_matching_uri));
+        assert!(!spiffe_verifier.cert_subject_matches(&no_matching_identity));
 
-    #[test]
-    fn subject_verifier_rejects_no_match_anywhere() {
-        let verifier = make_verifier(&["spiffe://svc.pin220.com/restate-agents/*"]);
-        let cert = generate_cert("unrelated-cn", &[], &[]);
-        assert!(!verifier.cert_subject_matches(&cert));
-    }
+        let dns_verifier = make_verifier(&["restate-*.internal"]);
+        let matching_dns = generate_cert("irrelevant-cn", &[], &["restate-node1.internal"]);
+        assert!(dns_verifier.cert_subject_matches(&matching_dns));
 
-    #[test]
-    fn subject_verifier_multiple_patterns() {
-        let verifier = make_verifier(&[
+        let cn_verifier = make_verifier(&["restate-*"]);
+        let matching_cn = generate_cert("restate-admin", &[], &[]);
+        let matching_cn_with_other_san =
+            generate_cert("restate-admin", &["spiffe://other/id"], &[]);
+        let non_matching_cn = generate_cert("kafka-broker-1", &[], &[]);
+        assert!(cn_verifier.cert_subject_matches(&matching_cn));
+        assert!(cn_verifier.cert_subject_matches(&matching_cn_with_other_san));
+        assert!(!cn_verifier.cert_subject_matches(&non_matching_cn));
+
+        let multiple_patterns = make_verifier(&[
             "spiffe://svc.pin220.com/restate-agents/*/admin",
             "spiffe://svc.pin220.com/restate-agents/*/worker",
         ]);
-
         let admin_cert = generate_cert(
             "node",
             &["spiffe://svc.pin220.com/restate-agents/staging/admin"],
@@ -758,10 +702,9 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
             &["spiffe://svc.pin220.com/restate-agents/staging/ingress"],
             &[],
         );
-
-        assert!(verifier.cert_subject_matches(&admin_cert));
-        assert!(verifier.cert_subject_matches(&worker_cert));
-        assert!(!verifier.cert_subject_matches(&other_cert));
+        assert!(multiple_patterns.cert_subject_matches(&admin_cert));
+        assert!(multiple_patterns.cert_subject_matches(&worker_cert));
+        assert!(!multiple_patterns.cert_subject_matches(&other_cert));
     }
 
     /// End-to-end test of the client-side server-cert verifier with a real

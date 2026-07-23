@@ -346,22 +346,33 @@ fn default_refresh_interval() -> NonZeroFriendlyDuration {
 mod tests {
     use super::*;
 
-    #[test]
-    fn tls_config_minimal_parsing() {
-        let toml_str = r#"
+    fn minimal_tls_config() -> FabricTlsOptions {
+        toml::from_str(
+            r#"
             cert-file = "/certs/node.crt"
             key-file = "/certs/node.key"
             ca-files = ["/certs/ca.crt"]
-        "#;
-        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
+        "#,
+        )
+        .unwrap()
+    }
 
-        assert_eq!(opts.mode, TlsMode::Off); // default
+    #[test]
+    fn tls_config_defaults_and_inheritance() {
+        assert!(NetworkingOptions::default().tls.is_none());
+
+        let opts = minimal_tls_config();
+        assert_eq!(opts.mode, TlsMode::Off);
         assert_eq!(opts.cert_file, PathBuf::from("/certs/node.crt"));
         assert_eq!(opts.key_file, PathBuf::from("/certs/node.key"));
         assert_eq!(opts.ca_files, vec![PathBuf::from("/certs/ca.crt")]);
-        assert!(!opts.require_client_auth); // default false
-        assert_eq!(*opts.refresh_interval, Duration::from_secs(3600)); // default 1h
+        assert!(!opts.require_client_auth);
+        assert_eq!(*opts.refresh_interval, Duration::from_secs(3600));
+        assert!(opts.allowed_subject_names.is_empty());
         assert!(opts.client.is_none());
+        assert_eq!(opts.client_cert_file(), &opts.cert_file);
+        assert_eq!(opts.client_key_file(), &opts.key_file);
+        assert_eq!(opts.client_ca_files(), opts.ca_files);
     }
 
     #[test]
@@ -379,65 +390,35 @@ mod tests {
     }
 
     #[test]
-    fn tls_config_full_parsing() {
-        let toml_str = r#"
+    fn tls_config_overrides() {
+        let opts: FabricTlsOptions = toml::from_str(
+            r#"
             mode = "allow"
             cert-file = "/certs/server.crt"
             key-file = "/certs/server.key"
             ca-files = ["/certs/ca1.crt", "/certs/ca2.crt"]
             require-client-auth = false
             refresh-interval = "15m"
+            allowed-subject-names = [
+                "spiffe://domain/admin",
+                "spiffe://domain/worker",
+            ]
 
             [client]
             cert-file = "/certs/client.crt"
             key-file = "/certs/client.key"
             root-ca-files = ["/certs/client-ca.crt"]
-        "#;
-        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
+        "#,
+        )
+        .unwrap();
 
         assert_eq!(opts.mode, TlsMode::Allow);
         assert!(!opts.require_client_auth);
         assert_eq!(*opts.refresh_interval, Duration::from_secs(900));
-
-        let client = opts.client.as_ref().unwrap();
-        assert_eq!(client.cert_file, Some(PathBuf::from("/certs/client.crt")));
-        assert_eq!(client.key_file, Some(PathBuf::from("/certs/client.key")));
         assert_eq!(
-            client.root_ca_files,
-            Some(vec![PathBuf::from("/certs/client-ca.crt")])
+            opts.allowed_subject_names,
+            ["spiffe://domain/admin", "spiffe://domain/worker"]
         );
-    }
-
-    #[test]
-    fn tls_client_inheritance() {
-        let toml_str = r#"
-            cert-file = "/certs/node.crt"
-            key-file = "/certs/node.key"
-            ca-files = ["/certs/ca.crt"]
-        "#;
-        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
-
-        // Without [client] section, client methods inherit from parent
-        assert_eq!(opts.client_cert_file(), &PathBuf::from("/certs/node.crt"));
-        assert_eq!(opts.client_key_file(), &PathBuf::from("/certs/node.key"));
-        assert_eq!(opts.client_ca_files(), &[PathBuf::from("/certs/ca.crt")]);
-    }
-
-    #[test]
-    fn tls_client_override() {
-        let toml_str = r#"
-            cert-file = "/certs/server.crt"
-            key-file = "/certs/server.key"
-            ca-files = ["/certs/server-ca.crt"]
-
-            [client]
-            cert-file = "/certs/client.crt"
-            key-file = "/certs/client.key"
-            root-ca-files = ["/certs/client-ca.crt"]
-        "#;
-        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
-
-        // Client methods should return overridden values
         assert_eq!(opts.client_cert_file(), &PathBuf::from("/certs/client.crt"));
         assert_eq!(opts.client_key_file(), &PathBuf::from("/certs/client.key"));
         assert_eq!(
@@ -447,97 +428,25 @@ mod tests {
     }
 
     #[test]
-    fn networking_options_tls_none_by_default() {
-        let opts = NetworkingOptions::default();
-        assert!(opts.tls.is_none());
-    }
+    fn tls_config_validation() {
+        let mut opts = minimal_tls_config();
+        assert!(opts.validate().is_ok());
 
-    #[test]
-    fn tls_config_with_allowed_subject_names() {
-        let toml_str = r#"
-            cert-file = "/certs/node.crt"
-            key-file = "/certs/node.key"
-            ca-files = ["/certs/ca.crt"]
-            allowed-subject-names = [
-                "spiffe://svc.pin220.com/restate-agents/*/admin",
-                "spiffe://svc.pin220.com/restate-agents/*/worker",
-                "spiffe://svc.pin220.com/restate-agents/*/ingress",
-            ]
-        "#;
-        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
-
-        assert_eq!(opts.allowed_subject_names.len(), 3);
-        assert_eq!(
-            opts.allowed_subject_names[0],
-            "spiffe://svc.pin220.com/restate-agents/*/admin"
-        );
-        assert!(opts.require_client_auth);
-    }
-
-    #[test]
-    fn tls_config_allowed_subject_names_empty_by_default() {
-        let toml_str = r#"
-            cert-file = "/certs/node.crt"
-            key-file = "/certs/node.key"
-            ca-files = ["/certs/ca.crt"]
-        "#;
-        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
-        assert!(opts.allowed_subject_names.is_empty());
-    }
-
-    #[test]
-    fn validate_rejects_empty_allowed_subject_names_with_client_auth() {
-        let toml_str = r#"
-            cert-file = "/certs/node.crt"
-            key-file = "/certs/node.key"
-            ca-files = ["/certs/ca.crt"]
-            require-client-auth = true
-        "#;
-        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
-        let result = opts.validate();
-        assert!(result.is_err());
+        opts.require_client_auth = true;
+        let err = opts.validate().unwrap_err();
         assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("allowed-subject-names is empty")
+            err.to_string().contains("allowed-subject-names is empty"),
+            "unexpected validation error: {err}"
         );
-    }
 
-    #[test]
-    fn validate_accepts_wildcard_allowed_subject_names() {
-        let toml_str = r#"
-            cert-file = "/certs/node.crt"
-            key-file = "/certs/node.key"
-            ca-files = ["/certs/ca.crt"]
-            require-client-auth = true
-            allowed-subject-names = ["*"]
-        "#;
-        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
+        opts.allowed_subject_names = vec!["*".to_owned()];
         assert!(opts.validate().is_ok());
-    }
 
-    #[test]
-    fn validate_accepts_empty_when_no_client_auth() {
-        let toml_str = r#"
-            cert-file = "/certs/node.crt"
-            key-file = "/certs/node.key"
-            ca-files = ["/certs/ca.crt"]
-            require-client-auth = false
-        "#;
-        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
+        opts.allowed_subject_names = vec!["spiffe://domain/restate-*".to_owned()];
         assert!(opts.validate().is_ok());
-    }
 
-    #[test]
-    fn validate_accepts_specific_patterns() {
-        let toml_str = r#"
-            cert-file = "/certs/node.crt"
-            key-file = "/certs/node.key"
-            ca-files = ["/certs/ca.crt"]
-            allowed-subject-names = ["spiffe://domain/restate-*"]
-        "#;
-        let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
+        opts.require_client_auth = false;
+        opts.allowed_subject_names.clear();
         assert!(opts.validate().is_ok());
     }
 }
