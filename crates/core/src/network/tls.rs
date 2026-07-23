@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -39,13 +39,25 @@ use crate::{ShutdownError, TaskCenter, TaskId, TaskKind, cancellation_watcher};
 /// up the client identity and server verifier through this handle.
 static GLOBAL_CLIENT_CONFIG: OnceLock<TlsClientConfig> = OnceLock::new();
 
-/// Client-side TLS materials for outbound fabric connections: the client
-/// identity as PEM (the form tonic consumes) and the server-certificate
+/// Client-side TLS materials for outbound fabric connections: the optional
+/// client identity as PEM (the form tonic consumes) and the server-certificate
 /// verifier enforcing chain validation plus subject-name authorization.
 pub struct ClientTlsMaterials {
+    pub identity: Option<ClientIdentity>,
+    pub verifier: Arc<dyn ServerCertVerifier>,
+}
+
+/// A client certificate/key pair presented to mTLS-secured fabric peers.
+pub struct ClientIdentity {
     pub cert_pem: Vec<u8>,
     pub key_pem: Vec<u8>,
-    pub verifier: Arc<dyn ServerCertVerifier>,
+}
+
+/// Paths to a client certificate/key pair on disk.
+#[derive(Clone, Copy)]
+pub struct ClientIdentityFiles<'a> {
+    pub cert_file: &'a Path,
+    pub key_file: &'a Path,
 }
 
 /// Holds hot-swappable TLS material for outbound fabric connections.
@@ -55,13 +67,14 @@ pub struct TlsClientConfig {
 }
 
 impl TlsClientConfig {
+    /// A `None` identity yields a server-auth-only configuration (sufficient
+    /// for clusters with `require-client-auth = false`).
     pub fn new<S: AsRef<str>>(
-        cert_file: &Path,
-        key_file: &Path,
-        ca_files: &[PathBuf],
+        identity: Option<ClientIdentityFiles<'_>>,
+        ca_files: &[impl AsRef<Path>],
         allowed_subject_names: &[S],
     ) -> anyhow::Result<Self> {
-        let client = build_client_materials(cert_file, key_file, ca_files, allowed_subject_names)?;
+        let client = build_client_materials(identity, ca_files, allowed_subject_names)?;
         Ok(Self {
             client_materials: Arc::new(ArcSwap::from_pointee(client)),
         })
@@ -69,8 +82,10 @@ impl TlsClientConfig {
 
     pub fn from_fabric_options(opts: &FabricTlsOptions) -> anyhow::Result<Self> {
         Self::new(
-            opts.client_cert_file(),
-            opts.client_key_file(),
+            Some(ClientIdentityFiles {
+                cert_file: opts.client_cert_file(),
+                key_file: opts.client_key_file(),
+            }),
             opts.client_ca_files(),
             &opts.allowed_subject_names,
         )
@@ -149,8 +164,10 @@ pub fn spawn_reloader(
                     }
                 }
                 match build_client_materials(
-                    opts.client_cert_file(),
-                    opts.client_key_file(),
+                    Some(ClientIdentityFiles {
+                        cert_file: opts.client_cert_file(),
+                        key_file: opts.client_key_file(),
+                    }),
                     opts.client_ca_files(),
                     &opts.allowed_subject_names,
                 ) {
@@ -410,14 +427,13 @@ impl ServerCertVerifier for SubjectNameServerVerifier {
 }
 
 fn build_client_materials<S: AsRef<str>>(
-    cert_file: &Path,
-    key_file: &Path,
-    ca_files: &[PathBuf],
+    identity: Option<ClientIdentityFiles<'_>>,
+    ca_files: &[impl AsRef<Path>],
     allowed_subject_names: &[S],
 ) -> anyhow::Result<ClientTlsMaterials> {
     let mut root_store = RootCertStore::empty();
     for ca_path in ca_files {
-        for cert in load_certs(ca_path)? {
+        for cert in load_certs(ca_path.as_ref())? {
             root_store.add(cert)?;
         }
     }
@@ -444,27 +460,39 @@ fn build_client_materials<S: AsRef<str>>(
     // PEM parses): tonic consumes them much later, when the first outbound TLS
     // channel is built, and a mismatch there would panic the connection path
     // instead of failing startup / hot-reload.
-    let certs = load_certs(cert_file)?;
-    let key = load_private_key(key_file)?;
-    rustls::sign::CertifiedKey::from_der(certs, key, &rustls::crypto::ring::default_provider())
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "Client certificate '{}' and key '{}' are not a valid pair: {e}",
-                cert_file.display(),
-                key_file.display()
-            )
-        })?;
+    let identity = identity
+        .map(
+            |ClientIdentityFiles {
+                 cert_file,
+                 key_file,
+             }| {
+                let certs = load_certs(cert_file)?;
+                let key = load_private_key(key_file)?;
+                rustls::sign::CertifiedKey::from_der(
+                    certs,
+                    key,
+                    &rustls::crypto::ring::default_provider(),
+                )
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Client certificate '{}' and key '{}' are not a valid pair: {e}",
+                        cert_file.display(),
+                        key_file.display()
+                    )
+                })?;
 
-    let cert_pem = std::fs::read(cert_file)
-        .map_err(|e| anyhow::anyhow!("Failed to read cert file '{}': {e}", cert_file.display()))?;
-    let key_pem = std::fs::read(key_file)
-        .map_err(|e| anyhow::anyhow!("Failed to read key file '{}': {e}", key_file.display()))?;
+                let cert_pem = std::fs::read(cert_file).map_err(|e| {
+                    anyhow::anyhow!("Failed to read cert file '{}': {e}", cert_file.display())
+                })?;
+                let key_pem = std::fs::read(key_file).map_err(|e| {
+                    anyhow::anyhow!("Failed to read key file '{}': {e}", key_file.display())
+                })?;
+                anyhow::Ok(ClientIdentity { cert_pem, key_pem })
+            },
+        )
+        .transpose()?;
 
-    Ok(ClientTlsMaterials {
-        cert_pem,
-        key_pem,
-        verifier,
-    })
+    Ok(ClientTlsMaterials { identity, verifier })
 }
 
 fn load_certs(path: &Path) -> anyhow::Result<Vec<CertificateDer<'static>>> {
@@ -578,6 +606,10 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
 
         TlsClientConfig::from_fabric_options(&opts)
             .expect("valid client config should be accepted");
+
+        let ca_only = TlsClientConfig::new(None, &[ca_file.path()], &["*"])
+            .expect("CA-only client config should be accepted");
+        assert!(ca_only.client_materials().identity.is_none());
 
         // The server cert and key are not a matching pair, so ServerConfig
         // construction must fail without preventing construction of the

@@ -19,7 +19,7 @@ use tempfile::TempDir;
 use tracing::info;
 
 use restate_core::network::net_util::{DNSResolution, create_tonic_channel};
-use restate_core::network::tls::TlsClientConfig;
+use restate_core::network::tls::{ClientIdentityFiles, TlsClientConfig};
 use restate_core::protobuf::node_ctl_svc::new_node_ctl_client;
 use restate_local_cluster_runner::{
     cluster::{Cluster, StartedCluster},
@@ -185,8 +185,15 @@ fn install_test_tls_client(tls_dir: &Path, ca_cert: &rcgen::Certificate, ca_key:
     let (client_cert, client_key) = generate_node_cert(ca_cert, ca_key, "test-client");
     let (ca_path, cert_path, key_path) =
         write_certs_to_dir(&client_dir, ca_cert, &client_cert, &client_key);
-    let client_config = TlsClientConfig::new(&cert_path, &key_path, &[ca_path], &["*"])
-        .expect("valid test TLS client");
+    let client_config = TlsClientConfig::new(
+        Some(ClientIdentityFiles {
+            cert_file: &cert_path,
+            key_file: &key_path,
+        }),
+        &[ca_path],
+        &["*"],
+    )
+    .expect("valid test TLS client");
     assert!(
         client_config.set_global(),
         "test TLS client configuration already installed"

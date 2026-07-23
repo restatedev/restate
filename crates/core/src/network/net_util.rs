@@ -49,8 +49,13 @@ pub enum DNSResolution {
 /// Without this, tonic rejects `https://` URIs with `HttpsUriWithoutTlsSupport`.
 pub fn apply_fabric_tls(endpoint: Endpoint, uri: &Uri, config: &TlsClientConfig) -> Endpoint {
     let materials = config.client_materials();
-    let identity = tonic::transport::Identity::from_pem(&materials.cert_pem, &materials.key_pem);
-    let mut tls_config = tonic::transport::ClientTlsConfig::new().identity(identity);
+    let mut tls_config = tonic::transport::ClientTlsConfig::new();
+    if let Some(identity) = &materials.identity {
+        tls_config = tls_config.identity(tonic::transport::Identity::from_pem(
+            &identity.cert_pem,
+            &identity.key_pem,
+        ));
+    }
     // tonic derives the rustls ServerName from uri.host(), which is bracketed
     // for IPv6 authorities (e.g. "[::1]") and not a valid ServerName. Strip
     // the brackets via an explicit domain name.

@@ -10,6 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
+use std::path::PathBuf;
 use std::sync::RwLock;
 use std::{cmp::Ordering, fmt::Display, sync::Arc};
 
@@ -21,6 +22,7 @@ use tonic::{Code, Status, transport::Channel};
 use tracing::{debug, info};
 
 use restate_cli_util::CliContext;
+use restate_core::network::tls::ClientIdentityFiles;
 use restate_core::protobuf::node_ctl_svc::{
     GetMetadataRequest, IdentResponse, new_node_ctl_client,
 };
@@ -103,6 +105,40 @@ impl std::error::Error for SimpleStatusWrapper {
 }
 
 #[derive(Clone, Parser, Collect, Debug)]
+pub struct TlsOpts {
+    /// Path to PEM-encoded CA certificate(s) for verifying the server certificate of
+    /// TLS-secured fabric ports (`https://` addresses). Sufficient on its own for
+    /// clusters that don't require client authentication; pair with --tls-cert and
+    /// --tls-key for mTLS clusters.
+    #[clap(long, global = true, env = "RESTATECTL_TLS_CA")]
+    pub tls_ca: Option<PathBuf>,
+
+    /// Path to a PEM-encoded client certificate presented to mTLS-secured fabric ports.
+    #[clap(
+        long,
+        global = true,
+        env = "RESTATECTL_TLS_CERT",
+        requires = "tls_key",
+        requires = "tls_ca"
+    )]
+    pub tls_cert: Option<PathBuf>,
+
+    /// Path to the PEM-encoded private key for the client certificate.
+    #[clap(long, global = true, env = "RESTATECTL_TLS_KEY", requires = "tls_cert")]
+    pub tls_key: Option<PathBuf>,
+}
+
+impl TlsOpts {
+    /// The client certificate/key pair for mTLS-secured fabric ports, when provided.
+    pub fn client_identity(&self) -> Option<ClientIdentityFiles<'_>> {
+        Some(ClientIdentityFiles {
+            cert_file: self.tls_cert.as_deref()?,
+            key_file: self.tls_key.as_deref()?,
+        })
+    }
+}
+
+#[derive(Clone, Parser, Collect, Debug)]
 pub struct ConnectionInfo {
     /// Specify one or more server addresses to connect to.
     ///
@@ -136,6 +172,9 @@ pub struct ConnectionInfo {
         conflicts_with = "address",
     )]
     pub single_address: Option<AdvertisedAddress<FabricPort>>,
+
+    #[clap(flatten)]
+    pub tls: TlsOpts,
 
     #[clap(skip)]
     nodes_configuration: Arc<Mutex<Option<NodesConfiguration>>>,

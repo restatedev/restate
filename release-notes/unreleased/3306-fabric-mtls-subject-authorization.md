@@ -34,6 +34,9 @@ root-ca-files = ["/certs/client-ca.crt"]
   certificate's Subject CN and SANs (DNS and URI, including SPIFFE IDs) against
   `allowed-subject-names` glob patterns. This prevents unauthorized services holding a
   certificate from a shared CA from connecting.
+- **restatectl support**: `--tls-ca` (env: `RESTATECTL_TLS_CA`) verifies TLS-secured
+  fabric ports and is sufficient on its own for clusters without client authentication;
+  add `--tls-cert`/`--tls-key` when the cluster sets `require-client-auth = true`.
 - **Rolling enablement**: different enforcement modes for gradual rollout:
   - `off` (default) — TLS disabled; the section may be staged on disk without effect
   - `allow` — certs loaded, TLS and plaintext accepted, nodes still advertise `http://`
