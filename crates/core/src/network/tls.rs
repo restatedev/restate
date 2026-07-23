@@ -402,9 +402,20 @@ fn build_client_materials(opts: &FabricTlsOptions) -> anyhow::Result<ClientTlsMa
     let cert_file = opts.client_cert_file();
     let key_file = opts.client_key_file();
 
-    // Validate that the PEM files parse before handing them to tonic.
-    load_certs(cert_file)?;
-    load_private_key(key_file)?;
+    // Validate the client certificate and key as a *pair* (not just that each
+    // PEM parses): tonic consumes them much later, when the first outbound TLS
+    // channel is built, and a mismatch there would panic the connection path
+    // instead of failing startup / hot-reload.
+    let certs = load_certs(cert_file)?;
+    let key = load_private_key(key_file)?;
+    rustls::sign::CertifiedKey::from_der(certs, key, &rustls::crypto::ring::default_provider())
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Client certificate '{}' and key '{}' are not a valid pair: {e}",
+                cert_file.display(),
+                key_file.display()
+            )
+        })?;
 
     let cert_pem = std::fs::read(cert_file)
         .map_err(|e| anyhow::anyhow!("Failed to read cert file '{}': {e}", cert_file.display()))?;
@@ -531,7 +542,7 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
         let ca_file = write_temp_file(&ca_cert.pem());
 
         let opts = FabricTlsOptions {
-            mode: restate_types::config::TlsMode::Strict,
+            mode: restate_types::config::TlsMode::Require,
             cert_file: cert_file.path().to_path_buf(),
             key_file: key_file.path().to_path_buf(),
             ca_files: vec![ca_file.path().to_path_buf()],
@@ -550,6 +561,48 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
         assert!(
             err.contains("key"),
             "expected a private-key/certificate mismatch error, got: {err}"
+        );
+    }
+
+    /// A mismatched pair in the separate `[networking.tls.client]` override
+    /// must fail at startup, not later when the first outbound channel is
+    /// built (where tonic would panic in `apply_fabric_tls`).
+    #[test]
+    fn tls_cert_resolver_rejects_mismatched_client_override() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let params = rcgen::CertificateParams::new(vec!["node".to_owned()]).unwrap();
+        let node_key = rcgen::KeyPair::generate().unwrap();
+        let node_cert = params.self_signed(&node_key).unwrap();
+        let wrong_key = rcgen::KeyPair::generate().unwrap();
+
+        let cert_file = write_temp_file(&node_cert.pem());
+        let key_file = write_temp_file(&node_key.serialize_pem());
+        let wrong_key_file = write_temp_file(&wrong_key.serialize_pem());
+
+        let opts = FabricTlsOptions {
+            mode: restate_types::config::TlsMode::Require,
+            cert_file: cert_file.path().to_path_buf(),
+            key_file: key_file.path().to_path_buf(),
+            ca_files: vec![cert_file.path().to_path_buf()],
+            require_client_auth: false,
+            refresh_interval: restate_util_time::NonZeroFriendlyDuration::from_secs_unchecked(3600),
+            allowed_subject_names: vec![],
+            // server pair is valid; the client override pairs the same cert
+            // with the wrong key
+            client: Some(restate_types::config::FabricTlsClientOptions {
+                cert_file: None,
+                key_file: Some(wrong_key_file.path().to_path_buf()),
+                root_ca_files: None,
+            }),
+        };
+
+        let Err(err) = TlsCertResolver::new(&opts) else {
+            panic!("mismatched client cert/key override must be rejected at startup");
+        };
+        assert!(
+            err.to_string().contains("not a valid pair"),
+            "expected a client pair validation error, got: {err}"
         );
     }
 

@@ -9,7 +9,7 @@ new optional `[networking.tls]` configuration section:
 
 ```toml
 [networking.tls]
-mode = "strict"                # or "optional" for rolling upgrades
+mode = "require"               # off | allow | prefer | require
 cert-file = "/certs/node.crt"
 key-file = "/certs/node.key"
 ca-files = ["/certs/ca.crt"]
@@ -34,11 +34,14 @@ root-ca-files = ["/certs/client-ca.crt"]
   certificate's Subject CN and SANs (DNS and URI, including SPIFFE IDs) against
   `allowed-subject-names` glob patterns. This prevents unauthorized services holding a
   certificate from a shared CA from connecting.
-- **Rolling upgrades**: `mode = "optional"` accepts both plaintext and TLS on the same
-  port, allowing a zero-downtime migration: deploy all nodes with `optional` + certs,
-  verify, then switch to `strict`.
-- TLS-enabled nodes advertise `https://` fabric addresses; peers use the scheme to
-  decide the connection type.
+- **Rolling enablement**: the mode decouples certificate distribution from advertising
+  TLS from requiring it (modeled after MongoDB's `tlsMode`):
+  - `off` — TLS disabled; the section may be staged on disk without effect
+  - `allow` — certs loaded, TLS and plaintext accepted, still advertises `http://`
+  - `prefer` — TLS and plaintext accepted, advertises `https://` so peers dial TLS
+  - `require` (default) — only TLS accepted, advertises `https://`
+- Nodes in `prefer`/`require` mode advertise `https://` fabric addresses; peers use
+  the scheme to decide the connection type.
 
 ### Why This Matters
 
@@ -55,22 +58,28 @@ environments cannot use. This brings Restate to parity with other distributed sy
 - **Fail-safe validation**: `allowed-subject-names` must be non-empty when
   `require-client-auth = true`; the node refuses to start otherwise. Use `["*"]` to
   explicitly opt into CA-only trust (chain validation without identity checking).
-- **restatectl**: in `strict` mode, plaintext connections to port 5122 are rejected;
-  `restatectl` needs TLS flags or `optional` mode until the internal/external port
-  split (#3583) lands.
+- **restatectl**: in `require` mode, plaintext connections to port 5122 are rejected.
+  `restatectl` can present a client certificate via the `RESTATECTL_TLS_CA_FILE`,
+  `RESTATECTL_TLS_CERT_FILE`, and `RESTATECTL_TLS_KEY_FILE` environment variables
+  (or the corresponding `--tls-*` flags) until the internal/external port split
+  (#3583) lands.
 
 ### Migration Guidance
 
-Rolling enablement on a live cluster:
+Rolling enablement on a live cluster, one mode step at a time (each step is applied
+to every node — with a restart — before moving to the next):
 
-1. Deploy all nodes with `mode = "optional"` and certificates — nodes advertise
-   `https://` and accept both plaintext and TLS.
-2. Verify all inter-node connections use TLS.
-3. Switch to `mode = "strict"` — plaintext is rejected.
+1. `mode = "allow"` + certificates on all nodes — certs are loaded and TLS is
+   accepted, but nodes still advertise `http://`, so peers that have not restarted
+   into the TLS config yet can still connect everywhere.
+2. `mode = "prefer"` on all nodes — nodes re-register with `https://` addresses and
+   peers dial them with TLS. Plaintext is still accepted.
+3. Verify all inter-node connections use TLS, then `mode = "require"` — plaintext is
+   rejected.
 
-Note: nodes registered in the nodes configuration keep their advertised address until
-they re-register (restart). Enable TLS on all nodes before switching any node to
-`strict`.
+Rollback is the same sequence in reverse. Nodes keep their registered advertised
+address until they re-register (restart), which is why `allow` must be fully rolled
+out before any node moves to `prefer`.
 
 ### Related Issues
 

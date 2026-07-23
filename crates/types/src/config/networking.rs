@@ -147,6 +147,13 @@ impl NetworkingOptions {
     pub fn fabric_memory_limit(&self) -> NonZeroByteCount {
         self.fabric_memory_limit.max(self.message_size_limit)
     }
+
+    /// The fabric TLS options, unless TLS is disabled (section absent or
+    /// `mode = "off"`). Use this instead of accessing `tls` directly so that
+    /// `off` behaves exactly like an absent section.
+    pub fn fabric_tls(&self) -> Option<&FabricTlsOptions> {
+        self.tls.as_ref().filter(|t| t.mode.is_enabled())
+    }
 }
 
 impl Default for NetworkingOptions {
@@ -177,16 +184,50 @@ impl Default for NetworkingOptions {
 
 /// TLS mode for fabric inter-node communication.
 ///
+/// The modes are ordered for safe rolling enablement (and rollback): certificate
+/// distribution is decoupled from advertising TLS, which is decoupled from
+/// requiring it. Roll the cluster forward one step at a time:
+/// `off` → `allow` → `prefer` → `require`.
+///
 /// Since v1.3.0
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum TlsMode {
-    /// Only TLS connections are accepted; plaintext is rejected.
+    /// TLS is disabled. Certificates are not loaded and the node behaves as if
+    /// `[networking.tls]` were absent. Allows staging the TLS configuration on
+    /// all nodes before activating it.
+    Off,
+    /// Certificates are loaded; both TLS and plaintext connections are
+    /// accepted, but the node still advertises a plaintext (`http://`)
+    /// address. Peers that have not loaded TLS configuration yet can still
+    /// connect to it — and it can be dialed by every node in the cluster.
+    Allow,
+    /// Both TLS and plaintext connections are accepted, and the node
+    /// advertises an `https://` address so peers connect with TLS. Only move
+    /// here once all nodes are at least in `allow` mode.
+    Prefer,
+    /// Only TLS connections are accepted; plaintext is rejected. Only move
+    /// here once all nodes are in `prefer` mode.
     #[default]
-    Strict,
-    /// Both TLS and plaintext connections are accepted. Use during rolling upgrades.
-    Optional,
+    Require,
+}
+
+impl TlsMode {
+    /// Certificates are loaded and the TLS acceptor/connector machinery is active.
+    pub fn is_enabled(&self) -> bool {
+        !matches!(self, TlsMode::Off)
+    }
+
+    /// The node advertises an `https://` fabric address.
+    pub fn advertises_tls(&self) -> bool {
+        matches!(self, TlsMode::Prefer | TlsMode::Require)
+    }
+
+    /// Plaintext connections are accepted alongside TLS.
+    pub fn accepts_plaintext(&self) -> bool {
+        !matches!(self, TlsMode::Require)
+    }
 }
 
 /// TLS configuration for fabric inter-node communication.
@@ -196,7 +237,8 @@ pub enum TlsMode {
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct FabricTlsOptions {
-    /// TLS enforcement mode. Default: `strict`.
+    /// TLS enforcement mode: `off`, `allow`, `prefer`, or `require`.
+    /// Default: `require`. See [`TlsMode`] for the rolling-enablement sequence.
     #[serde(default)]
     pub mode: TlsMode,
 
@@ -276,10 +318,6 @@ impl FabricTlsOptions {
             .unwrap_or(&self.ca_files)
     }
 
-    pub fn is_strict(&self) -> bool {
-        self.mode == TlsMode::Strict
-    }
-
     pub fn validate(&self) -> Result<(), anyhow::Error> {
         if self.require_client_auth && self.allowed_subject_names.is_empty() {
             anyhow::bail!(
@@ -313,7 +351,7 @@ mod tests {
         "#;
         let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
 
-        assert_eq!(opts.mode, TlsMode::Strict); // default
+        assert_eq!(opts.mode, TlsMode::Require); // default
         assert_eq!(opts.cert_file, PathBuf::from("/certs/node.crt"));
         assert_eq!(opts.key_file, PathBuf::from("/certs/node.key"));
         assert_eq!(opts.ca_files, vec![PathBuf::from("/certs/ca.crt")]);
@@ -323,9 +361,23 @@ mod tests {
     }
 
     #[test]
+    fn tls_mode_rollout_semantics() {
+        for (mode, enabled, advertises, plaintext) in [
+            (TlsMode::Off, false, false, true),
+            (TlsMode::Allow, true, false, true),
+            (TlsMode::Prefer, true, true, true),
+            (TlsMode::Require, true, true, false),
+        ] {
+            assert_eq!(mode.is_enabled(), enabled, "{mode:?}");
+            assert_eq!(mode.advertises_tls(), advertises, "{mode:?}");
+            assert_eq!(mode.accepts_plaintext(), plaintext, "{mode:?}");
+        }
+    }
+
+    #[test]
     fn tls_config_full_parsing() {
         let toml_str = r#"
-            mode = "optional"
+            mode = "prefer"
             cert-file = "/certs/server.crt"
             key-file = "/certs/server.key"
             ca-files = ["/certs/ca1.crt", "/certs/ca2.crt"]
@@ -339,10 +391,9 @@ mod tests {
         "#;
         let opts: FabricTlsOptions = toml::from_str(toml_str).unwrap();
 
-        assert_eq!(opts.mode, TlsMode::Optional);
+        assert_eq!(opts.mode, TlsMode::Prefer);
         assert!(!opts.require_client_auth);
         assert_eq!(*opts.refresh_interval, Duration::from_secs(900));
-        assert!(!opts.is_strict());
 
         let client = opts.client.as_ref().unwrap();
         assert_eq!(client.cert_file, Some(PathBuf::from("/certs/client.crt")));

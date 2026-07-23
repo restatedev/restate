@@ -231,14 +231,14 @@ where
                 let socket_span = error_span!("SocketHandler", ?peer_addr);
 
                 let network_options = &configuration.live_load().networking;
-                // live-loaded so the strict/optional enforcement mode can be
-                // changed at runtime without restarting the server
+                // live-loaded so the enforcement mode can be changed at
+                // runtime without restarting the server
                 let tls_mode = tls.as_ref().map(|_| {
                     network_options
                         .tls
                         .as_ref()
-                        .map(|t| t.mode.clone())
-                        .unwrap_or(TlsMode::Strict)
+                        .map(|t| t.mode)
+                        .unwrap_or(TlsMode::Require)
                 });
                 let mut builder = hyper_util::server::conn::auto::Builder::new(TaskCenterExecutor);
                 builder
@@ -323,9 +323,9 @@ where
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Establishes the application-layer transport on a freshly accepted TCP
-/// stream: performs the TLS handshake in strict mode, sniffs the first byte in
-/// optional mode (0x16 = TLS ClientHello) to decide between TLS and plaintext,
-/// and passes plaintext through otherwise.
+/// stream: performs the TLS handshake in `require` mode; in `allow`/`prefer`
+/// modes, sniffs the first byte (0x16 = TLS ClientHello) to decide between TLS
+/// and plaintext; passes plaintext through otherwise.
 async fn establish_tcp_connection(
     tcp_stream: tokio::net::TcpStream,
     tls_resolver: Option<TlsCertResolver>,
@@ -333,8 +333,9 @@ async fn establish_tcp_connection(
 ) -> io::Result<Either<tokio_rustls::server::TlsStream<tokio::net::TcpStream>, tokio::net::TcpStream>>
 {
     let acceptor = match (&tls_resolver, &tls_mode) {
-        (Some(resolver), Some(TlsMode::Strict)) => Some(resolver.tls_acceptor()),
-        (Some(resolver), Some(TlsMode::Optional)) => {
+        (Some(_), Some(TlsMode::Off)) | (None, _) | (_, None) => None,
+        (Some(resolver), Some(TlsMode::Require)) => Some(resolver.tls_acceptor()),
+        (Some(resolver), Some(TlsMode::Allow | TlsMode::Prefer)) => {
             let mut peek_buf = [0u8; 1];
             if matches!(tcp_stream.peek(&mut peek_buf).await, Ok(1) if peek_buf[0] == 0x16) {
                 Some(resolver.tls_acceptor())
@@ -342,7 +343,6 @@ async fn establish_tcp_connection(
                 None
             }
         }
-        _ => None,
     };
 
     match acceptor {

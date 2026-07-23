@@ -90,6 +90,30 @@ pub enum Command {
     Storage(Storage),
 }
 
-fn init(common_opts: &CommonOpts) {
-    CliContext::new(common_opts.clone()).set_as_global();
+fn init(common_opts: &CommonOpts) -> anyhow::Result<()> {
+    let ctx = CliContext::new(common_opts.clone());
+
+    // When TLS materials are provided, register the process-wide fabric TLS
+    // resolver so every channel dialing an `https://` fabric address (nodes in
+    // `prefer`/`require` mode) presents the client certificate. Stopgap until
+    // internal/external services are split onto separate ports (#3583).
+    if let Some((ca, cert, key)) = ctx.network.tls_files() {
+        let tls_opts = restate_types::config::FabricTlsOptions {
+            mode: restate_types::config::TlsMode::Require,
+            cert_file: cert.clone(),
+            key_file: key.clone(),
+            ca_files: vec![ca.clone()],
+            // client-side: we authenticate the server, it authenticates us
+            require_client_auth: false,
+            refresh_interval: restate_util_time::NonZeroFriendlyDuration::from_secs_unchecked(3600),
+            // trust any server that presents a valid cert from the CA;
+            // identity pinning is a server-side concern for restatectl
+            allowed_subject_names: vec!["*".to_owned()],
+            client: None,
+        };
+        restate_core::network::tls::TlsCertResolver::new(&tls_opts)?.set_global();
+    }
+
+    ctx.set_as_global();
+    Ok(())
 }

@@ -182,7 +182,7 @@ async fn plaintext_http2_accepted(authority: &str) -> bool {
 }
 
 #[test_log::test(restate_core::test)]
-async fn fabric_tls_strict_cluster() -> googletest::Result<()> {
+async fn fabric_tls_require_cluster() -> googletest::Result<()> {
     let tls_dir = TempDir::new().unwrap();
     let (ca_cert, ca_key) = generate_ca();
 
@@ -196,14 +196,14 @@ async fn fabric_tls_strict_cluster() -> googletest::Result<()> {
         &ca_cert,
         &ca_key,
         3,
-        TlsMode::Strict,
+        TlsMode::Require,
     );
 
-    info!("Starting 3-node cluster with strict mTLS");
+    info!("Starting 3-node cluster with require-mode mTLS");
     let cluster = Cluster::builder()
-        .cluster_name("tls-strict-cluster")
+        .cluster_name("tls-require-cluster")
         .nodes(nodes)
-        .temp_base_dir("fabric_tls_strict")
+        .temp_base_dir("fabric_tls_require")
         .build()
         .start()
         .await?;
@@ -223,20 +223,20 @@ async fn fabric_tls_strict_cluster() -> googletest::Result<()> {
 
     let authorities = assert_all_nodes_advertise_tls(&cluster, 3).await?;
 
-    // strict mode must reject plaintext connections on the fabric port
+    // require mode must reject plaintext connections on the fabric port
     for authority in &authorities {
         assert!(
             !plaintext_http2_accepted(authority).await,
-            "strict mode must reject plaintext connections on {authority}"
+            "require mode must reject plaintext connections on {authority}"
         );
     }
 
-    info!("Cluster is healthy with strict mTLS — test passed");
+    info!("Cluster is healthy with require-mode mTLS — test passed");
     Ok(())
 }
 
 #[test_log::test(restate_core::test)]
-async fn fabric_tls_optional_mode() -> googletest::Result<()> {
+async fn fabric_tls_prefer_mode() -> googletest::Result<()> {
     let tls_dir = TempDir::new().unwrap();
     let (ca_cert, ca_key) = generate_ca();
 
@@ -250,14 +250,14 @@ async fn fabric_tls_optional_mode() -> googletest::Result<()> {
         &ca_cert,
         &ca_key,
         3,
-        TlsMode::Optional,
+        TlsMode::Prefer,
     );
 
-    info!("Starting 3-node cluster with optional TLS mode");
+    info!("Starting 3-node cluster with prefer TLS mode");
     let cluster = Cluster::builder()
-        .cluster_name("tls-optional-cluster")
+        .cluster_name("tls-prefer-cluster")
         .nodes(nodes)
-        .temp_base_dir("fabric_tls_optional")
+        .temp_base_dir("fabric_tls_prefer")
         .build()
         .start()
         .await?;
@@ -272,19 +272,82 @@ async fn fabric_tls_optional_mode() -> googletest::Result<()> {
         .await
         .into_test_result()?;
 
-    info!("Waiting for cluster to become healthy (optional mode)");
+    info!("Waiting for cluster to become healthy (prefer mode)");
     cluster.wait_healthy(Duration::from_secs(30)).await?;
 
     let authorities = assert_all_nodes_advertise_tls(&cluster, 3).await?;
 
-    // optional mode must still accept plaintext connections (rolling upgrades)
+    // prefer mode must still accept plaintext connections (rolling upgrades)
     for authority in &authorities {
         assert!(
             plaintext_http2_accepted(authority).await,
-            "optional mode must accept plaintext connections on {authority}"
+            "prefer mode must accept plaintext connections on {authority}"
         );
     }
 
-    info!("Cluster is healthy with optional TLS mode — test passed");
+    info!("Cluster is healthy with prefer TLS mode — test passed");
+    Ok(())
+}
+
+/// In `allow` mode certificates are loaded and TLS connections are accepted,
+/// but nodes still advertise plaintext addresses — the first step of a rolling
+/// TLS enablement, when not all peers have TLS configuration yet.
+#[test_log::test(restate_core::test)]
+async fn fabric_tls_allow_mode() -> googletest::Result<()> {
+    let tls_dir = TempDir::new().unwrap();
+    let (ca_cert, ca_key) = generate_ca();
+
+    let mut base_config = Configuration::new_random_ports();
+    base_config.common.auto_provision = false;
+    base_config.common.default_num_partitions = 1;
+
+    let nodes = configure_tls_nodes(
+        base_config,
+        tls_dir.path(),
+        &ca_cert,
+        &ca_key,
+        3,
+        TlsMode::Allow,
+    );
+
+    info!("Starting 3-node cluster with allow TLS mode");
+    let cluster = Cluster::builder()
+        .cluster_name("tls-allow-cluster")
+        .nodes(nodes)
+        .temp_base_dir("fabric_tls_allow")
+        .build()
+        .start()
+        .await?;
+
+    cluster.nodes[0]
+        .provision_cluster(
+            None,
+            ReplicationProperty::new_unchecked(3),
+            None,
+            EnumSet::empty(),
+        )
+        .await
+        .into_test_result()?;
+
+    info!("Waiting for cluster to become healthy (allow mode)");
+    cluster.wait_healthy(Duration::from_secs(30)).await?;
+
+    // allow mode must NOT advertise https:// — peers without TLS config must
+    // still be able to dial every node
+    let nodes_config = cluster.nodes[0]
+        .metadata_client()
+        .get::<NodesConfiguration>(NODES_CONFIG_KEY.clone())
+        .await
+        .expect("can read nodes configuration")
+        .expect("nodes configuration must exist after provisioning");
+    for (node_id, node_config) in nodes_config.iter() {
+        let address = node_config.address.to_string();
+        assert!(
+            !address.starts_with("https://"),
+            "allow mode must advertise plaintext addresses, node {node_id} got '{address}'"
+        );
+    }
+
+    info!("Cluster is healthy with allow TLS mode — test passed");
     Ok(())
 }
