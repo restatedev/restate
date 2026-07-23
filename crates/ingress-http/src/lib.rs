@@ -9,18 +9,18 @@
 // by the Apache License, Version 2.0.
 
 mod handler;
+mod integration;
 mod layers;
 mod metric_definitions;
 mod rpc_request_dispatcher;
 mod server;
 
-pub use rpc_request_dispatcher::InvocationClientRequestDispatcher;
-pub use server::{HyperServerIngress, IngressServerError};
-
 use std::future::Future;
 use std::sync::Arc;
 
 use bytes::Bytes;
+pub use rpc_request_dispatcher::InvocationClientRequestDispatcher;
+pub use server::{HyperServerIngress, IngressServerError};
 
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::client::{
