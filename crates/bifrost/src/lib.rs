@@ -27,7 +27,9 @@ mod types;
 mod watchdog;
 
 pub use appender::Appender;
-pub use background_appender::{AppenderHandle, BackgroundAppender, CommitToken, LogSender};
+pub use background_appender::{
+    AppenderHandle, BackgroundAppender, CommitToken, EnqueueWithNotificationResult, LogSender,
+};
 pub use bifrost::{Bifrost, ErrorRecoveryStrategy};
 pub use bifrost_admin::{BifrostAdmin, MaybeSealedSegment};
 pub use data_record::{DataRecord, DataRecordError};

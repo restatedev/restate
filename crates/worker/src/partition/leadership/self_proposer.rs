@@ -12,22 +12,21 @@ use std::sync::Arc;
 
 use futures::never::Never;
 
-use restate_bifrost::{Bifrost, CommitToken, EnqueueError, ErrorRecoveryStrategy, InputRecord};
+use restate_bifrost::{
+    Bifrost, EnqueueError, EnqueueWithNotificationResult, ErrorRecoveryStrategy, InputRecord,
+};
 use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
 use restate_types::{
-    identifiers::PartitionKey, logs::LogId, net::ingest::IngestRecord, time::NanosSinceEpoch,
+    config::Configuration, identifiers::PartitionKey, logs::LogId, net::ingest::IngestRecord,
+    time::NanosSinceEpoch,
 };
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
 use crate::partition::leadership::Error;
 
-// Constants since it's very unlikely that we can derive a meaningful configuration
-// that the user can reason about.
-//
-// The queue size is small to reduce the tail latency. This comes at the cost of throughput but
-// this runs within a single processor and the expected throughput is bound by the overall
-// throughput of the processor itself.
-const BIFROST_QUEUE_SIZE: usize = 50;
+// A constant since it's very unlikely that we can derive a meaningful configuration
+// that the user can reason about. The queue's memory budget, on the other hand, is
+// configurable via `worker.self-proposal-queue-memory-limit`.
 const MAX_BIFROST_APPEND_BATCH: usize = 5000;
 
 static BIFROST_APPENDER_TASK: &str = "bifrost-appender";
@@ -43,11 +42,14 @@ impl SelfProposer {
         epoch_sequence_number: EpochSequenceNumber,
         bifrost: &Bifrost,
     ) -> Result<Self, Error> {
+        let memory_limit = Configuration::pinned()
+            .worker
+            .self_proposal_queue_memory_limit;
         let bifrost_appender = bifrost
             .create_background_appender(
                 log_id,
                 ErrorRecoveryStrategy::ExtendChainPreferred,
-                BIFROST_QUEUE_SIZE,
+                Some(memory_limit),
                 MAX_BIFROST_APPEND_BATCH,
             )?
             .start("self-appender")?;
@@ -69,13 +71,11 @@ impl SelfProposer {
     }
 
     /// Self-propose many commands to Bifrost, attaching ESN-based dedup information.
-    ///
-    /// Note that self_propose_many will return an error if the number of commands is greater than
-    /// the internal channel's max capacity.
-    pub async fn self_propose_many(
+    /// Returns the number of bytes proposed (the serialized size of all the commands).
+    pub fn self_propose_many(
         &mut self,
         cmds: impl ExactSizeIterator<Item = (PartitionKey, Command)>,
-    ) -> Result<(), Error> {
+    ) -> Result<usize, Error> {
         // allocate a sequence number range for the batch
         let leader_epoch = self.epoch_sequence_number.leader_epoch;
 
@@ -100,11 +100,10 @@ impl SelfProposer {
             Arc::new(Envelope::new(header, cmd))
         });
 
-        // Only blocks if background append is pushing back (queue full)
-        self.bifrost_appender
+        let bytes_written = self
+            .bifrost_appender
             .sender()
             .enqueue_many(envelopes)
-            .await
             .map_err(|e| Error::SelfProposer(e.to_string()))?;
 
         // update the sequence number range for the next batch
@@ -113,37 +112,53 @@ impl SelfProposer {
             sequence_number: end_seq,
         };
 
-        Ok(())
+        Ok(bytes_written)
     }
 
     /// Self-propose a single command to Bifrost, attaching ESN-based dedup information.
-    pub async fn self_propose(
+    /// Returns the number of bytes proposed (the serialized size of the command).
+    pub fn self_propose(
         &mut self,
         partition_key: PartitionKey,
         cmd: Command,
-    ) -> Result<(), Error> {
+    ) -> Result<usize, Error> {
         let envelope = Envelope::new(self.create_self_propose_header(partition_key), cmd);
 
-        // Only blocks if background append is pushing back (queue full)
         self.bifrost_appender
             .sender()
             .enqueue(Arc::new(envelope))
-            .await
-            .map_err(|e| Error::SelfProposer(e.to_string()))?;
-
-        Ok(())
+            .map_err(|e| Error::SelfProposer(e.to_string()))
     }
 
-    /// Append a command to Bifrost **without** dedup information, returning a [`CommitToken`].
+    /// Self-propose a single command to Bifrost, attaching ESN-based dedup information.
+    /// Compared to [`SelfProposer::self_propose`], this method bypasses all memory accounting
+    /// on the appender.
+    /// This should only be used for commands that can't afford a backpressue.
+    /// Returns the number of bytes proposed (the serialized size of the command).
+    pub fn self_propose_unaccounted(
+        &mut self,
+        partition_key: PartitionKey,
+        cmd: Command,
+    ) -> Result<usize, Error> {
+        let envelope = Envelope::new(self.create_self_propose_header(partition_key), cmd);
+
+        self.bifrost_appender
+            .sender()
+            .enqueue_unaccounted(Arc::new(envelope))
+            .map_err(|e| Error::SelfProposer(e.to_string()))
+    }
+
+    /// Append a command to Bifrost **without** dedup information, returning the number of bytes
+    /// written and a [`CommitToken`](restate_bifrost::CommitToken).
     ///
     /// Unlike [`Self::self_propose`], this does not attach an epoch sequence number. Records
     /// appended this way are never filtered by the dedup mechanism during leadership transitions,
     /// which makes them safe for fire-and-forget ingress commands (signals, invocation responses).
-    pub async fn append_with_notification(
+    pub fn append_with_notification(
         &mut self,
         partition_key: PartitionKey,
         cmd: Command,
-    ) -> Result<CommitToken, Error> {
+    ) -> Result<EnqueueWithNotificationResult, Error> {
         let header = Header {
             dest: Destination::Processor {
                 partition_key,
@@ -156,58 +171,42 @@ impl SelfProposer {
         };
         let envelope = Envelope::new(header, cmd);
 
-        let commit_token = self
-            .bifrost_appender
+        self.bifrost_appender
             .sender()
             .enqueue_with_notification(Arc::new(envelope))
-            .await
-            .map_err(|e| Error::SelfProposer(e.to_string()))?;
-
-        Ok(commit_token)
+            .map_err(|e| Error::SelfProposer(e.to_string()))
     }
 
-    /// Forward externally-created records to Bifrost, returning a [`CommitToken`].
+    /// Forward externally-created records to Bifrost, returning the number of bytes written and a
+    /// [`CommitToken`](restate_bifrost::CommitToken).
     ///
     /// The records already carry their own dedup information in their headers; no ESN is attached.
-    /// Internally this uses `enqueue_unchecked` which does not check the record size. Hence
+    /// Internally this uses `enqueue_many_unchecked` which does not check record sizes. Hence
     /// the only limit here is the networking max message size.
-    pub async fn forward_many_with_notification(
+    pub fn forward_many_with_notification(
         &mut self,
         records: impl ExactSizeIterator<Item = IngestRecord>,
-    ) -> Result<CommitToken, EnqueueError<()>> where {
+    ) -> Result<EnqueueWithNotificationResult, EnqueueError<()>> {
         let sender = self.bifrost_appender.sender();
 
-        // This should ideally be implemented
-        // by using `sender.enqueue_many`
-        // but since we have no guarantee over the
-        // underlying channel size a `reserve_many()` might
-        // return a misleading Closed error
-        //
-        // sender
-        //     .enqueue_many(records)
-        //     .await
-        //     .map_err(|e| Error::SelfProposer(e.to_string()))?;
-        //
-        // so instead we do this.
-
-        for record in records {
+        let inputs = records.map(|record| {
             // Skip decoding the envelope; build the InputRecord directly from the raw bytes.
             // The ingestion client should only handle payloads of type Envelope.
-            let input = unsafe {
+            unsafe {
                 InputRecord::from_bytes_unchecked(
                     NanosSinceEpoch::now(),
                     record.keys,
                     record.record,
                 )
-            };
+            }
+        });
 
-            sender
-                .enqueue_unchecked(input)
-                .await
-                .map_err(|e| e.drop_payload())?;
-        }
+        let bytes_written = sender.enqueue_many_unchecked(inputs)?;
 
-        sender.notify_committed().await
+        Ok(EnqueueWithNotificationResult {
+            commit_token: sender.notify_committed()?,
+            bytes_written,
+        })
     }
 
     fn create_self_propose_header(&mut self, partition_key: PartitionKey) -> Header {
@@ -236,5 +235,13 @@ impl SelfProposer {
             Ok(()) => Error::task_terminated_unexpectedly(BIFROST_APPENDER_TASK),
             Err(err) => Error::task_failed(BIFROST_APPENDER_TASK, err),
         })
+    }
+
+    pub fn has_capacity(&self) -> bool {
+        self.bifrost_appender.sender_ref().has_capacity()
+    }
+
+    pub fn wait_for_capacity(&self) -> impl std::future::Future<Output = ()> + 'static {
+        self.bifrost_appender.sender_ref().wait_for_capacity()
     }
 }
