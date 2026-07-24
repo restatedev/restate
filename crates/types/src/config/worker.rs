@@ -154,6 +154,19 @@ pub struct WorkerOptions {
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub use_multi_db_layout: bool,
+
+    /// # Self-proposal queue memory limit
+    ///
+    /// The amount of memory a partition leader may use to buffer commands it proposes to its
+    /// own log (timers, invoker effects, RPCs, etc.) before pushing back on their producers.
+    /// Larger values improve append batching and throughput at the cost of memory usage and
+    /// commit tail latency. The limit applies to each partition individually.
+    ///
+    /// Default: 64 MiB
+    ///
+    /// Since v1.7.3
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    pub self_proposal_queue_memory_limit: NonZeroByteCount,
 }
 
 impl WorkerOptions {
@@ -217,6 +230,9 @@ impl Default for WorkerOptions {
             ),
             rule_book_poll_interval: NonZeroFriendlyDuration::from_secs_unchecked(30),
             use_multi_db_layout: false,
+            self_proposal_queue_memory_limit: NonZeroByteCount::new(
+                NonZeroUsize::new(64 * 1024 * 1024).expect("non zero"),
+            ),
         }
     }
 }
