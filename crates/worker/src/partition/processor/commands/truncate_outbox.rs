@@ -45,25 +45,29 @@ impl<P: HasOutboxMut> ApplyPartitionCommand<TruncateOutboxCommand>
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use googletest::prelude::*;
+    use std::assert_matches;
+    use std::ops::RangeInclusive;
 
     use restate_bifrost::DataRecord;
     use restate_core::TaskCenter;
     use restate_partition_store::{PartitionStore, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
     use restate_storage_api::Transaction;
-    use restate_storage_api::outbox_table::ReadOutboxTable;
+    use restate_storage_api::fsm_table::WriteFsmTable;
+    use restate_storage_api::outbox_table::{OutboxMessage, ReadOutboxTable, WriteOutboxTable};
+    use restate_types::SemanticRestateVersion;
+    use restate_types::invocation::ServiceInvocation;
     use restate_types::logs::{Keys, Lsn, SequenceNumber};
     use restate_types::message::MessageIndex;
-    use restate_types::partitions::{Partition, PersistedFeatures};
+    use restate_types::partitions::Partition;
     use restate_types::sharding::{KeyRange, PartitionId};
     use restate_types::time::NanosSinceEpoch;
     use restate_wal_protocol::v2::{self, Command};
 
     use super::{ApplyPartitionCommand, TruncateOutboxCommand, TruncateOutboxContext};
-    use crate::partition::processor::{HasOutbox, OutboxAccess, ProcessorRawContext};
+    use crate::partition::processor::{
+        HasOutbox, HasOutboxMut, OutboxAccess, OutboxMut, ProcessorRawContext,
+    };
 
     async fn open_store() -> PartitionStore {
         RocksDbManager::init();
@@ -80,11 +84,19 @@ mod tests {
             .unwrap()
     }
 
-    fn empty_processor() -> ProcessorRawContext {
-        ProcessorRawContext::new(
-            Arc::new(Partition::new(PartitionId::MIN, KeyRange::FULL)),
-            PersistedFeatures::default(),
-        )
+    fn mock_outbox_message() -> OutboxMessage {
+        OutboxMessage::ServiceInvocation(Box::new(ServiceInvocation::mock()))
+    }
+
+    async fn populate_outbox(storage: &mut PartitionStore, range: RangeInclusive<MessageIndex>) {
+        let next_sequence_number = range.end() + 1;
+        let message = mock_outbox_message();
+        let mut txn = storage.transaction();
+        for index in range {
+            txn.put_outbox_message(index, &message).unwrap();
+        }
+        txn.put_outbox_seq_number(next_sequence_number).unwrap();
+        txn.commit().await.unwrap();
     }
 
     /// Drives a `TruncateOutbox` record through the partition-command handler and
@@ -117,33 +129,97 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn truncate_outbox_from_empty() {
+    async fn initializes_outbox_head_from_storage() {
         let mut storage = open_store().await;
-        let mut processor = empty_processor();
 
-        // An outbox message with index 0 has been processed and must now be truncated.
+        let mut processor =
+            ProcessorRawContext::create(SemanticRestateVersion::current(), &mut storage)
+                .await
+                .unwrap();
+        assert_eq!(processor.outbox().outbox_tail(), 0);
+
+        let mut txn = storage.transaction();
+        processor
+            .outbox_mut()
+            .enqueue(&mut txn, &mock_outbox_message())
+            .unwrap();
+        txn.commit().await.unwrap();
+        drop(txn);
         truncate(&mut processor, &mut storage, 0).await;
+        assert_matches!(storage.get_outbox_message(0).await, Ok(None));
 
-        assert_that!(storage.get_outbox_message(0).await.unwrap(), none());
-        // The head catches up to the next available sequence number on truncation. Since we
-        // don't know in advance whether we'll be asked to truncate more than one message, we
-        // track the head as the next position beyond the last truncation point. Leaving it as
-        // None is only safe while the outbox is known to be empty.
-        assert_that!(processor.outbox().outbox_head(), some(eq(1)));
+        populate_outbox(&mut storage, 3..=5).await;
+        let mut processor =
+            ProcessorRawContext::create(SemanticRestateVersion::current(), &mut storage)
+                .await
+                .unwrap();
+        assert_eq!(processor.outbox().outbox_tail(), 6);
+
+        truncate(&mut processor, &mut storage, 4).await;
+        assert_matches!(storage.get_outbox_message(3).await, Ok(None));
+        assert_matches!(storage.get_outbox_message(4).await, Ok(None));
+        assert_matches!(storage.get_outbox_message(5).await, Ok(Some(_)));
     }
 
     #[restate_core::test]
-    async fn truncate_outbox_with_gap() {
+    async fn truncates_and_reuses_outbox() {
         let mut storage = open_store().await;
-        let mut processor = empty_processor();
-        // The outbox holds [3..=5]; the whole range is truncated after message 5 is processed.
-        processor.seed_outbox_in_memory(5, Some(3));
+        populate_outbox(&mut storage, 3..=5).await;
+        let mut processor =
+            ProcessorRawContext::create(SemanticRestateVersion::current(), &mut storage)
+                .await
+                .unwrap();
+
+        // Truncating already-truncated outbox should be a no-op
+        truncate(&mut processor, &mut storage, 2).await;
+
+        truncate(&mut processor, &mut storage, 4).await;
+
+        assert_matches!(storage.get_outbox_message(3).await, Ok(None));
+        assert_matches!(storage.get_outbox_message(4).await, Ok(None));
+        assert_matches!(storage.get_outbox_message(5).await, Ok(Some(_)));
+        assert_eq!(processor.outbox().outbox_tail(), 6);
 
         truncate(&mut processor, &mut storage, 5).await;
 
-        assert_that!(storage.get_outbox_message(3).await.unwrap(), none());
-        assert_that!(storage.get_outbox_message(4).await.unwrap(), none());
-        assert_that!(storage.get_outbox_message(5).await.unwrap(), none());
-        assert_that!(processor.outbox().outbox_head(), some(eq(6)));
+        assert_matches!(storage.get_outbox_message(5).await, Ok(None));
+        assert_eq!(processor.outbox().outbox_tail(), 6);
+
+        let mut txn = storage.transaction();
+        processor
+            .outbox_mut()
+            .enqueue(&mut txn, &mock_outbox_message())
+            .unwrap();
+        txn.commit().await.unwrap();
+        drop(txn);
+
+        assert_matches!(storage.get_outbox_message(6).await, Ok(Some(_)));
+        assert_eq!(processor.outbox().outbox_tail(), 7);
+
+        truncate(&mut processor, &mut storage, 6).await;
+
+        assert_matches!(storage.get_outbox_message(6).await, Ok(None));
+        assert_eq!(processor.outbox().outbox_tail(), 7);
+
+        // Simulating a restart
+        // The Outbox is fully truncated at this point
+        let mut processor =
+            ProcessorRawContext::create(SemanticRestateVersion::current(), &mut storage)
+                .await
+                .unwrap();
+        assert_eq!(processor.outbox().outbox_tail(), 7);
+
+        let mut txn = storage.transaction();
+        processor
+            .outbox_mut()
+            .enqueue(&mut txn, &mock_outbox_message())
+            .unwrap();
+        txn.commit().await.unwrap();
+        drop(txn);
+
+        assert_matches!(storage.get_outbox_message(7).await, Ok(Some(_)));
+        truncate(&mut processor, &mut storage, 7).await;
+        assert_matches!(storage.get_outbox_message(7).await, Ok(None));
+        assert_eq!(processor.outbox().outbox_tail(), 8);
     }
 }

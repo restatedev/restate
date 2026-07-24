@@ -730,7 +730,7 @@ where
                 TimerReader::from(partition_store.clone()),
             );
 
-            let (shuffle_tx, shuffle_rx) = mpsc::channel(config.worker.internal_queue_length());
+            let (shuffle_tx, shuffle_rx) = tokio::sync::watch::channel(None);
 
             let shuffle = Shuffle::new(
                 ShuffleMetadata::new(processor.partition_id(), *leader_epoch),
