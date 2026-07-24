@@ -34,7 +34,7 @@ use tracing::{Span, debug, info, info_span, instrument};
 use restate_core::network::{TransportConnect, hyper_error_status};
 use restate_core::{TaskCenter, TaskCenterFutureExt, cancellation_token, task_center};
 use restate_ingestion_client::IngestionClient;
-use restate_types::config::IngressOptions;
+use restate_types::config::{IngressOptions, IntegrationOptions};
 use restate_types::errors::GenericError;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
@@ -62,6 +62,7 @@ pub struct HyperServerIngress<T, Schemas, Dispatcher> {
     concurrency_limit: usize,
     request_size_limit: usize,
     http2_max_concurrent_streams: Option<NonZeroU32>,
+    integration_options: IntegrationOptions,
     ingestion_client: IngestionClient<T, Envelope>,
     // Parameters to build the layers
     schemas: Live<Schemas>,
@@ -91,6 +92,7 @@ where
             ingress_options.concurrent_api_requests_limit(),
             ingress_options.request_size_limit().get(),
             ingress_options.http2_max_concurrent_streams(),
+            ingress_options.integration.clone(),
             schemas,
             dispatcher,
             health,
@@ -111,6 +113,7 @@ where
         concurrency_limit: usize,
         request_size_limit: usize,
         http2_max_concurrent_streams: Option<NonZeroU32>,
+        integration_options: IntegrationOptions,
         schemas: Live<Schemas>,
         dispatcher: Dispatcher,
         health: HealthStatus<IngressStatus>,
@@ -123,6 +126,7 @@ where
             concurrency_limit,
             request_size_limit,
             http2_max_concurrent_streams,
+            integration_options,
             schemas,
             dispatcher,
             health,
@@ -142,6 +146,7 @@ where
             concurrency_limit,
             request_size_limit,
             http2_max_concurrent_streams,
+            integration_options,
             schemas,
             dispatcher,
             health,
@@ -205,7 +210,12 @@ where
 
         // Route the gRPC integration path to its own service; everything else keeps
         // flowing through the layered handler above.
-        let service = integration::IntegrationRouter::new(service, ingestion_client, schemas);
+        let service = integration::IntegrationRouter::new(
+            service,
+            ingestion_client,
+            schemas,
+            integration_options,
+        );
 
         // todo(azmy): `CorsLayer` should sit above `RequestBodyLimitLayer` so CORS is applied
         // as early as possible. This is currently blocked because `CorsLayer` requires the
@@ -425,6 +435,7 @@ mod tests {
     use hyper_util::client::legacy::Client;
     use hyper_util::rt::TokioExecutor;
     use restate_core::TestCoreEnv;
+    use restate_core::network::Swimlane;
     use restate_core::partitions::PartitionRouting;
     use restate_core::{TaskCenter, TaskKind};
     use restate_hyper_uds::UnixSocketConnector;
@@ -536,7 +547,11 @@ mod tests {
             env.metadata.updateable_partition_table(),
             PartitionRouting::new(replica_set_states, TaskCenter::current()),
             NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
-            SessionOptions::builder().build().unwrap(),
+            SessionOptions::builder()
+                .record_size_limit(NonZeroUsize::new(10 * 1024 * 1024).unwrap())
+                .swimlane(Swimlane::IngressData)
+                .build()
+                .unwrap(),
         );
 
         // Create the ingress and start it
@@ -546,6 +561,7 @@ mod tests {
             Semaphore::MAX_PERMITS,
             10 * 1024 * 1024, // 10MB
             None,
+            IntegrationOptions::default(),
             Live::from_value(mock_schemas()),
             Arc::new(mock_request_dispatcher),
             health.ingress_status(),
