@@ -160,6 +160,16 @@ impl PartialOrd<ByteCount<true>> for ByteCount<false> {
         Some(self.0.cmp(&other.0))
     }
 }
+impl FromStr for ByteCount<false> {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s: ByteSize = s.parse()?;
+
+        Ok(Self::new(
+            NonZeroUsize::new(s.0 as usize).ok_or_else(|| "ByteCount cannot be zero".to_owned())?,
+        ))
+    }
+}
 
 impl FromStr for ByteCount<true> {
     type Err = String;
