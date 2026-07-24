@@ -49,12 +49,11 @@ use restate_types::cluster::cluster_state::RunMode;
 use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionId};
-use restate_types::identifiers::{PartitionKey, PartitionProcessorRpcRequestId};
 use restate_types::invocation::FencingToken;
 use restate_types::live::LiveLoadExt;
 use restate_types::logs::Keys;
 use restate_types::message::MessageIndex;
-use restate_types::net::ingest::IngestRecord;
+use restate_types::net::ingest::{IngestRecord, IngestResponse, ResponseStatus};
 use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
@@ -91,10 +90,13 @@ use crate::partition::state_machine::Action;
 use crate::partition::types::InvokerEffect;
 
 use super::node::NodeContext;
-use super::processor::*;
+use super::{processor::*, rpc};
 
 type TimerService = restate_timer::TimerService<TimerKeyValue, TokioClock, TimerReader>;
 type InvokerStream = ReceiverStream<InvokerEffect>;
+type RpcReciprocal =
+    Reciprocal<Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>>;
+type IngestReciprocal = Reciprocal<Oneshot<IngestResponse>>;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -146,7 +148,8 @@ pub(crate) enum TaskTermination {
 }
 
 #[derive(Debug)]
-pub(crate) enum ActionEffect {
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum LeaderEvent {
     Scheduler(scheduler::Decisions),
     Invoker(InvokerEffect),
     Shuffle(shuffle::OutboxTruncation),
@@ -156,6 +159,22 @@ pub(crate) enum ActionEffect {
     UpsertSchema(Schema),
     UpsertRuleBook(Arc<restate_limiter::RuleBook>),
     AwaitingRpcSelfProposeDone,
+    NetworkService(NetworkServiceEvent),
+}
+
+#[derive(derive_more::Debug)]
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum NetworkServiceEvent {
+    RpcProposal {
+        proposal: rpc::RpcProposal,
+        #[debug(skip)]
+        reciprocal: RpcReciprocal,
+    },
+    IngestRecords {
+        records: Vec<IngestRecord>,
+        #[debug(skip)]
+        reciprocal: IngestReciprocal,
+    },
 }
 
 enum State {
@@ -230,13 +249,18 @@ where
         }
     }
 
-    pub(super) fn should_process_rpc(&self) -> bool {
-        // In case of BecomingLeader we prefer to park RPC requests
-        // until we transition out of the current state.
-        matches!(
-            self.state,
-            State::Leader(_) | State::Follower | State::Candidate { .. }
-        )
+    pub(super) fn try_reserve_rpc_processing_permit(&self) -> Option<RpcProcessingPermit> {
+        match &self.state {
+            State::Leader(leader_state) => leader_state
+                .try_reserve_network_event_permit()
+                .map(RpcProcessingPermit::Leader),
+            State::Follower | State::Candidate { .. } => Some(RpcProcessingPermit::NonLeader {
+                partition_id: self.partition_id(),
+            }),
+            // In case of BecomingLeader we prefer to park RPC requests
+            // until we transition out of the current state.
+            State::BecomingLeader { .. } => None,
+        }
     }
 
     #[instrument(level = "debug", skip_all, fields(leader_epoch = %leadership_info.leader_epoch))]
@@ -824,11 +848,11 @@ where
     ///
     /// * Follower: Nothing to do
     /// * Candidate: Monitor appender task
-    /// * Leader: Await action effects and monitor appender task
+    /// * Leader: Await events and monitor appender task
     pub async fn run(
         &mut self,
         ctx: impl Processor + HasVQueues,
-    ) -> Result<Vec<ActionEffect>, Error> {
+    ) -> Result<Vec<LeaderEvent>, Error> {
         match &mut self.state {
             State::Follower => Ok(futures::future::pending::<Vec<_>>().await),
             State::Candidate { self_proposer, .. }
@@ -842,17 +866,15 @@ where
         }
     }
 
-    pub async fn handle_action_effects(
+    pub async fn handle_events(
         &mut self,
-        action_effects: impl IntoIterator<Item = ActionEffect>,
+        events: impl IntoIterator<Item = LeaderEvent>,
     ) -> Result<(), Error> {
         match &mut self.state {
             State::Follower | State::Candidate { .. } | State::BecomingLeader { .. } => {
                 // nothing to do :-)
             }
-            State::Leader(leader_state) => {
-                leader_state.handle_action_effects(action_effects).await?
-            }
+            State::Leader(leader_state) => leader_state.handle_events(events).await?,
         }
 
         Ok(())
@@ -888,102 +910,6 @@ impl<T> LeadershipState<T> {
             }
             (_, request) => {
                 let _ = response_tx.send(LeaderQueryResponse::NotLeader(request.kind()));
-            }
-        }
-    }
-
-    pub async fn handle_rpc_proposal_command(
-        &mut self,
-        request_id: PartitionProcessorRpcRequestId,
-        reciprocal: Reciprocal<
-            Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
-        >,
-        partition_key: PartitionKey,
-        cmd: Command,
-    ) {
-        match &mut self.state {
-            State::Follower | State::Candidate { .. } | State::BecomingLeader { .. } => {
-                // Just fail the rpc
-                reciprocal.send(Err(PartitionProcessorRpcError::NotLeader(
-                    self.partition_id,
-                )))
-            }
-            State::Leader(leader_state) => {
-                leader_state
-                    .handle_rpc_proposal_command(request_id, reciprocal, partition_key, cmd)
-                    .await;
-            }
-        }
-    }
-
-    pub async fn propose_pause_and_fence(
-        &mut self,
-        request_id: PartitionProcessorRpcRequestId,
-        reciprocal: Reciprocal<
-            Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
-        >,
-        invocation_id: InvocationId,
-        cmd: Command,
-    ) {
-        match &mut self.state {
-            State::Follower | State::Candidate { .. } | State::BecomingLeader { .. } => {
-                // Just fail the rpc
-                reciprocal.send(Err(PartitionProcessorRpcError::NotLeader(
-                    self.partition_id,
-                )))
-            }
-            State::Leader(leader_state) => {
-                leader_state
-                    .propose_pause_and_fence(request_id, reciprocal, invocation_id, cmd)
-                    .await;
-            }
-        }
-    }
-
-    /// Append a command to Bifrost without dedup information, responding on Bifrost commit.
-    pub async fn append_and_respond_asynchronously(
-        &mut self,
-        partition_key: PartitionKey,
-        cmd: Command,
-        reciprocal: Reciprocal<
-            Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
-        >,
-        success_response: PartitionProcessorRpcResponse,
-    ) {
-        match &mut self.state {
-            State::Follower | State::Candidate { .. } | State::BecomingLeader { .. } => reciprocal
-                .send(Err(PartitionProcessorRpcError::NotLeader(
-                    self.partition_id,
-                ))),
-            State::Leader(leader_state) => {
-                leader_state
-                    .append_and_respond_asynchronously(
-                        partition_key,
-                        cmd,
-                        reciprocal,
-                        success_response,
-                    )
-                    .await;
-            }
-        }
-    }
-
-    /// Forward externally-created records to this partition.
-    pub async fn forward_many_with_callback<F>(
-        &mut self,
-        records: impl ExactSizeIterator<Item = IngestRecord>,
-        callback: F,
-    ) where
-        F: FnOnce(Result<(), PartitionProcessorRpcError>) + Send + Sync + 'static,
-    {
-        match &mut self.state {
-            State::Follower | State::Candidate { .. } | State::BecomingLeader { .. } => callback(
-                Err(PartitionProcessorRpcError::NotLeader(self.partition_id)),
-            ),
-            State::Leader(leader_state) => {
-                leader_state
-                    .forward_many_with_callback(records, callback)
-                    .await;
             }
         }
     }
@@ -1028,6 +954,45 @@ impl shuffle::OutboxReader for OutboxReader {
         };
 
         Ok(result)
+    }
+}
+
+pub(super) enum RpcProcessingPermit {
+    Leader(tokio::sync::mpsc::OwnedPermit<NetworkServiceEvent>),
+    NonLeader { partition_id: PartitionId },
+}
+
+impl RpcProcessingPermit {
+    pub fn buffer_rpc_proposal(self, proposal: rpc::RpcProposal, reciprocal: RpcReciprocal) {
+        match self {
+            RpcProcessingPermit::NonLeader { partition_id } => {
+                reciprocal.send(Err(PartitionProcessorRpcError::NotLeader(partition_id)))
+            }
+            RpcProcessingPermit::Leader(permit) => {
+                permit.send(NetworkServiceEvent::RpcProposal {
+                    proposal,
+                    reciprocal,
+                });
+            }
+        }
+    }
+
+    pub fn buffer_forwarded_records(
+        self,
+        records: Vec<IngestRecord>,
+        reciprocal: IngestReciprocal,
+    ) {
+        match self {
+            RpcProcessingPermit::NonLeader { partition_id } => {
+                reciprocal.send(ResponseStatus::NotLeader { of: partition_id }.into());
+            }
+            RpcProcessingPermit::Leader(permit) => {
+                permit.send(NetworkServiceEvent::IngestRecords {
+                    records,
+                    reciprocal,
+                });
+            }
+        }
     }
 }
 

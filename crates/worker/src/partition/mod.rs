@@ -89,6 +89,7 @@ use restate_wal_protocol::{Envelope, v2};
 use restate_worker_api::invoker::InvokerHandle;
 use restate_worker_api::{LeaderQueryCommand, LeaderQueryReceiver};
 
+use self::leadership::RpcProcessingPermit;
 use self::processor::commands::{
     AnnounceLeaderContext, ApplyPartitionCommand, NextStep, TruncateOutboxContext,
     UpdateDurabilityContext, UpsertRuleBookContext, UpsertSchemaContext, VersionBarrierContext,
@@ -289,7 +290,7 @@ pub enum ProcessorError {
     )]
     MigrationBarrier { reason: String },
     #[error(transparent)]
-    ActionEffect(#[from] leadership::Error),
+    Leadership(#[from] leadership::Error),
     #[error(transparent)]
     ShutdownError(#[from] ShutdownError),
     #[error("log read stream has terminated")]
@@ -528,6 +529,8 @@ where
             let config = self.node_ctx.config.live_load();
             let max_batching_size = config.worker.max_command_batch_size();
             let bytes_limit = config.worker.max_command_batch_bytes.as_usize();
+            let network_processing_permit =
+                self.leadership_state.try_reserve_rpc_processing_permit();
 
             tokio::select! {
                 _ = self.target_leader_state_rx.changed() => {
@@ -541,9 +544,9 @@ where
                     self.leadership_state.maybe_step_down(&mut self.ctx, new_state.current_leader_epoch, new_state.current_leader).await;
                     self.refresh_status(&mut durable_lsn_watch)?;
                 }
-                Some(msg) = self.network_leader_svc_rx.next(), if self.leadership_state.should_process_rpc() => {
+                Some(msg) = self.network_leader_svc_rx.next(), if network_processing_permit.is_some() => {
                     // todo: replace the live schema with the leader's consistent schema
-                    self.on_rpc(msg, live_schemas.live_load(), &last_applied_lsn_watch).await;
+                    self.on_rpc(msg, live_schemas.live_load(), &last_applied_lsn_watch, network_processing_permit.expect("guarded with is_some")).await;
                 }
                 _ = status_update_timer.tick() => {
                     // Update the status to ensure changes are observable
@@ -635,11 +638,11 @@ where
                     self.ctx.vqueues_mut().try_compact();
                 },
                 result = self.leadership_state.run(&mut self.ctx) => {
-                    let action_effects = result?;
-                    // We process the action_effects not directly in the run future because it
+                    let events = result?;
+                    // We process the events not directly in the run future because it
                     // requires the run future to be cancellation safe. In the future this could be
                     // implemented.
-                    self.leadership_state.handle_action_effects(action_effects).await?;
+                    self.leadership_state.handle_events(events).await?;
                 }
                 Some(leader_query_cmd) = self.leader_query_rx.recv() => {
                     self.on_leader_query(leader_query_cmd);
@@ -685,6 +688,7 @@ where
         >,
         body: PartitionProcessorRpcRequest,
         schemas: &Schema,
+        permit: RpcProcessingPermit,
     ) {
         let context = rpc::RpcContext::new(
             self.leadership_state.is_leader(),
@@ -695,35 +699,7 @@ where
         let decision = rpc::RpcHandler::handle(context, body).await;
 
         match decision {
-            rpc::Decision::Propose(rpc::RpcProposal {
-                partition_key,
-                cmd,
-                reply_on,
-            }) => match reply_on {
-                rpc::ReplyOn::Apply { request_id } => {
-                    self.leadership_state
-                        .handle_rpc_proposal_command(request_id, response_tx, partition_key, cmd)
-                        .await;
-                }
-                rpc::ReplyOn::Commit { response } => {
-                    self.leadership_state
-                        .append_and_respond_asynchronously(
-                            partition_key,
-                            cmd,
-                            response_tx,
-                            response,
-                        )
-                        .await;
-                }
-                rpc::ReplyOn::ApplyAndFence {
-                    request_id,
-                    invocation_id,
-                } => {
-                    self.leadership_state
-                        .propose_pause_and_fence(request_id, response_tx, invocation_id, cmd)
-                        .await;
-                }
-            },
+            rpc::Decision::Propose(proposal) => permit.buffer_rpc_proposal(proposal, response_tx),
             rpc::Decision::Reply(reply) => response_tx.send(reply),
             rpc::Decision::NotifyInvokerAndReply {
                 notification,
@@ -781,16 +757,18 @@ where
         msg: ServiceMessage<PartitionLeaderService>,
         schemas: &Schema,
         last_applied_lsn_watch: &watch::Receiver<Lsn>,
+        permit: RpcProcessingPermit,
     ) {
         match msg {
             ServiceMessage::Rpc(msg) if msg.msg_type() == PartitionProcessorRpcRequest::TYPE => {
                 let msg = msg.into_typed::<PartitionProcessorRpcRequest>();
                 // note: split() decodes the payload
                 let (response_tx, body) = msg.split();
-                self.on_pp_rpc_request(response_tx, body, schemas).await;
+                self.on_pp_rpc_request(response_tx, body, schemas, permit)
+                    .await;
             }
             ServiceMessage::Rpc(msg) if msg.msg_type() == ReceivedIngestRequest::TYPE => {
-                self.on_pp_ingest_request(msg.into_typed()).await;
+                self.on_pp_ingest_request(msg.into_typed(), permit);
             }
             ServiceMessage::Rpc(msg) if msg.msg_type() == DedupSequenceNrQueryRequest::TYPE => {
                 self.wait_for_tail_then(
@@ -889,26 +867,13 @@ where
         }
     }
 
-    async fn on_pp_ingest_request(&mut self, msg: Incoming<Rpc<ReceivedIngestRequest>>) {
+    fn on_pp_ingest_request(
+        &mut self,
+        msg: Incoming<Rpc<ReceivedIngestRequest>>,
+        permit: RpcProcessingPermit,
+    ) {
         let (reciprocal, request) = msg.split();
-
-        self.leadership_state
-            .forward_many_with_callback(
-                request.records.into_iter(),
-                move |result: Result<(), PartitionProcessorRpcError>| match result {
-                    Ok(_) => reciprocal.send(ResponseStatus::Ack.into()),
-                    Err(err) => match err {
-                        PartitionProcessorRpcError::NotLeader(id)
-                        | PartitionProcessorRpcError::LostLeadership(id) => {
-                            reciprocal.send(ResponseStatus::NotLeader { of: id }.into())
-                        }
-                        PartitionProcessorRpcError::Internal(msg) => {
-                            reciprocal.send(ResponseStatus::Internal { msg }.into())
-                        }
-                    },
-                },
-            )
-            .await;
+        permit.buffer_forwarded_records(request.records, reciprocal);
     }
 
     // --- Apply new commands/records
