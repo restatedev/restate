@@ -111,8 +111,9 @@ pub struct NetworkingOptions {
     /// When set, the fabric port uses TLS for both inbound and outbound connections.
     /// Without this section, fabric communication remains plaintext (default behavior).
     ///
-    /// Since v1.8.0
+    /// Since v1.7.3
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
     pub tls: Option<FabricTlsOptions>,
 }
 
@@ -192,8 +193,6 @@ impl Default for NetworkingOptions {
 /// distribution is decoupled from advertising TLS, which is decoupled from
 /// requiring it. Roll the cluster forward one step at a time:
 /// `off` → `allow` → `prefer` → `require`.
-///
-/// Since v1.8.0
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
@@ -235,8 +234,6 @@ impl TlsMode {
 }
 
 /// TLS configuration for fabric inter-node communication.
-///
-/// Since v1.8.0
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -271,8 +268,6 @@ pub struct FabricTlsOptions {
     /// Required when `require-client-auth` is `true`. Use `["*"]` to explicitly
     /// allow any authenticated peer (CA-only trust). An empty list is a
     /// configuration error to prevent accidental fail-open.
-    ///
-    /// Since v1.8.0
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_subject_names: Vec<String>,
 
@@ -285,7 +280,7 @@ pub struct FabricTlsOptions {
 /// Separate client TLS config for outbound fabric connections.
 /// Fields that are `None` inherit from the parent [`FabricTlsOptions`].
 ///
-/// Since v1.8.0
+/// Since v1.7.3
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]

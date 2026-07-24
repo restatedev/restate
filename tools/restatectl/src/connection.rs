@@ -110,7 +110,7 @@ pub struct TlsOpts {
     /// TLS-secured fabric ports (`https://` addresses). Sufficient on its own for
     /// clusters that don't require client authentication; pair with --tls-cert and
     /// --tls-key for mTLS clusters.
-    #[clap(long, global = true, env = "RESTATECTL_TLS_CA")]
+    #[clap(long, global = true, env = "RESTATECTL_TLS_CA", hide = true)]
     pub tls_ca: Option<PathBuf>,
 
     /// Path to a PEM-encoded client certificate presented to mTLS-secured fabric ports.
@@ -119,12 +119,19 @@ pub struct TlsOpts {
         global = true,
         env = "RESTATECTL_TLS_CERT",
         requires = "tls_key",
-        requires = "tls_ca"
+        requires = "tls_ca",
+        hide = true
     )]
     pub tls_cert: Option<PathBuf>,
 
     /// Path to the PEM-encoded private key for the client certificate.
-    #[clap(long, global = true, env = "RESTATECTL_TLS_KEY", requires = "tls_cert")]
+    #[clap(
+        long,
+        global = true,
+        env = "RESTATECTL_TLS_KEY",
+        requires = "tls_cert",
+        hide = true
+    )]
     pub tls_key: Option<PathBuf>,
 }
 
