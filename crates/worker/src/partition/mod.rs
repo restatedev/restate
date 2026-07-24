@@ -97,7 +97,8 @@ use self::processor::commands::{
 use self::processor::*;
 use self::state_machine::StateMachine;
 use crate::metric_definitions::{
-    LEADER_LABEL, LEADER_LABEL_LEADER, PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
+    LEADER_LABEL, LEADER_LABEL_FOLLOWER, LEADER_LABEL_LEADER, PARTITION_APPLY_COMMAND,
+    PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
 };
 use crate::partition::leadership::LeadershipState;
 use crate::partition::processor::leadership::LeadershipContext;
@@ -949,8 +950,13 @@ where
         let scope = envelope.as_ref().scope();
         match scope {
             CommandScope::PartitionScoped => {
-                self.apply_partition_command(envelope, txn, action_collector)
-                    .await
+                self.apply_partition_command(
+                    envelope,
+                    txn,
+                    action_collector,
+                    self.leadership_state.is_leader(),
+                )
+                .await
             }
             CommandScope::KeyScoped => {
                 let dedup = envelope.as_ref().dedup().clone();
@@ -972,8 +978,12 @@ where
         record: DataRecord<v2::Envelope<v2::Raw>>,
         txn: &'a mut PartitionStoreTransaction<'b>,
         action_collector: &'a mut ActionCollector,
+        is_leader: bool,
     ) -> Result<NextStep, ProcessorError> {
-        match record.as_ref().kind() {
+        let start = Instant::now();
+        let record_kind = record.as_ref().kind();
+        let command: &'static str = record_kind.into();
+        let res = match record_kind {
             v2::CommandKind::AnnounceLeader => {
                 AnnounceLeaderContext {
                     txn,
@@ -1043,6 +1053,13 @@ where
                     state_machine::Error::UnknownCommandKind,
                 ))
             }
-        }
+        };
+        histogram!(
+            PARTITION_APPLY_COMMAND,
+            "command" => command,
+            LEADER_LABEL => if is_leader { LEADER_LABEL_LEADER } else { LEADER_LABEL_FOLLOWER },
+        )
+        .record(start.elapsed());
+        res
     }
 }
