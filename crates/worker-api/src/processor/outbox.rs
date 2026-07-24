@@ -31,8 +31,6 @@ pub trait HasOutboxMut: HasOutbox {
 pub trait OutboxAccess {
     /// Sequence number of the next outbox message to be appended.
     fn outbox_tail(&self) -> MessageIndex;
-    /// First outbox message index that needs to be sent out.
-    fn outbox_head(&self) -> Option<MessageIndex>;
 }
 
 /// Mutable view of the outbox: append new messages and truncate delivered ones.
@@ -78,20 +76,12 @@ impl<T: OutboxAccess> OutboxAccess for &T {
     fn outbox_tail(&self) -> MessageIndex {
         (**self).outbox_tail()
     }
-    #[inline]
-    fn outbox_head(&self) -> Option<MessageIndex> {
-        (**self).outbox_head()
-    }
 }
 
 impl<T: OutboxAccess> OutboxAccess for &mut T {
     #[inline]
     fn outbox_tail(&self) -> MessageIndex {
         (**self).outbox_tail()
-    }
-    #[inline]
-    fn outbox_head(&self) -> Option<MessageIndex> {
-        (**self).outbox_head()
     }
 }
 
