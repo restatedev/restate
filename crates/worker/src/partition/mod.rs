@@ -638,11 +638,7 @@ where
                     self.ctx.vqueues_mut().try_compact();
                 },
                 result = self.leadership_state.run(&mut self.ctx) => {
-                    let events = result?;
-                    // We process the events not directly in the run future because it
-                    // requires the run future to be cancellation safe. In the future this could be
-                    // implemented.
-                    self.leadership_state.handle_events(events).await?;
+                    result?;
                 }
                 Some(leader_query_cmd) = self.leader_query_rx.recv() => {
                     self.on_leader_query(leader_query_cmd);
