@@ -89,21 +89,41 @@ impl TestEnv {
     }
 
     pub async fn create_with_features(features: PersistedFeatures) -> Self {
-        Self::create_with_state_machine(StateMachine::new(
-            0,    /* inbox_seq_number */
-            0,    /* outbox_seq_number */
-            None, /* outbox_head_seq_number */
-            KeyRange::FULL,
-            SemanticRestateVersion::current().clone(),
-            features, /* enabled_features */
-            None,     /* schema */
-            Arc::new(RuleBook::default()),
-            RuleBookCacheHandle::detached(),
-        ))
+        Self::create_with_features_and_range(features, KeyRange::FULL).await
+    }
+
+    /// Like [`Self::create_with_features`] but restricts the partition to
+    /// `key_range`, so writes for keys outside it surface as
+    /// `assert_partition_key` failures instead of passing trivially.
+    pub async fn create_with_features_and_range(
+        features: PersistedFeatures,
+        key_range: KeyRange,
+    ) -> Self {
+        Self::create_with_state_machine_and_range(
+            StateMachine::new(
+                0,    /* inbox_seq_number */
+                0,    /* outbox_seq_number */
+                None, /* outbox_head_seq_number */
+                key_range.clone(),
+                SemanticRestateVersion::current().clone(),
+                features, /* enabled_features */
+                None,     /* schema */
+                Arc::new(RuleBook::default()),
+                RuleBookCacheHandle::detached(),
+            ),
+            key_range,
+        )
         .await
     }
 
     pub async fn create_with_state_machine(state_machine: StateMachine) -> Self {
+        Self::create_with_state_machine_and_range(state_machine, KeyRange::FULL).await
+    }
+
+    pub async fn create_with_state_machine_and_range(
+        state_machine: StateMachine,
+        key_range: KeyRange,
+    ) -> Self {
         // Try init logging, if not already initialized. This removes the need for the test_log macro
         let _ = tracing_subscriber::FmtSubscriber::builder().with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
             .with_span_events(  match std::env::var_os("RUST_LOG_SPAN_EVENTS") {
@@ -134,7 +154,7 @@ impl TestEnv {
         );
         let manager = PartitionStoreManager::create(true).await.unwrap();
         let rocksdb_storage = manager
-            .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+            .open(&Partition::new(PartitionId::MIN, key_range), None)
             .await
             .unwrap();
 

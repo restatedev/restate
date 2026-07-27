@@ -3410,26 +3410,10 @@ impl<S> StateMachineApplyContext<'_, S> {
         match status {
             InvocationStatus::Scheduled(ScheduledInvocation { metadata, .. })
             | InvocationStatus::Inboxed(InboxedInvocation { metadata, .. }) => {
-                // Validate that if VO, that it's not locked already.
-                let invocation_target = &metadata.invocation_target;
-                if matches!(
-                    invocation_target.invocation_target_ty(),
-                    InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
-                ) {
-                    let keyed_service_id = invocation_target.as_keyed_service_id().expect(
-                        "When the handler type is Exclusive, the invocation target must have a key",
-                    );
-                    // Lock the service in the old status table.
-                    // Obsolete: Remove in lieu of using Locks when service status table is fully migrated to
-                    // locks table.
-                    self.storage
-                        .put_virtual_object_status(
-                            &keyed_service_id,
-                            &VirtualObjectStatus::Locked(invocation_id),
-                        )
-                        .map_err(Error::Storage)?;
-                }
-
+                // The exclusive lock lives in the vqueue locks table (partition-consistent);
+                // the old put_virtual_object_status(Locked) write here crossed partitions
+                // for scoped invocations. This arm is reachable only with vqueues enabled,
+                // so no feature gate is needed.
                 let (metadata, invocation_input) =
                     InFlightInvocationMetadata::from_pre_flight_invocation_metadata(
                         metadata,
@@ -3903,7 +3887,9 @@ impl<S> StateMachineApplyContext<'_, S> {
                             journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
 
-                    // Scope inheritance (journal-v2 equivalent: call_commands.rs).
+                    // Scope inheritance (journal-v2 equivalent: call_commands.rs):
+                    // an unscoped child joins its caller's scope so scope-level
+                    // rules govern the whole call tree.
                     let mut callee_invocation_target = callee_invocation_target.clone();
                     if self.is_scope_inheritance_enabled()
                         && callee_invocation_target.scope().is_none()
