@@ -97,11 +97,16 @@ use crate::metric_definitions::INTEGRATION_INGESTED;
 pub(crate) fn integration_server<T, Schemas>(
     ingestion_client: IngestionClient<T, Envelope>,
     schemas: Live<Schemas>,
+    max_window_size: NonZeroU64,
 ) -> IntegrationSvcServer<IntegrationService<T, Schemas>>
 where
     Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
 {
-    IntegrationSvcServer::new(IntegrationService::new(ingestion_client, schemas))
+    IntegrationSvcServer::new(IntegrationService::new(
+        ingestion_client,
+        schemas,
+        max_window_size,
+    ))
 }
 
 /// Window-replenishment threshold, as a percentage of the maximum window size.
@@ -122,13 +127,19 @@ const UPDATE_WINDOW_THRESHOLD: u64 = 20; // 20% of max window size
 pub(crate) struct IntegrationService<T, Schemas> {
     ingestion_client: IngestionClient<T, Envelope>,
     schemas: Live<Schemas>,
+    max_window_size: NonZeroU64,
 }
 
 impl<T, Schemas> IntegrationService<T, Schemas> {
-    fn new(ingestion_client: IngestionClient<T, Envelope>, schemas: Live<Schemas>) -> Self {
+    fn new(
+        ingestion_client: IngestionClient<T, Envelope>,
+        schemas: Live<Schemas>,
+        max_window_size: NonZeroU64,
+    ) -> Self {
         Self {
             ingestion_client,
             schemas,
+            max_window_size,
         }
     }
 }
@@ -152,6 +163,7 @@ where
             request.into_inner(),
             self.ingestion_client.clone(),
             self.schemas.clone(),
+            self.max_window_size,
         );
         let response = futures::stream::unfold(stream, IngestionStream::step);
 
@@ -192,13 +204,14 @@ where
         inbound: S,
         ingestion_client: IngestionClient<T, Envelope>,
         schemas: Live<Schemas>,
+        max_window_size: NonZeroU64,
     ) -> Self {
         Self {
             inbound,
             ingestion_client,
             schemas,
             state: State::WaitingStart,
-            max_window_size: NonZeroU64::new(128 * 1024).unwrap(), // 128KiB
+            max_window_size,
         }
     }
 
@@ -327,7 +340,6 @@ where
             return Err(Status::invalid_argument("expecting a Start message"));
         };
 
-        // todo: verify settings if set
         let settings = start.settings;
         if let Some(ref settings) = settings {
             self.validate_settings(settings)
