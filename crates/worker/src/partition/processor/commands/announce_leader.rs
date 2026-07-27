@@ -55,7 +55,13 @@ impl<P: Processor + HasFsmMut + HasVQueuesMut + HasTrimQueue + HasStatusMut, T: 
         self.action_collector.clear();
 
         // update partition store with latest epoch metadata
-        if let Some(current_config) = &announce_leader.current_config {
+        if let Some(current_config) = &announce_leader.current_config
+            && self
+                .processor
+                .fsm()
+                .epoch_metadata()
+                .is_none_or(|c| c.version < current_config.version)
+        {
             let announced = CachedEpochMetadata {
                 version: announce_leader.epoch_version.unwrap(),
                 leader_node_id: announce_leader.node_id,
@@ -91,9 +97,7 @@ impl<P: Processor + HasFsmMut + HasVQueuesMut + HasTrimQueue + HasStatusMut, T: 
             )
             .await?;
 
-        if self.leadership.is_leader()
-            && let Some(cached) = self.processor.fsm().epoch_metadata()
-        {
+        if let Some(cached) = self.processor.fsm().epoch_metadata() {
             self.node_ctx.replica_set_states.note_observed_membership(
                 self.processor.partition_id(),
                 restate_types::partitions::state::LeadershipState {
@@ -104,14 +108,6 @@ impl<P: Processor + HasFsmMut + HasVQueuesMut + HasTrimQueue + HasStatusMut, T: 
                 &cached.next.as_ref().map(|c| &c.replica_set).cloned(),
             );
         }
-
-        self.node_ctx.replica_set_states.note_observed_leader(
-            self.processor.partition_id(),
-            restate_types::partitions::state::LeadershipState {
-                current_leader_epoch: announce_leader.leader_epoch,
-                current_leader: announce_leader.node_id,
-            },
-        );
 
         Ok(NextStep::AdvanceLastAppliedLsn {
             lsn,
