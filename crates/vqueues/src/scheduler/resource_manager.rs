@@ -17,7 +17,16 @@ mod invoker;
 pub(super) fn test_grouped_waiters(
     weight_resolver: super::eligible::WeightResolver,
 ) -> grouped_waiters::GroupedWaiters {
-    grouped_waiters::GroupedWaiters::new(weight_resolver)
+    // lane weights default to 1 here — these tests exercise GROUP weight
+    // semantics; lane semantics are tested in grouped_waiters.rs itself
+    grouped_waiters::GroupedWaiters::new(
+        weight_resolver,
+        std::sync::Arc::new(
+            |_: &super::eligible::SchedulingGroup, _: &restate_types::ServiceName| {
+                std::num::NonZeroU32::MIN
+            },
+        ),
+    )
 }
 mod gradient2;
 mod invoker_memory;
@@ -56,7 +65,7 @@ use self::locks::Locks;
 use self::permit::ProvisionalPermit;
 use self::user_limiter::UserLimiter;
 use super::VQueueHandle;
-use super::eligible::{EligibilityTracker, SchedulingGroup, WeightResolver};
+use super::eligible::{EligibilityTracker, SchedulingGroup, WeightResolver, LaneWeightResolver};
 use crate::GlobalTokenBucket;
 
 // A set of queues waiting on a resource
@@ -89,6 +98,7 @@ impl ResourceManager {
         memory_pool: MemoryPool,
         initial_invocation_memory: NonZeroByteCount,
         weight_resolver: WeightResolver,
+        lane_weight_resolver: LaneWeightResolver,
         partition_label: String,
     ) -> Result<Self, StorageError> {
         let locks = Locks::create(storage).await?;
@@ -99,6 +109,7 @@ impl ResourceManager {
             invoker_concurrency: InvokerConcurrencyLimiter::new(
                 concurrency_limiter,
                 weight_resolver,
+                lane_weight_resolver,
             ),
             invoker_throttling: InvokerThrottlingLimiter::new(global_throttling),
             invoker_memory: InvokerMemoryLimiter::new(memory_pool, initial_invocation_memory),
@@ -280,10 +291,18 @@ impl ResourceManager {
                 // Do we have one?
                 if !current_permit.has_invoker_permit() {
                     // poll for one or die trying
+                    // the service name selects the lane WITHIN the group;
+                    // unlinked vqueues pool into the "" lane (they never take
+                    // invoker permits for state mutations anyway)
+                    let service = meta
+                        .service_name()
+                        .cloned()
+                        .unwrap_or_else(super::eligible::unlinked_group);
                     let Some(invoker_permit) = self.invoker_concurrency.poll_acquire(
                         cx,
                         vqueue,
                         &SchedulingGroup::of(meta),
+                        &service,
                     ) else {
                         return AcquireOutcome::BlockedOn(ResourceKind::InvokerConcurrency);
                     };

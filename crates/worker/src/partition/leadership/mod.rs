@@ -476,13 +476,15 @@ where
                 })?
                 .into_guard();
 
-            // Scheduling weights are scope-keyed and arrive via the rules system
-            // (`restate rules set <scope> --weight N`): the scheduler service keeps
-            // the shared scope-weight map in sync from rule updates, and the
-            // resolver closures read it whenever a scheduling group is (re-)created.
-            // Service-name groups always run at the default weight 1.
+            // Scheduling weights are scope-keyed and arrive via the rules system;
+            // the resolver closures read the shared weight maps whenever a
+            // scheduling group is (re-)created. Lane weights (per-service stride
+            // lanes inside a group) default to 1, equal round-robin.
             let scope_weights = restate_vqueues::ScopeWeights::default();
             let weight_resolver = restate_vqueues::scope_weight_resolver(scope_weights.clone());
+            let service_weights = restate_vqueues::ServiceWeights::default();
+            let lane_weight_resolver =
+                restate_vqueues::lane_weight_resolver(service_weights.clone());
 
             let scheduler_service = SchedulerService::create(
                 ResourceManager::create(
@@ -492,6 +494,7 @@ where
                     self.invoker_capacity.memory_pool.clone(),
                     self.invoker_capacity.initial_invocation_memory,
                     weight_resolver.clone(),
+                    lane_weight_resolver,
                     self.partition.partition_id.to_string(),
                 )
                 .await?,
@@ -499,6 +502,7 @@ where
                 vqueues_cache,
                 weight_resolver,
                 scope_weights,
+                service_weights,
             )
             .await?;
 

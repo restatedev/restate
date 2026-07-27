@@ -70,6 +70,14 @@ impl SchedulingGroup {
 /// grouped waiter lists.
 pub type WeightResolver = std::sync::Arc<dyn Fn(&SchedulingGroup) -> NonZeroU32 + Send + Sync>;
 
+/// Resolves a service LANE's weight within a scheduling group — the second
+/// level of the waiter list's stride scheduling. Consulted at lane creation
+/// (so, like group weights, changes apply as a lane cycles). Default weight 1
+/// gives equal round-robin across a group's services; L1 rules
+/// (`<scope>/<Service>` with a `scheduling_weight`) configure unequal shares.
+pub type LaneWeightResolver =
+    std::sync::Arc<dyn Fn(&SchedulingGroup, &ServiceName) -> NonZeroU32 + Send + Sync>;
+
 /// Group name used for vqueues that are not linked to any service.
 pub(in crate::scheduler) fn unlinked_group() -> ServiceName {
     ServiceName::new("")
@@ -149,12 +157,8 @@ impl ServiceGroup {
 pub(crate) struct EligibilityTracker {
     #[debug(skip)]
     delayed_eligibility: DelayQueue<VQueueHandle>,
-    /// Outer WRR ring: rotation order over service groups. Invariant: contains exactly
+    /// Outer WRR ring: rotation order over service groups. Contains exactly
     /// the keys of `groups`, each once.
-    ///
-    /// Note: group keys hash their interned string CONTENT (not a pointer),
-    /// so `groups` lookups cost O(name length) — acceptable because lookups are
-    /// per dispatch step, not per queued key.
     group_ring: VecDeque<SchedulingGroup>,
     #[debug(skip)]
     groups: HashMap<SchedulingGroup, ServiceGroup>,
@@ -290,11 +294,8 @@ impl EligibilityTracker {
         storage: &S,
         vqueues: &mut SecondaryMap<VQueueHandle, VQueueState<S>>,
     ) -> Result<Option<VQueueHandle>, StorageError> {
-        // avoid rescanning the group ring multiple rounds: every iteration either fully
-        // scans + rotates a group (at most num_groups times) or drops an emptied group
-        // (at most num_groups times), so 2 * num_groups bounds the scan. With a single
-        // group no rotation or drop-and-continue can occur, so one scan suffices —
-        // matching the flat ring's single pass.
+        // Each iteration either scans+rotates a group or drops an emptied one,
+        // each bounded by num_groups, so 2 * num_groups bounds the scan.
         let num_groups = self.group_ring.len();
         let scan_bound = if num_groups <= 1 {
             num_groups
@@ -409,10 +410,9 @@ impl EligibilityTracker {
         if let Some(State::Scheduled { wake_up }) = self.states.remove(handle) {
             self.delayed_eligibility.remove(&wake_up.timer_key);
         }
-        // Note: the handle is lazily purged from its group's ring on the next
-        // `next_eligible` scan (missing state => pop), exactly like the previous
-        // flat-ring implementation. `handle_group` is intentionally kept: the queue's
-        // service never changes for the lifetime of the cache slot.
+        // The handle is lazily purged from its group's ring on the next
+        // `next_eligible` scan (missing state => pop). `handle_group` is
+        // kept: the queue's service never changes for the cache slot's lifetime.
     }
 
     // Places the vqueue back on the ready ring only if it was not already there.

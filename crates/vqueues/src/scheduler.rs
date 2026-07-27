@@ -93,6 +93,68 @@ pub fn apply_rule_updates_to_scope_weights(weights: &ScopeWeights, updates: &[Ru
     }
 }
 
+/// Live map of (scope, service) → lane scheduling weight, fed from L1 EXACT
+/// rules (`<scope>/<Service>` patterns carrying a `scheduling_weight`). Read by
+/// the [`LaneWeightResolver`] that shapes per-service stride lanes inside the
+/// grouped waiter lists. Default (absent) = weight 1 = equal round-robin.
+pub type ServiceWeights =
+    std::sync::Arc<std::sync::RwLock<hashbrown::HashMap<(String, String), NonZeroU32>>>;
+
+/// Builds the lane-weight resolver over a shared service-weights map: scoped
+/// groups look up `(scope, service)`; everything else (unscoped service groups
+/// have a single lane anyway) runs at weight 1. Both stride lanes of one group
+/// resolve against the same scope, so cross-scope ratios are untouched.
+pub fn lane_weight_resolver(weights: ServiceWeights) -> crate::scheduler::eligible::LaneWeightResolver {
+    std::sync::Arc::new(move |group: &SchedulingGroup, service: &restate_types::ServiceName| {
+        match group {
+            SchedulingGroup::Scope(scope) => weights
+                .read()
+                .expect("service weights lock poisoned")
+                .get(&(scope.as_str().to_owned(), AsRef::<str>::as_ref(service).to_owned()))
+                .copied()
+                .unwrap_or(NonZeroU32::MIN),
+            SchedulingGroup::Service(_) => NonZeroU32::MIN,
+        }
+    })
+}
+
+/// Folds rule updates into the service-weights map. Only L1 EXACT/EXACT
+/// patterns carry lane weights (wildcards are concurrency-only); an upsert
+/// without a weight resets the lane to the default.
+pub fn apply_rule_updates_to_service_weights(weights: &ServiceWeights, updates: &[RuleUpdate]) {
+    let mut map = weights.write().expect("service weights lock poisoned");
+    for update in updates {
+        match update {
+            RuleUpdate::Upsert { pattern, limit } => {
+                if let RulePattern::L1 {
+                    scope: Pattern::Exact(scope),
+                    l1: Pattern::Exact(l1),
+                } = pattern
+                {
+                    let key = (scope.as_str().to_owned(), l1.as_str().to_owned());
+                    match limit.scheduling_weight {
+                        Some(weight) => {
+                            map.insert(key, weight);
+                        }
+                        None => {
+                            map.remove(&key);
+                        }
+                    }
+                }
+            }
+            RuleUpdate::Remove { pattern } => {
+                if let RulePattern::L1 {
+                    scope: Pattern::Exact(scope),
+                    l1: Pattern::Exact(l1),
+                } = pattern
+                {
+                    map.remove(&(scope.as_str().to_owned(), l1.as_str().to_owned()));
+                }
+            }
+        }
+    }
+}
+
 type UnconfirmedAssignments = hashbrown::HashMap<EntryKey, (PermitBuilder, EntryMetadata)>;
 
 fn status_from_detailed_eligibility(value: DetailedEligibility) -> SchedulingStatus {
@@ -172,6 +234,9 @@ pub struct SchedulerService<S: VQueueStore> {
     /// Scope → weight map kept in sync from rule updates; read by the
     /// weight-resolver closures inside the DRR scheduler.
     scope_weights: ScopeWeights,
+    /// (scope, service) → lane weight map, fed from L1 exact rules; read by
+    /// the lane-weight resolver inside the grouped waiter lists.
+    service_weights: ServiceWeights,
 }
 
 impl<S: VQueueStore> SchedulerService<S> {
@@ -182,6 +247,7 @@ impl<S: VQueueStore> SchedulerService<S> {
         Self {
             state: State::<S>::Disabled,
             scope_weights: ScopeWeights::default(),
+            service_weights: ServiceWeights::default(),
         }
     }
 
@@ -191,6 +257,7 @@ impl<S: VQueueStore> SchedulerService<S> {
         vqueues_cache: &VQueuesMetaCache,
         weight_resolver: WeightResolver,
         scope_weights: ScopeWeights,
+        service_weights: ServiceWeights,
     ) -> Result<Self, StorageError>
     where
         S: ScanVQueueTable,
@@ -215,6 +282,7 @@ impl<S: VQueueStore> SchedulerService<S> {
         Ok(Self {
             state,
             scope_weights,
+            service_weights,
         })
     }
 
@@ -229,6 +297,7 @@ impl<S: VQueueStore> SchedulerService<S> {
     /// scheduler is disabled (followers).
     pub fn on_rules_updated(&self, updates: Box<[RuleUpdate]>) {
         apply_rule_updates_to_scope_weights(&self.scope_weights, &updates);
+        apply_rule_updates_to_service_weights(&self.service_weights, &updates);
         if let State::Active(ref drr_scheduler) = self.state {
             drr_scheduler.on_rules_updated(updates);
         }
@@ -441,10 +510,12 @@ mod scope_weight_lifecycle_tests {
         let payment = SchedulingGroup::Scope(Scope::try_non_interned("payment").unwrap());
         let other = SchedulingGroup::Service(restate_types::ServiceName::new("other"));
 
+        let pay_svc = restate_types::ServiceName::new("PaySvc");
+        let other_svc = restate_types::ServiceName::new("other");
         // group created at default weight 1
-        waiters.push_back(handles[0], &payment);
-        waiters.push_back(handles[1], &payment);
-        waiters.push_back(handles[2], &other);
+        waiters.push_back(handles[0], &payment, &pay_svc);
+        waiters.push_back(handles[1], &payment, &pay_svc);
+        waiters.push_back(handles[2], &other, &other_svc);
 
         // rule update arrives while the group EXISTS: weight 10
         let pattern: restate_limiter::RulePattern<ReString> = "payment".parse().unwrap();
@@ -468,9 +539,9 @@ mod scope_weight_lifecycle_tests {
         assert!(waiters.is_empty());
 
         // fresh group (created after the update) picks up weight 10 immediately
-        waiters.push_back(handles[3], &payment);
-        waiters.push_back(handles[4], &payment);
-        waiters.push_back(handles[5], &other);
+        waiters.push_back(handles[3], &payment, &pay_svc);
+        waiters.push_back(handles[4], &payment, &pay_svc);
+        waiters.push_back(handles[5], &other, &other_svc);
         assert_eq!(waiters.pop_front(), Some(handles[3]));
         assert_eq!(
             waiters.pop_front(),

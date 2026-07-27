@@ -702,6 +702,10 @@ mod tests {
             .await
     }
 
+    fn test_lane_resolver() -> crate::scheduler::eligible::LaneWeightResolver {
+        std::sync::Arc::new(|_: &SchedulingGroup, _: &restate_types::ServiceName| NonZeroU32::MIN)
+    }
+
     async fn create_resource_manager_full(
         db: &PartitionDb,
         concurrency: Concurrency,
@@ -715,6 +719,7 @@ mod tests {
             MemoryPool::unlimited(),
             NonZeroByteCount::new(NonZeroUsize::MIN),
             weight_resolver,
+            test_lane_resolver(),
             "test".to_string(),
         )
         .await
@@ -1916,9 +1921,8 @@ mod tests {
         );
     }
 
-    /// The thesis starvation scenario in miniature: a huge weight-1 group must not
-    /// starve a tiny weight-10 group. The small group's share depends only on the
-    /// weights, not on the queue-count imbalance.
+    /// A huge weight-1 group must not starve a tiny weight-10 group; the
+    /// small group's share depends only on weights, not queue count.
     #[restate_core::test]
     async fn wrr_small_high_weight_group_not_starved_by_large_group() {
         let mut rocksdb = storage_test_environment().await;
@@ -2206,11 +2210,8 @@ mod tests {
         scheduler.assert_scheduler_invariants();
     }
 
-    /// End-to-end: under invoker-concurrency pressure (limit 1), the WRR waiter
-    /// list — not arrival order — decides who acquires freed permits. Payment
-    /// queues arrive first and outnumber the batcher 6:2; a FIFO waiter list
-    /// would grant all payment permits before any batcher permit. The batcher
-    /// must instead be dispatched within the first WRR cycle after a release.
+    /// Under invoker-concurrency pressure, the WRR waiter list — not arrival
+    /// order — decides who acquires freed permits.
     #[restate_core::test]
     async fn wrr_waiter_list_decides_dispatch_under_concurrency_pressure() {
         let mut rocksdb = storage_test_environment().await;
@@ -2292,10 +2293,9 @@ mod tests {
         );
     }
 
-    /// Scope groups: scoped queues of DIFFERENT services schedule as ONE group
-    /// whose weight comes from the (rule-fed) scope-weights map, competing
-    /// against unscoped per-service groups at weight 1 — the end-to-end shape
-    /// of `restate rules set payment --weight 10` + scope inheritance.
+    /// Scoped queues of different services schedule as one group, whose
+    /// weight comes from the scope-weights map, competing against unscoped
+    /// per-service groups at weight 1.
     #[restate_core::test]
     async fn wrr_scope_group_spans_services_with_rule_weight() {
         use crate::scheduler::{ScopeWeights, scope_weight_resolver};
@@ -2447,13 +2447,8 @@ mod tests {
         scheduler.assert_scheduler_invariants();
     }
 
-    /// End-to-end A2 pipeline test: an ADAPTIVE rule's limit must move from
-    /// REAL permit lifecycles — poll admits, `confirm_run_attempt` builds the
-    /// `ReservedResources` (capturing `acquired_at`), dropping it sends
-    /// `PermitReleased { held_for: Some(..) }`, and the next poll's
-    /// `poll_resources` feeds the sample into the Gradient2 controller.
-    /// (The revert path is sample-free by construction: `revert_permit_builder`
-    /// never builds a `ReservedResources`, so no `held_for` can exist.)
+    /// An adaptive rule's limit must move from real permit lifecycles: poll,
+    /// confirm, release, and the next poll feeds the sample into Gradient2.
     #[restate_core::test(start_paused = true)]
     async fn adaptive_limit_learns_through_real_permit_lifecycle() {
         use restate_limiter::AdaptiveConcurrency;
@@ -2559,7 +2554,7 @@ mod tests {
         }
         // Growth proof: with healthy (constant) hold times the learned limit
         // climbs additively above the cold start, so MORE entries got admitted
-        // than the initial window — the whole A2 sample pipeline works.
+        // than the initial window — the full adaptive sample pipeline works.
         assert!(
             total_admitted > cold_start_admitted,
             "adaptive limit must grow from real permit-release samples \
