@@ -981,16 +981,17 @@ impl PartitionStoreTransaction<'_> {
     }
 }
 
-fn assert_partition_key_or_err(
+fn assert_partition_key_or_err<T: WithPartitionKey + ?Sized>(
     partition_key_range: KeyRange,
-    partition_key: &impl WithPartitionKey,
+    partition_key: &T,
 ) -> Result<()> {
-    let partition_key = partition_key.partition_key();
-    if partition_key_range.contains(&partition_key) {
+    let pk = partition_key.partition_key();
+    if partition_key_range.contains(&pk) {
         return Ok(());
     }
     Err(StorageError::Generic(anyhow!(
-        "Partition key '{partition_key}' is not part of PartitionStore's partition '{partition_key_range:?}'. This indicates a bug."
+        "Partition key '{pk}' is not part of PartitionStore's partition '{partition_key_range:?}' (key-type: {}). This indicates a bug.",
+        std::any::type_name::<T>()
     )))
 }
 

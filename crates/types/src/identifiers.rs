@@ -461,10 +461,11 @@ impl ServiceId {
         key: impl Into<ByteString>,
     ) -> Self {
         let key = key.into();
-        let partition_key = scope
-            .as_ref()
-            .map(|s| s.partition_key())
-            .unwrap_or_else(|| partitioner::HashPartitioner::compute_partition_key(&key));
+        // A keyed entity's state (K/V state, inbox, promises, locks) is always
+        // addressed at partition(hash(key)); scope is a scheduling label only,
+        // never a storage-partition selector. Keep `scope` as metadata but
+        // always partition by the key so invocation and state co-locate.
+        let partition_key = partitioner::HashPartitioner::compute_partition_key(&key);
         Self {
             service_name: service_name.into(),
             key,
@@ -569,21 +570,19 @@ impl InvocationId {
     where
         F: FnOnce() -> PartitionKey,
     {
-        let scope = invocation_target.scope();
-        let partition_key = if let Some(scope) = scope {
-            // Scoped invocations inherit the partition key from their owning scope
-            scope.partition_key()
-        } else {
-            // --- Partition key generation
-            // Either try to generate the deterministic partition key, if possible
-            deterministic_partition_key(
-                invocation_target.service_name(),
-                invocation_target.key().map(|bs| bs.as_ref()),
-                idempotency_key,
-            )
-            // If no deterministic partition key can be generated, just pick a random number
-            .unwrap_or_else(f)
-        };
+        // Scope is a scheduling label only and never selects the storage partition.
+        // Keyed targets and idempotent invocations partition by their own key
+        // (co-locating with their addressed state); unkeyed, non-idempotent
+        // services partition by their distributed fanout key (`f`), spreading
+        // across all partitions since they carry no keyed state to cross.
+        // Scope governance is unaffected: the per-partition vqueue scheduler
+        // matches WRR/adaptive rules by the scope string, independent of placement.
+        let partition_key = deterministic_partition_key(
+            invocation_target.service_name(),
+            invocation_target.key().map(|bs| bs.as_ref()),
+            idempotency_key,
+        )
+        .unwrap_or_else(f);
 
         // --- Invocation UUID generation
         InvocationId::from_parts(
@@ -1531,6 +1530,67 @@ mod tests {
                 .as_keyed_service_id()
                 .unwrap()
                 .partition_key()
+        );
+    }
+
+    /// A scoped keyed target must still partition by its own key, not by the
+    /// scope, so the invocation co-locates with its addressed state.
+    #[test]
+    fn scoped_keyed_target_partitions_by_key_not_scope() {
+        let scope = Scope::try_non_interned("payment").unwrap();
+        let invocation_target = InvocationTarget::virtual_object(
+            "MyService",
+            "MyKey",
+            "MyMethod",
+            VirtualObjectHandlerType::Exclusive,
+        )
+        .with_scope(Some(scope.clone()));
+
+        let invocation_id = InvocationId::mock_generate(&invocation_target);
+        let service_id = invocation_target.as_keyed_service_id().unwrap();
+
+        let key_pk = partitioner::HashPartitioner::compute_partition_key("MyKey");
+        let scope_pk = scope.partition_key();
+        assert_ne!(
+            key_pk, scope_pk,
+            "test precondition: key hash and scope hash must differ"
+        );
+
+        // invocation and its keyed state co-locate on the KEY's partition...
+        assert_eq!(invocation_id.partition_key(), service_id.partition_key());
+        assert_eq!(invocation_id.partition_key(), key_pk);
+        // ...never on the scope's partition.
+        assert_ne!(invocation_id.partition_key(), scope_pk);
+    }
+
+    /// Scope is a scheduling label only. A scoped unkeyed service distributes
+    /// across partitions by its bounded fanout set, exactly like an unscoped
+    /// one — it is not co-located on partition(hash(scope)).
+    #[test]
+    fn scoped_unkeyed_service_distributes_not_by_scope() {
+        let scope = Scope::try_non_interned("payment").unwrap();
+        let target =
+            InvocationTarget::service("MyService", "MyMethod").with_scope(Some(scope.clone()));
+
+        // the bounded, service-specific set of partition keys an unkeyed service
+        // may land on (identical whether scoped or not)
+        let fanout: HashSet<PartitionKey> = (0..UNSCOPED_SERVICE_PARTITION_KEY_FANOUT)
+            .map(|b| unscoped_service_partition_key("MyService", b))
+            .collect();
+
+        let mut seen = HashSet::new();
+        for _ in 0..2000 {
+            let pk = InvocationId::generate(&target, None).partition_key();
+            assert!(
+                fanout.contains(&pk),
+                "scoped unkeyed pk must come from the service fanout set, not hash(scope)"
+            );
+            seen.insert(pk);
+        }
+        // distributes across many partition keys instead of funnelling to one
+        assert!(
+            seen.len() > 1,
+            "a scoped unkeyed service must distribute, not funnel onto one partition"
         );
     }
 

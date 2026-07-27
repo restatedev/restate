@@ -121,13 +121,10 @@ pub struct CanonicalLockId<'a> {
 
 impl<'a> WithPartitionKey for CanonicalLockId<'a> {
     fn partition_key(&self) -> PartitionKey {
-        if let Some(scope) = self.scope {
-            scope.partition_key()
-        } else {
-            // for backward compatibility, we use the "key" only as the source for
-            // calculating the partition key
-            HashPartitioner::compute_partition_key(self.lock_name.key())
-        }
+        // A lock protects a keyed entity, so it is always stored at
+        // partition(hash(key)). Scope stays part of the lock identity
+        // (Display) but must never select the storage partition.
+        HashPartitioner::compute_partition_key(self.lock_name.key())
     }
 }
 
@@ -203,16 +200,33 @@ mod tests {
         );
     }
 
+    /// A lock partitions by the key it protects, never by the scope, so it
+    /// co-locates with that key's invocation and state.
     #[test]
-    fn scoped_partition_key_uses_scope() {
+    fn scoped_partition_key_uses_key_not_scope() {
         let lock = LockName::parse("my-service/my-key").unwrap();
+        let key = ByteString::from("my-key");
+
         let scope: Option<Scope> = Some(Scope::try_from_static("my-scope").unwrap());
-        let canonical = CanonicalLockId {
+        let scoped = CanonicalLockId {
             scope: &scope,
             lock_name: &lock,
         };
+        let no_scope: Option<Scope> = None;
+        let unscoped = CanonicalLockId {
+            scope: &no_scope,
+            lock_name: &lock,
+        };
+
+        // scoped and unscoped locks for the same key share the key's partition
         assert_eq!(
-            canonical.partition_key(),
+            scoped.partition_key(),
+            HashPartitioner::compute_partition_key(&key),
+        );
+        assert_eq!(scoped.partition_key(), unscoped.partition_key());
+        // ...and NOT the scope's partition
+        assert_ne!(
+            scoped.partition_key(),
             HashPartitioner::compute_partition_key(Scope::try_from_static("my-scope").unwrap()),
         );
     }
