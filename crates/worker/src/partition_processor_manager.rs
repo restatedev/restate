@@ -86,13 +86,12 @@ use restate_worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 
 use crate::metric_definitions::{
     ERROR_STOP, FLARE_REASON_MIGRATION_BARRIER, FLARE_REASON_SNAPSHOT_UNAVAILABLE,
-    FLARE_REASON_VERSION_BARRIER, GAP_STOP, PARTITION_BLOCKED_FLARE, PARTITION_IS_EFFECTIVE_LEADER,
-    PARTITION_START, REASON_LABEL, STARTUP_ERROR_STOP, TYPE_LABEL,
+    FLARE_REASON_VERSION_BARRIER, GAP_STOP, NORMAL_STOP, NUM_ACTIVE_PARTITION_LEADERS,
+    NUM_ACTIVE_PARTITIONS, NUM_PARTITIONS, PARTITION_APPLIED_LSN_LAG, PARTITION_BLOCKED_FLARE,
+    PARTITION_LABEL, PARTITION_NUM_UNKNOWN_APPLIED_LSN_LAG, PARTITION_START, PARTITION_STOP,
+    PARTITION_TIME_SINCE_LAST_STATUS_UPDATE, REASON_LABEL, SNAPSHOT_AGE, STARTUP_ERROR_STOP,
+    TYPE_LABEL,
 };
-use crate::metric_definitions::{NORMAL_STOP, PARTITION_TIME_SINCE_LAST_STATUS_UPDATE};
-use crate::metric_definitions::{NUM_ACTIVE_PARTITIONS, PARTITION_APPLIED_LSN_LAG};
-use crate::metric_definitions::{NUM_PARTITIONS, SNAPSHOT_AGE};
-use crate::metric_definitions::{PARTITION_LABEL, PARTITION_STOP};
 use crate::partition::{LeadershipInfo, NodeContext, ProcessorError};
 use crate::partition_processor_manager::processor_state::{
     LeaderEpochToken, ProcessorState, StartedProcessor,
@@ -577,7 +576,6 @@ where
                         );
                     }
                 }
-                gauge!(NUM_ACTIVE_PARTITIONS).set(self.processor_states.len() as f64);
             }
             EventKind::Stopped(result) => {
                 self.unregister_pp_rpc_shard(partition_id);
@@ -679,8 +677,6 @@ where
                 if !self.restart_partition_processor_if_replica(partition_id, delay) {
                     debug!("Partition processor stopped: {result:?}");
                 }
-
-                gauge!(NUM_ACTIVE_PARTITIONS).set(self.processor_states.len() as f64);
             }
             EventKind::NewLeaderEpoch {
                 leader_epoch_token,
@@ -816,28 +812,29 @@ where
 
     /// Collect enriched processor status from all running partitions
     fn get_state(&self) -> BTreeMap<PartitionId, PartitionProcessorStatus> {
-        self.processor_states
+        let mut num_active_leaders: u32 = 0;
+        let mut num_unknown_applied_lsn_lag: u32 = 0;
+        let mut last_updated_samples = Vec::with_capacity(self.processor_states.len());
+        let mut applied_lsn_lag_samples = Vec::with_capacity(self.processor_states.len());
+        let mut snapshot_age_samples = Vec::with_capacity(self.processor_states.len());
+
+        let statuses = self
+            .processor_states
             .iter()
             .filter_map(|(partition_id, processor_state)| {
                 let mut status = processor_state.partition_processor_status()?;
-                let labels = [(PARTITION_LABEL, partition_id.to_string())];
 
-                gauge!(PARTITION_TIME_SINCE_LAST_STATUS_UPDATE, &labels)
-                    .set(status.updated_at.elapsed());
-
-                gauge!(PARTITION_IS_EFFECTIVE_LEADER, &labels).set(
-                    if status.is_effective_leader() {
-                        1.0
-                    } else {
-                        0.0
-                    },
-                );
+                last_updated_samples.push(status.updated_at.elapsed().as_secs_f64());
+                num_active_leaders += u32::from(status.is_effective_leader());
 
                 // todo: PartitionProcessorStatus struct is shared across PP and PPM, consider splitting it
-                status.last_archived_log_lsn = self
-                    .latest_snapshots
-                    .get(partition_id)
-                    .map(|s| s.archived_lsn);
+                let latest_snapshot = self.latest_snapshots.get(partition_id);
+                if let Some(snapshot) = latest_snapshot {
+                    snapshot_age_samples
+                        .push(snapshot.latest_snapshot_created_at.elapsed().as_secs_f64());
+                }
+
+                status.last_archived_log_lsn = latest_snapshot.map(|s| s.archived_lsn);
 
                 let current_tail_lsn = self.target_tail_lsns.get(partition_id).cloned();
                 let target_tail_lsn = if current_tail_lsn > status.target_tail_lsn {
@@ -848,15 +845,14 @@ where
 
                 match target_tail_lsn {
                     None => {
-                        // unknown might indicate an issue, so we set the metric to infinity
-                        gauge!(PARTITION_APPLIED_LSN_LAG, &labels).set(f64::INFINITY);
+                        num_unknown_applied_lsn_lag += 1;
                     }
                     Some(target_tail_lsn) => {
                         status.target_tail_lsn = Some(target_tail_lsn);
 
                         // tail lsn always points to the next "free" lsn slot. Therefor the lag is calculate as `lsn-1`
                         // hence we do target_tail_lsn.prev() below
-                        gauge!(PARTITION_APPLIED_LSN_LAG, &labels).set(
+                        applied_lsn_lag_samples.push(
                             target_tail_lsn.prev().as_u64().saturating_sub(
                                 status.last_applied_log_lsn.unwrap_or(Lsn::OLDEST).as_u64(),
                             ) as f64,
@@ -866,7 +862,17 @@ where
 
                 Some((*partition_id, status))
             })
-            .collect()
+            .collect();
+        report_quantile_gauges(
+            PARTITION_TIME_SINCE_LAST_STATUS_UPDATE,
+            &mut last_updated_samples,
+        );
+        report_quantile_gauges(PARTITION_APPLIED_LSN_LAG, &mut applied_lsn_lag_samples);
+        report_quantile_gauges(SNAPSHOT_AGE, &mut snapshot_age_samples);
+        gauge!(PARTITION_NUM_UNKNOWN_APPLIED_LSN_LAG).set(num_unknown_applied_lsn_lag as f64);
+        gauge!(NUM_ACTIVE_PARTITIONS).set(self.processor_states.len() as f64);
+        gauge!(NUM_ACTIVE_PARTITION_LEADERS).set(num_active_leaders as f64);
+        statuses
     }
 
     fn on_command(&mut self, command: ProcessorsManagerCommand) {
@@ -989,8 +995,6 @@ where
         partition_id: PartitionId,
         snapshot_status: PartitionSnapshotStatus,
     ) {
-        gauge!(SNAPSHOT_AGE, PARTITION_LABEL => partition_id.to_string())
-            .set(snapshot_status.latest_snapshot_created_at.elapsed());
         match self.latest_snapshots.entry(partition_id) {
             Entry::Occupied(mut e) => {
                 if snapshot_status.archived_lsn >= e.get().archived_lsn {
@@ -1343,8 +1347,6 @@ where
                 self.latest_snapshots.remove(&partition_id);
             }
         }
-
-        gauge!(NUM_ACTIVE_PARTITIONS).set(self.processor_states.len() as f64);
     }
 
     /// Starts a partition processor if this node is part of the replica set of the given partition.
@@ -1555,6 +1557,23 @@ enum EventKind {
         snapshot_status: PartitionSnapshotStatus,
     },
     SnapshotStatusUpdateSkipped,
+}
+
+fn report_quantile_gauges(metric_name: &'static str, samples: &mut [f64]) {
+    const PARTITION_METRIC_QUANTILES: [(&str, f64); 4] =
+        [("0.5", 0.5), ("0.9", 0.9), ("0.99", 0.99), ("1.0", 1.0)];
+
+    samples.sort_unstable_by(f64::total_cmp);
+
+    for (quantile_label, quantile) in PARTITION_METRIC_QUANTILES {
+        let value = if samples.is_empty() {
+            f64::NAN
+        } else {
+            let rank = (quantile * samples.len() as f64).ceil() as usize;
+            samples[rank.saturating_sub(1)]
+        };
+        gauge!(metric_name, "quantile" => quantile_label).set(value);
+    }
 }
 
 #[cfg(test)]
