@@ -21,12 +21,7 @@ pub(super) struct Request {
     pub(super) append_invocation_reply_on: AppendInvocationReplyOn,
 }
 
-impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
-    for RpcContext<'a, TActuator, TSchemas, TStorage>
-{
-    type Output = PartitionProcessorRpcResponse;
-    type Error = ();
-
+impl<'a, TSchemas, TStorage> RpcHandler<Request> for RpcContext<'a, TSchemas, TStorage> {
     async fn handle(
         self,
         Request {
@@ -34,8 +29,7 @@ impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
             invocation_request,
             append_invocation_reply_on,
         }: Request,
-        replier: Replier<Self::Output>,
-    ) -> Result<(), Self::Error> {
+    ) -> Decision {
         let mut service_invocation = ServiceInvocation::from_request(
             Arc::unwrap_or_clone(invocation_request),
             invocation::Source::ingress(request_id),
@@ -58,25 +52,18 @@ impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
         let partition_key = service_invocation.partition_key();
         let cmd = Command::Invoke(Box::new(service_invocation));
 
-        match append_invocation_reply_on {
-            AppendInvocationReplyOn::Appended => {
-                self.proposer
-                    .append_and_respond_asynchronously(
-                        partition_key,
-                        cmd,
-                        replier,
-                        PartitionProcessorRpcResponse::Appended,
-                    )
-                    .await;
-            }
-            AppendInvocationReplyOn::Submitted | AppendInvocationReplyOn::Output => {
-                self.proposer
-                    .handle_rpc_proposal_command(partition_key, cmd, request_id, replier)
-                    .await;
-            }
-        }
-
-        Ok(())
+        Decision::Propose(RpcProposal {
+            partition_key,
+            cmd,
+            reply_on: match append_invocation_reply_on {
+                AppendInvocationReplyOn::Appended => ReplyOn::Commit {
+                    response: PartitionProcessorRpcResponse::Appended,
+                },
+                AppendInvocationReplyOn::Submitted | AppendInvocationReplyOn::Output => {
+                    ReplyOn::Apply { request_id }
+                }
+            },
+        })
     }
 }
 
@@ -84,122 +71,91 @@ impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
 mod tests {
     use super::*;
 
-    use crate::partition::rpc::MockActuator;
-    use futures::FutureExt;
     use googletest::prelude::*;
     use restate_test_util::let_assert;
-    use std::future::ready;
     use test_log::test;
+
+    async fn handle(
+        request_id: PartitionProcessorRpcRequestId,
+        append_invocation_reply_on: AppendInvocationReplyOn,
+    ) -> Decision {
+        RpcHandler::handle(
+            RpcContext::new(true, PartitionId::MIN, &(), &mut ()),
+            Request {
+                request_id,
+                invocation_request: Arc::new(InvocationRequest::mock()),
+                append_invocation_reply_on,
+            },
+        )
+        .await
+    }
 
     #[test(restate_core::test)]
     async fn reply_on_appended() {
-        let mut proposer = MockActuator::new();
-        proposer
-            .expect_append_and_respond_asynchronously::<PartitionProcessorRpcResponse>()
-            .return_once_st(|_, cmd, _, _| {
-                let_assert!(Command::Invoke(service_invocation) = cmd);
-                assert_that!(
-                    service_invocation,
-                    points_to(all!(
-                        field!(ServiceInvocation.response_sink, none()),
-                        field!(ServiceInvocation.submit_notification_sink, none()),
-                    ))
-                );
-                ready(()).boxed()
-            });
-        proposer
-            .expect_handle_rpc_proposal_command::<PartitionProcessorRpcResponse>()
-            .never();
-
-        let (tx, _rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &(), &mut ()),
-            Request {
-                request_id: Default::default(),
-                invocation_request: Arc::new(InvocationRequest::mock()),
-                append_invocation_reply_on: AppendInvocationReplyOn::Appended,
-            },
-            Replier::new(tx),
-        )
-        .await
-        .unwrap();
+        let_assert!(
+            Decision::Propose(RpcProposal {
+                cmd: Command::Invoke(service_invocation),
+                reply_on: ReplyOn::Commit { response },
+                ..
+            }) = handle(Default::default(), AppendInvocationReplyOn::Appended).await
+        );
+        assert_eq!(response, PartitionProcessorRpcResponse::Appended);
+        assert_that!(
+            service_invocation,
+            points_to(all!(
+                field!(ServiceInvocation.response_sink, none()),
+                field!(ServiceInvocation.submit_notification_sink, none()),
+            ))
+        );
     }
 
     #[test(restate_core::test)]
     async fn reply_on_submitted() {
         let request_id = PartitionProcessorRpcRequestId::new();
-        let mut proposer = MockActuator::new();
-        proposer
-            .expect_append_and_respond_asynchronously::<PartitionProcessorRpcResponse>()
-            .never();
-        proposer
-            .expect_handle_rpc_proposal_command::<PartitionProcessorRpcResponse>()
-            .return_once_st(|_, cmd, req_id, _| {
-                let_assert!(Command::Invoke(service_invocation) = cmd);
-                assert_that!(
-                    service_invocation,
-                    points_to(all!(
-                        field!(ServiceInvocation.response_sink, none()),
-                        field!(
-                            ServiceInvocation.submit_notification_sink,
-                            some(eq(SubmitNotificationSink::Ingress { request_id: req_id }))
-                        ),
-                    ))
-                );
-                ready(()).boxed()
-            });
-
-        let (tx, _rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &(), &mut ()),
-            Request {
-                request_id,
-                invocation_request: Arc::new(InvocationRequest::mock()),
-                append_invocation_reply_on: AppendInvocationReplyOn::Submitted,
-            },
-            Replier::new(tx),
-        )
-        .await
-        .unwrap();
+        let_assert!(
+            Decision::Propose(RpcProposal {
+                cmd: Command::Invoke(service_invocation),
+                reply_on: ReplyOn::Apply {
+                    request_id: actual_request_id,
+                },
+                ..
+            }) = handle(request_id, AppendInvocationReplyOn::Submitted).await
+        );
+        assert_eq!(actual_request_id, request_id);
+        assert_that!(
+            service_invocation,
+            points_to(all!(
+                field!(ServiceInvocation.response_sink, none()),
+                field!(
+                    ServiceInvocation.submit_notification_sink,
+                    some(eq(SubmitNotificationSink::Ingress { request_id }))
+                ),
+            ))
+        );
     }
 
     #[test(restate_core::test)]
     async fn reply_on_output() {
         let request_id = PartitionProcessorRpcRequestId::new();
-        let mut proposer = MockActuator::new();
-        proposer
-            .expect_append_and_respond_asynchronously::<PartitionProcessorRpcResponse>()
-            .never();
-        proposer
-            .expect_handle_rpc_proposal_command::<PartitionProcessorRpcResponse>()
-            .return_once_st(|_, cmd, req_id, _| {
-                let_assert!(Command::Invoke(service_invocation) = cmd);
-                assert_that!(
-                    service_invocation,
-                    points_to(all!(
-                        field!(
-                            ServiceInvocation.response_sink,
-                            some(eq(ServiceInvocationResponseSink::Ingress {
-                                request_id: req_id
-                            }))
-                        ),
-                        field!(ServiceInvocation.submit_notification_sink, none()),
-                    ))
-                );
-                ready(()).boxed()
-            });
-
-        let (tx, _rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &(), &mut ()),
-            Request {
-                request_id,
-                invocation_request: Arc::new(InvocationRequest::mock()),
-                append_invocation_reply_on: AppendInvocationReplyOn::Output,
-            },
-            Replier::new(tx),
-        )
-        .await
-        .unwrap();
+        let_assert!(
+            Decision::Propose(RpcProposal {
+                cmd: Command::Invoke(service_invocation),
+                reply_on: ReplyOn::Apply {
+                    request_id: actual_request_id,
+                },
+                ..
+            }) = handle(request_id, AppendInvocationReplyOn::Output).await
+        );
+        assert_eq!(actual_request_id, request_id);
+        assert_that!(
+            service_invocation,
+            points_to(all!(
+                field!(
+                    ServiceInvocation.response_sink,
+                    some(eq(ServiceInvocationResponseSink::Ingress { request_id }))
+                ),
+                field!(ServiceInvocation.submit_notification_sink, none()),
+            ))
+        );
     }
 }

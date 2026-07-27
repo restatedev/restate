@@ -187,9 +187,10 @@ impl EntryValue {
 }
 
 #[derive(Debug, Clone, Eq, Default, PartialEq, bilrost::Message)]
+#[non_exhaustive]
 pub struct EntryMetadataRef<'a> {
     #[bilrost(tag(1))]
-    deployment: Option<&'a str>,
+    pub deployment: Option<&'a str>,
     // If set, this is the amount of memory the invocation seems to require to
     // run on the invoker side.
     #[bilrost(tag(2), encoding(fixed))]

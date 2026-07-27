@@ -13,16 +13,17 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_sharding::KeyRange;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::ScanVQueueMetaTable;
+use restate_storage_api::vqueue_table::filters::ScanMetaFilter;
 use restate_storage_api::vqueue_table::metadata::VQueueMetaRef;
 use restate_types::vqueues::VQueueId;
 
 use crate::context::{QueryContext, SelectPartitions};
-use crate::filter::FirstMatchingPartitionKeyExtractor;
+use crate::filter::{FirstMatchingPartitionKeyExtractor, VQueueMetaFilter};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
+use crate::statistics::{RowEstimate, TableStatisticsBuilder};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 use crate::vqueue_meta::row::append_vqueues_meta_row;
 use crate::vqueue_meta::schema::{SysVqueueMetaBuilder, sys_vqueue_meta_sort_order};
@@ -40,15 +41,24 @@ pub(crate) fn register_self(
         VQueuesMetaScanner,
     )) as Arc<dyn ScanPartition>;
 
+    let schema = SysVqueueMetaBuilder::schema();
+
+    // There are far fewer vqueues than vqueue entries, so this table is small.
+    let statistics = TableStatisticsBuilder::new(schema.clone())
+        .with_num_rows_estimate(RowEstimate::Small)
+        .with_partition_key()
+        .with_primary_key("id");
+
     let vqueue_meta_table = PartitionedTableProvider::new(
         partition_selector,
-        SysVqueueMetaBuilder::schema(),
+        schema,
         sys_vqueue_meta_sort_order(),
         remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
         FirstMatchingPartitionKeyExtractor::default()
             .with_scope("scope")
-            .with_partitioned_resource_id::<VQueueId>("id"),
-    );
+            .with_grouped_partitioned_resource_id::<VQueueId>("id"),
+    )
+    .with_statistics(statistics.build());
 
     ctx.register_partitioned_table(NAME, Arc::new(vqueue_meta_table))
 }
@@ -60,7 +70,7 @@ impl ScanLocalPartition for VQueuesMetaScanner {
     type Builder = SysVqueueMetaBuilder;
     type Item<'a> = (&'a VQueueId, &'a VQueueMetaRef<'a>);
     type ConversionError = std::convert::Infallible;
-    type Filter = KeyRange;
+    type Filter = VQueueMetaFilter;
 
     fn for_each_row<
         F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
@@ -69,10 +79,11 @@ impl ScanLocalPartition for VQueuesMetaScanner {
             + 'static,
     >(
         partition_store: &PartitionStore,
-        range: KeyRange,
+        filter: VQueueMetaFilter,
         mut f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
-        partition_store.for_each_vqueue_meta(range, move |item| f(item).map_break(Result::unwrap))
+        partition_store
+            .for_each_vqueue_meta(filter.into(), move |item| f(item).map_break(Result::unwrap))
     }
 
     fn append_row<'a>(
@@ -81,5 +92,14 @@ impl ScanLocalPartition for VQueuesMetaScanner {
     ) -> Result<(), Self::ConversionError> {
         append_vqueues_meta_row(row_builder, qid, meta);
         Ok(())
+    }
+}
+
+impl From<VQueueMetaFilter> for ScanMetaFilter {
+    fn from(value: VQueueMetaFilter) -> Self {
+        match value.ids {
+            Some(selection) => ScanMetaFilter::MetaIdSet(selection.ids),
+            None => ScanMetaFilter::PartitionKey(value.partition_keys),
+        }
     }
 }

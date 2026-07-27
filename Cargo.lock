@@ -1104,6 +1104,7 @@ dependencies = [
  "restate-bifrost",
  "restate-core",
  "restate-errors",
+ "restate-memory",
  "restate-metadata-server",
  "restate-rocksdb",
  "restate-test-util",
@@ -9080,8 +9081,8 @@ dependencies = [
 
 [[package]]
 name = "restate-web-ui"
-version = "1.0.12"
-source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v1.0.12#1296268085b68791fd8b24c7444f195eb519582c"
+version = "1.0.17"
+source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v1.0.17#ce52cb5c15d68588bc81d315d220b7bbbc88df72"
 dependencies = [
  "anyhow",
  "include_dir",
@@ -9104,7 +9105,6 @@ dependencies = [
  "googletest",
  "itertools 0.14.0",
  "metrics",
- "mockall",
  "opentelemetry",
  "parking_lot",
  "prost",

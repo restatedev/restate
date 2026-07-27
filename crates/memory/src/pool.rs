@@ -108,6 +108,20 @@ impl MemoryPool {
         }
     }
 
+    /// Returns the number of bytes in overdraft (used - capacity). Returns zero if
+    /// usage is still within capacity.
+    #[inline]
+    pub fn overdraft(&self) -> usize {
+        match &self.inner {
+            Some(inner) => {
+                let capacity = inner.capacity.load(Ordering::Relaxed);
+                let used = inner.used.load(Ordering::Relaxed);
+                used.saturating_sub(capacity)
+            }
+            None => 0,
+        }
+    }
+
     /// Tries to reserve `size` bytes without waiting.
     ///
     /// Returns `None` if insufficient capacity.
@@ -163,6 +177,59 @@ impl MemoryPool {
                         return lease;
                     }
                     notified.await;
+                }
+            }
+            None => MemoryLease {
+                budget: self.clone(),
+                size,
+            },
+        }
+    }
+
+    /// Waits until there's any available budget. There's no guarantees
+    /// though that by the time the caller is woken up, that the budget
+    /// will still be available.
+    pub async fn wait_until_available(&self) {
+        let Some(inner) = &self.inner else {
+            return;
+        };
+        loop {
+            let notified = inner.notify.notified();
+            if self.available() > 0 {
+                break;
+            }
+            notified.await;
+        }
+    }
+
+    /// Reserves `size` bytes unconditionally, without checking capacity.
+    ///
+    /// The pool may go into overdraft: `used` exceeds `capacity`, `available()`
+    /// reports 0, and ordinary `try_reserve`/`reserve` callers wait until enough
+    /// leases are returned to repay the debt. Never waits.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the total amount of reserved memory would exceed `usize::MAX`.
+    #[inline]
+    pub fn force_reserve(&self, size: usize) -> MemoryLease {
+        if size == 0 {
+            return MemoryLease {
+                budget: self.clone(),
+                size,
+            };
+        }
+        match &self.inner {
+            Some(inner) => {
+                inner
+                    .used
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                        used.checked_add(size)
+                    })
+                    .expect("MemoryPool used counter overflowed");
+                MemoryLease {
+                    budget: self.clone(),
+                    size,
                 }
             }
             None => MemoryLease {
@@ -480,7 +547,9 @@ const _: () = {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::num::NonZeroUsize;
+    use std::time::Duration;
 
     use super::*;
 
@@ -729,5 +798,84 @@ mod tests {
 
         assert_eq!(count.load(Ordering::Relaxed), 100);
         assert_eq!(budget.used(), bytes(0));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn force_reserve() {
+        let budget = budget(100);
+        let r1 = budget.try_reserve(90).expect("should succeed");
+        assert_eq!(r1.size(), bytes(90));
+        assert_eq!(budget.used(), bytes(90));
+        assert_eq!(budget.available(), 10);
+        assert_eq!(budget.overdraft(), 0);
+
+        assert_matches!(budget.try_reserve(20), None);
+        let r2 = budget.force_reserve(20);
+        assert_eq!(r2.size(), bytes(20));
+        assert_eq!(budget.used(), bytes(110));
+        // available() should still report 0 even though we're in overdraft
+        assert_eq!(budget.available(), 0);
+        assert_eq!(budget.overdraft(), 10);
+
+        // Try to reserve anything while in overdraft will fail
+        assert_matches!(budget.try_reserve(1), None);
+
+        let r3 = budget.force_reserve(50);
+        assert_eq!(r3.size(), bytes(50));
+        assert_eq!(budget.used(), bytes(160));
+        assert_eq!(budget.available(), 0);
+        assert_eq!(budget.overdraft(), 60);
+
+        let mut waiter1 = std::pin::pin!(budget.reserve(10));
+        let mut waiter2 = std::pin::pin!(budget.wait_until_available());
+
+        // Waiters will be blocked
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), waiter1.as_mut())
+                .await
+                .is_err()
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), waiter2.as_mut())
+                .await
+                .is_err()
+        );
+
+        drop(r3);
+        assert_eq!(budget.used(), bytes(110));
+        assert_eq!(budget.available(), 0);
+        assert_eq!(budget.overdraft(), 10);
+
+        // Returning capacity while in overdraft won't fullfill waiters
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), waiter1.as_mut())
+                .await
+                .is_err()
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), waiter2.as_mut())
+                .await
+                .is_err()
+        );
+
+        drop(r2);
+        assert_eq!(budget.used(), bytes(90));
+        assert_eq!(budget.available(), 10);
+        assert_eq!(budget.overdraft(), 0);
+
+        // Only then will waiters be unblocked
+        // waiter2 is waiting for available() to be > 0, so it should be
+        // immediately unblocked.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), waiter2.as_mut())
+                .await
+                .is_ok()
+        );
+        // waiter1 is trying to reserve 10 bytes, which it'll be able to acquire
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), waiter1.as_mut())
+                .await
+                .is_ok()
+        );
     }
 }

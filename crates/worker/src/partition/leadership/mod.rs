@@ -49,12 +49,11 @@ use restate_types::cluster::cluster_state::RunMode;
 use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionId};
-use restate_types::identifiers::{PartitionKey, PartitionProcessorRpcRequestId};
 use restate_types::invocation::FencingToken;
 use restate_types::live::LiveLoadExt;
 use restate_types::logs::Keys;
 use restate_types::message::MessageIndex;
-use restate_types::net::ingest::IngestRecord;
+use restate_types::net::ingest::{IngestRecord, IngestResponse, ResponseStatus};
 use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
@@ -91,10 +90,13 @@ use crate::partition::state_machine::Action;
 use crate::partition::types::InvokerEffect;
 
 use super::node::NodeContext;
-use super::processor::*;
+use super::{processor::*, rpc};
 
 type TimerService = restate_timer::TimerService<TimerKeyValue, TokioClock, TimerReader>;
 type InvokerStream = ReceiverStream<InvokerEffect>;
+type RpcReciprocal =
+    Reciprocal<Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>>;
+type IngestReciprocal = Reciprocal<Oneshot<IngestResponse>>;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -146,7 +148,8 @@ pub(crate) enum TaskTermination {
 }
 
 #[derive(Debug)]
-pub(crate) enum ActionEffect {
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum LeaderEvent {
     Scheduler(scheduler::Decisions),
     Invoker(InvokerEffect),
     Shuffle(shuffle::OutboxTruncation),
@@ -155,13 +158,33 @@ pub(crate) enum ActionEffect {
     PartitionMaintenance(UpdatePartitionDurabilityCommand),
     UpsertSchema(Schema),
     UpsertRuleBook(Arc<restate_limiter::RuleBook>),
-    AwaitingRpcSelfProposeDone,
+    NetworkService(NetworkServiceEvent),
+}
+
+#[derive(derive_more::Debug)]
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum NetworkServiceEvent {
+    RpcProposal {
+        proposal: rpc::RpcProposal,
+        #[debug(skip)]
+        reciprocal: RpcReciprocal,
+    },
+    IngestRecords {
+        records: Vec<IngestRecord>,
+        #[debug(skip)]
+        reciprocal: IngestReciprocal,
+    },
 }
 
 enum State {
     Follower,
     Candidate {
         at: Instant,
+        /// When this node started campaigning for leadership. Unlike `at`, which is reset on
+        /// each state transition to time the current phase, this is preserved across a
+        /// `BecomingLeader` detour so the readiness event can report the full
+        /// candidacy-to-effective-leadership duration.
+        campaign_started_at: Instant,
         leader_epoch: LeaderEpoch,
         // to be able to move out of it
         self_proposer: Option<SelfProposer>,
@@ -170,11 +193,23 @@ enum State {
     /// From the perspective of other nodes, it's the effective leader of the partition.
     BecomingLeader {
         at: Instant,
+        campaign_started_at: Instant,
         leader_epoch: LeaderEpoch,
         // to be able to move out of it
         self_proposer: Option<SelfProposer>,
     },
     Leader(Box<LeaderState>),
+}
+
+/// Readiness recorded when `become_leader` installs `State::Leader`: the epoch it became
+/// leader for, and how long it took to get there, measured from when this node started
+/// campaigning for leadership until it reached effective leadership. This spans the
+/// `AnnounceLeader` log round-trip and, on feature-enabling transitions, the intervening
+/// `BecomingLeader` version-barrier round-trip. It excludes only the leader-epoch acquisition
+/// that precedes the campaign.
+pub(crate) struct EffectiveLeadershipReadiness {
+    pub(crate) leader_epoch: LeaderEpoch,
+    pub(crate) time_to_effective_leadership: Duration,
 }
 
 impl State {
@@ -194,6 +229,11 @@ pub(crate) struct LeadershipState<T> {
     partition_id: PartitionId,
     ingestion_client: IngestionClient<T, Envelope>,
     leader_query_tx: LeaderQuerySender,
+
+    /// Set when `become_leader` installs `State::Leader`, cleared by
+    /// `take_effective_leadership_readiness` once the enclosing batch has been successfully
+    /// committed locally and the readiness log can be safely emitted.
+    became_effective_leader: Option<EffectiveLeadershipReadiness>,
 }
 
 impl<T> LeadershipState<T>
@@ -210,11 +250,26 @@ where
             partition_id,
             ingestion_client,
             leader_query_tx,
+            became_effective_leader: None,
         }
     }
 
     pub(crate) fn is_leader(&self) -> bool {
         matches!(self.state, State::Leader(_) | State::BecomingLeader { .. })
+    }
+
+    pub(crate) fn is_effective_leader(&self) -> bool {
+        matches!(self.state, State::Leader(_))
+    }
+
+    /// Returns and consumes the readiness recorded when `become_leader` installed
+    /// `State::Leader`, but only if the processor is still an effective leader. The token is
+    /// consumed even after a same-batch step-down, so it can never be observed twice.
+    pub(crate) fn take_effective_leadership_readiness(
+        &mut self,
+    ) -> Option<EffectiveLeadershipReadiness> {
+        let readiness = self.became_effective_leader.take()?;
+        self.is_effective_leader().then_some(readiness)
     }
 
     pub(crate) fn partition_id(&self) -> PartitionId {
@@ -230,13 +285,18 @@ where
         }
     }
 
-    pub(super) fn should_process_rpc(&self) -> bool {
-        // In case of BecomingLeader we prefer to park RPC requests
-        // until we transition out of the current state.
-        matches!(
-            self.state,
-            State::Leader(_) | State::Follower | State::Candidate { .. }
-        )
+    pub(super) fn try_reserve_rpc_processing_permit(&self) -> Option<RpcProcessingPermit> {
+        match &self.state {
+            State::Leader(leader_state) => leader_state
+                .try_reserve_network_event_permit()
+                .map(RpcProcessingPermit::Leader),
+            State::Follower | State::Candidate { .. } => Some(RpcProcessingPermit::NonLeader {
+                partition_id: self.partition_id(),
+            }),
+            // In case of BecomingLeader we prefer to park RPC requests
+            // until we transition out of the current state.
+            State::BecomingLeader { .. } => None,
+        }
     }
 
     #[instrument(level = "debug", skip_all, fields(leader_epoch = %leadership_info.leader_epoch))]
@@ -272,6 +332,7 @@ where
         ctx: impl Processor,
         node_ctx: &NodeContext,
     ) -> Result<(), Error> {
+        let campaign_started_at = Instant::now();
         let leader_epoch = leadership_info.leader_epoch;
 
         let announce_leader = Command::AnnounceLeader(Box::new(AnnounceLeaderCommand {
@@ -289,12 +350,11 @@ where
             &node_ctx.bifrost,
         )?;
 
-        self_proposer
-            .self_propose(ctx.key_range().start(), announce_leader)
-            .await?;
+        self_proposer.self_propose_unaccounted(ctx.key_range().start(), announce_leader)?;
 
         self.state = State::Candidate {
             at: Instant::now(),
+            campaign_started_at,
             leader_epoch,
             self_proposer: Some(self_proposer),
         };
@@ -462,11 +522,13 @@ where
 
         if let State::Candidate {
             at,
+            campaign_started_at,
             leader_epoch,
             self_proposer,
         }
         | State::BecomingLeader {
             at,
+            campaign_started_at,
             leader_epoch,
             self_proposer,
         } = &mut self.state
@@ -548,17 +610,15 @@ where
                         .collect::<Vec<_>>()
                         .join(", ")
                 );
-                self_proposer
-                    .self_propose(
-                        processor.key_range().start(),
-                        Command::VersionBarrier(VersionBarrierCommand {
-                            version: barrier_version,
-                            partition_key_range: Keys::RangeInclusive(processor.key_range().into()),
-                            human_reason: Some("Apply state-machine feature changes".to_owned()),
-                            feature_changes: feature_changes.into_iter().map(|c| c.id()).collect(),
-                        }),
-                    )
-                    .await?;
+                self_proposer.self_propose_unaccounted(
+                    processor.key_range().start(),
+                    Command::VersionBarrier(VersionBarrierCommand {
+                        version: barrier_version,
+                        partition_key_range: Keys::RangeInclusive(processor.key_range().into()),
+                        human_reason: Some("Apply state-machine feature changes".to_owned()),
+                        feature_changes: feature_changes.into_iter().map(|c| c.id()).collect(),
+                    }),
+                )?;
 
                 // Switch to BecomingLeader state until we finish any pending tasks to enable the
                 // new features. We will transition us to an effective leader when the state
@@ -579,6 +639,7 @@ where
 
                 self.state = State::BecomingLeader {
                     at: Instant::now(),
+                    campaign_started_at: *campaign_started_at,
                     leader_epoch: *leader_epoch,
                     self_proposer: Some(self_proposer),
                 };
@@ -715,9 +776,11 @@ where
                 at.elapsed().friendly(),
             );
 
+            let leader_epoch = *leader_epoch;
+            let campaign_started_at = *campaign_started_at;
             self.state = State::Leader(Box::new(LeaderState::new(
                 processor.partition_id(),
-                *leader_epoch,
+                leader_epoch,
                 processor.key_range(),
                 shuffle_task_handle,
                 cleaner_handle,
@@ -736,6 +799,11 @@ where
                 leader_query_guard,
                 node_ctx.rule_book_cache.subscribe(),
             )));
+
+            self.became_effective_leader = Some(EffectiveLeadershipReadiness {
+                leader_epoch,
+                time_to_effective_leadership: campaign_started_at.elapsed(),
+            });
 
             Ok(())
         } else {
@@ -824,13 +892,10 @@ where
     ///
     /// * Follower: Nothing to do
     /// * Candidate: Monitor appender task
-    /// * Leader: Await action effects and monitor appender task
-    pub async fn run(
-        &mut self,
-        ctx: impl Processor + HasVQueues,
-    ) -> Result<Vec<ActionEffect>, Error> {
+    /// * Leader: Await events and monitor appender task
+    pub async fn run(&mut self, ctx: impl Processor + HasVQueues) -> Result<(), Error> {
         match &mut self.state {
-            State::Follower => Ok(futures::future::pending::<Vec<_>>().await),
+            State::Follower => futures::future::pending().await,
             State::Candidate { self_proposer, .. }
             | State::BecomingLeader { self_proposer, .. } => Err(self_proposer
                 .as_mut()
@@ -840,22 +905,6 @@ where
                 .expect_err("never should never be returned")),
             State::Leader(leader_state) => leader_state.run(ctx).await,
         }
-    }
-
-    pub async fn handle_action_effects(
-        &mut self,
-        action_effects: impl IntoIterator<Item = ActionEffect>,
-    ) -> Result<(), Error> {
-        match &mut self.state {
-            State::Follower | State::Candidate { .. } | State::BecomingLeader { .. } => {
-                // nothing to do :-)
-            }
-            State::Leader(leader_state) => {
-                leader_state.handle_action_effects(action_effects).await?
-            }
-        }
-
-        Ok(())
     }
 
     // This is returned only if we're leaders (otherwise there's no messages to be sent to the invoker)
@@ -888,102 +937,6 @@ impl<T> LeadershipState<T> {
             }
             (_, request) => {
                 let _ = response_tx.send(LeaderQueryResponse::NotLeader(request.kind()));
-            }
-        }
-    }
-
-    pub async fn handle_rpc_proposal_command(
-        &mut self,
-        request_id: PartitionProcessorRpcRequestId,
-        reciprocal: Reciprocal<
-            Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
-        >,
-        partition_key: PartitionKey,
-        cmd: Command,
-    ) {
-        match &mut self.state {
-            State::Follower | State::Candidate { .. } | State::BecomingLeader { .. } => {
-                // Just fail the rpc
-                reciprocal.send(Err(PartitionProcessorRpcError::NotLeader(
-                    self.partition_id,
-                )))
-            }
-            State::Leader(leader_state) => {
-                leader_state
-                    .handle_rpc_proposal_command(request_id, reciprocal, partition_key, cmd)
-                    .await;
-            }
-        }
-    }
-
-    pub async fn propose_pause_and_fence(
-        &mut self,
-        request_id: PartitionProcessorRpcRequestId,
-        reciprocal: Reciprocal<
-            Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
-        >,
-        invocation_id: InvocationId,
-        cmd: Command,
-    ) {
-        match &mut self.state {
-            State::Follower | State::Candidate { .. } | State::BecomingLeader { .. } => {
-                // Just fail the rpc
-                reciprocal.send(Err(PartitionProcessorRpcError::NotLeader(
-                    self.partition_id,
-                )))
-            }
-            State::Leader(leader_state) => {
-                leader_state
-                    .propose_pause_and_fence(request_id, reciprocal, invocation_id, cmd)
-                    .await;
-            }
-        }
-    }
-
-    /// Append a command to Bifrost without dedup information, responding on Bifrost commit.
-    pub async fn append_and_respond_asynchronously(
-        &mut self,
-        partition_key: PartitionKey,
-        cmd: Command,
-        reciprocal: Reciprocal<
-            Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
-        >,
-        success_response: PartitionProcessorRpcResponse,
-    ) {
-        match &mut self.state {
-            State::Follower | State::Candidate { .. } | State::BecomingLeader { .. } => reciprocal
-                .send(Err(PartitionProcessorRpcError::NotLeader(
-                    self.partition_id,
-                ))),
-            State::Leader(leader_state) => {
-                leader_state
-                    .append_and_respond_asynchronously(
-                        partition_key,
-                        cmd,
-                        reciprocal,
-                        success_response,
-                    )
-                    .await;
-            }
-        }
-    }
-
-    /// Forward externally-created records to this partition.
-    pub async fn forward_many_with_callback<F>(
-        &mut self,
-        records: impl ExactSizeIterator<Item = IngestRecord>,
-        callback: F,
-    ) where
-        F: FnOnce(Result<(), PartitionProcessorRpcError>) + Send + Sync + 'static,
-    {
-        match &mut self.state {
-            State::Follower | State::Candidate { .. } | State::BecomingLeader { .. } => callback(
-                Err(PartitionProcessorRpcError::NotLeader(self.partition_id)),
-            ),
-            State::Leader(leader_state) => {
-                leader_state
-                    .forward_many_with_callback(records, callback)
-                    .await;
             }
         }
     }
@@ -1028,6 +981,45 @@ impl shuffle::OutboxReader for OutboxReader {
         };
 
         Ok(result)
+    }
+}
+
+pub(super) enum RpcProcessingPermit {
+    Leader(tokio::sync::mpsc::OwnedPermit<NetworkServiceEvent>),
+    NonLeader { partition_id: PartitionId },
+}
+
+impl RpcProcessingPermit {
+    pub fn buffer_rpc_proposal(self, proposal: rpc::RpcProposal, reciprocal: RpcReciprocal) {
+        match self {
+            RpcProcessingPermit::NonLeader { partition_id } => {
+                reciprocal.send(Err(PartitionProcessorRpcError::NotLeader(partition_id)))
+            }
+            RpcProcessingPermit::Leader(permit) => {
+                permit.send(NetworkServiceEvent::RpcProposal {
+                    proposal,
+                    reciprocal,
+                });
+            }
+        }
+    }
+
+    pub fn buffer_forwarded_records(
+        self,
+        records: Vec<IngestRecord>,
+        reciprocal: IngestReciprocal,
+    ) {
+        match self {
+            RpcProcessingPermit::NonLeader { partition_id } => {
+                reciprocal.send(ResponseStatus::NotLeader { of: partition_id }.into());
+            }
+            RpcProcessingPermit::Leader(permit) => {
+                permit.send(NetworkServiceEvent::IngestRecords {
+                    records,
+                    reciprocal,
+                });
+            }
+        }
     }
 }
 
@@ -1152,6 +1144,7 @@ mod tests {
         // the journal-v2 default; the processor stays `BecomingLeader` until that barrier
         // is applied.
         assert!(matches!(state.state, State::BecomingLeader { .. }));
+        assert!(!state.is_effective_leader());
 
         let record = reader.next().await.unwrap()?;
         let envelope = record.try_decode::<Envelope>().unwrap()?;
@@ -1173,6 +1166,19 @@ mod tests {
             .await?;
 
         assert!(matches!(state.state, State::Leader(_)));
+        assert!(state.is_effective_leader());
+
+        // become_leader() only records the transition; the caller (the partition
+        // processor's run loop) is responsible for emitting the readiness log, and only
+        // after the enclosing batch has been successfully committed locally.
+        let readiness = state
+            .take_effective_leadership_readiness()
+            .expect("become_leader records the transition to effective leadership");
+        assert_eq!(readiness.leader_epoch, leader_epoch);
+        // Measured from candidacy, so it spans the AnnounceLeader and BecomingLeader
+        // round-trips this test walked through, not just the final become_leader body.
+        assert!(!readiness.time_to_effective_leadership.is_zero());
+        assert!(state.take_effective_leadership_readiness().is_none());
 
         state.step_down().await;
 

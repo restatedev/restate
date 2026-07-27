@@ -25,6 +25,7 @@ use restate_types::live::LiveLoadExt;
 use restate_core::MetadataWriter;
 use restate_core::my_node_id;
 use restate_core::{Metadata, ShutdownError};
+use restate_memory::NonZeroByteCount;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::SealMetadata;
 use restate_types::logs::metadata::{LogletParams, Logs, SegmentIndex};
@@ -206,16 +207,17 @@ impl Bifrost {
         ))
     }
 
+    /// See [`BackgroundAppender::new`] for the semantics of `memory_limit`.
     pub fn create_background_appender<T: StorageEncode>(
         &self,
         log_id: LogId,
         error_recovery_strategy: ErrorRecoveryStrategy,
-        queue_capacity: usize,
+        memory_limit: Option<NonZeroByteCount>,
         max_batch_size: usize,
     ) -> Result<BackgroundAppender<T>> {
         Ok(BackgroundAppender::new(
             self.create_appender(log_id, error_recovery_strategy)?,
-            queue_capacity,
+            memory_limit,
             max_batch_size,
         ))
     }
@@ -1359,7 +1361,7 @@ mod tests {
         let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
 
         let background_appender: crate::BackgroundAppender<String> = bifrost
-            .create_background_appender(LogId::new(0), ErrorRecoveryStrategy::Wait, 10, 10)?;
+            .create_background_appender(LogId::new(0), ErrorRecoveryStrategy::Wait, None, 10)?;
 
         let mut handle = background_appender.start("test-appender")?;
         let sender = handle.sender();
@@ -1367,8 +1369,8 @@ mod tests {
         // A string with 100 bytes
         let payload = String::from_utf8(vec![b't'; 100]).unwrap();
 
-        // try_enqueue should fail with RecordTooLarge
-        let result = sender.try_enqueue(payload.clone());
+        // enqueue should fail with RecordTooLarge
+        let result = sender.enqueue(payload.clone());
         assert_that!(
             result,
             pat!(Err(pat!(EnqueueError::RecordTooLarge {
@@ -1378,7 +1380,7 @@ mod tests {
         );
 
         // enqueue (async) should also fail with RecordTooLarge
-        let result = sender.enqueue(payload.clone()).await;
+        let result = sender.enqueue(payload.clone());
         assert_that!(
             result,
             pat!(Err(pat!(EnqueueError::RecordTooLarge {
@@ -1387,8 +1389,8 @@ mod tests {
             })))
         );
 
-        // try_enqueue_with_notification should also fail
-        let result = sender.try_enqueue_with_notification(payload.clone());
+        // enqueue_with_notification should also fail
+        let result = sender.enqueue_with_notification(payload.clone());
         assert!(matches!(
             result,
             Err(EnqueueError::RecordTooLarge {
@@ -1415,14 +1417,14 @@ mod tests {
         let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
 
         let background_appender: crate::BackgroundAppender<String> = bifrost
-            .create_background_appender(LogId::new(0), ErrorRecoveryStrategy::Wait, 10, 10)?;
+            .create_background_appender(LogId::new(0), ErrorRecoveryStrategy::Wait, None, 10)?;
 
         let mut handle = background_appender.start("test-appender")?;
         let sender = handle.sender();
 
         // With a 10KB limit, the ~2KB estimated record should succeed
         let payload = "test".to_string();
-        sender.enqueue(payload).await?;
+        sender.enqueue(payload)?;
 
         // Drain and wait for commit
         handle.drain().await?;
@@ -1442,21 +1444,16 @@ mod tests {
         let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
 
         let background_appender: crate::BackgroundAppender<String> = bifrost
-            .create_background_appender(LogId::new(0), ErrorRecoveryStrategy::Wait, 1000, 100)?;
+            .create_background_appender(LogId::new(0), ErrorRecoveryStrategy::Wait, None, 100)?;
 
         let mut handle = background_appender.start("test-appender")?;
         let sender = handle.sender();
 
-        // Rapidly enqueue many records using try_enqueue (non-blocking)
+        // Rapidly enqueue many records using enqueue
         let mut enqueued = 0;
         for i in 0..100 {
-            match sender.try_enqueue(format!("rapid-record-{i}")) {
-                Ok(()) => enqueued += 1,
-                Err(EnqueueError::Full(_)) => {
-                    // Queue is full, use async enqueue
-                    sender.enqueue(format!("rapid-record-{i}")).await?;
-                    enqueued += 1;
-                }
+            match sender.enqueue(format!("rapid-record-{i}")) {
+                Ok(_) => enqueued += 1,
                 Err(e) => return Err(e.into()),
             }
         }
@@ -1464,7 +1461,7 @@ mod tests {
         assert_that!(enqueued, eq(100));
 
         // Wait for all to be committed
-        let token = sender.notify_committed().await?;
+        let token = sender.notify_committed()?;
         token.await?;
 
         handle.drain().await?;

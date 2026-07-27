@@ -12,10 +12,6 @@ use crate::table_macro::*;
 
 use datafusion::arrow::datatypes::DataType;
 
-// Stage scans run concurrently and merge into a shared builder, so only
-// `partition_key` is monotone within a single partition's output stream.
-define_sort_order!(sys_vqueues(partition_key));
-
 define_table!(sys_vqueues(
     /// Internal column that is used for partitioning. Can be ignored.
     partition_key: DataType::UInt64,

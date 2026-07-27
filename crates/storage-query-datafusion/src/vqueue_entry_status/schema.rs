@@ -8,9 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::table_macro::*;
-
 use datafusion::arrow::datatypes::DataType;
+
+use crate::table_macro::*;
 
 define_sort_order!(sys_vqueue_entry_status(partition_key));
 

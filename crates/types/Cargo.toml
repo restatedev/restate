@@ -139,5 +139,9 @@ harness = false
 name = "id_encoding"
 harness = false
 
+[[bench]]
+name = "record_cache"
+harness = false
+
 [lints]
 workspace = true

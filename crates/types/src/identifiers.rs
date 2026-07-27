@@ -385,6 +385,11 @@ impl FromStr for InvocationUuid {
 
         // ulid (u128)
         let raw_ulid: u128 = decoder.cursor.decode_next()?;
+
+        if decoder.cursor.remaining() != 0 {
+            return Err(IdDecodeError::Length);
+        }
+
         Ok(Self::from(raw_ulid))
     }
 }
@@ -743,6 +748,11 @@ impl FromStr for InvocationId {
         // ulid (u128)
         let raw_ulid: u128 = decoder.cursor.decode_next()?;
         let inner = InvocationUuid::from(raw_ulid);
+
+        if decoder.cursor.remaining() != 0 {
+            return Err(IdDecodeError::Length);
+        }
+
         Ok(Self {
             partition_key,
             inner,
