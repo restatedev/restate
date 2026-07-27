@@ -51,10 +51,12 @@ pub const USAGE_LEADER_JOURNAL_ENTRY_COUNT: &str = "restate.usage.leader_journal
 
 pub const NUM_PARTITIONS: &str = "restate.num_partitions";
 pub const NUM_ACTIVE_PARTITIONS: &str = "restate.num_active_partitions";
+pub const NUM_ACTIVE_PARTITION_LEADERS: &str = "restate.num_active_partition_leaders";
 pub const PARTITION_TIME_SINCE_LAST_STATUS_UPDATE: &str =
-    "restate.partition.time_since_last_status_update";
+    "restate.partition.time_since_last_status_update.seconds";
 pub const PARTITION_APPLIED_LSN_LAG: &str = "restate.partition.applied_lsn_lag";
-pub const PARTITION_IS_EFFECTIVE_LEADER: &str = "restate.partition.is_effective_leader";
+pub const PARTITION_NUM_UNKNOWN_APPLIED_LSN_LAG: &str =
+    "restate.partition.num_unknown_applied_lsn_lag";
 
 pub const PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS: &str =
     "restate.partition.record_committed_to_read_latency.seconds";
@@ -122,27 +124,33 @@ pub(crate) fn describe_metrics() {
     );
 
     describe_gauge!(
-        PARTITION_IS_EFFECTIVE_LEADER,
+        NUM_ACTIVE_PARTITION_LEADERS,
         Unit::Count,
-        "Set to 1 if the partition is an effective leader"
+        "Number of active partition leaders started by partition processor manager on this node"
     );
 
-    describe_gauge!(
+    describe_histogram!(
         PARTITION_TIME_SINCE_LAST_STATUS_UPDATE,
         Unit::Seconds,
-        "Number of seconds since the last partition status update"
+        "Distribution of the number of seconds since the last status update, across the partitions on this node"
     );
 
-    describe_gauge!(
+    describe_histogram!(
         PARTITION_APPLIED_LSN_LAG,
         Unit::Count,
-        "Number of records between last applied lsn and the log tail"
+        "Distribution of the number of records between last applied lsn and the log tail, across the partitions on this node"
     );
 
     describe_gauge!(
+        PARTITION_NUM_UNKNOWN_APPLIED_LSN_LAG,
+        Unit::Count,
+        "Number of partitions with unknown applied lsn lag"
+    );
+
+    describe_histogram!(
         SNAPSHOT_AGE,
         Unit::Seconds,
-        "The age of the latest partition snapshot in seconds"
+        "Distribution of the age in seconds of the latest snapshot, across the partitions on this node"
     );
 
     describe_counter!(

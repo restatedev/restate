@@ -3539,7 +3539,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Gap between applied LSN and log tail per partition",
+      "description": "Distribution of the gap between applied LSN and log tail across active partitions, by node. Partitions with unknown lag are shown on the right axis.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3590,7 +3590,41 @@
           },
           "unit": "short"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "E"
+            },
+            "properties": [
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "custom.axisLabel",
+                "value": "Unknown partitions"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    10,
+                    10
+                  ],
+                  "fill": "dash"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 7,
@@ -3622,12 +3656,48 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "restate_partition_applied_lsn_lag{cluster_name=\"$cluster\", node_name=~\"$node\", partition=~\"$partition\"}",
-          "legendFormat": "{{node_name}}/p{{partition}}",
+          "expr": "restate_partition_applied_lsn_lag{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=\"0.5\"}",
+          "legendFormat": "{{node_name}} p50",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "restate_partition_applied_lsn_lag{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=\"0.9\"}",
+          "legendFormat": "{{node_name}} p90",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "restate_partition_applied_lsn_lag{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=\"0.99\"}",
+          "legendFormat": "{{node_name}} p99",
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "restate_partition_applied_lsn_lag{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=\"1.0\"}",
+          "legendFormat": "{{node_name}} max",
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "restate_partition_num_unknown_applied_lsn_lag{cluster_name=\"$cluster\", node_name=~\"$node\"}",
+          "legendFormat": "{{node_name}} unknown",
+          "refId": "E"
         }
       ],
-      "title": "Applied LSN Lag",
+      "title": "Applied LSN Lag Quantiles",
       "type": "timeseries"
     },
     {
@@ -4022,7 +4092,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Maximum snapshot age per partition (across all nodes). High values indicate snapshots may be stale.",
+      "description": "Distribution of the age of the latest snapshot across the partitions known to each node. High values indicate snapshots may be stale. Note that partitions that have never been snapshotted contribute no sample, so they do not show up here at all.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -4104,9 +4174,18 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "max by (partition) (restate_partition_snapshot_age_seconds{cluster_name=\"$cluster\", node_name=~\"$node\", partition=~\"$partition\"})",
-          "legendFormat": "p{{partition}}",
+          "expr": "restate_partition_snapshot_age_seconds{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=\"0.5\"}",
+          "legendFormat": "{{node_name}} p50",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "restate_partition_snapshot_age_seconds{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=\"1\"}",
+          "legendFormat": "{{node_name}} max",
+          "refId": "B"
         }
       ],
       "title": "Snapshot Age",
@@ -5911,7 +5990,7 @@
         "multi": true,
         "name": "partition",
         "options": [],
-        "query": "label_values(restate_partition_is_effective_leader{cluster_name=\"$cluster\"}, partition)",
+        "query": "label_values(restate_partition_start_total{cluster_name=\"$cluster\"}, partition)",
         "refresh": 1,
         "regex": "",
         "sort": 3,
