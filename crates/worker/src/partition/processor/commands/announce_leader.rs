@@ -91,9 +91,7 @@ impl<P: Processor + HasFsmMut + HasVQueuesMut + HasTrimQueue + HasStatusMut, T: 
             )
             .await?;
 
-        if self.leadership.is_leader()
-            && let Some(cached) = self.processor.fsm().epoch_metadata()
-        {
+        if let Some(cached) = self.processor.fsm().epoch_metadata() {
             self.node_ctx.replica_set_states.note_observed_membership(
                 self.processor.partition_id(),
                 restate_types::partitions::state::LeadershipState {
@@ -104,14 +102,6 @@ impl<P: Processor + HasFsmMut + HasVQueuesMut + HasTrimQueue + HasStatusMut, T: 
                 &cached.next.as_ref().map(|c| &c.replica_set).cloned(),
             );
         }
-
-        self.node_ctx.replica_set_states.note_observed_leader(
-            self.processor.partition_id(),
-            restate_types::partitions::state::LeadershipState {
-                current_leader_epoch: announce_leader.leader_epoch,
-                current_leader: announce_leader.node_id,
-            },
-        );
 
         Ok(NextStep::AdvanceLastAppliedLsn {
             lsn,
