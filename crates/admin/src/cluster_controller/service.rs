@@ -23,7 +23,7 @@ use rand::seq::IteratorRandom;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use restate_bifrost::{Bifrost, MaybeSealedSegment};
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
@@ -213,6 +213,7 @@ enum ClusterControllerCommand {
         log_id: LogId,
         segment_index: Option<SegmentIndex>,
         permanent_seal: bool,
+        tail_lsn: Option<Lsn>,
         context: std::collections::HashMap<String, String>,
         response_tx: oneshot::Sender<anyhow::Result<Lsn>>,
     },
@@ -320,6 +321,7 @@ impl ClusterControllerHandle {
         segment_index: Option<SegmentIndex>,
         permanent_seal: bool,
         context: std::collections::HashMap<String, String>,
+        tail_lsn: Option<Lsn>,
     ) -> Result<anyhow::Result<Lsn>, ShutdownError> {
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -330,6 +332,7 @@ impl ClusterControllerHandle {
                 segment_index,
                 permanent_seal,
                 context,
+                tail_lsn,
                 response_tx,
             })
             .await;
@@ -568,6 +571,7 @@ impl<T: TransportConnect> Service<T> {
                 segment_index,
                 permanent_seal,
                 mut context,
+                tail_lsn,
                 response_tx,
             } => {
                 let bifrost = self.bifrost.clone();
@@ -580,6 +584,7 @@ impl<T: TransportConnect> Service<T> {
                         log_id,
                         segment_index,
                         permanent_seal,
+                        forced_tail_lsn: tail_lsn,
                         context,
                         bifrost,
                     }
@@ -786,6 +791,9 @@ struct SealChainTask {
     segment_index: Option<SegmentIndex>,
     permanent_seal: bool,
     context: std::collections::HashMap<String, String>,
+    /// If set, we will use this tail LSN value instead of the actual calculated tail from the
+    /// underlying loglet.
+    forced_tail_lsn: Option<Lsn>,
     bifrost: Bifrost,
 }
 
@@ -798,13 +806,26 @@ impl SealChainTask {
             .tail()
             .index();
 
+        if let Some(forced_tail_lsn) = &self.forced_tail_lsn {
+            warn!(
+                context = ?self.context,
+                "Force-sealing log {} with tail LSN {forced_tail_lsn} due to an admin request",
+                self.log_id
+            );
+        }
+
         let segment_index = self.segment_index.unwrap_or(actual_tail_segment);
         let seal_metadata = SealMetadata::with_context(self.permanent_seal, self.context);
 
         let tail_lsn = self
             .bifrost
             .admin()
-            .seal(self.log_id, segment_index, seal_metadata)
+            .seal(
+                self.log_id,
+                segment_index,
+                seal_metadata,
+                self.forced_tail_lsn,
+            )
             .await?;
 
         Ok(tail_lsn)
