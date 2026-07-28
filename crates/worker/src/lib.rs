@@ -26,10 +26,6 @@ mod subscription_integration;
 use std::sync::Arc;
 
 use codederror::CodedError;
-use restate_core::network::Swimlane;
-use restate_ingestion_client::SessionOptions;
-use restate_types::net::connect_opts::GrpcConnectionOptions;
-use restate_wal_protocol::Envelope;
 use tracing::info;
 
 use restate_bifrost::Bifrost;
@@ -37,11 +33,13 @@ use restate_core::MetadataKind;
 use restate_core::cancellation_watcher;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
+use restate_core::network::Swimlane;
 use restate_core::network::TransportConnect;
 use restate_core::partitions::PartitionRouting;
 use restate_core::{Metadata, TaskKind};
 use restate_core::{MetadataWriter, TaskCenter};
 use restate_ingestion_client::IngestionClient;
+use restate_ingestion_client::SessionOptions;
 use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_partition_store::PartitionStoreManager;
 use restate_partition_store::snapshots::SnapshotRepository;
@@ -51,11 +49,13 @@ use restate_types::Version;
 use restate_types::Versioned;
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
+use restate_types::net::connect_opts::GrpcConnectionOptions;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::schema::Redaction;
 use restate_types::schema::kafka::KafkaClusterResolver;
 use restate_types::schema::subscriptions::SubscriptionResolver;
+use restate_wal_protocol::v2::{Envelope, Raw};
 use restate_worker_api::ProcessorsManagerHandle;
 
 use crate::partition_processor_manager::PartitionProcessorManager;
@@ -113,7 +113,7 @@ where
         partition_store_manager: Arc<PartitionStoreManager>,
         networking: Networking<T>,
         bifrost: Bifrost,
-        ingestion_client: IngestionClient<T, Envelope>,
+        ingestion_client: IngestionClient<T, Envelope<Raw>>,
         router_builder: &mut MessageRouterBuilder,
         metadata_writer: MetadataWriter,
         remote_scanner_manager: RemoteScannerManager,
@@ -131,7 +131,7 @@ where
         let schema = metadata.updateable_schema();
 
         // ingress_kafka
-        let ingress_kafka = IngressKafkaService::new(ingestion_client.clone(), schema.clone());
+        let ingress_kafka = IngressKafkaService::new(ingestion_client, schema.clone());
 
         let subscription_controller_handle =
             SubscriptionControllerHandle::new(ingress_kafka.create_command_sender());
