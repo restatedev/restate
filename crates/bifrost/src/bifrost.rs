@@ -398,6 +398,7 @@ impl BifrostInner {
                                 log_id,
                                 loglet.segment_index(),
                                 SealMetadata::new("find-tail", my_node_id()),
+                                None,
                             )
                             .await
                         {
@@ -1253,7 +1254,7 @@ mod tests {
         // seal and don't extend the chain.
         let _ = bifrost
             .admin()
-            .seal(LOG_ID, SegmentIndex::from(0), SealMetadata::default())
+            .seal(LOG_ID, SegmentIndex::from(0), SealMetadata::default(), None)
             .await?;
 
         // appends should stall!
