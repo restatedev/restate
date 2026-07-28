@@ -20,7 +20,7 @@ use restate_worker_api::processor::{OutboxAccess, OutboxMut};
 
 pub struct Outbox {
     /// First outbox message index that needs to be sent out.
-    outbox_head_seq: Option<MessageIndex>,
+    outbox_head_seq: MessageIndex,
     /// Sequence number of the next outbox message to be appended.
     outbox_tail_seq: MessageIndex,
 }
@@ -30,17 +30,7 @@ impl Outbox {
     pub fn new_empty() -> Self {
         Self {
             outbox_tail_seq: 0,
-            outbox_head_seq: None,
-        }
-    }
-
-    /// Builds an outbox with pre-set head/tail sequence numbers, without touching
-    /// storage. Lets partition-command tests simulate a partially-truncated outbox.
-    #[cfg(test)]
-    pub fn seed(tail: MessageIndex, head: Option<MessageIndex>) -> Self {
-        Self {
-            outbox_tail_seq: tail,
-            outbox_head_seq: head,
+            outbox_head_seq: 0,
         }
     }
 
@@ -52,7 +42,7 @@ impl Outbox {
         let outbox_head_seq_number = storage.get_outbox_head_seq_number().await?;
         Ok(Self {
             outbox_tail_seq: outbox_seq_number,
-            outbox_head_seq: outbox_head_seq_number,
+            outbox_head_seq: outbox_head_seq_number.unwrap_or(outbox_seq_number),
         })
     }
 }
@@ -60,10 +50,6 @@ impl Outbox {
 impl OutboxAccess for Outbox {
     fn outbox_tail(&self) -> MessageIndex {
         self.outbox_tail_seq
-    }
-
-    fn outbox_head(&self) -> Option<MessageIndex> {
-        self.outbox_head_seq
     }
 }
 
@@ -74,7 +60,11 @@ impl OutboxMut for Outbox {
         to: MessageIndex,
     ) -> Result<(), StorageError> {
         // todo: Add validation or clamping to avoid truncating >= the outbox tail
-        let range = RangeInclusive::new(self.outbox_head_seq.unwrap_or(to), to);
+        if self.outbox_head_seq > to {
+            // We've already truncated those messages before
+            return Ok(());
+        }
+        let range = RangeInclusive::new(self.outbox_head_seq, to);
         trace!(
             restate.outbox.seq_from = range.start(),
             restate.outbox.seq_to = range.end(),
@@ -83,7 +73,7 @@ impl OutboxMut for Outbox {
 
         txn.truncate_outbox(range)?;
 
-        self.outbox_head_seq = Some(to + 1);
+        self.outbox_head_seq = to + 1;
         Ok(())
     }
 
