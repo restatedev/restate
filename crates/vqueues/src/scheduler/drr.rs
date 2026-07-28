@@ -271,8 +271,12 @@ impl<S: VQueueStore> DRRScheduler<S> {
                         VQueueState::new(slot.vqueue_id(), &self.storage, slot.meta().num_running())
                     });
 
-                    self.eligible
-                        .refresh_membership(event.queue, slot.meta(), qstate);
+                    if self
+                        .eligible
+                        .refresh_membership(event.queue, slot.meta(), qstate)
+                    {
+                        self.wake_up();
+                    }
                 }
                 EventDetails::EnqueuedToInbox { key, value } => {
                     let Some(slot) = metas.get(event.queue) else {
@@ -290,18 +294,27 @@ impl<S: VQueueStore> DRRScheduler<S> {
                         // The newly enqueued item became the head of the queue.
                         // If the vqueue was blocked we need to place it back
                         // on the ready ring if it wasn't already there.
+                        let mut wake_up = false;
                         if let Some(resource) = self.eligible.mark_queue_unblocked(event.queue) {
                             self.resource_manager.remove_vqueue(event.queue, &resource);
-                        } else {
-                            self.eligible
-                                .refresh_membership(event.queue, slot.meta(), qstate);
+                            wake_up = true;
+                        } else if self
+                            .eligible
+                            .refresh_membership(event.queue, slot.meta(), qstate)
+                        {
+                            wake_up = true;
                         }
 
                         // Let the other queues that were blocked on my partial permit
                         // get unblocked. But only after I added myself back (potentially)
                         // to the ready ring.
-                        self.resource_manager
+                        wake_up |= self
+                            .resource_manager
                             .revert_permit_builder(&mut self.eligible, permit_builder);
+
+                        if wake_up {
+                            self.wake_up();
+                        }
                     }
                 }
                 EventDetails::RemovedFromInbox(key) => {
@@ -321,10 +334,12 @@ impl<S: VQueueStore> DRRScheduler<S> {
                     // 3. None of the above, removing only changes the vqueue metadata.
                     //
                     // If we have been holding a concurrency permit for this item, we release it.
+                    let mut wake_up = false;
                     if let Some((permit, _)) = qstate.remove_from_unconfirmed_assignments(key) {
                         // Case 1:
                         // This item is _not_ going to run, so we revert its built up permit
-                        self.resource_manager
+                        wake_up |= self
+                            .resource_manager
                             .revert_permit_builder(&mut self.eligible, permit);
                     } else if let Some(permit_builder) = qstate.notify_removed(key) {
                         // Case 2:
@@ -339,11 +354,13 @@ impl<S: VQueueStore> DRRScheduler<S> {
                             // force the queue to be polled again since the head
                             // will definitely be unknown at this point.
                             self.eligible.ensure_queue_needs_polling(event.queue);
+                            wake_up = true;
                         }
                         // let the other queues that were blocked on my partial permit
                         // get unblocked. But only after I added myself back (potentially)
                         // to the ready ring.
-                        self.resource_manager
+                        wake_up |= self
+                            .resource_manager
                             .revert_permit_builder(&mut self.eligible, permit_builder);
                     }
 
@@ -351,14 +368,22 @@ impl<S: VQueueStore> DRRScheduler<S> {
                         // the removal makes the queue dormant. Remove it from everything
                         self.mark_vqueue_as_dormant(slot.vqueue_id(), event.queue);
                     }
+
+                    if wake_up {
+                        self.wake_up();
+                    }
                 }
             }
         }
     }
 
     fn release_lock(&mut self, scope: &Option<Scope>, lock_name: &LockName) {
-        self.resource_manager
-            .release_lock(&mut self.eligible, scope, lock_name);
+        if self
+            .resource_manager
+            .release_lock(&mut self.eligible, scope, lock_name)
+        {
+            self.wake_up();
+        }
     }
 
     pub fn iter_status(
@@ -418,12 +443,18 @@ impl<S: VQueueStore> DRRScheduler<S> {
         self.resource_manager
             .scan_user_limit_counters(partition_key)
     }
+
+    fn wake_up(&self) {
+        self.waker.wake_by_ref();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::num::{NonZeroU16, NonZeroU32, NonZeroUsize};
-    use std::task::Poll;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::{Context, Poll, Wake, Waker};
 
     use restate_clock::RoughTimestamp;
     use restate_clock::time::MillisSinceEpoch;
@@ -458,6 +489,14 @@ mod tests {
     use super::*;
 
     const BASE_RUN_AT_MS: u64 = 1_744_000_000_000;
+
+    struct TestWaker(Arc<AtomicBool>);
+
+    impl Wake for TestWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
 
     fn test_qid(partition_key: u64) -> VQueueId {
         VQueueId::custom(partition_key, "1")
@@ -716,17 +755,50 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn empty_scheduler_returns_pending() {
-        let rocksdb = storage_test_environment().await;
+    async fn only_actionable_inbox_event_wakes_pending_scheduler() {
+        let mut rocksdb = storage_test_environment().await;
         let db = rocksdb.partition_db();
-        let cache = VQueuesMetaCache::create(db.clone(), TEST_VQUEUES_CAPACITY)
+        let mut cache = VQueuesMetaCache::create(db.clone(), TEST_VQUEUES_CAPACITY)
             .await
             .unwrap();
 
         let mut scheduler = create_scheduler(db, &cache).await;
+        let was_woken = Arc::new(AtomicBool::new(false));
+        let waker = Waker::from(Arc::new(TestWaker(Arc::clone(&was_woken))));
+        let mut cx = Context::from_waker(&waker);
+        assert!(matches!(
+            Pin::new(&mut scheduler).poll_schedule_next(cache.view(), &mut cx),
+            Poll::Pending
+        ));
+
+        let qid = test_qid(1);
+        let mut events = Vec::new();
+        let mut txn = rocksdb.transaction();
+        enqueue_entry(&mut txn, &mut cache, &qid, 1, 0, Some(&mut events)).await;
+        txn.commit().await.expect("commit should succeed");
+        drop(txn);
+
+        for event in events {
+            scheduler.on_inbox_event(cache.view(), event);
+        }
+
+        assert!(was_woken.load(Ordering::Relaxed));
+
+        was_woken.store(false, Ordering::Relaxed);
+        let mut events = Vec::new();
+        let mut txn = rocksdb.transaction();
+        enqueue_entry(&mut txn, &mut cache, &qid, 2, 1, Some(&mut events)).await;
+        txn.commit().await.expect("commit should succeed");
+        drop(txn);
+
+        for event in events {
+            scheduler.on_inbox_event(cache.view(), event);
+        }
+
+        assert!(!was_woken.load(Ordering::Relaxed));
         assert!(matches!(
             poll_scheduler(Pin::new(&mut scheduler), cache.view()),
-            Poll::Pending
+            Poll::Ready(Ok(_))
         ));
     }
 

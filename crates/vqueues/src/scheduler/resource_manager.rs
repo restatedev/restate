@@ -136,44 +136,45 @@ impl ResourceManager {
         eligible: &mut EligibilityTracker,
         scope: &Option<Scope>,
         lock_name: &LockName,
-    ) {
+    ) -> bool {
         trace!("[release_lock] scope: {scope:?}, lock_name: {lock_name}");
 
         let Some(queues) = self.locks.release_lock(scope, lock_name) else {
-            return;
+            return false;
         };
 
-        for queue in queues {
-            // notify the scheduler that those queues should be woken up.
-            eligible.wake_up_queue(queue);
-        }
+        eligible.wake_up_queues(queues)
     }
 
     /// Reverts will release the lock if the user permit has one
+    /// returns true if queues were woken up
     pub(super) fn revert_permit_builder(
         &mut self,
         eligible: &mut EligibilityTracker,
         builder: PermitBuilder,
-    ) {
+    ) -> bool {
         let Some(permit) = builder.into_user_permit() else {
-            return;
+            return false;
         };
 
+        let mut wake_up = false;
         // Release the lock if we have one held
         if let Some(lock) = permit.lock
             && let Some(queues) = self.locks.release_lock(&lock.scope, &lock.lock_name)
         {
-            eligible.wake_up_queues(queues);
+            wake_up |= eligible.wake_up_queues(queues);
         }
 
         for resource in permit.resources {
             match resource {
                 UserPermitKind::LimitKeyConcurrency(scope, limit_key) => {
                     let woken = self.user_limiter.release_concurrency(&scope, &limit_key);
-                    eligible.wake_up_queues(woken);
+                    wake_up |= eligible.wake_up_queues(woken);
                 }
             }
         }
+
+        wake_up
     }
 
     pub(super) fn poll_acquire_permit(
