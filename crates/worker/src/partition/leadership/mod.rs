@@ -212,6 +212,12 @@ pub(crate) struct EffectiveLeadershipReadiness {
     pub(crate) time_to_effective_leadership: Duration,
 }
 
+#[cfg(test)]
+struct PromotionTestHook {
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
 impl State {
     fn leader_epoch(&self) -> Option<LeaderEpoch> {
         match self {
@@ -234,6 +240,9 @@ pub(crate) struct LeadershipState<T> {
     /// `take_effective_leadership_readiness` once the enclosing batch has been successfully
     /// committed locally and the readiness log can be safely emitted.
     became_effective_leader: Option<EffectiveLeadershipReadiness>,
+
+    #[cfg(test)]
+    promotion_test_hook: Option<PromotionTestHook>,
 }
 
 impl<T> LeadershipState<T>
@@ -251,6 +260,8 @@ where
             ingestion_client,
             leader_query_tx,
             became_effective_leader: None,
+            #[cfg(test)]
+            promotion_test_hook: None,
         }
     }
 
@@ -647,6 +658,12 @@ where
                 return Ok(());
             }
 
+            #[cfg(test)]
+            if let Some(hook) = &self.promotion_test_hook {
+                hook.entered.notify_one();
+                hook.release.notified().await;
+            }
+
             let schema = Metadata::with_current(|m| m.updateable_schema());
 
             let (invoker_tx, invoker_rx) = mpsc::channel(config.worker.internal_queue_length());
@@ -1027,33 +1044,43 @@ impl RpcProcessingPermit {
 mod tests {
     use std::num::NonZeroUsize;
     use std::sync::Arc;
+    use std::time::Duration;
 
     use test_log::test;
+    use tokio::sync::{Notify, watch};
+    use tokio::time::timeout;
     use tokio_stream::StreamExt;
 
     use assert2::let_assert;
     use restate_bifrost::Bifrost;
+    use restate_core::network::ShardSender;
     use restate_core::partitions::PartitionRouting;
-    use restate_core::{TaskCenter, TestCoreEnv};
+    use restate_core::{MetadataFutureExt, TaskCenter, TestCoreEnv, TestCoreEnvBuilder};
     use restate_ingestion_client::{IngestionClient, SessionOptions};
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
+    use restate_types::cluster::cluster_state::PartitionProcessorStatus;
     use restate_types::config::Configuration;
     use restate_types::identifiers::{LeaderEpoch, PartitionId};
+    use restate_types::logs::metadata::{LogsConfiguration, ProviderConfiguration, ProviderKind};
     use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
+    use restate_types::net::metadata::MetadataKind;
+    use restate_types::net::partition_processor::PartitionLeaderService;
     use restate_types::partitions::state::PartitionReplicaSetStates;
     use restate_types::partitions::{
         Partition, PartitionConfiguration, PartitionFeatureChange, PersistedFeatures,
     };
     use restate_types::sharding::KeyRange;
-    use restate_types::{GenerationalNodeId, Version};
+    use restate_types::{GenerationalNodeId, Version, Versioned};
     use restate_wal_protocol::Command;
     use restate_wal_protocol::Envelope;
     use restate_worker_api::invoker::capacity::InvokerCapacity;
 
-    use crate::partition::leadership::{LeadershipState, State};
+    use crate::partition::leadership::{LeadershipState, PromotionTestHook, State};
     use crate::partition::processor::ProcessorRawContext;
-    use crate::partition::{LeadershipInfo, NodeContext};
+    use crate::partition::{
+        LeadershipInfo, NodeContext, PartitionProcessorBuilder, TargetLeaderState,
+    };
     use crate::partition_processor_manager::PartitionLeaderHandlesRegistry;
     use crate::rule_book_cache::RuleBookCacheHandle;
 
@@ -1061,6 +1088,128 @@ mod tests {
     const NODE_ID: GenerationalNodeId = GenerationalNodeId::new(0, 0);
     const PARTITION_KEY_RANGE: KeyRange = KeyRange::FULL;
     const PARTITION: Partition = Partition::new(PARTITION_ID, PARTITION_KEY_RANGE);
+
+    #[test(restate_core::test)]
+    async fn status_updates_continue_while_becoming_leader() -> googletest::Result<()> {
+        let env = TestCoreEnvBuilder::with_incoming_only_connector()
+            .set_my_node_id(NODE_ID)
+            .add_mock_nodes_config()
+            .set_provider_kind(ProviderKind::InMemory)
+            .build()
+            .await;
+        let mut logs = env
+            .metadata
+            .logs_snapshot()
+            .as_ref()
+            .clone()
+            .try_into_builder()?;
+        logs.set_configuration(LogsConfiguration {
+            default_provider: ProviderConfiguration::InMemory,
+        });
+        let logs = logs
+            .build_if_modified()
+            .expect("test log provider configuration should change");
+        let logs_version = logs.version();
+        env.metadata_writer.submit(Arc::new(logs));
+        env.metadata
+            .wait_for_version(MetadataKind::Logs, logs_version)
+            .await?;
+
+        RocksDbManager::init();
+        let bifrost = Bifrost::init_in_memory(env.metadata_writer)
+            .with_metadata(&env.metadata)
+            .await;
+        let replica_set_states = PartitionReplicaSetStates::default();
+        let partition_store_manager = PartitionStoreManager::create(true).await?;
+
+        let ingress = IngestionClient::new(
+            env.networking.clone(),
+            env.metadata.updateable_partition_table(),
+            PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
+            NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
+            SessionOptions::default(),
+        );
+        let node_ctx = NodeContext::new(
+            NODE_ID,
+            Configuration::live(),
+            replica_set_states,
+            RuleBookCacheHandle::detached(),
+            bifrost,
+            InvokerCapacity::new_unlimited(),
+            PartitionLeaderHandlesRegistry::default(),
+        );
+
+        let partition_store = partition_store_manager.open(&PARTITION, None).await?;
+        let partition_db = partition_store.partition_db().clone();
+        drop(partition_store);
+
+        let (target_state_tx, target_state_rx) = watch::channel(TargetLeaderState::Follower);
+        let (_network_tx, network_rx) = ShardSender::<PartitionLeaderService>::new();
+        let (status_tx, mut status_rx) = watch::channel(PartitionProcessorStatus::default());
+        let builder =
+            PartitionProcessorBuilder::new(target_state_rx, network_rx, status_tx, node_ctx);
+        let mut processor = builder.build(ingress, partition_db).await?;
+
+        let promotion_entered = Arc::new(Notify::new());
+        let promotion_release = Arc::new(Notify::new());
+        processor.leadership_state.promotion_test_hook = Some(PromotionTestHook {
+            entered: Arc::clone(&promotion_entered),
+            release: Arc::clone(&promotion_release),
+        });
+
+        let assertion = async {
+            // Wait until the processor loop is running, then ask it to campaign through the real
+            // Bifrost AnnounceLeader and version-barrier path.
+            timeout(Duration::from_secs(10), status_rx.changed())
+                .await
+                .expect("partition processor should publish its initial status")
+                .expect("status sender should remain open");
+            target_state_tx
+                .send(TargetLeaderState::Leader(Box::new(LeadershipInfo {
+                    version: Version::MIN,
+                    leader_epoch: LeaderEpoch::from(1),
+                    current_config: PartitionConfiguration::default().into(),
+                    next_config: None,
+                })))
+                .expect("partition processor should receive the leadership target");
+
+            timeout(Duration::from_secs(10), promotion_entered.notified())
+                .await
+                .expect("partition processor should reach the slow promotion step");
+
+            // Discard status notifications published before promotion became blocked. A healthy
+            // processor must publish another status while the promotion future remains pending.
+            status_rx.borrow_and_update();
+            let status_published_during_promotion = matches!(
+                timeout(Duration::from_secs(2), status_rx.changed()).await,
+                Ok(Ok(()))
+            );
+            promotion_release.notify_one();
+            status_published_during_promotion
+        };
+
+        let status_published_during_promotion = {
+            let run_processor = processor.run().with_metadata(&env.metadata);
+            tokio::pin!(run_processor);
+            tokio::select! {
+                status_published = assertion => status_published,
+                result = &mut run_processor => {
+                    panic!("partition processor stopped unexpectedly: {result:?}");
+                }
+            }
+        };
+
+        TaskCenter::current()
+            .shutdown_node("test_completed", 0)
+            .await;
+        RocksDbManager::get().shutdown().await;
+
+        assert!(
+            status_published_during_promotion,
+            "partition status publication stopped while leader promotion was pending"
+        );
+        Ok(())
+    }
 
     #[test(restate_core::test)]
     async fn become_leader_then_step_down() -> googletest::Result<()> {
