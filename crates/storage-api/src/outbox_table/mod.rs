@@ -10,14 +10,28 @@
 
 use std::ops::RangeInclusive;
 
+use bytes::Bytes;
+
 use restate_types::identifiers::{PartitionKey, WithPartitionKey};
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationResponse, InvocationTermination, NotifySignalRequest,
     ServiceInvocation,
 };
+use restate_types::storage::StorageCodecKind;
+use serde_with::{TryFromInto, serde_as};
 
 use crate::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
+
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OpaqueMessage {
+    pub partition_key: PartitionKey,
+    pub kind: u8,
+    #[serde_as(as = "TryFromInto<u8>")]
+    pub codec: StorageCodecKind,
+    pub message: Bytes,
+}
 
 /// Types of outbox messages.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -36,6 +50,14 @@ pub enum OutboxMessage {
 
     /// Notify signal request
     NotifySignal(NotifySignalRequest),
+
+    /// Opaque message
+    ///
+    /// Contains opaque outbox message.
+    /// This will eventually replace the other message types in this enum
+    ///
+    /// Since v1.8
+    Opaque(OpaqueMessage),
 }
 
 impl PartitionStoreProtobufValue for OutboxMessage {
@@ -50,6 +72,7 @@ impl WithPartitionKey for OutboxMessage {
             OutboxMessage::InvocationTermination(it) => it.invocation_id.partition_key(),
             OutboxMessage::AttachInvocation(ai) => ai.partition_key(),
             OutboxMessage::NotifySignal(sig) => sig.partition_key(),
+            OutboxMessage::Opaque(sig) => sig.partition_key,
         }
     }
 }
