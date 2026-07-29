@@ -16,6 +16,7 @@
 use bilrost::OwnedMessage;
 
 use restate_limiter::RuleBook;
+use restate_partition_store::PartitionSeal;
 use restate_partition_store::fsm_table::PartitionStateMachineKey;
 use restate_partition_store::keys::{DecodeTableKey, KeyKind};
 use restate_partition_store::vqueue_table::{EntryStatusKey, InputPayloadKey};
@@ -56,6 +57,8 @@ mod fsm_variable {
     pub const RULE_BOOK: u64 = 9;
     /// *Since v1.7.0*
     pub const STATE_MACHINE_FEATURES: u64 = 10;
+    /// *Since v1.7.3*
+    pub const SEAL_MARKER: u64 = 11;
 }
 
 /// Result of decoding a value, including codec metadata
@@ -390,6 +393,11 @@ fn decode_fsm_value(key: &[u8], value: &[u8]) -> DecodedValue {
         }
     };
 
+    // The seal marker is plain json, it is not wrapped in a StorageCodec envelope.
+    if state_id == fsm_variable::SEAL_MARKER {
+        return decode_fsm_seal_marker(value);
+    }
+
     // Read codec byte
     let codec_byte = value[0];
     let codec = StorageCodecKind::try_from(codec_byte).ok();
@@ -451,6 +459,28 @@ fn decode_fsm_value(key: &[u8], value: &[u8]) -> DecodedValue {
             payload_size,
             format!("<unknown state_id={unknown}, {} bytes>", payload_size),
         ),
+    }
+}
+
+/// Decode the partition seal marker.
+///
+/// Unlike every other FSM variable, the seal marker is stored as plain json bytes without a
+/// [`StorageCodec`] envelope, so there is no codec byte to strip. Values written by a newer
+/// version may carry a [`PartitionSeal`] variant we don't know about; in that case we fall back to
+/// echoing the raw json instead of reporting a decode error.
+fn decode_fsm_seal_marker(value: &[u8]) -> DecodedValue {
+    let payload_size = value.len();
+
+    match serde_json::from_slice::<PartitionSeal>(value) {
+        Ok(seal) => DecodedValue::decoded(None, payload_size, format!("PartitionSeal({seal:?})")),
+        Err(err) => match serde_json::from_slice::<serde_json::Value>(value) {
+            Ok(raw) => DecodedValue::decoded(
+                None,
+                payload_size,
+                format!("PartitionSeal(<unrecognized> {raw})"),
+            ),
+            Err(_) => DecodedValue::error(None, payload_size, format!("{err}")),
+        },
     }
 }
 
@@ -564,6 +594,7 @@ mod tests {
     use restate_partition_store::PaddedPartitionId;
     use restate_partition_store::fsm_table::PartitionStateMachineKey;
     use restate_partition_store::keys::EncodeTableKeyPrefix;
+    use restate_types::logs::Lsn;
     use restate_types::storage::StorageCodec;
 
     use super::*;
@@ -615,6 +646,30 @@ mod tests {
         assert!(
             matches!(&decoded.content, DecodedContent::Decoded(s) if s.contains("JcOrphanCleanupDone(1)")),
             "jc-orphan-cleanup flag should decode, got: {decoded}"
+        );
+
+        // Seal marker: plain json, no StorageCodec envelope
+        let value = serde_json::to_vec(&PartitionSeal::AheadOfLog {
+            partition_applied_lsn: Lsn::new(10),
+            log_tail_lsn: Lsn::new(5),
+        })
+        .unwrap();
+        let decoded = decode_value(KeyKind::Fsm, &fsm_key(fsm_variable::SEAL_MARKER), &value);
+        assert_eq!(decoded.codec, None);
+        assert!(
+            matches!(&decoded.content, DecodedContent::Decoded(s) if s.contains("AheadOfLog")),
+            "seal marker should decode, got: {decoded}"
+        );
+
+        // A variant written by a newer version falls back to the raw json
+        let decoded = decode_value(
+            KeyKind::Fsm,
+            &fsm_key(fsm_variable::SEAL_MARKER),
+            br#"{"type":"SomethingNew"}"#,
+        );
+        assert!(
+            matches!(&decoded.content, DecodedContent::Decoded(s) if s.contains("<unrecognized>")),
+            "unknown seal variant should fall back to raw json, got: {decoded}"
         );
     }
 }
