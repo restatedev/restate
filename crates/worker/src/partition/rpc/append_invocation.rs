@@ -9,11 +9,11 @@
 // by the Apache License, Version 2.0.
 
 use super::*;
-use restate_types::identifiers::WithPartitionKey;
 use restate_types::invocation;
 use restate_types::invocation::{
     ServiceInvocation, ServiceInvocationResponseSink, SubmitNotificationSink,
 };
+use restate_wal_protocol::v2::commands;
 
 pub(super) struct Request {
     pub(super) request_id: PartitionProcessorRpcRequestId,
@@ -49,13 +49,9 @@ impl<'a, TSchemas, TStorage> RpcHandler<Request> for RpcContext<'a, TSchemas, TS
             }
         };
 
-        let partition_key = service_invocation.partition_key();
-        let cmd = Command::Invoke(Box::new(service_invocation));
-
-        Decision::Propose(RpcProposal {
-            partition_key,
-            cmd,
-            reply_on: match append_invocation_reply_on {
+        Decision::Propose(RpcProposal::new(
+            commands::InvokeCommand::from(service_invocation),
+            match append_invocation_reply_on {
                 AppendInvocationReplyOn::Appended => ReplyOn::Commit {
                     response: PartitionProcessorRpcResponse::Appended,
                 },
@@ -63,7 +59,7 @@ impl<'a, TSchemas, TStorage> RpcHandler<Request> for RpcContext<'a, TSchemas, TS
                     ReplyOn::Apply { request_id }
                 }
             },
-        })
+        ))
     }
 }
 
@@ -92,70 +88,78 @@ mod tests {
 
     #[test(restate_core::test)]
     async fn reply_on_appended() {
-        let_assert!(
-            Decision::Propose(RpcProposal {
-                cmd: Command::Invoke(service_invocation),
-                reply_on: ReplyOn::Commit { response },
-                ..
-            }) = handle(Default::default(), AppendInvocationReplyOn::Appended).await
-        );
+        let (_, service_invocation_command, reply_on) =
+            handle(Default::default(), AppendInvocationReplyOn::Appended)
+                .await
+                .extract_as_rpc_proposal::<commands::InvokeCommand>();
+
+        let service_invocation: ServiceInvocation = service_invocation_command.into();
+        let_assert!(ReplyOn::Commit { response } = reply_on);
+
         assert_eq!(response, PartitionProcessorRpcResponse::Appended);
         assert_that!(
             service_invocation,
-            points_to(all!(
+            all!(
                 field!(ServiceInvocation.response_sink, none()),
                 field!(ServiceInvocation.submit_notification_sink, none()),
-            ))
+            )
         );
     }
 
     #[test(restate_core::test)]
     async fn reply_on_submitted() {
         let request_id = PartitionProcessorRpcRequestId::new();
+
+        let (_, service_invocation_command, reply_on) =
+            handle(request_id, AppendInvocationReplyOn::Submitted)
+                .await
+                .extract_as_rpc_proposal::<commands::InvokeCommand>();
+
+        let service_invocation: ServiceInvocation = service_invocation_command.into();
         let_assert!(
-            Decision::Propose(RpcProposal {
-                cmd: Command::Invoke(service_invocation),
-                reply_on: ReplyOn::Apply {
-                    request_id: actual_request_id,
-                },
-                ..
-            }) = handle(request_id, AppendInvocationReplyOn::Submitted).await
+            ReplyOn::Apply {
+                request_id: actual_request_id
+            } = reply_on
         );
+
         assert_eq!(actual_request_id, request_id);
         assert_that!(
             service_invocation,
-            points_to(all!(
+            all!(
                 field!(ServiceInvocation.response_sink, none()),
                 field!(
                     ServiceInvocation.submit_notification_sink,
                     some(eq(SubmitNotificationSink::Ingress { request_id }))
                 ),
-            ))
+            )
         );
     }
 
     #[test(restate_core::test)]
     async fn reply_on_output() {
         let request_id = PartitionProcessorRpcRequestId::new();
+
+        let (_, service_invocation_command, reply_on) =
+            handle(request_id, AppendInvocationReplyOn::Output)
+                .await
+                .extract_as_rpc_proposal::<commands::InvokeCommand>();
+
+        let service_invocation: ServiceInvocation = service_invocation_command.into();
         let_assert!(
-            Decision::Propose(RpcProposal {
-                cmd: Command::Invoke(service_invocation),
-                reply_on: ReplyOn::Apply {
-                    request_id: actual_request_id,
-                },
-                ..
-            }) = handle(request_id, AppendInvocationReplyOn::Output).await
+            ReplyOn::Apply {
+                request_id: actual_request_id
+            } = reply_on
         );
         assert_eq!(actual_request_id, request_id);
         assert_that!(
             service_invocation,
-            points_to(all!(
+            all!(
                 field!(
                     ServiceInvocation.response_sink,
                     some(eq(ServiceInvocationResponseSink::Ingress { request_id }))
                 ),
                 field!(ServiceInvocation.submit_notification_sink, none()),
-            ))
+            )
         );
     }
 }

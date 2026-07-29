@@ -204,6 +204,20 @@ impl Envelope<Raw> {
         }
     }
 
+    pub fn from_erased_command(dedup: Dedup, erased: ErasedCommand) -> Self {
+        let ErasedCommand { kind, command } = erased;
+
+        Self {
+            header: Header {
+                dedup,
+                kind,
+                codec: Some(command.default_codec()),
+            },
+            payload: PolyBytes::Typed(command),
+            _p: PhantomData,
+        }
+    }
+
     /// Converts Raw Envelope into a Typed envelope. Panics
     /// if the record kind does not match the M::KIND
     pub fn into_typed<M: Command>(self) -> Envelope<M> {
@@ -504,6 +518,30 @@ where
 
     fn inner(self) -> C {
         BodyWithKeys::into_inner(self)
+    }
+}
+
+#[derive(derive_more::Debug, Clone)]
+pub struct ErasedCommand {
+    kind: CommandKind,
+    #[debug(skip)]
+    command: Arc<dyn StorageEncode>,
+}
+
+impl ErasedCommand {
+    pub fn new<C: Command>(cmd: C) -> Self {
+        Self {
+            kind: C::KIND,
+            command: Arc::new(cmd),
+        }
+    }
+
+    pub fn downcast_arc<C: Command>(self) -> Option<Arc<C>> {
+        self.command.downcast_arc::<C>().ok()
+    }
+
+    pub fn kind(&self) -> CommandKind {
+        self.kind
     }
 }
 
