@@ -128,6 +128,17 @@ where
 
                     let mut partition_store = partition_store?;
 
+                    // verify that this partition store is not sealed
+                    if let Some(seal) = partition_store.get_seal_marker().await? {
+                        warn!("Local partition store for partition {} is sealed due to {}. The \
+                        partition store is not safe to use by this node and will need to be replaced \
+                        by a safe snapshot before continuing!",
+                        partition.partition_id,
+                        seal,
+                        );
+                        return Err(ProcessorError::from(seal));
+                    }
+
                     // One-time background cleanup of orphaned jc index entries left behind
                     // by a bug in delete_journal that used the wrong scan prefix.
                     // Runs on a blocking thread so it doesn't starve the tokio runtime.

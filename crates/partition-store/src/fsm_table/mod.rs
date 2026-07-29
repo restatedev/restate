@@ -8,11 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::TableKind::PartitionStateMachine;
-use crate::keys::{EncodeTableKey, KeyKind, define_table_key};
-use crate::{
-    PaddedPartitionId, PartitionDb, PartitionStore, PartitionStoreTransaction, StorageAccess,
-};
 use restate_limiter::RuleBook;
 use restate_storage_api::fsm_table::{
     CachedEpochMetadata, PartitionDurability, ReadFsmTable, SequenceNumber, WriteFsmTable,
@@ -27,6 +22,13 @@ use restate_types::partitions::StorageVersion;
 use restate_types::partitions::features::PersistedFeatures;
 use restate_types::schema::Schema;
 use restate_types::storage::{StorageCodec, StorageDecode};
+
+use crate::TableKind::PartitionStateMachine;
+use crate::keys::{EncodeTableKey, KeyKind, define_table_key};
+use crate::{
+    PaddedPartitionId, PartitionDb, PartitionSeal, PartitionStore, PartitionStoreTransaction,
+    StorageAccess,
+};
 
 define_table_key!(
     PartitionStateMachine,
@@ -101,6 +103,15 @@ pub(crate) mod fsm_variable {
     /// `VersionBarrierCommand` entries carrying feature changes.
     /// *Since v1.7.0*
     pub(crate) const STATE_MACHINE_FEATURES: u64 = 10;
+
+    /// A local marker (not replicated) written to indicate that the partition store
+    /// is unsafe and should be not used by processors. The data is json serialized
+    /// and contains the reason for the seal. The intention is to prevent processors
+    /// from using this partition store until it has been removed and replaced with
+    /// an unsealed safe one.
+    ///
+    /// *Since v1.7.3*
+    pub(crate) const SEAL_MARKER: u64 = 11;
 }
 
 fn get<T: PartitionStoreProtobufValue, S: StorageAccess>(
@@ -218,6 +229,38 @@ pub(crate) async fn put_jc_orphan_cleanup_done<S: StorageAccess>(
         fsm_variable::JC_ORPHAN_CLEANUP_DONE,
         &SequenceNumber::from(1u64),
     )
+}
+
+pub(crate) async fn get_partition_seal<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+) -> Result<Option<PartitionSeal>> {
+    let key = PartitionStateMachineKey {
+        partition_id: partition_id.into(),
+        state_id: fsm_variable::SEAL_MARKER,
+    };
+
+    storage.get_kv_raw(key, |_k, v| {
+        v.map(|v| serde_json::from_slice(v).map_err(|e| StorageError::Conversion(e.into())))
+            .transpose()
+    })
+}
+
+pub(crate) async fn seal_partition<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+    seal: &PartitionSeal,
+) -> Result<()> {
+    let key = PartitionStateMachineKey {
+        partition_id: partition_id.into(),
+        state_id: fsm_variable::SEAL_MARKER,
+    };
+
+    storage.put_kv_raw(
+        key,
+        serde_json::to_vec(seal).map_err(|e| StorageError::Conversion(e.into()))?,
+    )?;
+    Ok(())
 }
 
 /// Reads a `StorageCodec`-encoded value directly from the partition db's column family.
