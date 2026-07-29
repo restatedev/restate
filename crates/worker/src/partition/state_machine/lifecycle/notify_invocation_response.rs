@@ -149,9 +149,9 @@ where
                 "Got an invocation response, but there is no corresponding command in the journal for completion index {}. This indicates storage corruption.",
                 caller_completion_id
             );
-            return Err(Error::MissingCommandForInvocationResponse(
-                caller_completion_id,
-            ));
+            // return Err(Error::MissingCommandForInvocationResponse(
+            //     caller_completion_id,
+            // ));
         }
 
         Ok(())
