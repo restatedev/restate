@@ -10,16 +10,18 @@
 
 #![allow(clippy::enum_variant_names)]
 
-use pin_project::pin_project;
-use restate_types::timer::TimerKey;
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::future;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker, ready};
+
+use pin_project::pin_project;
 use tokio_util::sync::ReusableBoxFuture;
 use tracing::trace;
+
+use restate_types::timer::TimerKey;
 
 pub mod clock;
 #[cfg(test)]
@@ -56,6 +58,7 @@ enum ProcessTimersState<TimerKey, SleepFuture> {
     ReadNextTimer,
     AwaitTimer {
         timer_key: TimerKey,
+        waker: Waker,
         #[pin]
         sleep: SleepFuture,
     },
@@ -234,12 +237,15 @@ where
                         ProcessTimersStateProj::ReadNextTimer => {
                             // nothing to do because peek timer will be read next
                         }
-                        ProcessTimersStateProj::AwaitTimer { timer_key, .. } => {
+                        ProcessTimersStateProj::AwaitTimer {
+                            timer_key, waker, ..
+                        } => {
                             // we might wait for a later timer if the newly added timer fires earlier
                             if new_timer_key < *timer_key {
                                 trace!(
                                     "Reset process timer state to ReadNextTimer because added timer fires earlier."
                                 );
+                                waker.wake_by_ref();
                                 process_timers_state.set(ProcessTimersState::ReadNextTimer);
                             }
                         }
@@ -300,8 +306,11 @@ where
                     ProcessTimersStateProj::ReadNextTimer => {
                         // nothing to do
                     }
-                    ProcessTimersStateProj::AwaitTimer { timer_key, .. } => {
+                    ProcessTimersStateProj::AwaitTimer {
+                        timer_key, waker, ..
+                    } => {
                         if key == *timer_key {
+                            waker.wake_by_ref();
                             process_timers_state.set(ProcessTimersState::ReadNextTimer);
 
                             trace!("Skip awaiting removed timer '{key:?}'. Read next timer.");
@@ -344,7 +353,8 @@ where
 
         loop {
             match state.as_mut().project() {
-                StateProj::Idle(_) => {
+                StateProj::Idle(waker) => {
+                    waker.clone_from(cx.waker());
                     return Poll::Pending;
                 }
                 StateProj::LoadTimers { removed_timers } => {
@@ -423,6 +433,7 @@ where
                                 );
                                 process_timers_state.set(ProcessTimersState::AwaitTimer {
                                     timer_key: timer_key.clone(),
+                                    waker: cx.waker().clone(),
                                     sleep,
                                 });
                             } else {
@@ -455,7 +466,8 @@ where
                             state.set(State::LoadTimers { removed_timers });
                         }
                     }
-                    ProcessTimersStateProj::AwaitTimer { sleep, .. } => {
+                    ProcessTimersStateProj::AwaitTimer { sleep, waker, .. } => {
+                        waker.clone_from(cx.waker());
                         ready!(sleep.poll(cx));
                         process_timers_state.set(ProcessTimersState::TriggerTimer);
                     }
