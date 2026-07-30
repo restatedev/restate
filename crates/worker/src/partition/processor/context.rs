@@ -137,17 +137,6 @@ impl ProcessorRawContext {
         }
     }
 
-    /// Seeds the in-memory outbox head/tail without persisting it. Test-only,
-    /// lets partition-command tests start from a partially-truncated outbox.
-    #[cfg(test)]
-    pub fn seed_outbox_in_memory(
-        &mut self,
-        tail: restate_types::message::MessageIndex,
-        head: Option<restate_types::message::MessageIndex>,
-    ) {
-        self.outbox = Outbox::seed(tail, head);
-    }
-
     /// Overwrites the in-memory feature set without persisting it. Test-only,
     /// mirrors the old `StateMachine`-embedded feature cache mutation.
     #[cfg(test)]
