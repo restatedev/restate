@@ -61,7 +61,7 @@ pub(crate) fn register_self(
         sys_invocation_status_sort_order(),
         remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
         FirstMatchingPartitionKeyExtractor::default()
-            .with_service_key("target_service_key")
+            .with_scope_or_service_key("scope", "target_service_key")
             .with_grouped_invocation_id("id"),
     )
     .with_statistics(statistics.build());
