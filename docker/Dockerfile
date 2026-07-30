@@ -29,6 +29,7 @@ ARG SCCACHE_SERVER_PORT=4227
 FROM base-$TARGETARCH AS builder
 ARG SCCACHE_SERVER_PORT
 ARG TARGETARCH
+ARG UPLOAD_DEBUGINFO
 
 ENV RUSTC_WRAPPER=/usr/bin/sccache
 ENV SCCACHE_DIR=/var/cache/sccache
@@ -47,51 +48,61 @@ ENV ac_cv_printf_positional=yes
 # Set sasl2-sys cross-compilation env variables (because we cannot run cross compiled tests)
 ENV ac_cv_gssapi_supports_spnego=yes
 
-# Overrides the behaviour of the release profile re including debug symbols, which in our repo is not to include them.
-# Should be set to 'false' or 'true'. See https://doc.rust-lang.org/cargo/reference/environment-variables.html
-ARG CARGO_PROFILE_RELEASE_DEBUG=false
+# Cargo profile to build with. Must be a profile defined in the workspace Cargo.toml
+# (e.g. release, release-lite, release-debug).
+ARG CARGO_PROFILE=release
 # Avoids feature unification by building the three binaries individually
 ARG BUILD_INDIVIDUALLY=false
 ARG RESTATE_FEATURES=''
-RUN if [ "$BUILD_INDIVIDUALLY" = "true" ]; then \
-    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES chef-cook --release -p restate-cli && \
-    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES chef-cook --release -p restate-server && \
-    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES chef-cook --release -p restatectl; \
+RUN if [ "$UPLOAD_DEBUGINFO" = "true" ]; then \
+    profile_env=$(printf '%s' "$CARGO_PROFILE" | tr '[:lower:]-' '[:upper:]_') && \
+    export "CARGO_PROFILE_${profile_env}_DEBUG=true"; \
+    fi && \
+    if [ "$BUILD_INDIVIDUALLY" = "true" ]; then \
+    just arch="$TARGETARCH" libc=gnu features="$RESTATE_FEATURES" chef-cook --profile="$CARGO_PROFILE" -p restate-cli && \
+    just arch="$TARGETARCH" libc=gnu features="$RESTATE_FEATURES" chef-cook --profile="$CARGO_PROFILE" -p restate-server && \
+    just arch="$TARGETARCH" libc=gnu features="$RESTATE_FEATURES" chef-cook --profile="$CARGO_PROFILE" -p restatectl; \
     else \
-    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES chef-cook --release -p restate-cli -p restate-server -p restatectl; \
+    just arch="$TARGETARCH" libc=gnu features="$RESTATE_FEATURES" chef-cook --profile="$CARGO_PROFILE" -p restate-cli -p restate-server -p restatectl; \
     fi
 COPY . .
 
 FROM builder AS upload-false
 RUN --mount=type=cache,target=/var/cache/sccache \
     if [ "$BUILD_INDIVIDUALLY" = "true" ]; then \
-    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release -p restate-cli && \
-    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release -p restate-server && \
-    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release -p restatectl; \
+    just arch="$TARGETARCH" libc=gnu features="$RESTATE_FEATURES" build --profile="$CARGO_PROFILE" -p restate-cli && \
+    just arch="$TARGETARCH" libc=gnu features="$RESTATE_FEATURES" build --profile="$CARGO_PROFILE" -p restate-server && \
+    just arch="$TARGETARCH" libc=gnu features="$RESTATE_FEATURES" build --profile="$CARGO_PROFILE" -p restatectl; \
     else \
-    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release -p restate-cli -p restate-server -p restatectl; \
+    just arch="$TARGETARCH" libc=gnu features="$RESTATE_FEATURES" build --profile="$CARGO_PROFILE" -p restate-cli -p restate-server -p restatectl; \
     fi && \
     just notice-file && \
-    mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restate-server target/restate-server && \
-    mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restatectl target/restatectl && \
-    mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restate target/restate
+    case "$CARGO_PROFILE" in dev|test) profile_dir=debug ;; release|bench) profile_dir=release ;; *) profile_dir="$CARGO_PROFILE" ;; esac && \
+    target_dir="target/$(just arch="$TARGETARCH" libc=gnu print-target)/$profile_dir" && \
+    mv "$target_dir/restate-server" target/restate-server && \
+    mv "$target_dir/restatectl" target/restatectl && \
+    mv "$target_dir/restate" target/restate
 RUN cp docker/scripts/no-restate-debug-symbols.sh target/download-restate-debug-symbols.sh
 
 FROM builder AS upload-true
 RUN --mount=type=secret,id=parca --mount=type=cache,target=/var/cache/sccache \
     # useful so that binaries can tell if they actually were compiled with debug symbols
     export DEBUG_STRIPPED="true" && \
+    profile_env=$(printf '%s' "$CARGO_PROFILE" | tr '[:lower:]-' '[:upper:]_') && \
+    export "CARGO_PROFILE_${profile_env}_DEBUG=true" && \
     if [ "$BUILD_INDIVIDUALLY" = "true" ]; then \
-    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release -p restate-cli && \
-    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release -p restate-server && \
-    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release -p restatectl; \
+    just arch="$TARGETARCH" libc=gnu features="$RESTATE_FEATURES" build --profile="$CARGO_PROFILE" -p restate-cli && \
+    just arch="$TARGETARCH" libc=gnu features="$RESTATE_FEATURES" build --profile="$CARGO_PROFILE" -p restate-server && \
+    just arch="$TARGETARCH" libc=gnu features="$RESTATE_FEATURES" build --profile="$CARGO_PROFILE" -p restatectl; \
     else \
-    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release -p restate-cli -p restate-server -p restatectl; \
+    just arch="$TARGETARCH" libc=gnu features="$RESTATE_FEATURES" build --profile="$CARGO_PROFILE" -p restate-cli -p restate-server -p restatectl; \
     fi && \
     just notice-file && \
-    mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restate-server target/restate-server && \
-    mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restatectl target/restatectl && \
-    mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restate target/restate && \
+    case "$CARGO_PROFILE" in dev|test) profile_dir=debug ;; release|bench) profile_dir=release ;; *) profile_dir="$CARGO_PROFILE" ;; esac && \
+    target_dir="target/$(just arch="$TARGETARCH" libc=gnu print-target)/$profile_dir" && \
+    mv "$target_dir/restate-server" target/restate-server && \
+    mv "$target_dir/restatectl" target/restatectl && \
+    mv "$target_dir/restate" target/restate && \
     $(just --set arch $TARGETARCH --evaluate _arch)-linux-gnu-objcopy --only-keep-debug target/restate-server target/restate-server.debug && \
     $(just --set arch $TARGETARCH --evaluate _arch)-linux-gnu-objcopy --strip-debug target/restate-server && \
     $(just --set arch $TARGETARCH --evaluate _arch)-linux-gnu-objcopy --add-gnu-debuglink=target/restate-server.debug target/restate-server && \
