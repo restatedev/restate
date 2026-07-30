@@ -46,7 +46,14 @@ pub(crate) fn append_partition_row(
         row.last_record_applied_at(ts.as_u64() as i64);
     }
 
-    row.fmt_replay_status(state.replay_status);
+    if state.is_broken() {
+        // A parked processor is not replaying anything. Leave the column NULL rather than
+        // reporting the default `starting`, which would read as progress.
+        row.fmt_broken_reason(state.broken_reason);
+    } else {
+        row.fmt_replay_status(state.replay_status);
+    }
+
     if let Some(lsn) = state.durable_lsn {
         row.durable_log_lsn(lsn.into());
     }
