@@ -214,6 +214,9 @@ impl Node {
                     TlsClientConfig, TlsServerConfig, spawn_reloader,
                 };
                 tls_opts.validate()?;
+                tls_opts.validate_advertised_address(
+                    &config.common.advertised_address(&address_book),
+                )?;
                 let server_config = TlsServerConfig::new(tls_opts)?;
                 let client_config = TlsClientConfig::from_fabric_options(tls_opts)?;
                 spawn_reloader(

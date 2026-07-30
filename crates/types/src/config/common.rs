@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::time::Duration;
 
+use anyhow::bail;
 use enumset::EnumSet;
 use paste::paste;
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,7 @@ use serde_with::serde_as;
 use restate_serde_util::SerdeableHeaderHashMap;
 use restate_util_bytecount::NonZeroByteCount;
 use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
+use tracing::warn;
 
 use super::{
     CPU_COUNT, DEFAULT_MESSAGE_SIZE_LIMIT, GossipOptions, InvalidConfigurationError,
@@ -329,6 +331,42 @@ impl FabricTlsOptions {
             );
         }
         Ok(())
+    }
+
+    pub fn validate_advertised_address(
+        &self,
+        address: &AdvertisedAddress<FabricPort>,
+    ) -> anyhow::Result<()> {
+        match self.mode {
+            TlsMode::Off | TlsMode::Allow => Ok(()),
+            TlsMode::Prefer => {
+                let Some(uri) = address.uri() else {
+                    warn!(
+                        "Tls mode is set to prefer, while the advertised address is a unix socket. TLS is currently not supported for unix sockets."
+                    );
+                    return Ok(());
+                };
+                if uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
+                    warn!(
+                        "Advertised address '{address}' is not HTTPS, but TLS is in 'prefer' mode. Nodes will attempt to connect to this node in plaintext instead."
+                    );
+                }
+                Ok(())
+            }
+            TlsMode::Require => {
+                let Some(uri) = address.uri() else {
+                    bail!(
+                        "Tls mode is set to required, while the advertised address is a unix socket. TLS is currently not supported for unix sockets."
+                    );
+                };
+                if uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
+                    bail!(
+                        "Advertised address '{address}' is not an HTTPS address, but TLS is in 'require' mode. Please either advertise an HTTPS address in the config or loosen the TLS mode."
+                    );
+                }
+                Ok(())
+            }
+        }
     }
 }
 
