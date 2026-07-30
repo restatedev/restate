@@ -57,7 +57,7 @@ use restate_partition_store::snapshots::{
 use restate_partition_store::{SnapshotError, SnapshotErrorKind};
 use restate_types::GenerationalNodeId;
 use restate_types::cluster::cluster_state::ReplayStatus;
-use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
+use restate_types::cluster::cluster_state::{BrokenReason, PartitionProcessorStatus, RunMode};
 use restate_types::config::Configuration;
 use restate_types::epoch::EpochMetadata;
 use restate_types::health::HealthStatus;
@@ -70,7 +70,9 @@ use restate_types::net::metadata::MetadataKind;
 use restate_types::net::partition_processor::PartitionLeaderService;
 use restate_types::net::partition_processor_manager::{
     ControlProcessor, ControlProcessors, CreateSnapshotRequest, CreateSnapshotResponse,
-    PartitionManagerService, ProcessorCommand, Snapshot, SnapshotError as NetSnapshotError,
+    DropPartitionStoreError, DropPartitionStoreOutcome, DropPartitionStoreRequest,
+    DropPartitionStoreResponse, PartitionManagerService, ProcessorCommand, Snapshot,
+    SnapshotError as NetSnapshotError,
 };
 use restate_types::net::{RpcRequest as _, UnaryMessage};
 use restate_types::nodes_config::{NodesConfigError, NodesConfiguration, WorkerState};
@@ -121,6 +123,7 @@ pub struct PartitionProcessorManager<T> {
 
     asynchronous_operations: JoinSet<AsynchronousEvent>,
 
+    pending_drops: HashMap<PartitionId, PendingDrop>,
     pending_snapshots: HashMap<PartitionId, PendingSnapshotTask>,
     latest_snapshots: HashMap<PartitionId, PartitionSnapshotStatus>,
     pending_snapshot_status_refreshes: HashSet<PartitionId>,
@@ -146,6 +149,26 @@ type SnapshotResultInternal = Result<(PartitionId, PartitionSnapshotStatus), Sna
 struct PendingSnapshotTask {
     snapshot_id: SnapshotId,
     sender: Option<oneshot::Sender<SnapshotResult>>,
+}
+
+type DropResult = Result<DropPartitionStoreOutcome, DropPartitionStoreError>;
+
+/// An in-flight request to delete this node's local copy of a partition.
+///
+/// While one of these exists for a partition, the manager will not start a processor for it,
+/// so that we never race the drop against a fresh `open()`.
+struct PendingDrop {
+    /// Set while we are waiting for a running processor to terminate before we can drop.
+    awaiting_stop: bool,
+    sender: oneshot::Sender<DropResult>,
+}
+
+/// What to do with a partition once its processor's runtime task has terminated.
+enum PostStopAction {
+    Restart(RestartDelay),
+    /// Give up on the partition: retrying cannot fix the failure, so we park the processor
+    /// in [`ProcessorState::Broken`] until an operator intervenes.
+    Park(BrokenReason),
 }
 
 enum RestartDelay {
@@ -264,6 +287,7 @@ where
             target_tail_lsns: HashMap::default(),
             leader_handles_registry: PartitionLeaderHandlesRegistry::default(),
             asynchronous_operations: JoinSet::default(),
+            pending_drops: HashMap::default(),
             pending_snapshots: HashMap::default(),
             latest_snapshots: HashMap::default(),
             pending_snapshot_status_refreshes: HashSet::default(),
@@ -393,6 +417,14 @@ where
             task.cancel();
         }
 
+        // abandon in-flight drop requests rather than deleting data on the way down; the
+        // requester sees its RPC fail and can retry against the restarted node
+        self.pending_drops.clear();
+
+        // broken processors have no runtime task left to await, so drop them upfront to keep
+        // `await_processors_termination` from waiting on an event that can never arrive
+        self.processor_states.retain(|_, state| !state.is_broken());
+
         // stop all running processors
         for processor_state in self.processor_states.values_mut() {
             processor_state.stop();
@@ -432,6 +464,10 @@ where
             ServiceMessage::Rpc(msg) if msg.msg_type() == CreateSnapshotRequest::TYPE => {
                 let request = msg.into_typed::<CreateSnapshotRequest>();
                 self.handle_create_snapshot_request(request);
+            }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == DropPartitionStoreRequest::TYPE => {
+                let request = msg.into_typed::<DropPartitionStoreRequest>();
+                self.handle_drop_partition_store_request(request);
             }
             msg => {
                 msg.fail(Verdict::MessageUnrecognized);
@@ -559,6 +595,16 @@ where
                                     runtime_handle.cancel();
                                     self.await_runtime_task_result(partition_id, runtime_handle);
                                 }
+                                ProcessorState::Broken { .. } => {
+                                    // Unreachable in practice: we only park a processor as
+                                    // broken after its runtime task reported termination.
+                                    // Stop the new one and stay broken.
+                                    debug!(
+                                        "Started partition processor for a partition we gave up on. Stopping it."
+                                    );
+                                    runtime_handle.cancel();
+                                    self.await_runtime_task_result(partition_id, runtime_handle);
+                                }
                             }
                         } else {
                             debug!("Started partition processor is no longer needed. Stopping it.");
@@ -576,24 +622,29 @@ where
                             partition_id,
                             RestartDelay::Fixed,
                         );
+                        // no runtime task was created, so no `Stopped` event will follow: a drop
+                        // waiting for this processor to go away has to be resumed from here
+                        if self.take_pending_drop_stop_wait(partition_id) {
+                            self.spawn_drop_partition_store_task(partition_id);
+                        }
                     }
                 }
                 gauge!(NUM_ACTIVE_PARTITIONS).set(self.processor_states.len() as f64);
             }
             EventKind::Stopped(result) => {
                 self.unregister_pp_rpc_shard(partition_id);
-                let delay = match self.processor_states.remove(&partition_id) {
+                let action = match self.processor_states.remove(&partition_id) {
                     None => {
                         debug!("Stopped partition processor which is no longer running.");
                         // immediately try to restart if we are still part of the partition's membership
                         counter!(PARTITION_STOP, PARTITION_LABEL => partition_id.to_string(), TYPE_LABEL => NORMAL_STOP).increment(1);
-                        RestartDelay::Immediate
+                        PostStopAction::Restart(RestartDelay::Immediate)
                     }
                     Some(processor_state) => match processor_state {
                         ProcessorState::Starting { .. } => {
                             counter!(PARTITION_STOP, PARTITION_LABEL => partition_id.to_string(), TYPE_LABEL => STARTUP_ERROR_STOP).increment(1);
                             warn!(%partition_id, "Partition processor failed to start: {result:?}");
-                            RestartDelay::Fixed
+                            PostStopAction::Restart(RestartDelay::Fixed)
                         }
                         ProcessorState::Started {
                             processor,
@@ -613,13 +664,24 @@ where
                                     counter!(PARTITION_STOP, PARTITION_LABEL => partition_id.to_string(), TYPE_LABEL => ERROR_STOP).increment(1);
                                     gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL => partition_id.to_string(), REASON_LABEL => FLARE_REASON_VERSION_BARRIER).set(1);
                                     error!(%partition_id, "Partition processor start error: {e}");
-                                    RestartDelay::MaxBackoff
+                                    PostStopAction::Restart(RestartDelay::MaxBackoff)
                                 }
                                 Err(e @ ProcessorError::MigrationBarrier { .. }) => {
                                     counter!(PARTITION_STOP, PARTITION_LABEL => partition_id.to_string(), TYPE_LABEL => ERROR_STOP).increment(1);
                                     gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL => partition_id.to_string(), REASON_LABEL => FLARE_REASON_MIGRATION_BARRIER).set(1);
                                     error!(%partition_id, "Partition processor start error: {e}");
-                                    RestartDelay::MaxBackoff
+                                    PostStopAction::Restart(RestartDelay::MaxBackoff)
+                                }
+                                Err(e @ ProcessorError::PartitionAheadOfLog { .. }) => {
+                                    counter!(PARTITION_STOP, PARTITION_LABEL => partition_id.to_string(), TYPE_LABEL => ERROR_STOP).increment(1);
+                                    gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL => partition_id.to_string(), REASON_LABEL => FLARE_REASON_AHEAD_OF_LOG).set(1);
+                                    error!(
+                                        %partition_id,
+                                        "Partition processor start error: {e}. The local partition store \
+                                        is sealed; this node will not run this partition again until the \
+                                        store has been dropped and replaced by a safe snapshot",
+                                    );
+                                    PostStopAction::Park(BrokenReason::AheadOfLog)
                                 }
                                 Err(e @ ProcessorError::PartitionAheadOfLog { .. }) => {
                                     counter!(PARTITION_STOP, PARTITION_LABEL => partition_id.to_string(), TYPE_LABEL => ERROR_STOP).increment(1);
@@ -644,7 +706,7 @@ where
                                         );
                                         self.fast_forward_on_startup.insert(partition_id, *to_lsn);
 
-                                        RestartDelay::Immediate
+                                        PostStopAction::Restart(RestartDelay::Immediate)
                                     } else {
                                         error!(
                                             %partition_id,
@@ -653,7 +715,7 @@ where
                                         );
                                         gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL => partition_id.to_string(), REASON_LABEL => FLARE_REASON_SNAPSHOT_UNAVAILABLE).set(1);
                                         // configuration problem; until we have peer-to-peer state exchange we can only wait
-                                        RestartDelay::MaxBackoff
+                                        PostStopAction::Restart(RestartDelay::MaxBackoff)
                                     }
                                 }
                                 Err(err) => {
@@ -663,12 +725,12 @@ where
                                     };
                                     counter!(PARTITION_STOP, PARTITION_LABEL => partition_id.to_string(), TYPE_LABEL => ERROR_STOP).increment(1);
                                     error!(%partition_id, %err, "Partition processor exited unexpectedly, {}", next_delay);
-                                    next_delay
+                                    PostStopAction::Restart(next_delay)
                                 }
                                 Ok(_) => {
                                     counter!(PARTITION_STOP, PARTITION_LABEL => partition_id.to_string(), TYPE_LABEL => NORMAL_STOP).increment(1);
                                     info!(%partition_id, "Partition processor stopped");
-                                    RestartDelay::Immediate
+                                    PostStopAction::Restart(RestartDelay::Immediate)
                                 }
                             }
                         }
@@ -678,13 +740,37 @@ where
                                     .unregister_all(processor.key_range());
                             }
                             counter!(PARTITION_STOP, PARTITION_LABEL => partition_id.to_string(), TYPE_LABEL => NORMAL_STOP).increment(1);
-                            RestartDelay::Immediate
+                            PostStopAction::Restart(RestartDelay::Immediate)
                         }
+                        // Unreachable in practice: a broken processor has no runtime task that
+                        // could report back. Stay broken rather than silently restarting.
+                        ProcessorState::Broken { reason, .. } => PostStopAction::Park(reason),
                     },
                 };
 
-                if !self.restart_partition_processor_if_replica(partition_id, delay) {
-                    debug!("Partition processor stopped: {result:?}");
+                // A pending drop was waiting for this processor to release the store. Note that
+                // `should_run_processor` reports false while a drop is pending, so neither branch
+                // below revives the processor we just stopped.
+                let resume_drop = self.take_pending_drop_stop_wait(partition_id);
+
+                match action {
+                    PostStopAction::Restart(delay) => {
+                        if !self.restart_partition_processor_if_replica(partition_id, delay) {
+                            debug!("Partition processor stopped: {result:?}");
+                        }
+                    }
+                    PostStopAction::Park(reason) => {
+                        if self.should_run_processor(partition_id) {
+                            self.processor_states
+                                .insert(partition_id, ProcessorState::broken(reason));
+                        } else {
+                            debug!("Partition processor stopped: {result:?}");
+                        }
+                    }
+                }
+
+                if resume_drop {
+                    self.spawn_drop_partition_store_task(partition_id);
                 }
 
                 gauge!(NUM_ACTIVE_PARTITIONS).set(self.processor_states.len() as f64);
@@ -738,6 +824,9 @@ where
             EventKind::SnapshotStatusUpdateSkipped => {
                 self.pending_snapshot_status_refreshes.remove(&partition_id);
                 // No-op: no snapshot found or error fetching status (logged upstream)
+            }
+            EventKind::PartitionStoreDropped(result) => {
+                self.on_partition_store_dropped(partition_id, result);
             }
         }
     }
@@ -1293,6 +1382,143 @@ where
         Ok(Box::new(epoch.into()))
     }
 
+    /// Deletes this node's local copy of a partition, on operator request.
+    ///
+    /// We only touch the store once we are sure that no processor is using it: either this node
+    /// already gave up on the partition, or it isn't a replica of it, or - with `force` - we stop
+    /// the running processor and wait for it to terminate first. [`Self::pending_drops`] keeps the
+    /// manager from starting a new processor in the meantime.
+    #[instrument(level = "info", skip_all, fields(partition_id = %partition_id, force = %force))]
+    fn on_drop_partition_store(
+        &mut self,
+        partition_id: PartitionId,
+        force: bool,
+        sender: oneshot::Sender<DropResult>,
+    ) {
+        if self.pending_drops.contains_key(&partition_id) {
+            let _ = sender.send(Err(DropPartitionStoreError::DropInProgress));
+            return;
+        }
+
+        if !self.partition_table.live_load().contains(&partition_id) {
+            // without the partition's metadata we don't know which column family to drop
+            let _ = sender.send(Err(DropPartitionStoreError::UnknownPartition));
+            return;
+        }
+
+        let awaiting_stop = match self.processor_states.get_mut(&partition_id) {
+            // this node isn't running the partition; nothing can race us
+            None => false,
+            Some(state) if state.is_broken() => {
+                // no runtime task to await, the processor is already gone
+                self.processor_states.remove(&partition_id);
+                false
+            }
+            Some(_) if !force => {
+                let _ = sender.send(Err(DropPartitionStoreError::ProcessorRunning));
+                return;
+            }
+            Some(state) => {
+                warn!("Stopping a running partition processor to drop its local store");
+                state.stop();
+                true
+            }
+        };
+
+        self.pending_drops.insert(
+            partition_id,
+            PendingDrop {
+                awaiting_stop,
+                sender,
+            },
+        );
+
+        if !awaiting_stop {
+            self.spawn_drop_partition_store_task(partition_id);
+        }
+    }
+
+    /// Clears the "waiting for the processor to terminate" flag of a pending drop. Returns true
+    /// if a drop was waiting, and is now ready to run.
+    fn take_pending_drop_stop_wait(&mut self, partition_id: PartitionId) -> bool {
+        self.pending_drops
+            .get_mut(&partition_id)
+            .is_some_and(|pending| std::mem::take(&mut pending.awaiting_stop))
+    }
+
+    fn spawn_drop_partition_store_task(&mut self, partition_id: PartitionId) {
+        let partition = self.partition_table.live_load().get(&partition_id).cloned();
+        let psm = self.partition_store_manager.clone();
+
+        self.asynchronous_operations
+            .build_task()
+            .name(&format!("drop-partition-store-{partition_id}"))
+            .spawn(
+                async move {
+                    let result = match partition {
+                        None => Err(DropPartitionStoreError::UnknownPartition),
+                        Some(partition) => psm
+                            .drop_partition_store(&partition)
+                            .await
+                            .map(|dropped| {
+                                if dropped {
+                                    DropPartitionStoreOutcome::Dropped
+                                } else {
+                                    DropPartitionStoreOutcome::NoStoreFound
+                                }
+                            })
+                            .map_err(|err| DropPartitionStoreError::Internal(err.to_string())),
+                    };
+
+                    AsynchronousEvent {
+                        partition_id,
+                        inner: EventKind::PartitionStoreDropped(result),
+                    }
+                }
+                .in_current_tc(),
+            )
+            .expect("to spawn drop partition store task");
+    }
+
+    fn on_partition_store_dropped(&mut self, partition_id: PartitionId, result: DropResult) {
+        match &result {
+            Ok(outcome) => {
+                info!(%partition_id, "Drop partition store request completed: {outcome}");
+                // the partition can only have been blocked on data we just deleted
+                gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL => partition_id.to_string(), REASON_LABEL => FLARE_REASON_AHEAD_OF_LOG).set(0);
+            }
+            Err(err) => {
+                warn!(%partition_id, "Drop partition store request failed: {err}");
+            }
+        }
+
+        if let Some(pending) = self.pending_drops.remove(&partition_id) {
+            let _ = pending.sender.send(result);
+        }
+
+        // now that the drop is no longer pending, resume normal operation: if we are still a
+        // replica of this partition the processor starts over from a snapshot or an empty store
+        self.restart_partition_processor_if_replica(partition_id, RestartDelay::Immediate);
+        gauge!(NUM_ACTIVE_PARTITIONS).set(self.processor_states.len() as f64);
+    }
+
+    fn handle_drop_partition_store_request(
+        &mut self,
+        request: Incoming<Rpc<DropPartitionStoreRequest>>,
+    ) {
+        let (sender, rx) = oneshot::channel();
+        let (reciprocal, body) = request.split();
+        self.on_drop_partition_store(body.partition_id, body.force, sender);
+        tokio::spawn(async move {
+            let Ok(result) = rx.await else {
+                // dropping the reciprocal will notify the sender that the request will not
+                // complete.
+                return;
+            };
+            reciprocal.send(DropPartitionStoreResponse { result });
+        });
+    }
+
     fn handle_create_snapshot_request(&mut self, request: Incoming<Rpc<CreateSnapshotRequest>>) {
         let (sender, rx) = oneshot::channel();
         let (reciprocal, body) = request.split();
@@ -1338,7 +1564,16 @@ where
         // All the remaining running processors are no longer part of the observed partition
         // configuration. Let's terminate them.
         for partition_id in running_processors.into_iter() {
-            if let Some(processor) = self.processor_states.get_mut(&partition_id) {
+            let Some(processor) = self.processor_states.get_mut(&partition_id) else {
+                continue;
+            };
+
+            if processor.is_broken() {
+                // A broken processor has no runtime task that would report its termination,
+                // so drop it right away instead of waiting for a `Stopped` event.
+                debug!(%partition_id, "Forget broken partition processor because it is no longer a member of the partition configuration");
+                self.processor_states.remove(&partition_id);
+            } else {
                 debug!(%partition_id, "Stop partition processor because it is no longer a member of the partition configuration");
                 processor.stop();
 
@@ -1347,11 +1582,23 @@ where
                         "Partition processor stop requested with snapshot task result outstanding"
                     );
                 }
-                self.latest_snapshots.remove(&partition_id);
             }
+            self.latest_snapshots.remove(&partition_id);
         }
 
         gauge!(NUM_ACTIVE_PARTITIONS).set(self.processor_states.len() as f64);
+    }
+
+    /// Whether this node should be running a processor for the given partition, i.e. we are
+    /// part of its replica set, its local store is not being dropped, and the manager itself is
+    /// not shutting down.
+    fn should_run_processor(&self, partition_id: PartitionId) -> bool {
+        !restate_core::is_cancellation_requested()
+            && !self.pending_drops.contains_key(&partition_id)
+            && self
+                .replica_set_states
+                .membership_state(partition_id)
+                .contains(Metadata::with_current(|m| m.my_node_id().as_plain()))
     }
 
     /// Starts a partition processor if this node is part of the replica set of the given partition.
@@ -1361,28 +1608,22 @@ where
         partition_id: PartitionId,
         delay: RestartDelay,
     ) -> bool {
-        // only restart partition processors if the partition processor manager is still supposed to run
-        if restate_core::is_cancellation_requested() {
+        if !self.should_run_processor(partition_id) {
             return false;
         }
 
-        if self
-            .replica_set_states
-            .membership_state(partition_id)
-            .contains(Metadata::with_current(|m| m.my_node_id().as_plain()))
-        {
-            self.start_partition_processor(
-                partition_id,
-                delay.next_delay().map(|d| d.add_jitter(0.3)),
-            );
-            true
-        } else {
-            false
-        }
+        self.start_partition_processor(partition_id, delay.next_delay().map(|d| d.add_jitter(0.3)));
+        true
     }
 
     #[instrument(level = "info", skip_all, fields(partition_id = %partition_id))]
     fn start_partition_processor(&mut self, partition_id: PartitionId, delay: Option<Duration>) {
+        if self.pending_drops.contains_key(&partition_id) {
+            // dropping the column family under a starting processor would corrupt it
+            debug!("Not starting partition processor while its local store is being dropped");
+            return;
+        }
+
         let Some(partition) = self.partition_table.live_load().get(&partition_id).cloned() else {
             debug!(
                 "Cannot start partition processor because it is not contained in the partition table. Waiting for a partition table update."
@@ -1562,6 +1803,7 @@ enum EventKind {
         snapshot_status: PartitionSnapshotStatus,
     },
     SnapshotStatusUpdateSkipped,
+    PartitionStoreDropped(DropResult),
 }
 
 #[cfg(test)]

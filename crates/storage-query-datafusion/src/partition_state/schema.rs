@@ -70,5 +70,9 @@ define_table!(
         /// Partition-store on-disk storage version (StorageVersion discriminant).
         /// Set once on partition open.
         storage_version: DataType::UInt32,
+
+        /// Why the node gave up on running this partition processor, if it did.
+        /// NULL while the processor is healthy.
+        broken_reason: DataType::Utf8,
     )
 );

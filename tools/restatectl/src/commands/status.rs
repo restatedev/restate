@@ -26,7 +26,7 @@ use restate_types::health::MetadataServerStatus;
 use restate_types::logs::metadata::Logs;
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 use restate_types::protobuf::cluster::node_state::State;
-use restate_types::protobuf::cluster::{AliveNode, RunMode};
+use restate_types::protobuf::cluster::{AliveNode, BrokenReason, RunMode};
 use restate_types::{GenerationalNodeId, NodeId};
 use restate_util_time::DurationExt;
 
@@ -158,6 +158,12 @@ async fn alive_node_status(
     let counter = alive_node.partitions.values().fold(
         PartitionCounter::default(),
         |mut counter, partition_status| {
+            // a broken processor is neither leading nor following, it isn't running at all
+            if partition_status.broken_reason() != BrokenReason::NotBroken {
+                counter.broken += 1;
+                return counter;
+            }
+
             let effective =
                 RunMode::try_from(partition_status.effective_mode).expect("valid effective mode");
             let planned =
@@ -251,6 +257,7 @@ struct PartitionCounter {
     followers: u16,
     upgrading: u16,
     downgrading: u16,
+    broken: u16,
 }
 
 impl PartitionCounter {
@@ -273,6 +280,9 @@ impl PartitionCounter {
         write!(buf, "{}", self.followers).expect("must succeed");
         if self.downgrading > 0 {
             write!(buf, "+{}", self.downgrading).expect("must succeed");
+        }
+        if self.broken > 0 {
+            write!(buf, " ({} broken)", self.broken).expect("must succeed");
         }
 
         buf
