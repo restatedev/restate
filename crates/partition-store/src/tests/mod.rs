@@ -86,6 +86,67 @@ async fn read_write() {
     RocksDbManager::get().shutdown().await;
 }
 
+/// Dropping a partition releases the last reference to its database, whose shutdown then runs
+/// in the background. In the multi-db layout that partition owns the whole database, so
+/// re-opening it must wait for the shutdown to complete: until then rocksdb still holds the
+/// directory's file lock and rotates its LOG files.
+///
+/// This exercises `RocksDbManager`'s open/close interlock; it lives here because this is where
+/// the rocksdb test harness is. A single round often wins the race by chance, hence the loop.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reopen_partition_after_background_close() {
+    let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+    let partition = Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1));
+
+    let (manager, store) = storage_test_environment_with_manager().await;
+    drop(store);
+
+    for round in 0..10 {
+        manager.drop_partition_store(&partition).await.unwrap();
+        manager
+            .open(&partition, None)
+            .await
+            .unwrap_or_else(|err| panic!("re-open after drop failed on round {round}: {err}"));
+    }
+
+    RocksDbManager::get().shutdown().await;
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn drop_partition_store_deletes_local_data() {
+    use restate_storage_api::Transaction;
+    use restate_storage_api::fsm_table::{ReadFsmTable, WriteFsmTable};
+    use restate_types::logs::Lsn;
+
+    let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+    let partition = Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1));
+
+    let (manager, mut store) = storage_test_environment_with_manager().await;
+
+    {
+        let mut txn = store.transaction();
+        txn.put_applied_lsn(Lsn::new(100)).unwrap();
+        txn.commit().await.expect("commit succeeds");
+    }
+    assert_eq!(Some(Lsn::new(100)), store.get_applied_lsn().await.unwrap());
+    drop(store);
+
+    assert!(
+        manager.drop_partition_store(&partition).await.unwrap(),
+        "the partition's column family existed and was dropped"
+    );
+    assert!(
+        !manager.drop_partition_store(&partition).await.unwrap(),
+        "dropping a partition we no longer hold is a no-op"
+    );
+
+    // re-opening provisions a fresh store; the data we wrote before the drop is gone
+    let mut store = manager.open(&partition, None).await.unwrap();
+    assert_eq!(None, store.get_applied_lsn().await.unwrap());
+
+    RocksDbManager::get().shutdown().await;
+}
+
 pub(crate) fn mock_service_invocation(service_id: ServiceId) -> Box<ServiceInvocation> {
     let invocation_target = InvocationTarget::mock_from_service_id(service_id);
     Box::new(ServiceInvocation::initialize(
