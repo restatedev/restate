@@ -194,11 +194,11 @@ A **reusable workflow** called by this repo and many others in the restatedev or
 **Inputs:**
 - `uploadImageAsTarball`: Save image as artifact for downstream jobs
 - `platforms`: Target platforms (default: `linux/arm64,linux/amd64`)
-- `debug`: Include debug symbols
 - `parca`: Split debug symbols and upload to Polar Signals
 - `buildIndividually`: Build binaries separately to avoid feature unification
 - `features`: Cargo features to enable
 - `pushToDockerHub`: Push to Docker Hub in addition to GHCR
+- `profile`: Select which Cargo profile to build
 
 **Build optimizations:**
 - Uses `sccache` with WarpBuild cache

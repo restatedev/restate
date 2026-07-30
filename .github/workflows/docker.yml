@@ -17,11 +17,6 @@ on:
         required: false
         default: ""
         type: string
-      debug:
-        description: "include debug symbols in built image"
-        required: false
-        default: false
-        type: boolean
       parca:
         description: "split out debug symbols and upload to polar signals"
         required: false
@@ -36,6 +31,11 @@ on:
         description: "features to enable in the build"
         required: false
         default: ""
+        type: string
+      profile:
+        description: "cargo profile to build with (must exist in Cargo.toml)"
+        required: false
+        default: "release"
         type: string
       pushToDockerHub:
         description: "push image to DockerHub"
@@ -60,11 +60,6 @@ on:
         required: false
         default: ""
         type: string
-      debug:
-        description: "include debug symbols in built image"
-        required: false
-        default: false
-        type: boolean
       parca:
         description: "upload debug symbols to polar signals"
         required: false
@@ -79,6 +74,11 @@ on:
         description: "features to enable in the build"
         required: false
         default: ""
+        type: string
+      profile:
+        description: "cargo profile to build with (must exist in Cargo.toml)"
+        required: false
+        default: "release"
         type: string
       pushToDockerHub:
         description: "push image to DockerHub"
@@ -99,8 +99,8 @@ env:
 
 jobs:
   build-and-push-image:
-    runs-on: ${{ (inputs.debug || inputs.parca) && 'warp-ubuntu-latest-x64-32x' || 'warp-ubuntu-latest-x64-16x' }}
-    timeout-minutes: ${{ (inputs.debug || inputs.parca) && 140 || 70 }}
+    runs-on: ${{ inputs.parca && 'warp-ubuntu-latest-x64-32x' || 'warp-ubuntu-latest-x64-16x' }}
+    timeout-minutes: ${{ inputs.parca && 140 || 70 }}
 
     steps:
       - name: Checkout repository
@@ -205,6 +205,18 @@ jobs:
             echo "This is not the latest version - will not update latest tag"
           fi
 
+      - name: Compute image tag prefix
+        id: prefix
+        env:
+          CARGO_PROFILE: ${{ inputs.profile }}
+        run: |
+          # Keep non-release-profile images from clobbering the regular tags.
+          # NB parca must not contribute a prefix; release builds use it and need plain tags.
+          PREFIX=""
+          if [[ "$CARGO_PROFILE" != "release" ]]; then PREFIX="${CARGO_PROFILE}-"; fi
+          echo "value=${PREFIX}" >> "$GITHUB_OUTPUT"
+          echo "Tag prefix: '${PREFIX}'"
+
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v5
@@ -215,7 +227,7 @@ jobs:
 
           flavor: |
             latest=${{ (steps.is-latest.outputs.is_latest == 'true') && 'true' || 'false' }}
-            ${{ inputs.debug && 'prefix=debug-,onlatest=true' || '' }}
+            ${{ steps.prefix.outputs.value != '' && format('prefix={0},onlatest=true', steps.prefix.outputs.value) || '' }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -262,15 +274,15 @@ jobs:
           platforms: ${{ github.ref == 'refs/heads/main' && 'linux/arm64,linux/amd64' || (inputs.platforms || 'linux/arm64,linux/amd64') }}
           network: host
           build-args: |
-            CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug || inputs.parca }}
+            CARGO_PROFILE=${{ inputs.profile }}
             BUILD_INDIVIDUALLY=${{ inputs.buildIndividually }}
             UPLOAD_DEBUGINFO=${{ inputs.parca }}
             RESTATE_FEATURES=${{ inputs.features || '' }}
           secrets: |
             parca=${{ secrets.PARCA_TOKEN }}
           cache-from: type=gha,url=http://127.0.0.1:49160/,version=1
-          # don't cache debug/parca builds, it's just too big
-          cache-to: ${{ (!inputs.debug && !inputs.parca) && 'type=gha,url=http://127.0.0.1:49160/,mode=max,version=1' || '' }}
+          # don't cache parca builds, they're too big
+          cache-to: ${{ !inputs.parca && 'type=gha,url=http://127.0.0.1:49160/,mode=max,version=1' || '' }}
 
       - name: Upload docker image tar as artifact
         if: ${{ inputs.uploadImageAsTarball != '' }}
@@ -292,7 +304,7 @@ jobs:
           network: host
           outputs: type=local,dest=./debug-symbols
           build-args: |
-            CARGO_PROFILE_RELEASE_DEBUG=true
+            CARGO_PROFILE=${{ inputs.profile }}
             BUILD_INDIVIDUALLY=${{ inputs.buildIndividually }}
             UPLOAD_DEBUGINFO=true
             RESTATE_FEATURES=${{ inputs.features || '' }}
