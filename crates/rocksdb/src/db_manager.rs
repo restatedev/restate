@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use parking_lot::RwLock;
 use rocksdb::{Cache, RateLimiter, RateLimiterMode, WriteBufferManager};
+use tokio::sync::Semaphore;
 use tokio_util::task::TaskTracker;
 use tracing::{debug, error, info, warn};
 
@@ -41,6 +42,12 @@ pub struct RocksDbManager {
     // auto updates to changes in common.rocksdb_memory_limit and common.rocksdb_memtable_total_size_limit
     pub(crate) write_buffer_manager: WriteBufferManager,
     dbs: RwLock<HashMap<DbName, Weak<RocksDb>>>,
+    /// Databases whose shutdown is still running, keyed by name.
+    ///
+    /// RocksDB only releases a database directory's file lock once its shutdown completes, so
+    /// re-opening the same database has to wait for the in-flight close first. The semaphore
+    /// holds no permits and is closed by the shutdown task to release waiters.
+    closing_dbs: RwLock<HashMap<DbName, Arc<Semaphore>>>,
     shutting_down: AtomicBool,
     close_db_tasks: TaskTracker,
     high_pri_pool: threadpool::ThreadPool,
@@ -116,6 +123,7 @@ impl RocksDbManager {
             cache,
             write_buffer_manager,
             dbs,
+            closing_dbs: RwLock::default(),
             shutting_down: AtomicBool::new(false),
             close_db_tasks: TaskTracker::default(),
             high_pri_pool,
@@ -164,6 +172,11 @@ impl RocksDbManager {
         // get latest options
         let name = db_spec.name.clone();
         let path = db_spec.path.clone();
+
+        // A previous instance of this database may still be shutting down, in which case rocksdb
+        // has not released the directory's file lock yet and opening would fail.
+        self.wait_for_pending_close(&name).await;
+
         let wrapper = RocksDb::open(self, db_spec).await?;
         self.dbs
             .write()
@@ -183,6 +196,7 @@ impl RocksDbManager {
             .store(true, std::sync::atomic::Ordering::Release);
         self.shutdown().await;
         self.dbs.write().clear();
+        self.closing_dbs.write().clear();
         self.shutting_down
             .store(false, std::sync::atomic::Ordering::Release);
         Ok(())
@@ -236,15 +250,55 @@ impl RocksDbManager {
         self.dbs.read().values().filter_map(Weak::upgrade).collect()
     }
 
+    /// Waits for an in-flight close of the named database to complete, if there is one.
+    async fn wait_for_pending_close(&self, name: &DbName) {
+        let Some(semaphore) = self.closing_dbs.read().get(name).cloned() else {
+            return;
+        };
+
+        debug!(db = %name, "Waiting for the previous instance of this database to finish closing");
+        // never granted; resolves with an error once the shutdown task closes the semaphore
+        let _ = semaphore.acquire().await;
+    }
+
+    /// Marks the named database as closing. Callers must pass the returned semaphore to
+    /// [`Self::finish_pending_close`] once the shutdown has completed.
+    fn register_pending_close(&self, name: DbName) -> Arc<Semaphore> {
+        let semaphore = Arc::new(Semaphore::new(0));
+        self.closing_dbs.write().insert(name, semaphore.clone());
+        semaphore
+    }
+
+    fn finish_pending_close(&self, name: &DbName, semaphore: &Arc<Semaphore>) {
+        {
+            let mut guard = self.closing_dbs.write();
+            // only clear our own registration; the database may have been opened and closed again
+            if guard
+                .get(name)
+                .is_some_and(|current| Arc::ptr_eq(current, semaphore))
+            {
+                guard.remove(name);
+            }
+        }
+        // releases anyone that started waiting before we removed the entry above
+        semaphore.close();
+    }
+
     /// Closes the database and waits for completion.
-    pub(crate) async fn close_db(&self, db: Arc<RocksDb>) -> Result<(), Arc<RocksDb>> {
+    pub(crate) async fn close_db(&'static self, db: Arc<RocksDb>) -> Result<(), Arc<RocksDb>> {
         let db = Arc::try_unwrap(db)?;
+        let name = db.name().clone();
         // unconditionally remove the db from the map
-        self.dbs.write().remove(db.name());
+        self.dbs.write().remove(&name);
+        let semaphore = self.register_pending_close(name.clone());
         let handle = self.close_db_tasks.spawn_blocking(move || {
             db.db.shutdown();
+            // `db` is dropped as this closure returns, which is what destroys the underlying
+            // rocksdb database and releases its directory lock.
         });
         let _ = handle.await;
+        // Only now is the lock gone, so it is safe to let a waiting open proceed.
+        self.finish_pending_close(&name, &semaphore);
         Ok(())
     }
 
@@ -256,13 +310,22 @@ impl RocksDbManager {
     /// [`RocksDbManager`]'s shutdown routine.
     ///
     /// if you need to wait for the shutdown, then use [`RocksDb::close`] instead.
-    pub(crate) fn background_close_db(&self, db: RocksAccess) {
-        let Some(_db) = self.dbs.write().remove(db.name()) else {
+    pub(crate) fn background_close_db(&'static self, db: RocksAccess) {
+        let name = db.name().clone();
+        let Some(_db) = self.dbs.write().remove(&name) else {
             // database has already been closed via other means
             return;
         };
+        // Opening this database again has to wait for this shutdown: rocksdb holds the
+        // directory's file lock until it completes.
+        let semaphore = self.register_pending_close(name.clone());
         self.close_db_tasks.spawn_blocking(move || {
             db.shutdown();
+            // Destroying the database is what releases its directory lock; `shutdown` above only
+            // flushes. Waiters must not be released before this, or their open fails with
+            // "lock hold by current process".
+            drop(db);
+            self.finish_pending_close(&name, &semaphore);
         });
     }
 
