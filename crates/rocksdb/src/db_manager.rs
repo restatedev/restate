@@ -331,6 +331,16 @@ impl RocksDbManager {
 
     /// Ask all databases to shut down cleanly
     pub async fn shutdown(&'static self) {
+        // Stop accepting new work. Submitters using the `*_unchecked` variants can still get
+        // through, which is why we join the pools below instead of relying on this alone.
+        self.shutting_down
+            .store(true, std::sync::atomic::Ordering::Release);
+
+        // Wait for storage tasks that are already running before draining `self.dbs`: a database
+        // that is still being opened has not been registered there yet (see `open_db`), so it
+        // would otherwise escape the close loop entirely.
+        self.join_storage_pools().await;
+
         self.close_db_tasks.close();
         for (name, db) in self.dbs.write().drain() {
             let Some(db) = db.upgrade() else {
@@ -344,8 +354,37 @@ impl RocksDbManager {
         }
         // wait for all tasks to complete
         self.close_db_tasks.wait().await;
+
+        // No storage task may still be inside rocksdb when we return. The process can begin
+        // running C++ static destructors right after this, and a task still in `DB::Open` would
+        // then read a freed option-registry static and crash with SIGSEGV.
+        self.join_storage_pools().await;
         self.env.clone().join_all_threads();
         info!("Rocksdb manager shutdown completed");
+    }
+
+    /// Waits until neither storage pool has queued or running jobs.
+    ///
+    /// Bounded by the configured shutdown grace period: a stalled write is not a reason to hang
+    /// the process forever, even though returning early re-opens the window described in
+    /// [`Self::shutdown`].
+    async fn join_storage_pools(&'static self) {
+        let grace_period = Configuration::pinned().common.shutdown_grace_period();
+
+        // `ThreadPool::join` blocks, so it must not run on a runtime worker.
+        let join = tokio::task::spawn_blocking(move || {
+            self.high_pri_pool.join();
+            self.low_pri_pool.join();
+        });
+
+        match tokio::time::timeout(grace_period, join).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => warn!("Failed to join rocksdb storage thread pools: {err}"),
+            Err(_) => warn!(
+                "Rocksdb storage thread pools are still busy after {:?}, continuing shutdown",
+                grace_period
+            ),
+        }
     }
 
     /// Emergency shutdown is ongoing, this will ensure rocksdb's wal is fsynced.
