@@ -72,4 +72,8 @@ pub(crate) fn append_partition_row(
     if let Some(version) = state.storage_version {
         row.storage_version(version as u32);
     }
+
+    if state.is_broken() {
+        row.fmt_broken_reason(state.broken_reason);
+    }
 }

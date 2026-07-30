@@ -21,7 +21,8 @@ use restate_core::protobuf::cluster_ctrl_svc::{ClusterStateRequest, new_cluster_
 use restate_types::logs::Lsn;
 use restate_types::nodes_config::Role;
 use restate_types::protobuf::cluster::{
-    DeadNode, DetailedRunMode, PartitionProcessorStatus, ReplayStatus, RunMode, node_state,
+    BrokenReason, DeadNode, DetailedRunMode, PartitionProcessorStatus, ReplayStatus, RunMode,
+    node_state,
 };
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 
@@ -184,6 +185,7 @@ pub async fn list_partitions(
                 render_replay_status(
                     processor.status.effective_mode(),
                     processor.status.replay_status(),
+                    processor.status.broken_reason(),
                     processor.status.target_tail_lsn.map(Into::into),
                 ),
                 Cell::new(
@@ -309,7 +311,22 @@ fn render_mode(
     }
 }
 
-fn render_replay_status(effective: RunMode, status: ReplayStatus, target_lsn: Option<Lsn>) -> Cell {
+fn render_replay_status(
+    effective: RunMode,
+    status: ReplayStatus,
+    broken_reason: BrokenReason,
+    target_lsn: Option<Lsn>,
+) -> Cell {
+    // A broken processor isn't running at all, so its replay status carries no information.
+    match broken_reason {
+        BrokenReason::NotBroken => {}
+        BrokenReason::AheadOfLog => {
+            return Cell::new("Broken (ahead-of-log)")
+                .fg(Color::Red)
+                .add_attribute(Attribute::Bold);
+        }
+    }
+
     match (status, effective) {
         (ReplayStatus::Unknown, _) => Cell::new("UNKNOWN").fg(Color::Red),
         (ReplayStatus::Starting, _) => Cell::new("Starting").fg(Color::Yellow),
