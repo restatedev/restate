@@ -18,6 +18,7 @@ use restate_storage_api::invocation_status_table::{
     ScanInvocationStatusTable, ScanInvocationStatusTableRange,
 };
 use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
+use restate_types::config::Configuration;
 use restate_types::errors::ConversionError;
 use restate_types::identifiers::InvocationId;
 
@@ -55,14 +56,26 @@ pub(crate) fn register_self(
         .with_foreign_key("pinned_deployment_id", DEPLOYMENT_ROW_ESTIMATE)
         .with_foreign_key("target_service_name", SERVICE_ROW_ESTIMATE);
 
+    let partition_key_extractor = FirstMatchingPartitionKeyExtractor::default()
+        .with_service_key(
+            if Configuration::pinned()
+                .common
+                .experimental
+                .is_vqueues_enabled()
+            {
+                "scope"
+            } else {
+                "target_service_key"
+            },
+        )
+        .with_grouped_invocation_id("id");
+
     let status_table = PartitionedTableProvider::new(
         partition_selector,
         schema,
         sys_invocation_status_sort_order(),
         remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
-        FirstMatchingPartitionKeyExtractor::default()
-            .with_service_key("target_service_key")
-            .with_grouped_invocation_id("id"),
+        partition_key_extractor,
     )
     .with_statistics(statistics.build());
     ctx.register_partitioned_table(NAME, Arc::new(status_table))
