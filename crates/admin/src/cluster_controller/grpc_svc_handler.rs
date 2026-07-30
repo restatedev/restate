@@ -241,6 +241,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
                 request.segment_index.map(SegmentIndex::from),
                 false, /* permanent_seal */
                 request.context,
+                request.tail_lsn.map(Into::into),
             )
             .await
             .map_err(|_| Status::aborted("Node is shutting down"))?
