@@ -116,6 +116,11 @@ fn build_restate_proto(out_dir: &Path) -> std::io::Result<()> {
             "DetailedRunMode",
             "#[derive(::strum::Display, ::restate_encoding::NetSerde, ::bilrost::Enumeration)]",
         )
+        .enum_attribute(
+            "BrokenReason",
+            "#[derive(::strum::Display, ::restate_encoding::NetSerde, ::bilrost::Enumeration)]",
+        )
+        .enum_attribute("BrokenReason", "#[strum(serialize_all = \"snake_case\")]")
         .btree_map([
             ".restate.cluster.ClusterState",
             ".restate.cluster.AliveNode",
