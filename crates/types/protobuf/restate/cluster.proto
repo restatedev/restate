@@ -70,6 +70,18 @@ enum ReplayStatus {
   CATCHING_UP = 3;
 }
 
+// Why a partition processor has been parked on a node. A parked processor is
+// not retried automatically; it needs operator intervention to recover.
+// Since v1.7.3
+enum BrokenReason {
+  // The partition processor is not broken.
+  BrokenReason_NOT_BROKEN = 0;
+  // The local partition store's applied LSN is ahead of the log tail, which
+  // indicates data loss in the log. The store has been sealed and must be
+  // replaced before this node can run the partition again.
+  BrokenReason_AHEAD_OF_LOG = 1;
+}
+
 message PartitionProcessorStatus {
   reserved 8;
   google.protobuf.Timestamp updated_at = 1;
@@ -93,6 +105,9 @@ message PartitionProcessorStatus {
   // Partition-store on-disk storage version (StorageVersion discriminant).
   optional uint32 storage_version = 16;
   DetailedRunMode detailed_effective_mode = 17;
+  // Set when this node has parked the partition processor instead of retrying
+  // it. All other fields carry their defaults in that case.
+  BrokenReason broken_reason = 18;
 }
 
 message ReplicationProperty { string replication_property = 1; }
