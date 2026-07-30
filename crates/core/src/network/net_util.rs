@@ -317,7 +317,7 @@ where
 /// Upper bound on the TLS protocol sniff + handshake for a newly accepted
 /// TCP connection. This runs in the per-connection task, so it bounds resource
 /// usage per connection rather than protecting the accept loop.
-const TLS_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(5);
+const TLS_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Establishes the application-layer transport on a freshly accepted TCP
 /// stream: performs the TLS handshake in `require` mode; in `allow`/`prefer`
@@ -339,6 +339,9 @@ async fn negotiate_tcp_transport(
             ));
         }
         (Some(config), TlsMode::Allow | TlsMode::Prefer) => {
+            // Note: This is a poor man's implementation for TLS sniffing. It only works for
+            // for sniffing TLS when the protocol used is HTTP as its first byte won't be 0x16 (the TLS ClientHello).
+            // If we're to ever to switch to a different plaintext protocol, we'll need to implement a proper sniffer.
             let mut peek_buf = [0u8; 1];
             if matches!(tcp_stream.peek(&mut peek_buf).await, Ok(1) if peek_buf[0] == 0x16) {
                 Some(config.tls_acceptor())

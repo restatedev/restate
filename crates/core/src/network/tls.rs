@@ -148,6 +148,7 @@ pub fn spawn_reloader(
         async move {
             let mut cancelled = std::pin::pin!(cancellation_watcher());
             let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             ticker.tick().await; // skip first immediate tick
             loop {
                 tokio::select! {

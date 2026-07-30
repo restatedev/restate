@@ -114,6 +114,8 @@ fn create_channel<P: ListenerPort + GrpcPort>(
         // this true by default, but this is to guard against any change in defaults
         .tcp_nodelay(true);
 
+    // If TLS is in required mode, we'll just reject to connect to a non TLS address.
+    // Note: TLS settings are only supported for HTTP addresses.
     if Configuration::pinned().common.fabric_tls_mode() == TlsMode::Require
         && address.is_http()
         && !address.is_tls()

@@ -373,7 +373,7 @@ pub struct CommonOptions {
     /// Since v1.7.3
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "schemars", schemars(skip))]
-    pub tls: Option<FabricTlsOptions>,
+    tls: Option<FabricTlsOptions>,
 
     /// # Node Location
     ///
@@ -870,6 +870,10 @@ impl CommonOptions {
     /// `off` behaves exactly like an absent section.
     pub fn fabric_tls(&self) -> Option<&FabricTlsOptions> {
         self.tls.as_ref().filter(|t| t.mode.is_enabled())
+    }
+
+    pub fn fabric_tls_mut(&mut self) -> &mut Option<FabricTlsOptions> {
+        &mut self.tls
     }
 
     pub fn fabric_tls_mode(&self) -> TlsMode {
