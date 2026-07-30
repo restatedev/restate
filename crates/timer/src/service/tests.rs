@@ -8,21 +8,26 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::service::clock::TokioClock;
-use crate::service::clock::tests::ManualClock;
-use crate::{Timer, TimerReader, TimerService};
-use futures_util::FutureExt;
-use restate_test_util::let_assert;
-use restate_types::time::MillisSinceEpoch;
-use restate_types::timer::TimerKey;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, SystemTime};
+
+use futures_util::FutureExt;
 use test_log::test;
 use tokio::sync::oneshot;
+
+use restate_test_util::let_assert;
+use restate_types::time::MillisSinceEpoch;
+use restate_types::timer::TimerKey;
+
+use crate::service::clock::TokioClock;
+use crate::service::clock::tests::ManualClock;
+use crate::{Timer, TimerReader, TimerService};
 
 #[derive(Debug, Clone)]
 struct MockTimerReader<T>
@@ -156,6 +161,14 @@ impl Timer for TimerValue {
 impl TimerKey for TimerValue {
     fn wake_up_time(&self) -> MillisSinceEpoch {
         self.wake_up_time
+    }
+}
+
+struct TestWaker(AtomicBool);
+
+impl Wake for TestWaker {
+    fn wake(self: Arc<Self>) {
+        self.0.store(true, AtomicOrdering::Relaxed);
     }
 }
 
@@ -322,6 +335,55 @@ async fn earlier_timers_replace_older_ones() {
         let_assert!(TimerValue { value, .. } = service.as_mut().next_timer().await);
         assert_eq!(value, i);
     }
+}
+
+#[test]
+fn adding_earlier_timer_wakes_service() {
+    let clock = ManualClock::new(MillisSinceEpoch::UNIX_EPOCH);
+    let timer_reader = MockTimerReader::<TimerValue>::new();
+    timer_reader.add_timer(TimerValue::new(1, 10.into()));
+
+    let service = TimerService::new(clock, Some(1), timer_reader);
+    tokio::pin!(service);
+
+    let test_waker = Arc::new(TestWaker(AtomicBool::new(false)));
+    let waker = Waker::from(Arc::clone(&test_waker));
+    let mut cx = Context::from_waker(&waker);
+
+    assert_eq!(service.as_mut().poll_next_timer(&mut cx), Poll::Pending);
+
+    service
+        .as_mut()
+        .add_timer(TimerValue::new(0, MillisSinceEpoch::UNIX_EPOCH));
+
+    assert!(test_waker.0.load(AtomicOrdering::Relaxed));
+    assert_eq!(
+        service.as_mut().poll_next_timer(&mut cx),
+        Poll::Ready(TimerValue::new(0, MillisSinceEpoch::UNIX_EPOCH))
+    );
+}
+
+#[test]
+fn removing_awaited_timer_wakes_service() {
+    let clock = ManualClock::new(MillisSinceEpoch::UNIX_EPOCH);
+    let timer_reader = MockTimerReader::<TimerValue>::new();
+    let timer = TimerValue::new(0, 10.into());
+    timer_reader.add_timer(timer);
+
+    let service = TimerService::new(clock, Some(1), timer_reader.clone());
+    tokio::pin!(service);
+
+    let test_waker = Arc::new(TestWaker(AtomicBool::new(false)));
+    let waker = Waker::from(Arc::clone(&test_waker));
+    let mut cx = Context::from_waker(&waker);
+
+    assert_eq!(service.as_mut().poll_next_timer(&mut cx), Poll::Pending);
+
+    timer_reader.remove_timer(timer);
+    service.as_mut().remove_timer(timer);
+
+    assert!(test_waker.0.load(AtomicOrdering::Relaxed));
+    assert_eq!(service.as_mut().poll_next_timer(&mut cx), Poll::Pending);
 }
 
 async fn yield_to_timer_service<
