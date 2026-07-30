@@ -150,7 +150,7 @@ pub(crate) enum TaskTermination {
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum LeaderEvent {
-    Scheduler(scheduler::Decisions),
+    Scheduler(Result<scheduler::Decisions, StorageError>),
     Invoker(InvokerEffect),
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerKeyValue),
