@@ -27,6 +27,7 @@ features := ""
 libc := "gnu"
 arch := "" # use the default architecture
 os := "" # use the default os
+profile := "release" # cargo profile used by the `docker` recipe
 
 _features := if features == "all" {
         "--all-features"
@@ -179,7 +180,7 @@ verify: lint test doctest
 
 docker:
     # podman builds do not work without --platform set, even though it claims to default to host arch
-    docker buildx build . --platform linux/{{ _docker_arch }} --file docker/Dockerfile --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}' --build-arg RESTATE_FEATURES={{ features }} --load
+    docker buildx build . --platform linux/{{ _docker_arch }} --file docker/Dockerfile --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}' --build-arg RESTATE_FEATURES={{ features }} --build-arg CARGO_PROFILE={{ profile }} --load
 
 docker-debug:
     # podman builds do not work without --platform set, even though it claims to default to host arch
