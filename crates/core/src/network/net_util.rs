@@ -237,7 +237,8 @@ where
                 let (stream, peer_addr) = incoming_connection?;
                 let socket_span = error_span!("SocketHandler", ?peer_addr);
 
-                let network_options = &configuration.live_load().networking;
+                let config = configuration.live_load();
+                let network_options = &config.networking;
                 let mut builder = hyper_util::server::conn::auto::Builder::new(TaskCenterExecutor);
                 builder
                     .http2()
@@ -254,7 +255,7 @@ where
                         let service = service.clone();
                         let graceful_shutdown = graceful_shutdown.watcher();
                         let tls_mode = if P::SUPPORTS_TLS {
-                            network_options.fabric_tls_mode()
+                            config.common.fabric_tls_mode()
                         } else {
                             TlsMode::Off
                         };

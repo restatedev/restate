@@ -109,7 +109,7 @@ fn configure_tls_nodes(
         let (ca_path, cert_path, key_path) =
             write_certs_to_dir(&node_dir, ca_cert, &node_cert, &node_key);
 
-        node.config_mut().networking.tls = Some(FabricTlsOptions {
+        node.config_mut().common.tls = Some(FabricTlsOptions {
             mode,
             cert_file: cert_path,
             key_file: key_path,

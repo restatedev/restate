@@ -32,7 +32,7 @@ use restate_types::config::FabricTlsOptions;
 use crate::{ShutdownError, TaskCenter, TaskId, TaskKind, cancellation_watcher};
 
 /// The process-wide fabric TLS client configuration, set once at node startup when
-/// `[networking.tls]` is configured. Fabric TLS configuration is process-global
+/// `[tls]` is configured. Fabric TLS configuration is process-global
 /// (like [`restate_types::config::Configuration`]), and channels to fabric
 /// peers are created from many places that dial advertised addresses directly
 /// (metadata-store client, raft networking, control channels) — they all pick
@@ -624,7 +624,7 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
         );
     }
 
-    /// A mismatched pair in the separate `[networking.tls.client]` override
+    /// A mismatched pair in the separate `[tls.client]` override
     /// must fail at startup, not later when the first outbound channel is
     /// built (where tonic would panic in `apply_fabric_tls`).
     #[test]

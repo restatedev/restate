@@ -53,8 +53,8 @@ pub struct AddressBook {
     data_dir: PathBuf,
     bound_addr: HashMap<std::any::TypeId, AddressesErased, BuildHasherDefault<IdHasher>>,
     listeners: HashMap<std::any::TypeId, ListenersErased, BuildHasherDefault<IdHasher>>,
-    /// Whether the fabric port is served with TLS ([`networking.tls`] is
-    /// configured). Captured at bind time so advertised fabric addresses carry
+    /// Whether the fabric port is served with TLS ([`tls`] is configured).
+    /// Captured at bind time so advertised fabric addresses carry
     /// the `https://` scheme without every caller threading the flag through.
     fabric_tls_mode: TlsMode,
 }
@@ -109,7 +109,7 @@ impl AddressBook {
         // Message Fabric
         self.bind(config.common.fabric_listener_options(), &mut listenfd)
             .await?;
-        self.fabric_tls_mode = config.networking.fabric_tls_mode();
+        self.fabric_tls_mode = config.common.fabric_tls_mode();
         // todo: add NodeCtl port
 
         Ok(())

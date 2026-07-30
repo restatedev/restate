@@ -5,10 +5,10 @@
 ### What Changed
 
 The fabric port (5122) can now be secured with TLS/mTLS at the application layer via a
-new optional `[networking.tls]` configuration section:
+new optional `[tls]` configuration section:
 
 ```toml
-[networking.tls]
+[tls]
 mode = "require"               # off | allow | prefer | require
 cert-file = "/certs/node.crt"
 key-file = "/certs/node.key"
@@ -21,7 +21,7 @@ refresh-interval = "1h"        # hot-reload certs from disk
 allowed-subject-names = ["spiffe://svc.example.com/restate/*"]
 
 # Optional: separate client certs for outbound (inherits from above if omitted)
-[networking.tls.client]
+[tls.client]
 cert-file = "/certs/client.crt"
 key-file = "/certs/client.key"
 root-ca-files = ["/certs/client-ca.crt"]
@@ -51,9 +51,9 @@ environments cannot use. This feature adds native support for TLS in restate.
 
 ### Impact on Users
 
-- **Existing deployments**: no change — without `[networking.tls]`, behavior is
+- **Existing deployments**: no change — without `[tls]`, behavior is
   identical to today (plaintext).
-- **New deployments**: opt in via `[networking.tls]`.
+- **New deployments**: opt in via `[tls]`.
 
 ### Migration Guidance
 

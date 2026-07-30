@@ -207,7 +207,7 @@ impl Node {
         // client below, which eagerly builds its initial channels): channels
         // pick up the identity/verifier via the process-wide client config.
         let tls_server_config = config
-            .networking
+            .common
             .fabric_tls()
             .map(|tls_opts| {
                 use restate_core::network::tls::{
