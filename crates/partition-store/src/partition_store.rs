@@ -45,7 +45,9 @@ use restate_types::storage::StorageEncode;
 
 use restate_types::partitions::StorageVersion;
 
+use crate::fsm_table::get_partition_seal;
 use crate::fsm_table::put_storage_version;
+use crate::fsm_table::seal_partition;
 use crate::fsm_table::{
     get_locally_durable_lsn, get_storage_version_from_partition_db, is_jc_orphan_cleanup_done,
     put_jc_orphan_cleanup_done,
@@ -110,6 +112,20 @@ impl From<PaddedPartitionId> for PartitionId {
     fn from(value: PaddedPartitionId) -> Self {
         Self::from(u16::try_from(value.0).expect("partition_id must fit in u16"))
     }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_more::Display)]
+#[serde(tag = "type")]
+pub enum PartitionSeal {
+    #[display(
+        "last applied LSN is ahead of the log, \
+        this indicates data-loss in the log. \
+        partition_applied_lsn: {partition_applied_lsn}, log_tail_lsn: {log_tail_lsn}"
+    )]
+    AheadOfLog {
+        partition_applied_lsn: Lsn,
+        log_tail_lsn: Lsn,
+    },
 }
 
 // Ensures that both types have the same length, this makes it possible to
@@ -614,6 +630,14 @@ impl PartitionStore {
 
     pub fn partition(&self) -> &Arc<Partition> {
         self.db.partition()
+    }
+
+    pub async fn get_seal_marker(&mut self) -> Result<Option<PartitionSeal>> {
+        get_partition_seal(self, self.partition_id()).await
+    }
+
+    pub async fn seal(&mut self, seal: &PartitionSeal) -> Result<()> {
+        seal_partition(self, self.partition_id(), seal).await
     }
 
     /// Returns `true` if the one-time cleanup of orphaned `jc` index entries has not yet been
