@@ -403,7 +403,7 @@ impl BifrostInner {
                             .await
                         {
                             Ok(lsn) => {
-                                info!(%log_id, "Chain is sealed at lsn={lsn}, will attempt finding the tail again");
+                                debug!(%log_id, "Chain is sealed at lsn={lsn}, will attempt finding the tail again");
                                 continue;
                             }
                             Err(err) => {
