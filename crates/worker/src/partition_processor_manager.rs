@@ -85,12 +85,12 @@ use restate_worker_api::invoker::capacity::InvokerCapacity;
 use restate_worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 
 use crate::metric_definitions::{
-    ERROR_STOP, FLARE_REASON_MIGRATION_BARRIER, FLARE_REASON_SNAPSHOT_UNAVAILABLE,
-    FLARE_REASON_VERSION_BARRIER, GAP_STOP, NORMAL_STOP, NUM_ACTIVE_PARTITION_LEADERS,
-    NUM_ACTIVE_PARTITIONS, NUM_PARTITIONS, PARTITION_APPLIED_LSN_LAG, PARTITION_BLOCKED_FLARE,
-    PARTITION_LABEL, PARTITION_NUM_UNKNOWN_APPLIED_LSN_LAG, PARTITION_START, PARTITION_STOP,
-    PARTITION_TIME_SINCE_LAST_STATUS_UPDATE, REASON_LABEL, SNAPSHOT_AGE, STARTUP_ERROR_STOP,
-    TYPE_LABEL,
+    ERROR_STOP, FLARE_REASON_AHEAD_OF_LOG, FLARE_REASON_MIGRATION_BARRIER,
+    FLARE_REASON_SNAPSHOT_UNAVAILABLE, FLARE_REASON_VERSION_BARRIER, GAP_STOP, NORMAL_STOP,
+    NUM_ACTIVE_PARTITION_LEADERS, NUM_ACTIVE_PARTITIONS, NUM_PARTITIONS, PARTITION_APPLIED_LSN_LAG,
+    PARTITION_BLOCKED_FLARE, PARTITION_LABEL, PARTITION_NUM_UNKNOWN_APPLIED_LSN_LAG,
+    PARTITION_START, PARTITION_STOP, PARTITION_TIME_SINCE_LAST_STATUS_UPDATE, REASON_LABEL,
+    SNAPSHOT_AGE, STARTUP_ERROR_STOP, TYPE_LABEL,
 };
 use crate::partition::{LeadershipInfo, NodeContext, ProcessorError};
 use crate::partition_processor_manager::processor_state::{
@@ -615,6 +615,12 @@ where
                                 Err(e @ ProcessorError::MigrationBarrier { .. }) => {
                                     counter!(PARTITION_STOP, PARTITION_LABEL => partition_id.to_string(), TYPE_LABEL => ERROR_STOP).increment(1);
                                     gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL => partition_id.to_string(), REASON_LABEL => FLARE_REASON_MIGRATION_BARRIER).set(1);
+                                    error!(%partition_id, "Partition processor start error: {e}");
+                                    RestartDelay::MaxBackoff
+                                }
+                                Err(e @ ProcessorError::PartitionAheadOfLog { .. }) => {
+                                    counter!(PARTITION_STOP, PARTITION_LABEL => partition_id.to_string(), TYPE_LABEL => ERROR_STOP).increment(1);
+                                    gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL => partition_id.to_string(), REASON_LABEL => FLARE_REASON_AHEAD_OF_LOG).set(1);
                                     error!(%partition_id, "Partition processor start error: {e}");
                                     RestartDelay::MaxBackoff
                                 }
