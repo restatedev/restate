@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod drop_store;
 mod epoch_metadata;
 mod gen_metadata;
 mod leadership;
@@ -29,4 +30,6 @@ pub enum Partitions {
     /// Control partition leadership
     #[clap(subcommand)]
     Leadership(leadership::Leadership),
+    /// Delete a node's local copy of a partition
+    DropStore(drop_store::DropStoreOpts),
 }

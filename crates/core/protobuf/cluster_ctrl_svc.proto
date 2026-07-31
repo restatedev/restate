@@ -27,6 +27,9 @@ service ClusterCtrlSvc {
   rpc CreatePartitionSnapshot(CreatePartitionSnapshotRequest)
       returns (CreatePartitionSnapshotResponse);
 
+  rpc DropPartitionStore(DropPartitionStoreRequest)
+      returns (DropPartitionStoreResponse);
+
   rpc SealAndExtendChain(SealAndExtendChainRequest)
       returns (SealAndExtendChainResponse);
 
@@ -117,6 +120,24 @@ message CreatePartitionSnapshotResponse {
   uint32 log_id = 2;
   // Minimum LSN (inclusive) which is guaranteed to be covered by the snapshot
   uint64 min_applied_lsn = 3;
+}
+
+// Deletes a single node's local copy of a partition. All data the node holds
+// for this partition is lost; it can only be recovered from a snapshot or by
+// replaying the log. This is intended for recovering a node whose partition
+// store has been sealed (see BrokenReason).
+message DropPartitionStoreRequest {
+  uint32 partition_id = 1;
+  // The node to delete the partition store from
+  restate.common.NodeId node_id = 2;
+  // Stop a running partition processor before deleting. Without this, the node
+  // rejects the request unless it has already given up on the partition.
+  bool force = 3;
+}
+
+message DropPartitionStoreResponse {
+  // False if the node had no local partition store to delete
+  bool dropped = 1;
 }
 
 message ChainExtension {
