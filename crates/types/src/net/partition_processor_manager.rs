@@ -93,3 +93,51 @@ pub struct Snapshot {
 pub enum SnapshotError {
     SnapshotCreationFailed(String),
 }
+
+define_rpc! {
+    @request = DropPartitionStoreRequest,
+    @response = DropPartitionStoreResponse,
+    @service = PartitionManagerService,
+}
+
+default_wire_codec!(DropPartitionStoreRequest);
+default_wire_codec!(DropPartitionStoreResponse);
+
+/// Asks a node to delete its local copy of a partition's data.
+///
+/// The node refuses unless it has given up on running the partition (see
+/// [`crate::cluster::cluster_state::BrokenReason`]) or isn't running it at all, so that a healthy
+/// processor can never have its store pulled out from under it. `force` overrides that check by
+/// stopping the processor first.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DropPartitionStoreRequest {
+    pub partition_id: PartitionId,
+    pub force: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DropPartitionStoreResponse {
+    pub result: Result<DropPartitionStoreOutcome, DropPartitionStoreError>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, derive_more::Display)]
+pub enum DropPartitionStoreOutcome {
+    #[display("the local partition store was dropped")]
+    Dropped,
+    #[display("this node has no local partition store for this partition")]
+    NoStoreFound,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, derive_more::Display)]
+pub enum DropPartitionStoreError {
+    #[display(
+        "a partition processor is running on this node and the partition does not look broken"
+    )]
+    ProcessorRunning,
+    #[display("another drop request for this partition is already in progress")]
+    DropInProgress,
+    #[display("the partition is not in this node's partition table")]
+    UnknownPartition,
+    #[display("failed to drop the local partition store: {_0}")]
+    Internal(String),
+}
