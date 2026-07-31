@@ -105,7 +105,7 @@ impl<'a> BifrostAdmin<'a> {
             .ok_or(Error::UnknownLogId(log_id))?;
 
         let sealed_segment = loop {
-            let sealed_segment = self.seal_inner(log_id, segment_index, None).await?;
+            let sealed_segment = self.seal_inner(log_id, segment_index, None, None).await?;
             if sealed_segment.tail.is_sealed() {
                 break sealed_segment;
             }
@@ -156,7 +156,7 @@ impl<'a> BifrostAdmin<'a> {
             .ok_or(Error::UnknownLogId(log_id))?;
 
         let sealed_segment = loop {
-            let sealed_segment = self.seal_inner(log_id, segment_index, None).await?;
+            let sealed_segment = self.seal_inner(log_id, segment_index, None, None).await?;
             if sealed_segment.tail.is_sealed() {
                 break sealed_segment;
             }
@@ -184,6 +184,7 @@ impl<'a> BifrostAdmin<'a> {
         log_id: LogId,
         segment_index: SegmentIndex,
         seal_metadata: Option<SealMetadata>,
+        forced_tail_lsn: Option<Lsn>,
     ) -> Result<MaybeSealedSegment> {
         self.inner.fail_if_shutting_down()?;
         // first find the tail segment for this log.
@@ -223,7 +224,11 @@ impl<'a> BifrostAdmin<'a> {
             }
         }
 
-        let tail = loglet.find_tail(FindTailOptions::ConsistentRead).await?;
+        let tail = if let Some(forced_tail_lsn) = forced_tail_lsn {
+            TailState::Sealed(forced_tail_lsn)
+        } else {
+            loglet.find_tail(FindTailOptions::ConsistentRead).await?
+        };
 
         if let Some(seal_metadata) = seal_metadata
             && tail.is_sealed()
@@ -255,9 +260,10 @@ impl<'a> BifrostAdmin<'a> {
         log_id: LogId,
         segment_index: SegmentIndex,
         metadata: SealMetadata,
+        forced_tail_lsn: Option<Lsn>,
     ) -> Result<Lsn> {
         let maybe_sealed = self
-            .seal_inner(log_id, segment_index, Some(metadata))
+            .seal_inner(log_id, segment_index, Some(metadata), forced_tail_lsn)
             .await?;
         if let TailState::Sealed(lsn) = maybe_sealed.tail {
             Ok(lsn)
