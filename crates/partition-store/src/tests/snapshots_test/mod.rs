@@ -62,7 +62,10 @@ pub(crate) async fn run_tests(
     // drop; we restore from them below. `snapshots_dir` (a TempDir) still owns the parent dir.
     let _exported_dir = snapshot.base_dir.into_path();
 
-    manager.drop_partition(partition_id).await.unwrap();
+    manager
+        .drop_partition_store(&Partition::new(partition_id, key_range))
+        .await
+        .unwrap();
 
     let snapshot_meta: PartitionSnapshotMetadata = serde_json::from_str(&metadata_json).unwrap();
 
