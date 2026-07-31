@@ -11,6 +11,7 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
+use std::fmt;
 
 use ahash::HashMap;
 use futures::{StreamExt, TryStreamExt};
@@ -157,6 +158,50 @@ struct PartitionConfigurationUpdate {
     current: PartitionConfiguration,
     next: Option<PartitionConfiguration>,
     leadership_policy: LeadershipPolicy,
+}
+
+struct CompleteReconfigurationResult {
+    configuration: PartitionConfigurationUpdate,
+    transition: Option<PartitionConfigurationTransition>,
+}
+
+struct PartitionConfigurationTransition {
+    current_version: Version,
+    current_replica_set: NodeSet,
+    next_version: Version,
+    next_replica_set: NodeSet,
+}
+
+#[derive(Default)]
+struct PartitionConfigurationTransitions(BTreeMap<PartitionId, PartitionConfigurationTransition>);
+
+impl PartitionConfigurationTransitions {
+    fn insert(&mut self, partition_id: PartitionId, transition: PartitionConfigurationTransition) {
+        self.0.insert(partition_id, transition);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl fmt::Display for PartitionConfigurationTransitions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("[")?;
+        let mut separator = "";
+        for (partition_id, transition) in &self.0 {
+            write!(
+                f,
+                "{separator}P{partition_id}({} {:#} -> {} {:#})",
+                transition.current_version,
+                transition.current_replica_set,
+                transition.next_version,
+                transition.next_replica_set,
+            )?;
+            separator = ", ";
+        }
+        f.write_str("]")
+    }
 }
 
 pub struct Scheduler<T> {
@@ -342,6 +387,32 @@ impl<T: TransportConnect> Scheduler<T> {
         nodes_config: &NodesConfiguration,
         partition_table: &PartitionTable,
     ) -> Result<(), Error> {
+        let mut transitions = PartitionConfigurationTransitions::default();
+        let result = self
+            .ensure_valid_partition_configuration_inner(
+                cluster_state,
+                legacy_cluster_state,
+                nodes_config,
+                partition_table,
+                &mut transitions,
+            )
+            .await;
+
+        if !transitions.is_empty() {
+            info!("Partition configuration transitions: {transitions}");
+        }
+
+        result
+    }
+
+    async fn ensure_valid_partition_configuration_inner(
+        &mut self,
+        cluster_state: &ClusterState,
+        legacy_cluster_state: &LegacyClusterState,
+        nodes_config: &NodesConfiguration,
+        partition_table: &PartitionTable,
+        transitions: &mut PartitionConfigurationTransitions,
+    ) -> Result<(), Error> {
         let mut membership_updates = self.replica_set_states.membership_update_batch();
 
         for partition_id in partition_table.iter_ids().copied() {
@@ -436,12 +507,19 @@ impl<T: TransportConnect> Scheduler<T> {
                 partition_state,
                 legacy_cluster_state,
             ) {
-                let partition_configuration_update = Self::complete_reconfiguration(
+                let CompleteReconfigurationResult {
+                    configuration: partition_configuration_update,
+                    transition,
+                } = Self::complete_reconfiguration(
                     self.metadata_writer.raw_metadata_store_client(),
                     partition_id,
                     occupied_entry.get(),
                 )
                 .await?;
+
+                if let Some(transition) = transition {
+                    transitions.insert(partition_id, transition);
+                }
 
                 if occupied_entry.get_mut().update(
                     partition_configuration_update.current,
@@ -622,7 +700,7 @@ impl<T: TransportConnect> Scheduler<T> {
         metadata_store_client: &MetadataStoreClient,
         partition_id: PartitionId,
         partition_state: &PartitionState,
-    ) -> Result<PartitionConfigurationUpdate, Error> {
+    ) -> Result<CompleteReconfigurationResult, Error> {
         let current_version = partition_state.current.version();
         let expected_next_version = partition_state
             .next
@@ -660,21 +738,27 @@ impl<T: TransportConnect> Scheduler<T> {
             }
         }).await {
             Ok(epoch_metadata) => {
-                info!(
-                    %partition_id,
-                    "Partition configuration transition: {current_version} {} -> {expected_next_version} {}",
-                    partition_state.current.replica_set(),
-                    epoch_metadata.current().replica_set(),
-                    );
+                let transition = PartitionConfigurationTransition {
+                    current_version,
+                    current_replica_set: partition_state.current.replica_set().clone(),
+                    next_version: expected_next_version,
+                    next_replica_set: epoch_metadata.current().replica_set().clone(),
+                };
                 let (_, _, current, next, leadership_policy) = epoch_metadata.into_inner();
-                Ok(PartitionConfigurationUpdate {
-                    current,
-                    next,
-                    leadership_policy,
+                Ok(CompleteReconfigurationResult {
+                    configuration: PartitionConfigurationUpdate {
+                        current,
+                        next,
+                        leadership_policy,
+                    },
+                    transition: Some(transition),
                 })
             }
             Err(ReadModifyWriteError::FailedOperation(concurrent_update)) => {
-                Ok(*concurrent_update)
+                Ok(CompleteReconfigurationResult {
+                    configuration: *concurrent_update,
+                    transition: None,
+                })
             }
             Err(ReadModifyWriteError::ReadWrite(err)) => {
                 Err(err.into())
