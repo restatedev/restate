@@ -108,18 +108,6 @@ impl SharedState {
             cell.note_durable_lsn(durable_lsn);
         };
     }
-
-    #[cfg(test)]
-    pub async fn drop_partition(
-        &self,
-        partition_id: PartitionId,
-    ) -> Result<(), restate_rocksdb::RocksError> {
-        let Some(cell) = self.partitions.read().get(&partition_id).cloned() else {
-            return Ok(());
-        };
-        let mut state_guard = cell.inner.write().await;
-        cell.drop_cf(&mut state_guard).await
-    }
 }
 
 pub struct PartitionStoreManager {
@@ -390,12 +378,37 @@ impl PartitionStoreManager {
             .await
     }
 
-    #[cfg(test)]
-    pub async fn drop_partition(
-        &self,
-        partition_id: PartitionId,
-    ) -> Result<(), restate_rocksdb::RocksError> {
-        self.state.drop_partition(partition_id).await
+    /// Deletes this node's local copy of the partition, discarding all of its data.
+    ///
+    /// Returns `true` if a local column family existed and was dropped, `false` if there was
+    /// nothing to delete.
+    ///
+    /// The caller is responsible for making sure that no partition processor is using the store:
+    /// the partition cell's lock keeps concurrent opens out, but it cannot stop a processor that
+    /// is already holding a [`PartitionDb`] clone.
+    #[instrument(level = "error", skip_all, fields(partition_id = %partition.partition_id, cf_name = %partition.cf_name()))]
+    pub async fn drop_partition_store(&self, partition: &Partition) -> Result<bool, RocksError> {
+        let rocksdb = self.open_rocksdb(partition).await?;
+        // resolves `State::Unknown` so that a column family we have never opened in this process
+        // is still found (and dropped) below
+        let cell = self.state.get_or_open(partition, &rocksdb).await;
+
+        let mut state_guard = cell.inner.write().await;
+        let existed = state_guard.db().is_some();
+        cell.drop_cf(&mut state_guard).await?;
+        drop(state_guard);
+
+        // Note: we deliberately don't close the database here. In the multi-db layout this was its
+        // only column family, so dropping `rocksdb` below closes it in the background, and
+        // `RocksDbManager` makes a subsequent open wait for that shutdown to finish.
+        drop(rocksdb);
+
+        if existed {
+            info!("Dropped local partition store");
+        } else {
+            debug!("No local partition store to drop");
+        }
+        Ok(existed)
     }
 
     /// Opens a partition store by importing an already-downloaded snapshot, discarding any
