@@ -25,13 +25,14 @@ use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{Bifrost, Error as BiforstError};
 use restate_core::protobuf::cluster_ctrl_svc::{
     ClusterStateRequest, ClusterStateResponse, CreatePartitionSnapshotRequest,
-    CreatePartitionSnapshotResponse, DescribeLogRequest, DescribeLogResponse, FindTailRequest,
-    FindTailResponse, GetClusterConfigurationRequest, GetClusterConfigurationResponse,
-    ListLogsRequest, ListLogsResponse, MigrateMetadataRequest, MigrateMetadataResponse,
-    QueryRequest, QueryResponse, QueryWarning, SealAndExtendChainRequest,
-    SealAndExtendChainResponse, SealChainRequest, SealChainResponse, SealedSegment,
-    SetClusterConfigurationRequest, SetClusterConfigurationResponse, SyncEpochMetadataRequest,
-    SyncEpochMetadataResponse, TailState, TrimLogRequest,
+    CreatePartitionSnapshotResponse, DescribeLogRequest, DescribeLogResponse,
+    DropPartitionStoreRequest, DropPartitionStoreResponse, FindTailRequest, FindTailResponse,
+    GetClusterConfigurationRequest, GetClusterConfigurationResponse, ListLogsRequest,
+    ListLogsResponse, MigrateMetadataRequest, MigrateMetadataResponse, QueryRequest, QueryResponse,
+    QueryWarning, SealAndExtendChainRequest, SealAndExtendChainResponse, SealChainRequest,
+    SealChainResponse, SealedSegment, SetClusterConfigurationRequest,
+    SetClusterConfigurationResponse, SyncEpochMetadataRequest, SyncEpochMetadataResponse,
+    TailState, TrimLogRequest,
     cluster_ctrl_svc_server::{ClusterCtrlSvc, ClusterCtrlSvcServer},
 };
 use restate_core::{Metadata, MetadataWriter};
@@ -45,14 +46,14 @@ use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::metadata::{GlobalMetadata, Precondition};
 use restate_types::metadata_store::keys::{NODES_CONFIG_KEY, partition_processor_epoch_key};
 use restate_types::net::connect_opts::GrpcConnectionOptions;
-use restate_types::net::partition_processor_manager::Snapshot;
+use restate_types::net::partition_processor_manager::{DropPartitionStoreOutcome, Snapshot};
 use restate_types::nodes_config::{NodesConfiguration, Role};
 use restate_types::partitions::PartitionTable;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::cluster::ClusterConfiguration;
 use restate_types::schema::Schema;
 use restate_types::storage::{StorageCodec, StorageEncode};
-use restate_types::{PlainNodeId, Version, Versioned};
+use restate_types::{NodeId, PlainNodeId, Version, Versioned};
 
 use crate::query_utils::WriteRecordBatchStream;
 
@@ -224,6 +225,42 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
                 snapshot_id: snapshot_id.to_string(),
                 log_id: log_id.into(),
                 min_applied_lsn: min_applied_lsn.as_u64(),
+            })),
+        }
+    }
+
+    /// Handles requests from `restatectl partition drop-store` to delete a single node's local
+    /// copy of a partition. Implemented as an RPC call to the targeted worker node.
+    async fn drop_partition_store(
+        &self,
+        request: Request<DropPartitionStoreRequest>,
+    ) -> Result<Response<DropPartitionStoreResponse>, Status> {
+        let request = request.into_inner();
+        let partition_id = PartitionId::from(
+            u16::try_from(request.partition_id)
+                .map_err(|id| Status::invalid_argument(format!("Invalid partition id: {id}")))?,
+        );
+        // the generation is irrelevant here: we target whichever generation of the node is
+        // currently alive
+        let node_id = NodeId::from(
+            request
+                .node_id
+                .ok_or_else(|| Status::invalid_argument("node_id is required"))?,
+        )
+        .id();
+
+        match self
+            .controller_handle
+            .drop_partition_store(partition_id, node_id, request.force)
+            .await
+            .map_err(|_| Status::aborted("Node is shutting down"))?
+        {
+            Err(err) => {
+                info!("Failed to drop partition store: {err}");
+                Err(Status::internal(err.to_string()))
+            }
+            Ok(outcome) => Ok(Response::new(DropPartitionStoreResponse {
+                dropped: matches!(outcome, DropPartitionStoreOutcome::Dropped),
             })),
         }
     }
