@@ -506,6 +506,16 @@ impl MembershipState {
         self.current_leader.subscribe()
     }
 
+    /// Iterates over node IDs in the current and next replica-set configurations.
+    ///
+    /// A node present in both configurations is yielded twice.
+    pub fn replica_set_union(&self) -> impl Iterator<Item = PlainNodeId> {
+        std::iter::once(&self.observed_current_membership)
+            .chain(self.observed_next_membership.iter())
+            .flat_map(|membership| membership.members.iter())
+            .map(|member| member.node_id)
+    }
+
     /// Returns the first alive node from `observed_current_membership` by overlaying it with the
     /// current cluster state.
     pub fn first_alive_node(&self, cluster_state: &ClusterState) -> Option<GenerationalNodeId> {

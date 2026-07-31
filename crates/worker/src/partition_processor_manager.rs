@@ -10,6 +10,7 @@
 
 mod introspection;
 mod processor_state;
+mod reconciliation;
 mod spawn_processor_task;
 
 pub use introspection::{LeaderQueryGuard, PartitionLeaderHandlesRegistry};
@@ -96,6 +97,7 @@ use crate::partition::{LeadershipInfo, NodeContext, ProcessorError};
 use crate::partition_processor_manager::processor_state::{
     LeaderEpochToken, ProcessorState, StartedProcessor,
 };
+use crate::partition_processor_manager::reconciliation::{ReconciliationPlan, StopDisposition};
 use crate::partition_processor_manager::spawn_processor_task::SpawnPartitionProcessorTask;
 use crate::rule_book_cache::{RuleBookCache, RuleBookCacheHandle};
 
@@ -1365,41 +1367,33 @@ where
 
     fn on_replica_set_state_changes(&mut self, replica_set_states: &PartitionReplicaSetStates) {
         let my_node_id = Metadata::with_current(|m| m.my_node_id().as_plain());
-        let mut running_processors: HashSet<_> = self.processor_states.keys().copied().collect();
+        let plan =
+            ReconciliationPlan::build(&self.processor_states, replica_set_states, my_node_id);
 
-        // Not ideal to have to iterate over all replica states. An index per node id could help.
-        // In practice, this is probably not a problem because the replica sets won't change that
-        // often.
-        for (partition_id, membership_state) in replica_set_states.iter() {
-            if membership_state.contains(my_node_id) {
-                if !self.processor_states.contains_key(&partition_id) {
-                    self.start_partition_processor(partition_id, None);
-                }
-
-                running_processors.remove(&partition_id);
-            }
+        if !plan.is_empty() {
+            info!("Reconciling partition processors: {plan}");
         }
 
-        // All the remaining running processors are no longer part of the observed partition
-        // configuration. Let's terminate them.
-        for partition_id in running_processors.into_iter() {
-            let Some(processor) = self.processor_states.get_mut(&partition_id) else {
-                continue;
-            };
+        for partition_id in plan.starts.keys().copied() {
+            self.start_partition_processor(partition_id, None);
+        }
 
-            if processor.is_broken() {
-                // A broken processor has no runtime task that would report its termination,
-                // so drop it right away instead of waiting for a `Stopped` event.
-                debug!(%partition_id, "Forget broken partition processor because it is no longer a member of the partition configuration");
-                self.processor_states.remove(&partition_id);
-            } else {
-                debug!(%partition_id, "Stop partition processor because it is no longer a member of the partition configuration");
-                processor.stop();
+        for (&partition_id, planned_stop) in &plan.stops {
+            match planned_stop.disposition() {
+                StopDisposition::RequestStop => {
+                    let Some(processor) = self.processor_states.get_mut(&partition_id) else {
+                        continue;
+                    };
+                    processor.stop();
 
-                if self.pending_snapshots.contains_key(&partition_id) {
-                    info!(%partition_id,
-                        "Partition processor stop requested with snapshot task result outstanding"
-                    );
+                    if self.pending_snapshots.contains_key(&partition_id) {
+                        info!(%partition_id,
+                            "Partition processor stop requested with snapshot task result outstanding"
+                        );
+                    }
+                }
+                StopDisposition::ForgetBroken => {
+                    self.processor_states.remove(&partition_id);
                 }
             }
             self.latest_snapshots.remove(&partition_id);
