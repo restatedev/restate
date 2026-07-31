@@ -662,9 +662,10 @@ impl<T: TransportConnect> Scheduler<T> {
             Ok(epoch_metadata) => {
                 info!(
                     %partition_id,
-                    old_replica_set = %partition_state.current.replica_set(),
-                    new_replica_set = %epoch_metadata.current().replica_set(),
-                    "Transitioned from partition configuration {current_version} to {expected_next_version}");
+                    "Partition configuration transition: {current_version} {} -> {expected_next_version} {}",
+                    partition_state.current.replica_set(),
+                    epoch_metadata.current().replica_set(),
+                    );
                 let (_, _, current, next, leadership_policy) = epoch_metadata.into_inner();
                 Ok(PartitionConfigurationUpdate {
                     current,

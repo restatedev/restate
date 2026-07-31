@@ -22,6 +22,7 @@ use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt, stream};
 use itertools::Itertools;
 use metrics::counter;
+use tokio::time::Instant;
 use tokio_stream::wrappers::{ReceiverStream, WatchStream};
 use tracing::{debug, trace};
 
@@ -79,6 +80,7 @@ const NETWORK_EVENTS_BUFFER_SIZE: usize = 1;
 
 pub struct LeaderState {
     pub(crate) partition_id: PartitionId,
+    pub at: Instant,
     pub leader_epoch: LeaderEpoch,
     // only needed for proposing TruncateOutbox to ourselves
     partition_key_range: KeyRange,
@@ -151,6 +153,7 @@ impl LeaderState {
         let (network_events_tx, network_events_rx) =
             tokio::sync::mpsc::channel(NETWORK_EVENTS_BUFFER_SIZE);
         LeaderState {
+            at: Instant::now(),
             partition_id,
             leader_epoch,
             partition_key_range,
