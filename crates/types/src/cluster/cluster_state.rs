@@ -19,7 +19,7 @@ use crate::identifiers::{LeaderEpoch, PartitionId};
 use crate::logs::Lsn;
 use crate::partitions::StorageVersion;
 use crate::partitions::features::PersistedFeatures;
-pub use crate::protobuf::cluster::DetailedRunMode;
+pub use crate::protobuf::cluster::{BrokenReason, DetailedRunMode};
 use crate::time::MillisSinceEpoch;
 use crate::{GenerationalNodeId, PlainNodeId, Version};
 
@@ -211,9 +211,22 @@ pub struct PartitionProcessorStatus {
     /// Since v1.7.3 (if Unknown, use effective_mode)
     #[bilrost(17)]
     pub detailed_effective_mode: DetailedRunMode,
+
+    /// Set when the node has parked this partition processor instead of retrying it.
+    /// All other fields carry their defaults in that case.
+    ///
+    /// Since v1.7.3
+    #[bilrost(18)]
+    pub broken_reason: BrokenReason,
 }
 
 impl PartitionProcessorStatus {
+    /// The node running this processor gave up on it and will not retry until an
+    /// operator intervenes.
+    pub fn is_broken(&self) -> bool {
+        self.broken_reason != BrokenReason::NotBroken
+    }
+
     pub fn effective_mode(&self) -> DetailedRunMode {
         match self.detailed_effective_mode {
             DetailedRunMode::Unknown => self.effective_mode.into(),
@@ -269,6 +282,7 @@ impl Default for PartitionProcessorStatus {
             last_applied_schema_version: None,
             enabled_features: PersistedFeatures::default(),
             storage_version: None,
+            broken_reason: BrokenReason::NotBroken,
         }
     }
 }
