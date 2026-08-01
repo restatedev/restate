@@ -15,6 +15,7 @@ use restate_core::TaskCenter;
 use restate_core::network::grpc::CoreNodeSvcHandler;
 use restate_core::network::{ConnectionManager, NetworkServerBuilder};
 use restate_core::{Identification, MetadataWriter};
+use restate_ingress_http::IngressDrainHandle;
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 use restate_types::config::Configuration;
 
@@ -31,6 +32,7 @@ impl NetworkServer {
         mut server_builder: NetworkServerBuilder,
         metadata_writer: MetadataWriter,
         prometheus: Prometheus,
+        ingress_drain: Option<IngressDrainHandle>,
     ) -> Result<(), anyhow::Error> {
         // Configure Metric Exporter
         let mut state_builder = NodeCtrlHandlerStateBuilder::default();
@@ -81,7 +83,7 @@ impl NetworkServer {
         );
 
         server_builder.register_grpc_service(
-            NodeCtlSvcHandler::new(metadata_writer)
+            NodeCtlSvcHandler::new(metadata_writer, ingress_drain)
                 .into_server(&Configuration::pinned().networking),
             restate_core::protobuf::node_ctl_svc::FILE_DESCRIPTOR_SET,
         );

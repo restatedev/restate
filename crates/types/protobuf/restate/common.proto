@@ -120,6 +120,8 @@ enum IngressStatus {
   IngressStatus_UNKNOWN = 0;
   IngressStatus_READY = 1;
   IngressStatus_STARTING_UP = 2;
+  IngressStatus_DRAINING = 3;
+  IngressStatus_DRAINED = 4;
 }
 
 enum MetadataKind {

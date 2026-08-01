@@ -45,7 +45,9 @@ use restate_types::schema::service::ServiceMetadataResolver;
 use restate_util_time::DurationExt;
 
 use super::*;
+use crate::drain::{IngressDrainHandle, IngressDrainStatus};
 use crate::handler::Handler;
+use crate::layers::in_flight_requests::InFlightRequestsLayer;
 use crate::metric_definitions::{HTTP_CONNECTION_CREATED, HTTP_CONNECTION_DROPPED};
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -54,6 +56,8 @@ pub enum IngressServerError {
     #[code(unknown)]
     Running(#[from] hyper::Error),
 }
+
+const FINAL_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct HyperServerIngress<Schemas, Dispatcher> {
     listeners: Listeners<HttpIngressPort>,
@@ -66,6 +70,8 @@ pub struct HyperServerIngress<Schemas, Dispatcher> {
     dispatcher: Dispatcher,
 
     health: HealthStatus<IngressStatus>,
+    drain: IngressDrainHandle,
+    final_drain_timeout: Duration,
 }
 
 impl<Schemas, Dispatcher> HyperServerIngress<Schemas, Dispatcher>
@@ -117,7 +123,19 @@ where
             schemas,
             dispatcher,
             health,
+            drain: IngressDrainHandle::new(),
+            final_drain_timeout: FINAL_DRAIN_TIMEOUT,
         }
+    }
+
+    pub fn drain_handle(&self) -> IngressDrainHandle {
+        self.drain.clone()
+    }
+
+    #[cfg(test)]
+    fn with_final_drain_timeout(mut self, timeout: Duration) -> Self {
+        self.final_drain_timeout = timeout;
+        self
     }
 
     #[instrument(
@@ -135,6 +153,8 @@ where
             schemas,
             dispatcher,
             health,
+            drain,
+            final_drain_timeout,
         } = self;
 
         // Prepare the handler
@@ -190,6 +210,7 @@ where
             .layer(RequestBodyLimitLayer::new(request_size_limit))
             .layer(CorsLayer::very_permissive())
             .layer(layers::load_shed::LoadShedLayer::new(concurrency_limit))
+            .layer(InFlightRequestsLayer::new(drain.clone()))
             .layer(layers::tracing_context_extractor::HttpTraceContextExtractorLayer)
             .service(Handler::new(schemas, dispatcher));
 
@@ -200,6 +221,7 @@ where
         // move `CorsLayer` above `RequestBodyLimitLayer`.
 
         let shutdown = cancellation_token();
+        let drain_requested = drain.cancellation_token();
 
         if let Some(uds_path) = listeners.uds_address() {
             Span::current().record("uds.path", uds_path.display().to_string());
@@ -209,14 +231,34 @@ where
             Span::current().record("server.port", socket_addr.port());
         }
         info!("Ingress HTTP listening");
-        health.update(IngressStatus::Ready);
+        if drain.progress().status == IngressDrainStatus::Active {
+            health.update(IngressStatus::Ready);
+        } else {
+            health.update(IngressStatus::Draining);
+        }
 
         let mut inflight = TaskTracker::default();
         let force_shutdown = CancellationToken::new();
+        let connection_shutdown = ConnectionShutdown {
+            drain: drain_requested.clone(),
+            force: force_shutdown.clone(),
+            progress: drain.clone(),
+        };
 
-        // UDS
+        let mut final_shutdown = false;
         loop {
             tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => {
+                    info!("HTTP ingress shutdown requested");
+                    final_shutdown = true;
+                    drain.start_draining();
+                    break;
+                }
+                _ = drain_requested.cancelled() => {
+                    info!("HTTP ingress drain requested");
+                    break;
+                }
                 res = listeners.accept() => {
                     let (stream, peer_addr) = res?;
                     match stream {
@@ -226,8 +268,7 @@ where
                                 peer_addr,
                                 service.clone(),
                                 http2_max_concurrent_streams,
-                                shutdown.child_token(),
-                                force_shutdown.child_token(),
+                                connection_shutdown.clone(),
                                 &mut inflight,
                             )?;
                         }
@@ -237,26 +278,42 @@ where
                                 peer_addr,
                                 service.clone(),
                                 http2_max_concurrent_streams,
-                                shutdown.child_token(),
-                                force_shutdown.child_token(),
+                                connection_shutdown.clone(),
                                 &mut inflight,
                             )?;
                         }
 
                     }
                 }
-                  _ = shutdown.cancelled() => {
-                      info!("HTTP ingress shutdown requested");
-                      drop(listeners);
-                      inflight.close();
-                      break;
+            }
+        }
+
+        drop(listeners);
+        inflight.close();
+        health.update(IngressStatus::Draining);
+        drain.admission_closed();
+
+        if !final_shutdown {
+            tokio::select! {
+                () = inflight.wait() => {
+                    drain.drained();
+                    health.update(IngressStatus::Drained);
+                    info!("All in-flight HTTP ingress connections drained");
+                    // Retain task-center ownership of the role until normal shutdown.
+                    shutdown.cancelled().await;
+                    return Ok(());
+                }
+                () = shutdown.cancelled() => {
+                    final_shutdown = true;
                 }
             }
         }
 
-        // drain in-flight requests (give them some time to finish)
-        match tokio::time::timeout(Duration::from_secs(5), inflight.wait()).await {
+        debug_assert!(final_shutdown);
+        match tokio::time::timeout(final_drain_timeout, inflight.wait()).await {
             Ok(()) => {
+                drain.drained();
+                health.update(IngressStatus::Drained);
                 info!("All in-flight HTTP ingress connections drained");
             }
             Err(_) => {
@@ -278,8 +335,7 @@ where
         remote_peer: SocketAddress,
         handler: T,
         http2_max_concurrent_streams: Option<NonZeroU32>,
-        drain: CancellationToken,
-        force_shutdown: CancellationToken,
+        shutdown: ConnectionShutdown,
         inflight: &mut TaskTracker,
     ) -> anyhow::Result<()>
     where
@@ -299,6 +355,7 @@ where
     {
         let connect_info = ConnectInfo::new(remote_peer);
         counter!(HTTP_CONNECTION_CREATED).increment(1);
+        let mut connection_guard = shutdown.progress.connection_started();
 
         let io = TokioIo::new(stream);
         let handler = hyper_util::service::TowerToHyperService::new(handler.map_request(
@@ -311,7 +368,7 @@ where
         let tc_executor = TaskCenterExecutor::new(
             TaskCenter::current(),
             inflight.clone(),
-            force_shutdown.clone(),
+            shutdown.force.clone(),
         );
 
         // Spawn a tokio task to serve the connection
@@ -349,18 +406,26 @@ where
                             }
                         }
                     }
-                    _ = drain.cancelled(), if !draining => {
+                    _ = shutdown.drain.cancelled(), if !draining => {
                         // Ask clients to not send any more requests on this connection
                         serve_connection_fut.as_mut().graceful_shutdown();
+                        connection_guard.goaway_initiated();
                         draining = true;
                     }
-                    _ = force_shutdown.cancelled() => { break; }
+                    _ = shutdown.force.cancelled() => { break; }
                 }
             }
         }.in_current_tc());
 
         Ok(())
     }
+}
+
+#[derive(Clone)]
+struct ConnectionShutdown {
+    drain: CancellationToken,
+    force: CancellationToken,
+    progress: IngressDrainHandle,
 }
 
 #[derive(Clone)]
@@ -469,7 +534,7 @@ mod tests {
 
         let socket_dir = tempfile::tempdir().unwrap();
         let socket_path = socket_dir.path().join("ingress.sock");
-        bootstrap_test(
+        let _drain = bootstrap_test(
             Listeners::new_unix_listener(socket_path.clone()).unwrap(),
             mock_dispatcher,
         )
@@ -504,10 +569,160 @@ mod tests {
         restate_test_util::assert_eq!(response_value.greeting, "Igal");
     }
 
+    #[restate_core::test]
+    async fn explicit_drain_closes_admission_and_preserves_in_flight_request() {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let release = Arc::new(Semaphore::new(0));
+        let mut mock_dispatcher = MockRequestDispatcher::default();
+        mock_dispatcher.expect_call().once().return_once({
+            let release = release.clone();
+            move |invocation_request| {
+                Box::pin(async move {
+                    let _ = started_tx.send(());
+                    let _permit = release.acquire().await.unwrap();
+                    Ok(InvocationOutput {
+                        request_id: Default::default(),
+                        invocation_id: Some(invocation_request.invocation_id()),
+                        completion_expiry_time: None,
+                        response: InvocationOutputResponse::Success(
+                            InvocationTarget::service("greeter.Greeter", "greet"),
+                            serde_json::to_vec(&GreetingResponse {
+                                greeting: "Igal".to_string(),
+                            })
+                            .unwrap()
+                            .into(),
+                        ),
+                    })
+                })
+            }
+        });
+
+        let socket_dir = tempfile::tempdir().unwrap();
+        let socket_path = socket_dir.path().join("ingress.sock");
+        let drain = bootstrap_test(
+            Listeners::new_unix_listener(socket_path.clone()).unwrap(),
+            mock_dispatcher,
+        )
+        .await;
+        let client = Client::builder(TokioExecutor::new())
+            .http2_only(true)
+            .build::<_, Full<Bytes>>(UnixSocketConnector::new(socket_path));
+
+        let response = tokio::spawn({
+            let client = client.clone();
+            async move {
+                client
+                    .request(
+                        http::Request::post("http://localhost/greeter.Greeter/greet")
+                            .header(http::header::CONTENT_TYPE, "application/json")
+                            .body(Full::new(Bytes::new()))
+                            .unwrap(),
+                    )
+                    .await
+            }
+        });
+        started_rx.await.unwrap();
+
+        let progress = tokio::time::timeout(Duration::from_secs(1), drain.drain())
+            .await
+            .unwrap();
+        assert_eq!(progress.status, IngressDrainStatus::Draining);
+        assert_eq!(progress.in_flight_requests, 1);
+        assert_eq!(progress.in_flight_connections, 1);
+
+        let new_request = client.request(
+            http::Request::post("http://localhost/greeter.Greeter/greet")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), new_request)
+                .await
+                .expect("new request should fail promptly")
+                .is_err(),
+            "a draining ingress must not admit another request"
+        );
+
+        release.add_permits(1);
+        assert_eq!(
+            response.await.unwrap().unwrap().status(),
+            http::StatusCode::OK
+        );
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while drain.progress().status != IngressDrainStatus::Drained {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("ingress should become drained after the response is flushed");
+        assert_eq!(drain.progress().in_flight_requests, 0);
+        assert_eq!(drain.progress().in_flight_connections, 0);
+    }
+
+    #[restate_core::test]
+    async fn task_cancellation_applies_final_drain_timeout() {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let mut mock_dispatcher = MockRequestDispatcher::default();
+        mock_dispatcher.expect_call().once().return_once(move |_| {
+            Box::pin(async move {
+                let _ = started_tx.send(());
+                std::future::pending().await
+            })
+        });
+
+        let socket_dir = tempfile::tempdir().unwrap();
+        let socket_path = socket_dir.path().join("ingress.sock");
+        let drain = bootstrap_test_with_final_drain_timeout(
+            Listeners::new_unix_listener(socket_path.clone()).unwrap(),
+            mock_dispatcher,
+            Duration::from_millis(10),
+        )
+        .await;
+        let client = Client::builder(TokioExecutor::new())
+            .http2_only(true)
+            .build::<_, Full<Bytes>>(UnixSocketConnector::new(socket_path));
+        let response = tokio::spawn(async move {
+            client
+                .request(
+                    http::Request::post("http://localhost/greeter.Greeter/greet")
+                        .header(http::header::CONTENT_TYPE, "application/json")
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                )
+                .await
+        });
+        started_rx.await.unwrap();
+        drain.drain().await;
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            TaskCenter::cancel_tasks(Some(TaskKind::HttpIngressRole), None),
+        )
+        .await
+        .expect("task cancellation must force an outstanding request after the final timeout");
+        assert!(response.await.unwrap().is_err());
+        assert_eq!(drain.progress().in_flight_requests, 0);
+        assert_eq!(drain.progress().in_flight_connections, 0);
+    }
+
     async fn bootstrap_test(
         listeners: Listeners<HttpIngressPort>,
         mock_request_dispatcher: MockRequestDispatcher,
-    ) {
+    ) -> IngressDrainHandle {
+        bootstrap_test_with_final_drain_timeout(
+            listeners,
+            mock_request_dispatcher,
+            FINAL_DRAIN_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn bootstrap_test_with_final_drain_timeout(
+        listeners: Listeners<HttpIngressPort>,
+        mock_request_dispatcher: MockRequestDispatcher,
+        final_drain_timeout: Duration,
+    ) -> IngressDrainHandle {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
         let health = Health::default();
 
@@ -520,7 +735,10 @@ mod tests {
             Live::from_value(mock_schemas()),
             Arc::new(mock_request_dispatcher),
             health.ingress_status(),
-        );
-        TaskCenter::spawn(TaskKind::SystemService, "ingress", ingress.run()).unwrap();
+        )
+        .with_final_drain_timeout(final_drain_timeout);
+        let drain = ingress.drain_handle();
+        TaskCenter::spawn(TaskKind::HttpIngressRole, "ingress", ingress.run()).unwrap();
+        drain
     }
 }

@@ -8,5 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+pub(crate) mod in_flight_requests;
 pub mod load_shed;
 pub mod tracing_context_extractor;
