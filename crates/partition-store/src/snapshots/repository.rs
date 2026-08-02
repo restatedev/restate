@@ -9,17 +9,20 @@
 // by the Apache License, Version 2.0.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use anyhow::{Context, anyhow, bail};
 use bytes::BytesMut;
+use chrono::{DateTime, Utc};
 use futures::{StreamExt, TryStreamExt};
 use metrics::Gauge;
 use object_store::path::Path as ObjectPath;
 use object_store::{
     MultipartUpload, ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion,
 };
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_with::{DefaultOnError, DisplayFromStr, FromInto, serde_as};
 use tempfile::TempDir;
@@ -29,7 +32,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio_util::io::StreamReader;
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, Span, debug, info, instrument, warn};
+use tracing::{Instrument, Span, debug, info, instrument, trace, warn};
 use url::Url;
 
 use restate_clock::{Clock, WallClock};
@@ -109,6 +112,7 @@ pub struct SnapshotRepository {
     upload_part_size: usize,
     upload_single_put_threshold: u64,
     snapshot_type: restate_types::config::SnapshotType,
+    orphan_cleanup: bool,
     lease_provider: Option<LeaseProvider>,
     #[cfg(any(test, feature = "test-util"))]
     enable_cleanup: bool,
@@ -126,6 +130,45 @@ const SAME_NODE_LEASE_POLL_INTERVAL: std::time::Duration = std::time::Duration::
 
 /// Maximum number of concurrent downloads when getting snapshots from the repository.
 const DOWNLOAD_CONCURRENCY_LIMIT: usize = 8;
+
+/// Minimum age for files to be considered orphan candidates during repository scan.
+const ORPHAN_MIN_AGE: Duration = Duration::from_hours(24);
+
+/// Object store keys eligible for sweeping. Anything not matching a pattern here is never
+/// deleted, so unrecognised files fail safe by leaking rather than by being swept. When adding
+/// new repository layout entries, stay clear of the `ssts/` and `lsn_*` prefixes.
+mod sweep_patterns {
+    use super::*;
+
+    /// SST files from incremental snapshots: `ssts/{32-char-hex-xxh3-128}.sst`.
+    /// Hash length matches `ContentHash`'s `{:032x}` format - keep these in sync.
+    pub static SHARED_SST: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^ssts/[0-9a-f]{32}\.sst$").unwrap());
+
+    /// Snapshot prefix: `lsn_{20-digit}-snap_1{base62}`
+    pub static SNAPSHOT_PREFIX: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"lsn_\d{20}-snap_1[A-Za-z0-9]+").unwrap());
+
+    /// Snapshot metadata files: `lsn_{lsn}-snap_1{base62}/metadata.json`
+    pub static SNAPSHOT_METADATA: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^lsn_\d{20}-snap_1[A-Za-z0-9]+/metadata\.json$").unwrap());
+
+    /// SST files from full snapshots: `lsn_{lsn}-snap_1{base62}/{number}.sst`
+    pub static SNAPSHOT_SST: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^lsn_\d{20}-snap_1[A-Za-z0-9]+/\d+\.sst$").unwrap());
+
+    pub fn is_shared_sst(relative_path: &str) -> bool {
+        SHARED_SST.is_match(relative_path)
+    }
+
+    pub fn is_snapshot_file(relative_path: &str) -> bool {
+        SNAPSHOT_METADATA.is_match(relative_path) || SNAPSHOT_SST.is_match(relative_path)
+    }
+
+    pub fn extract_snapshot_prefix(path: &str) -> Option<&str> {
+        SNAPSHOT_PREFIX.find(path).map(|m| m.as_str())
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum LatestSnapshotVersion {
@@ -249,6 +292,24 @@ impl SnapshotReference {
             log_byte_offset: snapshot.log_byte_offset,
         }
     }
+}
+
+#[derive(Debug, Default)]
+struct SnapshotInventory {
+    /// SST files found in the ssts/ directory with their last modified time.
+    shared_sst_files: HashMap<ObjectPath, DateTime<Utc>>,
+    /// Snapshot prefixes found, mapped to the modification time of their newest file. Tracking
+    /// the newest rather than the oldest keeps in-flight and partially replicated uploads out of
+    /// the sweep, since the age threshold is applied to this value.
+    snapshot_prefixes: HashMap<String, DateTime<Utc>>,
+}
+
+#[derive(Debug, Default)]
+struct OrphanedPaths {
+    /// SST files not referenced by any retained snapshot.
+    ssts: Vec<ObjectPath>,
+    /// Snapshot prefixes not in the retained snapshots list.
+    snapshots: Vec<String>,
 }
 
 impl LatestSnapshot {
@@ -507,6 +568,9 @@ impl SnapshotRepository {
             upload_part_size: snapshots_options.upload_part_size(),
             upload_single_put_threshold: snapshots_options.upload_single_put_threshold(),
             snapshot_type: snapshots_options.experimental_snapshot_type,
+            orphan_cleanup: snapshots_options
+                .experimental_orphan_cleanup
+                .unwrap_or(false),
             #[cfg(any(test, feature = "test-util"))]
             enable_cleanup: snapshots_options.enable_cleanup,
             lease_provider,
@@ -946,7 +1010,10 @@ impl SnapshotRepository {
         #[cfg(any(test, feature = "test-util"))]
         let enable_cleanup = self.enable_cleanup;
 
-        if !evicted_snapshots.is_empty() && enable_cleanup {
+        if enable_cleanup && (!evicted_snapshots.is_empty() || self.orphan_cleanup) {
+            // Cleanup task handles both evicted snapshot deletion and orphan sweep.
+            // We spawn it even when no snapshots are evicted so orphan sweep runs
+            // after every successful upload.
             self.spawn_cleanup_task(snapshot.partition_id, evicted_snapshots, lease_guard);
         }
 
@@ -1251,6 +1318,42 @@ impl SnapshotRepository {
             .await;
         }
 
+        if self.orphan_cleanup && lease_guard.is_valid() {
+            use crate::metric_definitions::{
+                SNAPSHOT_ORPHAN_FILES_DELETED, SNAPSHOT_ORPHAN_SCAN_FAILED,
+                SNAPSHOT_ORPHAN_SCAN_TOTAL,
+            };
+
+            debug!(%partition_id, "Running orphan scan");
+
+            metrics::counter!(SNAPSHOT_ORPHAN_SCAN_TOTAL).increment(1);
+
+            match self
+                .find_orphaned_files(
+                    partition_id,
+                    &retained_snapshots,
+                    ORPHAN_MIN_AGE,
+                    &referenced_sst_keys,
+                )
+                .await
+            {
+                Ok(orphans) if !orphans.ssts.is_empty() || !orphans.snapshots.is_empty() => {
+                    let (deleted_ssts, deleted_dirs) = self
+                        .cleanup_orphaned_files(partition_id, orphans, lease_guard)
+                        .await;
+                    metrics::counter!(SNAPSHOT_ORPHAN_FILES_DELETED)
+                        .increment((deleted_ssts + deleted_dirs) as u64);
+                }
+                Ok(_) => {
+                    debug!(%partition_id, "No orphaned files found during scan");
+                }
+                Err(err) => {
+                    warn!(%partition_id, %err, "Failed to scan for orphaned files");
+                    metrics::counter!(SNAPSHOT_ORPHAN_SCAN_FAILED).increment(1);
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -1301,7 +1404,11 @@ impl SnapshotRepository {
     }
 
     /// Best-effort deletion of snapshot files. Errors are logged but not propagated.
-    #[instrument(level = "warn", skip(self, lease_guard), fields(%partition_id, snapshot_id = %snapshot_ref.snapshot_id))]
+    #[instrument(
+        level = "warn",
+        skip(self, referenced_sst_keys, lease_guard),
+        fields(%partition_id, snapshot_id = %snapshot_ref.snapshot_id)
+    )]
     async fn delete_snapshot_files(
         &self,
         partition_id: PartitionId,
@@ -1720,6 +1827,49 @@ impl SnapshotRepository {
         }
     }
 
+    async fn scan_partition_files(
+        &self,
+        partition_id: PartitionId,
+    ) -> anyhow::Result<SnapshotInventory> {
+        let prefix = self.partition_snapshots_prefix(partition_id);
+        let prefix_str = format!("{}/", prefix.as_ref());
+        let stream = self.object_store.list(Some(&prefix));
+
+        let mut scan = SnapshotInventory::default();
+
+        futures::pin_mut!(stream);
+        while let Some(meta) = stream.try_next().await? {
+            let path_str = meta.location.as_ref();
+
+            let object_path = match path_str.strip_prefix(&prefix_str) {
+                Some(path) => path,
+                None => continue,
+            };
+
+            if sweep_patterns::is_shared_sst(object_path) {
+                scan.shared_sst_files
+                    .insert(meta.location, meta.last_modified);
+            } else if sweep_patterns::is_snapshot_file(object_path)
+                && let Some(dir_name) =
+                    sweep_patterns::extract_snapshot_prefix(path_str).map(String::from)
+            {
+                scan.snapshot_prefixes
+                    .entry(dir_name)
+                    .and_modify(|newest| *newest = (*newest).max(meta.last_modified))
+                    .or_insert(meta.last_modified);
+            }
+        }
+
+        trace!(
+            %partition_id,
+            sst_count = scan.shared_sst_files.len(),
+            dir_count = scan.snapshot_prefixes.len(),
+            "Scanned partition files"
+        );
+
+        Ok(scan)
+    }
+
     /// Builds the set of SST keys referenced by the given retained snapshots.
     ///
     /// Returns an error if any retained snapshot's metadata cannot be read or parsed
@@ -1789,6 +1939,136 @@ impl SnapshotRepository {
         }
 
         Ok(referenced_sst_keys)
+    }
+
+    /// Finds orphaned files in the repository by scanning all files and comparing
+    /// against the retained snapshots list.
+    ///
+    /// Files are only considered orphaned if they are older than `min_age` to avoid
+    /// deleting files from in-flight uploads or CRR replication.
+    async fn find_orphaned_files(
+        &self,
+        partition_id: PartitionId,
+        retained_snapshots: &[SnapshotReference],
+        min_age: Duration,
+        referenced_ssts: &HashSet<ObjectPath>,
+    ) -> anyhow::Result<OrphanedPaths> {
+        let scan = self.scan_partition_files(partition_id).await?;
+        let now = Utc::now();
+        let age_threshold = now - chrono::Duration::from_std(min_age)?;
+
+        let retained_prefixes: HashSet<&str> =
+            retained_snapshots.iter().map(|r| r.path.as_str()).collect();
+
+        let orphaned_ssts: Vec<ObjectPath> = scan
+            .shared_sst_files
+            .into_iter()
+            .filter(|(path, modified)| !referenced_ssts.contains(path) && *modified < age_threshold)
+            .map(|(path, _)| path)
+            .collect();
+
+        let orphaned_snapshots: Vec<String> = scan
+            .snapshot_prefixes
+            .into_iter()
+            .filter(|(prefix, newest_modified)| {
+                !retained_prefixes.contains(prefix.as_str()) && *newest_modified < age_threshold
+            })
+            .map(|(prefix, _)| prefix)
+            .collect();
+
+        if !orphaned_ssts.is_empty() || !orphaned_snapshots.is_empty() {
+            info!(
+                %partition_id,
+                orphaned_sst_count = orphaned_ssts.len(),
+                orphaned_snapshot_count = orphaned_snapshots.len(),
+                "Found orphaned files during repository scan"
+            );
+        }
+
+        Ok(OrphanedPaths {
+            ssts: orphaned_ssts,
+            snapshots: orphaned_snapshots,
+        })
+    }
+
+    /// Cleans up orphaned files discovered during a repository scan.
+    /// Should be called with an active lease to prevent races.
+    async fn cleanup_orphaned_files(
+        &self,
+        partition_id: PartitionId,
+        orphans: OrphanedPaths,
+        lease_guard: &Arc<SnapshotLeaseGuard>,
+    ) -> (usize, usize) {
+        let mut deleted_ssts = 0;
+        let mut deleted_snapshots = 0;
+
+        for sst_path in orphans.ssts {
+            if !lease_guard.is_valid() {
+                debug!(%partition_id, "Lease expired during orphan cleanup, aborting");
+                break;
+            }
+
+            if let Err(err) = self.object_store.delete(&sst_path).await {
+                if !matches!(err, object_store::Error::NotFound { .. }) {
+                    warn!(%sst_path, %err, "Failed to delete orphaned SST");
+                }
+            } else {
+                debug!(%sst_path, "Deleted orphaned SST");
+                deleted_ssts += 1;
+            }
+        }
+
+        for snapshot_prefix in orphans.snapshots {
+            if !lease_guard.is_valid() {
+                debug!(%partition_id, "Lease expired during orphan cleanup, aborting");
+                break;
+            }
+
+            let snapshot_path = self
+                .prefix
+                .clone()
+                .join(partition_id.to_string())
+                .join(snapshot_prefix.as_str());
+
+            let stream = self.object_store.list(Some(&snapshot_path));
+            futures::pin_mut!(stream);
+
+            let mut prefix_deleted = true;
+            loop {
+                match stream.try_next().await {
+                    Ok(Some(meta)) => {
+                        if let Err(err) = self.object_store.delete(&meta.location).await
+                            && !matches!(err, object_store::Error::NotFound { .. })
+                        {
+                            warn!(path = %meta.location, %err, "Failed to delete file in orphaned snapshot prefix");
+                            prefix_deleted = false;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(err) => {
+                        warn!(%snapshot_prefix, %err, "Failed to list files in orphaned snapshot prefix");
+                        prefix_deleted = false;
+                        break;
+                    }
+                }
+            }
+
+            if prefix_deleted {
+                debug!(%snapshot_prefix, "Deleted orphaned snapshot directory");
+                deleted_snapshots += 1;
+            }
+        }
+
+        if deleted_ssts > 0 || deleted_snapshots > 0 {
+            info!(
+                %partition_id,
+                deleted_ssts,
+                deleted_snapshots,
+                "Cleaned up orphaned files"
+            );
+        }
+
+        (deleted_ssts, deleted_snapshots)
     }
 }
 
@@ -2747,6 +3027,7 @@ mod tests {
             upload_part_size: SnapshotsOptions::default().upload_part_size(),
             upload_single_put_threshold: SnapshotsOptions::default().upload_single_put_threshold(),
             snapshot_type: restate_types::config::SnapshotType::default(),
+            orphan_cleanup: false,
             lease_provider: None,
             enable_cleanup: false,
         }
@@ -3525,6 +3806,143 @@ mod tests {
             status.latest_snapshot_created_at,
             MillisSinceEpoch::UNIX_EPOCH + Duration::from_secs(2),
             "reports the latest retained snapshot's created-at time"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn extract_snapshot_prefix_from_path() {
+        assert_eq!(
+            super::sweep_patterns::extract_snapshot_prefix(
+                "prefix/0/lsn_00000000000000001234-snap_1abc123DEF456ghi789/file"
+            ),
+            Some("lsn_00000000000000001234-snap_1abc123DEF456ghi789")
+        );
+    }
+
+    #[test]
+    fn sweep_eligible_patterns() {
+        use super::sweep_patterns::*;
+
+        // Exactly 32 lowercase hex chars (xxh3-128 digest) is required.
+        assert!(is_shared_sst("ssts/0123456789abcdef0123456789abcdef.sst"));
+        assert!(is_shared_sst("ssts/fedcba9876543210fedcba9876543210.sst"));
+
+        assert!(!is_shared_sst("ssts/ignored.sst"));
+        assert!(!is_shared_sst("ssts/abc123def456789012345678901234.sst")); // 30 chars
+        assert!(!is_shared_sst(
+            "ssts/0123456789abcdef0123456789abcdef00.sst"
+        )); // 34 chars
+        assert!(!is_shared_sst("ssts/0123456789ABCDEF0123456789ABCDEF.sst")); // uppercase not allowed
+        assert!(!is_shared_sst("ssts/file with spaces.sst"));
+
+        assert!(is_snapshot_file(
+            "lsn_00000000000000001234-snap_1abc123DEF456ghi789/metadata.json"
+        ));
+        assert!(is_snapshot_file(
+            "lsn_00000000000000001234-snap_1abc123DEF456ghi789/123456.sst"
+        ));
+
+        assert!(!is_snapshot_file("data.json"));
+        assert!(!is_snapshot_file("something-else/metadata.json"));
+        assert!(!is_snapshot_file(
+            "lsn_00000000000000001234-snap1/metadata.json"
+        ));
+    }
+
+    #[restate_core::test]
+    async fn scan_partition_files() -> anyhow::Result<()> {
+        let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+
+        let snapshots_destination = tempdir()?;
+        let destination_url = Url::from_file_path(snapshots_destination.path())
+            .unwrap()
+            .to_string();
+
+        let opts = SnapshotsOptions {
+            destination: Some(destination_url.clone()),
+            ..SnapshotsOptions::default()
+        };
+        let repository =
+            SnapshotRepository::new_from_config_with_stub_leases(&opts, tempdir()?.keep())
+                .await?
+                .unwrap();
+
+        let partition_id = PartitionId::MIN;
+
+        let ssts_path = snapshots_destination
+            .path()
+            .join(partition_id.to_string())
+            .join("ssts");
+        tokio::fs::create_dir_all(&ssts_path).await?;
+        tokio::fs::write(
+            ssts_path.join("0123456789abcdef0123456789abcdef.sst"),
+            b"sst1",
+        )
+        .await?;
+        tokio::fs::write(
+            ssts_path.join("fedcba9876543210fedcba9876543210.sst"),
+            b"sst2",
+        )
+        .await?;
+        tokio::fs::write(ssts_path.join("ignored.sst"), b"ignored").await?;
+
+        let snapshot_path = snapshots_destination
+            .path()
+            .join(partition_id.to_string())
+            .join("lsn_00000000000000000100-snap_1abc123DEF456ghi789");
+        tokio::fs::create_dir_all(&snapshot_path).await?;
+        tokio::fs::write(snapshot_path.join("metadata.json"), b"{}").await?;
+        tokio::fs::write(snapshot_path.join("000001.sst"), b"data").await?;
+
+        // missing metadata.json
+        let incomplete_snapshot_path = snapshots_destination
+            .path()
+            .join(partition_id.to_string())
+            .join("lsn_00000000000000000200-snap_1xyz789ABC456def123");
+        tokio::fs::create_dir_all(&incomplete_snapshot_path).await?;
+        tokio::fs::write(incomplete_snapshot_path.join("000001.sst"), b"data").await?;
+
+        // invalid snapshot name
+        let non_snapshot_path = snapshots_destination
+            .path()
+            .join(partition_id.to_string())
+            .join("lsn_00000000000000000300-something");
+        tokio::fs::create_dir_all(&non_snapshot_path).await?;
+        tokio::fs::write(non_snapshot_path.join("metadata.json"), b"{}").await?;
+
+        let scan = repository.scan_partition_files(partition_id).await?;
+
+        assert_eq!(
+            scan.shared_sst_files.len(),
+            2,
+            "should find 2 hex-named SST files"
+        );
+
+        assert_eq!(
+            scan.snapshot_prefixes.len(),
+            2,
+            "should find 2 production-format snapshot directories"
+        );
+        // A directory is a sweep candidate whether or not it carries metadata.json: a snapshot
+        // whose metadata upload never landed is exactly the aborted-upload case we want swept.
+        assert!(
+            scan.snapshot_prefixes
+                .contains_key("lsn_00000000000000000100-snap_1abc123DEF456ghi789"),
+            "snapshot directory with metadata should be found"
+        );
+        assert!(
+            scan.snapshot_prefixes
+                .contains_key("lsn_00000000000000000200-snap_1xyz789ABC456def123"),
+            "snapshot directory without metadata should also be found"
+        );
+
+        assert!(
+            !scan
+                .snapshot_prefixes
+                .contains_key("lsn_00000000000000000300-snap1"),
+            "invalid snapshot prefix should be ignored"
         );
 
         Ok(())
