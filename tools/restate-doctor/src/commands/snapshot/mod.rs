@@ -190,6 +190,12 @@ impl MetadataStore for OfflineMetadataStore {
 }
 
 pub async fn run_snapshot(args: &SnapshotArgs) -> anyhow::Result<()> {
+    // Boxed because this future holds the partition store manager, the snapshot repository and the
+    // query engine at once, which makes it too large to keep on the caller's stack.
+    Box::pin(run_snapshot_inner(args)).await
+}
+
+async fn run_snapshot_inner(args: &SnapshotArgs) -> anyhow::Result<()> {
     let repository_url =
         Url::parse(&args.repository).context("failed to parse the snapshot repository URL")?;
     let object_store_options = args.object_store_options();
@@ -307,7 +313,7 @@ async fn run(
     let manager = PartitionStoreManager::create(true)
         .await
         .context("failed to create the partition store manager")?;
-    let snapshot_repository = SnapshotRepository::new_from_config(
+    let snapshot_repository = SnapshotRepository::new_read_only_from_config(
         &config.worker.snapshots,
         config.worker.storage.snapshots_staging_dir(),
     )
