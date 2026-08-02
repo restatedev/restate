@@ -465,6 +465,7 @@ async fn snapshot(
         log_id: LogId::MIN,
         min_applied_lsn: lsn,
         db_comparator_name: "leveldb.BytewiseComparator".to_owned(),
+        file_keys: Default::default(),
         compatibility: Some(SnapshotCompatibility {
             min_restate_version: SemanticRestateVersion::new(1, 8, 0),
             storage_features: vec!["scoped-state-table".into(), "future-feature".into()],

@@ -1209,6 +1209,20 @@ fn is_default_max_successive_merges(i: &u16) -> bool {
     *i == DEFAULT_MAX_SUCCESSIVE_MERGES
 }
 
+/// # Snapshot type
+///
+/// Controls whether snapshots use full or incremental mode.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum SnapshotType {
+    /// Store each snapshot as a complete copy.
+    #[default]
+    Full,
+    /// Reuse unchanged data between snapshots to reduce upload and storage costs.
+    Incremental,
+}
+
 /// # Snapshot options
 ///
 /// Partition store object-store snapshotting settings. Setting `destination` enables automatic
@@ -1335,6 +1349,31 @@ pub struct SnapshotsOptions {
 
     #[cfg(any(test, feature = "test-util"))]
     pub enable_cleanup: bool,
+
+    /// # Snapshot type
+    ///
+    /// Controls whether snapshots use full or incremental mode.
+    /// - Full: Each snapshot is stored as a complete copy (default)
+    /// - Incremental: Snapshots reuse unchanged data to reduce uploads and storage
+    ///
+    /// Incremental mode reduces network and storage usage for frequent snapshots.
+    ///
+    /// Default: `Full`
+    ///
+    /// Since v1.7.3
+    #[serde(default)]
+    pub experimental_snapshot_type: SnapshotType,
+
+    /// # Snapshot check interval
+    ///
+    /// How frequently to check snapshot trigger conditions. Lower values will result in snapshots
+    /// kicked off sooner, once preconditions are met. Jitter will be added to configured value.
+    ///
+    /// Default: `30s`
+    ///
+    /// Since v1.7.3
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_interval: Option<FriendlyDuration>,
 }
 
 fn default_num_retained() -> NonZero<u8> {
@@ -1371,6 +1410,8 @@ impl Default for SnapshotsOptions {
             automatic_snapshot_concurrency_limit: None,
             #[cfg(any(test, feature = "test-util"))]
             enable_cleanup: true,
+            experimental_snapshot_type: SnapshotType::default(),
+            check_interval: None,
         }
     }
 }
@@ -1387,6 +1428,11 @@ impl SnapshotsOptions {
 
     pub fn export_concurrency_limit(&self) -> u32 {
         self.export_concurrency_limit.map(|v| v.get()).unwrap_or(4)
+    }
+    pub fn check_interval(&self) -> Duration {
+        self.check_interval
+            .map(|d| d.into())
+            .unwrap_or_else(|| Duration::from_secs(30))
     }
 
     pub fn automatic_snapshot_concurrency_limit(&self) -> u32 {

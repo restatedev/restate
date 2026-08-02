@@ -69,6 +69,7 @@ pub(crate) async fn run_tests(
         db_comparator_name: snapshot.db_comparator_name.clone(),
         compatibility: snapshot.compatibility.clone(),
         files: snapshot.files.clone(),
+        file_keys: std::collections::BTreeMap::new(),
     };
     assert!(snapshot.compatibility.is_some());
     let metadata_json = serde_json::to_string_pretty(&snapshot_meta).unwrap();

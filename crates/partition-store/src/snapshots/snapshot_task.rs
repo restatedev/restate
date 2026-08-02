@@ -152,6 +152,7 @@ impl SnapshotPartitionTask {
             db_comparator_name: snapshot.db_comparator_name.clone(),
             compatibility: snapshot.compatibility.clone(),
             files: snapshot.files.clone(),
+            file_keys: std::collections::BTreeMap::new(),
         }
     }
 }
