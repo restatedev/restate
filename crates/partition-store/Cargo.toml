@@ -38,6 +38,7 @@ enum-map = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 jiff = { workspace = true }
+chrono = { workspace = true }
 metrics = { workspace = true }
 object_store = { workspace = true }
 parking_lot = { workspace = true }
@@ -45,6 +46,7 @@ paste = { workspace = true }
 pin-project = { workspace = true }
 prost = { workspace = true }
 rand = { workspace = true }
+regex = { workspace = true }
 rocksdb = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
