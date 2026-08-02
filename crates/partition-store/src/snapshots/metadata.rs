@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use rocksdb::LiveFile;
@@ -122,6 +123,23 @@ pub struct PartitionSnapshotMetadata {
     /// The RocksDB SST files comprising the snapshot.
     #[serde_as(as = "Vec<SnapshotSstFile>")]
     pub files: Vec<LiveFile>,
+
+    /// Mapping from SST filename to repository object key.
+    /// Key: exact filename as it appears in LiveFile.name (e.g., "/000752.sst")
+    /// Value: relative object store key (e.g., "`ssts/a1b2c3d4e5f67890a1b2c3d4e5f67890.sst`")
+    ///
+    /// This map is used as an implicit format discriminator: when empty the snapshot was
+    /// written by the legacy full-snapshot path and SSTs live at `{lsn}-{snap_id}/{filename}`;
+    /// when non-empty the snapshot is incremental and the map must cover every entry in
+    /// `files`. Mixed (partial) coverage is not produced by any writer in this crate;
+    /// readers treat per-file lookup misses as the legacy case for forward compatibility.
+    ///
+    /// The discriminator is therefore only reliable in one direction: an incremental snapshot
+    /// with no SST files at all is indistinguishable from a legacy one. That is inert today
+    /// because resolution is per-file, but it is the reason not to build format-versioning
+    /// decisions on this field - add an explicit format version instead.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub file_keys: BTreeMap<String, String>,
 }
 
 impl PartitionSnapshotMetadata {
@@ -192,6 +210,8 @@ struct PartitionSnapshotMetadataShadow {
     pub partition_store_byte_offset: Option<u64>,
     #[serde_as(as = "Vec<SnapshotSstFile>")]
     pub files: Vec<LiveFile>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub file_keys: BTreeMap<String, String>,
 }
 
 impl From<PartitionSnapshotMetadataShadow> for PartitionSnapshotMetadata {
@@ -219,6 +239,7 @@ impl From<PartitionSnapshotMetadataShadow> for PartitionSnapshotMetadata {
             log_byte_offset: value.log_byte_offset,
             partition_store_byte_offset: value.partition_store_byte_offset,
             files: value.files,
+            file_keys: value.file_keys,
         }
     }
 }

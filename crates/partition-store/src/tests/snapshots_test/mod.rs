@@ -72,6 +72,7 @@ pub(crate) async fn run_tests(
         log_byte_offset: snapshot.log_byte_offset,
         partition_store_byte_offset: snapshot.partition_store_byte_offset,
         files: snapshot.files.clone(),
+        file_keys: std::collections::BTreeMap::new(),
     };
     assert!(snapshot.compatibility.is_some());
     assert_eq!(
