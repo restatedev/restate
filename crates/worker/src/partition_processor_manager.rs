@@ -306,10 +306,15 @@ where
         let mut partition_table_version_watcher = metadata.watch(MetadataKind::PartitionTable);
         gauge!(NUM_PARTITIONS).set(self.partition_table.live_load().len() as f64);
 
-        let mut snapshot_check_interval = tokio::time::interval_at(
-            tokio::time::Instant::now() + Duration::from_secs(rand::rng().random_range(30..60)), // delay scheduled snapshots on startup
-            Duration::from_secs(1).add_jitter(0.1),
-        );
+        let check_interval = self
+            .updateable_config
+            .pinned()
+            .worker
+            .snapshots
+            .check_interval()
+            .add_jitter(0.1);
+        let mut snapshot_check_interval =
+            tokio::time::interval_at(tokio::time::Instant::now() + check_interval, check_interval);
         snapshot_check_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         let mut update_target_tail_lsns = tokio::time::interval(Duration::from_secs(1));
@@ -1162,7 +1167,11 @@ where
                 let jitter = if sender.is_some() {
                     Duration::ZERO
                 } else {
-                    Duration::from_millis(rand::rng().random_range(0..10_000))
+                    // Spread automatic snapshots across the check interval so that partitions
+                    // sharing a tick don't all start uploading at once.
+                    rand::rng().random_range(
+                        Duration::ZERO..=config.worker.snapshots.check_interval() / 10,
+                    )
                 };
                 let spawn_task_result = TaskCenter::spawn_unmanaged_child(
                     TaskKind::PartitionSnapshotProducer,
@@ -1211,7 +1220,6 @@ where
         if !self.pending_snapshot_status_refreshes.insert(partition_id) {
             return;
         }
-
         let psm = self.partition_store_manager.clone();
         self.asynchronous_operations
             .build_task()
