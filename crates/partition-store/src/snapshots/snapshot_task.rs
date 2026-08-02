@@ -23,8 +23,9 @@ use restate_types::logs::Lsn;
 use restate_types::nodes_config::ClusterFingerprint;
 
 use super::{
-    CommitFenceRequest, LocalPartitionSnapshot, PartitionSnapshotMetadata, PartitionSnapshotStatus,
-    SnapshotError, SnapshotErrorKind, SnapshotFormatVersion, SnapshotRepository,
+    CommitFenceRequest, LeaseError, LocalPartitionSnapshot, PartitionSnapshotMetadata,
+    PartitionSnapshotStatus, SnapshotError, SnapshotErrorKind, SnapshotFormatVersion,
+    SnapshotRepository,
 };
 use crate::PartitionStoreManager;
 
@@ -80,6 +81,28 @@ impl SnapshotPartitionTask {
     }
 
     async fn create_snapshot_inner(&self) -> Result<PartitionSnapshotStatus, SnapshotError> {
+        // Acquire lease BEFORE export to avoid dedup/delete races with cleanup while uploading SSTs.
+        // Also eliminates the possibility of concurrent snapshots for the same partition at close LSNs.
+        let lease_guard = self
+            .snapshot_repository
+            .acquire_lease(self.partition_id)
+            .await
+            .map_err(|e| {
+                let kind = if matches!(e, LeaseError::Unavailable) {
+                    warn!(
+                        "Create snapshot unavailable due to read-only repository; \
+                        this indicates an internal misconfiguration bug"
+                    );
+                    SnapshotErrorKind::RepositoryNotConfigured
+                } else {
+                    SnapshotErrorKind::RepositoryIo(anyhow::Error::new(e))
+                };
+                SnapshotError {
+                    partition_id: self.partition_id,
+                    kind,
+                }
+            })?;
+
         let snapshot = self
             .partition_store_manager
             .export_partition(
@@ -96,7 +119,7 @@ impl SnapshotPartitionTask {
         let status = self
             .snapshot_repository
             // `put` takes ownership of the snapshot directory and removes it after upload.
-            .put(&metadata, snapshot.base_dir)
+            .put(&metadata, snapshot.base_dir, lease_guard)
             .await
             .map_err(|e| SnapshotError {
                 partition_id: self.partition_id,

@@ -321,7 +321,7 @@ async fn run(
     let manager = PartitionStoreManager::create(true)
         .await
         .context("failed to create the partition store manager")?;
-    let snapshot_repository = SnapshotRepository::new_from_config(
+    let snapshot_repository = SnapshotRepository::new_read_only_from_config(
         &config.worker.snapshots,
         config.worker.storage.snapshots_staging_dir(),
     )
