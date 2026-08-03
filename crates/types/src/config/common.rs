@@ -277,24 +277,6 @@ pub struct FabricTlsOptions {
     pub allowed_subject_names: Vec<String>,
 }
 
-/// Separate client TLS config for outbound fabric connections.
-/// Fields that are `None` inherit from the parent [`FabricTlsOptions`].
-///
-/// Since v1.7.3
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[serde(rename_all = "kebab-case")]
-pub struct FabricTlsClientOptions {
-    /// Client certificate for outbound connections. Inherits from parent if omitted.
-    pub cert_file: Option<PathBuf>,
-
-    /// Client private key for outbound connections. Inherits from parent if omitted.
-    pub key_file: Option<PathBuf>,
-
-    /// Root CA files for verifying server certificates. Inherits from parent if omitted.
-    pub root_ca_files: Option<Vec<PathBuf>>,
-}
-
 impl FabricTlsOptions {
     pub fn validate(&self) -> Result<(), anyhow::Error> {
         if self.require_client_auth && self.allowed_subject_names.is_empty() {
