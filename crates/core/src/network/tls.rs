@@ -219,7 +219,7 @@ fn build_server_config(opts: &FabricTlsOptions) -> anyhow::Result<ServerConfig> 
     };
 
     let mut config = builder.with_single_cert(certs, key)?;
-    config.alpn_protocols = vec![b"h2".to_vec()];
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(config)
 }
 
