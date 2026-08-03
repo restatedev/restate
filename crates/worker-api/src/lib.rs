@@ -13,6 +13,7 @@ pub mod processor;
 pub mod resources;
 
 mod leader_query;
+mod metric_definitions;
 mod partition_processor_manager;
 mod partition_processor_rpc_client;
 mod scheduler_status;

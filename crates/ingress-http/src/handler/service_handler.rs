@@ -44,7 +44,10 @@ use super::tracing::prepare_tracing_span;
 use super::{APPLICATION_JSON, Handler};
 use crate::RequestDispatcher;
 use crate::handler::responses::{IDEMPOTENCY_EXPIRES, X_RESTATE_ID};
-use crate::metric_definitions::{INGRESS_REQUEST_DURATION, INGRESS_REQUESTS, REQUEST_COMPLETED};
+use crate::metric_definitions::{
+    INGRESS_REQUEST_DURATION, INGRESS_REQUESTS, REQUEST_COMPLETED, REQUEST_ERROR,
+    REQUEST_INGRESS_ERROR, REQUEST_INVOCATION_ERROR,
+};
 
 pub(crate) const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
 const LIMIT_KEY_HEADER: HeaderName = HeaderName::from_static("x-restate-limit-key");
@@ -74,6 +77,20 @@ pub(crate) struct SendResponse {
     status: SendStatus,
 }
 
+fn request_metric_status(result: &Result<Response<Full<Bytes>>, HandlerError>) -> &'static str {
+    match result {
+        Ok(response)
+            if response.status().is_client_error() || response.status().is_server_error() =>
+        {
+            REQUEST_INVOCATION_ERROR
+        }
+        Ok(_) => REQUEST_COMPLETED,
+        Err(HandlerError::Invocation(_)) => REQUEST_INVOCATION_ERROR,
+        Err(error) if error.status_code().is_client_error() => REQUEST_ERROR,
+        Err(_) => REQUEST_INGRESS_ERROR,
+    }
+}
+
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
     Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
@@ -88,7 +105,36 @@ where
         <B as http_body::Body>::Error: Into<GenericError>,
     {
         let start_time = Instant::now();
+        let service_name_label = service_request.name.to_string();
+        let invoke_ty_label = service_request.invoke_ty.as_static_str();
 
+        let result = self.process_service_request(req, service_request).await;
+
+        histogram!(
+            INGRESS_REQUEST_DURATION,
+            "rpc.service" => service_name_label.clone(),
+            "rpc.type" => invoke_ty_label,
+        )
+        .record(start_time.elapsed());
+
+        counter!(
+            INGRESS_REQUESTS,
+            "status" => request_metric_status(&result),
+            "rpc.service" => service_name_label,
+            "rpc.type" => invoke_ty_label,
+        )
+        .increment(1);
+        result
+    }
+
+    async fn process_service_request<B: http_body::Body>(
+        self,
+        req: Request<B>,
+        service_request: ServiceRequestType,
+    ) -> Result<Response<Full<Bytes>>, HandlerError>
+    where
+        <B as http_body::Body>::Error: Into<GenericError>,
+    {
         let ServiceRequestType {
             name: service_name,
             handler: handler_name,
@@ -204,114 +250,91 @@ where
         .with_scope(scope);
 
         let invocation_id = InvocationId::generate(&invocation_target, idempotency_key.as_deref());
-        let invoke_ty_str = invoke_ty.as_static_str();
 
-        let result = async move {
-            let ingress_span_context =
-                prepare_tracing_span(&invocation_id, &invocation_target, &req);
+        let ingress_span_context = prepare_tracing_span(&invocation_id, &invocation_target, &req);
 
-            debug!(
-                restate.invocation.id = %invocation_id,
-                restate.invocation.target = %invocation_target.short(),
-                "Processing invocation request"
-            );
+        debug!(
+            restate.invocation.id = %invocation_id,
+            restate.invocation.target = %invocation_target.short(),
+            "Processing invocation request"
+        );
 
-            let (parts, body) = req.into_parts();
+        let (parts, body) = req.into_parts();
 
-            // Check HTTP Method
-            if parts.method != Method::GET && parts.method != Method::POST {
-                return Err(HandlerError::MethodNotAllowed);
-            }
+        // Check HTTP Method
+        if parts.method != Method::GET && parts.method != Method::POST {
+            return Err(HandlerError::MethodNotAllowed);
+        }
 
-            // Collect body
-            let body = body
-                .collect()
+        // Collect body
+        let body = body
+            .collect()
+            .await
+            .map_err(|e| HandlerError::Body(e.into()))?
+            .to_bytes();
+        trace!(rpc.request = ?body);
+
+        // Validate content-type and body
+        invocation_target_meta.input_rules.validate(
+            parts
+                .headers
+                .get(header::CONTENT_TYPE)
+                .map(|h| {
+                    h.to_str()
+                        .map_err(|e| HandlerError::BadHeader(header::CONTENT_TYPE, e))
+                })
+                .transpose()?,
+            &body,
+        )?;
+
+        // Parse delay query parameter
+        let delay = parse_delay(parts.uri.query())?;
+
+        // Parse limit-key from header or query param (header takes precedence)
+        let limit_key = parse_limit_key(&parts.headers, parts.uri.query())?;
+
+        // Validate invariant: limit-key requires scope
+        if !limit_key.is_empty() && invocation_target.scope().is_none() {
+            return Err(HandlerError::LimitKeyWithoutScope);
+        }
+
+        // Get headers
+        let headers = parse_headers(parts)?;
+
+        // Prepare service invocation
+        let mut invocation_request_header =
+            InvocationRequestHeader::initialize(invocation_id, invocation_target);
+        invocation_request_header.with_related_span(SpanRelation::parent(ingress_span_context));
+        invocation_request_header.with_retention(invocation_retention);
+        if let Some(key) = idempotency_key {
+            invocation_request_header.idempotency_key = Some(key);
+        }
+        invocation_request_header.limit_key = limit_key;
+        invocation_request_header.headers = headers;
+
+        match invoke_ty {
+            InvokeType::Call => {
+                if delay.is_some() {
+                    return Err(HandlerError::UnsupportedDelay);
+                }
+                Self::handle_service_call(
+                    Arc::new(InvocationRequest::new(invocation_request_header, body)),
+                    invocation_target_meta,
+                    self.dispatcher,
+                )
                 .await
-                .map_err(|e| HandlerError::Body(e.into()))?
-                .to_bytes();
-            trace!(rpc.request = ?body);
-
-            // Validate content-type and body
-            invocation_target_meta.input_rules.validate(
-                parts
-                    .headers
-                    .get(header::CONTENT_TYPE)
-                    .map(|h| {
-                        h.to_str()
-                            .map_err(|e| HandlerError::BadHeader(header::CONTENT_TYPE, e))
-                    })
-                    .transpose()?,
-                &body,
-            )?;
-
-            // Parse delay query parameter
-            let delay = parse_delay(parts.uri.query())?;
-
-            // Parse limit-key from header or query param (header takes precedence)
-            let limit_key = parse_limit_key(&parts.headers, parts.uri.query())?;
-
-            // Validate invariant: limit-key requires scope
-            if !limit_key.is_empty() && invocation_target.scope().is_none() {
-                return Err(HandlerError::LimitKeyWithoutScope);
             }
+            InvokeType::Send => {
+                invocation_request_header.execution_time =
+                    delay.map(|d| SystemTime::now() + d).map(Into::into);
 
-            // Get headers
-            let headers = parse_headers(parts)?;
-
-            // Prepare service invocation
-            let mut invocation_request_header =
-                InvocationRequestHeader::initialize(invocation_id, invocation_target);
-            invocation_request_header.with_related_span(SpanRelation::parent(ingress_span_context));
-            invocation_request_header.with_retention(invocation_retention);
-            if let Some(key) = idempotency_key {
-                invocation_request_header.idempotency_key = Some(key);
-            }
-            invocation_request_header.limit_key = limit_key;
-            invocation_request_header.headers = headers;
-
-            match invoke_ty {
-                InvokeType::Call => {
-                    if delay.is_some() {
-                        return Err(HandlerError::UnsupportedDelay);
-                    }
-                    Self::handle_service_call(
-                        Arc::new(InvocationRequest::new(invocation_request_header, body)),
-                        invocation_target_meta,
-                        self.dispatcher,
-                    )
-                    .await
-                }
-                InvokeType::Send => {
-                    invocation_request_header.execution_time =
-                        delay.map(|d| SystemTime::now() + d).map(Into::into);
-
-                    Self::handle_service_send(
-                        Arc::new(InvocationRequest::new(invocation_request_header, body)),
-                        self.dispatcher,
-                    )
-                    .await
-                }
+                Self::handle_service_send(
+                    Arc::new(InvocationRequest::new(invocation_request_header, body)),
+                    self.dispatcher,
+                )
+                .await
             }
         }
-        .await;
-
-        // Note that we only record (mostly) successful requests here. We might want to
-        // change this in the _near_ future.
-        histogram!(
-            INGRESS_REQUEST_DURATION,
-            "rpc.service" => service_name.to_string(),
-            "rpc.type" => invoke_ty_str,
-        )
-        .record(start_time.elapsed());
-
-        counter!(
-            INGRESS_REQUESTS,
-            "status" => REQUEST_COMPLETED,
-            "rpc.service" => service_name.to_string(),
-            "rpc.type" => invoke_ty_str,
-        )
-        .increment(1);
-        result
     }
 
     async fn handle_service_call(
