@@ -17,13 +17,16 @@ use std::time::Duration;
 
 use http::Uri;
 use hyper::body::{Body, Incoming};
+use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::graceful::GracefulShutdown;
-use tokio::io;
+use rustls::pki_types::ServerName;
+use tokio::io::{self, AsyncRead, AsyncWrite};
 use tokio::net::UnixStream;
 use tokio::task::JoinHandle;
 use tokio_util::either::Either;
 use tonic::transport::{Channel, Endpoint};
+use tower::Service;
 use tracing::{Instrument, Span, debug, error_span, info, instrument, trace};
 
 use restate_types::config::{Configuration, TlsMode};
@@ -43,30 +46,151 @@ pub enum DNSResolution {
     Headless,
 }
 
-/// Applies the fabric client TLS materials to an endpoint that dials an
-/// `https://` fabric peer. Reads the materials per call (rather than once at
-/// startup) so certificate hot-reload takes effect for new connections.
-/// Without this, tonic rejects `https://` URIs with `HttpsUriWithoutTlsSupport`.
-pub fn apply_fabric_tls(endpoint: Endpoint, uri: &Uri, config: &TlsClientConfig) -> Endpoint {
-    let materials = config.client_materials();
-    let mut tls_config = tonic::transport::ClientTlsConfig::new();
-    if let Some(identity) = &materials.identity {
-        tls_config = tls_config.identity(tonic::transport::Identity::from_pem(
-            &identity.cert_pem,
-            &identity.key_pem,
-        ));
+/// Derives the rustls server name for a fabric peer URI.
+fn tls_server_name(uri: &Uri) -> Result<ServerName<'static>, String> {
+    let host = uri
+        .host()
+        .ok_or_else(|| format!("fabric peer address '{uri}' has no host"))?;
+    // URI hosts retain brackets around IPv6 addresses, while rustls
+    // ServerName expects the unbracketed address.
+    let host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    ServerName::try_from(host.to_owned())
+        .map_err(|_| format!("fabric peer host '{host}' is not a valid TLS server name"))
+}
+
+#[derive(Clone)]
+struct ReloadingTlsConnector<C> {
+    inner: C,
+    tls_config: TlsClientConfig,
+    server_name: Result<ServerName<'static>, String>,
+    connect_timeout: Option<Duration>,
+}
+
+impl<C> ReloadingTlsConnector<C> {
+    fn new(
+        inner: C,
+        uri: &Uri,
+        tls_config: TlsClientConfig,
+        connect_timeout: Option<Duration>,
+    ) -> Self {
+        Self {
+            inner,
+            tls_config,
+            server_name: tls_server_name(uri),
+            connect_timeout,
+        }
     }
-    // tonic derives the rustls ServerName from uri.host(), which is bracketed
-    // for IPv6 authorities (e.g. "[::1]") and not a valid ServerName. Strip
-    // the brackets via an explicit domain name.
-    if let Some(host) = uri.host()
-        && let Some(unbracketed) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']'))
-    {
-        tls_config = tls_config.domain_name(unbracketed);
+}
+
+impl<C, IO> Service<Uri> for ReloadingTlsConnector<C>
+where
+    C: Service<Uri, Response = TokioIo<IO>> + Send + 'static,
+    IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    C::Future: Send + 'static,
+    C::Error: Into<GenericError>,
+{
+    type Response = TokioIo<tokio_rustls::client::TlsStream<IO>>;
+    type Error = GenericError;
+    type Future =
+        Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx).map_err(Into::into)
     }
-    endpoint
-        .tls_config_with_verifier(tls_config, materials.verifier.clone())
-        .expect("valid TLS configuration for fabric peer")
+
+    fn call(&mut self, uri: Uri) -> Self::Future {
+        let connect = self.inner.call(uri);
+        let tls_config = self.tls_config.clone();
+        let server_name = self.server_name.clone();
+        let connect_timeout = self.connect_timeout;
+
+        Box::pin(async move {
+            let connect = async move {
+                let server_name = server_name.map_err(GenericError::from)?;
+                let io = connect.await.map_err(Into::into)?;
+                // Resolve the ArcSwap only after TCP connects, immediately
+                // before the TLS handshake, so reconnects use the latest
+                // materials.
+                let io = tls_config
+                    .tls_connector()
+                    .connect(server_name, io.into_inner())
+                    .await?;
+                if io.get_ref().1.alpn_protocol() != Some(b"h2") {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "HTTP/2 was not negotiated",
+                    )
+                    .into());
+                }
+                Ok(TokioIo::new(io))
+            };
+
+            match connect_timeout {
+                Some(timeout) => tokio::time::timeout(timeout, connect)
+                    .await
+                    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "connection timed out"))?,
+                None => connect.await,
+            }
+        })
+    }
+}
+
+fn apply_http_options<R>(endpoint: &Endpoint, http: &mut HttpConnector<R>) {
+    http.enforce_http(false);
+    http.set_nodelay(endpoint.get_tcp_nodelay());
+    http.set_keepalive(endpoint.get_tcp_keepalive());
+    http.set_keepalive_interval(endpoint.get_tcp_keepalive_interval());
+    http.set_keepalive_retries(endpoint.get_tcp_keepalive_retries());
+    http.set_connect_timeout(endpoint.get_connect_timeout());
+}
+
+pub(crate) fn connect_tonic_endpoint(
+    endpoint: Endpoint,
+    uri: &Uri,
+    dns_resolution: DNSResolution,
+    tls_config: Option<&TlsClientConfig>,
+) -> Channel {
+    match (dns_resolution, tls_config) {
+        (DNSResolution::Gai, None) => endpoint.connect_lazy(),
+        (DNSResolution::Gai, Some(tls_config)) => {
+            let mut http = HttpConnector::new();
+            apply_http_options(&endpoint, &mut http);
+            Channel::new(
+                ReloadingTlsConnector::new(
+                    http,
+                    uri,
+                    tls_config.clone(),
+                    endpoint.get_connect_timeout(),
+                ),
+                endpoint,
+            )
+        }
+        (DNSResolution::Headless, tls_config) => {
+            // Headless DNS names need special consideration:
+            // 1. We need to ensure all IPs are used across retries.
+            // 2. The HTTP connector splits the connection timeout between all
+            //    resolved addresses, so we don't want too many.
+            let mut http = HttpConnector::new_with_resolver(RandomAddressResolver);
+            apply_http_options(&endpoint, &mut http);
+
+            if let Some(tls_config) = tls_config {
+                Channel::new(
+                    ReloadingTlsConnector::new(
+                        http,
+                        uri,
+                        tls_config.clone(),
+                        endpoint.get_connect_timeout(),
+                    ),
+                    endpoint,
+                )
+            } else {
+                endpoint.connect_with_connector_lazy(http)
+            }
+        }
+    }
 }
 
 pub fn create_tonic_channel<
@@ -86,17 +210,12 @@ pub fn create_tonic_channel<
         PeerNetAddress::Http(uri) => Channel::builder(uri.clone()),
     };
 
-    let mut endpoint = apply_options(endpoint, options);
+    let endpoint = apply_options(endpoint, options);
 
     // Fabric peers that advertise https:// require the fabric client TLS
     // identity regardless of which channel factory dials them (metadata-store,
     // raft, control channels all go through here).
-    if address.is_tls()
-        && let Some(config) = TlsClientConfig::global()
-        && let PeerNetAddress::Http(uri) = &address
-    {
-        endpoint = apply_fabric_tls(endpoint, uri, config);
-    }
+    let tls_config = address.is_tls().then(TlsClientConfig::global).flatten();
 
     match address {
         PeerNetAddress::Uds(uds_path) => {
@@ -107,24 +226,8 @@ pub fn create_tonic_channel<
                 }
             }))
         }
-        PeerNetAddress::Http(_) => {
-            match dns_resolution {
-                DNSResolution::Gai => endpoint.connect_lazy(),
-                DNSResolution::Headless => {
-                    // headless dns names need special consideration:
-                    // 1. We need to ensure all ips are used across retries
-                    // 2. The http connector will split the conn timeout between all resolved addresses, so we don't want too many
-                    let mut http = hyper_util::client::legacy::connect::HttpConnector::new_with_resolver(RandomAddressResolver);
-                    http.enforce_http(false);
-                    http.set_nodelay(endpoint.get_tcp_nodelay());
-                    http.set_keepalive(endpoint.get_tcp_keepalive());
-                    http.set_keepalive_interval(endpoint.get_tcp_keepalive_interval());
-                    http.set_keepalive_retries(endpoint.get_tcp_keepalive_retries());
-                    http.set_connect_timeout(endpoint.get_connect_timeout());
-
-                    endpoint.connect_with_connector_lazy(http)
-                },
-            }
+        PeerNetAddress::Http(uri) => {
+            connect_tonic_endpoint(endpoint, &uri, dns_resolution, tls_config)
         }
     }
 }

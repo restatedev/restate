@@ -24,7 +24,7 @@ use restate_types::net::address::{AdvertisedAddress, GrpcPort, ListenerPort, Pee
 use restate_types::net::connect_opts::GrpcConnectionOptions;
 
 use crate::network::grpc::DEFAULT_GRPC_COMPRESSION;
-use crate::network::net_util::apply_fabric_tls;
+use crate::network::net_util::{DNSResolution, connect_tonic_endpoint};
 use crate::network::protobuf::core_node_svc::core_node_svc_client::CoreNodeSvcClient;
 use crate::network::protobuf::network::Message;
 use crate::network::tls::TlsClientConfig;
@@ -98,7 +98,7 @@ fn create_channel<P: ListenerPort + GrpcPort>(
         PeerNetAddress::Http(uri) => Channel::builder(uri.clone()).executor(TaskCenterExecutor),
     };
 
-    let mut endpoint = endpoint
+    let endpoint = endpoint
         .user_agent(format!(
             "restate/{}",
             option_env!("CARGO_PKG_VERSION").unwrap_or("dev")
@@ -126,18 +126,16 @@ fn create_channel<P: ListenerPort + GrpcPort>(
         )));
     }
 
-    if address.is_tls()
-        && let PeerNetAddress::Http(uri) = &address
-    {
-        if let Some(config) = TlsClientConfig::global() {
-            endpoint = apply_fabric_tls(endpoint, uri, config);
-        } else {
-            return Err(ConnectError::Transport(
+    let tls_config = if address.is_tls() {
+        Some(TlsClientConfig::global().ok_or_else(|| {
+            ConnectError::Transport(
                 "no tls client configuration available, but peer is advertising a tls address"
                     .to_owned(),
-            ));
-        }
-    }
+            )
+        })?)
+    } else {
+        None
+    };
 
     Ok(match address {
         PeerNetAddress::Uds(uds_path) => {
@@ -148,7 +146,9 @@ fn create_channel<P: ListenerPort + GrpcPort>(
                 }
             }))
         }
-        PeerNetAddress::Http(_) => endpoint.connect_lazy()
+        PeerNetAddress::Http(uri) => {
+            connect_tonic_endpoint(endpoint, &uri, DNSResolution::Gai, tls_config)
+        }
     })
 }
 
