@@ -117,7 +117,6 @@ fn configure_tls_nodes(
             require_client_auth: true,
             refresh_interval: restate_util_time::NonZeroFriendlyDuration::from_secs_unchecked(3600),
             allowed_subject_names: vec!["*".into()],
-            client: None,
         });
     }
 

@@ -275,11 +275,6 @@ pub struct FabricTlsOptions {
     /// configuration error to prevent accidental fail-open.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_subject_names: Vec<String>,
-
-    /// Optional separate TLS configuration for outbound connections to peer nodes.
-    /// If omitted, the server cert/key/ca are used for outbound connections as well.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client: Option<FabricTlsClientOptions>,
 }
 
 /// Separate client TLS config for outbound fabric connections.
@@ -301,27 +296,6 @@ pub struct FabricTlsClientOptions {
 }
 
 impl FabricTlsOptions {
-    pub fn client_cert_file(&self) -> &PathBuf {
-        self.client
-            .as_ref()
-            .and_then(|c| c.cert_file.as_ref())
-            .unwrap_or(&self.cert_file)
-    }
-
-    pub fn client_key_file(&self) -> &PathBuf {
-        self.client
-            .as_ref()
-            .and_then(|c| c.key_file.as_ref())
-            .unwrap_or(&self.key_file)
-    }
-
-    pub fn client_ca_files(&self) -> &[PathBuf] {
-        self.client
-            .as_ref()
-            .and_then(|c| c.root_ca_files.as_deref())
-            .unwrap_or(&self.ca_files)
-    }
-
     pub fn validate(&self) -> Result<(), anyhow::Error> {
         if self.require_client_auth && self.allowed_subject_names.is_empty() {
             anyhow::bail!(
@@ -1562,7 +1536,7 @@ mod tests {
     }
 
     #[test]
-    fn tls_config_defaults_and_inheritance() {
+    fn tls_config_defaults() {
         assert!(CommonOptions::default().tls.is_none());
 
         let opts = minimal_tls_config();
@@ -1573,10 +1547,6 @@ mod tests {
         assert!(!opts.require_client_auth);
         assert_eq!(*opts.refresh_interval, Duration::from_secs(3600));
         assert!(opts.allowed_subject_names.is_empty());
-        assert!(opts.client.is_none());
-        assert_eq!(opts.client_cert_file(), &opts.cert_file);
-        assert_eq!(opts.client_key_file(), &opts.key_file);
-        assert_eq!(opts.client_ca_files(), opts.ca_files);
 
         let common = CommonOptions {
             tls: Some(opts),
@@ -1601,44 +1571,6 @@ mod tests {
             assert_eq!(mode.advertises_tls(), advertises, "{mode:?}");
             assert_eq!(mode.accepts_plaintext(), plaintext, "{mode:?}");
         }
-    }
-
-    #[test]
-    fn tls_config_overrides() {
-        let opts: FabricTlsOptions = toml::from_str(
-            r#"
-            mode = "allow"
-            cert-file = "/certs/server.crt"
-            key-file = "/certs/server.key"
-            ca-files = ["/certs/ca1.crt", "/certs/ca2.crt"]
-            require-client-auth = false
-            refresh-interval = "15m"
-            allowed-subject-names = [
-                "spiffe://domain/admin",
-                "spiffe://domain/worker",
-            ]
-
-            [client]
-            cert-file = "/certs/client.crt"
-            key-file = "/certs/client.key"
-            root-ca-files = ["/certs/client-ca.crt"]
-        "#,
-        )
-        .unwrap();
-
-        assert_eq!(opts.mode, TlsMode::Allow);
-        assert!(!opts.require_client_auth);
-        assert_eq!(*opts.refresh_interval, Duration::from_secs(900));
-        assert_eq!(
-            opts.allowed_subject_names,
-            ["spiffe://domain/admin", "spiffe://domain/worker"]
-        );
-        assert_eq!(opts.client_cert_file(), &PathBuf::from("/certs/client.crt"));
-        assert_eq!(opts.client_key_file(), &PathBuf::from("/certs/client.key"));
-        assert_eq!(
-            opts.client_ca_files(),
-            &[PathBuf::from("/certs/client-ca.crt")]
-        );
     }
 
     #[test]
