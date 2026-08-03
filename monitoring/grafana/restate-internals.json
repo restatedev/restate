@@ -736,7 +736,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (rpc_service) (rate(restate_ingress_requests_total{cluster_name=\"$cluster\", node_name=~\"$node\", status=\"completed\"}[$__rate_interval]))",
+          "expr": "sum by (rpc_service) (rate(restate_ingress_requests_total{cluster_name=\"$cluster\", node_name=~\"$node\", status=~\"completed|request_error|invocation_error|ingress_error\"}[$__rate_interval]))",
           "legendFormat": "{{rpc_service}}",
           "refId": "A"
         },
@@ -745,7 +745,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(restate_ingress_requests_total{cluster_name=\"$cluster\", node_name=~\"$node\", status=\"completed\"}[$__rate_interval]))",
+          "expr": "sum(rate(restate_ingress_requests_total{cluster_name=\"$cluster\", node_name=~\"$node\", status=~\"completed|request_error|invocation_error|ingress_error\"}[$__rate_interval]))",
           "legendFormat": "Total",
           "refId": "B"
         }
