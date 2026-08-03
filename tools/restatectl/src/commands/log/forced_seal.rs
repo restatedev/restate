@@ -10,16 +10,16 @@
 
 use std::collections::HashMap;
 
+use anyhow::bail;
 use cling::prelude::*;
-use tracing::error;
 
+use restate_cli_util::ui::console::confirm_or_exit;
 use restate_cli_util::{CliContext, c_println};
 use restate_core::protobuf::cluster_ctrl_svc::{SealChainRequest, new_cluster_ctrl_client};
-use restate_types::logs::LogId;
+use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::nodes_config::Role;
 
 use crate::connection::ConnectionInfo;
-use crate::util::RangeParam;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "seal")]
@@ -29,28 +29,26 @@ pub struct SealOpts {
     segment_index: Option<u32>,
     /// The log id or range to seal and extend, e.g. "0", "1-4".
     #[clap(required = true)]
-    log_id: Vec<RangeParam>,
+    log_id: u32,
+    #[clap(required = true)]
+    tail_lsn: u64,
     /// Reason for sealing the log chain. This will appear as metadata on the chain.
     #[clap(long)]
     reason: Option<String>,
 }
 
 async fn seal(connection: &ConnectionInfo, opts: &SealOpts) -> anyhow::Result<()> {
-    for log_id in opts.log_id.iter().flatten().map(LogId::from) {
-        if let Err(err) = inner_seal(connection, opts, log_id).await {
-            error!("Failed to seal log chain for log={log_id}: {err}");
-        }
-        c_println!("");
+    let log_id = LogId::from(opts.log_id);
+    let tail_lsn = Lsn::from(opts.tail_lsn);
+
+    if tail_lsn == Lsn::INVALID {
+        bail!("tail LSN must be a valid non-zero value");
     }
 
-    Ok(())
-}
+    confirm_or_exit(&format!(
+        "Force-seal log {log_id} with tail LSN {tail_lsn}? This can cause permanent data loss"
+    ))?;
 
-async fn inner_seal(
-    connection: &ConnectionInfo,
-    opts: &SealOpts,
-    log_id: LogId,
-) -> anyhow::Result<()> {
     let mut context = HashMap::default();
     context.insert("source".to_owned(), "restatectl".to_owned());
     if let Some(reason) = &opts.reason {
@@ -59,7 +57,7 @@ async fn inner_seal(
     let request = SealChainRequest {
         log_id: log_id.into(),
         segment_index: opts.segment_index,
-        tail_lsn: None,
+        tail_lsn: Some(tail_lsn.as_u64()),
         context,
     };
 

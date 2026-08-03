@@ -653,13 +653,13 @@ impl Stream for LogReadStream {
     }
 }
 
-// NOTE: This function assumes that chain sealing is supported/enabled.
 async fn seal_chain(bifrost: &BifrostInner, log_id: LogId, segment_index: SegmentIndex) {
     match BifrostAdmin::new(bifrost)
         .seal(
             log_id,
             segment_index,
             SealMetadata::new("read-stream", my_node_id()),
+            None,
         )
         .await
     {

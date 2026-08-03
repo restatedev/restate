@@ -13,6 +13,7 @@ mod describe_log;
 // #[cfg(feature = "dump-local-log")]
 // mod dump_log;
 mod find_tail;
+mod forced_seal;
 mod gen_metadata;
 pub mod list_logs;
 mod reconfigure;
@@ -45,6 +46,9 @@ pub enum Logs {
     Reconfigure(reconfigure::ReconfigureOpts),
     /// Force sealing the current log chain
     Seal(seal::SealOpts),
+    /// [DANGEROUS] Force sealing the current log chain.
+    #[clap(hide = true)]
+    ForcedSeal(forced_seal::SealOpts),
     /// Find and show tail state of a log
     FindTail(find_tail::FindTailOpts),
 }
