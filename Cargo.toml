@@ -222,6 +222,7 @@ prost-dto = { version = "0.0.4" }
 prost-types = { version = "0.14.1" }
 quote = "1"
 rand = "0.10.1"
+rcgen = "0.13"
 regex = { version = "1.12" }
 reqwest = { version = "0.12", default-features = false, features = [
     "json",
@@ -264,6 +265,7 @@ tokio = { version = "1.48.0", default-features = false, features = [
     "macros",
     "parking_lot",
 ] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 tokio-stream = "0.1.17"
 tokio-util = { version = "0.7.17" }
 toml = { version = "0.9" }
@@ -290,6 +292,8 @@ utoipa = { version = "5.4" }
 utoipa-axum = "0.2"
 uuid = { version = "1.19.0", features = ["v7", "serde"] }
 vergen = { version = "8.0.0", default-features = false }
+wildmatch = "2.6.1"
+x509-parser = "0.16"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zstd = { version = "0.13" }
 

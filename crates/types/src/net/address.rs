@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 pub trait ListenerPort: Clone + PartialEq + Eq {
     const NAME: &'static str;
     const DEFAULT_PORT: u16;
+    const SUPPORTS_TLS: bool = false;
 
     const UDS_NAME: &'static str;
     /// Whether this port allows binding on an anonymous unix-socket or not.
@@ -89,6 +90,7 @@ pub struct FabricPort;
 impl ListenerPort for FabricPort {
     const NAME: &'static str = "message-fabric-server";
     const DEFAULT_PORT: u16 = 5122;
+    const SUPPORTS_TLS: bool = true;
     const UDS_NAME: &'static str = "fabric.sock";
     // this is disallowed for the message fabric since we must be able to acquire a
     // non-anonymous socket address to allow server-to-server communication.
@@ -271,6 +273,11 @@ impl PeerNetAddress {
     pub fn is_http(&self) -> bool {
         matches!(self, PeerNetAddress::Http(_))
     }
+
+    /// Returns true if this address uses the `https` scheme (TLS).
+    pub fn is_tls(&self) -> bool {
+        matches!(self, PeerNetAddress::Http(uri) if uri.scheme() == Some(&http::uri::Scheme::HTTPS))
+    }
 }
 
 #[derive(
@@ -359,7 +366,12 @@ impl<P: ListenerPort> Default for AdvertisedAddress<P> {
 }
 
 impl<P: ListenerPort> AdvertisedAddress<P> {
-    pub fn derive_from_bind_address(address: SocketAddress, advertised_host: Option<&str>) -> Self {
+    pub fn derive_from_bind_address(
+        address: SocketAddress,
+        advertised_host: Option<&str>,
+        tls: bool,
+    ) -> Self {
+        let scheme = if tls { "https" } else { "http" };
         let inner = match address {
             SocketAddress::Socket(address) => {
                 let routable_ip = || {
@@ -380,21 +392,19 @@ impl<P: ListenerPort> AdvertisedAddress<P> {
                 // do we have an input hostname?
                 let hostname = advertised_host.unwrap_or_else(|| routable_ip());
                 PeerNetAddress::Http(
-                    format!("http://{hostname}:{}", address.port())
+                    format!("{scheme}://{hostname}:{}", address.port())
                         .parse()
                         .expect("valid uri"),
                 )
             }
-            SocketAddress::Uds(path) => {
-                // it's a UDS address, we'll use the path.
-                PeerNetAddress::Uds(path)
-            }
+            // it's a UDS address, we'll use the path.
+            SocketAddress::Uds(path) => PeerNetAddress::Uds(path),
             SocketAddress::Anonymous => {
                 // In case this is an anonymous unix-socket, we'll fallback to a generic
                 // localhost-based address without a port. The assumption is the caller
                 // will proxy their request through the unix-socket and the host+scheme
                 // part of the URI will be ignored by the server.
-                PeerNetAddress::Http("http://localhost".parse().expect("valid uri"))
+                PeerNetAddress::Http(format!("{scheme}://localhost").parse().expect("valid uri"))
             }
         };
 
@@ -742,5 +752,46 @@ mod tests {
         let input = "";
         let result = input.parse::<AdvertisedAddress<FabricPort>>();
         assert!(result.is_err(), "Expected an error for empty input");
+    }
+
+    #[test]
+    fn peer_net_address_is_tls() {
+        // https scheme is TLS
+        let addr: AdvertisedAddress<FabricPort> = "https://10.0.0.1:5122".parse().unwrap();
+        let peer = addr.into_address().unwrap();
+        assert!(peer.is_tls());
+
+        // http scheme is not TLS
+        let addr: AdvertisedAddress<FabricPort> = "http://10.0.0.1:5122".parse().unwrap();
+        let peer = addr.into_address().unwrap();
+        assert!(!peer.is_tls());
+
+        // bare host (defaults to http) is not TLS
+        let addr: AdvertisedAddress<FabricPort> = "10.0.0.1:5122".parse().unwrap();
+        let peer = addr.into_address().unwrap();
+        assert!(!peer.is_tls());
+
+        // UDS is not TLS
+        let addr: AdvertisedAddress<FabricPort> = "unix:/tmp/fabric.sock".parse().unwrap();
+        let peer = addr.into_address().unwrap();
+        assert!(!peer.is_tls());
+    }
+
+    #[test]
+    fn derive_from_bind_address_tls_scheme() {
+        let socket = SocketAddress::Socket("192.168.1.1:5122".parse().unwrap());
+
+        // Without TLS — should produce http://
+        let addr =
+            AdvertisedAddress::<FabricPort>::derive_from_bind_address(socket.clone(), None, false);
+        let peer = addr.into_address().unwrap();
+        assert!(!peer.is_tls());
+        assert!(peer.to_string().starts_with("http://"));
+
+        // With TLS — should produce https://
+        let addr = AdvertisedAddress::<FabricPort>::derive_from_bind_address(socket, None, true);
+        let peer = addr.into_address().unwrap();
+        assert!(peer.is_tls());
+        assert!(peer.to_string().starts_with("https://"));
     }
 }
