@@ -24,7 +24,7 @@ use crate::DbSpec;
 use crate::RawRocksDb;
 use crate::RocksError;
 use crate::configuration::create_default_cf_options;
-use crate::{CfName, RocksDbReadPerfGuard};
+use crate::{BottommostLevelCompaction, CfName, ManualCompactionOptions, RocksDbReadPerfGuard};
 use crate::{DbName, OpenMode};
 
 /// Operations in this wrapper can be IO blocking, prefer using [`crate::RocksDb`]
@@ -309,8 +309,19 @@ impl RocksAccess {
         Ok(self.db.flush_cfs_opt(&cf_refs, &flushopts)?)
     }
 
-    pub fn compact_all(&self) {
-        let opts = CompactOptions::default();
+    pub fn compact_all(&self, options: ManualCompactionOptions) {
+        let mut opts = CompactOptions::default();
+        opts.set_bottommost_level_compaction(match options.bottommost_level_compaction {
+            BottommostLevelCompaction::Skip => rocksdb::BottommostLevelCompaction::Skip,
+            BottommostLevelCompaction::IfHaveCompactionFilter => {
+                rocksdb::BottommostLevelCompaction::IfHaveCompactionFilter
+            }
+            BottommostLevelCompaction::Force => rocksdb::BottommostLevelCompaction::Force,
+            BottommostLevelCompaction::ForceOptimized => {
+                rocksdb::BottommostLevelCompaction::ForceOptimized
+            }
+        });
+        opts.set_change_level(options.recalculate_level);
         self.cfs()
             .iter()
             .filter_map(|name| self.cf_handle(name))

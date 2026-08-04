@@ -12,9 +12,10 @@ use std::cmp::max_by_key;
 
 use anyhow::Context;
 use bytes::BytesMut;
+use tokio::sync::oneshot;
 use tonic::codec::CompressionEncoding;
 use tonic::{Request, Response, Status};
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 use restate_metadata_server_grpc::grpc::new_metadata_server_client;
 use restate_metadata_store::protobuf::metadata_proxy_svc::metadata_proxy_svc_server::{
@@ -33,7 +34,7 @@ use restate_core::protobuf::node_ctl_svc::{
     ProvisionClusterResponse, TriggerCompactionRequest, TriggerCompactionResponse,
     cluster_features_from_proto,
 };
-use restate_core::{Identification, MetadataWriter};
+use restate_core::{Identification, MetadataWriter, TaskCenter, TaskKind};
 use restate_core::{Metadata, MetadataKind};
 use restate_metadata_store::{MetadataStoreClient, ReadError, WriteError};
 use restate_rocksdb::RocksDbManager;
@@ -46,6 +47,7 @@ use restate_types::nodes_config::{ClusterFeature, Role};
 use restate_types::protobuf::cluster::ClusterConfiguration as ProtoClusterConfiguration;
 use restate_types::protobuf::common::DatabaseKind;
 use restate_types::replication::ReplicationProperty;
+use restate_types::rocksdb::ManualCompactionOptions;
 use restate_types::storage::StorageCodec;
 
 use crate::{ClusterConfiguration, provision_cluster_metadata};
@@ -276,54 +278,87 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
     ) -> Result<Response<TriggerCompactionResponse>, Status> {
         let request = request.into_inner();
 
-        // An empty databases list means compact all; otherwise filter to the requested kinds,
-        // ignoring any unspecified/unknown values.
         let compact_all = request.databases.is_empty();
         let requested_kinds: Vec<DatabaseKind> = request
             .databases
             .into_iter()
-            .filter_map(|k| DatabaseKind::try_from(k).ok())
-            .filter(|k| *k != DatabaseKind::Unspecified)
-            .collect();
+            .map(|raw| {
+                let kind = DatabaseKind::try_from(raw).map_err(|_| {
+                    Status::invalid_argument(format!("unknown database kind id {raw}"))
+                })?;
+                if kind == DatabaseKind::Unspecified {
+                    return Err(Status::invalid_argument(
+                        "database kind 'unspecified' is not a valid selection",
+                    ));
+                }
+                Ok(kind)
+            })
+            .collect::<Result<_, _>>()?;
+        let options: ManualCompactionOptions = request
+            .options
+            .map(TryInto::try_into)
+            .transpose()
+            .map_err(|err: anyhow::Error| Status::invalid_argument(err.to_string()))?
+            .unwrap_or_default();
 
         let Some(manager) = RocksDbManager::maybe_get() else {
             return Err(Status::unavailable("RocksDB manager not initialized"));
         };
 
         let all_dbs = manager.get_all_dbs();
-        let mut results = Vec::new();
+        let (result_tx, result_rx) = oneshot::channel();
+        TaskCenter::spawn(
+            TaskKind::Disposable,
+            "manual-rocksdb-compaction",
+            async move {
+                let mut results = Vec::new();
 
-        // Compactions run sequentially to avoid overwhelming the system with
-        // concurrent I/O from multiple databases.
-        for db in all_dbs {
-            let db_name = db.name().to_string();
-            let kind = db.kind();
+                // Compact sequentially to limit the I/O pressure on each node.
+                for db in all_dbs {
+                    let db_name = db.name().to_string();
+                    let kind = db.kind();
+                    let should_compact = compact_all
+                        || (kind != DatabaseKind::Unspecified
+                            && requested_kinds.contains(&kind));
 
-            let should_compact = compact_all
-                || (kind != DatabaseKind::Unspecified && requested_kinds.contains(&kind));
+                    if !should_compact {
+                        continue;
+                    }
 
-            if !should_compact {
-                continue;
-            }
+                    info!(db = %db_name, "Starting manual RocksDB compaction");
+                    let cf_count = db.cfs().len() as u32;
+                    match db.compact_all(options).await {
+                        Ok(()) => {
+                            info!(db = %db_name, "Manual RocksDB compaction task completed");
+                            results.push(DatabaseCompactionResult {
+                                db_name,
+                                success: true,
+                                error: None,
+                                column_families_compacted: cf_count,
+                            });
+                        }
+                        Err(e) => {
+                            warn!(db = %db_name, error = %e, "Manual RocksDB compaction task failed");
+                            results.push(DatabaseCompactionResult {
+                                db_name,
+                                success: false,
+                                error: Some(e.to_string()),
+                                column_families_compacted: 0,
+                            });
+                        }
+                    }
+                }
 
-            let cf_count = db.cfs().len() as u32;
-            match db.compact_all().await {
-                Ok(()) => results.push(DatabaseCompactionResult {
-                    db_name,
-                    success: true,
-                    error: None,
-                    column_families_compacted: cf_count,
-                }),
-                Err(e) => results.push(DatabaseCompactionResult {
-                    db_name,
-                    success: false,
-                    error: Some(e.to_string()),
-                    column_families_compacted: 0,
-                }),
-            }
-        }
+                let _ = result_tx.send(TriggerCompactionResponse { results });
+                Ok(())
+            },
+        )
+        .map_err(|_| Status::unavailable("node is shutting down"))?;
 
-        Ok(Response::new(TriggerCompactionResponse { results }))
+        result_rx
+            .await
+            .map(Response::new)
+            .map_err(|_| Status::unavailable("compaction task was aborted"))
     }
 }
 

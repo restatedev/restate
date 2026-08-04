@@ -129,10 +129,24 @@ message EmbeddedMetadataClusterHealth {
 
 message TriggerCompactionRequest {
   repeated restate.common.DatabaseKind databases = 1;
+  ManualCompactionOptions options = 2;
 }
 
 message TriggerCompactionResponse {
   repeated DatabaseCompactionResult results = 1;
+}
+
+enum BottommostLevelCompaction {
+  BOTTOMMOST_LEVEL_COMPACTION_UNSPECIFIED = 0;
+  BOTTOMMOST_LEVEL_COMPACTION_SKIP = 1;
+  BOTTOMMOST_LEVEL_COMPACTION_IF_HAVE_COMPACTION_FILTER = 2;
+  BOTTOMMOST_LEVEL_COMPACTION_FORCE = 3;
+  BOTTOMMOST_LEVEL_COMPACTION_FORCE_OPTIMIZED = 4;
+}
+
+message ManualCompactionOptions {
+  BottommostLevelCompaction bottommost_level_compaction = 1;
+  bool recalculate_level = 2;
 }
 
 message DatabaseCompactionResult {
