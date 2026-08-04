@@ -12,21 +12,29 @@ use anyhow::Context;
 use cling::prelude::*;
 use tracing::error;
 
-use super::{signal_sync_epoch_metadata, update_epoch_metadata};
+use restate_cli_util::c_println;
+use restate_types::epoch::EpochMetadata;
+use restate_types::identifiers::PartitionId;
+use restate_types::partitions::placement_policy::PlacementFreeze;
+
 use crate::connection::ConnectionInfo;
 use crate::util::RangeParam;
-use restate_cli_util::c_println;
-use restate_types::identifiers::PartitionId;
+
+use super::super::epoch_metadata::{signal_sync_epoch_metadata, update_epoch_metadata};
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
-#[cling(run = "unfreeze_election")]
-pub struct UnfreezeOpts {
-    /// The partition id or range, e.g. "0", "1-4"
+#[cling(run = "freeze_placement")]
+pub struct FreezeOpts {
+    /// Partition id or range, e.g. "0", "1-4"
     #[arg(required = true)]
     partition_id: Vec<RangeParam<u16>>,
+
+    /// Reason for freezing automatic placement
+    #[arg(long, required = true)]
+    reason: String,
 }
 
-async fn unfreeze_election(connection: &ConnectionInfo, opts: &UnfreezeOpts) -> anyhow::Result<()> {
+async fn freeze_placement(connection: &ConnectionInfo, opts: &FreezeOpts) -> anyhow::Result<()> {
     let partition_table = connection.get_partition_table().await?;
     let mut updated = Vec::new();
 
@@ -38,16 +46,11 @@ async fn unfreeze_election(connection: &ConnectionInfo, opts: &UnfreezeOpts) -> 
         }
 
         update_epoch_metadata(connection, partition_id, |epoch_metadata| {
-            let epoch_metadata = epoch_metadata
-                .context(format!("partition {partition_id} has not been created yet"))?;
-            let mut policy = epoch_metadata.leadership_policy().clone();
-            policy.freeze = None;
-            Ok(epoch_metadata.set_leadership_policy(policy))
+            apply_freeze(epoch_metadata, opts.reason.clone(), partition_id)
         })
         .await?;
         updated.push(partition_id);
-
-        c_println!("Unfroze leader election for partition {partition_id}.");
+        c_println!("Froze automatic placement for partition {partition_id}.");
     }
 
     if !updated.is_empty() {
@@ -55,4 +58,17 @@ async fn unfreeze_election(connection: &ConnectionInfo, opts: &UnfreezeOpts) -> 
     }
 
     Ok(())
+}
+
+fn apply_freeze(
+    epoch_metadata: Option<EpochMetadata>,
+    reason: String,
+    partition_id: PartitionId,
+) -> anyhow::Result<EpochMetadata> {
+    let epoch_metadata =
+        epoch_metadata.context(format!("partition {partition_id} has not been created yet"))?;
+
+    let mut policy = epoch_metadata.placement_policy().clone();
+    policy.freeze = Some(PlacementFreeze { reason });
+    Ok(epoch_metadata.set_placement_policy(policy))
 }

@@ -8,38 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use cling::prelude::*;
 use tracing::error;
 
-use restate_cli_util::c_println;
-use restate_types::PlainNodeId;
-use restate_types::identifiers::PartitionId;
-use restate_types::partitions::leadership_policy::LeaderAffinity;
-
+use super::super::epoch_metadata::{signal_sync_epoch_metadata, update_epoch_metadata};
 use crate::connection::ConnectionInfo;
 use crate::util::RangeParam;
-
-use super::{signal_sync_epoch_metadata, update_epoch_metadata};
+use restate_cli_util::c_println;
+use restate_types::identifiers::PartitionId;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
-#[cling(run = "pin_leader")]
-pub struct PinOpts {
+#[cling(run = "unpin_leader")]
+pub struct UnpinOpts {
     /// The partition id or range, e.g. "0", "1-4"
     #[arg(required = true)]
     partition_id: Vec<RangeParam<u16>>,
-
-    /// Pin leadership to this node (e.g. 2)
-    #[arg(long, required = true)]
-    node: PlainNodeId,
 }
 
-async fn pin_leader(connection: &ConnectionInfo, opts: &PinOpts) -> anyhow::Result<()> {
-    let nodes_configuration = connection.get_nodes_configuration().await?;
-    nodes_configuration
-        .find_node_by_id(opts.node)
-        .map_err(|_| anyhow!("Node {} is not part of the cluster.", opts.node))?;
-
+async fn unpin_leader(connection: &ConnectionInfo, opts: &UnpinOpts) -> anyhow::Result<()> {
     let partition_table = connection.get_partition_table().await?;
     let mut updated = Vec::new();
 
@@ -54,14 +41,13 @@ async fn pin_leader(connection: &ConnectionInfo, opts: &PinOpts) -> anyhow::Resu
             let epoch_metadata = epoch_metadata
                 .context(format!("partition {partition_id} has not been created yet"))?;
             let mut policy = epoch_metadata.leadership_policy().clone();
-            policy.affinity = Some(LeaderAffinity::Node(opts.node));
+            policy.affinity = None;
             Ok(epoch_metadata.set_leadership_policy(policy))
         })
         .await?;
         updated.push(partition_id);
 
-        let node_id = u32::from(opts.node);
-        c_println!("Pinned partition {partition_id} leader to node N{node_id}.");
+        c_println!("Unpinned leader for partition {partition_id}.");
     }
 
     if !updated.is_empty() {

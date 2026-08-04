@@ -8,15 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod freeze;
-mod pin;
-mod show;
-mod unfreeze;
-mod unpin;
-
-use anyhow::bail;
-use cling::prelude::*;
-
 use restate_cli_util::CliContext;
 use restate_core::protobuf::cluster_ctrl_svc::{SyncEpochMetadataRequest, new_cluster_ctrl_client};
 use restate_metadata_store::MetadataStoreClient;
@@ -33,24 +24,10 @@ use restate_types::storage::StorageCodec;
 
 use crate::connection::ConnectionInfo;
 
-#[derive(Run, Subcommand, Clone)]
-pub enum Leader {
-    /// Pin partition leader to a specific node
-    Pin(pin::PinOpts),
-    /// Unpin partition leader (clear node preference)
-    Unpin(unpin::UnpinOpts),
-    /// Freeze leader election for partitions
-    Freeze(freeze::FreezeOpts),
-    /// Unfreeze leader election for partitions
-    Unfreeze(unfreeze::UnfreezeOpts),
-    /// Show the leadership policy for partitions
-    Show(show::ShowOpts),
-}
-
 pub(super) async fn read_epoch_metadata(
     connection: &ConnectionInfo,
     partition_id: PartitionId,
-) -> anyhow::Result<EpochMetadata> {
+) -> anyhow::Result<Option<EpochMetadata>> {
     let get_request = GetRequest {
         key: partition_processor_epoch_key(partition_id).to_string(),
     };
@@ -64,10 +41,11 @@ pub(super) async fn read_epoch_metadata(
         .await?
         .into_inner();
 
-    match get_response.value {
-        Some(mut value) => Ok(StorageCodec::decode::<EpochMetadata, _>(&mut value.bytes)?),
-        None => bail!("Partition {partition_id} has no epoch metadata"),
-    }
+    get_response
+        .value
+        .map(|mut value| StorageCodec::decode::<EpochMetadata, _>(&mut value.bytes))
+        .transpose()
+        .map_err(Into::into)
 }
 
 pub(super) async fn update_epoch_metadata<F>(
