@@ -40,7 +40,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use futures::{FutureExt, StreamExt};
-use metrics::histogram;
+use metrics::{counter, histogram};
 use tokio::sync::watch;
 use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{debug, error, info, instrument, trace, warn};
@@ -98,7 +98,7 @@ use self::processor::*;
 use self::state_machine::StateMachine;
 use crate::metric_definitions::{
     LEADER_LABEL, LEADER_LABEL_FOLLOWER, LEADER_LABEL_LEADER, PARTITION_APPLY_COMMAND,
-    PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
+    PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, PARTITION_RPC_QUEUE_LATENCY_EXCEEDED,
 };
 use crate::partition::leadership::LeadershipState;
 use crate::partition::processor::leadership::LeadershipContext;
@@ -112,6 +112,8 @@ pub struct LeadershipInfo {
     pub current_config: CurrentReplicaSetConfiguration,
     pub next_config: Option<NextReplicaSetConfiguration>,
 }
+
+const HIGH_RPC_QUEUE_LATENCY_THRESHOLD: Duration = Duration::from_secs(10);
 
 impl From<EpochMetadata> for LeadershipInfo {
     fn from(value: EpochMetadata) -> Self {
@@ -767,9 +769,15 @@ where
     ) {
         match msg {
             ServiceMessage::Rpc(msg) if msg.msg_type() == PartitionProcessorRpcRequest::TYPE => {
+                let dequeued_at = MillisSinceEpoch::now();
                 let msg = msg.into_typed::<PartitionProcessorRpcRequest>();
                 // note: split() decodes the payload
                 let (response_tx, body) = msg.split();
+                if body.sent_at.is_some_and(|sent_at| {
+                    dequeued_at.duration_since(sent_at) > HIGH_RPC_QUEUE_LATENCY_THRESHOLD
+                }) {
+                    counter!(PARTITION_RPC_QUEUE_LATENCY_EXCEEDED).increment(1);
+                }
                 self.on_pp_rpc_request(response_tx, body, schemas, permit)
                     .await;
             }

@@ -58,6 +58,10 @@ pub const PARTITION_IS_EFFECTIVE_LEADER: &str = "restate.partition.is_effective_
 
 pub const PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS: &str =
     "restate.partition.record_committed_to_read_latency.seconds";
+pub const PARTITION_RPC_HIGH_QUEUE_LATENCY_DETECTED: &str =
+    "restate.partition.high_queue_latency_detected.total";
+pub const PARTITION_SLOW_PARTITION_LOOP_DETECTED: &str =
+    "restate.partition.slow_partition_loop_detected.total";
 
 pub const PARTITION_SHUFFLE_MESSAGE_COUNT: &str = "restate.partition.shuffle.message.total";
 pub const PARTITION_SHUFFLE_INFLIGHT_RECORDS: &str = "restate.partition.shuffle.inflight";
@@ -107,6 +111,12 @@ pub(crate) fn describe_metrics() {
         PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
         Unit::Seconds,
         "Duration between the record commit time to read time"
+    );
+
+    describe_counter!(
+        PARTITION_RPC_HIGH_QUEUE_LATENCY_DETECTED,
+        Unit::Count,
+        "Number of partition processor RPCs that has been queued for too long"
     );
 
     describe_gauge!(
