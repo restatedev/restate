@@ -13,6 +13,7 @@
 use crate::identifiers::{LeaderEpoch, PartitionId};
 use crate::partitions::PartitionConfiguration;
 use crate::partitions::leadership_policy::LeadershipPolicy;
+use crate::partitions::placement_policy::PlacementPolicy;
 use crate::{GenerationalNodeId, Version, Versioned, flexbuffers_storage_encode_decode};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -27,6 +28,10 @@ pub struct EpochMetadata {
     /// Since v1.7.0
     #[serde(default, skip_serializing_if = "LeadershipPolicy::is_default")]
     leadership_policy: LeadershipPolicy,
+    /// Policy controlling automatic placement for this partition.
+    /// Since v1.7.3
+    #[serde(default, skip_serializing_if = "PlacementPolicy::is_default")]
+    placement_policy: PlacementPolicy,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -50,6 +55,7 @@ impl EpochMetadata {
             next,
             epoch: LeaderEpoch::INITIAL,
             leadership_policy: LeadershipPolicy::default(),
+            placement_policy: PlacementPolicy::default(),
         }
     }
 
@@ -61,6 +67,7 @@ impl EpochMetadata {
         PartitionConfiguration,
         Option<PartitionConfiguration>,
         LeadershipPolicy,
+        PlacementPolicy,
     ) {
         (
             self.version,
@@ -68,6 +75,7 @@ impl EpochMetadata {
             self.current,
             self.next,
             self.leadership_policy,
+            self.placement_policy,
         )
     }
 
@@ -112,6 +120,7 @@ impl EpochMetadata {
             next: self.next,
             epoch: self.epoch,
             leadership_policy: self.leadership_policy,
+            placement_policy: self.placement_policy,
         }
     }
 
@@ -165,6 +174,22 @@ impl EpochMetadata {
             ..self
         }
     }
+
+    /// Returns the placement policy for this partition.
+    /// Since v1.7.3
+    pub fn placement_policy(&self) -> &PlacementPolicy {
+        &self.placement_policy
+    }
+
+    /// Sets the placement policy for this partition.
+    /// Since v1.7.3
+    pub fn set_placement_policy(self, policy: PlacementPolicy) -> Self {
+        Self {
+            version: self.version.next(),
+            placement_policy: policy,
+            ..self
+        }
+    }
 }
 
 flexbuffers_storage_encode_decode!(EpochMetadata);
@@ -175,6 +200,7 @@ mod compatibility {
     use crate::identifiers::LeaderEpoch;
     use crate::partitions::PartitionConfiguration;
     use crate::partitions::leadership_policy::LeadershipPolicy;
+    use crate::partitions::placement_policy::PlacementPolicy;
 
     #[derive(Debug, serde::Deserialize)]
     pub struct EpochMetadataShadow {
@@ -189,6 +215,9 @@ mod compatibility {
 
         // added in v1.7.0
         leadership_policy: Option<LeadershipPolicy>,
+
+        // added in v1.7.3
+        placement_policy: Option<PlacementPolicy>,
     }
 
     impl From<EpochMetadataShadow> for EpochMetadata {
@@ -205,6 +234,7 @@ mod compatibility {
                 current: value.current.unwrap_or_default(),
                 next: value.next,
                 leadership_policy: value.leadership_policy.unwrap_or_default(),
+                placement_policy: value.placement_policy.unwrap_or_default(),
             }
         }
     }
@@ -212,14 +242,17 @@ mod compatibility {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use bytes::BytesMut;
+
     use crate::GenerationalNodeId;
     use crate::epoch::{EpochMetadata, PartitionConfiguration};
     use crate::identifiers::{LeaderEpoch, PartitionId};
+    use crate::partitions::placement_policy::{PlacementFreeze, PlacementPolicy};
     use crate::replication::ReplicationProperty;
     use crate::storage::StorageCodec;
     use crate::version::Versioned;
-    use bytes::BytesMut;
-    use std::collections::HashMap;
 
     #[test]
     fn basic_operations() {
@@ -271,5 +304,42 @@ mod tests {
             deserialized_epoch_metadata.version()
         );
         assert_eq!(epoch_metadata.epoch(), deserialized_epoch_metadata.epoch());
+    }
+
+    #[test]
+    fn placement_policy_survives_epoch_transitions_and_serialization() {
+        let node_id = GenerationalNodeId::new(1, 1);
+        let other_node_id = GenerationalNodeId::new(2, 1);
+        let configuration = |node_id: GenerationalNodeId| {
+            PartitionConfiguration::new(
+                ReplicationProperty::new_unchecked(1),
+                [node_id.as_plain()].into_iter().collect(),
+                HashMap::default(),
+            )
+        };
+        let policy = PlacementPolicy {
+            freeze: Some(PlacementFreeze {
+                reason: "maintenance".to_owned(),
+            }),
+        };
+
+        let epoch_metadata = EpochMetadata::new(configuration(node_id), None)
+            .set_placement_policy(policy.clone())
+            .reconfigure(configuration(other_node_id))
+            .complete_reconfiguration()
+            .claim_leadership(other_node_id, PartitionId::MIN);
+
+        assert_eq!(epoch_metadata.placement_policy(), &policy);
+
+        let mut buffer = BytesMut::default();
+        StorageCodec::encode(&epoch_metadata, &mut buffer).unwrap();
+        let decoded = StorageCodec::decode::<EpochMetadata, _>(&mut buffer).unwrap();
+
+        assert_eq!(decoded.placement_policy(), &policy);
+        assert_eq!(
+            decoded.current().replica_set(),
+            epoch_metadata.current().replica_set()
+        );
+        assert!(decoded.next().is_none());
     }
 }

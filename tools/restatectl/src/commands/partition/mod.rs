@@ -8,10 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod epoch_metadata;
 mod gen_metadata;
-mod leader;
+mod leadership;
 pub mod list;
-mod reconfigure;
+mod placement;
 
 use cling::prelude::*;
 
@@ -22,9 +23,10 @@ pub enum Partitions {
     List(list::ListPartitionsOpts),
     /// Prints a generated partition table in JSON format
     GenerateMetadata(gen_metadata::GeneratePartitionTableOpts),
-    /// Reconfigures the processors of the specified partition
-    Reconfigure(reconfigure::ReconfigureOpts),
-    /// Control leader election policy for partitions
+    /// Control partition processor placement
     #[clap(subcommand)]
-    Leader(leader::Leader),
+    Placement(placement::Placement),
+    /// Control partition leadership
+    #[clap(subcommand)]
+    Leadership(leadership::Leadership),
 }
