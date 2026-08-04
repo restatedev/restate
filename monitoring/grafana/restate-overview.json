@@ -261,7 +261,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(restate_partition_is_effective_leader{cluster_name=\"$cluster\", node_name=~\"$node\"}) / max(restate_num_partitions{cluster_name=\"$cluster\", node_name=~\"$node\"})",
+          "expr": "sum(restate_num_active_partition_leaders{cluster_name=\"$cluster\", node_name=~\"$node\"}) / max(restate_num_partitions{cluster_name=\"$cluster\", node_name=~\"$node\"})",
           "legendFormat": "Leaders",
           "refId": "A"
         }
@@ -713,7 +713,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (node_name) (restate_partition_is_effective_leader{cluster_name=\"$cluster\", node_name=~\"$node\"})",
+          "expr": "sum by (node_name) (restate_num_active_partition_leaders{cluster_name=\"$cluster\", node_name=~\"$node\"})",
           "legendFormat": "{{node_name}}",
           "refId": "A"
         }
@@ -778,7 +778,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (node_name) (restate_num_active_partitions{cluster_name=\"$cluster\", node_name=~\"$node\"}) - sum by (node_name) (restate_partition_is_effective_leader{cluster_name=\"$cluster\", node_name=~\"$node\"})",
+          "expr": "sum by (node_name) (restate_num_active_partitions{cluster_name=\"$cluster\", node_name=~\"$node\"}) - sum by (node_name) (restate_num_active_partition_leaders{cluster_name=\"$cluster\", node_name=~\"$node\"})",
           "legendFormat": "{{node_name}}",
           "refId": "A"
         }
@@ -924,7 +924,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(restate_partition_is_effective_leader{cluster_name=\"$cluster\", node_name=~\"$node\"})",
+          "expr": "sum(restate_num_active_partition_leaders{cluster_name=\"$cluster\", node_name=~\"$node\"})",
           "legendFormat": "leaders",
           "refId": "A"
         },
@@ -933,7 +933,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(restate_num_active_partitions{cluster_name=\"$cluster\", node_name=~\"$node\"}) - sum(restate_partition_is_effective_leader{cluster_name=\"$cluster\", node_name=~\"$node\"})",
+          "expr": "sum(restate_num_active_partitions{cluster_name=\"$cluster\", node_name=~\"$node\"}) - sum(restate_num_active_partition_leaders{cluster_name=\"$cluster\", node_name=~\"$node\"})",
           "legendFormat": "followers",
           "refId": "B"
         },
