@@ -146,16 +146,14 @@ pub fn spawn_reloader(
                     _ = &mut cancelled => return Ok(()),
                     _ = ticker.tick() => {}
                 }
-                match build_server_config(&opts) {
-                    Ok(new_server) => {
-                        server_config.store(Arc::new(new_server));
-                        info!("Fabric TLS server certificates reloaded");
-                    }
+                let new_server = match build_server_config(&opts) {
+                    Ok(new_server) => new_server,
                     Err(e) => {
                         warn!("Failed to reload fabric TLS server certificates: {e}");
+                        continue;
                     }
-                }
-                match build_client_config(
+                };
+                let new_client = match build_client_config(
                     Some(ClientIdentityFiles {
                         cert_file: &opts.cert_file,
                         key_file: &opts.key_file,
@@ -163,14 +161,16 @@ pub fn spawn_reloader(
                     &opts.ca_files,
                     &opts.allowed_subject_names,
                 ) {
-                    Ok(new_client) => {
-                        client_config.store(Arc::new(new_client));
-                        info!("Fabric TLS client certificates reloaded");
-                    }
+                    Ok(new_client) => new_client,
                     Err(e) => {
                         warn!("Failed to reload fabric TLS client certificates: {e}");
+                        continue;
                     }
-                }
+                };
+
+                server_config.store(Arc::new(new_server));
+                client_config.store(Arc::new(new_client));
+                info!("Fabric TLS server and client certificates reloaded");
             }
         },
     )
