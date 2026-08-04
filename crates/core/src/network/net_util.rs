@@ -327,6 +327,11 @@ where
     let mut shutdown = std::pin::pin!(cancellation_watcher());
     let graceful_shutdown = GracefulShutdown::new();
     let task_name: Arc<str> = Arc::from(format!("{server_name}-socket"));
+    let tls_mode = if P::SUPPORTS_TLS {
+        Configuration::pinned().common.fabric_tls_mode()
+    } else {
+        TlsMode::Off
+    };
 
     loop {
         tokio::select! {
@@ -357,11 +362,6 @@ where
                         let tls = tls.clone();
                         let service = service.clone();
                         let graceful_shutdown = graceful_shutdown.watcher();
-                        let tls_mode = if P::SUPPORTS_TLS {
-                            config.common.fabric_tls_mode()
-                        } else {
-                            TlsMode::Off
-                        };
 
                         TaskCenter::spawn(TaskKind::SocketHandler, task_name.clone(), async move {
                             let negotiated = tokio::time::timeout(
@@ -468,6 +468,8 @@ async fn serve_connection(
         if let Some(hyper_error) = e.downcast_ref::<hyper::Error>() {
             if hyper_error.is_incomplete_message() {
                 debug!("Connection closed before request completed");
+            } else {
+                debug!("Connection error: {hyper_error}")
             }
         } else {
             debug!("Connection terminated due to error: {e}");

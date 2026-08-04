@@ -227,7 +227,7 @@ impl Node {
                 )?;
                 // register process-wide so channels created via create_tonic_channel
                 // (metadata-store, raft, control) can dial https:// fabric peers
-                client_config.set_global();
+                assert!(client_config.set_global());
                 Ok(server_config)
             })
             .transpose()
