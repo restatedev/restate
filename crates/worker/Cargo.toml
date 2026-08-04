@@ -46,6 +46,7 @@ restate-storage-query-datafusion = { workspace = true }
 restate-util-time = { workspace = true }
 restate-timer = { workspace = true }
 restate-tracing-instrumentation = { workspace = true }
+restate-tracing = { workspace = true }
 restate-types = { workspace = true }
 restate-util-string = { workspace = true }
 restate-vqueues = { workspace = true }

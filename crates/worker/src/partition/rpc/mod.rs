@@ -119,6 +119,7 @@ where
         PartitionProcessorRpcRequest {
             request_id,
             partition_id: _,
+            sent_at: _,
             inner,
         }: PartitionProcessorRpcRequest,
     ) -> Decision {
