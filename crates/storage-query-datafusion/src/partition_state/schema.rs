@@ -45,7 +45,7 @@ define_table!(
         /// Last record applied at
         last_record_applied_at: TimestampMillisecond,
 
-        /// Replay status
+        /// Replay status. NULL if the processor is broken, since it is not replaying
         replay_status: DataType::Utf8,
 
         /// Durable log LSN
@@ -70,5 +70,9 @@ define_table!(
         /// Partition-store on-disk storage version (StorageVersion discriminant).
         /// Set once on partition open.
         storage_version: DataType::UInt32,
+
+        /// Why the node gave up on running this partition processor, if it did.
+        /// NULL while the processor is healthy.
+        broken_reason: DataType::Utf8,
     )
 );
