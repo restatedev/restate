@@ -39,6 +39,7 @@ use restate_types::net::partition_processor::{
     PartitionProcessorRpcRequest, PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
 };
 use restate_types::partition_table::{FindPartition, PartitionTable, PartitionTableError};
+use restate_types::time::MillisSinceEpoch;
 
 use crate::metric_definitions::{
     INVOCATION_CLIENT_REQUESTS, STATUS_COMPLETED, STATUS_INTERNAL_ERROR, STATUS_OVERLOADED_ERROR,
@@ -320,6 +321,7 @@ where
                 PartitionProcessorRpcRequest {
                     request_id,
                     partition_id,
+                    sent_at: Some(MillisSinceEpoch::now()),
                     inner: inner_request,
                 },
                 Some(*partition_id as u64),
