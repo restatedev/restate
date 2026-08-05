@@ -164,6 +164,9 @@ message SealChainRequest {
   // if not set.
   optional uint32 segment_index = 2;
   map<string, string> context = 3;
+  // forces the tail LSN to this value. This is extremely dangerous and should be
+  // used with extreme caution. If not set, the tail LSN is safely determined automatically.
+  optional uint64 tail_lsn = 4;
   // todo: option for permanently sealing the chain when this is fully supported
 }
 

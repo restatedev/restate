@@ -23,7 +23,7 @@ use futures::{FutureExt, StreamExt, stream};
 use itertools::Itertools;
 use metrics::counter;
 use tokio_stream::wrappers::{ReceiverStream, WatchStream};
-use tracing::{debug, error, trace};
+use tracing::{debug, trace};
 
 use restate_bifrost::CommitToken;
 use restate_core::network::{Oneshot, Reciprocal};
@@ -243,13 +243,8 @@ impl LeaderState {
         // todo(asoli): consider adding the scheduler pick_next() directly to the tokio::select!
         // if we have problems with latency
         let scheduler_stream = std::pin::pin!(stream::unfold(scheduler, |scheduler| async {
-            match scheduler.schedule_next(vqueue_metas).await {
-                Ok(decisions) => Some((LeaderEvent::Scheduler(decisions), scheduler)),
-                Err(e) => {
-                    error!("Fatal error when polling scheduler: {e}");
-                    None
-                }
-            }
+            let result = scheduler.schedule_next(vqueue_metas).await;
+            Some((LeaderEvent::Scheduler(result), scheduler))
         }));
 
         let schema_stream = schema_stream.filter_map(|_| {
@@ -592,7 +587,7 @@ trait LeaderEventHandler {
 
 fn handle_event(event: LeaderEvent, state: &mut LeaderEventHandlerState<'_>) -> Result<(), Error> {
     match event {
-        LeaderEvent::Scheduler(event) => event.handle(state),
+        LeaderEvent::Scheduler(event) => event?.handle(state),
         LeaderEvent::PartitionMaintenance(event) => event.handle(state),
         LeaderEvent::Invoker(event) => event.handle(state),
         LeaderEvent::Shuffle(event) => event.handle(state),

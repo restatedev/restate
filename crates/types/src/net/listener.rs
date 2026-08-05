@@ -21,7 +21,7 @@ use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 use tokio_util::either::Either;
 use tracing::{debug, info};
 
-use crate::config::{Configuration, ListenerOptions};
+use crate::config::{Configuration, ListenerOptions, TlsMode};
 use crate::nodes_config::Role;
 
 use super::address::{AdvertisedAddress, BindAddress, ListenerPort, SocketAddress};
@@ -53,6 +53,10 @@ pub struct AddressBook {
     data_dir: PathBuf,
     bound_addr: HashMap<std::any::TypeId, AddressesErased, BuildHasherDefault<IdHasher>>,
     listeners: HashMap<std::any::TypeId, ListenersErased, BuildHasherDefault<IdHasher>>,
+    /// Whether the fabric port is served with TLS ([`tls`] is configured).
+    /// Captured at bind time so advertised fabric addresses carry
+    /// the `https://` scheme without every caller threading the flag through.
+    fabric_tls_mode: TlsMode,
 }
 
 impl AddressBook {
@@ -61,6 +65,7 @@ impl AddressBook {
             data_dir,
             listeners: HashMap::with_hasher(BuildHasherDefault::new()),
             bound_addr: HashMap::with_hasher(BuildHasherDefault::new()),
+            fabric_tls_mode: TlsMode::Off,
         }
     }
 
@@ -104,6 +109,7 @@ impl AddressBook {
         // Message Fabric
         self.bind(config.common.fabric_listener_options(), &mut listenfd)
             .await?;
+        self.fabric_tls_mode = config.common.fabric_tls_mode();
         // todo: add NodeCtl port
 
         Ok(())
@@ -272,20 +278,25 @@ impl AddressBook {
         &self,
         advertised_host: Option<&str>,
     ) -> AdvertisedAddress<P> {
+        // TLS is only supported for fabric port. Other listeners (admin, ingress, etc.) only support plaintext.
+        // The server should only advertise its TLS address.
+        let advertise_tls = self.fabric_tls_mode.advertises_tls() && P::SUPPORTS_TLS;
         let Some(addresses) = self.bound_addr.get(&std::any::TypeId::of::<P>()) else {
-            // If we don't bind this address, we return a reasonable default.
             return AdvertisedAddress::default();
         };
-        // prefer TCP if available
         if let Some(tcp_address) = addresses.tcp_bind_address {
             AdvertisedAddress::derive_from_bind_address(
                 SocketAddress::Socket(tcp_address),
                 advertised_host,
+                advertise_tls,
             )
         } else if let Some(uds_path) = &addresses.uds_path {
-            AdvertisedAddress::derive_from_bind_address(SocketAddress::Uds(uds_path.clone()), None)
+            AdvertisedAddress::derive_from_bind_address(
+                SocketAddress::Uds(uds_path.clone()),
+                None,
+                false, // No Tls for unix sockets
+            )
         } else {
-            // We can't guess, so we'll return a reasonable default.
             AdvertisedAddress::default()
         }
     }

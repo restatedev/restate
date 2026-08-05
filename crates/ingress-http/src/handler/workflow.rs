@@ -11,7 +11,7 @@
 use bytes::Bytes;
 use http::{Method, Request, Response};
 use http_body_util::Full;
-use tracing::{info, warn};
+use tracing::{trace, warn};
 
 use restate_types::errors::GenericError;
 use restate_types::identifiers::ServiceId;
@@ -65,7 +65,7 @@ where
             return Err(HandlerError::MethodNotAllowed);
         }
 
-        info!(
+        trace!(
             restate.workflow.id = %workflow_id,
             "Processing workflow attach request"
         );

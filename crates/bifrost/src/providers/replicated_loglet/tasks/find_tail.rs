@@ -339,12 +339,17 @@ impl<T: TransportConnect> FindTailTask<T> {
                             .expect("at least one node is known and sealed");
                         let current_known_global = self.known_global_tail.latest_offset();
                         if max_local_tail < current_known_global {
-                            // what? Something went seriously wrong. This indicates that we somehow
+                            // what? Something went wrong. This indicates that we somehow
                             // have previously determined that global tail is higher than the max
-                            // observed local tail on f-majority of nodes.
-                            panic!(
-                                "max_local_tail={max_local_tail} is less than known_global_tail={current_known_global}"
+                            // observed local tail on f-majority of nodes. This can happen if by the
+                            // time we have collected the local tails, we updated our world view of
+                            // the global tail and those local tails are not old. The hope here is
+                            // that if we started a new round of GetLogletInfo, we would see the new
+                            // local tails and we can converge.
+                            debug!(
+                                "max_local_tail={max_local_tail} is less than known_global_tail={current_known_global}, restarting find-tail procedure!"
                             );
+                            continue 'find_tail;
                         } else if max_local_tail == current_known_global ||
                         // max_local_tail > known_global_tail
                         // Does a write-quorum check pass for this tail? In other words, do we have

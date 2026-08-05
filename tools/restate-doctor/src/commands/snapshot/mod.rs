@@ -190,6 +190,11 @@ impl MetadataStore for OfflineMetadataStore {
 }
 
 pub async fn run_snapshot(args: &SnapshotArgs) -> anyhow::Result<()> {
+    // boxed to keep the cling-generated future below clippy::large_futures
+    Box::pin(run_snapshot_inner(args)).await
+}
+
+async fn run_snapshot_inner(args: &SnapshotArgs) -> anyhow::Result<()> {
     let repository_url =
         Url::parse(&args.repository).context("failed to parse the snapshot repository URL")?;
     let object_store_options = args.object_store_options();

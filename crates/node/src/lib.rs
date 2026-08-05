@@ -202,6 +202,38 @@ impl Node {
             )));
         };
 
+        // Initialize fabric TLS if configured. This must happen before any
+        // channel to a fabric peer is created (including the metadata-store
+        // client below, which eagerly builds its initial channels): channels
+        // pick up the identity/verifier via the process-wide client config.
+        let tls_server_config = config
+            .common
+            .fabric_tls()
+            .map(|tls_opts| {
+                use restate_core::network::tls::{
+                    TlsClientConfig, TlsServerConfig, spawn_reloader,
+                };
+                tls_opts.validate()?;
+                tls_opts.validate_advertised_address(
+                    &config.common.advertised_address(&address_book),
+                )?;
+                let server_config = TlsServerConfig::new(tls_opts)?;
+                let client_config = TlsClientConfig::from_fabric_options(tls_opts)?;
+                spawn_reloader(
+                    tls_opts.clone(),
+                    &server_config,
+                    &client_config,
+                    *tls_opts.refresh_interval,
+                )?;
+                // register process-wide so channels created via create_tonic_channel
+                // (metadata-store, raft, control) can dial https:// fabric peers
+                assert!(client_config.set_global());
+                Ok(server_config)
+            })
+            .transpose()
+            .map_err(BuildError::InvalidConfiguration)?;
+        server_builder.set_tls(tls_server_config);
+
         let (metadata_store_role, metadata_store_client) = if config.has_role(Role::MetadataServer)
         {
             restate_metadata_server::create_metadata_server_and_client(
@@ -228,6 +260,7 @@ impl Node {
             })
         });
         let mut router_builder = MessageRouterBuilder::with_default_pool(default_pool);
+
         let networking = Networking::with_grpc_connector();
         metadata_manager.register_in_message_router(&mut router_builder);
         let replica_set_states = PartitionReplicaSetStates::default();

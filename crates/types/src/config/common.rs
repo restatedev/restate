@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::time::Duration;
 
+use anyhow::bail;
 use enumset::EnumSet;
 use paste::paste;
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,7 @@ use serde_with::serde_as;
 use restate_serde_util::SerdeableHeaderHashMap;
 use restate_util_bytecount::NonZeroByteCount;
 use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
+use tracing::warn;
 
 use super::{
     CPU_COUNT, DEFAULT_MESSAGE_SIZE_LIMIT, GossipOptions, InvalidConfigurationError,
@@ -190,6 +192,148 @@ impl<P: ListenerPort> Default for ListenerOptions<P> {
     }
 }
 
+/// TLS mode for fabric inter-node communication.
+///
+/// The modes are ordered for safe rolling enablement (and rollback): certificate
+/// distribution is decoupled from advertising TLS, which is decoupled from
+/// requiring it. Roll the cluster forward one step at a time:
+/// `off` → `allow` → `prefer` → `require`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum TlsMode {
+    /// TLS is disabled. Certificates are not loaded and the node behaves as if
+    /// `[tls]` were absent. Allows staging the TLS configuration on all nodes
+    /// before activating it.
+    #[default]
+    Off,
+    /// Certificates are loaded; both TLS and plaintext connections are
+    /// accepted, but the node still advertises a plaintext (`http://`)
+    /// address. Peers that have not loaded TLS configuration yet can still
+    /// connect to it — and it can be dialed by every node in the cluster.
+    Allow,
+    /// Both TLS and plaintext connections are accepted, and the node
+    /// advertises an `https://` address so peers connect with TLS. Only move
+    /// here once all nodes are at least in `allow` mode.
+    Prefer,
+    /// Only TLS connections are accepted; plaintext is rejected. Only move
+    /// here once all nodes are in `prefer` mode.
+    Require,
+}
+
+impl TlsMode {
+    /// Certificates are loaded and the TLS acceptor/connector machinery is active.
+    pub fn is_enabled(&self) -> bool {
+        !matches!(self, TlsMode::Off)
+    }
+
+    /// The node advertises an `https://` fabric address.
+    pub fn advertises_tls(&self) -> bool {
+        matches!(self, TlsMode::Prefer | TlsMode::Require)
+    }
+
+    /// Plaintext connections are accepted alongside TLS.
+    pub fn accepts_plaintext(&self) -> bool {
+        !matches!(self, TlsMode::Require)
+    }
+}
+
+/// TLS configuration for fabric inter-node communication.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct FabricTlsOptions {
+    /// TLS enforcement mode: `off`, `allow`, `prefer`, or `require`.
+    /// Default: `off`. See [`TlsMode`] for the rolling-enablement sequence.
+    #[serde(default)]
+    pub mode: TlsMode,
+
+    /// Path to the PEM-encoded server certificate.
+    pub cert_file: PathBuf,
+
+    /// Path to the PEM-encoded private key.
+    pub key_file: PathBuf,
+
+    /// Paths to PEM-encoded CA certificates for verifying peer certificates.
+    pub ca_files: Vec<PathBuf>,
+
+    /// Require clients to present a valid certificate (mTLS). Default: `false`.
+    #[serde(default = "default_require_client_auth")]
+    pub require_client_auth: bool,
+
+    /// How often to reload certificates from disk. Default: `1h`.
+    #[serde(default = "default_refresh_interval")]
+    pub refresh_interval: NonZeroFriendlyDuration,
+
+    /// Allowed subject names on peer certificates. After mTLS authentication
+    /// succeeds, the peer certificate's Subject Common Name (CN) and Subject
+    /// Alternative Names (DNS names and URIs) are checked against these patterns.
+    /// Supports `*` glob wildcards (e.g., `spiffe://domain/*`, `restate-*`).
+    ///
+    /// Required when `require-client-auth` is `true`. Use `["*"]` to explicitly
+    /// allow any authenticated peer (CA-only trust). An empty list is a
+    /// configuration error to prevent accidental fail-open.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_subject_names: Vec<String>,
+}
+
+impl FabricTlsOptions {
+    pub fn validate(&self) -> Result<(), anyhow::Error> {
+        if self.require_client_auth && self.allowed_subject_names.is_empty() {
+            anyhow::bail!(
+                "[tls] require-client-auth is true but allowed-subject-names is empty. \
+                 Specify allowed patterns (e.g., [\"spiffe://domain/*\"]) or set [\"*\"] \
+                 to explicitly allow any authenticated peer."
+            );
+        }
+        Ok(())
+    }
+
+    pub fn validate_advertised_address(
+        &self,
+        address: &AdvertisedAddress<FabricPort>,
+    ) -> anyhow::Result<()> {
+        match self.mode {
+            TlsMode::Off | TlsMode::Allow => Ok(()),
+            TlsMode::Prefer => {
+                let Some(uri) = address.uri() else {
+                    warn!(
+                        "Tls mode is set to prefer, while the advertised address is a unix socket. TLS is currently not supported for unix sockets."
+                    );
+                    return Ok(());
+                };
+                if uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
+                    warn!(
+                        "Advertised address '{address}' is not HTTPS, but TLS is in 'prefer' mode. Nodes will attempt to connect to this node in plaintext instead."
+                    );
+                }
+                Ok(())
+            }
+            TlsMode::Require => {
+                let Some(uri) = address.uri() else {
+                    bail!(
+                        "Tls mode is set to required, while the advertised address is a unix socket. TLS is currently not supported for unix sockets."
+                    );
+                };
+                if uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
+                    bail!(
+                        "Advertised address '{address}' is not an HTTPS address, but TLS is in 'require' mode. Please either advertise an HTTPS address in the config or loosen the TLS mode."
+                    );
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+fn default_require_client_auth() -> bool {
+    false
+}
+
+fn default_refresh_interval() -> NonZeroFriendlyDuration {
+    NonZeroFriendlyDuration::from_secs_unchecked(3600)
+}
+
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -213,6 +357,17 @@ pub struct CommonOptions {
 
     #[serde(flatten)]
     pub(super) fabric_listener_options: ListenerOptions<FabricPort>,
+
+    /// # TLS Configuration
+    ///
+    /// Optional TLS/mTLS configuration for inter-node fabric communication.
+    /// When set, the fabric port uses TLS for both inbound and outbound connections.
+    /// Without this section, fabric communication remains plaintext (default behavior).
+    ///
+    /// Since v1.7.3
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    tls: Option<FabricTlsOptions>,
 
     /// # Node Location
     ///
@@ -704,6 +859,21 @@ impl CommonOptions {
         &self.fabric_listener_options
     }
 
+    /// The fabric TLS options, unless TLS is disabled (section absent or
+    /// `mode = "off"`). Use this instead of accessing `tls` directly so that
+    /// `off` behaves exactly like an absent section.
+    pub fn fabric_tls(&self) -> Option<&FabricTlsOptions> {
+        self.tls.as_ref().filter(|t| t.mode.is_enabled())
+    }
+
+    pub fn fabric_tls_mut(&mut self) -> &mut Option<FabricTlsOptions> {
+        &mut self.tls
+    }
+
+    pub fn fabric_tls_mode(&self) -> TlsMode {
+        self.tls.as_ref().map(|t| t.mode).unwrap_or_default()
+    }
+
     pub fn tokio_listener_options(&self) -> &ListenerOptions<TokioConsolePort> {
         &self.tokio_console_listener_options
     }
@@ -873,6 +1043,7 @@ impl Default for CommonOptions {
             base_dir: None,
             metadata_client: MetadataClientOptions::default(),
             fabric_listener_options: Default::default(),
+            tls: None,
             default_num_partitions: 24,
             default_replication: ReplicationProperty::new_unchecked(1),
             disable_prometheus: false,
@@ -1326,11 +1497,86 @@ impl Default for IngestionOptions {
 mod tests {
     use std::str::FromStr;
 
+    use googletest::prelude::eq;
+    use googletest::{assert_that, elements_are, pat};
+
     use crate::config::MetadataClientKind;
     use crate::config_loader::ConfigLoaderBuilder;
     use crate::net::address::AdvertisedAddress;
-    use googletest::prelude::eq;
-    use googletest::{assert_that, elements_are, pat};
+
+    use super::*;
+
+    fn minimal_tls_config() -> FabricTlsOptions {
+        toml::from_str(
+            r#"
+            cert-file = "/certs/node.crt"
+            key-file = "/certs/node.key"
+            ca-files = ["/certs/ca.crt"]
+        "#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn tls_config_defaults() {
+        assert!(CommonOptions::default().tls.is_none());
+
+        let opts = minimal_tls_config();
+        assert_eq!(opts.mode, TlsMode::Off);
+        assert_eq!(opts.cert_file, PathBuf::from("/certs/node.crt"));
+        assert_eq!(opts.key_file, PathBuf::from("/certs/node.key"));
+        assert_eq!(opts.ca_files, vec![PathBuf::from("/certs/ca.crt")]);
+        assert!(!opts.require_client_auth);
+        assert_eq!(*opts.refresh_interval, Duration::from_secs(3600));
+        assert!(opts.allowed_subject_names.is_empty());
+
+        let common = CommonOptions {
+            tls: Some(opts),
+            ..CommonOptions::default()
+        };
+        let serialized = toml::to_string(&common).unwrap();
+        assert!(serialized.contains("[tls]"));
+        assert!(!serialized.contains("[networking.tls]"));
+        let deserialized: CommonOptions = toml::from_str(&serialized).unwrap();
+        assert!(deserialized.tls.is_some());
+    }
+
+    #[test]
+    fn tls_mode_rollout_semantics() {
+        for (mode, enabled, advertises, plaintext) in [
+            (TlsMode::Off, false, false, true),
+            (TlsMode::Allow, true, false, true),
+            (TlsMode::Prefer, true, true, true),
+            (TlsMode::Require, true, true, false),
+        ] {
+            assert_eq!(mode.is_enabled(), enabled, "{mode:?}");
+            assert_eq!(mode.advertises_tls(), advertises, "{mode:?}");
+            assert_eq!(mode.accepts_plaintext(), plaintext, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn tls_config_validation() {
+        let mut opts = minimal_tls_config();
+        assert!(opts.validate().is_ok());
+
+        opts.require_client_auth = true;
+        let err = opts.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("allowed-subject-names is empty"),
+            "unexpected validation error: {err}"
+        );
+
+        opts.allowed_subject_names = vec!["*".to_owned()];
+        assert!(opts.validate().is_ok());
+
+        opts.allowed_subject_names = vec!["spiffe://domain/restate-*".to_owned()];
+        assert!(opts.validate().is_ok());
+
+        opts.require_client_auth = false;
+        opts.allowed_subject_names.clear();
+        assert!(opts.validate().is_ok());
+    }
 
     #[test]
     #[ignore]
