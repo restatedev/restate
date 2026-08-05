@@ -489,6 +489,7 @@ impl<T: TransportConnect> Scheduler<T> {
 
     /// Checks whether a pending reconfiguration should be completed. Conditions for doing this are:
     ///
+    /// * The next configuration is empty
     /// * All workers in the current configuration are disabled
     /// * Any of the partition processors in the next configuration is active (== caught up)
     ///
@@ -519,7 +520,7 @@ impl<T: TransportConnect> Scheduler<T> {
             legacy_cluster_state.is_partition_processor_active(&partition_id, node_id)
         });
 
-        all_current_workers_disabled || any_next_pp_active
+        next.replica_set().is_empty() || all_current_workers_disabled || any_next_pp_active
     }
 
     async fn load_partition_configuration(

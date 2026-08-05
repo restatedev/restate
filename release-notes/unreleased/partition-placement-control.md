@@ -18,6 +18,18 @@ the cluster controller from creating or retargeting a pending replica set, but a
 reconfiguration to complete. Explicit `placement set` operations remain available as operator
 overrides.
 
+An explicit empty replica set can be used to stop all partition processors for a partition:
+
+```bash
+restatectl partitions placement set 0 --freeze --replicas
+```
+
+The command warns and asks for confirmation because the partition becomes unavailable while its
+replica set remains empty. Pass `--yes` for non-interactive use. Freezing placement keeps the
+replica set empty; without a freeze, the cluster controller may replace it with a non-empty set
+when enough eligible workers are available. Unfreezing an empty placement resumes automatic
+assignment. Stopping partition processors does not delete their local partition stores.
+
 Partition administration commands are now grouped under `partitions placement` and
 `partitions leadership`; the standalone `partitions reconfigure` command has been removed.
 

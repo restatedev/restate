@@ -13,7 +13,8 @@ use std::collections::HashMap;
 use anyhow::{anyhow, bail};
 use cling::prelude::*;
 
-use restate_cli_util::c_println;
+use restate_cli_util::ui::console::confirm_or_exit;
+use restate_cli_util::{c_println, c_warn};
 use restate_types::PlainNodeId;
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::PartitionId;
@@ -33,7 +34,13 @@ pub struct SetOpts {
     partition_id: PartitionId,
 
     /// Nodes that should run a partition processor replica (comma-separated)
-    #[arg(long, short = 'r', required = true, value_delimiter = ',')]
+    #[arg(
+        long,
+        short = 'r',
+        required = true,
+        value_delimiter = ',',
+        num_args = 0..
+    )]
     replicas: Vec<PlainNodeId>,
 
     /// Freeze automatic placement after setting the replicas
@@ -45,10 +52,6 @@ async fn set_placement(connection: &ConnectionInfo, opts: &SetOpts) -> anyhow::R
     let partition_table = connection.get_partition_table().await?;
     if !partition_table.contains(&opts.partition_id) {
         bail!("Partition {} does not exist.", opts.partition_id);
-    }
-
-    if opts.replicas.is_empty() {
-        bail!("At least one replica is required.");
     }
 
     let replicas: NodeSet = opts.replicas.iter().copied().collect();
@@ -63,13 +66,25 @@ async fn set_placement(connection: &ConnectionInfo, opts: &SetOpts) -> anyhow::R
         })?;
     }
 
-    let replication = u8::try_from(replicas.len())
-        .map_err(|_| anyhow!("Cannot configure more than {} replicas.", u8::MAX))?;
-    let placement = PartitionConfiguration::new(
-        ReplicationProperty::new_unchecked(replication),
-        replicas,
-        HashMap::default(),
-    );
+    let replication = if replicas.is_empty() {
+        c_warn!(
+            "An empty replica set stops all partition processors for partition {} once the \
+             configuration takes effect. Automatic placement may assign new replicas unless \
+             placement is frozen.",
+            opts.partition_id
+        );
+        confirm_or_exit(&format!(
+            "Set an empty replica set for partition {}?",
+            opts.partition_id
+        ))?;
+
+        partition_table.replication_property(&nodes_configuration)
+    } else {
+        let replication = u8::try_from(replicas.len())
+            .map_err(|_| anyhow!("Cannot configure more than {} replicas.", u8::MAX))?;
+        ReplicationProperty::new_unchecked(replication)
+    };
+    let placement = PartitionConfiguration::new(replication, replicas, HashMap::default());
 
     update_epoch_metadata(connection, opts.partition_id, |epoch_metadata| {
         apply_placement(epoch_metadata, placement.clone(), opts.freeze.as_deref())
