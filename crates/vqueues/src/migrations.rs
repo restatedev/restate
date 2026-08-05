@@ -64,7 +64,6 @@ pub async fn migrate_to_vqueues(
     ctx: &mut MigrationContext<'_>,
     cache: &mut VQueuesMetaCache,
     migration_record_created_at: UniqueTimestamp,
-    skip_completed: bool,
 ) -> Result<(), StorageError> {
     // Design Notes:
     // We need to make the migration of a single invocation atomic. An invocation is either migrated
@@ -78,14 +77,7 @@ pub async fn migrate_to_vqueues(
     let mut stats = MigrationStats::new(partition_id);
     info!(partition_id = %partition_id, "Starting migration to vqueues");
     migrate_inboxes(&mut stats, migration_record_created_at, cache, ctx).await?;
-    migrate_invocations(
-        &mut stats,
-        migration_record_created_at,
-        cache,
-        ctx,
-        skip_completed,
-    )
-    .await?;
+    migrate_invocations(&mut stats, migration_record_created_at, cache, ctx).await?;
 
     // clean up old keyed service status table after we have migrated everything
     restate_partition_store::migrations::migrate_to_locks_table::delete_service_status_data(ctx)?;
@@ -243,7 +235,6 @@ async fn migrate_invocations(
     migration_record_created_at: UniqueTimestamp,
     cache: &mut VQueuesMetaCache,
     ctx: &mut MigrationContext<'_>,
-    skip_completed: bool,
 ) -> Result<(), StorageError> {
     let mut readopts = rocksdb::ReadOptions::default();
     readopts.set_total_order_seek(true);
@@ -278,9 +269,7 @@ async fn migrate_invocations(
         // Allow tokio to cancel this task if the processor is being cancelled.
         tokio::task::consume_budget().await;
         let (key, value) = iterator.item().unwrap();
-        let Some((invocation_id, status)) =
-            read_invocation_status(key, value, skip_completed, stats)?
-        else {
+        let Some((invocation_id, status)) = read_invocation_status(key, value)? else {
             iterator.next();
             continue;
         };
@@ -614,8 +603,6 @@ fn invocation_id_from_key_bytes<B: bytes::Buf>(
 fn read_invocation_status(
     mut k: &[u8],
     v: &[u8],
-    skip_completed: bool,
-    stats: &mut MigrationStats,
 ) -> Result<Option<(InvocationId, InvocationStatus)>, StorageError> {
     let invocation_id = invocation_id_from_key_bytes(&mut k)?;
 
@@ -630,16 +617,6 @@ fn read_invocation_status(
             InvocationStatusDiscriminants::Inboxed
         )
     {
-        Ok(None)
-    } else if skip_completed
-        && matches!(
-            invocation_status.status,
-            InvocationStatusDiscriminants::Completed
-        )
-    {
-        // The `InvocationLite` discriminant is enough to know we can skip this entry, so we avoid
-        // the cost of fully decoding the (potentially large) completed invocation value.
-        stats.inc_skipped_completed();
         Ok(None)
     } else {
         Ok(Some((invocation_id, decode_value(v)?)))
@@ -670,7 +647,6 @@ struct MigrationStats {
     num_suspended: usize,
     num_paused: usize,
     num_completed: usize,
-    num_skipped_completed: usize,
 }
 
 impl MigrationStats {
@@ -688,7 +664,6 @@ impl MigrationStats {
             num_suspended: 0,
             num_paused: 0,
             num_completed: 0,
-            num_skipped_completed: 0,
         }
     }
 
@@ -702,7 +677,7 @@ impl MigrationStats {
         if self.total.is_multiple_of(100) && self.last_report.elapsed() >= Duration::from_secs(5) {
             info!(
                 partition_id = %self.partition_id,
-                "[VQueues Migration Progress] total={} inbox={} invoked={} scheduled={} paused={} suspended={} completed={} skipped_completed={} elapsed={}",
+                "[VQueues Migration Progress] total={} inbox={} invoked={} scheduled={} paused={} suspended={} completed={} elapsed={}",
                 self.total,
                 self.num_inboxed,
                 self.num_invoked,
@@ -710,7 +685,6 @@ impl MigrationStats {
                 self.num_paused,
                 self.num_suspended,
                 self.num_completed,
-                self.num_skipped_completed,
                 self.start_time.elapsed().friendly()
             );
             self.last_report = Instant::now();
@@ -720,7 +694,7 @@ impl MigrationStats {
     fn report_finish(&self) {
         info!(
             partition_id = %self.partition_id,
-            "[VQueues Migration Completed] total={} inbox={} invoked={} scheduled={} paused={} suspended={} completed={} skipped_completed={} elapsed={}",
+            "[VQueues Migration Completed] total={} inbox={} invoked={} scheduled={} paused={} suspended={} completed={} elapsed={}",
             self.total,
             self.num_inboxed,
             self.num_invoked,
@@ -728,7 +702,6 @@ impl MigrationStats {
             self.num_paused,
             self.num_suspended,
             self.num_completed,
-            self.num_skipped_completed,
             self.start_time.elapsed().friendly()
         );
     }
@@ -759,12 +732,6 @@ impl MigrationStats {
 
     fn inc_completed(&mut self) {
         self.num_completed += 1;
-        self.total += 1;
-        self.maybe_report();
-    }
-
-    fn inc_skipped_completed(&mut self) {
-        self.num_skipped_completed += 1;
         self.total += 1;
         self.maybe_report();
     }
