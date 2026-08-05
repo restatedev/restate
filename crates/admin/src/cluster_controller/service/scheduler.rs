@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
 
 use ahash::HashMap;
-use futures::{StreamExt, TryStreamExt};
+use futures::StreamExt;
 use tracing::{debug, info, trace};
 
 use restate_core::network::{NetworkSender as _, Networking, Swimlane, TransportConnect};
@@ -34,7 +34,8 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::partitions::leadership_policy::{LeaderAffinity, LeadershipPolicy};
 use restate_types::partitions::placement_policy::PlacementPolicy;
 use restate_types::partitions::state::{
-    ObservedPartitionReplicaSetVersion, PartitionReplicaSetStates, ReplicaSetState,
+    MembershipUpdateBatch, ObservedPartitionReplicaSetVersion, PartitionReplicaSetStates,
+    ReplicaSetState,
 };
 use restate_types::partitions::{PartitionConfiguration, worker_candidate_filter};
 use restate_types::replication::balanced_spread_selector::{
@@ -220,18 +221,15 @@ impl<T: TransportConnect> Scheduler<T> {
         };
 
         if updated {
-            Self::note_observed_membership_update(
-                partition_id,
-                occupied_entry.get(),
-                &self.replica_set_states,
-            );
+            let mut batch = self.replica_set_states.membership_update_batch();
+            Self::note_observed_membership_update(partition_id, occupied_entry.get(), &mut batch);
         }
     }
 
     fn note_observed_membership_update(
         partition_id: PartitionId,
         partition_state: &PartitionState,
-        replica_set_states: &PartitionReplicaSetStates,
+        batch: &mut MembershipUpdateBatch,
     ) {
         let current_membership =
             ReplicaSetState::from_partition_configuration(&partition_state.current);
@@ -243,7 +241,7 @@ impl<T: TransportConnect> Scheduler<T> {
         // the leadership epoch has been acquired or not. The leadership state will only be
         // updated when either the actual leader or any of the followers has observed the
         // leader epoch as being the winner of the elections.
-        replica_set_states.note_observed_membership(
+        batch.note_observed_membership(
             partition_id,
             Default::default(),
             &current_membership,
@@ -300,7 +298,7 @@ impl<T: TransportConnect> Scheduler<T> {
         &mut self,
         partition_table: &PartitionTable,
     ) -> Result<(), Error> {
-        self.partitions = futures::stream::iter(partition_table.iter_ids().cloned().map(
+        let mut partition_configs = futures::stream::iter(partition_table.iter_ids().cloned().map(
             async |partition_id| {
                 Result::<_, Error>::Ok((
                     partition_id,
@@ -313,23 +311,32 @@ impl<T: TransportConnect> Scheduler<T> {
             },
         ))
         // load partitions concurrently - we choose 24 to match the default partition count
-        .buffer_unordered(24)
-        .try_filter_map(
-            async |(partition_id, partition_state)| match partition_state {
-                Some(partition_state) => {
+        .buffer_unordered(24);
+
+        let mut partitions = HashMap::default();
+        let mut batch = self.replica_set_states.membership_update_batch();
+        let mut first_error = None;
+        while let Some(val) = partition_configs.next().await {
+            match val {
+                Ok((partition_id, Some(partition_state))) => {
                     Self::note_observed_membership_update(
                         partition_id,
                         &partition_state,
-                        &self.replica_set_states,
+                        &mut batch,
                     );
-
-                    Ok(Some((partition_id, partition_state)))
+                    partitions.insert(partition_id, partition_state);
                 }
-                None => Ok(None),
-            },
-        )
-        .try_collect::<HashMap<_, _>>()
-        .await?;
+                Ok((_partition_id, None)) => {}
+                Err(err) => {
+                    first_error.get_or_insert(err);
+                }
+            }
+        }
+
+        if let Some(err) = first_error {
+            return Err(err);
+        }
+        self.partitions = partitions;
 
         Ok(())
     }
@@ -359,6 +366,8 @@ impl<T: TransportConnect> Scheduler<T> {
         nodes_config: &NodesConfiguration,
         partition_table: &PartitionTable,
     ) -> Result<(), Error> {
+        let mut membership_updates = self.replica_set_states.membership_update_batch();
+
         for partition_id in partition_table.iter_ids().copied() {
             let entry = self.partitions.entry(partition_id);
 
@@ -406,7 +415,7 @@ impl<T: TransportConnect> Scheduler<T> {
                                 Self::note_observed_membership_update(
                                     partition_id,
                                     entry.get(),
-                                    &self.replica_set_states,
+                                    &mut membership_updates,
                                 );
                             }
                         }
@@ -436,7 +445,7 @@ impl<T: TransportConnect> Scheduler<T> {
                         Self::note_observed_membership_update(
                             partition_id,
                             occupied_entry.get(),
-                            &self.replica_set_states,
+                            &mut membership_updates,
                         );
                         occupied_entry
                     } else {
@@ -470,7 +479,7 @@ impl<T: TransportConnect> Scheduler<T> {
                     Self::note_observed_membership_update(
                         partition_id,
                         occupied_entry.get(),
-                        &self.replica_set_states,
+                        &mut membership_updates,
                     );
                 }
             }
