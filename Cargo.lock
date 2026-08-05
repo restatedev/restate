@@ -8815,6 +8815,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-tracing"
+version = "1.7.3-dev"
+dependencies = [
+ "restate-clock",
+ "restate-workspace-hack",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "restate-tracing-instrumentation"
 version = "1.7.3-dev"
 dependencies = [
