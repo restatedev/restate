@@ -10,11 +10,13 @@
 
 pub mod balanced_spread_selector;
 mod checker;
+mod load_balanced_selector;
 mod nodeset;
 mod nodeset_selector;
 mod replication_property;
 
 pub use checker::*;
+pub use load_balanced_selector::*;
 pub use nodeset::*;
 pub use nodeset_selector::DomainAwareNodeSetSelector as NodeSetSelector;
 pub use nodeset_selector::{NodeSelectorError, NodeSetSelectorOptions};
