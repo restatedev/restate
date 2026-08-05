@@ -47,6 +47,7 @@ use tracing::{debug, error, info, instrument, trace, warn};
 
 use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{DataRecord, DataRecordError, LogEntry};
+use restate_clock::RoughTimestamp;
 use restate_core::network::{
     Incoming, Oneshot, Reciprocal, Rpc, ServiceMessage, ServiceStream, TransportConnect, Verdict,
 };
@@ -60,6 +61,7 @@ use restate_storage_api::deduplication_table::{
     DedupSequenceNumber, ProducerId, ReadDeduplicationTable,
 };
 use restate_storage_api::{StorageError, Transaction};
+use restate_tracing::warn_ratelimited;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::LeaderEpoch;
@@ -111,6 +113,43 @@ pub struct LeadershipInfo {
     pub leader_epoch: LeaderEpoch,
     pub current_config: CurrentReplicaSetConfiguration,
     pub next_config: Option<NextReplicaSetConfiguration>,
+}
+
+const HIGH_RPC_QUEUE_LATENCY_THRESHOLD: Duration = Duration::from_secs(20);
+const SLOW_PARTITION_PROCESSOR_ARM_THRESHOLD: Duration = Duration::from_secs(30);
+
+struct SlowPartitionProcessorArmTracker<'a> {
+    partition_id: &'a str,
+    arm_label: &'static str,
+    // Using a low resolution clock here to optimize for perf, given that we're
+    // not that interested in accurate measurements.
+    started_at: RoughTimestamp,
+}
+
+impl<'a> SlowPartitionProcessorArmTracker<'a> {
+    fn new(partition_id: &'a str, arm_label: &'static str) -> Self {
+        Self {
+            partition_id,
+            arm_label,
+            started_at: RoughTimestamp::now(),
+        }
+    }
+}
+
+impl<'a> Drop for SlowPartitionProcessorArmTracker<'a> {
+    fn drop(&mut self) {
+        let duration = self.started_at.elapsed();
+        if duration > SLOW_PARTITION_PROCESSOR_ARM_THRESHOLD {
+            warn_ratelimited!(
+                10,
+                std::time::Duration::from_mins(1),
+                partition_id = self.partition_id,
+                "Detected slow partition processor arm ({}) which has been running for {}",
+                self.arm_label,
+                duration.friendly()
+            );
+        }
+    }
 }
 
 impl From<EpochMetadata> for LeadershipInfo {
@@ -200,6 +239,7 @@ impl PartitionProcessorBuilder {
             LeadershipState::new(ctx.partition_id(), ingestion_client, leader_query_tx);
 
         Ok(PartitionProcessor {
+            partition_id_label: ctx.partition_id().to_string(),
             partition_store,
             ctx,
             node_ctx,
@@ -213,6 +253,7 @@ impl PartitionProcessorBuilder {
 }
 
 pub struct PartitionProcessor<T> {
+    partition_id_label: String,
     partition_store: PartitionStore,
     ctx: ProcessorRawContext,
     node_ctx: NodeContext,
@@ -525,6 +566,7 @@ where
 
         let mut cloned_partition_store = self.partition_store.clone();
         let mut txn = cloned_partition_store.transaction();
+        let partition_id_label = self.partition_id_label.clone();
 
         loop {
             let config = self.node_ctx.config.live_load();
@@ -535,21 +577,37 @@ where
 
             tokio::select! {
                 _ = self.target_leader_state_rx.changed() => {
+                    let _guard = SlowPartitionProcessorArmTracker::new(
+                        partition_id_label.as_str(),
+                        "target_leader_state",
+                    );
                     let target_leader_state = self.target_leader_state_rx.borrow_and_update().clone();
                     self.on_target_leader_state(target_leader_state).await.context("failed handling target leader state change")?;
                     self.refresh_status(&mut durable_lsn_watch)?;
                 }
                 Ok(()) = watch_leader_changes.changed() => {
+                    let _guard = SlowPartitionProcessorArmTracker::new(
+                        partition_id_label.as_str(),
+                        "leadership_state",
+                    );
                     // cloning to avoid holding the underlying RwLock.
                     let new_state = *watch_leader_changes.borrow_and_update();
                     self.leadership_state.maybe_step_down(&mut self.ctx, new_state.current_leader_epoch, new_state.current_leader).await;
                     self.refresh_status(&mut durable_lsn_watch)?;
                 }
                 Some(msg) = self.network_leader_svc_rx.next(), if network_processing_permit.is_some() => {
+                    let _guard = SlowPartitionProcessorArmTracker::new(
+                        partition_id_label.as_str(),
+                        "network_leader_svc_rx",
+                    );
                     // todo: replace the live schema with the leader's consistent schema
                     self.on_rpc(msg, live_schemas.live_load(), &last_applied_lsn_watch, network_processing_permit.expect("guarded with is_some")).await;
                 }
                 _ = status_update_timer.tick() => {
+                    let _guard = SlowPartitionProcessorArmTracker::new(
+                        partition_id_label.as_str(),
+                        "status_update_timer",
+                    );
                     // Update the status to ensure changes are observable
                     self.refresh_status(&mut durable_lsn_watch)?;
                 }
@@ -558,6 +616,10 @@ where
                 // Subsequent records are drained synchronously below (`now_or_never`), so the
                 // applied-but-uncommitted records can never be lost to select cancellation.
                 maybe_first = record_stream.next() => {
+                    let _guard = SlowPartitionProcessorArmTracker::new(
+                        partition_id_label.as_str(),
+                        "record_stream",
+                    );
                     let Some(first) = maybe_first else {
                         return Err(ProcessorError::LogReadStreamTerminated);
                     };
@@ -648,9 +710,17 @@ where
                     }
                 },
                 result = self.leadership_state.run(&mut self.ctx) => {
+                    let _guard = SlowPartitionProcessorArmTracker::new(
+                        partition_id_label.as_str(),
+                        "leadership_state.run",
+                    );
                     result?;
                 }
                 Some(leader_query_cmd) = self.leader_query_rx.recv() => {
+                    let _guard = SlowPartitionProcessorArmTracker::new(
+                        partition_id_label.as_str(),
+                        "leader_query_rx",
+                    );
                     self.on_leader_query(leader_query_cmd);
                 }
             }
@@ -767,9 +837,21 @@ where
     ) {
         match msg {
             ServiceMessage::Rpc(msg) if msg.msg_type() == PartitionProcessorRpcRequest::TYPE => {
+                let dequeued_at = MillisSinceEpoch::now();
                 let msg = msg.into_typed::<PartitionProcessorRpcRequest>();
                 // note: split() decodes the payload
                 let (response_tx, body) = msg.split();
+                if let Some(sent_at) = body.sent_at
+                    && dequeued_at.duration_since(sent_at) > HIGH_RPC_QUEUE_LATENCY_THRESHOLD
+                {
+                    warn_ratelimited!(
+                        10,
+                        std::time::Duration::from_mins(1),
+                        partition_id = self.partition_id_label.as_str(),
+                        "Detected high RPC queue latency of {}. This could indicate a slow partition processor loop.",
+                        sent_at.elapsed().friendly()
+                    );
+                }
                 self.on_pp_rpc_request(response_tx, body, schemas, permit)
                     .await;
             }
