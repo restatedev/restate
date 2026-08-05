@@ -41,8 +41,12 @@ impl<IC> InvocationClientRequestDispatcher<IC> {
     pub fn new(invocation_client: IC) -> Self {
         Self {
             invocation_client,
-            // TODO figure out how to tune this?
-            retry_policy: RetryPolicy::fixed_delay(Duration::from_millis(50), None),
+            retry_policy: RetryPolicy::exponential(
+                Duration::from_millis(50),
+                2.0,
+                None,                         // max attempts
+                Some(Duration::from_secs(1)), // max interval
+            ),
         }
     }
 
