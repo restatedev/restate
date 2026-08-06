@@ -27,7 +27,7 @@ use restate_types::replication::NodeSet;
 use crate::connection::ConnectionInfo;
 use crate::util::RangeParam;
 
-use super::read_epoch_metadata;
+use super::super::epoch_metadata::read_epoch_metadata;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "show_policy")]
@@ -74,7 +74,11 @@ async fn show_policy(connection: &ConnectionInfo, opts: &ShowOpts) -> anyhow::Re
         }
 
         let epoch_metadata = match read_epoch_metadata(connection, partition_id).await {
-            Ok(em) => em,
+            Ok(Some(em)) => em,
+            Ok(None) => {
+                error!("Partition {partition_id} has no epoch metadata");
+                continue;
+            }
             Err(err) => {
                 error!("Failed to get epoch metadata for partition {partition_id}: {err}");
                 continue;

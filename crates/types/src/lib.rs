@@ -53,6 +53,7 @@ pub mod rate;
 pub mod replicated_loglet;
 pub mod replication;
 pub mod retries;
+pub mod rocksdb;
 pub mod schema;
 pub mod service_discovery;
 pub mod service_protocol;

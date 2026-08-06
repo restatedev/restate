@@ -30,6 +30,39 @@ pub struct PartitionReplicaSetStates {
     inner: Arc<Inner>,
 }
 
+/// Batches notifications for observed membership updates.
+pub struct MembershipUpdateBatch {
+    states: PartitionReplicaSetStates,
+    changed: bool,
+    membership_changed: bool,
+}
+
+impl MembershipUpdateBatch {
+    pub fn note_observed_membership(
+        &mut self,
+        partition_id: PartitionId,
+        current_leader: LeadershipState,
+        current_membership: &ReplicaSetState,
+        next_membership: &Option<ReplicaSetState>,
+    ) {
+        let modified = self.states.merge_observed_membership(
+            partition_id,
+            current_leader,
+            current_membership,
+            next_membership,
+        );
+        self.changed |= modified.changed();
+        self.membership_changed |= modified.membership_changed;
+    }
+}
+
+impl Drop for MembershipUpdateBatch {
+    fn drop(&mut self) {
+        self.states
+            .notify_observed_membership_changes(self.changed, self.membership_changed);
+    }
+}
+
 #[derive(Default)]
 struct Inner {
     partitions: DashMap<PartitionId, MembershipState>,
@@ -86,7 +119,31 @@ impl PartitionReplicaSetStates {
         current_membership: &ReplicaSetState,
         next_membership: &Option<ReplicaSetState>,
     ) {
-        let modified = match self.inner.partitions.entry(partition_id) {
+        let modified = self.merge_observed_membership(
+            partition_id,
+            current_leader,
+            current_membership,
+            next_membership,
+        );
+        self.notify_observed_membership_changes(modified.changed(), modified.membership_changed);
+    }
+
+    pub fn membership_update_batch(&self) -> MembershipUpdateBatch {
+        MembershipUpdateBatch {
+            states: self.clone(),
+            changed: false,
+            membership_changed: false,
+        }
+    }
+
+    fn merge_observed_membership(
+        &self,
+        partition_id: PartitionId,
+        current_leader: LeadershipState,
+        current_membership: &ReplicaSetState,
+        next_membership: &Option<ReplicaSetState>,
+    ) -> MembershipMergeResult {
+        match self.inner.partitions.entry(partition_id) {
             Entry::Occupied(mut occupied_entry) => {
                 occupied_entry
                     .get_mut()
@@ -100,12 +157,14 @@ impl PartitionReplicaSetStates {
                 });
                 MembershipMergeResult::all_changed()
             }
-        };
+        }
+    }
 
-        if modified.changed() {
+    fn notify_observed_membership_changes(&self, changed: bool, membership_changed: bool) {
+        if changed {
             self.inner.global_notify.notify_waiters();
         }
-        if modified.membership_changed {
+        if membership_changed {
             self.inner.membership_notify.notify_waiters();
         }
     }
@@ -447,6 +506,16 @@ impl MembershipState {
         self.current_leader.subscribe()
     }
 
+    /// Iterates over node IDs in the current and next replica-set configurations.
+    ///
+    /// A node present in both configurations is yielded twice.
+    pub fn replica_set_union(&self) -> impl Iterator<Item = PlainNodeId> {
+        std::iter::once(&self.observed_current_membership)
+            .chain(self.observed_next_membership.iter())
+            .flat_map(|membership| membership.members.iter())
+            .map(|member| member.node_id)
+    }
+
     /// Returns the first alive node from `observed_current_membership` by overlaying it with the
     /// current cluster state.
     pub fn first_alive_node(&self, cluster_state: &ClusterState) -> Option<GenerationalNodeId> {
@@ -567,6 +636,33 @@ mod tests {
                 },
                 &None,
             );
+
+            assert!(changed.now_or_never().is_some());
+            assert!(membership_changed.now_or_never().is_some());
+        }
+
+        // Batched updates are immediately visible but notify only after the batch closes.
+        {
+            let mut changed = Box::pin(states.changed());
+            let mut membership_changed = Box::pin(states.membership_changed());
+            {
+                let mut batch = states.membership_update_batch();
+                for partition_id in [PartitionId::from(1), PartitionId::from(2)] {
+                    batch.note_observed_membership(
+                        partition_id,
+                        LeadershipState::default(),
+                        &ReplicaSetState {
+                            version: Version::from(1),
+                            members: Default::default(),
+                        },
+                        &None,
+                    );
+                }
+
+                assert_eq!(states.iter().count(), 3);
+                assert!(changed.as_mut().now_or_never().is_none());
+                assert!(membership_changed.as_mut().now_or_never().is_none());
+            }
 
             assert!(changed.now_or_never().is_some());
             assert!(membership_changed.now_or_never().is_some());

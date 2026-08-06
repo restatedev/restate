@@ -130,11 +130,8 @@ pub enum ErrorResponse {
 }
 
 impl HandlerError {
-    pub(crate) fn fill_builder<B: http_body::Body + Default + From<Bytes>>(
-        self,
-        res_builder: http::response::Builder,
-    ) -> Response<B> {
-        let status_code = match &self {
+    pub(crate) fn status_code(&self) -> StatusCode {
+        match self {
             HandlerError::NotFound
             | HandlerError::ServiceNotFound(_)
             | HandlerError::ServiceHandlerNotFound(_, _)
@@ -176,7 +173,14 @@ impl HandlerError {
                 StatusCode::from_u16(e.code().into()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
             }
             HandlerError::NotReady => StatusCode::from_u16(470).unwrap(),
-        };
+        }
+    }
+
+    pub(crate) fn fill_builder<B: http_body::Body + Default + From<Bytes>>(
+        self,
+        res_builder: http::response::Builder,
+    ) -> Response<B> {
+        let status_code = self.status_code();
 
         let error_response = match self {
             HandlerError::Invocation(e) => ErrorResponse::Invocation(e),

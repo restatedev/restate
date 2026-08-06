@@ -12,7 +12,7 @@ use anyhow::Context;
 use cling::prelude::*;
 use tracing::error;
 
-use super::{signal_sync_epoch_metadata, update_epoch_metadata};
+use super::super::epoch_metadata::{signal_sync_epoch_metadata, update_epoch_metadata};
 use crate::connection::ConnectionInfo;
 use crate::util::RangeParam;
 use restate_cli_util::c_println;

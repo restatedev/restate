@@ -10,7 +10,7 @@
 
 use std::io::Write;
 
-use restate_rocksdb::RocksDbManager;
+use restate_rocksdb::{ManualCompactionOptions, RocksDbManager};
 use tokio::signal::unix::{SignalKind, signal};
 use tracing::{info, warn};
 
@@ -63,7 +63,7 @@ pub(super) async fn sighup_compact() {
                 ),
             };
             let db_name = db.name().to_owned();
-            match db.compact_all().await {
+            match db.compact_all(ManualCompactionOptions::default()).await {
                 Ok(()) => {
                     let _ = writeln!(
                         std::io::stderr(),

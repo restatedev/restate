@@ -43,7 +43,7 @@ use futures::{FutureExt, StreamExt};
 use metrics::histogram;
 use tokio::sync::watch;
 use tokio::time::{Instant, MissedTickBehavior};
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{debug, error, instrument, trace, warn};
 
 use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{DataRecord, DataRecordError, LogEntry};
@@ -53,7 +53,7 @@ use restate_core::network::{
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskKind, cancellation_token};
 use restate_ingestion_client::IngestionClient;
 use restate_partition_store::{
-    MigrationError, PartitionDb, PartitionStore, PartitionStoreTransaction,
+    MigrationError, PartitionDb, PartitionSeal, PartitionStore, PartitionStoreTransaction,
 };
 use restate_platform::memory::EstimatedMemorySize;
 use restate_storage_api::deduplication_table::{
@@ -115,7 +115,7 @@ pub struct LeadershipInfo {
 
 impl From<EpochMetadata> for LeadershipInfo {
     fn from(value: EpochMetadata) -> Self {
-        let (version, leader_epoch, current, next, _) = value.into_inner();
+        let (version, leader_epoch, current, next, _, _) = value.into_inner();
 
         Self {
             version,
@@ -300,6 +300,20 @@ pub enum ProcessorError {
     Other(#[from] anyhow::Error),
 }
 
+impl From<PartitionSeal> for ProcessorError {
+    fn from(value: PartitionSeal) -> Self {
+        match value {
+            PartitionSeal::AheadOfLog {
+                partition_applied_lsn,
+                log_tail_lsn,
+            } => ProcessorError::PartitionAheadOfLog {
+                partition_applied_lsn,
+                log_tail_lsn,
+            },
+        }
+    }
+}
+
 /// OrderedOperations are scheduled operations that
 /// will only get executed once the partition read up to
 /// the bifrost tail that was found once the operation
@@ -425,15 +439,6 @@ where
         let partition_id = self.ctx.partition_id();
         let my_node = self.node_ctx.my_node_id().as_plain();
 
-        let mut durable_lsn_watch = self.partition_store.get_durable_lsn().await?;
-        let durable_lsn = durable_lsn_watch
-            .borrow_and_update()
-            .unwrap_or(Lsn::INVALID);
-
-        self.node_ctx
-            .replica_set_states
-            .note_durable_lsn(partition_id, my_node, durable_lsn);
-
         // If the underlying log is not provisioned, now is the time to provision it.
         // We'll retry a few times before giving back control to PPM
         //
@@ -476,13 +481,34 @@ where
         // If our `last_applied_lsn` is at or beyond the tail, this is a strong indicator
         // that the log has reverted backwards.
         if self.ctx.fsm().last_applied_lsn() >= current_tail.offset() {
+            let partition_applied_lsn = self.ctx.fsm().last_applied_lsn();
+            let log_tail_lsn = current_tail.offset();
+            self.partition_store
+                .seal(&PartitionSeal::AheadOfLog {
+                    partition_applied_lsn,
+                    log_tail_lsn,
+                })
+                .await?;
+
             return Err(ProcessorError::PartitionAheadOfLog {
-                partition_applied_lsn: self.ctx.fsm().last_applied_lsn(),
-                log_tail_lsn: current_tail.offset(),
+                partition_applied_lsn,
+                log_tail_lsn,
             });
         }
 
+        let mut durable_lsn_watch = self.partition_store.get_durable_lsn().await?;
+        let durable_lsn = durable_lsn_watch
+            .borrow_and_update()
+            .unwrap_or(Lsn::INVALID);
+
+        self.node_ctx
+            .replica_set_states
+            .note_durable_lsn(partition_id, my_node, durable_lsn);
+
         self.ctx.status_mut().set_started_at(Instant::now());
+        // Note that before this point, we will not allow taking snapshots of this partition store
+        // and it's important that we perform the seal check before we update the replay status to
+        // avoid taking snapshots of a sealed partition store.
         self.ctx.set_catchup_lsn(current_tail.offset());
         debug!(
             last_applied_lsn = %self.ctx.fsm().last_applied_lsn(),
@@ -637,15 +663,6 @@ where
                     // compact while applying the WAL commands as this could remove vqueue meta entries
                     // which are required by the scheduler when applying the scheduler events.
                     self.ctx.vqueues_mut().try_compact();
-
-                    if let Some(readiness) = self.leadership_state.take_effective_leadership_readiness() {
-                        info!(
-                            partition_id = %self.ctx.partition_id(),
-                            leader_epoch = %readiness.leader_epoch,
-                            time_to_effective_leadership_seconds = readiness.time_to_effective_leadership.as_secs_f64(),
-                            "Partition processor reached effective leadership"
-                        );
-                    }
                 },
                 result = self.leadership_state.run(&mut self.ctx) => {
                     result?;

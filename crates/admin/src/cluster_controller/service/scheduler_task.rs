@@ -129,8 +129,8 @@ where
                     match epoch_metadata {
                         Ok(epoch_metadata) => {
                             for (partition_id, epoch_metadata) in epoch_metadata {
-                                let (_, _, current, next, leadership_policy) = epoch_metadata.into_inner();
-                                self.scheduler.update_partition_configuration(partition_id, current, next, leadership_policy);
+                                let (_, _, current, next, leadership_policy, placement_policy) = epoch_metadata.into_inner();
+                                self.scheduler.update_partition_configuration(partition_id, current, next, leadership_policy, placement_policy);
                             }
 
                             // changed partition configurations might mean that we need to select a new

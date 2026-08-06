@@ -36,6 +36,7 @@ use rocksdb::statistics::Ticker;
 
 use restate_core::ShutdownError;
 use restate_types::protobuf::common::DatabaseKind;
+pub use restate_types::rocksdb::{BottommostLevelCompaction, ManualCompactionOptions};
 
 // re-exports
 pub use self::background::StorageTaskKind;
@@ -494,13 +495,16 @@ impl RocksDb {
     }
 
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
-    pub async fn compact_all(self: Arc<Self>) -> Result<(), RocksError> {
+    pub async fn compact_all(
+        self: Arc<Self>,
+        options: ManualCompactionOptions,
+    ) -> Result<(), RocksError> {
         let manager = self.manager;
         let task = StorageTask::default()
             .kind(StorageTaskKind::Compaction)
             .op(move || {
                 let _x = RocksDbReadPerfGuard::new("manual-compaction");
-                self.db.compact_all();
+                self.db.compact_all(options);
             })
             .build()
             .unwrap();

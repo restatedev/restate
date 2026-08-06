@@ -8,20 +8,27 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::time::Duration;
+
 use cling::prelude::*;
 use tokio::task::JoinSet;
+use tonic::Code;
 use tracing::info;
 
 use restate_cli_util::_comfy_table::{Cell, Table};
 use restate_cli_util::ui::console::StyledTable;
-use restate_cli_util::{CliContext, c_println};
-use restate_core::protobuf::node_ctl_svc::{TriggerCompactionRequest, new_node_ctl_client};
+use restate_cli_util::{CliContext, c_eprintln, c_println};
+use restate_core::network::net_util::{DNSResolution, create_tonic_channel};
+use restate_core::protobuf::node_ctl_svc::{
+    ManualCompactionOptions as ProtoManualCompactionOptions, TriggerCompactionRequest,
+    TriggerCompactionResponse, new_node_ctl_client,
+};
 use restate_types::PlainNodeId;
 use restate_types::net::address::{AdvertisedAddress, FabricPort};
 use restate_types::protobuf::common::DatabaseKind;
+use restate_types::rocksdb::{BottommostLevelCompaction, ManualCompactionOptions};
 
 use crate::connection::ConnectionInfo;
-use crate::util::grpc_channel;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "compact")]
@@ -34,6 +41,46 @@ pub struct CompactOpts {
     /// Target specific nodes by node ID (e.g. N1,N2). Defaults to all nodes in the cluster.
     #[arg(long, short = 'n', value_delimiter = ',')]
     node: Vec<PlainNodeId>,
+
+    /// Maximum time to wait for compaction results. Accepted compactions continue after timeout.
+    #[arg(long, default_value = "30m", value_parser = humantime::parse_duration)]
+    timeout: Duration,
+
+    /// Controls whether RocksDB rewrites files already in the bottommost level.
+    ///
+    /// Forcing bottommost-level compaction can reclaim space after large deletions, but causes
+    /// additional I/O and write amplification.
+    ///
+    /// See https://github.com/facebook/rocksdb/wiki/Manual-Compaction#compactrange.
+    #[arg(long, value_enum, default_value = "if-have-compaction-filter")]
+    bottommost_level_compaction: BottommostLevelCompaction,
+
+    /// Refit compacted files to the minimum level capable of holding the data.
+    ///
+    /// Use after compaction substantially reduces the data size and the current level is no longer
+    /// appropriate for the resulting files.
+    ///
+    /// See https://github.com/facebook/rocksdb/wiki/Manual-Compaction#compactrange.
+    #[arg(long)]
+    recalculate_level: bool,
+}
+
+impl From<&CompactOpts> for ProtoManualCompactionOptions {
+    fn from(value: &CompactOpts) -> Self {
+        ManualCompactionOptions {
+            bottommost_level_compaction: value.bottommost_level_compaction,
+            recalculate_level: value.recalculate_level,
+        }
+        .into()
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum TriggerCompactionError {
+    #[error("compaction request timed out after {0:?}")]
+    Timeout(Duration),
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
 }
 
 fn parse_database_kind(s: &str) -> Result<DatabaseKind, String> {
@@ -52,6 +99,7 @@ fn parse_database_kind(s: &str) -> Result<DatabaseKind, String> {
 async fn compact(connection: &ConnectionInfo, opts: &CompactOpts) -> anyhow::Result<()> {
     // An empty list means "compact all" at the server side.
     let database_kinds: Vec<i32> = opts.database.iter().map(|k| *k as i32).collect();
+    let compaction_options = ProtoManualCompactionOptions::from(opts);
 
     // Resolve target node addresses from the cluster configuration.
     let nodes_config = connection.get_nodes_configuration().await?;
@@ -84,8 +132,10 @@ async fn compact(connection: &ConnectionInfo, opts: &CompactOpts) -> anyhow::Res
     let mut tasks = JoinSet::new();
     for address in addresses {
         let db_kinds = database_kinds.clone();
+        let timeout = opts.timeout;
         tasks.spawn(async move {
-            let result = trigger_compaction_on_node(&address, db_kinds).await;
+            let result =
+                trigger_compaction_on_node(&address, db_kinds, compaction_options, timeout).await;
             (address, result)
         });
     }
@@ -118,6 +168,12 @@ async fn compact(connection: &ConnectionInfo, opts: &CompactOpts) -> anyhow::Res
             }
             Ok((address, Err(err))) => {
                 total_failed += 1;
+                if let TriggerCompactionError::Timeout(timeout) = &err {
+                    c_eprintln!(
+                        "Compaction request to {address} timed out after {}. Any compaction request accepted by the node continues in the background; check the node logs before retrying.",
+                        humantime::format_duration(*timeout)
+                    );
+                }
                 results_table.add_row(vec![
                     Cell::new(address.to_string()),
                     Cell::new("-"),
@@ -134,33 +190,49 @@ async fn compact(connection: &ConnectionInfo, opts: &CompactOpts) -> anyhow::Res
 
     c_println!("{}", results_table);
     c_println!(
-        "Compaction complete: {} succeeded, {} failed",
+        "Compaction results: {} succeeded, {} failed",
         total_success,
         total_failed
     );
 
+    if total_failed > 0 {
+        anyhow::bail!("{total_failed} compaction operation(s) failed");
+    }
     Ok(())
 }
 
 async fn trigger_compaction_on_node(
     address: &AdvertisedAddress<FabricPort>,
     databases: Vec<i32>,
-) -> Result<restate_core::protobuf::node_ctl_svc::TriggerCompactionResponse, anyhow::Error> {
-    let channel = grpc_channel(address.clone());
-    let mut client = new_node_ctl_client(channel, &CliContext::get().network);
+    options: ProtoManualCompactionOptions,
+    timeout: Duration,
+) -> Result<TriggerCompactionResponse, TriggerCompactionError> {
+    let mut network = CliContext::get().network.clone();
+    network.request_timeout = timeout
+        .as_millis()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("compaction timeout is too large"))?;
+    let channel = create_tonic_channel(address.clone(), &network, DNSResolution::Gai);
+    let mut client = new_node_ctl_client(channel, &network);
 
-    let timeout = CliContext::get().request_timeout();
-    let request = TriggerCompactionRequest { databases };
-    let response = tokio::time::timeout(timeout, client.trigger_compaction(request))
-        .await
-        .map_err(|_| anyhow::anyhow!("Compaction timed out after {:?}", timeout))?
-        .map_err(|e| anyhow::anyhow!("gRPC error: {}", e))?;
-
+    let request = TriggerCompactionRequest {
+        databases,
+        options: Some(options),
+    };
+    let response = client.trigger_compaction(request).await.map_err(|err| {
+        if err.code() == Code::DeadlineExceeded {
+            TriggerCompactionError::Timeout(timeout)
+        } else {
+            TriggerCompactionError::Other(anyhow::anyhow!("gRPC error: {err}"))
+        }
+    })?;
     Ok(response.into_inner())
 }
 
 #[cfg(test)]
 mod tests {
+    use restate_core::protobuf::node_ctl_svc::BottommostLevelCompaction as ProtoBottommostLevelCompaction;
+
     use super::*;
 
     #[test]
@@ -194,5 +266,22 @@ mod tests {
         assert!(super::parse_database_kind("all").is_err());
         assert!(super::parse_database_kind("").is_err());
         assert!(super::parse_database_kind("db").is_err());
+    }
+
+    #[test]
+    fn compaction_options_are_mapped() {
+        let opts = CompactOpts {
+            database: Vec::new(),
+            node: Vec::new(),
+            timeout: Duration::from_secs(30 * 60),
+            bottommost_level_compaction: BottommostLevelCompaction::ForceOptimized,
+            recalculate_level: true,
+        };
+        let requested = ProtoManualCompactionOptions::from(&opts);
+        assert_eq!(
+            requested.bottommost_level_compaction,
+            ProtoBottommostLevelCompaction::ForceOptimized as i32
+        );
+        assert!(requested.recalculate_level);
     }
 }

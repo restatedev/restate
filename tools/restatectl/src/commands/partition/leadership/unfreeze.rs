@@ -12,27 +12,21 @@ use anyhow::Context;
 use cling::prelude::*;
 use tracing::error;
 
+use super::super::epoch_metadata::{signal_sync_epoch_metadata, update_epoch_metadata};
 use crate::connection::ConnectionInfo;
 use crate::util::RangeParam;
 use restate_cli_util::c_println;
 use restate_types::identifiers::PartitionId;
-use restate_types::partitions::leadership_policy::ElectionFreeze;
-
-use super::{signal_sync_epoch_metadata, update_epoch_metadata};
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
-#[cling(run = "freeze_election")]
-pub struct FreezeOpts {
+#[cling(run = "unfreeze_election")]
+pub struct UnfreezeOpts {
     /// The partition id or range, e.g. "0", "1-4"
     #[arg(required = true)]
     partition_id: Vec<RangeParam<u16>>,
-
-    /// Reason for freezing leader election
-    #[arg(long, required = true)]
-    reason: String,
 }
 
-async fn freeze_election(connection: &ConnectionInfo, opts: &FreezeOpts) -> anyhow::Result<()> {
+async fn unfreeze_election(connection: &ConnectionInfo, opts: &UnfreezeOpts) -> anyhow::Result<()> {
     let partition_table = connection.get_partition_table().await?;
     let mut updated = Vec::new();
 
@@ -47,15 +41,13 @@ async fn freeze_election(connection: &ConnectionInfo, opts: &FreezeOpts) -> anyh
             let epoch_metadata = epoch_metadata
                 .context(format!("partition {partition_id} has not been created yet"))?;
             let mut policy = epoch_metadata.leadership_policy().clone();
-            policy.freeze = Some(ElectionFreeze {
-                reason: opts.reason.clone(),
-            });
+            policy.freeze = None;
             Ok(epoch_metadata.set_leadership_policy(policy))
         })
         .await?;
         updated.push(partition_id);
 
-        c_println!("Froze leader election for partition {partition_id}.");
+        c_println!("Unfroze leader election for partition {partition_id}.");
     }
 
     if !updated.is_empty() {
