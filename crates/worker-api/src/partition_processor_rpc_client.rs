@@ -8,8 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 
+use metrics::counter;
 use tracing::trace;
 
 use restate_core::ShutdownError;
@@ -18,7 +21,6 @@ use restate_core::network::{NetworkSender, RpcReplyError, Swimlane};
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::partitions::PartitionRouting;
 use restate_types::NodeId;
-use restate_types::errors::GenericError;
 use restate_types::identifiers::{
     EntryIndex, InvocationId, PartitionId, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
@@ -37,6 +39,12 @@ use restate_types::net::partition_processor::{
     PartitionProcessorRpcRequest, PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
 };
 use restate_types::partition_table::{FindPartition, PartitionTable, PartitionTableError};
+
+use crate::metric_definitions::{
+    INVOCATION_CLIENT_REQUESTS, STATUS_COMPLETED, STATUS_INTERNAL_ERROR, STATUS_OVERLOADED_ERROR,
+    STATUS_PROTOCOL_ERROR, STATUS_ROUTING_ERROR, STATUS_SHUTDOWN, STATUS_UNAVAILABLE_ERROR,
+    describe_metrics,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PartitionProcessorInvocationClientError {
@@ -61,18 +69,43 @@ pub struct RpcError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum RpcErrorKind {
-    #[error(transparent)]
     Connect(#[from] ConnectError),
-    #[error("failed sending request: {0}")]
-    SendFailed(GenericError),
-    #[error("not leader")]
-    NotLeader,
-    #[error("lost leadership")]
-    LostLeadership,
-    #[error("rejecting rpc because the partition is too busy")]
-    Busy,
-    #[error("internal error: {0}")]
-    Internal(String),
+    ConnectionClosedBeforeSend,
+    Encode(#[from] EncodeError),
+    Reply(#[from] RpcReplyError),
+    Processor(#[from] PartitionProcessorRpcError),
+}
+
+// Note: Those are customer facing errors (e.g. in http invocation response errors), so try to keep
+// stable as much as possible.
+impl fmt::Display for RpcErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RpcErrorKind::Connect(err) => err.fmt(f),
+            RpcErrorKind::ConnectionClosedBeforeSend => {
+                f.write_str("failed sending request: Connection lost")
+            }
+            RpcErrorKind::Encode(err) => write!(f, "failed sending request: {err}"),
+            RpcErrorKind::Reply(
+                RpcReplyError::ServiceNotFound
+                | RpcReplyError::SortCodeNotFound
+                | RpcReplyError::ServiceStopped,
+            )
+            | RpcErrorKind::Processor(PartitionProcessorRpcError::NotLeader(_)) => {
+                f.write_str("not leader")
+            }
+            RpcErrorKind::Reply(RpcReplyError::LoadShedding | RpcReplyError::ServiceNotReady) => {
+                f.write_str("rejecting rpc because the partition is too busy")
+            }
+            RpcErrorKind::Reply(err) => write!(f, "internal error: {err}"),
+            RpcErrorKind::Processor(PartitionProcessorRpcError::LostLeadership(_)) => {
+                f.write_str("lost leadership")
+            }
+            RpcErrorKind::Processor(PartitionProcessorRpcError::Internal(msg)) => {
+                write!(f, "internal error: {msg}")
+            }
+        }
+    }
 }
 
 impl PartitionProcessorInvocationClientError {
@@ -89,6 +122,52 @@ impl PartitionProcessorInvocationClientError {
             _ => false,
         }
     }
+
+    fn as_metric_label(&self) -> &'static str {
+        match self {
+            PartitionProcessorInvocationClientError::UnknownPartition(_)
+            | PartitionProcessorInvocationClientError::UnknownNode(_) => STATUS_ROUTING_ERROR,
+            PartitionProcessorInvocationClientError::Shutdown(_) => STATUS_SHUTDOWN,
+            PartitionProcessorInvocationClientError::Rpc(err) => err.source.as_metric_label(),
+        }
+    }
+}
+
+impl RpcErrorKind {
+    fn as_metric_label(&self) -> &'static str {
+        match self {
+            RpcErrorKind::Connect(ConnectError::Shutdown(_)) => STATUS_SHUTDOWN,
+            RpcErrorKind::Connect(ConnectError::Discovery(_))
+            | RpcErrorKind::Reply(
+                RpcReplyError::ServiceNotFound
+                | RpcReplyError::ServiceStopped
+                | RpcReplyError::SortCodeNotFound,
+            )
+            | RpcErrorKind::Processor(
+                PartitionProcessorRpcError::NotLeader(_)
+                | PartitionProcessorRpcError::LostLeadership(_),
+            ) => STATUS_ROUTING_ERROR,
+            RpcErrorKind::Reply(RpcReplyError::LoadShedding) => STATUS_OVERLOADED_ERROR,
+            RpcErrorKind::Connect(
+                ConnectError::Handshake(_)
+                | ConnectError::Throttled(_)
+                | ConnectError::Transport(_),
+            )
+            | RpcErrorKind::ConnectionClosedBeforeSend
+            | RpcErrorKind::Reply(
+                RpcReplyError::Dropped
+                | RpcReplyError::ConnectionClosed(_)
+                | RpcReplyError::ServiceNotReady,
+            ) => STATUS_UNAVAILABLE_ERROR,
+            RpcErrorKind::Encode(_)
+            | RpcErrorKind::Reply(RpcReplyError::Unknown(_) | RpcReplyError::MessageUnrecognized) => {
+                STATUS_PROTOCOL_ERROR
+            }
+            RpcErrorKind::Processor(PartitionProcessorRpcError::Internal(_)) => {
+                STATUS_INTERNAL_ERROR
+            }
+        }
+    }
 }
 
 impl RpcError {
@@ -101,16 +180,20 @@ impl RpcError {
     }
 
     fn is_safe_to_retry(&self) -> bool {
-        match self.source {
+        match &self.source {
             RpcErrorKind::Connect(_)
-            | RpcErrorKind::NotLeader
-            | RpcErrorKind::Busy
-            | RpcErrorKind::SendFailed(_) => {
+            | RpcErrorKind::ConnectionClosedBeforeSend
+            | RpcErrorKind::Encode(_) => {
                 // These are pre-flight error that we can distinguish,
                 // and for which we know for certain that no message was proposed yet to the log.
                 true
             }
-            _ => false,
+            RpcErrorKind::Reply(err) => !err.maybe_processed(),
+            RpcErrorKind::Processor(PartitionProcessorRpcError::NotLeader(_)) => true,
+            RpcErrorKind::Processor(
+                PartitionProcessorRpcError::LostLeadership(_)
+                | PartitionProcessorRpcError::Internal(_),
+            ) => false,
         }
     }
 }
@@ -122,42 +205,11 @@ impl From<PartitionProcessorInvocationClientError> for InvocationClientError {
     }
 }
 
-impl From<EncodeError> for RpcErrorKind {
-    fn from(value: EncodeError) -> Self {
-        Self::SendFailed(value.into())
-    }
-}
-
-impl From<RpcReplyError> for RpcErrorKind {
-    fn from(value: RpcReplyError) -> Self {
-        match value {
-            e @ RpcReplyError::Unknown(_) => Self::Internal(e.to_string()),
-            e @ RpcReplyError::Dropped => Self::Internal(e.to_string()),
-            // todo: perhaps this should be an explicit error
-            e @ RpcReplyError::ConnectionClosed(_) => Self::Internal(e.to_string()),
-            e @ RpcReplyError::MessageUnrecognized => Self::Internal(e.to_string()),
-            RpcReplyError::ServiceNotFound | RpcReplyError::SortCodeNotFound => Self::NotLeader,
-            RpcReplyError::LoadShedding => Self::Busy,
-            RpcReplyError::ServiceNotReady => Self::Busy,
-            RpcReplyError::ServiceStopped => Self::NotLeader,
-        }
-    }
-}
-
-impl From<PartitionProcessorRpcError> for RpcErrorKind {
-    fn from(value: PartitionProcessorRpcError) -> Self {
-        match value {
-            PartitionProcessorRpcError::NotLeader(_) => RpcErrorKind::NotLeader,
-            PartitionProcessorRpcError::LostLeadership(_) => RpcErrorKind::LostLeadership,
-            PartitionProcessorRpcError::Internal(msg) => RpcErrorKind::Internal(msg),
-        }
-    }
-}
-
 pub struct PartitionProcessorInvocationClient<C> {
     networking: Networking<C>,
     partition_table: Live<PartitionTable>,
     partition_routing: PartitionRouting,
+    partition_id_labels: Arc<HashMap<PartitionId, Arc<str>>>,
 }
 
 impl<C: Clone> Clone for PartitionProcessorInvocationClient<C> {
@@ -166,6 +218,7 @@ impl<C: Clone> Clone for PartitionProcessorInvocationClient<C> {
             networking: self.networking.clone(),
             partition_table: self.partition_table.clone(),
             partition_routing: self.partition_routing.clone(),
+            partition_id_labels: self.partition_id_labels.clone(),
         }
     }
 }
@@ -176,10 +229,18 @@ impl<C> PartitionProcessorInvocationClient<C> {
         partition_table: Live<PartitionTable>,
         partition_routing: PartitionRouting,
     ) -> Self {
+        describe_metrics();
+        let partition_id_labels = partition_table
+            .pinned()
+            .iter_ids()
+            .map(|partition_id| (*partition_id, Arc::<str>::from(partition_id.to_string())))
+            .collect();
+
         Self {
             networking,
             partition_table,
             partition_routing,
+            partition_id_labels: Arc::new(partition_id_labels),
         }
     }
 }
@@ -196,8 +257,42 @@ where
         let partition_id = self
             .partition_table
             .pinned()
-            .find_partition_id(inner_request.partition_key())?;
+            .find_partition_id(inner_request.partition_key());
+        let partition_id_label: metrics::SharedString = match partition_id.as_ref() {
+            Ok(partition_id) => match self.partition_id_labels.get(partition_id) {
+                Some(label) => label.clone().into(),
+                None => partition_id.to_string().into(),
+            },
+            Err(_) => "unknown".into(),
+        };
 
+        let res = match partition_id {
+            Ok(partition_id) => {
+                self.send_to_partition(request_id, partition_id, inner_request)
+                    .await
+            }
+            Err(err) => Err(err.into()),
+        };
+
+        counter!(
+            INVOCATION_CLIENT_REQUESTS,
+            "partition_id" => partition_id_label,
+            "status" => match &res {
+                Ok(_) => STATUS_COMPLETED,
+                Err(err) => err.as_metric_label(),
+            },
+        )
+        .increment(1);
+
+        res
+    }
+
+    async fn send_to_partition(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        partition_id: PartitionId,
+        inner_request: PartitionProcessorRpcRequestInner,
+    ) -> Result<PartitionProcessorRpcResponse, PartitionProcessorInvocationClientError> {
         let node_id = NodeId::from(
             self.partition_routing
                 .get_node_by_partition(partition_id)
@@ -217,7 +312,7 @@ where
             RpcError::from_err(
                 partition_id,
                 node_id,
-                RpcErrorKind::SendFailed("Connection lost".into()),
+                RpcErrorKind::ConnectionClosedBeforeSend,
             )
         })?;
         let rpc_result = permit

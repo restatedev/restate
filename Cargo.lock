@@ -9236,6 +9236,7 @@ dependencies = [
  "derive_more",
  "futures",
  "gardal",
+ "metrics",
  "restate-clock",
  "restate-core",
  "restate-errors",
