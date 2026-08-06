@@ -805,6 +805,9 @@ where
         }
     }
 
+    // This function is only called when vqueues are not enabled, in the vqueues world, the
+    // the scheduler takes care of resuming those invocations. This should be removed once
+    // we no longer have non-vqueues based invocations.
     async fn resume_invoked_invocations(
         invoker_handle: &mut InvokerChannelServiceHandle,
         partition_store: &mut PartitionStore,
