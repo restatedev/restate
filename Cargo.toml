@@ -92,6 +92,7 @@ restate-util-time = { path = "util/time" }
 restate-test-util = { path = "crates/test-util" }
 restate-timer = { path = "crates/timer" }
 restate-timer-queue = { path = "crates/timer-queue" }
+restate-tracing = { path = "crates/tracing" }
 restate-tracing-instrumentation = { path = "crates/tracing-instrumentation" }
 restate-types = { path = "crates/types" }
 restate-utoipa = { path = "crates/utoipa" }
