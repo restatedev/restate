@@ -722,7 +722,15 @@ where
             }
 
             let (fencing_tokens, next_fencing_token) =
-                Self::resume_invoked_invocations(&mut invoker_handle, partition_store).await?;
+                if processor.fsm().features().is_vqueues_enabled() {
+                    // VQueues migration is atomic. Either all invocations have a vqueue id, or none of them do.
+                    // As such, if the partition has the feature enabled, it means that we no longer have any "Invoked"
+                    // invocation without a vqueue id. So the `resume_invoked_invocations` scan below would have skipped all
+                    // invocations anyways.
+                    (HashMap::default(), 0)
+                } else {
+                    Self::resume_invoked_invocations(&mut invoker_handle, partition_store).await?
+                };
 
             let timer_service = TimerService::new(
                 TokioClock,
@@ -811,14 +819,13 @@ where
         }
     }
 
+    // This function is only called when vqueues are not enabled, in the vqueues world, the
+    // the scheduler takes care of resuming those invocations. This should be removed once
+    // we no longer have non-vqueues based invocations.
     async fn resume_invoked_invocations(
         invoker_handle: &mut InvokerChannelServiceHandle,
         partition_store: &mut PartitionStore,
     ) -> Result<(HashMap<InvocationId, FencingToken>, FencingToken), Error> {
-        // todo(asoli): If we are asked to migrate to vqueues (or vqueues are enabled).
-        // we must migrate all invoked invocations here (through a wal command).
-        // (blocker to v1.7.0)
-
         let mut invoked_invocations = std::pin::pin!(
             partition_store
                 .scan_legacy_invoked_invocations()
