@@ -27,7 +27,6 @@ use restate_storage_api::service_status_table::{
 use restate_storage_api::timer_table::WriteTimerTable;
 use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_storage_api::{journal_table as journal_table_v1, journal_table_v2};
-use restate_types::config::Configuration;
 use restate_types::identifiers::{DeploymentId, EntryIndex, InvocationId, WithPartitionKey};
 use restate_types::invocation::client::RestartAsNewInvocationResponse;
 use restate_types::invocation::{
@@ -251,9 +250,9 @@ where
         // If the old invocation was already vqueue-enabled, we carry down the same vqueue id.
         // if not and we are now in vqueue-enabled mode, we assign a vqueue id to it.
         let qid = completed_invocation.vqueue_id.or_else(|| {
-            Configuration::pinned()
-                .common
-                .experimental
+            ctx.processor
+                .fsm()
+                .features()
                 .is_vqueues_enabled()
                 .then_some(VQueue::infer_vqueue_id_from_invocation(
                     new_invocation_id.partition_key(),
