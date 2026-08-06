@@ -27,7 +27,6 @@ use restate_storage_api::service_status_table::{
 use restate_storage_api::timer_table::WriteTimerTable;
 use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_storage_api::{journal_table as journal_table_v1, journal_table_v2};
-use restate_types::config::Configuration;
 use restate_types::identifiers::{DeploymentId, EntryIndex, InvocationId, WithPartitionKey};
 use restate_types::invocation::client::RestartAsNewInvocationResponse;
 use restate_types::invocation::{
