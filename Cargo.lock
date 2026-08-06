@@ -9216,6 +9216,7 @@ dependencies = [
  "restate-storage-query-datafusion",
  "restate-test-util",
  "restate-timer",
+ "restate-tracing",
  "restate-tracing-instrumentation",
  "restate-types",
  "restate-util-string",
