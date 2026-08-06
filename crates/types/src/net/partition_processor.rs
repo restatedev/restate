@@ -29,6 +29,7 @@ use crate::net::codec::{
 };
 use crate::net::{ProtocolVersion, ServiceTag};
 use crate::net::{default_wire_codec, define_rpc, define_service};
+use crate::time::MillisSinceEpoch;
 
 pub struct PartitionLeaderService;
 
@@ -50,6 +51,8 @@ default_wire_codec!(Result<PartitionProcessorRpcResponse, PartitionProcessorRpcE
 pub struct PartitionProcessorRpcRequest {
     pub request_id: PartitionProcessorRpcRequestId,
     pub partition_id: PartitionId,
+    /// Time at which the source node sent the request.
+    pub sent_at: Option<MillisSinceEpoch>,
     pub inner: PartitionProcessorRpcRequestInner,
 }
 
