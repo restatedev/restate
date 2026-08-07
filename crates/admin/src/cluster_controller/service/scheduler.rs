@@ -607,14 +607,15 @@ impl<T: TransportConnect> Scheduler<T> {
             return true;
         }
 
-        // Added processors start while `next` is pending, so there is no need to make them
-        // current before one is ready. Keeping the transition pending prevents an unready
-        // addition from entering leader election and lets placement reconsider `next` if the
-        // current replica set recovers first.
+        // Added processors start while `next` is pending. For transitions with additions,
+        // require readiness to be evidenced by at least one addition rather than retained
+        // overlap. This preserves the existing any-Active completion rule; other additions
+        // may still be warming when `next` becomes current.
         let mut newly_added = next
             .replica_set()
-            .difference(partition_state.current.replica_set());
-        let Some(first_newly_added) = newly_added.next() else {
+            .difference(partition_state.current.replica_set())
+            .peekable();
+        if newly_added.peek().is_none() {
             return next.replica_set().iter().any(|node_id| {
                 is_partition_processor_active_on_current_generation(
                     partition_id,
@@ -623,13 +624,8 @@ impl<T: TransportConnect> Scheduler<T> {
                     legacy_cluster_state,
                 )
             });
-        };
-        is_partition_processor_active_on_current_generation(
-            partition_id,
-            first_newly_added,
-            nodes_config,
-            legacy_cluster_state,
-        ) || newly_added.any(|node_id| {
+        }
+        newly_added.any(|node_id| {
             is_partition_processor_active_on_current_generation(
                 partition_id,
                 node_id,
@@ -1308,7 +1304,7 @@ mod tests {
     }
 
     #[test]
-    fn reconfiguration_requires_an_added_follower_to_be_active() {
+    fn reconfiguration_with_multiple_additions_requires_any_added_follower_to_be_active() {
         let partition_id = PartitionId::MIN;
         let state = reconfiguration_state(&[3, 2], Some(&[2, 1, 4]));
         let nodes_config = nodes_configuration([(1, 1), (2, 1), (3, 1), (4, 1)]);
