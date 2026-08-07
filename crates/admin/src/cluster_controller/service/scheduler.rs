@@ -607,32 +607,29 @@ impl<T: TransportConnect> Scheduler<T> {
             return true;
         }
 
-        // If `next` adds processors to the replica set, wait for at least one addition to
-        // demonstrate readiness before making `next` current. Committing while every
-        // addition is still catching up admits unready replicas to leader election and,
-        // during replacement, can drop warm followers from the current replica set.
-        let mut newly_added = next
-            .replica_set()
-            .difference(partition_state.current.replica_set())
-            .peekable();
-        if newly_added.peek().is_none() {
-            return next.replica_set().iter().any(|node_id| {
-                is_partition_processor_active_on_current_generation(
-                    partition_id,
-                    *node_id,
-                    nodes_config,
-                    legacy_cluster_state,
-                )
-            });
-        }
-        newly_added.any(|node_id| {
+        let is_ready = |node_id| {
             is_partition_processor_active_on_current_generation(
                 partition_id,
                 node_id,
                 nodes_config,
                 legacy_cluster_state,
             )
-        })
+        };
+
+        let mut newly_added = next
+            .replica_set()
+            .difference(partition_state.current.replica_set())
+            .peekable();
+        if newly_added.peek().is_some() {
+            // If `next` adds processors to the replica set, wait for at least one addition to
+            // demonstrate readiness before making `next` current. Committing while every addition
+            // is still catching up admits unready replicas to leader election and, during
+            // replacement, can drop warm followers from the current replica set.
+            newly_added.any(is_ready)
+        } else {
+            // Removal-only: at least one retained member must be ready before we drop replicas
+            next.replica_set().iter().copied().any(is_ready)
+        }
     }
 
     async fn load_partition_configuration(
@@ -1099,6 +1096,14 @@ impl<T: TransportConnect> Scheduler<T> {
     }
 }
 
+/// Like [`LegacyClusterState::is_partition_processor_active`], but only trusts a status report
+/// coming from the node generation currently registered in the nodes configuration.
+///
+/// `LegacyClusterState` can retain a status observed from a previous incarnation of a node. After a
+/// restart (e.g. during a rolling update), a leftover `Active` report says nothing about the
+/// current process, which may still be restoring or replaying — so it must not certify
+/// reconfiguration completion. Any mismatch, in either direction, fails toward "not ready", which
+/// only delays completion by a refresh round.
 fn is_partition_processor_active_on_current_generation(
     partition_id: PartitionId,
     node_id: PlainNodeId,
@@ -1156,11 +1161,7 @@ mod tests {
     use super::*;
 
     fn configuration(node_id: u32) -> PartitionConfiguration {
-        PartitionConfiguration::new(
-            ReplicationProperty::new_unchecked(1),
-            [PlainNodeId::from(node_id)].into_iter().collect(),
-            HashMap::default(),
-        )
+        configuration_with_nodes([node_id])
     }
 
     fn configuration_with_nodes(node_ids: impl IntoIterator<Item = u32>) -> PartitionConfiguration {
@@ -1173,7 +1174,12 @@ mod tests {
         )
     }
 
-    fn reconfiguration_state(current: &[u32], next: Option<&[u32]>) -> PartitionState {
+    struct Reconfiguring<'a> {
+        current: &'a [u32],
+        next: Option<&'a [u32]>,
+    }
+
+    fn partition_state(Reconfiguring { current, next }: Reconfiguring<'_>) -> PartitionState {
         PartitionState::new(
             configuration_with_nodes(current.iter().copied()),
             next.map(|next| configuration_with_nodes(next.iter().copied())),
@@ -1200,6 +1206,7 @@ mod tests {
         nodes_config
     }
 
+    /// None = node reports alive but has no processor status for this partition.
     fn reconfiguration_legacy_state(
         partition_id: PartitionId,
         statuses: impl IntoIterator<Item = (u32, Option<ReplayStatus>)>,
@@ -1240,8 +1247,8 @@ mod tests {
 
     fn should_complete(
         partition_id: PartitionId,
-        state: &PartitionState,
         nodes_config: &NodesConfiguration,
+        state: &PartitionState,
         statuses: impl IntoIterator<Item = (u32, Option<ReplayStatus>)>,
     ) -> bool {
         Scheduler::<FailingConnector>::should_complete_reconfiguration(
@@ -1255,13 +1262,16 @@ mod tests {
     #[test]
     fn reconfiguration_waits_for_added_follower_to_be_active() {
         let partition_id = PartitionId::MIN;
-        let state = reconfiguration_state(&[3, 2], Some(&[2, 1]));
+        let state = partition_state(Reconfiguring {
+            current: &[3, 2],
+            next: Some(&[2, 1]),
+        });
         let nodes_config = nodes_configuration([(1, 1), (2, 1), (3, 1)]);
 
         assert!(!should_complete(
             partition_id,
-            &state,
             &nodes_config,
+            &state,
             [
                 (2, Some(ReplayStatus::Active)),
                 (1, Some(ReplayStatus::Starting)),
@@ -1269,22 +1279,26 @@ mod tests {
         ));
         assert!(should_complete(
             partition_id,
-            &state,
             &nodes_config,
+            &state,
             [(1, Some(ReplayStatus::Active))],
         ));
     }
 
     #[test]
-    fn reconfiguration_waits_for_added_follower_when_increasing_replication() {
+    fn reconfiguration_waits_for_added_follower_when_replacing_replica() {
         let partition_id = PartitionId::MIN;
-        let state = reconfiguration_state(&[2, 1], Some(&[2, 1, 3]));
+        // N1 and N2 are retained; N3 joins.
+        let state = partition_state(Reconfiguring {
+            current: &[2, 1],
+            next: Some(&[2, 1, 3]),
+        });
         let nodes_config = nodes_configuration([(1, 1), (2, 1), (3, 1)]);
 
         assert!(!should_complete(
             partition_id,
-            &state,
             &nodes_config,
+            &state,
             [
                 (1, Some(ReplayStatus::Active)),
                 (2, Some(ReplayStatus::Active)),
@@ -1293,8 +1307,8 @@ mod tests {
         ));
         assert!(should_complete(
             partition_id,
-            &state,
             &nodes_config,
+            &state,
             [
                 (1, Some(ReplayStatus::Active)),
                 (2, Some(ReplayStatus::Active)),
@@ -1304,15 +1318,19 @@ mod tests {
     }
 
     #[test]
-    fn reconfiguration_with_multiple_additions_requires_any_added_follower_to_be_active() {
+    fn reconfiguration_with_multiple_additions_completes_when_one_is_active() {
         let partition_id = PartitionId::MIN;
-        let state = reconfiguration_state(&[3, 2], Some(&[2, 1, 4]));
+        // N3 departs, N2 is retained, and N1 and N4 join.
+        let state = partition_state(Reconfiguring {
+            current: &[3, 2],
+            next: Some(&[2, 1, 4]),
+        });
         let nodes_config = nodes_configuration([(1, 1), (2, 1), (3, 1), (4, 1)]);
 
         assert!(!should_complete(
             partition_id,
-            &state,
             &nodes_config,
+            &state,
             [
                 (2, Some(ReplayStatus::Active)),
                 (1, Some(ReplayStatus::Starting)),
@@ -1321,8 +1339,8 @@ mod tests {
         ));
         assert!(should_complete(
             partition_id,
-            &state,
             &nodes_config,
+            &state,
             [
                 (1, Some(ReplayStatus::Active)),
                 (4, Some(ReplayStatus::Starting)),
@@ -1333,7 +1351,10 @@ mod tests {
     #[test]
     fn reconfiguration_requires_active_status_from_current_node_generation() {
         let partition_id = PartitionId::MIN;
-        let state = reconfiguration_state(&[3, 2], Some(&[2, 1]));
+        let state = partition_state(Reconfiguring {
+            current: &[3, 2],
+            next: Some(&[2, 1]),
+        });
         let nodes_config = nodes_configuration([(1, 2), (2, 1), (3, 1)]);
         let mut n1_active_from_old_generation =
             reconfiguration_legacy_state(partition_id, [(1, Some(ReplayStatus::Active))]);
@@ -1370,18 +1391,21 @@ mod tests {
     fn reconfiguration_without_additions_requires_an_active_retained_follower() {
         let partition_id = PartitionId::MIN;
         let nodes_config = nodes_configuration([(2, 2), (3, 1)]);
-        let pure_removal = reconfiguration_state(&[3, 2], Some(&[2]));
+        let pure_removal = partition_state(Reconfiguring {
+            current: &[3, 2],
+            next: Some(&[2]),
+        });
 
         assert!(!should_complete(
             partition_id,
-            &pure_removal,
             &nodes_config,
+            &pure_removal,
             [],
         ));
         assert!(!should_complete(
             partition_id,
-            &pure_removal,
             &nodes_config,
+            &pure_removal,
             [(2, Some(ReplayStatus::Starting))],
         ));
         let mut n2_active_from_old_generation =
@@ -1414,14 +1438,20 @@ mod tests {
         );
         assert!(should_complete(
             partition_id,
-            &reconfiguration_state(&[3, 2], Some(&[])),
             &nodes_config,
+            &partition_state(Reconfiguring {
+                current: &[3, 2],
+                next: Some(&[]),
+            }),
             [],
         ));
         assert!(!should_complete(
             partition_id,
-            &reconfiguration_state(&[3, 2], None),
             &nodes_config,
+            &partition_state(Reconfiguring {
+                current: &[3, 2],
+                next: None,
+            }),
             [],
         ));
     }
