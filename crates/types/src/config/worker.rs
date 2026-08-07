@@ -867,8 +867,9 @@ pub struct StorageOptions {
     /// across databases.
     ///
     /// If unset, defaults are computed based on CPU count and active node roles.
+    ///
+    /// Since v1.7.0
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "schemars", schemars(skip))]
     rocksdb_max_background_flushes: Option<NonZeroU32>,
 
     /// # Max background compactions
@@ -878,8 +879,9 @@ pub struct StorageOptions {
     /// so it gets a larger share of the compaction budget (~65%).
     ///
     /// If unset, defaults are computed based on CPU count and active node roles.
+    ///
+    /// Since v1.7.0
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "schemars", schemars(skip))]
     rocksdb_max_background_compactions: Option<NonZeroU32>,
 
     /// # Clamps target size for sst files
