@@ -12,10 +12,12 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
 use std::fmt;
+use std::future::Future;
+use std::time::{Duration, Instant};
 
 use ahash::HashMap;
 use futures::StreamExt;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 use restate_core::network::{NetworkSender as _, Networking, Swimlane, TransportConnect};
 use restate_core::{Metadata, MetadataWriter, ShutdownError, SyncError, TaskCenter, TaskKind};
@@ -220,6 +222,29 @@ pub struct Scheduler<T> {
     partitions: HashMap<PartitionId, PartitionState>,
     replica_set_states: PartitionReplicaSetStates,
     cluster_state: ClusterState,
+    last_slow_synchronous_pass_warn: Option<Instant>,
+}
+
+const SLOW_SYNCHRONOUS_PASS_THRESHOLD: Duration = Duration::from_secs(1);
+const SLOW_SYNCHRONOUS_PASS_WARN_INTERVAL: Duration = Duration::from_secs(30);
+
+// A long poll is work that prevented Tokio from scheduling another task; wall time would also
+// include time yielded to metadata I/O.
+async fn measure_max_poll_elapsed<F>(future: F) -> (F::Output, Duration)
+where
+    F: Future,
+{
+    let mut max_poll_elapsed = Duration::ZERO;
+    let mut future = std::pin::pin!(future);
+    let output = futures::future::poll_fn(|cx| {
+        let started_at = Instant::now();
+        let poll = future.as_mut().poll(cx);
+        max_poll_elapsed = max_poll_elapsed.max(started_at.elapsed());
+        poll
+    })
+    .await;
+
+    (output, max_poll_elapsed)
 }
 
 /// The scheduler is responsible for assigning partition processors to nodes and to electing
@@ -238,6 +263,7 @@ impl<T: TransportConnect> Scheduler<T> {
             partitions: HashMap::default(),
             replica_set_states,
             cluster_state: TaskCenter::with_current(|h| h.cluster_state().clone()),
+            last_slow_synchronous_pass_warn: None,
         }
     }
 
@@ -304,8 +330,11 @@ impl<T: TransportConnect> Scheduler<T> {
         partition_table: &PartitionTable,
     ) -> Result<(), Error> {
         if self.partitions.is_empty() {
-            self.load_all_partition_configuration(partition_table)
-                .await?;
+            let (result, elapsed) =
+                measure_max_poll_elapsed(self.load_all_partition_configuration(partition_table))
+                    .await;
+            self.warn_if_synchronous_pass_is_slow("configuration-load", elapsed);
+            result?;
         }
 
         // prioritise leadership changes over partition reconfiguration
@@ -313,23 +342,34 @@ impl<T: TransportConnect> Scheduler<T> {
         // instructing a new leader when we already have the metadata requires no new metadata operations and can be done nearly instantly
         // by comparison, ensure_valid_partition_configuration can take (metadata operation latency * affected partitions)
         // which might be several seconds, and leader instruction would only happen at the end.
+        let started_at = Instant::now();
         self.ensure_valid_leaders(
             cluster_state,
             legacy_cluster_state,
             nodes_config,
             partition_table,
         );
-        self.instruct_nodes(legacy_cluster_state)?;
+        self.warn_if_synchronous_pass_is_slow("leader-election", started_at.elapsed());
 
-        self.ensure_valid_partition_configuration(
-            cluster_state,
-            legacy_cluster_state,
-            nodes_config,
-            partition_table,
-        )
-        .await?;
-        // we may have chosen new leaders, so we instruct again
+        let started_at = Instant::now();
         self.instruct_nodes(legacy_cluster_state)?;
+        self.warn_if_synchronous_pass_is_slow("instruction-generation", started_at.elapsed());
+
+        let (result, elapsed) =
+            measure_max_poll_elapsed(self.ensure_valid_partition_configuration(
+                cluster_state,
+                legacy_cluster_state,
+                nodes_config,
+                partition_table,
+            ))
+            .await;
+        self.warn_if_synchronous_pass_is_slow("reconfiguration", elapsed);
+        result?;
+        // we may have chosen new leaders, so we instruct again
+
+        let started_at = Instant::now();
+        self.instruct_nodes(legacy_cluster_state)?;
+        self.warn_if_synchronous_pass_is_slow("instruction-generation", started_at.elapsed());
 
         // todo move draining workers to disabled if they no longer run any partition processors;
         //  since the worker state is stored in the NodesConfiguration and the replica sets are
@@ -339,6 +379,24 @@ impl<T: TransportConnect> Scheduler<T> {
         //  wait a little bit to give the nodes configuration time to be spread across the cluster.
 
         Ok(())
+    }
+
+    fn warn_if_synchronous_pass_is_slow(&mut self, pass: &'static str, elapsed: Duration) {
+        if elapsed < SLOW_SYNCHRONOUS_PASS_THRESHOLD
+            || self
+                .last_slow_synchronous_pass_warn
+                .is_some_and(|last| last.elapsed() < SLOW_SYNCHRONOUS_PASS_WARN_INTERVAL)
+        {
+            return;
+        }
+
+        self.last_slow_synchronous_pass_warn = Some(Instant::now());
+        warn!(
+            pass,
+            ?elapsed,
+            partitions = self.partitions.len(),
+            "Partition-wide scheduler pass exceeded the synchronous-work budget"
+        );
     }
 
     async fn load_all_partition_configuration(
