@@ -24,15 +24,14 @@ arrow-array = { version = "58", default-features = false, features = ["chrono-tz
 arrow-cast = { version = "58", default-features = false, features = ["prettyprint"] }
 arrow-ipc = { version = "58", features = ["lz4", "zstd"] }
 arrow-schema = { version = "58", default-features = false, features = ["canonical_extension_types"] }
-aws-credential-types = { version = "1", default-features = false, features = ["test-util"] }
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-credential-types = { version = "1", default-features = false, features = ["hardcoded-credentials", "test-util"] }
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 aws-lc-sys = { version = "0.40", default-features = false, features = ["prebuilt-nasm"] }
 aws-runtime = { version = "1", default-features = false, features = ["event-stream"] }
 aws-sdk-sts = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
 aws-sigv4 = { version = "1", features = ["http0-compat", "sign-eventstream"] }
 aws-smithy-http = { version = "0.63", default-features = false, features = ["event-stream"] }
-aws-smithy-runtime = { version = "1", default-features = false, features = ["client", "default-https-client", "rt-tokio"] }
-aws-smithy-runtime-api = { version = "1", features = ["client", "http-auth", "test-util"] }
 aws-smithy-types = { version = "1", default-features = false, features = ["byte-stream-poll-next", "http-body-0-4-x", "http-body-1-x", "rt-tokio", "test-util"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "query", "tokio"] }
 bilrost = { version = "0.1014", default-features = false, features = ["auto-optimize", "bytestring", "derive", "smallvec", "std"] }
@@ -154,15 +153,14 @@ arrow-array = { version = "58", default-features = false, features = ["chrono-tz
 arrow-cast = { version = "58", default-features = false, features = ["prettyprint"] }
 arrow-ipc = { version = "58", features = ["lz4", "zstd"] }
 arrow-schema = { version = "58", default-features = false, features = ["canonical_extension_types"] }
-aws-credential-types = { version = "1", default-features = false, features = ["test-util"] }
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-credential-types = { version = "1", default-features = false, features = ["hardcoded-credentials", "test-util"] }
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 aws-lc-sys = { version = "0.40", default-features = false, features = ["prebuilt-nasm"] }
 aws-runtime = { version = "1", default-features = false, features = ["event-stream"] }
 aws-sdk-sts = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
 aws-sigv4 = { version = "1", features = ["http0-compat", "sign-eventstream"] }
 aws-smithy-http = { version = "0.63", default-features = false, features = ["event-stream"] }
-aws-smithy-runtime = { version = "1", default-features = false, features = ["client", "default-https-client", "rt-tokio"] }
-aws-smithy-runtime-api = { version = "1", features = ["client", "http-auth", "test-util"] }
 aws-smithy-types = { version = "1", default-features = false, features = ["byte-stream-poll-next", "http-body-0-4-x", "http-body-1-x", "rt-tokio", "test-util"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "query", "tokio"] }
 bilrost = { version = "0.1014", default-features = false, features = ["auto-optimize", "bytestring", "derive", "smallvec", "std"] }

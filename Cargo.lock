@@ -607,6 +607,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-msk-iam-sasl-signer"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e62f2c07adf3f0bd1ad40414dd30fcf34c595d5f613e36011d5b62eeff14f490"
+dependencies = [
+ "aws-config",
+ "aws-credential-types",
+ "aws-sdk-sts",
+ "aws-sigv4",
+ "aws-types",
+ "base64 0.22.1",
+ "chrono",
+ "futures",
+ "thiserror 1.0.69",
+ "url",
+]
+
+[[package]]
 name = "aws-runtime"
 version = "1.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7957,6 +7975,8 @@ name = "restate-ingress-kafka"
 version = "1.7.3-dev"
 dependencies = [
  "anyhow",
+ "aws-config",
+ "aws-msk-iam-sasl-signer",
  "base64 0.22.1",
  "bytes",
  "derive_more",
@@ -9185,6 +9205,7 @@ dependencies = [
  "arrow-cast",
  "arrow-ipc",
  "arrow-schema",
+ "aws-config",
  "aws-credential-types",
  "aws-lc-rs",
  "aws-lc-sys",
@@ -9192,8 +9213,6 @@ dependencies = [
  "aws-sdk-sts",
  "aws-sigv4",
  "aws-smithy-http",
- "aws-smithy-runtime",
- "aws-smithy-runtime-api",
  "aws-smithy-types",
  "axum",
  "bilrost",

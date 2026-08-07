@@ -113,7 +113,10 @@ fn parse_oauthbearer_config(config: &str) -> OAuthBearerConfig {
 /// can be unit-tested without a tokio runtime or any AWS calls.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ResolvedProvider {
-    MskIam { region: String, profile: Option<String> },
+    MskIam {
+        region: String,
+        profile: Option<String>,
+    },
 }
 
 /// Validate the parsed config and resolve which provider to use.
@@ -377,10 +380,7 @@ mod tests {
             .unwrap();
         let result = generate_oauth_token(handle.handle(), Some("region=us-east-1"));
         let err = result.expect_err("expected missing-provider error");
-        assert!(
-            err.to_string().contains("Missing 'provider'"),
-            "got: {err}"
-        );
+        assert!(err.to_string().contains("Missing 'provider'"), "got: {err}");
     }
 
     #[test]
@@ -402,10 +402,7 @@ mod tests {
         // No config at all is equivalent to an empty config: provider is missing.
         let result = generate_oauth_token(handle.handle(), None);
         let err = result.expect_err("expected missing-provider error");
-        assert!(
-            err.to_string().contains("Missing 'provider'"),
-            "got: {err}"
-        );
+        assert!(err.to_string().contains("Missing 'provider'"), "got: {err}");
     }
 
     /// When the crate is built without the `msk-iam` feature, resolving succeeds
@@ -417,7 +414,8 @@ mod tests {
         let handle = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
-        let result = generate_oauth_token(handle.handle(), Some("provider=msk-iam,region=us-east-1"));
+        let result =
+            generate_oauth_token(handle.handle(), Some("provider=msk-iam,region=us-east-1"));
         let err = result.expect_err("expected feature-disabled error");
         assert!(err.to_string().contains("msk-iam"), "got: {err}");
         assert!(err.to_string().contains("feature"), "got: {err}");
