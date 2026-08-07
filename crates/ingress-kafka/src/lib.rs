@@ -11,6 +11,8 @@
 mod builder;
 mod consumer_task;
 mod metric_definitions;
+#[cfg(feature = "msk-iam")]
+mod oauth;
 mod subscription_controller;
 
 use rdkafka::error::KafkaError;
