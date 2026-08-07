@@ -30,6 +30,7 @@ futures = { workspace = true }
 enumset = { workspace = true }
 http = { workspace = true }
 itertools = { workspace = true }
+libc = "0.2"
 nix = { version = "0.30.1", features = ["signal"] }
 rand = { workspace = true }
 regex = { workspace = true }
