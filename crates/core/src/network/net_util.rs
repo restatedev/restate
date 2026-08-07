@@ -13,7 +13,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use http::Uri;
 use hyper::body::{Body, Incoming};
@@ -29,6 +29,7 @@ use tonic::transport::{Channel, Endpoint};
 use tower::Service;
 use tracing::{Instrument, Span, debug, error_span, info, instrument, trace};
 
+use restate_tracing::warn_ratelimited;
 use restate_types::config::{Configuration, TlsMode};
 use restate_types::errors::GenericError;
 use restate_types::net::address::{AdvertisedAddress, GrpcPort};
@@ -38,6 +39,29 @@ use restate_types::net::listener::Listeners;
 
 use crate::network::tls::{TlsClientConfig, TlsServerConfig};
 use crate::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
+
+pub(crate) async fn warn_on_slow_h2_polls<F>(stream_kind: &'static str, future: F) -> F::Output
+where
+    F: Future,
+{
+    tokio::pin!(future);
+    std::future::poll_fn(|cx| {
+        let started_at = Instant::now();
+        let result = future.as_mut().poll(cx);
+        let elapsed = started_at.elapsed();
+        if elapsed >= Duration::from_millis(100) {
+            warn_ratelimited!(
+                10,
+                Duration::from_secs(60),
+                stream_kind,
+                ?elapsed,
+                "Slow HTTP/2 stream poll on the default runtime"
+            );
+        }
+        result
+    })
+    .await
+}
 
 pub enum DNSResolution {
     // use whatever order getaddressinfo returns (http connector will use the first v4 and v6 ips it finds)
@@ -491,7 +515,7 @@ where
     fn execute(&self, fut: F) {
         let _ = TaskCenter::spawn_child(TaskKind::H2ServerStream, "h2stream", async move {
             // ignore the future output
-            let _ = fut.await;
+            let _ = warn_on_slow_h2_polls("server", fut).await;
             Ok(())
         });
     }

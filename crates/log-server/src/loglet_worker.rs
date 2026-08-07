@@ -8,7 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::time::Duration;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use metrics::counter;
 use tokio::sync::mpsc;
@@ -25,6 +26,7 @@ use restate_core::task_center::TaskGuard;
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_token};
 use restate_futures_util::waiter_queue::WaiterQueue;
 use restate_platform::memory::EstimatedMemorySize;
+use restate_tracing::warn_ratelimited;
 use restate_types::GenerationalNodeId;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber, TailState};
 use restate_types::net::{RpcRequest, UnaryMessage, log_server::*};
@@ -40,6 +42,16 @@ use crate::metric_definitions::{
 use crate::tasks::{
     OnComplete, SealStorageTask, StoreStorageTask, SyncGlobalTailStorageTask, TrimStorageTask,
 };
+
+static ACTIVE_GET_RECORDS_REQUESTS: AtomicUsize = AtomicUsize::new(0);
+
+struct ActiveGetRecordsRequest;
+
+impl Drop for ActiveGetRecordsRequest {
+    fn drop(&mut self) {
+        ACTIVE_GET_RECORDS_REQUESTS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 /// A loglet worker
 ///
@@ -629,6 +641,7 @@ impl<S: LogStore> LogletWorker<S> {
 
         let log_store = self.log_store.clone();
         let loglet_state = self.loglet_state.clone();
+        let loglet_id = self.loglet_id;
         let from_offset = msg.from_offset;
         // validate that from_offset <= to_offset
         if msg.from_offset > msg.to_offset {
@@ -640,6 +653,10 @@ impl<S: LogStore> LogletWorker<S> {
             TaskKind::Disposable,
             "logserver-get-records",
             async move {
+                let active_requests =
+                    ACTIVE_GET_RECORDS_REQUESTS.fetch_add(1, Ordering::Relaxed) + 1;
+                let _active_request = ActiveGetRecordsRequest;
+                let started_at = Instant::now();
                 let records = match log_store.read_records(msg, &loglet_state).await {
                     Ok(records) => records,
                     Err(_) => Records::new(
@@ -649,8 +666,25 @@ impl<S: LogStore> LogletWorker<S> {
                     )
                     .with_status(Status::Disabled),
                 };
+                let scan_elapsed = started_at.elapsed();
+                let returned_records = records.records.len();
                 // ship the response to the original connection
                 reciprocal.send(records);
+                let encode_and_send_elapsed = started_at.elapsed().saturating_sub(scan_elapsed);
+                let total_elapsed = started_at.elapsed();
+                if total_elapsed >= Duration::from_millis(100) {
+                    warn_ratelimited!(
+                        10,
+                        Duration::from_secs(60),
+                        %loglet_id,
+                        active_requests,
+                        returned_records,
+                        ?scan_elapsed,
+                        ?encode_and_send_elapsed,
+                        ?total_elapsed,
+                        "Slow replicated-loglet GetRecords request"
+                    );
+                }
             },
         );
     }

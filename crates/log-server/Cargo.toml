@@ -26,6 +26,7 @@ restate-memory = { workspace = true }
 restate-metadata-store = { workspace = true }
 restate-platform = { workspace = true }
 restate-rocksdb = { workspace = true }
+restate-tracing = { workspace = true }
 restate-util-bytecount = { workspace = true, features = ["serde"] }
 restate-util-time = { workspace = true }
 restate-types = { workspace = true }

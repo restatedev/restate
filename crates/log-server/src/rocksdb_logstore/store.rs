@@ -10,12 +10,15 @@
 
 use std::cmp::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::time::{Duration, Instant};
 
 use rocksdb::{BoundColumnFamily, DB, ReadOptions, WriteBatch, WriteOptions};
 use tracing::{error, trace};
 
 use restate_bifrost::loglet::OperationError;
 use restate_rocksdb::{IoMode, Priority, RocksDb};
+use restate_tracing::warn_ratelimited;
 use restate_types::GenerationalNodeId;
 use restate_types::config::Configuration;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber, TailState};
@@ -36,6 +39,16 @@ use crate::rocksdb_logstore::keys::DataRecordKey;
 use crate::tasks::{
     OnComplete, SealStorageTask, StoreStorageTask, SyncGlobalTailStorageTask, TrimStorageTask,
 };
+
+static ACTIVE_READ_RECORD_SCANS: AtomicUsize = AtomicUsize::new(0);
+
+struct ActiveReadRecordScan;
+
+impl Drop for ActiveReadRecordScan {
+    fn drop(&mut self) {
+        ACTIVE_READ_RECORD_SCANS.fetch_sub(1, AtomicOrdering::Relaxed);
+    }
+}
 
 #[derive(Clone)]
 pub struct RocksDbLogStore {
@@ -337,7 +350,10 @@ impl LogStore for RocksDbLogStore {
         msg: GetRecords,
         loglet_state: &LogletState,
     ) -> Result<Records, OperationError> {
-        block_in_place(|| {
+        let active_scans = ACTIVE_READ_RECORD_SCANS.fetch_add(1, AtomicOrdering::Relaxed) + 1;
+        let _active_scan = ActiveReadRecordScan;
+        let started_at = Instant::now();
+        let result = block_in_place(|| {
             let data_cf = self.data_cf();
             let loglet_id = msg.header.loglet_id;
             // The order of operations is important to remain correct.
@@ -401,6 +417,8 @@ impl LogStore for RocksDbLogStore {
             let mut read_pointer = read_from;
             iterator.seek(oldest_key_bytes);
             let mut first_record_inserted = false;
+            let mut scanned_records = 0usize;
+            let mut scanned_bytes = 0usize;
 
             while iterator.valid() && iterator.key().is_some() && read_pointer <= read_to {
                 let loaded_key =
@@ -438,6 +456,8 @@ impl LogStore for RocksDbLogStore {
                 // Is this a filtered record?
                 let decoder = DataRecordDecoder::new(iterator.value().expect("log record exists"))
                     .map_err(RocksDbLogStoreError::from)?;
+                scanned_records += 1;
+                scanned_bytes = scanned_bytes.saturating_add(decoder.size());
 
                 if !decoder.matches_key_query(&msg.filter) {
                     records.push((offset, MaybeRecord::FilteredGap(Gap { to: offset })));
@@ -468,12 +488,52 @@ impl LogStore for RocksDbLogStore {
                 return Err(RocksDbLogStoreError::Rocksdb(e).into());
             }
 
-            Ok(Records {
+            let records = Records {
                 header: LogServerResponseHeader::new(local_tail, loglet_state.known_global_tail()),
                 next_offset: read_pointer,
                 records,
-            })
-        })
+            };
+            let returned_records = records.records.len();
+            Ok((records, scanned_records, scanned_bytes, returned_records))
+        });
+
+        let elapsed = started_at.elapsed();
+        match result {
+            Ok((records, scanned_records, scanned_bytes, returned_records)) => {
+                if elapsed >= Duration::from_millis(100) {
+                    warn_ratelimited!(
+                        10,
+                        Duration::from_secs(60),
+                        loglet_id = %msg.header.loglet_id,
+                        from_offset = %msg.from_offset,
+                        to_offset = %msg.to_offset,
+                        active_scans,
+                        scanned_records,
+                        scanned_bytes,
+                        returned_records,
+                        ?elapsed,
+                        "Slow replicated-loglet record scan"
+                    );
+                }
+                Ok(records)
+            }
+            Err(error) => {
+                if elapsed >= Duration::from_millis(100) {
+                    warn_ratelimited!(
+                        10,
+                        Duration::from_secs(60),
+                        loglet_id = %msg.header.loglet_id,
+                        from_offset = %msg.from_offset,
+                        to_offset = %msg.to_offset,
+                        active_scans,
+                        ?elapsed,
+                        %error,
+                        "Slow replicated-loglet record scan failed"
+                    );
+                }
+                Err(error)
+            }
+        }
     }
 
     async fn get_records_digest(

@@ -24,7 +24,7 @@ use restate_types::net::address::{AdvertisedAddress, GrpcPort, ListenerPort, Pee
 use restate_types::net::connect_opts::GrpcConnectionOptions;
 
 use crate::network::grpc::DEFAULT_GRPC_COMPRESSION;
-use crate::network::net_util::{DNSResolution, connect_tonic_endpoint};
+use crate::network::net_util::{DNSResolution, connect_tonic_endpoint, warn_on_slow_h2_polls};
 use crate::network::protobuf::core_node_svc::core_node_svc_client::CoreNodeSvcClient;
 use crate::network::protobuf::network::Message;
 use crate::network::tls::TlsClientConfig;
@@ -169,7 +169,7 @@ where
         // Making this task managed will result in occasional lockups on shutdown.
         let _ = TaskCenter::spawn_unmanaged(TaskKind::H2ClientStream, "h2stream", async move {
             // ignore the future output
-            let _ = fut.await;
+            let _ = warn_on_slow_h2_polls("client", fut).await;
         });
     }
 }
