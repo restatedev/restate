@@ -204,8 +204,8 @@ impl FdState {
         self.num_gossip_received >= (opts.gossip_fd_stability_threshold.get() as usize)
     }
 
-    /// returns true if there has been at least a gossip interval since the last one.
-    pub fn gossip_tick(&mut self, opts: &GossipOptions) -> bool {
+    /// Returns the number of gossip intervals elapsed since the last tick.
+    pub fn gossip_tick(&mut self, opts: &GossipOptions) -> u32 {
         let now = Instant::now();
         assert!(!opts.gossip_tick_interval.is_zero());
         // calculate how many intervals we have missed to compensate for long stalls
@@ -225,10 +225,9 @@ impl FdState {
             }
 
             self.last_gossip_tick = now;
-            true
-        } else {
-            false
         }
+
+        full_intervals
     }
 
     pub fn is_lonely(&self, opts: &GossipOptions) -> bool {
@@ -693,5 +692,198 @@ impl FdState {
     fn my_node_mut(&mut self) -> &mut Node {
         self.node_mut(&self.my_node_id.as_plain())
             .expect("my node must be in FD")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use restate_types::cluster_state::ClusterState;
+    use restate_types::net::address::AdvertisedAddress;
+    use restate_types::net::node::{ClusterStateReply, CsNode, CsReplyStatus};
+    use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
+    use restate_types::{GenerationalNodeId, RestateVersion};
+
+    use super::*;
+
+    const LOCAL_NODE: GenerationalNodeId = GenerationalNodeId::new(1, 1);
+    const PEER_NODE: GenerationalNodeId = GenerationalNodeId::new(2, 1);
+    const SECOND_PEER_NODE: GenerationalNodeId = GenerationalNodeId::new(3, 1);
+
+    fn nodes_config() -> NodesConfiguration {
+        let mut nodes_config = NodesConfiguration::new_for_testing();
+        for node_id in [LOCAL_NODE, PEER_NODE, SECOND_PEER_NODE] {
+            nodes_config.upsert_node(
+                NodeConfig::builder()
+                    .name(format!("node-{node_id}"))
+                    .current_generation(node_id)
+                    .address(AdvertisedAddress::default())
+                    .roles(Role::Admin | Role::Worker)
+                    .binary_version(RestateVersion::current())
+                    .build(),
+            );
+        }
+        nodes_config
+    }
+
+    fn state_with_live_peer() -> FdState {
+        let nodes_config = nodes_config();
+        let cluster_state = ClusterState::default();
+        let mut state = FdState::new(
+            LOCAL_NODE,
+            &nodes_config,
+            PartitionReplicaSetStates::default(),
+            cluster_state.updater(),
+        );
+        mark_peer_alive(&mut state, PEER_NODE);
+        state
+    }
+
+    fn mark_peer_alive(state: &mut FdState, node_id: GenerationalNodeId) {
+        let peer = state
+            .node_states
+            .get_mut(&node_id.as_plain())
+            .expect("peer is in the nodes configuration");
+        peer.gossip_age = 0;
+        peer.state = NodeState::Alive;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn first_tick_charges_time_spent_waiting_for_startup() {
+        let mut state = state_with_live_peer();
+        let opts = GossipOptions::default();
+
+        tokio::time::advance(Duration::from_secs(2)).await;
+
+        assert_eq!(state.gossip_tick(&opts), 20);
+        assert_eq!(
+            state.node_states[&PEER_NODE.as_plain()].gossip_age,
+            20,
+            "the first tick charges every elapsed gossip interval since FdState creation"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn resetting_tick_baseline_before_startup_avoids_charging_startup_wait() {
+        let mut state = state_with_live_peer();
+        let opts = GossipOptions::default();
+
+        tokio::time::advance(Duration::from_secs(2)).await;
+        state.last_gossip_tick = Instant::now();
+
+        assert_eq!(state.gossip_tick(&opts), 0);
+        assert_eq!(state.node_states[&PEER_NODE.as_plain()].gossip_age, 0);
+
+        tokio::time::advance(*opts.gossip_tick_interval).await;
+
+        assert_eq!(state.gossip_tick(&opts), 1);
+        assert_eq!(state.node_states[&PEER_NODE.as_plain()].gossip_age, 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn missed_tick_marks_all_live_peers_dead_when_the_detector_is_stable() {
+        let mut state = state_with_live_peer();
+        mark_peer_alive(&mut state, SECOND_PEER_NODE);
+        let opts = GossipOptions::default();
+        state.num_gossip_received = opts.gossip_fd_stability_threshold.get() as usize;
+
+        tokio::time::advance(Duration::from_millis(2900)).await;
+
+        assert_eq!(state.gossip_tick(&opts), 29);
+        assert_eq!(state.node_states[&PEER_NODE.as_plain()].gossip_age, 29);
+        assert_eq!(
+            state.node_states[&SECOND_PEER_NODE.as_plain()].gossip_age,
+            29
+        );
+
+        state.detect_peer_failures(&opts);
+
+        assert_eq!(
+            state.node_states[&PEER_NODE.as_plain()].state,
+            NodeState::Dead
+        );
+        assert_eq!(
+            state.node_states[&SECOND_PEER_NODE.as_plain()].state,
+            NodeState::Dead
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ordinary_ticks_mark_a_stable_unheard_peer_dead_at_age_eleven() {
+        let mut state = state_with_live_peer();
+        let opts = GossipOptions::default();
+        state.num_gossip_received = opts.gossip_fd_stability_threshold.get() as usize;
+
+        for expected_age in 1..=11 {
+            tokio::time::advance(*opts.gossip_tick_interval).await;
+
+            assert_eq!(state.gossip_tick(&opts), 1);
+            state.detect_peer_failures(&opts);
+
+            assert_eq!(
+                state.node_states[&PEER_NODE.as_plain()].gossip_age,
+                expected_age
+            );
+            assert_eq!(
+                state.node_states[&PEER_NODE.as_plain()].state,
+                if expected_age == 11 {
+                    NodeState::Dead
+                } else {
+                    NodeState::Alive
+                }
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn startup_preseed_does_not_prevent_the_first_tick_from_aging_a_live_peer() {
+        let nodes_config = nodes_config();
+        let cluster_state = ClusterState::default();
+        let mut state = FdState::new(
+            LOCAL_NODE,
+            &nodes_config,
+            PartitionReplicaSetStates::default(),
+            cluster_state.updater(),
+        );
+        let opts = GossipOptions::default();
+
+        assert_eq!(
+            state.node_states[&PEER_NODE.as_plain()].state,
+            NodeState::Dead
+        );
+        assert_eq!(
+            state.node_states[&PEER_NODE.as_plain()].gossip_age,
+            u32::MAX
+        );
+
+        tokio::time::advance(Duration::from_secs(2)).await;
+        state.update_from_cluster_state_message(
+            &opts,
+            ClusterStateReply {
+                status: CsReplyStatus::Ok,
+                nodes: vec![CsNode {
+                    node_id: PEER_NODE,
+                    state: net::node::NodeState::Alive,
+                }],
+                partitions: Vec::new(),
+            },
+        );
+
+        assert_eq!(
+            state.node_states[&PEER_NODE.as_plain()].state,
+            NodeState::Alive
+        );
+        assert_eq!(state.node_states[&PEER_NODE.as_plain()].gossip_age, 0);
+
+        assert_eq!(state.gossip_tick(&opts), 20);
+        state.num_gossip_received = opts.gossip_fd_stability_threshold.get() as usize;
+        state.detect_peer_failures(&opts);
+
+        assert_eq!(state.node_states[&PEER_NODE.as_plain()].gossip_age, 20);
+        assert_eq!(
+            state.node_states[&PEER_NODE.as_plain()].state,
+            NodeState::Dead
+        );
     }
 }

@@ -126,6 +126,12 @@ pub enum NodeStartError {
 }
 
 impl NodeSpec {
+    /// Adds an environment variable to the spawned server process.
+    pub fn with_env_var(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env.push((key.into(), value.into()));
+        self
+    }
+
     pub fn node_name(&self) -> &str {
         self.base_config.node_name()
     }

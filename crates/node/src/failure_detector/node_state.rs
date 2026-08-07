@@ -244,6 +244,8 @@ impl Node {
         if current_state != next_state {
             if matches!(next_state, NodeState::Dead | NodeState::Alive) {
                 tracing::info!(
+                    gossip_age = self.gossip_age,
+                    connection_closed = self.is_gone(),
                     "{} transitioned from {} to {} (gossip-age={})",
                     self.gen_node_id,
                     current_state,

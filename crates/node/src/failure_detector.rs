@@ -62,6 +62,24 @@ pub struct FailureDetector<T> {
     last_dumped: Instant,
 }
 
+#[derive(Default)]
+struct LoopWork {
+    gossip_messages: u32,
+    gossip_messages_elapsed: Duration,
+    get_node_state_requests: u32,
+    get_node_state_requests_elapsed: Duration,
+    get_cluster_state_requests: u32,
+    get_cluster_state_requests_elapsed: Duration,
+    startup_cluster_state_replies: u32,
+    startup_cluster_state_replies_elapsed: Duration,
+    node_status_changes: u32,
+    node_status_changes_elapsed: Duration,
+    nodes_config_changes: u32,
+    nodes_config_changes_elapsed: Duration,
+    unrecognized_messages: u32,
+    unrecognized_messages_elapsed: Duration,
+}
+
 impl<T: NetworkSender> FailureDetector<T> {
     pub fn new(
         opts: &GossipOptions,
@@ -126,6 +144,7 @@ impl<T: NetworkSender> FailureDetector<T> {
         let mut shutting_down = false;
         let (my_node_health, cs_updater) =
             TaskCenter::with_current(|tc| (tc.health().clone(), tc.cluster_state_updater()));
+        let fd_state_created_at = Instant::now();
         let mut fd_state = FdState::new(
             my_node_id,
             nodes_config.live_load(),
@@ -162,30 +181,49 @@ impl<T: NetworkSender> FailureDetector<T> {
             // broadcast again that we have started
             self.broadcast_bring_up(node_status, &mut fd_state);
         }
-        info!("Failure Detector Started");
+        info!(
+            startup_elapsed = ?fd_state_created_at.elapsed(),
+            "Failure Detector Started"
+        );
         // Explicit reset because the interval could have been created long time ago, and we don't
         // want to erroneously report that a stall was detected.
         self.gossip_interval.reset_immediately();
 
         // Start receiving gossip messages
         let mut network_rx = self.gossip_svc_rx.take().start();
+        let mut loop_work = LoopWork::default();
 
         loop {
             tokio::select! {
                 Ok(()) = my_node_status_watch.changed(), if !shutting_down => {
+                    let processing_started_at = Instant::now();
+                    loop_work.node_status_changes += 1;
                     // we should only see shutdowns.
                     let status = *my_node_status_watch.borrow_and_update();
                     debug_assert!(matches!(status, NodeStatus::ShuttingDown | NodeStatus::Unknown), "{status:?}");
                     self.broadcast_failover(&mut fd_state);
                     shutting_down = true;
+                    loop_work.node_status_changes_elapsed = loop_work
+                        .node_status_changes_elapsed
+                        .saturating_add(processing_started_at.elapsed());
                 }
                 Ok(()) = nodes_config_watch.changed() => {
+                    let processing_started_at = Instant::now();
+                    loop_work.nodes_config_changes += 1;
                     // can fail the task if we have been preempted
                     fd_state.refresh_nodes_config(nodes_config.live_load())?;
+                    loop_work.nodes_config_changes_elapsed = loop_work
+                        .nodes_config_changes_elapsed
+                        .saturating_add(processing_started_at.elapsed());
                 }
                 Some(Ok(cs_reply)) = get_cs_futs.next() => {
+                    let processing_started_at = Instant::now();
+                    loop_work.startup_cluster_state_replies += 1;
                     let opts = opts.live_load();
                     if cs_reply.status != restate_types::net::node::CsReplyStatus::Ok {
+                        loop_work.startup_cluster_state_replies_elapsed = loop_work
+                            .startup_cluster_state_replies_elapsed
+                            .saturating_add(processing_started_at.elapsed());
                         continue;
                     }
 
@@ -194,27 +232,53 @@ impl<T: NetworkSender> FailureDetector<T> {
                     }
                     // we are not interested in further replies.
                     get_cs_futs.clear();
+                    loop_work.startup_cluster_state_replies_elapsed = loop_work
+                        .startup_cluster_state_replies_elapsed
+                        .saturating_add(processing_started_at.elapsed());
                 }
                 tick_instant = self.gossip_interval.tick() => {
                     let opts = opts.live_load();
-                    self.tick(opts, tick_instant, &mut fd_state, nodes_config.live_load())?;
+                    self.tick(
+                        opts,
+                        tick_instant,
+                        &mut fd_state,
+                        nodes_config.live_load(),
+                        std::mem::take(&mut loop_work),
+                    )?;
                 }
                 Some(op) = network_rx.next() => {
+                    let processing_started_at = Instant::now();
                     let opts = opts.live_load();
                     match op {
                         ServiceMessage::Unary(msg) => {
+                            loop_work.gossip_messages += 1;
                             self.on_gossip_message(opts, msg, &mut fd_state);
+                            loop_work.gossip_messages_elapsed = loop_work
+                                .gossip_messages_elapsed
+                                .saturating_add(processing_started_at.elapsed());
                         }
                         ServiceMessage::Rpc(msg) if msg.msg_type() == GetNodeState::TYPE => {
+                            loop_work.get_node_state_requests += 1;
                             // V1 GetNodeState messages
                             self.on_get_node_state_rpc(msg);
+                            loop_work.get_node_state_requests_elapsed = loop_work
+                                .get_node_state_requests_elapsed
+                                .saturating_add(processing_started_at.elapsed());
                         }
                         ServiceMessage::Rpc(msg) if msg.msg_type() == GetClusterState::TYPE => {
+                            loop_work.get_cluster_state_requests += 1;
                             // V2 GetClusterState messages
                             self.on_get_cluster_state_rpc(&fd_state, opts, msg);
+                            loop_work.get_cluster_state_requests_elapsed = loop_work
+                                .get_cluster_state_requests_elapsed
+                                .saturating_add(processing_started_at.elapsed());
                         }
                         _ => {
+                            loop_work.unrecognized_messages += 1;
                             op.fail(Verdict::MessageUnrecognized);
+                            loop_work.unrecognized_messages_elapsed = loop_work
+                                .unrecognized_messages_elapsed
+                                .saturating_add(processing_started_at.elapsed());
                         }
                     }
                 }
@@ -230,7 +294,9 @@ impl<T: NetworkSender> FailureDetector<T> {
         tick_instant: Instant,
         state: &mut FdState,
         nodes_config: &NodesConfiguration,
+        loop_work: LoopWork,
     ) -> Result<(), Error> {
+        let processing_started_at = Instant::now();
         state.refresh_nodes_config(nodes_config)?;
         // Used as proxy for overload/stall detection
         let tick_lag = tick_instant.elapsed();
@@ -241,7 +307,16 @@ impl<T: NetworkSender> FailureDetector<T> {
                 tick_lag,
             );
         }
-        let interval_passed = state.gossip_tick(opts);
+        let intervals_passed = state.gossip_tick(opts);
+        let failure_significant = intervals_passed >= opts.gossip_failure_threshold.get();
+        if intervals_passed > 1 && !failure_significant {
+            debug!(
+                intervals_passed,
+                ?tick_lag,
+                fd_state = ?state,
+                "Failure detector processed multiple gossip intervals in one tick"
+            );
+        }
 
         // If we are not stable yet, we shouldn't make state machine transitions.
         //
@@ -249,7 +324,8 @@ impl<T: NetworkSender> FailureDetector<T> {
         // moved our state machines (we are not stable yet). The state machines are
         // mainly to update our interpretation of who's alive and who's dead but it
         // doesn't impact the information we send out to peers in the gossip message.
-        if state.is_stable(opts) {
+        let detector_stable = state.is_stable(opts);
+        if detector_stable {
             state.detect_peer_failures(opts);
         } else {
             // If we are not stable, we still want to update our own state.
@@ -260,8 +336,12 @@ impl<T: NetworkSender> FailureDetector<T> {
         }
 
         let sent_counter = counter!(GOSSIP_SENT);
+        let mut gossip_send_attempted = 0;
+        let mut gossip_send_succeeded = 0;
+        let mut gossip_send_failed = 0;
+        let gossip_send_started_at = Instant::now();
         // At least one interval has passed, let's send a gossip round
-        if interval_passed {
+        if intervals_passed > 0 {
             let mut sent = 0;
             let include_extras = self.intervals_since_last_extras
                 >= opts.gossip_extras_exchange_frequency.get()
@@ -271,11 +351,14 @@ impl<T: NetworkSender> FailureDetector<T> {
             // are started up.
             let msg = state.make_gossip_message(opts, include_extras, nodes_config);
             for target_node in state.select_targets_for_gossip(nodes_config, &self.networking) {
+                gossip_send_attempted += 1;
                 match target_node.send_gossip(&self.networking, msg.clone()) {
                     Err(err) => {
+                        gossip_send_failed += 1;
                         trace!(peer = %target_node.gen_node_id, "Couldn't send gossip to peer: {err}");
                     }
                     Ok(_) => {
+                        gossip_send_succeeded += 1;
                         sent += 1;
                         sent_counter.increment(1);
                         if sent >= opts.gossip_num_peers.get() {
@@ -297,10 +380,49 @@ impl<T: NetworkSender> FailureDetector<T> {
                     self.intervals_since_last_extras.saturating_add(1);
             }
         }
+        let gossip_send_elapsed = gossip_send_started_at.elapsed();
 
         if self.last_dumped.elapsed() > Duration::from_secs(1) {
             state.report_stats(opts);
             self.last_dumped = Instant::now();
+        }
+
+        let processing_elapsed = processing_started_at.elapsed();
+        if failure_significant {
+            warn!(
+                intervals_passed,
+                failure_threshold = opts.gossip_failure_threshold.get(),
+                detector_stable,
+                ?tick_lag,
+                ?processing_elapsed,
+                ?gossip_send_elapsed,
+                gossip_messages_since_last_tick = loop_work.gossip_messages,
+                gossip_messages_processing_elapsed_since_last_tick = ?loop_work.gossip_messages_elapsed,
+                get_node_state_requests_since_last_tick = loop_work.get_node_state_requests,
+                get_node_state_requests_processing_elapsed_since_last_tick = ?loop_work.get_node_state_requests_elapsed,
+                get_cluster_state_requests_since_last_tick = loop_work.get_cluster_state_requests,
+                get_cluster_state_requests_processing_elapsed_since_last_tick = ?loop_work.get_cluster_state_requests_elapsed,
+                startup_cluster_state_replies_since_last_tick = loop_work.startup_cluster_state_replies,
+                startup_cluster_state_replies_processing_elapsed_since_last_tick = ?loop_work.startup_cluster_state_replies_elapsed,
+                node_status_changes_since_last_tick = loop_work.node_status_changes,
+                node_status_changes_processing_elapsed_since_last_tick = ?loop_work.node_status_changes_elapsed,
+                nodes_config_changes_since_last_tick = loop_work.nodes_config_changes,
+                nodes_config_changes_processing_elapsed_since_last_tick = ?loop_work.nodes_config_changes_elapsed,
+                unrecognized_messages_since_last_tick = loop_work.unrecognized_messages,
+                unrecognized_messages_processing_elapsed_since_last_tick = ?loop_work.unrecognized_messages_elapsed,
+                gossip_send_attempted,
+                gossip_send_succeeded,
+                gossip_send_failed,
+                fd_state = ?state,
+                "Failure detector processed a failure-significant number of gossip intervals in one tick"
+            );
+        }
+        if processing_elapsed >= opts.gossip_tick_interval {
+            warn!(
+                ?processing_elapsed,
+                gossip_tick_interval = ?opts.gossip_tick_interval,
+                "Failure detector tick processing exceeded the gossip tick interval"
+            );
         }
 
         Ok(())
@@ -313,6 +435,7 @@ impl<T: NetworkSender> FailureDetector<T> {
         msg: Incoming<RawSvcUnary<GossipService>>,
         state: &mut FdState,
     ) {
+        let processing_started_at = Instant::now();
         let Ok(msg) = msg.try_into_typed::<Gossip>() else {
             return;
         };
@@ -325,6 +448,16 @@ impl<T: NetworkSender> FailureDetector<T> {
         }
         trace!(%peer, "Received a gossip message {:?}", msg);
         state.update_from_gossip_message(opts, peer, peer_nc_version, msg);
+
+        let processing_elapsed = processing_started_at.elapsed();
+        if processing_elapsed >= opts.gossip_tick_interval {
+            warn!(
+                %peer,
+                ?processing_elapsed,
+                gossip_tick_interval = ?opts.gossip_tick_interval,
+                "Admitted gossip message processing exceeded the gossip tick interval"
+            );
+        }
     }
 
     /// Handle V1's GetNodeState rpc request
