@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -35,6 +35,7 @@ use crate::remote_query_scanner_server::ScannerMap;
 use crate::{decode_expr, decode_schema, encode_record_batch};
 
 const SCANNER_EXPIRATION: Duration = Duration::from_secs(60);
+const SLOW_BATCH_ENCODING_THRESHOLD: Duration = Duration::from_millis(100);
 
 pub(crate) struct NextRequest {
     pub reciprocal: Reciprocal<Oneshot<RemoteQueryScannerNextResult>>,
@@ -198,7 +199,23 @@ impl ScannerTask {
                 }
             };
 
-            match encode_record_batch(&self.stream.schema(), record_batch) {
+            let num_rows = record_batch.num_rows();
+            let encoding_started_at = Instant::now();
+            let encoded_record_batch = encode_record_batch(&self.stream.schema(), record_batch);
+            let encoding_elapsed = encoding_started_at.elapsed();
+            if encoding_elapsed >= SLOW_BATCH_ENCODING_THRESHOLD {
+                warn!(
+                    scanner_id = %self.scanner_id,
+                    num_rows,
+                    encoded_bytes = encoded_record_batch
+                        .as_ref()
+                        .map_or(0, |record_batch| record_batch.len()),
+                    ?encoding_elapsed,
+                    "Remote query record-batch encoding exceeded the synchronous-work budget"
+                );
+            }
+
+            match encoded_record_batch {
                 Ok(record_batch) => {
                     request
                         .reciprocal
