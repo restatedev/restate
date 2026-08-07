@@ -1249,7 +1249,7 @@ fn leader_candidate<'a>(
 
     LeaderCandidate {
         node_id,
-        gossip_eligible: gossip_state.is_alive(),
+        gossip_eligible: cluster_state.is_alive(NodeId::from(node_id)),
         gossip_node_id,
         gossip_state,
         legacy_node_generation,
