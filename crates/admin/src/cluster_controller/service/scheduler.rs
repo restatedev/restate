@@ -607,10 +607,10 @@ impl<T: TransportConnect> Scheduler<T> {
             return true;
         }
 
-        // Added processors start while `next` is pending. For transitions with additions,
-        // require readiness to be evidenced by at least one addition rather than retained
-        // overlap. This preserves the existing any-Active completion rule; other additions
-        // may still be warming when `next` becomes current.
+        // If `next` adds processors to the replica set, wait for at least one addition to
+        // demonstrate readiness before making `next` current. Committing while every
+        // addition is still catching up admits unready replicas to leader election and,
+        // during replacement, can drop warm followers from the current replica set.
         let mut newly_added = next
             .replica_set()
             .difference(partition_state.current.replica_set())
