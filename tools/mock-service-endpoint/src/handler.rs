@@ -11,7 +11,6 @@
 use std::convert::Infallible;
 use std::fmt::{Display, Formatter};
 use std::num::NonZeroUsize;
-use std::str::FromStr;
 
 use async_stream::{stream, try_stream};
 use bytes::Bytes;
@@ -68,13 +67,13 @@ pub async fn serve(
             .body(Either::Left(Empty::new()))
             .unwrap());
     };
-    if let Some("Counter") = split.next() {
-    } else {
+    let service_name = split.next();
+    if !matches!(service_name, Some("Counter" | "Blob" | "JournalBurst")) {
         return Ok(Response::builder()
             .status(404)
             .body(Either::Left(Empty::new()))
             .unwrap());
-    };
+    }
     if let Some("invoke") = split.next() {
     } else {
         return Ok(Response::builder()
@@ -113,9 +112,12 @@ pub async fn serve(
         }
     };
 
-    let handler: Handler = match handler_name.parse() {
-        Ok(handler) => handler,
-        Err(_err) => {
+    let handler: Handler = match (service_name, handler_name) {
+        (Some("Counter"), "get") => Handler::Get,
+        (Some("Counter"), "add") => Handler::Add,
+        (Some("Blob"), "write") => Handler::BlobWrite,
+        (Some("JournalBurst"), "write") => Handler::JournalBurstWrite,
+        _ => {
             return Ok(Response::builder()
                 .status(404)
                 .body(Either::Left(Empty::new()))
@@ -141,22 +143,8 @@ pub async fn serve(
 pub enum Handler {
     Get,
     Add,
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("Invalid handler")]
-pub struct InvalidHandler;
-
-impl FromStr for Handler {
-    type Err = InvalidHandler;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "get" => Ok(Self::Get),
-            "add" => Ok(Self::Add),
-            _ => Err(InvalidHandler),
-        }
-    }
+    BlobWrite,
+    JournalBurstWrite,
 }
 
 impl Display for Handler {
@@ -164,6 +152,8 @@ impl Display for Handler {
         match self {
             Self::Get => write!(f, "get"),
             Self::Add => write!(f, "add"),
+            Self::BlobWrite => write!(f, "write"),
+            Self::JournalBurstWrite => write!(f, "write"),
         }
     }
 }
@@ -195,6 +185,16 @@ impl Handler {
                         },
                         Handler::Add => {
                             for await message in Self::handle_add(start_message, input, replayed) {
+                                yield message?
+                            }
+                        },
+                        Handler::BlobWrite => {
+                            for await message in Self::handle_blob_write(input, replayed) {
+                                yield message?
+                            }
+                        },
+                        Handler::JournalBurstWrite => {
+                            for await message in Self::handle_journal_burst_write(input, replayed) {
                                 yield message?
                             }
                         },
@@ -296,6 +296,56 @@ impl Handler {
                 }
         }
     }
+
+    fn handle_blob_write(
+        input: InputCommand,
+        replayed: Vec<Message>,
+    ) -> impl Stream<Item = Result<Message, FrameError>> {
+        try_stream! {
+            match replayed.len() {
+                0 => {
+                    yield set_state_named("blob", input.payload);
+                    yield output(Bytes::new());
+                    yield end();
+                }
+                1 => {
+                    yield output(Bytes::new());
+                    yield end();
+                }
+                2 => yield end(),
+                _ => {Err(FrameError::InvalidJournal)?; return},
+            }
+        }
+    }
+
+    fn handle_journal_burst_write(
+        input: InputCommand,
+        replayed: Vec<Message>,
+    ) -> impl Stream<Item = Result<Message, FrameError>> {
+        try_stream! {
+            let command_count: usize = serde_json::from_slice(input.payload.as_ref())?;
+            if command_count == 0 {
+                Err(FrameError::InvalidJournal)?;
+                return;
+            }
+
+            match replayed.len() {
+                replayed_commands if replayed_commands < command_count => {
+                    for sequence_number in replayed_commands..command_count {
+                        yield set_state_named("burst", sequence_number.to_string().into());
+                    }
+                    yield output(Bytes::new());
+                    yield end();
+                }
+                replayed_commands if replayed_commands == command_count => {
+                    yield output(Bytes::new());
+                    yield end();
+                }
+                replayed_commands if replayed_commands == command_count + 1 => yield end(),
+                _ => {Err(FrameError::InvalidJournal)?; return},
+            }
+        }
+    }
 }
 
 fn read_counter(state_map: &[StateEntry]) -> Option<Bytes> {
@@ -327,6 +377,10 @@ fn get_state(counter: Option<Bytes>) -> Message {
 }
 
 fn set_state(value: Bytes) -> Message {
+    set_state_named("counter", value)
+}
+
+fn set_state_named(key: impl Into<Bytes>, value: Bytes) -> Message {
     debug!(
         "Yielding SetStateEntryMessage with value {}",
         LossyDisplay(Some(&value))
@@ -335,7 +389,7 @@ fn set_state(value: Bytes) -> Message {
     Message::SetStateCommand(
         prost::Message::encode_to_vec(&SetStateCommandMessage {
             name: String::new(),
-            key: "counter".into(),
+            key: key.into(),
             value: Some(proto::Value { content: value }),
         })
         .into(),
