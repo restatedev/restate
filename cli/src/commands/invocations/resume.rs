@@ -33,6 +33,7 @@ pub struct Resume {
     /// * `virtualObjectName`
     /// * `virtualObjectName/key`
     /// * `virtualObjectName/key/handler`
+    #[clap(verbatim_doc_comment)]
     query: String,
 
     /// When resuming from paused/suspended, provide a deployment id to use to replace the currently pinned deployment id.
