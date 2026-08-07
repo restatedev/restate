@@ -108,6 +108,75 @@ async fn call_service() {
     assert_eq!(response_value.greeting, "Igal");
 }
 
+// Regression test for https://github.com/restatedev/restate/issues/4187:
+// client-supplied `x-restate-*` headers must not be forwarded to the service.
+// The namespace is reserved for the ingress, so a caller can neither inject
+// arbitrary `x-restate-*` headers nor override the ones the ingress sets.
+#[restate_core::test]
+#[traced_test]
+async fn ingress_overwrites_x_restate_headers() {
+    let greeting_req = GreetingRequest {
+        person: "Francesco".to_string(),
+    };
+
+    let req = hyper::Request::builder()
+        .uri("http://localhost/greeter.Greeter/greet")
+        .method(Method::POST)
+        .header("content-type", "application/json")
+        // Attempt to spoof the ingress-reserved path and inject an arbitrary
+        // `x-restate-*` header.
+        .header("x-restate-ingress-path", "/spoofed")
+        .header("x-restate-foo", "bar")
+        .header("my-header", "my-value")
+        .body(Full::new(Bytes::from(
+            serde_json::to_vec(&greeting_req).unwrap(),
+        )))
+        .unwrap();
+
+    let mut mock_dispatcher = MockRequestDispatcher::default();
+    mock_dispatcher
+        .expect_call()
+        .return_once(|invocation_request| {
+            let headers = &invocation_request.header.headers;
+
+            // Regular user headers are still forwarded.
+            assert!(
+                headers
+                    .iter()
+                    .any(|h| &*h.name == "my-header" && &*h.value == "my-value")
+            );
+
+            // The arbitrary client `x-restate-*` header is dropped.
+            assert!(!headers.iter().any(|h| &*h.name == "x-restate-foo"));
+
+            // `x-restate-ingress-path` is set by the ingress, exactly once, with
+            // the real request path - not the client-supplied "/spoofed" value.
+            let ingress_paths: Vec<_> = headers
+                .iter()
+                .filter(|h| &*h.name == "x-restate-ingress-path")
+                .collect();
+            assert_eq!(ingress_paths.len(), 1);
+            assert_eq!(&*ingress_paths[0].value, "/greeter.Greeter/greet");
+
+            Box::pin(ready(Ok(InvocationOutput {
+                request_id: Default::default(),
+                invocation_id: Some(invocation_request.invocation_id()),
+                completion_expiry_time: None,
+                response: InvocationOutputResponse::Success(
+                    InvocationTarget::service("greeter.Greeter", "greet"),
+                    serde_json::to_vec(&GreetingResponse {
+                        greeting: "Igal".to_string(),
+                    })
+                    .unwrap()
+                    .into(),
+                ),
+            })))
+        });
+
+    let response = handle(req, mock_dispatcher).await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
 #[restate_core::test]
 #[traced_test]
 async fn call_service_with_get() {
