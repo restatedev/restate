@@ -10,6 +10,7 @@
 
 //! This module contains all the core types representing a service invocation.
 
+pub mod audit;
 pub mod client;
 
 use std::borrow::Cow;
