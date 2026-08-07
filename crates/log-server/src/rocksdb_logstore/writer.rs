@@ -10,6 +10,7 @@
 
 use std::io::IoSlice;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use ahash::HashMap;
 use bytes::BytesMut;
@@ -17,7 +18,7 @@ use metrics::{Histogram, histogram};
 use rocksdb::{BoundColumnFamily, WriteBatch};
 use smallvec::SmallVec;
 use tokio::sync::mpsc;
-use tracing::{debug, error, trace};
+use tracing::{debug, error, trace, warn};
 
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_token};
 use restate_rocksdb::{IoMode, Priority, RocksDb, RocksError};
@@ -36,6 +37,8 @@ use crate::metric_definitions::LOG_SERVER_WRITE_BATCH_SIZE_BYTES;
 use crate::tasks::{
     SealStorageTask, StoreStorageTask, SyncGlobalTailStorageTask, TrimStorageTask, WriteStorageTask,
 };
+
+const SLOW_WRITER_CYCLE_THRESHOLD: Duration = Duration::from_millis(100);
 
 /// Commands sent to the [`LogStoreWriter`] over the mpsc channel.
 enum LogStoreWriteCommand {
@@ -194,7 +197,7 @@ impl LogStoreWriterBuilder {
                 let mut draining = false;
 
                 loop {
-                    tokio::select! {
+                    let command = tokio::select! {
                         biased;
                         () = cancel.cancelled(), if !draining => {
                             draining = true;
@@ -202,13 +205,19 @@ impl LogStoreWriterBuilder {
                             continue;
                         }
                         Some(cmd) = rx.recv() => {
-                            writer.handle_command(cmd, &mut batch);
+                            cmd
                         }
                         else => {
                             // both channels are closed, we are done.
                             break;
                         }
-                    }
+                    };
+
+                    // Start after recv so an idle channel cannot make a cycle look slow.
+                    let cycle_started = Instant::now();
+                    let command_handling_started = Instant::now();
+                    let mut command_count = 1;
+                    writer.handle_command(command, &mut batch);
 
                     let config = &config.live_load().log_server;
                     let batch_bytes_limit = config.write_batch_commit_bytes();
@@ -220,10 +229,34 @@ impl LogStoreWriterBuilder {
                             .is_none_or(|c| batch.len() < c.get())
                         && let Ok(cmd) = rx.try_recv()
                     {
+                        command_count += 1;
                         writer.handle_command(cmd, &mut batch);
                     }
 
-                    if !writer.commit(config, &mut batch).await {
+                    let command_handling_elapsed = command_handling_started.elapsed();
+                    let batch_record_count = batch.len();
+                    let batch_size_bytes = batch.size_in_bytes();
+                    let commit_started = Instant::now();
+                    let committed = writer.commit(config, &mut batch).await;
+                    let commit_elapsed = commit_started.elapsed();
+                    let cycle_elapsed = cycle_started.elapsed();
+
+                    if cycle_elapsed >= SLOW_WRITER_CYCLE_THRESHOLD
+                        || command_handling_elapsed >= SLOW_WRITER_CYCLE_THRESHOLD
+                    {
+                        warn!(
+                            ?cycle_elapsed,
+                            ?command_handling_elapsed,
+                            ?commit_elapsed,
+                            command_count,
+                            batch_record_count,
+                            batch_size_bytes,
+                            always_commit_in_background = config.always_commit_in_background,
+                            "LogStoreWriter slow writer cycle"
+                        );
+                    }
+
+                    if !committed {
                         // the store is disabled, will drop the rest of the commands.
                         break;
                     }

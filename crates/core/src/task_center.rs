@@ -32,6 +32,7 @@ use std::time::Duration;
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
+use futures::future::Either;
 #[cfg(debug_assertions)]
 use metrics::counter;
 use tokio::sync::oneshot;
@@ -340,6 +341,7 @@ struct TaskCenterInner {
     shutdown_requested: AtomicBool,
     current_exit_code: AtomicI32,
     managed_tasks: Mutex<HashMap<TaskId, Arc<Task>>>,
+    default_runtime_task_tracker: Arc<monitoring::DefaultRuntimeTaskTracker>,
     global_metadata: OnceLock<Metadata>,
     address_book: OnceLock<AddressBook>,
     memory_controller: MemoryController,
@@ -363,6 +365,7 @@ impl TaskCenterInner {
             id: TaskId::ROOT,
             name: "::".into(),
             kind: TaskKind::InPlace,
+            is_default_runtime: true,
             cancellation_token: CancellationToken::new(),
             partition_id: None,
         };
@@ -375,6 +378,7 @@ impl TaskCenterInner {
             shutdown_requested: AtomicBool::new(false),
             current_exit_code: AtomicI32::new(0),
             managed_tasks: Mutex::new(HashMap::new()),
+            default_runtime_task_tracker: Arc::new(monitoring::DefaultRuntimeTaskTracker::new()),
             global_metadata: OnceLock::new(),
             address_book: OnceLock::new(),
             memory_controller: MemoryController::default(),
@@ -472,8 +476,15 @@ impl TaskCenterInner {
 
         // spawned tasks get their own unlinked cancellation tokens
         let cancel = CancellationToken::new();
-        let (parent_id, parent_name, parent_partition) =
-            self.with_task_context(|ctx| (ctx.id, ctx.name.clone(), ctx.partition_id));
+        let (parent_id, parent_name, parent_partition, parent_is_default_runtime) = self
+            .with_task_context(|ctx| {
+                (
+                    ctx.id,
+                    ctx.name.clone(),
+                    ctx.partition_id,
+                    ctx.is_default_runtime,
+                )
+            });
 
         if self.root_task_context.cancellation_token.is_cancelled() {
             debug!(
@@ -492,6 +503,7 @@ impl TaskCenterInner {
             name.clone(),
             parent_id,
             parent_partition,
+            parent_is_default_runtime,
             cancel,
             future,
         );
@@ -520,16 +532,23 @@ impl TaskCenterInner {
     {
         let name = name.into();
 
-        let (parent_id, parent_name, parent_kind, parent_partition, cancel) = self
-            .with_task_context(|ctx| {
-                (
-                    ctx.id,
-                    ctx.name.clone(),
-                    ctx.kind,
-                    ctx.partition_id,
-                    ctx.cancellation_token.child_token(),
-                )
-            });
+        let (
+            parent_id,
+            parent_name,
+            parent_kind,
+            parent_partition,
+            parent_is_default_runtime,
+            cancel,
+        ) = self.with_task_context(|ctx| {
+            (
+                ctx.id,
+                ctx.name.clone(),
+                ctx.kind,
+                ctx.partition_id,
+                ctx.is_default_runtime,
+                ctx.cancellation_token.child_token(),
+            )
+        });
 
         if cancel.is_cancelled() {
             debug!(
@@ -548,6 +567,7 @@ impl TaskCenterInner {
             name.clone(),
             parent_id,
             parent_partition,
+            parent_is_default_runtime,
             cancel,
             future,
         );
@@ -572,8 +592,15 @@ impl TaskCenterInner {
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        let (parent_id, parent_name, parent_partition) =
-            self.with_task_context(|ctx| (ctx.id, ctx.name.clone(), ctx.partition_id));
+        let (parent_id, parent_name, parent_partition, parent_is_default_runtime) = self
+            .with_task_context(|ctx| {
+                (
+                    ctx.id,
+                    ctx.name.clone(),
+                    ctx.partition_id,
+                    ctx.is_default_runtime,
+                )
+            });
 
         if self.root_task_context.cancellation_token.is_cancelled() {
             debug!(
@@ -589,17 +616,20 @@ impl TaskCenterInner {
 
         let cancel = CancellationToken::new();
         let id = TaskId::default();
+        let is_default_runtime =
+            kind.runtime() == AsyncRuntime::Default || parent_is_default_runtime;
         let context = TaskContext {
             id,
             name: name.clone(),
             kind,
+            is_default_runtime,
             partition_id: parent_partition,
             cancellation_token: cancel.clone(),
         };
 
         let fut = unmanaged_wrapper(Arc::clone(self), context, future);
 
-        Ok(self.spawn_on_runtime(kind, name, cancel, fut))
+        Ok(self.spawn_on_runtime(kind, name, cancel, is_default_runtime, fut))
     }
 
     pub fn spawn_unmanaged_child<F, T>(
@@ -612,15 +642,21 @@ impl TaskCenterInner {
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        let (parent_id, parent_name, parent_partition, is_parent_cancelled) = self
-            .with_task_context(|ctx| {
-                (
-                    ctx.id,
-                    ctx.name.clone(),
-                    ctx.partition_id,
-                    ctx.cancellation_token.is_cancelled(),
-                )
-            });
+        let (
+            parent_id,
+            parent_name,
+            parent_partition,
+            parent_is_default_runtime,
+            is_parent_cancelled,
+        ) = self.with_task_context(|ctx| {
+            (
+                ctx.id,
+                ctx.name.clone(),
+                ctx.partition_id,
+                ctx.is_default_runtime,
+                ctx.cancellation_token.is_cancelled(),
+            )
+        });
 
         if is_parent_cancelled {
             debug!(
@@ -636,17 +672,20 @@ impl TaskCenterInner {
 
         let cancel = CancellationToken::new();
         let id = TaskId::default();
+        let is_default_runtime =
+            kind.runtime() == AsyncRuntime::Default || parent_is_default_runtime;
         let context = TaskContext {
             id,
             name: name.clone(),
             kind,
+            is_default_runtime,
             partition_id: parent_partition,
             cancellation_token: cancel.clone(),
         };
 
         let fut = unmanaged_wrapper(Arc::clone(self), context, future);
 
-        Ok(self.spawn_on_runtime(kind, name, cancel, fut))
+        Ok(self.spawn_on_runtime(kind, name, cancel, is_default_runtime, fut))
     }
 
     /// Must be called within a Localset-scoped task, not from a normal spawned task.
@@ -666,6 +705,7 @@ impl TaskCenterInner {
             id,
             name: name.clone(),
             kind,
+            is_default_runtime: false,
             cancellation_token: cancellation_token.clone(),
             // We must be within task-context already. let's get inherit partition_id
             partition_id: self.with_task_context(|c| c.partition_id),
@@ -755,6 +795,7 @@ impl TaskCenterInner {
             id,
             name: runtime_name.clone(),
             kind: root_task_kind,
+            is_default_runtime: false,
             cancellation_token: cancel.clone(),
             partition_id,
         };
@@ -886,6 +927,7 @@ impl TaskCenterInner {
         name: ReString,
         _parent_id: TaskId,
         partition_id: Option<PartitionId>,
+        parent_is_default_runtime: bool,
         cancel: CancellationToken,
         future: F,
     ) -> TaskId
@@ -894,10 +936,13 @@ impl TaskCenterInner {
     {
         let inner = Arc::clone(self);
         let id = TaskId::default();
+        let is_default_runtime =
+            kind.runtime() == AsyncRuntime::Default || parent_is_default_runtime;
         let context = TaskContext {
             id,
             name: name.clone(),
             kind,
+            is_default_runtime,
             partition_id,
             cancellation_token: cancel.clone(),
         };
@@ -911,7 +956,7 @@ impl TaskCenterInner {
         let mut handle_mut = task.handle.lock();
 
         let fut = wrapper(inner, context, future);
-        *handle_mut = Some(self.spawn_on_runtime(kind, &name, cancel, fut));
+        *handle_mut = Some(self.spawn_on_runtime(kind, &name, cancel, is_default_runtime, fut));
         // drop the lock
         drop(handle_mut);
         // Task is ready
@@ -923,12 +968,17 @@ impl TaskCenterInner {
         kind: TaskKind,
         name: &str,
         cancellation_token: CancellationToken,
+        is_default_runtime: bool,
         fut: F,
     ) -> TaskHandle<T>
     where
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
+        let fut = match is_default_runtime.then(|| self.default_runtime_task_tracker.track(kind)) {
+            Some(guard) => Either::Left(monitoring::DefaultRuntimeTaskFuture::new(fut, guard)),
+            None => Either::Right(fut),
+        };
         let tokio_task = tokio::task::Builder::new().name(name);
         #[cfg(debug_assertions)]
         {
@@ -1330,7 +1380,144 @@ mod tests {
 
     use googletest::prelude::*;
     use restate_types::config::CommonOptionsBuilder;
+    use tokio::sync::oneshot;
     use tracing_test::traced_test;
+
+    fn test_task_center(runtime: &tokio::runtime::Runtime) -> Handle {
+        TaskCenterBuilder::default()
+            .default_runtime_handle(runtime.handle().clone())
+            .build()
+            .unwrap()
+            .into_handle()
+    }
+
+    fn task_stats(tc: &Handle, kind: TaskKind) -> DefaultRuntimeTaskSnapshot {
+        tc.default_runtime_task_stats().task_kinds[kind]
+    }
+
+    #[test]
+    fn explicitly_default_task_is_counted() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let tc = test_task_center(&runtime);
+
+        let task_id = tc
+            .spawn(
+                TaskKind::H2ServerStream,
+                "explicit-default",
+                std::future::pending::<anyhow::Result<()>>(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            task_stats(&tc, TaskKind::H2ServerStream),
+            DefaultRuntimeTaskSnapshot {
+                spawned: 1,
+                active: 1,
+                peak_active: 1,
+                poll_count: 0,
+                poll_wall_duration: Duration::default(),
+            }
+        );
+
+        tc.cancel_task(task_id).unwrap().abort();
+        runtime.block_on(tokio::task::yield_now());
+        assert_eq!(task_stats(&tc, TaskKind::H2ServerStream).active, 0);
+    }
+
+    #[test]
+    fn inherited_child_of_default_task_is_counted() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let tc = test_task_center(&runtime);
+        let (child_tx, child_rx) = oneshot::channel();
+
+        let parent_id = tc
+            .spawn(TaskKind::H2ServerStream, "default-parent", async move {
+                let child = TaskCenter::spawn_unmanaged(
+                    TaskKind::Disposable,
+                    "inherited-child",
+                    std::future::pending::<()>(),
+                )?;
+                assert!(child_tx.send(child).is_ok());
+                std::future::pending::<anyhow::Result<()>>().await
+            })
+            .unwrap();
+        let child = runtime.block_on(async { child_rx.await.unwrap() });
+
+        assert_eq!(task_stats(&tc, TaskKind::Disposable).spawned, 1);
+        assert_eq!(task_stats(&tc, TaskKind::Disposable).active, 1);
+
+        child.abort();
+        tc.cancel_task(parent_id).unwrap().abort();
+        runtime.block_on(tokio::task::yield_now());
+        assert_eq!(task_stats(&tc, TaskKind::Disposable).active, 0);
+    }
+
+    #[test]
+    fn inherited_task_on_managed_runtime_is_excluded() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let tc = test_task_center(&runtime);
+        let (child_tx, child_rx) = oneshot::channel();
+        let (stop_tx, stop_rx) = oneshot::channel();
+
+        let managed_runtime = tc
+            .start_runtime(
+                TaskKind::PartitionProcessor,
+                "test-pp",
+                None,
+                move || async move {
+                    let child = TaskCenter::spawn_unmanaged(
+                        TaskKind::Disposable,
+                        "managed-runtime-child",
+                        std::future::pending::<()>(),
+                    )?;
+                    assert!(child_tx.send(child).is_ok());
+                    stop_rx.await.unwrap();
+                    Ok::<(), anyhow::Error>(())
+                },
+            )
+            .unwrap();
+        let child = runtime.block_on(async { child_rx.await.unwrap() });
+
+        assert_eq!(task_stats(&tc, TaskKind::Disposable).spawned, 0);
+        assert_eq!(task_stats(&tc, TaskKind::Disposable).active, 0);
+
+        child.abort();
+        runtime.block_on(async { child.await.unwrap_err() });
+        stop_tx.send(()).unwrap();
+        runtime.block_on(async { managed_runtime.await.unwrap() });
+    }
+
+    #[test]
+    fn aborted_task_is_removed_before_its_first_poll() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let tc = test_task_center(&runtime);
+
+        let task_id = tc
+            .spawn(
+                TaskKind::H2ServerStream,
+                "aborted-before-poll",
+                std::future::pending::<anyhow::Result<()>>(),
+            )
+            .unwrap();
+        assert_eq!(task_stats(&tc, TaskKind::H2ServerStream).active, 1);
+
+        tc.cancel_task(task_id).unwrap().abort();
+        runtime.block_on(tokio::task::yield_now());
+
+        assert_eq!(task_stats(&tc, TaskKind::H2ServerStream).active, 0);
+    }
 
     #[tokio::test(start_paused = true)]
     #[traced_test]

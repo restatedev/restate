@@ -27,6 +27,7 @@ pub struct TaskContext {
     pub(super) id: TaskId,
     pub(super) name: ReString,
     pub(super) kind: TaskKind,
+    pub(super) is_default_runtime: bool,
     /// cancel this token to request cancelling this task.
     pub(super) cancellation_token: CancellationToken,
     /// Tasks associated with a specific partition ID will have this set. This allows

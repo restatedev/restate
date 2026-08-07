@@ -96,6 +96,8 @@ where
             id: TaskId::default(),
             name: name.clone(),
             kind,
+            is_default_runtime: kind.runtime() == super::AsyncRuntime::Default
+                || parent.is_default_runtime,
             cancellation_token: CancellationToken::new(),
             partition_id: parent.partition_id,
         });

@@ -60,6 +60,7 @@ impl TaskId {
     Debug,
     Eq,
     PartialEq,
+    enum_map::Enum,
     strum::EnumProperty,
     strum::IntoStaticStr,
     derive_more::Display,

@@ -14,6 +14,7 @@ mod node_state;
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
+use ahash::HashMap;
 use futures::stream::FuturesUnordered;
 use metrics::counter;
 use tokio::time::Instant;
@@ -28,7 +29,7 @@ use restate_core::{
         BackPressureMode, Incoming, MessageRouterBuilder, RawSvcRpc, RawSvcUnary, ServiceMessage,
         ServiceReceiver, Verdict,
     },
-    task_center::TaskCenterMonitoring,
+    task_center::{DefaultRuntimeTaskStats, TaskCenterMonitoring},
 };
 use restate_memory::NonZeroByteCount;
 use restate_types::health::NodeStatus;
@@ -51,7 +52,7 @@ use crate::metric_definitions::GOSSIP_SENT;
 use self::fd_state::Error;
 use self::fd_state::FdState;
 
-const PARTITION_PROCESSOR_RUNTIME_RESELECTION_INTERVAL: Duration = Duration::from_secs(1);
+const BUSIEST_PARTITION_PROCESSOR_RUNTIMES: usize = 3;
 
 pub struct FailureDetector<T> {
     networking: T,
@@ -63,8 +64,6 @@ pub struct FailureDetector<T> {
     intervals_since_last_extras: u32,
     last_dumped: Instant,
     last_runtime_snapshot: RuntimeSnapshot,
-    partition_processor_runtime_sentinel: Option<String>,
-    next_partition_processor_runtime_reselection: Instant,
 }
 
 #[derive(Debug)]
@@ -76,13 +75,9 @@ struct RuntimeWorkerSnapshot {
 #[derive(Debug)]
 struct RuntimeSnapshot {
     workers: Vec<RuntimeWorkerSnapshot>,
-    partition_processor: Option<PartitionProcessorRuntimeSnapshot>,
-}
-
-#[derive(Debug)]
-struct PartitionProcessorRuntimeSnapshot {
-    name: String,
-    worker: RuntimeWorkerSnapshot,
+    tokio_spawned_tasks: u64,
+    task_stats: DefaultRuntimeTaskStats,
+    partition_processors: HashMap<String, RuntimeWorkerSnapshot>,
 }
 
 struct RuntimeWork {
@@ -91,18 +86,58 @@ struct RuntimeWork {
     worker_busy_duration: Vec<Duration>,
     worker_mean_poll_time: Vec<Duration>,
     worker_local_queue_depth: Vec<usize>,
-    partition_processor: Option<PartitionProcessorRuntimeWork>,
+    tokio_alive_tasks: usize,
+    tokio_spawned_tasks: u64,
+    tracked_task_active: u64,
+    tracked_task_spawned: u64,
+    approx_unattributed_task_active: usize,
+    approx_unattributed_task_spawned: u64,
+    partition_processors: PartitionProcessorRuntimeWork,
+}
+
+struct TaskKindWork {
+    kind: &'static str,
+    spawned: u64,
+    active: u64,
+    peak_active: u64,
+    poll_count_total: u64,
+    poll_count_delta: u64,
+    poll_wall_duration_total: Duration,
+    poll_wall_duration_delta: Duration,
+}
+
+impl std::fmt::Debug for TaskKindWork {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TaskKindWork")
+            .field("kind", &self.kind)
+            .field("spawned", &self.spawned)
+            .field("active", &self.active)
+            .field("peak_active", &self.peak_active)
+            .field("poll_count_total", &self.poll_count_total)
+            .field("poll_count_delta", &self.poll_count_delta)
+            .field("poll_wall_duration_total", &self.poll_wall_duration_total)
+            .field("poll_wall_duration_delta", &self.poll_wall_duration_delta)
+            .finish()
+    }
 }
 
 struct PartitionProcessorRuntimeWork {
+    count: usize,
+    worker_poll_count: u64,
+    worker_busy_duration: Duration,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct PartitionProcessorRuntimeDelta {
     name: String,
-    worker_poll_count: Option<u64>,
-    worker_busy_duration: Option<Duration>,
+    worker_poll_count: u64,
+    worker_busy_duration: Duration,
 }
 
 impl RuntimeSnapshot {
-    fn capture(partition_processor: Option<PartitionProcessorRuntimeSnapshot>) -> Self {
+    fn capture(partition_processors: HashMap<String, RuntimeWorkerSnapshot>) -> Self {
         let metrics = TaskCenter::with_current(|tc| tc.default_runtime_metrics());
+        let task_stats = TaskCenter::with_current(|tc| tc.default_runtime_task_stats());
         let workers = (0..metrics.num_workers())
             .map(|worker| RuntimeWorkerSnapshot {
                 poll_count: metrics.worker_poll_count(worker),
@@ -111,7 +146,9 @@ impl RuntimeSnapshot {
             .collect();
         Self {
             workers,
-            partition_processor,
+            tokio_spawned_tasks: metrics.spawned_tasks_count(),
+            task_stats,
+            partition_processors,
         }
     }
 
@@ -128,47 +165,134 @@ impl RuntimeSnapshot {
             worker_mean_poll_time.push(metrics.worker_mean_poll_time(worker));
             worker_local_queue_depth.push(metrics.worker_local_queue_depth(worker));
         }
+        let tracked_task_spawned = self
+            .task_stats
+            .task_kinds
+            .iter()
+            .zip(&previous.task_stats.task_kinds)
+            .map(|((_, current), (_, previous))| current.spawned.saturating_sub(previous.spawned))
+            .sum();
+        let tokio_spawned_tasks = self
+            .tokio_spawned_tasks
+            .saturating_sub(previous.tokio_spawned_tasks);
+
         RuntimeWork {
             global_queue_depth: metrics.global_queue_depth(),
             worker_poll_count,
             worker_busy_duration,
             worker_mean_poll_time,
             worker_local_queue_depth,
-            partition_processor: self.partition_processor.as_ref().map(|current| {
-                let previous = previous
-                    .partition_processor
-                    .as_ref()
-                    .filter(|previous| previous.name == current.name);
-                PartitionProcessorRuntimeWork {
-                    name: current.name.clone(),
-                    worker_poll_count: previous.map(|previous| {
-                        current
-                            .worker
-                            .poll_count
-                            .saturating_sub(previous.worker.poll_count)
-                    }),
-                    worker_busy_duration: previous.map(|previous| {
-                        current
-                            .worker
-                            .busy_duration
-                            .saturating_sub(previous.worker.busy_duration)
-                    }),
-                }
-            }),
+            tokio_alive_tasks: self.task_stats.tokio_alive_tasks,
+            tokio_spawned_tasks,
+            tracked_task_active: self.task_stats.tracked_active_tasks,
+            tracked_task_spawned,
+            approx_unattributed_task_active: self
+                .task_stats
+                .tokio_alive_tasks
+                .saturating_sub(self.task_stats.tracked_active_tasks as usize),
+            approx_unattributed_task_spawned: tokio_spawned_tasks
+                .saturating_sub(tracked_task_spawned),
+            partition_processors: partition_processor_runtime_work(
+                &self.partition_processors,
+                &previous.partition_processors,
+            ),
         }
+    }
+
+    fn task_kind_work(&self, previous: &Self) -> Vec<TaskKindWork> {
+        self.task_stats
+            .task_kinds
+            .iter()
+            .zip(&previous.task_stats.task_kinds)
+            .filter_map(|((kind, current), (_, previous))| {
+                let spawned = current.spawned.saturating_sub(previous.spawned);
+                let poll_count_delta = current.poll_count.saturating_sub(previous.poll_count);
+                let poll_wall_duration_delta = current
+                    .poll_wall_duration
+                    .saturating_sub(previous.poll_wall_duration);
+                (spawned > 0
+                    || current.active > 0
+                    || current.peak_active > 0
+                    || poll_count_delta > 0
+                    || !poll_wall_duration_delta.is_zero())
+                .then_some(TaskKindWork {
+                    kind: kind.into(),
+                    spawned,
+                    active: current.active,
+                    peak_active: current.peak_active,
+                    poll_count_total: current.poll_count,
+                    poll_count_delta,
+                    poll_wall_duration_total: current.poll_wall_duration,
+                    poll_wall_duration_delta,
+                })
+            })
+            .collect()
+    }
+
+    fn busiest_partition_processors(
+        &self,
+        previous: &Self,
+        limit: usize,
+    ) -> Vec<PartitionProcessorRuntimeDelta> {
+        busiest_partition_processors(
+            &self.partition_processors,
+            &previous.partition_processors,
+            limit,
+        )
     }
 }
 
-impl PartitionProcessorRuntimeSnapshot {
-    fn capture(name: String, metrics: tokio::runtime::RuntimeMetrics) -> Option<Self> {
-        (metrics.num_workers() > 0).then(|| Self {
-            name,
-            worker: RuntimeWorkerSnapshot {
-                poll_count: metrics.worker_poll_count(0),
-                busy_duration: metrics.worker_total_busy_duration(0),
-            },
+fn partition_processor_runtime_work(
+    current: &HashMap<String, RuntimeWorkerSnapshot>,
+    previous: &HashMap<String, RuntimeWorkerSnapshot>,
+) -> PartitionProcessorRuntimeWork {
+    current.iter().fold(
+        PartitionProcessorRuntimeWork {
+            count: current.len(),
+            worker_poll_count: 0,
+            worker_busy_duration: Duration::default(),
+        },
+        |mut work, (name, current)| {
+            let previous = previous.get(name);
+            work.worker_poll_count += previous.map_or(current.poll_count, |previous| {
+                current.poll_count.saturating_sub(previous.poll_count)
+            });
+            work.worker_busy_duration += previous.map_or(current.busy_duration, |previous| {
+                current.busy_duration.saturating_sub(previous.busy_duration)
+            });
+            work
+        },
+    )
+}
+
+fn busiest_partition_processors(
+    current: &HashMap<String, RuntimeWorkerSnapshot>,
+    previous: &HashMap<String, RuntimeWorkerSnapshot>,
+    limit: usize,
+) -> Vec<PartitionProcessorRuntimeDelta> {
+    let mut runtimes: Vec<_> = current
+        .iter()
+        .map(|(name, current)| {
+            let previous = previous.get(name);
+            PartitionProcessorRuntimeDelta {
+                name: name.clone(),
+                worker_poll_count: previous.map_or(current.poll_count, |previous| {
+                    current.poll_count.saturating_sub(previous.poll_count)
+                }),
+                worker_busy_duration: previous.map_or(current.busy_duration, |previous| {
+                    current.busy_duration.saturating_sub(previous.busy_duration)
+                }),
+            }
         })
-    }
+        .collect();
+    runtimes.sort_unstable_by(|left, right| {
+        right
+            .worker_busy_duration
+            .cmp(&left.worker_busy_duration)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    runtimes.truncate(limit);
+    runtimes
 }
 
 #[derive(Default)]
@@ -216,9 +340,7 @@ impl<T: NetworkSender> FailureDetector<T> {
             gossip_interval,
             intervals_since_last_extras: u32::MAX,
             last_dumped: Instant::now(),
-            last_runtime_snapshot: RuntimeSnapshot::capture(None),
-            partition_processor_runtime_sentinel: None,
-            next_partition_processor_runtime_reselection: Instant::now(),
+            last_runtime_snapshot: Self::capture_runtime_snapshot(),
         }
     }
 
@@ -300,7 +422,7 @@ impl<T: NetworkSender> FailureDetector<T> {
         // Explicit reset because the interval could have been created long time ago, and we don't
         // want to erroneously report that a stall was detected.
         self.gossip_interval.reset_immediately();
-        self.last_runtime_snapshot = self.capture_runtime_snapshot();
+        self.last_runtime_snapshot = Self::capture_runtime_snapshot();
 
         // Start receiving gossip messages
         let mut network_rx = self.gossip_svc_rx.take().start();
@@ -422,9 +544,8 @@ impl<T: NetworkSender> FailureDetector<T> {
         }
         let intervals_passed = state.gossip_tick(opts);
         let failure_significant = intervals_passed >= opts.gossip_failure_threshold.get();
-        let runtime_snapshot = self.capture_runtime_snapshot();
+        let runtime_snapshot = Self::capture_runtime_snapshot();
         let runtime_work = runtime_snapshot.work_since(&self.last_runtime_snapshot);
-        self.last_runtime_snapshot = runtime_snapshot;
         if intervals_passed > 1 && !failure_significant {
             debug!(
                 intervals_passed,
@@ -505,6 +626,7 @@ impl<T: NetworkSender> FailureDetector<T> {
 
         let processing_elapsed = processing_started_at.elapsed();
         if failure_significant {
+            let task_kind_work = runtime_snapshot.task_kind_work(&self.last_runtime_snapshot);
             warn!(
                 intervals_passed,
                 failure_threshold = opts.gossip_failure_threshold.get(),
@@ -534,9 +656,17 @@ impl<T: NetworkSender> FailureDetector<T> {
                 default_runtime_worker_busy_duration = ?runtime_work.worker_busy_duration,
                 default_runtime_worker_mean_poll_time = ?runtime_work.worker_mean_poll_time,
                 default_runtime_worker_local_queue_depth = ?runtime_work.worker_local_queue_depth,
-                partition_processor_runtime_sentinel = ?runtime_work.partition_processor.as_ref().map(|runtime| &runtime.name),
-                partition_processor_runtime_worker_poll_count_delta = ?runtime_work.partition_processor.as_ref().and_then(|runtime| runtime.worker_poll_count),
-                partition_processor_runtime_worker_busy_duration_delta = ?runtime_work.partition_processor.as_ref().and_then(|runtime| runtime.worker_busy_duration),
+                default_runtime_tokio_alive_tasks = runtime_work.tokio_alive_tasks,
+                default_runtime_tokio_spawned_tasks_delta = runtime_work.tokio_spawned_tasks,
+                default_runtime_tracked_task_active = runtime_work.tracked_task_active,
+                default_runtime_tracked_task_spawned_delta = runtime_work.tracked_task_spawned,
+                default_runtime_approx_unattributed_task_active = runtime_work.approx_unattributed_task_active,
+                default_runtime_approx_unattributed_task_spawned_delta = runtime_work.approx_unattributed_task_spawned,
+                default_runtime_task_kind_work = ?task_kind_work,
+                partition_processor_runtime_count = runtime_work.partition_processors.count,
+                partition_processor_runtime_worker_poll_count_delta = runtime_work.partition_processors.worker_poll_count,
+                partition_processor_runtime_worker_busy_duration_delta = ?runtime_work.partition_processors.worker_busy_duration,
+                partition_processor_runtime_busiest_by_busy_duration_delta = ?runtime_snapshot.busiest_partition_processors(&self.last_runtime_snapshot, BUSIEST_PARTITION_PROCESSOR_RUNTIMES),
                 fd_state = ?state,
                 "Failure detector processed a failure-significant number of gossip intervals in one tick"
             );
@@ -549,43 +679,34 @@ impl<T: NetworkSender> FailureDetector<T> {
             );
         }
 
+        self.last_runtime_snapshot = runtime_snapshot;
+
         Ok(())
     }
 
-    fn capture_runtime_snapshot(&mut self) -> RuntimeSnapshot {
-        let mut partition_processor = self
-            .partition_processor_runtime_sentinel
-            .as_deref()
-            .and_then(|name| {
-                TaskCenter::with_current(|tc| {
-                    tc.managed_runtime_metric(name).and_then(|metrics| {
-                        PartitionProcessorRuntimeSnapshot::capture(name.to_owned(), metrics)
+    fn capture_runtime_snapshot() -> RuntimeSnapshot {
+        let partition_processors = TaskCenter::with_current(|tc| {
+            tc.managed_runtime_metrics()
+                .into_iter()
+                .filter(|(name, _)| name.starts_with("pp-"))
+                .filter_map(|(name, metrics)| {
+                    (metrics.num_workers() > 0).then(|| {
+                        (
+                            name.to_string(),
+                            RuntimeWorkerSnapshot {
+                                poll_count: (0..metrics.num_workers())
+                                    .map(|worker| metrics.worker_poll_count(worker))
+                                    .sum(),
+                                busy_duration: (0..metrics.num_workers())
+                                    .map(|worker| metrics.worker_total_busy_duration(worker))
+                                    .fold(Duration::default(), |total, busy| total + busy),
+                            },
+                        )
                     })
                 })
-            });
-
-        if partition_processor.is_none() {
-            self.partition_processor_runtime_sentinel = None;
-            let now = Instant::now();
-            if now >= self.next_partition_processor_runtime_reselection {
-                self.next_partition_processor_runtime_reselection =
-                    now + PARTITION_PROCESSOR_RUNTIME_RESELECTION_INTERVAL;
-                partition_processor = TaskCenter::with_current(|tc| {
-                    tc.managed_runtime_metrics()
-                        .into_iter()
-                        .filter(|(name, _)| name.starts_with("pp-"))
-                        .min_by(|(left, _), (right, _)| left.as_str().cmp(right.as_str()))
-                        .and_then(|(name, metrics)| {
-                            PartitionProcessorRuntimeSnapshot::capture(name.to_string(), metrics)
-                        })
-                });
-                self.partition_processor_runtime_sentinel = partition_processor
-                    .as_ref()
-                    .map(|runtime| runtime.name.clone());
-            }
-        }
-
-        RuntimeSnapshot::capture(partition_processor)
+                .collect()
+        });
+        RuntimeSnapshot::capture(partition_processors)
     }
 
     /// handle incoming gossip messages
@@ -732,5 +853,59 @@ impl<T: NetworkSender> FailureDetector<T> {
         }
 
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn runtime(poll_count: u64, busy_duration: Duration) -> RuntimeWorkerSnapshot {
+        RuntimeWorkerSnapshot {
+            poll_count,
+            busy_duration,
+        }
+    }
+
+    #[test]
+    fn partition_processor_deltas_sum_and_report_busiest_runtimes() {
+        let previous: HashMap<_, _> = [
+            ("pp-a".to_owned(), runtime(4, Duration::from_millis(10))),
+            ("pp-b".to_owned(), runtime(10, Duration::from_millis(10))),
+            (
+                "pp-removed".to_owned(),
+                runtime(100, Duration::from_secs(1)),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let current: HashMap<_, _> = [
+            ("pp-a".to_owned(), runtime(10, Duration::from_millis(30))),
+            ("pp-b".to_owned(), runtime(20, Duration::from_millis(15))),
+            ("pp-new".to_owned(), runtime(1, Duration::from_millis(8))),
+        ]
+        .into_iter()
+        .collect();
+
+        let aggregate = partition_processor_runtime_work(&current, &previous);
+        assert_eq!(aggregate.count, 3);
+        assert_eq!(aggregate.worker_poll_count, 17);
+        assert_eq!(aggregate.worker_busy_duration, Duration::from_millis(33));
+
+        assert_eq!(
+            busiest_partition_processors(&current, &previous, 2),
+            vec![
+                PartitionProcessorRuntimeDelta {
+                    name: "pp-a".to_owned(),
+                    worker_poll_count: 6,
+                    worker_busy_duration: Duration::from_millis(20),
+                },
+                PartitionProcessorRuntimeDelta {
+                    name: "pp-new".to_owned(),
+                    worker_poll_count: 1,
+                    worker_busy_duration: Duration::from_millis(8),
+                },
+            ]
+        );
     }
 }
