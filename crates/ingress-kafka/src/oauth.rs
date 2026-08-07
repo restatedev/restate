@@ -49,12 +49,6 @@ pub(crate) enum OAuthError {
          \"provider={PROVIDER_MSK_IAM},region={DEFAULT_REGION}\""
     )]
     UnknownProvider(String),
-    #[cfg(not(feature = "msk-iam"))]
-    #[error(
-        "The '{PROVIDER_MSK_IAM}' provider requires building restate-ingress-kafka with the \
-         'msk-iam' feature enabled"
-    )]
-    FeatureDisabled,
     #[error("MSK IAM token generation thread panicked")]
     ThreadPanicked,
     #[error("no credentials provider available for the configured AWS profile")]
@@ -363,7 +357,8 @@ mod tests {
             .build()
             .unwrap();
         let result = generate_oauth_token(handle.handle(), Some("region=us-east-1"));
-        let err = result.expect_err("expected missing-provider error");
+
+        let err = result.err().unwrap();
         assert!(err.to_string().contains("Missing 'provider'"), "got: {err}");
     }
 
@@ -373,7 +368,7 @@ mod tests {
             .build()
             .unwrap();
         let result = generate_oauth_token(handle.handle(), Some("provider=azure-eh"));
-        let err = result.expect_err("expected unknown-provider error");
+        let err = result.err().unwrap();
         assert!(err.to_string().contains("azure-eh"), "got: {err}");
         assert!(err.to_string().contains("msk-iam"), "got: {err}");
     }
@@ -385,7 +380,7 @@ mod tests {
             .unwrap();
         // No config at all is equivalent to an empty config: provider is missing.
         let result = generate_oauth_token(handle.handle(), None);
-        let err = result.expect_err("expected missing-provider error");
+        let err = result.err().unwrap();
         assert!(err.to_string().contains("Missing 'provider'"), "got: {err}");
     }
 }
