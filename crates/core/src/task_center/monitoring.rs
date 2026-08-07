@@ -22,6 +22,8 @@ pub trait TaskCenterMonitoring {
 
     fn managed_runtime_metrics(&self) -> Vec<(ReString, RuntimeMetrics)>;
 
+    fn managed_runtime_metric(&self, runtime: &str) -> Option<RuntimeMetrics>;
+
     /// How long has the task-center been running?
     fn age(&self) -> Duration;
 
@@ -40,6 +42,13 @@ impl TaskCenterMonitoring for Handle {
             .iter()
             .map(|(k, v)| (k.clone(), v.runtime_handle().metrics()))
             .collect()
+    }
+
+    fn managed_runtime_metric(&self, runtime: &str) -> Option<RuntimeMetrics> {
+        let guard = self.inner.managed_runtimes.lock();
+        guard
+            .get(runtime)
+            .map(|runtime| runtime.runtime_handle().metrics())
     }
 
     /// How long has the task-center been running?

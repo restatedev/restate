@@ -51,6 +51,8 @@ use crate::metric_definitions::GOSSIP_SENT;
 use self::fd_state::Error;
 use self::fd_state::FdState;
 
+const PARTITION_PROCESSOR_RUNTIME_RESELECTION_INTERVAL: Duration = Duration::from_secs(1);
+
 pub struct FailureDetector<T> {
     networking: T,
     processor_manager_handle: Option<ProcessorsManagerHandle>,
@@ -60,6 +62,113 @@ pub struct FailureDetector<T> {
     // when did we send the last gossip message with extras
     intervals_since_last_extras: u32,
     last_dumped: Instant,
+    last_runtime_snapshot: RuntimeSnapshot,
+    partition_processor_runtime_sentinel: Option<String>,
+    next_partition_processor_runtime_reselection: Instant,
+}
+
+#[derive(Debug)]
+struct RuntimeWorkerSnapshot {
+    poll_count: u64,
+    busy_duration: Duration,
+}
+
+#[derive(Debug)]
+struct RuntimeSnapshot {
+    workers: Vec<RuntimeWorkerSnapshot>,
+    partition_processor: Option<PartitionProcessorRuntimeSnapshot>,
+}
+
+#[derive(Debug)]
+struct PartitionProcessorRuntimeSnapshot {
+    name: String,
+    worker: RuntimeWorkerSnapshot,
+}
+
+struct RuntimeWork {
+    global_queue_depth: usize,
+    worker_poll_count: Vec<u64>,
+    worker_busy_duration: Vec<Duration>,
+    worker_mean_poll_time: Vec<Duration>,
+    worker_local_queue_depth: Vec<usize>,
+    partition_processor: Option<PartitionProcessorRuntimeWork>,
+}
+
+struct PartitionProcessorRuntimeWork {
+    name: String,
+    worker_poll_count: Option<u64>,
+    worker_busy_duration: Option<Duration>,
+}
+
+impl RuntimeSnapshot {
+    fn capture(partition_processor: Option<PartitionProcessorRuntimeSnapshot>) -> Self {
+        let metrics = TaskCenter::with_current(|tc| tc.default_runtime_metrics());
+        let workers = (0..metrics.num_workers())
+            .map(|worker| RuntimeWorkerSnapshot {
+                poll_count: metrics.worker_poll_count(worker),
+                busy_duration: metrics.worker_total_busy_duration(worker),
+            })
+            .collect();
+        Self {
+            workers,
+            partition_processor,
+        }
+    }
+
+    fn work_since(&self, previous: &Self) -> RuntimeWork {
+        let metrics = TaskCenter::with_current(|tc| tc.default_runtime_metrics());
+        let mut worker_poll_count = Vec::with_capacity(self.workers.len());
+        let mut worker_busy_duration = Vec::with_capacity(self.workers.len());
+        let mut worker_mean_poll_time = Vec::with_capacity(self.workers.len());
+        let mut worker_local_queue_depth = Vec::with_capacity(self.workers.len());
+        for (worker, (current, previous)) in self.workers.iter().zip(&previous.workers).enumerate()
+        {
+            worker_poll_count.push(current.poll_count.saturating_sub(previous.poll_count));
+            worker_busy_duration.push(current.busy_duration.saturating_sub(previous.busy_duration));
+            worker_mean_poll_time.push(metrics.worker_mean_poll_time(worker));
+            worker_local_queue_depth.push(metrics.worker_local_queue_depth(worker));
+        }
+        RuntimeWork {
+            global_queue_depth: metrics.global_queue_depth(),
+            worker_poll_count,
+            worker_busy_duration,
+            worker_mean_poll_time,
+            worker_local_queue_depth,
+            partition_processor: self.partition_processor.as_ref().map(|current| {
+                let previous = previous
+                    .partition_processor
+                    .as_ref()
+                    .filter(|previous| previous.name == current.name);
+                PartitionProcessorRuntimeWork {
+                    name: current.name.clone(),
+                    worker_poll_count: previous.map(|previous| {
+                        current
+                            .worker
+                            .poll_count
+                            .saturating_sub(previous.worker.poll_count)
+                    }),
+                    worker_busy_duration: previous.map(|previous| {
+                        current
+                            .worker
+                            .busy_duration
+                            .saturating_sub(previous.worker.busy_duration)
+                    }),
+                }
+            }),
+        }
+    }
+}
+
+impl PartitionProcessorRuntimeSnapshot {
+    fn capture(name: String, metrics: tokio::runtime::RuntimeMetrics) -> Option<Self> {
+        (metrics.num_workers() > 0).then(|| Self {
+            name,
+            worker: RuntimeWorkerSnapshot {
+                poll_count: metrics.worker_poll_count(0),
+                busy_duration: metrics.worker_total_busy_duration(0),
+            },
+        })
+    }
 }
 
 #[derive(Default)]
@@ -107,6 +216,9 @@ impl<T: NetworkSender> FailureDetector<T> {
             gossip_interval,
             intervals_since_last_extras: u32::MAX,
             last_dumped: Instant::now(),
+            last_runtime_snapshot: RuntimeSnapshot::capture(None),
+            partition_processor_runtime_sentinel: None,
+            next_partition_processor_runtime_reselection: Instant::now(),
         }
     }
 
@@ -188,6 +300,7 @@ impl<T: NetworkSender> FailureDetector<T> {
         // Explicit reset because the interval could have been created long time ago, and we don't
         // want to erroneously report that a stall was detected.
         self.gossip_interval.reset_immediately();
+        self.last_runtime_snapshot = self.capture_runtime_snapshot();
 
         // Start receiving gossip messages
         let mut network_rx = self.gossip_svc_rx.take().start();
@@ -309,6 +422,9 @@ impl<T: NetworkSender> FailureDetector<T> {
         }
         let intervals_passed = state.gossip_tick(opts);
         let failure_significant = intervals_passed >= opts.gossip_failure_threshold.get();
+        let runtime_snapshot = self.capture_runtime_snapshot();
+        let runtime_work = runtime_snapshot.work_since(&self.last_runtime_snapshot);
+        self.last_runtime_snapshot = runtime_snapshot;
         if intervals_passed > 1 && !failure_significant {
             debug!(
                 intervals_passed,
@@ -413,6 +529,14 @@ impl<T: NetworkSender> FailureDetector<T> {
                 gossip_send_attempted,
                 gossip_send_succeeded,
                 gossip_send_failed,
+                default_runtime_global_queue_depth = runtime_work.global_queue_depth,
+                default_runtime_worker_poll_count = ?runtime_work.worker_poll_count,
+                default_runtime_worker_busy_duration = ?runtime_work.worker_busy_duration,
+                default_runtime_worker_mean_poll_time = ?runtime_work.worker_mean_poll_time,
+                default_runtime_worker_local_queue_depth = ?runtime_work.worker_local_queue_depth,
+                partition_processor_runtime_sentinel = ?runtime_work.partition_processor.as_ref().map(|runtime| &runtime.name),
+                partition_processor_runtime_worker_poll_count_delta = ?runtime_work.partition_processor.as_ref().and_then(|runtime| runtime.worker_poll_count),
+                partition_processor_runtime_worker_busy_duration_delta = ?runtime_work.partition_processor.as_ref().and_then(|runtime| runtime.worker_busy_duration),
                 fd_state = ?state,
                 "Failure detector processed a failure-significant number of gossip intervals in one tick"
             );
@@ -426,6 +550,42 @@ impl<T: NetworkSender> FailureDetector<T> {
         }
 
         Ok(())
+    }
+
+    fn capture_runtime_snapshot(&mut self) -> RuntimeSnapshot {
+        let mut partition_processor = self
+            .partition_processor_runtime_sentinel
+            .as_deref()
+            .and_then(|name| {
+                TaskCenter::with_current(|tc| {
+                    tc.managed_runtime_metric(name).and_then(|metrics| {
+                        PartitionProcessorRuntimeSnapshot::capture(name.to_owned(), metrics)
+                    })
+                })
+            });
+
+        if partition_processor.is_none() {
+            self.partition_processor_runtime_sentinel = None;
+            let now = Instant::now();
+            if now >= self.next_partition_processor_runtime_reselection {
+                self.next_partition_processor_runtime_reselection =
+                    now + PARTITION_PROCESSOR_RUNTIME_RESELECTION_INTERVAL;
+                partition_processor = TaskCenter::with_current(|tc| {
+                    tc.managed_runtime_metrics()
+                        .into_iter()
+                        .filter(|(name, _)| name.starts_with("pp-"))
+                        .min_by(|(left, _), (right, _)| left.as_str().cmp(right.as_str()))
+                        .and_then(|(name, metrics)| {
+                            PartitionProcessorRuntimeSnapshot::capture(name.to_string(), metrics)
+                        })
+                });
+                self.partition_processor_runtime_sentinel = partition_processor
+                    .as_ref()
+                    .map(|runtime| runtime.name.clone());
+            }
+        }
+
+        RuntimeSnapshot::capture(partition_processor)
     }
 
     /// handle incoming gossip messages
