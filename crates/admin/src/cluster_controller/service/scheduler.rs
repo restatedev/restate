@@ -616,7 +616,12 @@ impl<T: TransportConnect> Scheduler<T> {
             .difference(partition_state.current.replica_set());
         let Some(first_newly_added) = newly_added.next() else {
             return next.replica_set().iter().any(|node_id| {
-                legacy_cluster_state.is_partition_processor_active(&partition_id, node_id)
+                is_partition_processor_active_on_current_generation(
+                    partition_id,
+                    *node_id,
+                    nodes_config,
+                    legacy_cluster_state,
+                )
             });
         };
         is_partition_processor_active_on_current_generation(
@@ -1275,6 +1280,34 @@ mod tests {
     }
 
     #[test]
+    fn reconfiguration_waits_for_added_follower_when_increasing_replication() {
+        let partition_id = PartitionId::MIN;
+        let state = reconfiguration_state(&[2, 1], Some(&[2, 1, 3]));
+        let nodes_config = nodes_configuration([(1, 1), (2, 1), (3, 1)]);
+
+        assert!(!should_complete(
+            partition_id,
+            &state,
+            &nodes_config,
+            [
+                (1, Some(ReplayStatus::Active)),
+                (2, Some(ReplayStatus::Active)),
+                (3, Some(ReplayStatus::Starting)),
+            ],
+        ));
+        assert!(should_complete(
+            partition_id,
+            &state,
+            &nodes_config,
+            [
+                (1, Some(ReplayStatus::Active)),
+                (2, Some(ReplayStatus::Active)),
+                (3, Some(ReplayStatus::Active)),
+            ],
+        ));
+    }
+
+    #[test]
     fn reconfiguration_requires_an_added_follower_to_be_active() {
         let partition_id = PartitionId::MIN;
         let state = reconfiguration_state(&[3, 2], Some(&[2, 1, 4]));
@@ -1340,7 +1373,7 @@ mod tests {
     #[test]
     fn reconfiguration_without_additions_requires_an_active_retained_follower() {
         let partition_id = PartitionId::MIN;
-        let nodes_config = nodes_configuration([(2, 1), (3, 1)]);
+        let nodes_config = nodes_configuration([(2, 2), (3, 1)]);
         let pure_removal = reconfiguration_state(&[3, 2], Some(&[2]));
 
         assert!(!should_complete(
@@ -1355,12 +1388,34 @@ mod tests {
             &nodes_config,
             [(2, Some(ReplayStatus::Starting))],
         ));
-        assert!(should_complete(
-            partition_id,
-            &pure_removal,
-            &nodes_config,
-            [(2, Some(ReplayStatus::Active))],
-        ));
+        let mut n2_active_from_old_generation =
+            reconfiguration_legacy_state(partition_id, [(2, Some(ReplayStatus::Active))]);
+        assert!(
+            !Scheduler::<FailingConnector>::should_complete_reconfiguration(
+                partition_id,
+                &nodes_config,
+                &pure_removal,
+                &n2_active_from_old_generation,
+            )
+        );
+
+        let NodeState::Alive(n2) = n2_active_from_old_generation
+            .nodes
+            .get_mut(&PlainNodeId::from(2))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        n2.generational_node_id = GenerationalNodeId::new(2, 2);
+
+        assert!(
+            Scheduler::<FailingConnector>::should_complete_reconfiguration(
+                partition_id,
+                &nodes_config,
+                &pure_removal,
+                &n2_active_from_old_generation,
+            )
+        );
         assert!(should_complete(
             partition_id,
             &reconfiguration_state(&[3, 2], Some(&[])),
