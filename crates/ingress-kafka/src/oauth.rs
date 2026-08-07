@@ -21,10 +21,8 @@
 //! The provider-based dispatch is designed to be extensible for other
 //! OAUTHBEARER mechanisms in the future (e.g., Confluent Cloud, Azure Event Hubs).
 
-#[cfg(feature = "msk-iam")]
 use aws_config::{BehaviorVersion, Region};
 use tracing::debug;
-#[cfg(feature = "msk-iam")]
 use tracing::warn;
 
 /// The default AWS region used when `region` is not specified in the config.
@@ -57,13 +55,10 @@ pub(crate) enum OAuthError {
          'msk-iam' feature enabled"
     )]
     FeatureDisabled,
-    #[cfg(feature = "msk-iam")]
     #[error("MSK IAM token generation thread panicked")]
     ThreadPanicked,
-    #[cfg(feature = "msk-iam")]
     #[error("no credentials provider available for the configured AWS profile")]
     NoCredentialsProvider,
-    #[cfg(feature = "msk-iam")]
     #[error("failed to generate AWS MSK IAM token: {0}")]
     TokenGeneration(String),
 }
@@ -170,33 +165,22 @@ pub(crate) fn generate_oauth_token(
                 "Generating OAUTHBEARER token"
             );
 
-            #[cfg(feature = "msk-iam")]
-            {
-                let handle = handle.clone();
+            let handle = handle.clone();
 
-                let thread_result = std::thread::spawn(move || {
-                    handle.block_on(generate_msk_token_async(region, profile))
-                })
-                .join();
+            let thread_result = std::thread::spawn(move || {
+                handle.block_on(generate_msk_token_async(region, profile))
+            })
+            .join();
 
-                match thread_result {
-                    Ok(result) => result.map_err(Into::into),
-                    Err(_) => Err(OAuthError::ThreadPanicked.into()),
-                }
-            }
-
-            #[cfg(not(feature = "msk-iam"))]
-            {
-                // Silence unused-parameter warnings when the feature is disabled.
-                let _ = (handle, region, profile);
-                Err(OAuthError::FeatureDisabled.into())
+            match thread_result {
+                Ok(result) => result.map_err(Into::into),
+                Err(_) => Err(OAuthError::ThreadPanicked.into()),
             }
         }
     }
 }
 
 /// Async implementation of MSK IAM token generation.
-#[cfg(feature = "msk-iam")]
 async fn generate_msk_token_async(
     region: String,
     profile: Option<String>,
@@ -403,21 +387,5 @@ mod tests {
         let result = generate_oauth_token(handle.handle(), None);
         let err = result.expect_err("expected missing-provider error");
         assert!(err.to_string().contains("Missing 'provider'"), "got: {err}");
-    }
-
-    /// When the crate is built without the `msk-iam` feature, resolving succeeds
-    /// (parsing is always available) but token generation reports that the feature
-    /// must be enabled.
-    #[cfg(not(feature = "msk-iam"))]
-    #[test]
-    fn msk_iam_without_feature_reports_feature_disabled() {
-        let handle = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
-        let result =
-            generate_oauth_token(handle.handle(), Some("provider=msk-iam,region=us-east-1"));
-        let err = result.expect_err("expected feature-disabled error");
-        assert!(err.to_string().contains("msk-iam"), "got: {err}");
-        assert!(err.to_string().contains("feature"), "got: {err}");
     }
 }

@@ -172,6 +172,7 @@ struct RebalanceContext<T: TransportConnect> {
     builder: EnvelopeBuilder,
     consumer_group_id: String,
     /// Handle to the tokio runtime for blocking on async operations (e.g., MSK IAM token generation)
+    #[allow(dead_code)]
     tokio_handle: tokio::runtime::Handle,
 }
 
@@ -179,9 +180,6 @@ impl<T> ClientContext for RebalanceContext<T>
 where
     T: TransportConnect,
 {
-    /// Enable OAuth token refresh for OAUTHBEARER authentication (e.g., MSK IAM)
-    const ENABLE_REFRESH_OAUTH_TOKEN: bool = true;
-
     fn stats(&self, statistics: Statistics) {
         for topic in statistics.topics {
             for partition in topic.1.partitions {
@@ -197,6 +195,12 @@ where
         }
     }
 
+    // --- Keep default implementation when msk-iam is disabled
+
+    #[cfg(feature = "msk-iam")]
+    const ENABLE_REFRESH_OAUTH_TOKEN: bool = true;
+
+    #[cfg(feature = "msk-iam")]
     fn generate_oauth_token(
         &self,
         oauthbearer_config: Option<&str>,
