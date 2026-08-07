@@ -184,12 +184,13 @@ where
                 match &partition_key_selection {
                     // User requested a full scan of all partitions, return one physical partition per restate partition
                     None => itertools::Either::Left(Some((partition_id, partition)).into_iter()),
-                    // User requested too many point reads; for safety reasons we will ignore them
-                    Some(selection) if selection.keys.len() > 4096 => {
-                        itertools::Either::Left(Some((partition_id, partition)).into_iter())
-                    }
-                    // Group selected keys into one physical scan per Restate partition.
-                    Some(selection) if selection.fanout == PointReadFanout::PerPartition => {
+                    // Group selected keys into one physical scan per Restate partition if the number
+                    // of keys is too large (to bound the number of concurrent scans) or if the fanout
+                    // was set to per-partition.
+                    Some(selection)
+                        if selection.fanout == PointReadFanout::PerPartition
+                            || selection.keys.len() > 4096 =>
+                    {
                         let mut keys = selection.keys.range(partition.key_range).copied();
                         let selected = keys.next().map(|first| {
                             let last = keys.next_back().unwrap_or(first);
