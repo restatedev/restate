@@ -33,6 +33,11 @@ on:
         required: false
         default: ""
         type: string
+      profile:
+        description: "cargo profile to build with (must exist in Cargo.toml)"
+        required: false
+        default: "release"
+        type: string
       pushToDockerHub:
         description: "push image to DockerHub"
         required: false
@@ -71,6 +76,15 @@ on:
         required: false
         default: ""
         type: string
+      profile:
+        description: "cargo profile to build with"
+        required: false
+        default: "release"
+        type: choice
+        options:
+          - release
+          - release-lite
+          - release-debug
       pushToDockerHub:
         description: "push image to DockerHub"
         required: false
@@ -191,6 +205,17 @@ jobs:
             echo "This is not the latest version - will not update latest tag"
           fi
 
+      - name: Compute image tag prefix
+        id: prefix
+        run: |
+          # Keep non-release-profile and debug images from clobbering the regular tags.
+          # NB parca must not contribute a prefix; release builds use it and need plain tags.
+          PREFIX=""
+          if [[ "${{ inputs.debug }}" == "true" ]]; then PREFIX="debug-"; fi
+          if [[ "${{ inputs.profile }}" != "release" ]]; then PREFIX="${PREFIX}${{ inputs.profile }}-"; fi
+          echo "value=${PREFIX}" >> $GITHUB_OUTPUT
+          echo "Tag prefix: '${PREFIX}'"
+
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v5
@@ -201,7 +226,7 @@ jobs:
 
           flavor: |
             latest=${{ (steps.is-latest.outputs.is_latest == 'true') && 'true' || 'false' }}
-            ${{ inputs.debug && 'prefix=debug-,onlatest=true' || '' }}
+            ${{ steps.prefix.outputs.value != '' && format('prefix={0},onlatest=true', steps.prefix.outputs.value) || '' }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -247,7 +272,8 @@ jobs:
           platforms: ${{ github.ref == 'refs/heads/main' && 'linux/arm64,linux/amd64' || (inputs.platforms || 'linux/arm64,linux/amd64') }}
           network: host
           build-args: |
-            CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug || inputs.parca }}
+            CARGO_PROFILE=${{ inputs.profile }}
+            CARGO_PROFILE_DEBUG=${{ (inputs.debug || inputs.parca) && 'true' || '' }}
             BUILD_INDIVIDUALLY=${{ inputs.buildIndividually }}
             UPLOAD_DEBUGINFO=${{ inputs.parca }}
             RESTATE_FEATURES=${{ inputs.features || '' }}
@@ -277,7 +303,8 @@ jobs:
           network: host
           outputs: type=local,dest=./debug-symbols
           build-args: |
-            CARGO_PROFILE_RELEASE_DEBUG=true
+            CARGO_PROFILE=${{ inputs.profile }}
+            CARGO_PROFILE_DEBUG=true
             BUILD_INDIVIDUALLY=${{ inputs.buildIndividually }}
             UPLOAD_DEBUGINFO=true
             RESTATE_FEATURES=${{ inputs.features || '' }}
