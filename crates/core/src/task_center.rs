@@ -96,6 +96,14 @@ impl TaskCenter {
         CURRENT_TASK_CENTER.try_with(|tc| f(tc)).ok()
     }
 
+    // todo: this is temporary
+    pub fn with_io_runtime_handle<F, R>(f: F) -> R
+    where
+        F: FnOnce(&tokio::runtime::Handle) -> R,
+    {
+        CURRENT_TASK_CENTER.with(|tc| f(&tc.inner.default_runtime_handle))
+    }
+
     /// Get the current task center. Use this to spawn tasks on the current task center.
     /// This must be called from within a task-center task.
     #[track_caller]

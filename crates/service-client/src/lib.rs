@@ -85,6 +85,7 @@ impl ServiceClient {
     pub fn from_options(
         options: &ServiceClientOptions,
         assume_role_cache_mode: AssumeRoleCacheMode,
+        io_runtime: tokio::runtime::Handle,
     ) -> Result<Self, BuildError> {
         // The GCP token-cache mode mirrors the Lambda assume-role-cache mode.
         // None on admin/discovery dispatch, Unbounded on the worker/invoker
@@ -108,7 +109,7 @@ impl ServiceClient {
         };
 
         Ok(Self::new(
-            HttpClient::from_options(&options.http),
+            HttpClient::from_options(&options.http, io_runtime),
             LambdaClient::from_options(&options.lambda, assume_role_cache_mode),
             GcpTokenClient::new(gcp_cache_mode),
             request_identity_key,

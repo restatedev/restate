@@ -913,6 +913,10 @@ impl LambdaARN {
     pub fn region(&self) -> &str {
         &self.arn[(self.region.start as usize)..(self.region.end as usize)]
     }
+
+    pub fn as_str(&self) -> &str {
+        &self.arn
+    }
 }
 
 #[cfg(feature = "schemars")]

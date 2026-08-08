@@ -42,6 +42,7 @@ struct AuthorityPoolInner<C> {
 
 struct AuthorityPoolShared<C> {
     connector: C,
+    io_runtime: tokio::runtime::Handle,
     config: PoolConfig,
     connection_config: ConnectionConfig,
     inner: Arc<RwLock<AuthorityPoolInner<C>>>,
@@ -110,7 +111,7 @@ where
     C::Future: Send + 'static,
     C::Error: Into<Error>,
 {
-    pub fn new(connector: C, config: PoolConfig) -> Self {
+    pub fn new(connector: C, io_runtime: tokio::runtime::Handle, config: PoolConfig) -> Self {
         let connection_config = ConnectionConfigBuilder::default()
             .initial_max_send_streams(config.initial_max_send_streams.get())
             .streams_per_connection_limit(config.streams_per_connection_limit.get())
@@ -125,6 +126,7 @@ where
 
         let shared = AuthorityPoolShared {
             connector,
+            io_runtime,
             config,
             connection_config,
             inner: Arc::new(RwLock::new(AuthorityPoolInner {
@@ -415,8 +417,11 @@ where
 
             inner.epoch = inner.epoch.wrapping_add(1);
 
-            let candidate =
-                Connection::new(self.shared.connector.clone(), self.shared.connection_config);
+            let candidate = Connection::new(
+                self.shared.connector.clone(),
+                self.shared.io_runtime.clone(),
+                self.shared.connection_config,
+            );
             inner.connections.push_front(candidate.clone());
 
             Some(candidate)
@@ -456,6 +461,7 @@ mod test {
     fn make_pool(max_concurrent_streams: u32) -> AuthorityPool<TestConnector> {
         AuthorityPool::new(
             TestConnector::new(max_concurrent_streams),
+            tokio::runtime::Handle::current(),
             PoolConfig {
                 initial_max_send_streams: NonZeroU32::new(max_concurrent_streams).unwrap(),
                 ..Default::default()
