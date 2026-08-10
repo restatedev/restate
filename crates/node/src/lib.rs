@@ -384,6 +384,7 @@ impl Node {
                     .clone()
                     .map(|config| &config.ingress)
                     .boxed(),
+                ingestion_client.clone(),
                 &mut address_book,
                 tc.health().ingress_status(),
                 networking.clone(),
