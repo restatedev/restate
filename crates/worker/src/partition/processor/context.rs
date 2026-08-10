@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 
+use bytes::BytesMut;
 use metrics::gauge;
 use tokio::sync::watch;
 use tracing::info;
@@ -58,6 +59,21 @@ pub struct ProcessorRawContext {
     trim_queue: TrimQueue,
     /// The vqueues metadata cache
     vqueues: VQueuesMetaCache,
+    /// Helper encoding arena
+    encoding_arena: BytesMut,
+}
+
+pub trait HasEncodingArena {
+    fn encoding_arena(&mut self) -> &mut BytesMut;
+}
+
+impl<T> HasEncodingArena for &mut T
+where
+    T: HasEncodingArena,
+{
+    fn encoding_arena(&mut self) -> &mut BytesMut {
+        T::encoding_arena(self)
+    }
 }
 
 impl ProcessorRawContext {
@@ -118,6 +134,7 @@ impl ProcessorRawContext {
             status,
             trim_queue,
             vqueues,
+            encoding_arena: BytesMut::with_capacity(128 * 1024),
         })
     }
 
@@ -134,6 +151,7 @@ impl ProcessorRawContext {
             outbox: Outbox::new_empty(),
             trim_queue: TrimQueue::default(),
             vqueues: VQueuesMetaCache::new_empty(VQUEUE_CACHE_CAPACITY),
+            encoding_arena: BytesMut::with_capacity(128 * 1024),
         }
     }
 
@@ -296,5 +314,12 @@ impl HasStatusMut for ProcessorRawContext {
     #[inline]
     fn status_mut(&mut self) -> &mut Status {
         &mut self.status
+    }
+}
+
+impl HasEncodingArena for ProcessorRawContext {
+    #[inline]
+    fn encoding_arena(&mut self) -> &mut BytesMut {
+        &mut self.encoding_arena
     }
 }
