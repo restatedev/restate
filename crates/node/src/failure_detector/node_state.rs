@@ -62,6 +62,20 @@ pub enum NodeState {
     FailingOver,
 }
 
+/// The condition that determines the failure detector's target state.
+///
+/// This is test-only because production applies the resulting state transition directly. The
+/// deterministic harness uses the cause to hold only local-observer age expirations without
+/// manufacturing a different target state.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FailureDetectorTransitionCause {
+    AgeExpired,
+    TerminalConnection,
+    FailingOver,
+    Alive,
+}
+
 impl NodeState {
     pub fn is_potentially_alive(&self) -> bool {
         matches!(self, NodeState::Alive | NodeState::Suspect { .. })
@@ -111,6 +125,22 @@ pub struct Node {
 }
 
 impl Node {
+    #[cfg(test)]
+    pub(super) fn failure_detector_transition_cause(
+        &self,
+        opts: &GossipOptions,
+    ) -> FailureDetectorTransitionCause {
+        if self.is_gone() {
+            FailureDetectorTransitionCause::TerminalConnection
+        } else if self.gossip_age > opts.gossip_failure_threshold.get() {
+            FailureDetectorTransitionCause::AgeExpired
+        } else if self.in_failover {
+            FailureDetectorTransitionCause::FailingOver
+        } else {
+            FailureDetectorTransitionCause::Alive
+        }
+    }
+
     pub fn new(gen_node_id: GenerationalNodeId) -> Self {
         Self {
             gen_node_id,
