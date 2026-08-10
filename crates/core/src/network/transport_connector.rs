@@ -185,11 +185,10 @@ pub mod test_util {
 
             let (tx, egress, shared) = EgressStream::create_loopback();
 
-            let (header, hello) = crate::network::handshake::wait_for_hello(
-                &mut output_stream,
-                Configuration::pinned().networking.handshake_timeout.into(),
-            )
-            .await?;
+            let handshake_timeout = Configuration::pinned().networking.handshake_timeout.into();
+            let (header, hello) =
+                crate::network::handshake::wait_for_hello(&mut output_stream, handshake_timeout)
+                    .await?;
 
             // NodeId **must** be generational at this layer
             let _peer_node_id = hello.my_node_id.ok_or_else(|| {

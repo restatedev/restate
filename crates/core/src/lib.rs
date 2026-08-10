@@ -60,9 +60,6 @@ pub use task_center::{
     TaskKind, cancellation_token, cancellation_watcher, is_cancellation_requested, my_node_id,
 };
 
-#[cfg(feature = "test-util")]
-pub use task_center::Handle;
-
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_env;
 
