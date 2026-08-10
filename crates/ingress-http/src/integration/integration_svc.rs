@@ -69,7 +69,7 @@ use restate_ingestion_client::{IngestionClient, IngestionError, RecordCommit};
 use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{
-    DeploymentId, InvocationId, PartitionProcessorRpcRequestId, partitioner,
+    DeploymentId, InvocationId, PartitionProcessorRpcRequestId, SubscriptionId, partitioner,
 };
 use restate_types::invocation::{
     Header, InvocationTarget, InvocationTargetType, ServiceInvocation, SpanRelation,
@@ -986,9 +986,7 @@ impl ProcessorState {
             producer_id: if producer.is_empty() {
                 None
             } else {
-                let mut hasher = xxhash_rust::xxh3::Xxh3::default();
-                producer.hash(&mut hasher);
-                Some(hasher.digest128())
+                Some(Self::get_producer_id(&producer))
             },
             producer: producer.clone(),
             ingested_counter: metrics::counter!(
@@ -1001,6 +999,145 @@ impl ProcessorState {
             last_committed: None,
             current_window_size: 0,
             inflight: VecDeque::default(),
+        }
+    }
+
+    /// Derives the `u128` dedup producer id from the client-supplied producer string.
+    ///
+    /// The producer string itself has no enforced format: a client may use whatever
+    /// string it wants, as long as it is stable and unique per logical producer,
+    /// since that is what deduplication keys off.
+    ///
+    /// One shape gets special treatment, to allow a smooth migration from the
+    /// deprecated `ingress-kafka` to the new `ingress-integration-kafka`: a producer
+    /// string of the form `<subscription-id>:<consumer-group>:<topic>:<partition>`
+    /// is hashed exactly the way `dedup_producer_id` in
+    /// `crates/ingress-kafka/src/consumer_task.rs` hashed the same tuple, so existing
+    /// dedup state keeps working across the migration. That requires feeding the
+    /// hasher the *typed* values, not their string forms, hence the parsing below.
+    ///
+    /// Anything else — a different number of segments, or a segment that fails to
+    /// parse — is hashed as an opaque string.
+    ///
+    /// NOTE: this scheme is still a *proposal* and is subject to change while
+    /// backward compatibility with the old `ingress-kafka` producer ids is being
+    /// worked out.
+    /// See <https://github.com/restatedev/ingress-integration-kafka/issues/3>.
+    fn get_producer_id(producer: impl AsRef<str>) -> u128 {
+        let producer = producer.as_ref();
+        let mut hasher = xxhash_rust::xxh3::Xxh3::default();
+
+        match Self::as_kafka_producer(producer) {
+            // Do not change. This must stay byte-for-byte identical to
+            // `dedup_producer_id` in ingress-kafka, or migrated subscriptions will
+            // get fresh producer ids and replay duplicates.
+            Some((subscription, consumer_group, topic, partition)) => {
+                subscription.hash(&mut hasher);
+                '\0'.hash(&mut hasher);
+                consumer_group.hash(&mut hasher);
+                '\0'.hash(&mut hasher);
+                topic.hash(&mut hasher);
+                '\0'.hash(&mut hasher);
+                partition.hash(&mut hasher);
+            }
+            None => producer.hash(&mut hasher),
+        }
+
+        hasher.digest128()
+    }
+
+    /// Recognizes producer strings shaped like the ingress-kafka dedup tuple
+    /// `<subscription-id>:<consumer-group>:<topic>:<partition>`.
+    ///
+    /// Returns `None` unless the string splits into exactly four `:`-separated
+    /// segments whose first and last parse as a [`SubscriptionId`] and an `i32`
+    /// respectively. Note that a consumer group containing a `:` therefore falls
+    /// back to opaque-string hashing.
+    fn as_kafka_producer(producer: &str) -> Option<(SubscriptionId, &str, &str, i32)> {
+        let mut parts = producer.split(':');
+        let subscription = parts.next()?;
+        let consumer_group = parts.next()?;
+        let topic = parts.next()?;
+        let partition = parts.next()?;
+        if parts.next().is_some() {
+            return None;
+        }
+
+        Some((
+            subscription.parse().ok()?,
+            consumer_group,
+            topic,
+            partition.parse().ok()?,
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::hash::Hash;
+
+    use restate_types::identifiers::SubscriptionId;
+
+    use super::ProcessorState;
+
+    /// Verbatim copy of `dedup_producer_id` from
+    /// `crates/ingress-kafka/src/consumer_task.rs`, which is private to that crate.
+    /// Pins the exact byte layout the migration path depends on.
+    fn ingress_kafka_dedup_producer_id(
+        subscription: &SubscriptionId,
+        consumer_group: &str,
+        topic: &str,
+        partition: i32,
+    ) -> u128 {
+        let mut hasher = xxhash_rust::xxh3::Xxh3::new();
+
+        subscription.hash(&mut hasher);
+        '\0'.hash(&mut hasher);
+        consumer_group.hash(&mut hasher);
+        '\0'.hash(&mut hasher);
+        topic.hash(&mut hasher);
+        '\0'.hash(&mut hasher);
+        partition.hash(&mut hasher);
+
+        hasher.digest128()
+    }
+
+    fn opaque(producer: &str) -> u128 {
+        let mut hasher = xxhash_rust::xxh3::Xxh3::default();
+        producer.hash(&mut hasher);
+        hasher.digest128()
+    }
+
+    #[test]
+    fn producer_id_hashing() {
+        let subscription: SubscriptionId = "sub_15VqmTOnXH3Vv2pl5HOG7Ua".parse().unwrap();
+        let kafka_shaped = format!("{subscription}:my-group:my-topic:7");
+
+        // The kafka-shaped producer string reproduces the ingress-kafka producer id...
+        assert_eq!(
+            ProcessorState::get_producer_id(&kafka_shaped),
+            ingress_kafka_dedup_producer_id(&subscription, "my-group", "my-topic", 7),
+        );
+        // ...and does so via the special case, not by accident.
+        assert_ne!(
+            ProcessorState::get_producer_id(&kafka_shaped),
+            opaque(&kafka_shaped),
+        );
+
+        // Everything else is hashed as an opaque string.
+        for producer in [
+            "my-producer",                                  // no separators
+            "sub_15VqmTOnXH3Vv2pl5HOG7Ua:g:t",              // too few segments
+            "sub_15VqmTOnXH3Vv2pl5HOG7Ua:g:t:7:extra",      // too many segments
+            "sub_15VqmTOnXH3Vv2pl5HOG7Ua:g:with:colons:7",  // ':' in a segment
+            "not-a-subscription:g:t:7",                     // unparseable subscription
+            "sub_15VqmTOnXH3Vv2pl5HOG7Ua:g:t:not-a-number", // unparseable partition
+        ] {
+            assert_eq!(
+                ProcessorState::get_producer_id(producer),
+                opaque(producer),
+                "`{producer}` should fall back to opaque hashing",
+            );
         }
     }
 }
