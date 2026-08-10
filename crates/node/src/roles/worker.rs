@@ -24,7 +24,8 @@ use restate_storage_query_datafusion::remote_query_scanner_manager::RemoteScanne
 use restate_types::health::HealthStatus;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
-use restate_wal_protocol::Envelope;
+use restate_wal_protocol::v2::Envelope;
+use restate_wal_protocol::v2::Raw;
 use restate_worker::{RuleBookCacheHandle, Worker};
 use restate_worker_api::ProcessorsManagerHandle;
 
@@ -54,7 +55,7 @@ where
         partition_store_manager: Arc<PartitionStoreManager>,
         networking: Networking<T>,
         bifrost: Bifrost,
-        ingestion_client: IngestionClient<T, Envelope>,
+        ingestion_client: IngestionClient<T, Envelope<Raw>>,
         metadata_writer: MetadataWriter,
         remote_scanner_manager: RemoteScannerManager,
     ) -> Result<Self, WorkerRoleBuildError> {
