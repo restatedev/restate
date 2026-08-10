@@ -12,6 +12,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use futures::future;
+use serde::Deserialize;
 use tracing::warn;
 
 use restate_admin_rest_model::invocations::{
@@ -28,12 +29,12 @@ use restate_types::invocation::client::{
 };
 use restate_types::invocation::{InvocationTermination, PurgeInvocationRequest, TerminationFlavor};
 use restate_types::journal_v2::EntryIndex;
-use restate_wal_protocol::{Command, Envelope};
-use serde::Deserialize;
+use restate_types::logs::{BodyWithKeys, Keys};
+use restate_wal_protocol::v2;
+use restate_wal_protocol::v2::commands;
 
 use super::error::*;
 use crate::generate_meta_api_error;
-use crate::rest_api::create_envelope_header;
 use crate::state::AdminServiceState;
 
 #[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
@@ -88,30 +89,43 @@ where
         .parse::<InvocationId>()
         .map_err(|e| MetaApiError::InvalidField("invocation_id", e.to_string()))?;
 
-    let cmd = match mode.unwrap_or_default() {
-        DeletionMode::Cancel => Command::TerminateInvocation(InvocationTermination {
-            invocation_id,
-            flavor: TerminationFlavor::Cancel,
-            response_sink: None,
-        }),
-        DeletionMode::Kill => Command::TerminateInvocation(InvocationTermination {
-            invocation_id,
-            flavor: TerminationFlavor::Kill,
-            response_sink: None,
-        }),
-        DeletionMode::Purge => Command::PurgeInvocation(PurgeInvocationRequest {
-            invocation_id,
-            response_sink: None,
-        }),
+    let envelope = match mode.unwrap_or_default() {
+        DeletionMode::Cancel => v2::Envelope::new(
+            v2::Dedup::None,
+            commands::TerminateInvocationCommand::from(InvocationTermination {
+                invocation_id,
+                flavor: TerminationFlavor::Cancel,
+                response_sink: None,
+            }),
+        )
+        .into_raw(),
+        DeletionMode::Kill => v2::Envelope::new(
+            v2::Dedup::None,
+            commands::TerminateInvocationCommand::from(InvocationTermination {
+                invocation_id,
+                flavor: TerminationFlavor::Kill,
+                response_sink: None,
+            }),
+        )
+        .into_raw(),
+        DeletionMode::Purge => v2::Envelope::new(
+            v2::Dedup::None,
+            commands::PurgeInvocationCommand::from(PurgeInvocationRequest {
+                invocation_id,
+                response_sink: None,
+            }),
+        )
+        .into_raw(),
     };
 
     let partition_key = invocation_id.partition_key();
 
-    let envelope = Envelope::new(create_envelope_header(partition_key), cmd);
-
     let result = state
         .ingestion_client
-        .ingest(partition_key, envelope)
+        .ingest(
+            partition_key,
+            BodyWithKeys::new(envelope, Keys::Single(partition_key)),
+        )
         .await
         .map_err(|err| {
             warn!("Could not ingest invocation termination command: {err}");

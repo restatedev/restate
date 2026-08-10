@@ -33,6 +33,7 @@ const TMP_CLUSTER_MARKER_FILE_NAME: &str = ".tmp-cluster-marker";
 ///
 /// To reduce the risk of unexpected incompatibility issues, the minimum tracks the
 /// version we allow restate to downgrade to according to the compatibility policy.
+// todo(azmy): Bump to 1.7 before Restate v1.8.0 because of envelope v2
 const COMPATIBILITY_INFORMATION: CompatibilityInformation = CompatibilityInformation::new(
     SemanticRestateVersion::new(1, 6, 0),
     SemanticRestateVersion::new(1, 6, 0),
