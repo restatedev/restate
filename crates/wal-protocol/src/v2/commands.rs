@@ -135,15 +135,6 @@ impl HasRecordKeys for InvokeCommand {
 pub struct TruncateOutboxCommand {
     #[bilrost(1)]
     pub index: MessageIndex,
-
-    #[bilrost(2)]
-    pub partition_key_range: Keys,
-}
-
-impl HasRecordKeys for TruncateOutboxCommand {
-    fn record_keys(&self) -> Keys {
-        self.partition_key_range.clone()
-    }
 }
 
 bilrost_storage_encode_decode!(TruncateOutboxCommand);
