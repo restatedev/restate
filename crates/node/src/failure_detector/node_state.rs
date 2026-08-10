@@ -24,6 +24,19 @@ use restate_types::{GenerationalNodeId, Version};
 /// transition.
 const SELF_SUSPECT_OFFSET: Duration = Duration::from_millis(600);
 
+#[derive(Clone, Copy)]
+enum FailureCause {
+    GossipAge,
+    TerminalConnection,
+}
+
+#[derive(Clone, Copy)]
+enum TargetState {
+    Dead(FailureCause),
+    FailingOver,
+    Alive,
+}
+
 /// Node state transitions
 ///
 /// We start by assuming that all nodes are [`NodeState::Dead`]. As we receive gossip messages, we start to
@@ -60,20 +73,6 @@ pub enum NodeState {
     /// before it completely terminates. We will move it to dead if it's been in this state for
     /// longer than the failure detection threshold anyway.
     FailingOver,
-}
-
-/// The condition that determines the failure detector's target state.
-///
-/// This is test-only because production applies the resulting state transition directly. The
-/// deterministic harness uses the cause to hold only local-observer age expirations without
-/// manufacturing a different target state.
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum FailureDetectorTransitionCause {
-    AgeExpired,
-    TerminalConnection,
-    FailingOver,
-    Alive,
 }
 
 impl NodeState {
@@ -125,22 +124,6 @@ pub struct Node {
 }
 
 impl Node {
-    #[cfg(test)]
-    pub(super) fn failure_detector_transition_cause(
-        &self,
-        opts: &GossipOptions,
-    ) -> FailureDetectorTransitionCause {
-        if self.is_gone() {
-            FailureDetectorTransitionCause::TerminalConnection
-        } else if self.gossip_age > opts.gossip_failure_threshold.get() {
-            FailureDetectorTransitionCause::AgeExpired
-        } else if self.in_failover {
-            FailureDetectorTransitionCause::FailingOver
-        } else {
-            FailureDetectorTransitionCause::Alive
-        }
-    }
-
     pub fn new(gen_node_id: GenerationalNodeId) -> Self {
         Self {
             gen_node_id,
@@ -198,11 +181,14 @@ impl Node {
     ///
     /// `force_alive` is used exclusively to force this node to be alive without transitioning into
     /// suspect state in standalone setups.
+    /// `hold_age_failure_transition` suppresses only age-expiry evidence; terminal connection and
+    /// failover evidence retain their existing behavior.
     pub fn maybe_update_state(
         &mut self,
         opts: &GossipOptions,
         my_node_id: GenerationalNodeId,
         force_alive: bool,
+        hold_age_failure_transition: bool,
     ) -> Option<NodeState> {
         // A node is considered dead if any of the following is true:
         // 1. It's not been gossiping for `gossip_failure_threshold` intervals.
@@ -210,14 +196,28 @@ impl Node {
         //    it's not immediately marked dead, we just don't deduct from its gossip-age when we
         //    receive messages from it.
         // 3. We have lost gossip connection terminally
-        let target_state =
-            if (self.gossip_age > opts.gossip_failure_threshold.get()) || self.is_gone() {
-                NodeState::Dead
-            } else if self.in_failover {
-                NodeState::FailingOver
-            } else {
-                NodeState::Alive
-            };
+        let target_state = if self.is_gone() {
+            TargetState::Dead(FailureCause::TerminalConnection)
+        } else if self.gossip_age > opts.gossip_failure_threshold.get() {
+            TargetState::Dead(FailureCause::GossipAge)
+        } else if self.in_failover {
+            TargetState::FailingOver
+        } else {
+            TargetState::Alive
+        };
+
+        let target_state = match target_state {
+            TargetState::Dead(FailureCause::GossipAge) if hold_age_failure_transition => {
+                return None;
+            }
+            target_state => target_state,
+        };
+
+        let target_state = match target_state {
+            TargetState::Dead(_) => NodeState::Dead,
+            TargetState::FailingOver => NodeState::FailingOver,
+            TargetState::Alive => NodeState::Alive,
+        };
 
         let now = Instant::now();
         let current_state = self.state;
