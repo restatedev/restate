@@ -246,6 +246,17 @@ impl ConnectionManager {
         self.inner.lock().router = Arc::new(router);
     }
 
+    /// Installs an already-shared router for in-process multi-node tests.
+    #[cfg(feature = "test-util")]
+    pub fn set_shared_message_router(&self, router: Arc<MessageRouter>) {
+        self.inner.lock().router = router;
+    }
+
+    #[cfg(feature = "test-util")]
+    pub fn shared_message_router(&self) -> Arc<MessageRouter> {
+        self.inner.lock().router.clone()
+    }
+
     /// Accept a new incoming connection stream and register a network reactor task for it.
     pub async fn accept_incoming_connection<S>(
         &self,
