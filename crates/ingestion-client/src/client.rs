@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+// remove this comment
+
 use std::{marker::PhantomData, num::NonZeroUsize, sync::Arc, task::Poll};
 
 use bytes::BytesMut;
@@ -21,7 +23,7 @@ use restate_core::{
 use restate_types::{
     identifiers::PartitionKey,
     live::Live,
-    logs::{HasRecordKeys, Keys},
+    logs::{BodyWithKeys, HasRecordKeys, Keys},
     net::ingest::IngestRecord,
     partitions::{FindPartition, PartitionTable, PartitionTableError},
     storage::{StorageCodec, StorageEncode},
@@ -268,6 +270,16 @@ impl InputRecord<String> {
             keys: Keys::None,
             record: s.into(),
         }
+    }
+}
+
+impl<T> From<BodyWithKeys<T>> for InputRecord<T>
+where
+    T: StorageEncode,
+{
+    fn from(value: BodyWithKeys<T>) -> Self {
+        let (keys, record) = value.split();
+        Self { keys, record }
     }
 }
 
