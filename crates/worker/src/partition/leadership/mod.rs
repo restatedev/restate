@@ -65,11 +65,12 @@ use restate_util_time::DurationExt;
 use restate_vqueues::context::{HasVQueues, HasVQueuesMut};
 use restate_vqueues::scheduler::{self};
 use restate_vqueues::{ResourceManager, SchedulerService, VQueuesMeta};
+use restate_wal_protocol::Command;
 use restate_wal_protocol::control::{
     AnnounceLeaderCommand, UpdatePartitionDurabilityCommand, VersionBarrierCommand,
 };
 use restate_wal_protocol::timer::TimerKeyValue;
-use restate_wal_protocol::{Command, Envelope};
+use restate_wal_protocol::v2::{Envelope, Raw};
 use restate_worker_api::invoker::InvokerHandle;
 use restate_worker_api::{
     LeaderQueryCommand, LeaderQueryRequest, LeaderQueryResponse, LeaderQuerySender,
@@ -212,7 +213,7 @@ pub(crate) struct LeadershipState<T> {
     state: State,
 
     partition_id: PartitionId,
-    ingestion_client: IngestionClient<T, Envelope>,
+    ingestion_client: IngestionClient<T, Envelope<Raw>>,
     leader_query_tx: LeaderQuerySender,
 }
 
@@ -222,7 +223,7 @@ where
 {
     pub(crate) fn new(
         partition_id: PartitionId,
-        ingestion_client: IngestionClient<T, Envelope>,
+        ingestion_client: IngestionClient<T, Envelope<Raw>>,
         leader_query_tx: LeaderQuerySender,
     ) -> Self {
         Self {
@@ -764,7 +765,7 @@ where
             let (shuffle_tx, shuffle_rx) = tokio::sync::watch::channel(None);
 
             let shuffle = Shuffle::new(
-                ShuffleMetadata::new(processor.partition_id(), leader_epoch),
+                ShuffleMetadata::new(processor.partition_id()),
                 OutboxReader::from(partition_store.clone()),
                 shuffle_tx,
                 config.worker.internal_queue_length(),

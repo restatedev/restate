@@ -194,7 +194,7 @@ impl PartitionProcessorBuilder {
 
     pub async fn build<T>(
         self,
-        ingestion_client: IngestionClient<T, Envelope>,
+        ingestion_client: IngestionClient<T, v2::Envelope<v2::Raw>>,
         partition_db: PartitionDb,
     ) -> Result<PartitionProcessor<T>, ProcessorError>
     where

@@ -11,7 +11,6 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use restate_wal_protocol::Envelope;
 use tokio::sync::mpsc;
 use tracing::{error, warn};
 
@@ -24,6 +23,7 @@ use restate_types::retries::RetryPolicy;
 use restate_types::schema::Schema;
 use restate_types::schema::kafka::KafkaCluster;
 use restate_types::schema::subscriptions::{Source, Subscription};
+use restate_wal_protocol::v2::{Envelope, Raw};
 
 use super::*;
 use crate::builder::EnvelopeBuilder;
@@ -32,7 +32,7 @@ use crate::subscription_controller::task_orchestrator::TaskOrchestrator;
 // For simplicity of the current implementation, this currently lives in this module
 // In future versions, we should either pull this out in a separate process, or generify it and move it to the worker, or an ad-hoc module
 pub struct Service<T> {
-    ingestion: IngestionClient<T, Envelope>,
+    ingestion: IngestionClient<T, Envelope<Raw>>,
     schema: Live<Schema>,
 
     commands_tx: SubscriptionCommandSender,
@@ -43,7 +43,7 @@ impl<T> Service<T>
 where
     T: TransportConnect,
 {
-    pub fn new(ingestion: IngestionClient<T, Envelope>, schema: Live<Schema>) -> Self {
+    pub fn new(ingestion: IngestionClient<T, Envelope<Raw>>, schema: Live<Schema>) -> Self {
         metric_definitions::describe_metrics();
         let (commands_tx, commands_rx) = mpsc::channel(10);
 
