@@ -34,6 +34,7 @@ use tower::util::BoxCloneService;
 
 use restate_core::network::TransportConnect;
 use restate_ingestion_client::IngestionClient;
+use restate_types::config::IntegrationOptions;
 use restate_types::live::Live;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_wal_protocol::Envelope;
@@ -58,7 +59,7 @@ type GrpcService = BoxCloneService<Request<Incoming>, Response<tonic::body::Body
 #[derive(Clone)]
 pub(super) struct IntegrationRouter<S> {
     inner: S,
-    grpc: GrpcService,
+    grpc: Option<GrpcService>,
 }
 
 impl<S> IntegrationRouter<S> {
@@ -66,18 +67,21 @@ impl<S> IntegrationRouter<S> {
         inner: S,
         ingestion_client: IngestionClient<T, Envelope>,
         schemas: Live<Schemas>,
+        options: IntegrationOptions,
     ) -> Self
     where
         T: TransportConnect,
         Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
     {
-        Self {
-            inner,
-            grpc: BoxCloneService::new(integration_svc::integration_server(
+        let grpc = options.disable.not().then(|| {
+            BoxCloneService::new(integration_svc::integration_server(
                 ingestion_client,
                 schemas,
-            )),
-        }
+                options.max_window_size(),
+            ))
+        });
+
+        Self { inner, grpc }
     }
 }
 
@@ -100,9 +104,9 @@ where
     }
 
     fn call(&mut self, req: Request<Incoming>) -> Self::Future {
-        if is_grpc_request(&req) {
+        if let (true, Some(grpc)) = (is_grpc_request(&req), &self.grpc) {
             // tonic routes on the full canonical path, so forward the request as-is.
-            let grpc = self.grpc.clone();
+            let grpc = grpc.clone();
             Box::pin(async move {
                 let response = grpc.oneshot(req).await?;
                 // Widen the gRPC body's `tonic::Status` error to the unified type.
