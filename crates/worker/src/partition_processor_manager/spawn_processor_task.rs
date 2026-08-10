@@ -24,7 +24,7 @@ use restate_platform::prelude::ReString;
 use restate_types::cluster::cluster_state::PartitionProcessorStatus;
 use restate_types::logs::Lsn;
 use restate_types::partitions::Partition;
-use restate_wal_protocol::Envelope;
+use restate_wal_protocol::v2::{Envelope, Raw};
 
 use crate::PartitionProcessorBuilder;
 use crate::partition::NodeContext;
@@ -37,7 +37,7 @@ pub struct SpawnPartitionProcessorTask<T> {
     partition: Partition,
     partition_store_manager: Arc<PartitionStoreManager>,
     fast_forward_lsn: Option<Lsn>,
-    ingestion_client: IngestionClient<T, Envelope>,
+    ingestion_client: IngestionClient<T, Envelope<Raw>>,
 }
 
 impl<T> SpawnPartitionProcessorTask<T>
@@ -50,7 +50,7 @@ where
         partition: Partition,
         partition_store_manager: Arc<PartitionStoreManager>,
         fast_forward_lsn: Option<Lsn>,
-        ingestion_client: IngestionClient<T, Envelope>,
+        ingestion_client: IngestionClient<T, Envelope<Raw>>,
     ) -> Self {
         Self {
             node_ctx,
