@@ -1529,6 +1529,9 @@ pub mod v1 {
                         )
                     }
                     source::Source::Internal(_) => restate_types::invocation::Source::Internal,
+                    source::Source::Integration(integration) => {
+                        restate_types::invocation::Source::Integration(integration.into())
+                    }
                 };
 
                 Ok(source)
@@ -1561,6 +1564,9 @@ pub mod v1 {
                         })
                     }
                     restate_types::invocation::Source::Internal => source::Source::Internal(()),
+                    restate_types::invocation::Source::Integration(integration) => {
+                        source::Source::Integration(integration.as_str().into())
+                    }
                 };
 
                 Source {
@@ -1595,6 +1601,9 @@ pub mod v1 {
                         })
                     }
                     restate_types::invocation::Source::Internal => source::Source::Internal(()),
+                    restate_types::invocation::Source::Integration(integration) => {
+                        source::Source::Integration(integration.as_str().into())
+                    }
                 };
 
                 Source {

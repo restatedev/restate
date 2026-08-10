@@ -347,6 +347,12 @@ fn fill_invoked_by(
                 row.fmt_restarted_from(restart_as_new.invocation_id()?)
             }
         }
+        Source::Integration(integration) => {
+            row.invoked_by("integration");
+            if row.is_invoked_by_integration_defined() {
+                row.fmt_invoked_by_integration(integration);
+            }
+        }
     }
 
     Ok(())

@@ -67,6 +67,7 @@ define_table!(sys_invocation_status(
     /// * `service` if the invocation was created by another Restate service.
     /// * `subscription` if the invocation was created by a subscription (e.g. Kafka).
     /// * `restart_as_new` if the invocation was created by restarting an old invocation as new.
+    /// * `<integration>` if the invocation was created by the ingestion API.
     invoked_by: DataType::LargeUtf8,
 
     /// The caller [Invocation ID](/operate/invocation#invocation-identifier) if `invoked_by = 'service'`.
@@ -77,6 +78,9 @@ define_table!(sys_invocation_status(
 
     /// The name of caller service if `invoked_by = 'service'`.
     invoked_by_service_name: DataType::LargeUtf8,
+
+    /// the integration name if service `invoked_by = 'integration'`.
+    invoked_by_integration: DataType::LargeUtf8,
 
     /// The caller invocation target if `invoked_by = 'service'`.
     invoked_by_target: DataType::LargeUtf8,
