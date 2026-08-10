@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::{NonZeroU32, NonZeroUsize};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 
 use restate_memory::NonZeroByteCount;
 use serde::{Deserialize, Serialize};
@@ -19,6 +19,45 @@ use crate::net::address::{AdvertisedAddress, BindAddress, HttpIngressPort};
 use crate::net::listener::AddressBook;
 
 use super::{CommonOptions, KafkaClusterOptions, ListenerOptions};
+
+/// # Integration API options
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(rename = "IntegrationOptions", default))]
+#[serde(default, rename_all = "kebab-case")]
+pub struct IntegrationOptions {
+    /// # Disable the gRPC integration API
+    ///
+    /// Disable the experimental gRPC integration API on the ingress endpoint.
+    ///
+    /// Since v1.7.4
+    pub disable: bool,
+
+    /// # Maximum integration window size
+    ///
+    /// Maximum number of bytes an integration stream may have in flight before the server
+    /// applies back pressure.
+    ///
+    /// Since v1.7.4
+    pub max_window_size: NonZeroByteCount,
+}
+
+impl IntegrationOptions {
+    pub fn max_window_size(&self) -> NonZeroU64 {
+        NonZeroU64::new(self.max_window_size.as_u64()).expect("byte count is non-zero")
+    }
+}
+
+impl Default for IntegrationOptions {
+    fn default() -> Self {
+        Self {
+            disable: false,
+            max_window_size: NonZeroByteCount::new(
+                NonZeroUsize::new(128 * 1024).expect("window size is non-zero"),
+            ),
+        }
+    }
+}
 
 /// # Ingress options
 #[derive(Debug, Default, Clone, Serialize, Deserialize, derive_builder::Builder)]
@@ -79,6 +118,11 @@ pub struct IngressOptions {
     /// Settings for the ingestion client
     /// Currently only used by the Kafka ingress and the admin API.
     pub ingestion: IngestionOptions,
+
+    /// # Integration API options
+    ///
+    /// Settings for the experimental gRPC integration API.
+    pub integration: IntegrationOptions,
 }
 
 impl IngressOptions {
