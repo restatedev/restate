@@ -8842,6 +8842,7 @@ dependencies = [
  "restate-util-string",
  "restate-workspace-hack",
  "serde",
+ "serde_with",
  "static_assertions",
  "strum",
  "thiserror 2.0.20",
