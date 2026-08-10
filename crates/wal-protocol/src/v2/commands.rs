@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 pub use restate_storage_api::vqueue_table::scheduler::SchedulerDecisionsCommand;
 use restate_types::{
     bilrost_storage_encode_decode, flexbuffers_storage_encode_decode,
-    identifiers::{WithInvocationId, WithPartitionKey},
-    invocation,
+    identifiers::{EntryIndex, InvocationId, WithInvocationId, WithPartitionKey},
+    invocation::{self, JournalCompletionTarget, ResponseResult},
     logs::{HasRecordKeys, Keys},
     message::MessageIndex,
     state_mut,
@@ -23,7 +23,7 @@ use restate_types::{
 use super::sealed::Sealed;
 use super::{Command, CommandKind};
 pub use crate::control::UpsertRuleBookCommand;
-use crate::timer;
+use crate::{timer, v2::OutboxMessage};
 // Re-epxort vqueues commands
 pub use crate::invocation::PauseInvocationCommand;
 pub use crate::vqueues::{VQueuesPauseCommand, VQueuesResumeCommand};
@@ -70,6 +70,18 @@ flexbuffers_storage_encode_decode!(TerminateInvocationCommand);
 impl HasRecordKeys for TerminateInvocationCommand {
     fn record_keys(&self) -> Keys {
         Keys::Single(self.invocation_id.partition_key())
+    }
+}
+
+impl WithPartitionKey for TerminateInvocationCommand {
+    fn partition_key(&self) -> restate_types::sharding::PartitionKey {
+        self.0.invocation_id.partition_key()
+    }
+}
+
+impl OutboxMessage for TerminateInvocationCommand {
+    fn into_outbox_message(self) -> restate_storage_api::outbox_table::OutboxMessage {
+        restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(self.0)
     }
 }
 
@@ -131,6 +143,17 @@ impl HasRecordKeys for InvokeCommand {
     }
 }
 
+impl WithPartitionKey for InvokeCommand {
+    fn partition_key(&self) -> restate_types::sharding::PartitionKey {
+        self.0.partition_key()
+    }
+}
+impl OutboxMessage for InvokeCommand {
+    fn into_outbox_message(self) -> restate_storage_api::outbox_table::OutboxMessage {
+        restate_storage_api::outbox_table::OutboxMessage::ServiceInvocation(Box::new(self.0))
+    }
+}
+
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct TruncateOutboxCommand {
     #[bilrost(1)]
@@ -155,7 +178,19 @@ flexbuffers_storage_encode_decode!(AttachInvocationCommand);
 
 impl HasRecordKeys for AttachInvocationCommand {
     fn record_keys(&self) -> Keys {
-        Keys::Single(self.partition_key())
+        Keys::Single(self.0.partition_key())
+    }
+}
+
+impl WithPartitionKey for AttachInvocationCommand {
+    fn partition_key(&self) -> restate_types::sharding::PartitionKey {
+        self.0.partition_key()
+    }
+}
+
+impl OutboxMessage for AttachInvocationCommand {
+    fn into_outbox_message(self) -> restate_storage_api::outbox_table::OutboxMessage {
+        restate_storage_api::outbox_table::OutboxMessage::AttachInvocation(self.0)
     }
 }
 
@@ -268,7 +303,35 @@ flexbuffers_storage_encode_decode!(InvocationResponseCommand);
 
 impl HasRecordKeys for InvocationResponseCommand {
     fn record_keys(&self) -> Keys {
-        Keys::Single(self.partition_key())
+        Keys::Single(self.0.partition_key())
+    }
+}
+
+impl WithPartitionKey for InvocationResponseCommand {
+    fn partition_key(&self) -> restate_types::sharding::PartitionKey {
+        self.0.partition_key()
+    }
+}
+
+impl OutboxMessage for InvocationResponseCommand {
+    fn into_outbox_message(self) -> restate_storage_api::outbox_table::OutboxMessage {
+        restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(self.0)
+    }
+}
+
+impl InvocationResponseCommand {
+    pub fn from_awakeable_completion(
+        invocation_id: InvocationId,
+        entry_index: EntryIndex,
+        result: ResponseResult,
+    ) -> InvocationResponseCommand {
+        Self::from(invocation::InvocationResponse {
+            target: JournalCompletionTarget {
+                caller_id: invocation_id,
+                caller_completion_id: entry_index,
+            },
+            result,
+        })
     }
 }
 
@@ -308,7 +371,19 @@ flexbuffers_storage_encode_decode!(NotifySignalCommand);
 
 impl HasRecordKeys for NotifySignalCommand {
     fn record_keys(&self) -> Keys {
-        Keys::Single(self.partition_key())
+        Keys::Single(self.0.partition_key())
+    }
+}
+
+impl WithPartitionKey for NotifySignalCommand {
+    fn partition_key(&self) -> restate_types::sharding::PartitionKey {
+        self.0.partition_key()
+    }
+}
+
+impl OutboxMessage for NotifySignalCommand {
+    fn into_outbox_message(self) -> restate_storage_api::outbox_table::OutboxMessage {
+        restate_storage_api::outbox_table::OutboxMessage::NotifySignal(self.0)
     }
 }
 
