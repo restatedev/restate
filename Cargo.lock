@@ -8418,6 +8418,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "bilrost",
  "bytes",
  "codederror",
  "datafusion",

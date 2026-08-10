@@ -32,6 +32,9 @@ use crate::metric_definitions::{
 
 use super::node_state::{Node, NodeState};
 
+#[cfg(test)]
+use super::node_state::FailureDetectorTransitionCause;
+
 const GOSSIP_ATTEMPT_LIMIT: usize = 20;
 
 #[derive(thiserror::Error, Debug)]
@@ -248,12 +251,31 @@ impl FdState {
     }
 
     pub fn detect_peer_failures(&mut self, opts: &GossipOptions) {
+        self.detect_peer_failures_where(opts, |_| false);
+    }
+
+    #[cfg(test)]
+    pub(super) fn detect_peer_failures_holding_age_expiry(&mut self, opts: &GossipOptions) {
+        self.detect_peer_failures_where(opts, |node| {
+            node.failure_detector_transition_cause(opts)
+                == FailureDetectorTransitionCause::AgeExpired
+        });
+    }
+
+    fn detect_peer_failures_where(
+        &mut self,
+        opts: &GossipOptions,
+        hold_transition: impl Fn(&Node) -> bool,
+    ) {
         let is_standalone = self.node_states.len() == 1;
 
         let changed: Vec<_> = self
             .node_states
             .values_mut()
             .filter_map(|node| {
+                if hold_transition(node) {
+                    return None;
+                }
                 let maybe_updated_state =
                     if node.gen_node_id.as_plain() == self.my_node_id.as_plain() {
                         node.maybe_update_state(opts, self.my_node_id, is_standalone)

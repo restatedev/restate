@@ -1,11 +1,13 @@
 use std::collections::{HashMap as StdHashMap, VecDeque};
 use std::time::Duration;
 
+use bilrost::Message;
 use itertools::Itertools;
 use restate_types::NodeId;
 use restate_types::cluster_state::{ClusterState, NodeState as PublishedNodeState};
 use restate_types::net::address::AdvertisedAddress;
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
+use restate_types::time::MillisSinceEpoch;
 use restate_types::{GenerationalNodeId, RestateVersion};
 
 use super::*;
@@ -412,41 +414,12 @@ impl FdSimulation {
             *normal_polls
         };
 
-        let guarded_ages = if normal_polls <= opts.gossip_failure_threshold.get() {
-            let actor = self.actor_mut(node_id);
-            actor
-                .state
-                .node_states
-                .iter_mut()
-                .filter_map(|(peer, node)| {
-                    (node.gen_node_id != node_id
-                        && node.gossip_age > opts.gossip_failure_threshold.get())
-                    .then(|| {
-                        (
-                            *peer,
-                            std::mem::replace(
-                                &mut node.gossip_age,
-                                opts.gossip_failure_threshold.get(),
-                            ),
-                        )
-                    })
-                })
-                .collect_vec()
-        } else {
-            Vec::new()
-        };
-        {
-            let actor = self.actor_mut(node_id);
-            if actor.state.is_stable(&opts) {
+        let actor = self.actor_mut(node_id);
+        if actor.state.is_stable(&opts) {
+            if normal_polls <= opts.gossip_failure_threshold.get() {
+                actor.state.detect_peer_failures_holding_age_expiry(&opts);
+            } else {
                 actor.state.detect_peer_failures(&opts);
-            }
-            for (peer, gossip_age) in guarded_ages {
-                actor
-                    .state
-                    .node_states
-                    .get_mut(&peer)
-                    .expect("test peer exists")
-                    .gossip_age = gossip_age;
             }
         }
         self.record(
@@ -555,6 +528,25 @@ impl FdSimulation {
 
     fn local_stale_polls(&self, observer: GenerationalNodeId, peer: GenerationalNodeId) -> u32 {
         self.local_stale_polls[&(observer, peer.as_plain())]
+    }
+
+    fn gossip_bytes(&mut self, from: GenerationalNodeId) -> Vec<u8> {
+        let opts = self.opts.clone();
+        let nodes_config = self.nodes_config.clone();
+        let mut message =
+            self.actor_mut(from)
+                .state
+                .make_gossip_message(&opts, false, &nodes_config);
+        // Separate simulations use independently seeded maps and wall-clock timestamps. Normalize
+        // those irrelevant fields so this is a byte-for-byte comparison of the wire content that
+        // the baseline and grace decision policies control.
+        message.instance_ts = MillisSinceEpoch::UNIX_EPOCH;
+        message.sent_at = MillisSinceEpoch::UNIX_EPOCH;
+        for node in &mut message.nodes {
+            node.instance_ts = MillisSinceEpoch::UNIX_EPOCH;
+        }
+        message.nodes.sort_unstable_by_key(|node| node.node_id);
+        message.encode_to_vec()
     }
 
     fn normal_polls_since_discontinuity(&self, observer: GenerationalNodeId) -> u32 {
@@ -1408,4 +1400,76 @@ async fn terminal_connection_bypasses_observer_discontinuity_grace() {
     sim.advance_one_interval().await;
     sim.tick_with_observer_discontinuity_grace(A);
     assert_eq!(sim.actor(A).peer_state(B), NodeState::Dead);
+}
+
+#[tokio::test(start_paused = true)]
+async fn observer_discontinuity_grace_never_reanimates_a_dead_peer_without_gossip() {
+    let mut sim = FdSimulation::stable_three_node_cluster();
+    for _ in 0..11 {
+        sim.advance_one_interval().await;
+        sim.tick_with_legacy_wire_aging(A);
+    }
+    assert_eq!(sim.actor(A).peer_state(B), NodeState::Dead);
+
+    // More than five seconds of repeated stalls must hold the terminal local state; no clamped
+    // age may manufacture a Dead -> Suspect -> Alive recovery or reset the published view.
+    for _ in 0..6 {
+        tokio::time::advance(*sim.opts.gossip_tick_interval * 12).await;
+        sim.tick_with_observer_discontinuity_grace(A);
+        assert_eq!(sim.actor(A).peer_state(B), NodeState::Dead);
+        assert_eq!(
+            sim.actor(A)
+                .cluster_state
+                .get_node_state(NodeId::Generational(B)),
+            PublishedNodeState::Dead
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn observer_discontinuity_grace_preserves_dead_decisions_and_gossip_bytes() {
+    let mut baseline = FdSimulation::stable_three_node_cluster();
+    let mut grace = FdSimulation::stable_three_node_cluster();
+
+    // This compact corpus includes ordinary ticks, two observer discontinuities, and the
+    // recovery period following each. Grace may defer an age-only Dead, but can never introduce
+    // one before baseline. It must never change the wire message.
+    for intervals in [1, 12, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 12, 1, 1, 1] {
+        tokio::time::advance(*baseline.opts.gossip_tick_interval * intervals).await;
+        baseline.tick_with_legacy_wire_aging(A);
+        grace.tick_with_observer_discontinuity_grace(A);
+
+        for peer in [B, C] {
+            assert!(
+                grace.actor(A).peer_state(peer) != NodeState::Dead
+                    || baseline.actor(A).peer_state(peer) == NodeState::Dead,
+                "peer={peer}; baseline trace:\n{}\ngrace trace:\n{}",
+                baseline.trace(),
+                grace.trace()
+            );
+        }
+        assert_eq!(baseline.gossip_bytes(A), grace.gossip_bytes(A));
+    }
+
+    // With no discontinuity, both decision paths—including a real direct-gossip recovery—are
+    // identical. The direct message is the only evidence that permits improvement.
+    let mut baseline = FdSimulation::stable_three_node_cluster();
+    let mut grace = FdSimulation::stable_three_node_cluster();
+    for _ in 0..11 {
+        baseline.advance_one_interval().await;
+        baseline.tick_with_legacy_wire_aging(A);
+        grace.tick_with_observer_discontinuity_grace(A);
+    }
+    baseline.send_gossip(B, A, Delivery::Queue);
+    grace.send_gossip(B, A, Delivery::Queue);
+    baseline.drain_mailbox(A);
+    grace.drain_mailbox(A);
+    baseline.advance_one_interval().await;
+    baseline.tick_with_legacy_wire_aging(A);
+    grace.tick_with_observer_discontinuity_grace(A);
+    assert_eq!(
+        baseline.actor(A).peer_state(B),
+        grace.actor(A).peer_state(B)
+    );
+    assert_eq!(baseline.gossip_bytes(A), grace.gossip_bytes(A));
 }

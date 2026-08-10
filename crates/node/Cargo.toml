@@ -87,6 +87,7 @@ tikv-jemalloc-ctl = { workspace = true }
 tikv-jemalloc-sys = { workspace = true }
 
 [dev-dependencies]
+bilrost = { workspace = true }
 restate-core = { workspace = true, features = ["test-util"] }
 
 googletest = { workspace = true }
