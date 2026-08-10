@@ -106,10 +106,7 @@ mod tests {
         storage: &mut PartitionStore,
         index: MessageIndex,
     ) {
-        let envelope = TruncateOutboxCommand::test_envelope(TruncateOutboxCommand {
-            index,
-            partition_key_range: Keys::None,
-        });
+        let envelope = TruncateOutboxCommand::test_envelope(TruncateOutboxCommand { index });
         let record = DataRecord::new(
             NanosSinceEpoch::RESTATE_EPOCH,
             Keys::None,
