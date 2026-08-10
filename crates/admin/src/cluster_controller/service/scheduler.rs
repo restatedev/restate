@@ -45,6 +45,10 @@ use restate_types::replication::balanced_spread_selector::{
 use restate_types::replication::{NodeSet, ReplicationProperty};
 use restate_types::{NodeId, PlainNodeId, Version, Versioned};
 
+#[cfg(feature = "test-util")]
+#[path = "scheduler/test_support.rs"]
+pub mod test_support;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("failed writing to metadata store: {0}")]
@@ -57,6 +61,38 @@ pub enum Error {
     Metadata(#[from] SyncError),
     #[error("system is shutting down")]
     Shutdown(#[from] ShutdownError),
+}
+
+fn select_leader_by_priority(
+    partition: &PartitionState,
+    cluster_state: &ClusterState,
+    legacy_cluster_state: &LegacyClusterState,
+    partition_id: &PartitionId,
+    nodes_config: &NodesConfiguration,
+) -> Option<PlainNodeId> {
+    if partition.leadership_policy.freeze.is_some() {
+        return None;
+    }
+
+    let affinity = partition.leadership_policy.affinity.as_ref();
+    partition
+        .current
+        .replica_set()
+        .iter()
+        .copied()
+        .filter(|node_id| cluster_state.is_alive(NodeId::from(*node_id)))
+        .max_by_key(|node_id| {
+            let has_affinity =
+                affinity.is_some_and(|a| matches_affinity(*node_id, a, nodes_config));
+            let is_caught_up =
+                legacy_cluster_state.is_partition_processor_active(partition_id, node_id);
+            match (has_affinity, is_caught_up) {
+                (true, true) => 3u8,
+                (false, true) => 2,
+                (true, false) => 1,
+                (false, false) => 0,
+            }
+        })
 }
 
 #[derive(Debug, Clone)]
@@ -589,27 +625,44 @@ impl<T: TransportConnect> Scheduler<T> {
         partition_state: &PartitionState,
         legacy_cluster_state: &LegacyClusterState,
     ) -> bool {
-        // we can only complete the reconfiguration if a next configuration has been set
-        let Some(next) = partition_state.next.as_ref() else {
-            return false;
-        };
-
-        let all_current_workers_disabled = partition_state
-            .current
-            .replica_set()
-            .iter()
-            .all(|node_id| nodes_config.get_worker_state(node_id) == WorkerState::Disabled);
-
-        // check whether we can transition from the current configuration to the next
-        // configuration, which is possible as soon as a single partition processor from the
-        // next configuration has become active
-        let any_next_pp_active = next.replica_set().iter().any(|node_id| {
-            legacy_cluster_state.is_partition_processor_active(&partition_id, node_id)
-        });
-
-        next.replica_set().is_empty() || all_current_workers_disabled || any_next_pp_active
+        should_complete_reconfiguration(
+            partition_id,
+            nodes_config,
+            partition_state,
+            legacy_cluster_state,
+        )
     }
+}
 
+fn should_complete_reconfiguration(
+    partition_id: PartitionId,
+    nodes_config: &NodesConfiguration,
+    partition_state: &PartitionState,
+    legacy_cluster_state: &LegacyClusterState,
+) -> bool {
+    // we can only complete the reconfiguration if a next configuration has been set
+    let Some(next) = partition_state.next.as_ref() else {
+        return false;
+    };
+
+    let all_current_workers_disabled = partition_state
+        .current
+        .replica_set()
+        .iter()
+        .all(|node_id| nodes_config.get_worker_state(node_id) == WorkerState::Disabled);
+
+    // check whether we can transition from the current configuration to the next
+    // configuration, which is possible as soon as a single partition processor from the
+    // next configuration has become active
+    let any_next_pp_active = next
+        .replica_set()
+        .iter()
+        .any(|node_id| legacy_cluster_state.is_partition_processor_active(&partition_id, node_id));
+
+    next.replica_set().is_empty() || all_current_workers_disabled || any_next_pp_active
+}
+
+impl<T: TransportConnect> Scheduler<T> {
     async fn load_partition_configuration(
         metadata_store_client: &MetadataStoreClient,
         partition_id: PartitionId,
@@ -633,7 +686,6 @@ impl<T: TransportConnect> Scheduler<T> {
             Err(err) => Err(err.into()),
         }
     }
-
     async fn store_initial_partition_configuration(
         metadata_store_client: &MetadataStoreClient,
         partition_id: PartitionId,
@@ -686,7 +738,6 @@ impl<T: TransportConnect> Scheduler<T> {
             Err(ReadModifyWriteError::ReadWrite(err)) => Err(err.into()),
         }
     }
-
     async fn reconfigure_partition_configuration(
         metadata_store_client: &MetadataStoreClient,
         partition_id: PartitionId,
@@ -752,7 +803,6 @@ impl<T: TransportConnect> Scheduler<T> {
             Err(ReadModifyWriteError::ReadWrite(err)) => Err(err.into()),
         }
     }
-
     async fn complete_reconfiguration(
         metadata_store_client: &MetadataStoreClient,
         partition_id: PartitionId,
@@ -827,7 +877,6 @@ impl<T: TransportConnect> Scheduler<T> {
             }
         }
     }
-
     /// Checks whether the given partition requires reconfiguration. A partition requires
     /// reconfiguration in the following cases:
     ///
@@ -881,7 +930,6 @@ impl<T: TransportConnect> Scheduler<T> {
                 .unwrap_or(false)
         }
     }
-
     fn choose_partition_configuration(
         partition_id: PartitionId,
         nodes_config: &NodesConfiguration,
@@ -907,7 +955,6 @@ impl<T: TransportConnect> Scheduler<T> {
             })
             .ok()
     }
-
     /// Selects a leader based on the leadership policy, observed cluster state and replica set.
     ///
     /// Scores each alive replica in a single pass. Higher score wins:
@@ -928,34 +975,13 @@ impl<T: TransportConnect> Scheduler<T> {
             return;
         };
 
-        // Freeze: keep the current target leader, do not elect a new one.
-        if partition.leadership_policy.freeze.is_some() {
-            return;
-        }
-
-        let affinity = partition.leadership_policy.affinity.as_ref();
-
-        let best = partition
-            .current
-            .replica_set()
-            .iter()
-            .copied()
-            .filter(|node_id| cluster_state.is_alive(NodeId::from(*node_id)))
-            .max_by_key(|node_id| {
-                let has_affinity =
-                    affinity.is_some_and(|a| matches_affinity(*node_id, a, nodes_config));
-                let is_caught_up =
-                    legacy_cluster_state.is_partition_processor_active(partition_id, node_id);
-                match (has_affinity, is_caught_up) {
-                    (true, true) => 3u8,
-                    (false, true) => 2,
-                    (true, false) => 1,
-                    (false, false) => 0,
-                }
-            });
-
-        if let Some(best) = best
-            && partition.target_leader != Some(best)
+        if let Some(best) = select_leader_by_priority(
+            partition,
+            cluster_state,
+            legacy_cluster_state,
+            partition_id,
+            nodes_config,
+        ) && partition.target_leader != Some(best)
         {
             debug!(
                 "Selecting node {} as partition processor leader for partition {partition_id}",
@@ -966,7 +992,6 @@ impl<T: TransportConnect> Scheduler<T> {
 
         // keep the current target leader as we couldn't find any suitable substitute
     }
-
     fn instruct_nodes(&self, legacy_cluster_state: &LegacyClusterState) -> Result<(), Error> {
         let mut commands = BTreeMap::default();
 
