@@ -29,8 +29,8 @@ use restate_types::partitions::placement_policy::PlacementPolicy;
 
 use super::{PartitionState, select_leader_by_priority, should_complete_reconfiguration};
 
-/// The scheduler gate under test. `WaitForAddedReplica` is the exact readiness condition from
-/// #5150; it is kept in test support because this branch predates that production change.
+/// The scheduler gate under test. `WaitForAddedReplica` copies the intended #5150 readiness
+/// condition; delete this test-only copy when that production change lands.
 #[derive(Debug, Clone, Copy)]
 pub enum ReconfigurationGate {
     Current,
@@ -56,7 +56,7 @@ fn should_complete_reconfiguration_waiting_for_added_replica(
         return true;
     }
 
-    let is_added_replica_active = |node_id| {
+    let is_ready = |node_id| {
         let Ok(node_config) = nodes_config.find_node_by_id(node_id) else {
             return false;
         };
@@ -72,13 +72,13 @@ fn should_complete_reconfiguration_waiting_for_added_replica(
     };
     let mut newly_added = next
         .replica_set()
-        .difference(partition_state.current.replica_set());
-    let Some(first_newly_added) = newly_added.next() else {
-        return next.replica_set().iter().any(|node_id| {
-            legacy_cluster_state.is_partition_processor_active(&partition_id, node_id)
-        });
-    };
-    is_added_replica_active(first_newly_added) || newly_added.any(is_added_replica_active)
+        .difference(partition_state.current.replica_set())
+        .peekable();
+    if newly_added.peek().is_some() {
+        newly_added.any(is_ready)
+    } else {
+        next.replica_set().iter().copied().any(is_ready)
+    }
 }
 
 #[derive(Debug)]
@@ -92,6 +92,10 @@ pub struct PartitionEvaluation {
 
 /// Evaluates a single scheduler pass using the production reconfiguration gate, leader priority,
 /// and instruction-generation rules.
+///
+/// This adapter always starts with no target leader and therefore only models selection of a new
+/// target; it intentionally does not model production's retention of an existing target when no
+/// candidate is eligible.
 pub fn evaluate_partition(
     partition_id: PartitionId,
     current: PartitionConfiguration,
