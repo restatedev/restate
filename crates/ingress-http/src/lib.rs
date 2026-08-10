@@ -9,13 +9,11 @@
 // by the Apache License, Version 2.0.
 
 mod handler;
+mod integration;
 mod layers;
 mod metric_definitions;
 mod rpc_request_dispatcher;
 mod server;
-
-pub use rpc_request_dispatcher::InvocationClientRequestDispatcher;
-pub use server::{HyperServerIngress, IngressServerError};
 
 use std::future::Future;
 use std::sync::Arc;
@@ -30,6 +28,9 @@ use restate_types::invocation::client::{
 use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use restate_types::journal_v2::Signal;
 use restate_types::net::address::SocketAddress;
+
+pub use rpc_request_dispatcher::InvocationClientRequestDispatcher;
+pub use server::{HyperServerIngress, IngressServerError};
 
 /// Client connection information for a given RPC request
 #[derive(Clone, Debug)]
