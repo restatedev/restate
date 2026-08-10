@@ -15,4 +15,5 @@ pub mod v1;
 pub mod v2;
 pub mod vqueues;
 
+pub use restate_storage_api::deduplication_table::DedupInformation;
 pub use v1::{Command, Destination, Envelope, Header, Source};
