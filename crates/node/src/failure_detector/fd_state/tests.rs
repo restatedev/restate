@@ -329,7 +329,7 @@ impl FdSimulation {
             debug_assert_eq!(interval_passed, full_intervals > 0);
             if full_intervals > 1 {
                 for node in actor.state.node_states.values_mut() {
-                    if node.gen_node_id != node_id {
+                    if node.gen_node_id != node_id && node.gossip_age != u32::MAX {
                         node.gossip_age = node
                             .gossip_age
                             .saturating_sub(full_intervals.saturating_sub(1));
@@ -1801,6 +1801,42 @@ mod partition_7 {
             "trace:\n{}",
             trace.join("\n")
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn removal_only_gate_requires_a_retained_current_generation_replica() {
+        let sim = FdSimulation::stable_three_node_cluster();
+        let mut stale_status = statuses(false);
+        let Some(LegacyNodeState::Alive(node)) = stale_status.nodes.get_mut(&B.as_plain()) else {
+            panic!("N2 must have an Alive status");
+        };
+        node.generational_node_id = GenerationalNodeId::new(2, 2);
+
+        let stale = evaluate_partition(
+            PARTITION,
+            configuration([3, 2]),
+            Some(configuration([2])),
+            &sim.actor(A).cluster_state,
+            &stale_status,
+            &sim.nodes_config,
+            ReconfigurationGate::WaitForAddedReplica,
+        );
+        assert!(
+            !stale.completed_reconfiguration,
+            "a stale Active status cannot complete a removal-only transition"
+        );
+
+        let current_generation = evaluate_partition(
+            PARTITION,
+            configuration([3, 2]),
+            Some(configuration([2])),
+            &sim.actor(A).cluster_state,
+            &statuses(false),
+            &sim.nodes_config,
+            ReconfigurationGate::WaitForAddedReplica,
+        );
+        assert!(current_generation.completed_reconfiguration);
+        assert_eq!(format_configuration(&current_generation.current), "N2");
     }
 
     #[tokio::test(start_paused = true)]

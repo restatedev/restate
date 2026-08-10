@@ -686,6 +686,7 @@ impl<T: TransportConnect> Scheduler<T> {
             Err(err) => Err(err.into()),
         }
     }
+
     async fn store_initial_partition_configuration(
         metadata_store_client: &MetadataStoreClient,
         partition_id: PartitionId,
@@ -738,6 +739,7 @@ impl<T: TransportConnect> Scheduler<T> {
             Err(ReadModifyWriteError::ReadWrite(err)) => Err(err.into()),
         }
     }
+
     async fn reconfigure_partition_configuration(
         metadata_store_client: &MetadataStoreClient,
         partition_id: PartitionId,
@@ -803,6 +805,7 @@ impl<T: TransportConnect> Scheduler<T> {
             Err(ReadModifyWriteError::ReadWrite(err)) => Err(err.into()),
         }
     }
+
     async fn complete_reconfiguration(
         metadata_store_client: &MetadataStoreClient,
         partition_id: PartitionId,
@@ -877,6 +880,7 @@ impl<T: TransportConnect> Scheduler<T> {
             }
         }
     }
+
     /// Checks whether the given partition requires reconfiguration. A partition requires
     /// reconfiguration in the following cases:
     ///
@@ -930,6 +934,7 @@ impl<T: TransportConnect> Scheduler<T> {
                 .unwrap_or(false)
         }
     }
+
     fn choose_partition_configuration(
         partition_id: PartitionId,
         nodes_config: &NodesConfiguration,
@@ -955,6 +960,7 @@ impl<T: TransportConnect> Scheduler<T> {
             })
             .ok()
     }
+
     /// Selects a leader based on the leadership policy, observed cluster state and replica set.
     ///
     /// Scores each alive replica in a single pass. Higher score wins:
@@ -992,6 +998,7 @@ impl<T: TransportConnect> Scheduler<T> {
 
         // keep the current target leader as we couldn't find any suitable substitute
     }
+
     fn instruct_nodes(&self, legacy_cluster_state: &LegacyClusterState) -> Result<(), Error> {
         let mut commands = BTreeMap::default();
 
