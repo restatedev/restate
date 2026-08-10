@@ -181,8 +181,10 @@ impl Node {
     ///
     /// `force_alive` is used exclusively to force this node to be alive without transitioning into
     /// suspect state in standalone setups.
-    /// `hold_age_failure_transition` suppresses only age-expiry evidence; terminal connection and
-    /// failover evidence retain their existing behavior.
+    /// `hold_age_failure_transition` suppresses an age-expiry target unconditionally, including
+    /// when a stale `in_failover` marker is also present. Terminal connections are never held;
+    /// direct gossip and failover messages call this with `false` and retain their existing
+    /// immediate transitions.
     pub fn maybe_update_state(
         &mut self,
         opts: &GossipOptions,
