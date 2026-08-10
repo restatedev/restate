@@ -170,7 +170,6 @@ struct FdSimulation {
     mailboxes: Vec<VecDeque<QueuedGossip>>,
     trace: FdTrace,
     local_stale_polls: StdHashMap<(GenerationalNodeId, PlainNodeId), u32>,
-    normal_polls_since_discontinuity: StdHashMap<GenerationalNodeId, u32>,
 }
 
 impl FdSimulation {
@@ -209,16 +208,6 @@ impl FdSimulation {
                     .map(move |peer| ((observer, peer.as_plain()), 0))
             })
             .collect();
-        let normal_polls_since_discontinuity = node_ids
-            .iter()
-            .copied()
-            .map(|node_id| {
-                (
-                    node_id,
-                    opts.gossip_failure_threshold.get().saturating_add(1),
-                )
-            })
-            .collect();
         Self {
             opts,
             nodes_config,
@@ -226,7 +215,6 @@ impl FdSimulation {
             mailboxes: (0..node_count).map(|_| VecDeque::new()).collect(),
             trace: FdTrace::new(),
             local_stale_polls,
-            normal_polls_since_discontinuity,
         }
     }
 
@@ -336,6 +324,7 @@ impl FdSimulation {
                     }
                 }
             }
+            actor.state.consecutive_normal_gossip_polls = u32::MAX;
             if actor.state.is_stable(&opts) {
                 actor.state.detect_peer_failures(&opts);
             }
@@ -350,7 +339,21 @@ impl FdSimulation {
 
     /// Names the bulk-wire baseline in mixed-policy tests.
     fn tick_with_legacy_wire_aging(&mut self, node_id: GenerationalNodeId) -> u32 {
-        self.tick(node_id)
+        let opts = self.opts.clone();
+        let full_intervals = self.tick_with_legacy_wire_aging_without_detection(node_id, &opts);
+        let actor = self.actor_mut(node_id);
+        // This test-only baseline disables the new local decision gate while retaining production
+        // bulk-wire aging and the real `detect_peer_failures` transition path.
+        actor.state.consecutive_normal_gossip_polls = u32::MAX;
+        if actor.state.is_stable(&opts) {
+            actor.state.detect_peer_failures(&opts);
+        }
+        self.record(
+            format!("legacy-wire-tick(intervals={full_intervals})"),
+            node_id,
+            Some(full_intervals),
+        );
+        full_intervals
     }
 
     /// Models a wire-compatible local gate: bulk wire age is retained, but local age-only death
@@ -397,6 +400,7 @@ impl FdSimulation {
         };
         {
             let actor = self.actor_mut(node_id);
+            actor.state.consecutive_normal_gossip_polls = u32::MAX;
             if actor.state.is_stable(&opts) {
                 actor.state.detect_peer_failures(&opts);
             }
@@ -411,42 +415,6 @@ impl FdSimulation {
         }
         self.record(
             format!("dual-gate-tick(intervals={full_intervals})"),
-            node_id,
-            Some(full_intervals),
-        );
-        full_intervals
-    }
-
-    /// Models a local observer-discontinuity grace period. Gossip age and the wire format stay
-    /// unchanged; only local age-based death decisions are delayed after a skipped timer tick.
-    fn tick_with_observer_discontinuity_grace(&mut self, node_id: GenerationalNodeId) -> u32 {
-        let opts = self.opts.clone();
-        let full_intervals = self.tick_with_legacy_wire_aging_without_detection(node_id, &opts);
-        let normal_polls = {
-            let normal_polls = self
-                .normal_polls_since_discontinuity
-                .get_mut(&node_id)
-                .expect("test observer exists");
-            if full_intervals > 1 {
-                *normal_polls = 0;
-            } else if full_intervals > 0 {
-                *normal_polls = normal_polls.saturating_add(1);
-            }
-            *normal_polls
-        };
-
-        let actor = self.actor_mut(node_id);
-        if actor.state.is_stable(&opts) {
-            if normal_polls <= opts.gossip_failure_threshold.get() {
-                actor.state.detect_peer_failures_holding_age_expiry(&opts);
-            } else {
-                actor.state.detect_peer_failures(&opts);
-            }
-        }
-        self.record(
-            format!(
-                "discontinuity-grace-tick(intervals={full_intervals}, normal_polls={normal_polls})"
-            ),
             node_id,
             Some(full_intervals),
         );
@@ -570,8 +538,8 @@ impl FdSimulation {
         message.encode_to_vec()
     }
 
-    fn normal_polls_since_discontinuity(&self, observer: GenerationalNodeId) -> u32 {
-        self.normal_polls_since_discontinuity[&observer]
+    fn consecutive_normal_gossip_polls(&self, observer: GenerationalNodeId) -> u32 {
+        self.actor(observer).state.consecutive_normal_gossip_polls
     }
 
     fn deliver_next_from(&mut self, to: GenerationalNodeId, from: GenerationalNodeId) {
@@ -718,6 +686,7 @@ async fn resetting_only_the_tokio_interval_does_not_prevent_startup_pre_aging() 
         12
     );
     assert!(actor.state.gossip_tick(&opts));
+    actor.state.consecutive_normal_gossip_polls = u32::MAX;
     actor.state.detect_peer_failures(&opts);
     assert_eq!(
         actor.peer_state(B),
@@ -730,7 +699,12 @@ async fn resetting_only_the_tokio_interval_does_not_prevent_startup_pre_aging() 
 async fn paused_observer_bulk_ages_healthy_peers_to_dead() {
     let mut sim = FdSimulation::stable_three_node_cluster();
     pause_a_while_b_and_c_continue(&mut sim, 12).await;
-    assert_eq!(sim.tick(A), 12, "trace:\n{}", sim.trace());
+    assert_eq!(
+        sim.tick_with_legacy_wire_aging(A),
+        12,
+        "trace:\n{}",
+        sim.trace()
+    );
     for peer in [B, C] {
         assert_eq!(sim.actor(A).peer_age(peer), 12, "trace:\n{}", sim.trace());
         assert_eq!(
@@ -747,7 +721,12 @@ async fn observed_failure_significant_pause_lengths_false_kill_healthy_peers() {
     for intervals in [12, 20, 29, 30, 38, 39, 51] {
         let mut sim = FdSimulation::stable_three_node_cluster();
         pause_a_while_b_and_c_continue(&mut sim, intervals).await;
-        assert_eq!(sim.tick(A), intervals, "trace:\n{}", sim.trace());
+        assert_eq!(
+            sim.tick_with_legacy_wire_aging(A),
+            intervals,
+            "trace:\n{}",
+            sim.trace()
+        );
         for peer in [B, C] {
             assert_eq!(
                 sim.actor(A).peer_state(peer),
@@ -765,7 +744,12 @@ async fn draining_every_accumulated_message_before_the_delayed_tick_still_false_
     let mut sim = FdSimulation::stable_three_node_cluster();
     pause_a_while_b_and_c_continue(&mut sim, 12).await;
     sim.drain_mailbox(A);
-    assert_eq!(sim.tick(A), 12, "trace:\n{}", sim.trace());
+    assert_eq!(
+        sim.tick_with_legacy_wire_aging(A),
+        12,
+        "trace:\n{}",
+        sim.trace()
+    );
     assert_eq!(
         sim.actor(A).peer_state(B),
         NodeState::Dead,
@@ -811,7 +795,7 @@ async fn a_genuinely_silent_peer_during_an_observer_pause_is_eventually_detected
         sim.send_gossip(C, A, Delivery::Queue);
     }
 
-    sim.tick(A);
+    sim.tick_with_legacy_wire_aging(A);
     assert_eq!(
         sim.actor(A).peer_state(B),
         NodeState::Dead,
@@ -900,11 +884,21 @@ async fn resume_order_permutations_produce_divergent_views() {
             match event {
                 ResumeEvent::DeliverB => sim.deliver_next_from(A, B),
                 ResumeEvent::DeliverC => sim.deliver_next_from(A, C),
-                ResumeEvent::DelayedTick => assert_eq!(sim.tick(A), 12, "trace:\n{}", sim.trace()),
+                ResumeEvent::DelayedTick => assert_eq!(
+                    sim.tick_with_legacy_wire_aging(A),
+                    12,
+                    "trace:\n{}",
+                    sim.trace()
+                ),
             }
         }
         sim.advance_one_interval().await;
-        assert_eq!(sim.tick(A), 1, "trace:\n{}", sim.trace());
+        assert_eq!(
+            sim.tick_with_legacy_wire_aging(A),
+            1,
+            "trace:\n{}",
+            sim.trace()
+        );
         assert_eq!(
             (
                 state_name(sim.actor(A).peer_state(B)),
@@ -925,7 +919,12 @@ async fn paused_observer_cannot_distinguish_a_silent_peer_from_a_healthy_queued_
         sim.tick(C);
         sim.send_gossip(C, A, Delivery::Queue);
     }
-    assert_eq!(sim.tick(A), 12, "trace:\n{}", sim.trace());
+    assert_eq!(
+        sim.tick_with_legacy_wire_aging(A),
+        12,
+        "trace:\n{}",
+        sim.trace()
+    );
     assert_eq!(
         sim.actor(A).peer_state(B),
         NodeState::Dead,
@@ -1064,12 +1063,12 @@ async fn run_bulk_wire_a_against_grace_c_for(
     for _ in 0..resumes {
         for _ in 0..intervals_per_a_resume {
             sim.advance_one_interval().await;
-            sim.tick_with_observer_discontinuity_grace(C);
+            sim.tick(C);
             sim.tick_with_legacy_wire_aging(D);
             sim.send_gossip(C, A, Delivery::Queue);
         }
         assert!(
-            sim.tick_with_observer_discontinuity_grace(A) >= intervals_per_a_resume,
+            sim.tick(A) >= intervals_per_a_resume,
             "trace:\n{}",
             sim.trace()
         );
@@ -1292,27 +1291,24 @@ async fn observer_discontinuity_grace_keeps_healthy_queued_peers_alive() {
         sim.send_gossip(C, A, Delivery::Queue);
     }
 
-    assert!(
-        sim.tick_with_observer_discontinuity_grace(A) >= 30,
-        "trace:\n{}",
-        sim.trace()
-    );
+    assert!(sim.tick(A) >= 30, "trace:\n{}", sim.trace());
     for peer in [B, C] {
         assert_eq!(sim.actor(A).peer_state(peer), NodeState::Alive);
     }
     sim.drain_mailbox(A);
-    assert_eq!(sim.normal_polls_since_discontinuity(A), 0);
+    assert_eq!(sim.consecutive_normal_gossip_polls(A), 0);
 }
 
 #[tokio::test(start_paused = true)]
 async fn observer_discontinuity_grace_detects_a_silent_peer_after_eleven_normal_polls() {
     let mut sim = FdSimulation::stable_four_node_cluster();
     tokio::time::advance(*sim.opts.gossip_tick_interval * 30).await;
-    sim.tick_with_observer_discontinuity_grace(A);
+    sim.tick(A);
 
     for poll in 1..=11 {
         sim.advance_one_interval().await;
-        sim.tick_with_observer_discontinuity_grace(A);
+        sim.tick(A);
+        assert_eq!(sim.consecutive_normal_gossip_polls(A), poll);
         assert_eq!(
             sim.actor(A).peer_state(B),
             if poll == 11 {
@@ -1331,11 +1327,11 @@ async fn observer_discontinuity_grace_restarts_after_each_stall() {
     let mut sim = FdSimulation::stable_four_node_cluster();
     for stall in 0..2 {
         tokio::time::advance(*sim.opts.gossip_tick_interval * 12).await;
-        sim.tick_with_observer_discontinuity_grace(A);
+        sim.tick(A);
         if stall == 0 {
             for _ in 0..5 {
                 sim.advance_one_interval().await;
-                sim.tick_with_observer_discontinuity_grace(A);
+                sim.tick(A);
             }
         }
         assert_eq!(sim.actor(A).peer_state(B), NodeState::Alive);
@@ -1343,7 +1339,7 @@ async fn observer_discontinuity_grace_restarts_after_each_stall() {
 
     for poll in 1..=11 {
         sim.advance_one_interval().await;
-        sim.tick_with_observer_discontinuity_grace(A);
+        sim.tick(A);
         assert_eq!(
             sim.actor(A).peer_state(B),
             if poll == 11 {
@@ -1361,14 +1357,14 @@ async fn observer_discontinuity_grace_restarts_after_each_stall() {
 async fn observer_discontinuity_grace_handles_startup_pre_aging_and_normal_transport_loss() {
     let mut startup = FdSimulation::stable_three_node_cluster();
     tokio::time::advance(*startup.opts.gossip_tick_interval * 12).await;
-    assert_eq!(startup.tick_with_observer_discontinuity_grace(A), 12);
+    assert_eq!(startup.tick(A), 12);
     assert_eq!(startup.actor(A).peer_state(B), NodeState::Alive);
-    assert_eq!(startup.normal_polls_since_discontinuity(A), 0);
+    assert_eq!(startup.consecutive_normal_gossip_polls(A), 0);
 
     let mut normal = FdSimulation::stable_three_node_cluster();
     for poll in 1..=11 {
         normal.advance_one_interval().await;
-        normal.tick_with_observer_discontinuity_grace(A);
+        normal.tick(A);
         assert_eq!(
             normal.actor(A).peer_state(B),
             if poll == 11 {
@@ -1391,7 +1387,7 @@ async fn observer_discontinuity_grace_preserves_bulk_wire_stale_age_delay_for_ot
     // cross-observer gossip-age delay.
     run_bulk_wire_a_against_grace_c_for(&mut sim, 5, 2).await;
     assert!(
-        sim.normal_polls_since_discontinuity(C) > sim.opts.gossip_failure_threshold.get(),
+        sim.consecutive_normal_gossip_polls(C) > sim.opts.gossip_failure_threshold.get(),
         "trace:\n{}",
         sim.trace()
     );
@@ -1415,11 +1411,11 @@ async fn observer_discontinuity_grace_preserves_bulk_wire_stale_age_delay_for_ot
 async fn terminal_connection_bypasses_observer_discontinuity_grace() {
     let mut sim = FdSimulation::stable_three_node_cluster();
     tokio::time::advance(*sim.opts.gossip_tick_interval * 12).await;
-    sim.tick_with_observer_discontinuity_grace(A);
+    sim.tick(A);
     sim.mark_terminal_connection(A, B);
 
     sim.advance_one_interval().await;
-    sim.tick_with_observer_discontinuity_grace(A);
+    sim.tick(A);
     assert_eq!(sim.actor(A).peer_state(B), NodeState::Dead);
 }
 
@@ -1436,7 +1432,40 @@ async fn observer_discontinuity_grace_never_reanimates_a_dead_peer_without_gossi
     // age may manufacture a Dead -> Suspect -> Alive recovery or reset the published view.
     for _ in 0..6 {
         tokio::time::advance(*sim.opts.gossip_tick_interval * 12).await;
-        sim.tick_with_observer_discontinuity_grace(A);
+        sim.tick(A);
+        assert_eq!(sim.actor(A).peer_state(B), NodeState::Dead);
+        assert_eq!(
+            sim.actor(A)
+                .cluster_state
+                .get_node_state(NodeId::Generational(B)),
+            PublishedNodeState::Dead
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn observer_discontinuity_grace_holds_a_dead_sticky_failover_peer() {
+    let mut sim = FdSimulation::stable_three_node_cluster();
+    let failure_threshold = sim.opts.gossip_failure_threshold.get();
+    {
+        let node = sim
+            .actor_mut(A)
+            .state
+            .node_states
+            .get_mut(&B.as_plain())
+            .expect("N2 exists");
+        node.in_failover = true;
+        node.gossip_age = failure_threshold + 1;
+    }
+    sim.advance_one_interval().await;
+    sim.tick_with_legacy_wire_aging(A);
+    assert_eq!(sim.actor(A).peer_state(B), NodeState::Dead);
+
+    // The paused schedule outlives `gossip_suspect_interval`. A sticky failover marker is not
+    // fresh evidence and must not reanimate a peer already dead from gossip age.
+    for _ in 0..6 {
+        tokio::time::advance(*sim.opts.gossip_tick_interval * 12).await;
+        sim.tick(A);
         assert_eq!(sim.actor(A).peer_state(B), NodeState::Dead);
         assert_eq!(
             sim.actor(A)
@@ -1458,7 +1487,7 @@ async fn observer_discontinuity_grace_preserves_dead_decisions_and_gossip_bytes(
     for intervals in [1, 12, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 12, 1, 1, 1] {
         tokio::time::advance(*baseline.opts.gossip_tick_interval * intervals).await;
         baseline.tick_with_legacy_wire_aging(A);
-        grace.tick_with_observer_discontinuity_grace(A);
+        grace.tick(A);
 
         for peer in [B, C] {
             assert!(
@@ -1479,7 +1508,7 @@ async fn observer_discontinuity_grace_preserves_dead_decisions_and_gossip_bytes(
     for _ in 0..11 {
         baseline.advance_one_interval().await;
         baseline.tick_with_legacy_wire_aging(A);
-        grace.tick_with_observer_discontinuity_grace(A);
+        grace.tick(A);
     }
     baseline.send_gossip(B, A, Delivery::Queue);
     grace.send_gossip(B, A, Delivery::Queue);
@@ -1487,7 +1516,7 @@ async fn observer_discontinuity_grace_preserves_dead_decisions_and_gossip_bytes(
     grace.drain_mailbox(A);
     baseline.advance_one_interval().await;
     baseline.tick_with_legacy_wire_aging(A);
-    grace.tick_with_observer_discontinuity_grace(A);
+    grace.tick(A);
     assert_eq!(
         baseline.actor(A).peer_state(B),
         grace.actor(A).peer_state(B)
