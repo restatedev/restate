@@ -15,6 +15,7 @@ use super::*;
 const A: GenerationalNodeId = GenerationalNodeId::new(1, 1);
 const B: GenerationalNodeId = GenerationalNodeId::new(2, 1);
 const C: GenerationalNodeId = GenerationalNodeId::new(3, 1);
+const D: GenerationalNodeId = GenerationalNodeId::new(4, 1);
 
 /// A compact, deterministic record of one production-state-machine event.
 #[derive(Debug)]
@@ -174,10 +175,29 @@ struct FdSimulation {
 
 impl FdSimulation {
     fn three_node_cluster() -> Self {
+        Self::cluster([A, B, C])
+    }
+
+    fn four_node_cluster() -> Self {
+        Self::cluster([A, B, C, D])
+    }
+
+    fn stable_four_node_cluster() -> Self {
+        let mut simulation = Self::four_node_cluster();
+        for actor in &mut simulation.actors {
+            actor.establish_stable_alive_view(&simulation.opts);
+        }
+        simulation
+    }
+
+    fn cluster(node_ids: impl IntoIterator<Item = GenerationalNodeId>) -> Self {
         let opts = GossipOptions::default();
-        let nodes_config = nodes_config();
-        let actors = [A, B, C]
-            .into_iter()
+        let node_ids = node_ids.into_iter().collect_vec();
+        let node_count = node_ids.len();
+        let nodes_config = nodes_config(&node_ids);
+        let actors = node_ids
+            .iter()
+            .copied()
             .map(|node_id| FdActor::new(node_id, &nodes_config))
             .collect_vec();
         let local_stale_polls = node_ids
@@ -203,7 +223,7 @@ impl FdSimulation {
             opts,
             nodes_config,
             actors,
-            mailboxes: (0..3).map(|_| VecDeque::new()).collect(),
+            mailboxes: (0..node_count).map(|_| VecDeque::new()).collect(),
             trace: FdTrace::new(),
             local_stale_polls,
             normal_polls_since_discontinuity,
@@ -223,6 +243,7 @@ impl FdSimulation {
             A => 0,
             B => 1,
             C => 2,
+            D => 3,
             _ => panic!("unexpected test node {node_id}"),
         }
     }
@@ -593,9 +614,9 @@ impl FdSimulation {
     }
 }
 
-fn nodes_config() -> NodesConfiguration {
+fn nodes_config(node_ids: &[GenerationalNodeId]) -> NodesConfiguration {
     let mut nodes_config = NodesConfiguration::new_for_testing();
-    for node_id in [A, B, C] {
+    for &node_id in node_ids {
         nodes_config.upsert_node(
             NodeConfig::builder()
                 .name(format!("node-{node_id}"))
@@ -679,7 +700,7 @@ async fn real_gossip_reaches_the_same_stable_alive_peer_fixture_as_the_fast_fixt
 #[tokio::test(start_paused = true)]
 async fn resetting_only_the_tokio_interval_does_not_prevent_startup_pre_aging() {
     let opts = GossipOptions::default();
-    let mut actor = FdActor::new(A, &nodes_config());
+    let mut actor = FdActor::new(A, &nodes_config(&[A, B, C]));
     actor.establish_stable_alive_view(&opts);
     let mut interval = tokio::time::interval(*opts.gossip_tick_interval);
 
@@ -1472,4 +1493,334 @@ async fn observer_discontinuity_grace_preserves_dead_decisions_and_gossip_bytes(
         grace.actor(A).peer_state(B)
     );
     assert_eq!(baseline.gossip_bytes(A), grace.gossip_bytes(A));
+}
+
+mod partition_7 {
+    use std::collections::BTreeMap;
+    use std::time::Duration;
+
+    use restate_admin::cluster_controller::service::scheduler_test_support::{
+        PartitionEvaluation, ReconfigurationGate, evaluate_partition,
+    };
+    use restate_types::Version;
+    use restate_types::cluster::cluster_state::{
+        AliveNode, LegacyClusterState, NodeState as LegacyNodeState, PartitionProcessorStatus,
+        ReplayStatus, RunMode,
+    };
+    use restate_types::identifiers::PartitionId;
+    use restate_types::net::partition_processor_manager::ProcessorCommand;
+    use restate_types::partitions::PartitionConfiguration;
+    use restate_types::replication::{NodeSet, ReplicationProperty};
+    use restate_types::time::MillisSinceEpoch;
+
+    use super::*;
+
+    const PARTITION: PartitionId = PartitionId::MIN;
+
+    #[derive(Debug, Clone, Copy)]
+    enum Event {
+        Evaluate,
+        StopOldLeader,
+    }
+
+    fn configuration(nodes: impl IntoIterator<Item = u32>) -> PartitionConfiguration {
+        let replica_set: NodeSet = nodes.into_iter().map(PlainNodeId::from).collect();
+        PartitionConfiguration::new(
+            ReplicationProperty::new_unchecked(u8::try_from(replica_set.len()).unwrap()),
+            replica_set,
+            Default::default(),
+        )
+    }
+
+    fn statuses(cold_is_active: bool) -> LegacyClusterState {
+        let node_status = |node_id: u32, replay_status| {
+            let mut partitions = BTreeMap::new();
+            partitions.insert(
+                PARTITION,
+                PartitionProcessorStatus {
+                    replay_status,
+                    effective_mode: if node_id == 3 {
+                        RunMode::Leader
+                    } else {
+                        RunMode::Follower
+                    },
+                    ..PartitionProcessorStatus::default()
+                },
+            );
+            (
+                PlainNodeId::from(node_id),
+                LegacyNodeState::Alive(AliveNode {
+                    last_heartbeat_at: MillisSinceEpoch::now(),
+                    generational_node_id: GenerationalNodeId::new(node_id, 1),
+                    partitions,
+                    uptime: Duration::ZERO,
+                }),
+            )
+        };
+
+        LegacyClusterState {
+            last_refreshed: None,
+            nodes_config_version: Version::INVALID,
+            partition_table_version: Version::INVALID,
+            logs_metadata_version: Version::INVALID,
+            nodes: [
+                node_status(
+                    1,
+                    if cold_is_active {
+                        ReplayStatus::Active
+                    } else {
+                        ReplayStatus::Starting
+                    },
+                ),
+                node_status(2, ReplayStatus::Active),
+                // This deliberately remains stale after N2 is stopped. The scheduler must combine
+                // the PP status with the FD-published ClusterState when selecting a leader.
+                node_status(3, ReplayStatus::Active),
+            ]
+            .into_iter()
+            .collect(),
+        }
+    }
+
+    fn format_configuration(configuration: &PartitionConfiguration) -> String {
+        configuration
+            .replica_set()
+            .iter()
+            .map(ToString::to_string)
+            .join(",")
+    }
+
+    fn record_evaluation(
+        trace: &mut Vec<String>,
+        sim: &FdSimulation,
+        evaluation: &PartitionEvaluation,
+    ) {
+        trace.push(format!(
+            "current=[{}] next=[{}] fd(n0={:?}, n1={:?}, n2={:?}) complete={} leader={:?} commands={:?}",
+            format_configuration(&evaluation.current),
+            evaluation
+                .next
+                .as_ref()
+                .map(format_configuration)
+                .unwrap_or_default(),
+            sim.actor(A).peer_state(A),
+            sim.actor(A).peer_state(B),
+            sim.actor(A).peer_state(C),
+            evaluation.completed_reconfiguration,
+            evaluation.target_leader,
+            evaluation.commands,
+        ));
+    }
+
+    async fn stop_old_leader(sim: &mut FdSimulation) {
+        for _ in 0..=sim.opts.gossip_failure_threshold.get() {
+            sim.advance_one_interval().await;
+            // N1 and the controller both make a real gossip round. This keeps direct B evidence
+            // fresh without replaying a stale low age for C through B's outgoing view.
+            sim.tick_with_legacy_wire_aging(B);
+            sim.send_gossip(B, A, Delivery::Queue);
+            sim.drain_mailbox(A);
+            // `f926c5dbb` is intentionally experimental. This helper models current-main's
+            // bulk wire age while still executing production FdState transition/merge logic.
+            sim.tick_with_legacy_wire_aging(A);
+        }
+        assert_eq!(sim.actor(A).peer_state(B), NodeState::Alive);
+        assert_eq!(sim.actor(A).peer_state(C), NodeState::Dead);
+    }
+
+    fn evaluate(
+        sim: &FdSimulation,
+        current: PartitionConfiguration,
+        next: Option<PartitionConfiguration>,
+        gate: ReconfigurationGate,
+        cold_is_active: bool,
+    ) -> PartitionEvaluation {
+        evaluate_partition(
+            PARTITION,
+            current,
+            next,
+            &sim.actor(A).cluster_state,
+            &statuses(cold_is_active),
+            &sim.nodes_config,
+            gate,
+        )
+    }
+
+    async fn run(
+        gate: ReconfigurationGate,
+        events: &[Event],
+        cold_is_active: bool,
+        falsely_exclude_warm: bool,
+    ) -> (PartitionEvaluation, Vec<String>) {
+        let mut sim = FdSimulation::stable_three_node_cluster();
+        let mut current = configuration([3, 2]);
+        let mut next = Some(configuration([3, 1]));
+        let mut trace = vec![
+            "initial: current=[3,2] next=[3,1]; n2=Active leader, n1=Active warm, n0=Starting cold"
+                .to_owned(),
+        ];
+        for event in events {
+            match event {
+                Event::StopOldLeader => {
+                    stop_old_leader(&mut sim).await;
+                    trace.push("stop n2; FD publishes n2=Dead while n1 remains Alive".to_owned());
+                }
+                Event::Evaluate => {
+                    let evaluation = evaluate(&sim, current, next, gate, cold_is_active);
+                    current = evaluation.current.clone();
+                    next = evaluation.next.clone();
+                    record_evaluation(&mut trace, &sim, &evaluation);
+                }
+            }
+        }
+
+        if falsely_exclude_warm {
+            sim.mark_terminal_connection(A, B);
+            sim.advance_one_interval().await;
+            sim.tick_with_legacy_wire_aging(A);
+            trace.push("inject false FD exclusion for warm n1".to_owned());
+        }
+
+        let evaluation = evaluate(&sim, current, next, gate, cold_is_active);
+        record_evaluation(&mut trace, &sim, &evaluation);
+        (evaluation, trace)
+    }
+
+    fn assert_leader_command(evaluation: &PartitionEvaluation, node: PlainNodeId) {
+        assert!(
+            evaluation.commands.get(&node).is_some_and(|commands| {
+                commands
+                    .iter()
+                    .any(|command| command.command == ProcessorCommand::Leader)
+            }),
+            "expected a leader command for {node}; commands={:?}",
+            evaluation.commands
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn p7_current_gate_has_a_cold_leader_trace_in_both_event_orderings() {
+        for events in [
+            [Event::Evaluate, Event::StopOldLeader],
+            [Event::StopOldLeader, Event::Evaluate],
+        ] {
+            let (evaluation, trace) =
+                run(ReconfigurationGate::Current, &events, false, false).await;
+            assert_eq!(
+                format_configuration(&evaluation.current),
+                "N3,N1",
+                "trace:\n{}",
+                trace.join("\n")
+            );
+            assert_eq!(
+                evaluation.target_leader,
+                Some(A.as_plain()),
+                "trace:\n{}",
+                trace.join("\n")
+            );
+            assert_leader_command(&evaluation, A.as_plain());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn p7_added_replica_gate_keeps_the_warm_follower_eligible() {
+        for events in [
+            [Event::Evaluate, Event::StopOldLeader],
+            [Event::StopOldLeader, Event::Evaluate],
+        ] {
+            let (evaluation, trace) = run(
+                ReconfigurationGate::WaitForAddedReplica,
+                &events,
+                false,
+                false,
+            )
+            .await;
+            assert!(
+                !evaluation.completed_reconfiguration,
+                "trace:\n{}",
+                trace.join("\n")
+            );
+            assert_eq!(
+                format_configuration(&evaluation.current),
+                "N3,N2",
+                "trace:\n{}",
+                trace.join("\n")
+            );
+            assert_eq!(
+                evaluation.target_leader,
+                Some(B.as_plain()),
+                "trace:\n{}",
+                trace.join("\n")
+            );
+            assert_leader_command(&evaluation, B.as_plain());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn p7_added_replica_gate_never_promotes_cold_n0_when_warm_n1_is_falsely_excluded() {
+        let (evaluation, trace) = run(
+            ReconfigurationGate::WaitForAddedReplica,
+            &[Event::StopOldLeader],
+            false,
+            true,
+        )
+        .await;
+
+        assert!(
+            !evaluation.completed_reconfiguration,
+            "trace:\n{}",
+            trace.join("\n")
+        );
+        assert_eq!(
+            format_configuration(&evaluation.current),
+            "N3,N2",
+            "trace:\n{}",
+            trace.join("\n")
+        );
+        assert_ne!(
+            evaluation.target_leader,
+            Some(A.as_plain()),
+            "trace:\n{}",
+            trace.join("\n")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn p7_added_replica_gate_allows_completion_after_cold_n0_is_current_generation_active() {
+        let (evaluation, trace) =
+            run(ReconfigurationGate::WaitForAddedReplica, &[], true, false).await;
+
+        assert!(
+            evaluation.completed_reconfiguration,
+            "trace:\n{}",
+            trace.join("\n")
+        );
+        assert_eq!(
+            format_configuration(&evaluation.current),
+            "N3,N1",
+            "trace:\n{}",
+            trace.join("\n")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn p7_rf_two_to_three_waits_for_the_added_cold_replica() {
+        let mut sim = FdSimulation::stable_three_node_cluster();
+        stop_old_leader(&mut sim).await;
+
+        let evaluation = evaluate_partition(
+            PARTITION,
+            configuration([3, 2]),
+            Some(configuration([3, 2, 1])),
+            &sim.actor(A).cluster_state,
+            &statuses(false),
+            &sim.nodes_config,
+            ReconfigurationGate::WaitForAddedReplica,
+        );
+
+        assert!(!evaluation.completed_reconfiguration);
+        assert_eq!(format_configuration(&evaluation.current), "N3,N2");
+        assert_eq!(evaluation.target_leader, Some(B.as_plain()));
+        assert_leader_command(&evaluation, B.as_plain());
+    }
 }

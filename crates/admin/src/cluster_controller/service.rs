@@ -12,6 +12,9 @@ mod cluster_controller_state;
 mod scheduler;
 mod scheduler_task;
 
+#[cfg(feature = "test-util")]
+pub use scheduler::test_support as scheduler_test_support;
+
 use std::sync::Arc;
 use std::time::Duration;
 
