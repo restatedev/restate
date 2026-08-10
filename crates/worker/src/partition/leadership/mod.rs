@@ -66,7 +66,6 @@ use restate_util_time::DurationExt;
 use restate_vqueues::context::{HasVQueues, HasVQueuesMut};
 use restate_vqueues::scheduler::{self};
 use restate_vqueues::{ResourceManager, SchedulerService, VQueuesMeta};
-use restate_wal_protocol::Command;
 use restate_wal_protocol::control::{
     AnnounceLeaderCommand, UpdatePartitionDurabilityCommand, VersionBarrierCommand,
 };
@@ -301,14 +300,14 @@ where
         let campaign_started_at = Instant::now();
         let leader_epoch = leadership_info.leader_epoch;
 
-        let announce_leader = Command::AnnounceLeader(Box::new(AnnounceLeaderCommand {
+        let announce_leader = AnnounceLeaderCommand {
             node_id: node_ctx.my_node_id(),
             leader_epoch,
             epoch_version: Some(leadership_info.version),
             partition_key_range: ctx.key_range(),
             current_config: Some(leadership_info.current_config),
             next_config: leadership_info.next_config,
-        }));
+        };
 
         let mut self_proposer = SelfProposer::new(
             ctx.log_id(),
@@ -316,7 +315,7 @@ where
             &node_ctx.bifrost,
         )?;
 
-        self_proposer.self_propose_unaccounted(ctx.key_range().start(), announce_leader)?;
+        self_proposer.self_propose_unaccounted(announce_leader)?;
 
         self.state = State::Candidate {
             campaign_started_at,
@@ -572,15 +571,12 @@ where
                     .max(processor.fsm().min_restate_version())
                     .clone();
 
-                self_proposer.self_propose_unaccounted(
-                    processor.key_range().start(),
-                    Command::VersionBarrier(VersionBarrierCommand {
-                        version: barrier_version,
-                        partition_key_range: Keys::RangeInclusive(processor.key_range().into()),
-                        human_reason: Some("Apply state-machine feature changes".to_owned()),
-                        feature_changes: feature_changes.iter().map(|c| c.id()).collect(),
-                    }),
-                )?;
+                self_proposer.self_propose_unaccounted(VersionBarrierCommand {
+                    version: barrier_version,
+                    partition_key_range: Keys::RangeInclusive(processor.key_range().into()),
+                    human_reason: Some("Apply state-machine feature changes".to_owned()),
+                    feature_changes: feature_changes.iter().map(|c| c.id()).collect(),
+                })?;
 
                 // Switch to BecomingLeader state until we finish any pending tasks to enable the
                 // new features. We will transition us to an effective leader when the state
@@ -1025,7 +1021,6 @@ mod tests {
     use test_log::test;
     use tokio_stream::StreamExt;
 
-    use assert2::let_assert;
     use restate_bifrost::Bifrost;
     use restate_core::partitions::PartitionRouting;
     use restate_core::{TaskCenter, TestCoreEnv};
@@ -1041,8 +1036,8 @@ mod tests {
     };
     use restate_types::sharding::KeyRange;
     use restate_types::{GenerationalNodeId, Version};
-    use restate_wal_protocol::Command;
-    use restate_wal_protocol::Envelope;
+    use restate_wal_protocol::control::AnnounceLeaderCommand;
+    use restate_wal_protocol::v2::{Envelope, Raw, commands};
     use restate_worker_api::invoker::capacity::InvokerCapacity;
 
     use crate::partition::leadership::{LeadershipState, State};
@@ -1116,9 +1111,12 @@ mod tests {
             .expect("valid reader");
 
         let record = reader.next().await.unwrap()?;
-        let envelope = record.try_decode::<Envelope>().unwrap()?;
+        let envelope = record
+            .try_decode::<Envelope<Raw>>()
+            .unwrap()?
+            .into_typed::<AnnounceLeaderCommand>();
 
-        let_assert!(Command::AnnounceLeader(announce_leader) = envelope.command);
+        let announce_leader = envelope.into_inner()?;
         assert_eq!(announce_leader.node_id, NODE_ID);
         assert_eq!(announce_leader.leader_epoch, leader_epoch);
         assert_eq!(announce_leader.partition_key_range, PARTITION_KEY_RANGE);
@@ -1140,8 +1138,11 @@ mod tests {
         assert!(matches!(state.state, State::BecomingLeader { .. }));
 
         let record = reader.next().await.unwrap()?;
-        let envelope = record.try_decode::<Envelope>().unwrap()?;
-        let_assert!(Command::VersionBarrier(barrier) = envelope.command);
+        let envelope = record
+            .try_decode::<Envelope<Raw>>()
+            .unwrap()?
+            .into_typed::<commands::VersionBarrierCommand>();
+        let barrier = envelope.into_inner()?;
         assert!(
             barrier
                 .feature_changes

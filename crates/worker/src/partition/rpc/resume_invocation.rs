@@ -11,13 +11,14 @@
 use super::*;
 use crate::partition::state_machine::resolve_pinned_deployment;
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
-use restate_types::identifiers::{InvocationId, WithPartitionKey};
+use restate_types::identifiers::InvocationId;
 use restate_types::invocation::client::PatchDeploymentId;
 use restate_types::invocation::{
     IngressInvocationResponseSink, InvocationMutationResponseSink, ResumeInvocationRequest,
 };
 use restate_types::net::partition_processor::ResumeInvocationRpcResponse;
 use restate_types::schema::deployment::DeploymentResolver;
+use restate_wal_protocol::v2::commands;
 
 pub(super) struct Request {
     pub(super) request_id: PartitionProcessorRpcRequestId,
@@ -59,9 +60,8 @@ where
                     // is no running attempt to fence, so use the plain proposal path -- unlike
                     // pause's `propose_pause_and_fence`. Writing the new `update_deployment_id` field
                     // is safe here: vqueues being enabled implies a cluster min version >= 1.7.0.
-                    Decision::Propose(RpcProposal {
-                        partition_key: invocation_id.partition_key(),
-                        cmd: Command::ResumeInvocation(ResumeInvocationRequest {
+                    Decision::Propose(RpcProposal::new(
+                        commands::ResumeInvocationCommand::from(ResumeInvocationRequest {
                             invocation_id,
                             update_deployment_id: Some(update_deployment_id),
                             update_pinned_deployment_id: None,
@@ -70,8 +70,8 @@ where
                                 IngressInvocationResponseSink { request_id },
                             )),
                         }),
-                        reply_on: ReplyOn::Apply { request_id },
-                    })
+                        ReplyOn::Apply { request_id },
+                    ))
                 } else {
                     // Legacy invoker-owned path: there is a live attempt, so the pinned deployment
                     // cannot be patched. Poke the invoker to retry now, if possible.
@@ -92,9 +92,8 @@ where
                     // VQueue path: forward the unresolved patch; the apply path resolves it against
                     // the status as of the command's log position. Safe to write the new
                     // `update_deployment_id` field -- vqueues imply a cluster min version >= 1.7.0.
-                    return Decision::Propose(RpcProposal {
-                        partition_key: invocation_id.partition_key(),
-                        cmd: Command::ResumeInvocation(ResumeInvocationRequest {
+                    return Decision::Propose(RpcProposal::new(
+                        commands::ResumeInvocationCommand::from(ResumeInvocationRequest {
                             invocation_id,
                             update_deployment_id: Some(update_deployment_id),
                             update_pinned_deployment_id: None,
@@ -103,8 +102,8 @@ where
                                 IngressInvocationResponseSink { request_id },
                             )),
                         }),
-                        reply_on: ReplyOn::Apply { request_id },
-                    });
+                        ReplyOn::Apply { request_id },
+                    ));
                 }
 
                 // Non-VQueue path: a pre-1.7.0 node may still apply this command and does not know
@@ -125,9 +124,8 @@ where
                     }
                 };
 
-                Decision::Propose(RpcProposal {
-                    partition_key: invocation_id.partition_key(),
-                    cmd: Command::ResumeInvocation(ResumeInvocationRequest {
+                Decision::Propose(RpcProposal::new(
+                    commands::ResumeInvocationCommand::from(ResumeInvocationRequest {
                         invocation_id,
                         update_deployment_id: None,
                         update_pinned_deployment_id,
@@ -136,8 +134,8 @@ where
                             IngressInvocationResponseSink { request_id },
                         )),
                     }),
-                    reply_on: ReplyOn::Apply { request_id },
-                })
+                    ReplyOn::Apply { request_id },
+                ))
             }
             Ok(InvocationStatus::Scheduled(_)) | Ok(InvocationStatus::Inboxed(_)) => {
                 Decision::Reply(Ok(ResumeInvocationRpcResponse::NotStarted.into()))
@@ -173,6 +171,7 @@ mod tests {
     use restate_types::schema::deployment::Deployment;
     use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry;
     use restate_types::service_protocol::ServiceProtocolVersion;
+    use restate_types::sharding::WithPartitionKey;
     use rstest::rstest;
     use test_log::test;
 
@@ -270,13 +269,12 @@ mod tests {
             Default::default(),
         )
         .await;
-        let_assert!(
-            Decision::Propose(RpcProposal {
-                cmd: Command::ResumeInvocation(request),
-                reply_on: ReplyOn::Apply { .. },
-                ..
-            }) = decision
-        );
+
+        let (_, resume_invocation_command, reply_on) =
+            decision.extract_as_rpc_proposal::<commands::ResumeInvocationCommand>();
+
+        let_assert!(ReplyOn::Apply { .. } = reply_on);
+        let request: ResumeInvocationRequest = resume_invocation_command.into();
         assert_eq!(request.invocation_id, invocation_id);
     }
 
@@ -309,15 +307,17 @@ mod tests {
             Default::default(),
         )
         .await;
+
+        let (_, resume_invocation_command, reply_on) =
+            decision.extract_as_rpc_proposal::<commands::ResumeInvocationCommand>();
+
         let_assert!(
-            Decision::Propose(RpcProposal {
-                cmd: Command::ResumeInvocation(resume_invocation_request),
-                reply_on: ReplyOn::Apply {
-                    request_id: actual_request_id,
-                },
-                ..
-            }) = decision
+            ReplyOn::Apply {
+                request_id: actual_request_id
+            } = reply_on
         );
+
+        let resume_invocation_request: ResumeInvocationRequest = resume_invocation_command.into();
         assert_eq!(actual_request_id, request_id);
         assert_that!(
             resume_invocation_request,
