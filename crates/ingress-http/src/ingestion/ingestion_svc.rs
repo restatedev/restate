@@ -72,8 +72,8 @@ use restate_types::identifiers::{
     DeploymentId, InvocationId, PartitionProcessorRpcRequestId, partitioner,
 };
 use restate_types::invocation::{
-    Header, InvocationTarget, InvocationTargetType, ServiceInvocation, Source, SpanRelation,
-    WorkflowHandlerType,
+    Header, IngestionSource, InvocationTarget, InvocationTargetType, ServiceInvocation, Source,
+    SpanRelation, WorkflowHandlerType,
 };
 use restate_types::limit_key::parse_limit_key;
 use restate_types::live::Live;
@@ -750,7 +750,10 @@ where
             .experimental
             .is_invocation_source_integration_enabled()
         {
-            invocation.source = Source::Ingestion(state.integration.clone());
+            invocation.source = Source::Ingestion(IngestionSource {
+                integration: state.integration.as_str().into(),
+                producer: state.producer.as_str().into(),
+            });
         }
 
         let dedup = state

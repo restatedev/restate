@@ -143,6 +143,7 @@ pub mod v1 {
             PreFlightInvocationArgument, PreFlightInvocationInput, PreFlightInvocationJournal,
         };
         use crate::protobuf_types::ConversionError;
+        use crate::protobuf_types::v1::source::IngestionSource;
         use crate::protobuf_types::v1::{
             Future, NotificationEntryIndex, NotificationResultVariant,
         };
@@ -1538,6 +1539,32 @@ pub mod v1 {
             }
         }
 
+        impl From<restate_types::invocation::IngestionSource> for IngestionSource {
+            fn from(value: restate_types::invocation::IngestionSource) -> Self {
+                let restate_types::invocation::IngestionSource {
+                    integration,
+                    producer,
+                } = value;
+                Self {
+                    integration,
+                    producer,
+                }
+            }
+        }
+
+        impl From<IngestionSource> for restate_types::invocation::IngestionSource {
+            fn from(value: IngestionSource) -> Self {
+                let IngestionSource {
+                    integration,
+                    producer,
+                } = value;
+                Self {
+                    integration,
+                    producer,
+                }
+            }
+        }
+
         impl From<restate_types::invocation::Source> for Source {
             fn from(value: restate_types::invocation::Source) -> Self {
                 let source = match value {
@@ -1565,7 +1592,7 @@ pub mod v1 {
                     }
                     restate_types::invocation::Source::Internal => source::Source::Internal(()),
                     restate_types::invocation::Source::Ingestion(ingestion) => {
-                        source::Source::Ingestion(ingestion.as_str().into())
+                        source::Source::Ingestion(ingestion.into())
                     }
                 };
 
@@ -1602,7 +1629,7 @@ pub mod v1 {
                     }
                     restate_types::invocation::Source::Internal => source::Source::Internal(()),
                     restate_types::invocation::Source::Ingestion(ingestion) => {
-                        source::Source::Ingestion(ingestion.as_str().into())
+                        source::Source::Ingestion(ingestion.clone().into())
                     }
                 };
 
