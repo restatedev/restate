@@ -1530,38 +1530,10 @@ pub mod v1 {
                         )
                     }
                     source::Source::Internal(_) => restate_types::invocation::Source::Internal,
-                    source::Source::Ingestion(ingestion) => {
-                        restate_types::invocation::Source::Ingestion(ingestion.into())
-                    }
+                    source::Source::Ingestion(_) => restate_types::invocation::Source::Ingestion,
                 };
 
                 Ok(source)
-            }
-        }
-
-        impl From<restate_types::invocation::IngestionSource> for IngestionSource {
-            fn from(value: restate_types::invocation::IngestionSource) -> Self {
-                let restate_types::invocation::IngestionSource {
-                    integration,
-                    producer,
-                } = value;
-                Self {
-                    integration,
-                    producer,
-                }
-            }
-        }
-
-        impl From<IngestionSource> for restate_types::invocation::IngestionSource {
-            fn from(value: IngestionSource) -> Self {
-                let IngestionSource {
-                    integration,
-                    producer,
-                } = value;
-                Self {
-                    integration,
-                    producer,
-                }
             }
         }
 
@@ -1591,8 +1563,8 @@ pub mod v1 {
                         })
                     }
                     restate_types::invocation::Source::Internal => source::Source::Internal(()),
-                    restate_types::invocation::Source::Ingestion(ingestion) => {
-                        source::Source::Ingestion(ingestion.into())
+                    restate_types::invocation::Source::Ingestion => {
+                        source::Source::Ingestion(IngestionSource::default())
                     }
                 };
 
@@ -1628,8 +1600,8 @@ pub mod v1 {
                         })
                     }
                     restate_types::invocation::Source::Internal => source::Source::Internal(()),
-                    restate_types::invocation::Source::Ingestion(ingestion) => {
-                        source::Source::Ingestion(ingestion.clone().into())
+                    restate_types::invocation::Source::Ingestion => {
+                        source::Source::Ingestion(IngestionSource::default())
                     }
                 };
 
