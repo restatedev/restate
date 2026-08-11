@@ -797,6 +797,12 @@ impl ServiceInvocationResponseSink {
     }
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct IngestionSource {
+    pub integration: String,
+    pub producer: String,
+}
+
 /// Source of an invocation
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Source {
@@ -805,7 +811,7 @@ pub enum Source {
     Service(InvocationId, InvocationTarget),
     RestartAsNew(InvocationId),
     // Since v1.8
-    Ingestion(ReString),
+    Ingestion(IngestionSource),
     /// Internal calls for the non-deterministic built-in services
     Internal,
 }
@@ -1559,7 +1565,7 @@ mod serde_hacks {
         Subscription(SubscriptionId),
         Service(InvocationId, InvocationTarget),
         RestartAsNew(InvocationId),
-        Ingestion(ReString),
+        Ingestion(String, String),
         /// Internal calls for the non-deterministic built-in services
         Internal,
     }
@@ -1604,7 +1610,12 @@ mod serde_hacks {
                     Source::Subscription(sid) => super::Source::Subscription(sid),
                     Source::Service(id, target) => super::Source::Service(id, target),
                     Source::RestartAsNew(id) => super::Source::RestartAsNew(id),
-                    Source::Ingestion(ingestion) => super::Source::Ingestion(ingestion),
+                    Source::Ingestion(integration, producer) => {
+                        super::Source::Ingestion(IngestionSource {
+                            integration,
+                            producer,
+                        })
+                    }
                     Source::Internal => super::Source::Internal,
                 },
                 restate_version,
@@ -1658,7 +1669,9 @@ mod serde_hacks {
                     super::Source::Service(id, target) => Source::Service(id, target),
                     super::Source::Internal => Source::Internal,
                     super::Source::RestartAsNew(id) => Source::RestartAsNew(id),
-                    super::Source::Ingestion(ingestion) => Source::Ingestion(ingestion),
+                    super::Source::Ingestion(ingestion) => {
+                        Source::Ingestion(ingestion.integration, ingestion.producer)
+                    }
                 },
             }
         }

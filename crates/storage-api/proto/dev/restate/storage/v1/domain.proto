@@ -135,6 +135,11 @@ message Source {
 
   message RestartAsNew { InvocationId invocation_id = 1; }
 
+  message IngestionSource {
+    string integration = 1;
+    string producer = 2;
+  }
+
   oneof source {
     Ingress ingress = 9;
     Service service = 10;
@@ -142,7 +147,7 @@ message Source {
     Subscription subscription = 12;
     RestartAsNew restart_as_new = 13;
     // Since v1.8
-    string ingestion = 14;
+    IngestionSource ingestion = 14;
   }
 }
 
