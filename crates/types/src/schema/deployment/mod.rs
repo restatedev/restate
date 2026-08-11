@@ -11,6 +11,7 @@
 pub mod http_auth;
 
 pub use http_auth::{GoogleIdTokenAuth, HttpAuth, derive_audience};
+use restate_encoding::RestateEncoding;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -32,15 +33,25 @@ use http::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize, derive_more::Display)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    derive_more::Display,
+    bilrost::Enumeration,
+)]
 #[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
 pub enum ProtocolType {
     /// Request/Response
     #[display("Request/Response")]
-    RequestResponse,
+    RequestResponse = 0,
     /// Bidirectional Stream
     #[display("Bidirectional Stream")]
-    BidiStream,
+    BidiStream = 1,
 }
 
 #[derive(Debug, Clone)]
@@ -83,10 +94,10 @@ impl Deployment {
     ) -> bool {
         match (&self.ty, other_addess) {
             (
-                DeploymentType::Http {
+                DeploymentType::Http(HttpType {
                     address: this_address,
                     ..
-                },
+                }),
                 DeploymentAddress::Http(HttpDeploymentAddress {
                     uri: other_address,
                     auth: _,
@@ -99,7 +110,7 @@ impl Deployment {
                 other_additional_headers,
             ),
             (
-                DeploymentType::Lambda { arn: this_arn, .. },
+                DeploymentType::Lambda(LambdaType { arn: this_arn, .. }),
                 DeploymentAddress::Lambda(LambdaDeploymentAddress { arn: other_arn, .. }),
             ) => Self::semantic_eq_lambda(this_arn, other_arn),
             _ => false,
@@ -129,10 +140,10 @@ impl Deployment {
 }
 
 /// Lambda compression
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, bilrost::Enumeration)]
 #[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
 pub enum EndpointLambdaCompression {
-    Zstd,
+    Zstd = 0,
 }
 
 impl EndpointLambdaCompression {
@@ -143,27 +154,43 @@ impl EndpointLambdaCompression {
     }
 }
 
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Serialize, bilrost::Message)]
+pub struct HttpType {
+    #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+    #[bilrost(tag = 1, encoding(RestateEncoding))]
+    pub address: Uri,
+    #[bilrost(tag = 2)]
+    pub protocol_type: ProtocolType,
+    #[serde(with = "serde_with::As::<restate_serde_util::VersionSerde>")]
+    #[bilrost(tag = 3, encoding(RestateEncoding))]
+    pub http_version: http::Version,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(oneof(4))]
+    pub auth: Option<HttpAuth>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, bilrost::Message)]
+pub struct LambdaType {
+    #[bilrost(tag = 1)]
+    pub arn: LambdaARN,
+    #[bilrost(tag = 2)]
+    pub assume_role_arn: Option<ByteString>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag = 3)]
+    pub compression: Option<EndpointLambdaCompression>,
+}
 // TODO this type is serde because it represents how data is stored in the schema registry
 //  re-evaluate whether we should use another ad-hoc data structure for storage representation after schema v2 migration.
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, bilrost::Oneof, bilrost::Message)]
 #[serde(from = "serde_hacks::DeploymentType")]
 pub enum DeploymentType {
-    Http {
-        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-        address: Uri,
-        protocol_type: ProtocolType,
-        #[serde(with = "serde_with::As::<restate_serde_util::VersionSerde>")]
-        http_version: http::Version,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        auth: Option<HttpAuth>,
-    },
-    Lambda {
-        arn: LambdaARN,
-        assume_role_arn: Option<ByteString>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        compression: Option<EndpointLambdaCompression>,
-    },
+    Unknown,
+    #[bilrost(tag = 1)]
+    Http(HttpType),
+    #[bilrost(tag = 2)]
+    Lambda(LambdaType),
 }
 
 impl DeploymentType {
@@ -174,8 +201,9 @@ impl DeploymentType {
         impl Display for Wrapper<'_> {
             fn fmt(&self, f: &mut Formatter) -> fmt::Result {
                 match self {
-                    Wrapper(DeploymentType::Http { address, .. }) => address.fmt(f),
-                    Wrapper(DeploymentType::Lambda { arn, .. }) => arn.fmt(f),
+                    Wrapper(DeploymentType::Http(HttpType { address, .. })) => address.fmt(f),
+                    Wrapper(DeploymentType::Lambda(LambdaType { arn, .. })) => arn.fmt(f),
+                    Wrapper(DeploymentType::Unknown) => f.write_str("unknown"),
                 }
             }
         }
@@ -184,17 +212,22 @@ impl DeploymentType {
 
     pub fn as_address(&self) -> DeploymentAddress {
         match self {
-            DeploymentType::Http { address, auth, .. } => {
+            DeploymentType::Http(HttpType { address, auth, .. }) => {
                 HttpDeploymentAddress::new(address.clone())
                     .with_auth(auth.clone())
                     .into()
             }
-            DeploymentType::Lambda {
+            DeploymentType::Lambda(LambdaType {
                 arn,
                 assume_role_arn,
                 ..
-            } => LambdaDeploymentAddress::new(arn.clone(), assume_role_arn.clone().map(Into::into))
-                .into(),
+            }) => {
+                LambdaDeploymentAddress::new(arn.clone(), assume_role_arn.clone().map(Into::into))
+                    .into()
+            }
+            DeploymentType::Unknown => {
+                todo!("handle unknown deployment type")
+            }
         }
     }
 
@@ -207,22 +240,24 @@ impl DeploymentType {
 
     pub fn protocol_type(&self) -> ProtocolType {
         match self {
-            DeploymentType::Http { protocol_type, .. } => *protocol_type,
-            DeploymentType::Lambda { .. } => ProtocolType::RequestResponse,
+            DeploymentType::Http(HttpType { protocol_type, .. }) => *protocol_type,
+            DeploymentType::Lambda(_) => ProtocolType::RequestResponse,
+            DeploymentType::Unknown => ProtocolType::RequestResponse,
         }
     }
 
     pub const fn as_static_str(&self) -> &'static str {
         match self {
-            DeploymentType::Http {
+            DeploymentType::Http(HttpType {
                 protocol_type: ProtocolType::BidiStream,
                 ..
-            } => "Http/bidi-stream",
-            DeploymentType::Http {
+            }) => "Http/bidi-stream",
+            DeploymentType::Http(HttpType {
                 protocol_type: ProtocolType::RequestResponse,
                 ..
-            } => "Http/request-response",
+            }) => "Http/request-response",
             DeploymentType::Lambda { .. } => "Lambda",
+            DeploymentType::Unknown => "unknown",
         }
     }
 }
@@ -348,7 +383,7 @@ mod serde_hacks {
                     protocol_type,
                     http_version,
                     auth,
-                } => Self::Http {
+                } => Self::Http(HttpType {
                     address,
                     protocol_type,
                     http_version: match http_version {
@@ -356,16 +391,16 @@ mod serde_hacks {
                         None => Self::backfill_http_version(protocol_type),
                     },
                     auth,
-                },
+                }),
                 DeploymentType::Lambda {
                     arn,
                     assume_role_arn,
                     compression,
-                } => Self::Lambda {
+                } => Self::Lambda(LambdaType {
                     arn,
                     assume_role_arn,
                     compression,
-                },
+                }),
             }
         }
     }
@@ -373,7 +408,7 @@ mod serde_hacks {
 
 #[cfg(test)]
 mod serde_tests {
-    use crate::{identifiers::LambdaARN, storage::StorageCodec};
+    use crate::{identifiers::LambdaARN, schema::deployment::HttpType, storage::StorageCodec};
     use bytestring::ByteString;
     use http::Uri;
 
@@ -430,12 +465,12 @@ mod serde_tests {
         .unwrap();
         let dt: DeploymentType = StorageCodec::decode(&mut buf).unwrap();
         assert_eq!(
-            DeploymentType::Http {
+            DeploymentType::Http(HttpType {
                 address: Uri::from_static("https://svc.example.com"),
                 protocol_type: ProtocolType::BidiStream,
                 http_version: http::Version::HTTP_2,
                 auth: None,
-            },
+            }),
             dt
         );
     }
@@ -444,7 +479,7 @@ mod serde_tests {
     fn auth_field_round_trips() {
         use crate::schema::deployment::{GoogleIdTokenAuth, HttpAuth};
 
-        let original = DeploymentType::Http {
+        let original = DeploymentType::Http(HttpType {
             address: Uri::from_static("https://svc.example.com"),
             protocol_type: ProtocolType::BidiStream,
             http_version: http::Version::HTTP_2,
@@ -454,7 +489,7 @@ mod serde_tests {
                     "caller@proj.iam.gserviceaccount.com",
                 )),
             ))),
-        };
+        });
         let mut buf = bytes::BytesMut::default();
         StorageCodec::encode(&original, &mut buf).unwrap();
         let decoded: DeploymentType = StorageCodec::decode(&mut buf).unwrap();
@@ -474,12 +509,12 @@ mod serde_tests {
         .unwrap();
         let dt: DeploymentType = StorageCodec::decode(&mut buf).unwrap();
         assert_eq!(
-            DeploymentType::Http {
+            DeploymentType::Http(HttpType {
                 address: Uri::from_static("google.com"),
                 protocol_type: ProtocolType::BidiStream,
                 http_version: http::Version::HTTP_2,
                 auth: None,
-            },
+            }),
             dt
         );
 
@@ -494,12 +529,12 @@ mod serde_tests {
         .unwrap();
         let dt: DeploymentType = StorageCodec::decode(&mut buf).unwrap();
         assert_eq!(
-            DeploymentType::Http {
+            DeploymentType::Http(HttpType {
                 address: Uri::from_static("google.com"),
                 protocol_type: ProtocolType::RequestResponse,
                 http_version: http::Version::HTTP_11,
                 auth: None,
-            },
+            }),
             dt
         );
     }
@@ -519,12 +554,12 @@ pub mod test_util {
                 .expect("valid stable deployment id");
             Deployment {
                 id,
-                ty: DeploymentType::Http {
+                ty: DeploymentType::Http(HttpType {
                     address: "http://localhost:9080".parse().unwrap(),
                     protocol_type: ProtocolType::BidiStream,
                     http_version: http::Version::HTTP_2,
                     auth: None,
-                },
+                }),
                 supported_protocol_versions: 1..=MAX_SERVICE_PROTOCOL_VERSION_VALUE,
                 sdk_version: None,
                 created_at: MillisSinceEpoch::now(),
@@ -540,12 +575,12 @@ pub mod test_util {
                 .expect("valid stable deployment id");
             Deployment {
                 id,
-                ty: DeploymentType::Http {
+                ty: DeploymentType::Http(HttpType {
                     address: uri.parse().unwrap(),
                     protocol_type: ProtocolType::BidiStream,
                     http_version: http::Version::HTTP_2,
                     auth: None,
-                },
+                }),
                 supported_protocol_versions: 1..=MAX_SERVICE_PROTOCOL_VERSION_VALUE,
                 sdk_version: None,
                 created_at: MillisSinceEpoch::now(),

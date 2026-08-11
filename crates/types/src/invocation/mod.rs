@@ -42,13 +42,23 @@ use crate::limit_key::LimitKey;
 use crate::time::MillisSinceEpoch;
 use crate::{GenerationalNodeId, LockName, RestateVersion, ServiceName};
 
-#[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Eq,
+    Hash,
+    PartialEq,
+    Clone,
+    Copy,
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+    bilrost::Enumeration,
+)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
 pub enum ServiceType {
-    Service,
-    VirtualObject,
-    Workflow,
+    Service = 0,
+    VirtualObject = 1,
+    Workflow = 2,
 }
 
 impl ServiceType {
@@ -68,13 +78,22 @@ impl fmt::Display for ServiceType {
 }
 
 #[derive(
-    Eq, Hash, PartialEq, Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize,
+    Eq,
+    Hash,
+    PartialEq,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    bilrost::Enumeration,
 )]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum VirtualObjectHandlerType {
     #[default]
-    Exclusive,
-    Shared,
+    Exclusive = 0,
+    Shared = 1,
 }
 
 impl fmt::Display for VirtualObjectHandlerType {
@@ -84,13 +103,22 @@ impl fmt::Display for VirtualObjectHandlerType {
 }
 
 #[derive(
-    Eq, Hash, PartialEq, Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize,
+    Eq,
+    Hash,
+    PartialEq,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    bilrost::Enumeration,
 )]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum WorkflowHandlerType {
     #[default]
-    Workflow,
-    Shared,
+    Workflow = 0,
+    Shared = 1,
 }
 
 impl fmt::Display for WorkflowHandlerType {
@@ -99,11 +127,24 @@ impl fmt::Display for WorkflowHandlerType {
     }
 }
 
-#[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Eq,
+    Hash,
+    PartialEq,
+    Clone,
+    Copy,
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+    bilrost::Message,
+    bilrost::Oneof,
+)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum InvocationTargetType {
     Service,
+    #[bilrost(tag = 1)]
     VirtualObject(VirtualObjectHandlerType),
+    #[bilrost(tag = 2)]
     Workflow(WorkflowHandlerType),
 }
 
