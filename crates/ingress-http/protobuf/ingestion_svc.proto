@@ -157,6 +157,30 @@ enum ErrorKind {
     ERROR_KIND_BAD_REQUEST = 4;
 }
 
+// An error frame. It is always the last frame of the stream: whether the
+// error is stream-scoped or record-scoped, the server tears the stream down
+// right after sending it and processes no further messages.
+//
+// Record-scoped errors are the ones that carry `invocation_offset`: the
+// record at that offset was rejected (for example a missing key, an unknown
+// handler, or an internal ingestion failure) while the stream itself is
+// still well-formed. Stream-scoped errors leave `invocation_offset` unset
+// and describe a condition of the stream as a whole (shutdown, a protocol
+// violation, or invalid `Start`/`Settings`).
+//
+// Even a record-scoped error terminates the stream, on purpose. Skipping the
+// faulty record and continuing would commit the records that follow it and
+// move the deduplication high water mark past the failed offset, making it
+// impossible to ever ingest that record afterwards. Terminating instead
+// keeps the high water mark where it is and leaves the decision to the
+// client.
+//
+// Recovery is therefore the client's responsibility: reconnect with the same
+// producer ID, resume from the `last_committed` reported on the response
+// that carried this error, and skip (or fix) the offending record before
+// resending the rest. Note that records after the failed offset may have
+// already been sent by the client but were not committed; they must be
+// resent.
 message Error {
     // if set, the error is associated
     // with the invocation with that offset
