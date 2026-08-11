@@ -15,6 +15,7 @@ use std::{cmp, fmt};
 use bytes::Bytes;
 use bytestring::ByteString;
 use itertools::Itertools;
+use restate_encoding::RestateEncoding;
 use serde::{Deserialize, Serialize};
 
 use restate_util_bytecount::ByteCount;
@@ -65,14 +66,16 @@ pub trait InvocationTargetResolver {
     ) -> (RetryIter<'static>, OnMaxAttempts);
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Eq, PartialEq, Copy, Default, Serialize, Deserialize, bilrost::Enumeration,
+)]
 #[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
 pub enum OnMaxAttempts {
     /// Pause the invocation when max attempts are reached.
     #[default]
-    Pause,
+    Pause = 0,
     /// Kill the invocation when max attempts are reached.
-    Kill,
+    Kill = 1,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -148,9 +151,10 @@ pub enum InputValidationError {
     ContentTypeNotMatching(String, InputContentType),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Message)]
 pub struct InputRules {
     /// Input validation will try each of these rules. Validation passes if at least one rule matches.
+    #[bilrost(tag = 1)]
     pub input_validation_rules: Vec<InputValidationRule>,
 }
 
@@ -174,7 +178,7 @@ impl InputRules {
 
     pub fn json_schema(&self) -> Option<serde_json::Value> {
         for rule in &self.input_validation_rules {
-            if let InputValidationRule::JsonValue { schema, .. } = rule {
+            if let InputValidationRule::JsonValue(JsonValue { schema, .. }) = rule {
                 return schema.clone();
             }
         }
@@ -232,25 +236,32 @@ impl fmt::Display for InputRules {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Message)]
+pub struct JsonValue {
+    // Can use wildcards
+    #[bilrost(tag = 1)]
+    pub content_type: InputContentType,
+    // Right now we don't use this schema for anything except printing,
+    // so no need to use a more specialized type (we validate the schema is valid inside the schema registry updater)
+    #[bilrost(tag = 2, encoding(RestateEncoding))]
+    pub schema: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Message, bilrost::Oneof)]
 pub enum InputValidationRule {
     // Input and content-type must be empty
     NoBodyAndContentType,
 
+    #[bilrost(tag = 1)]
     // Validates only the content-type, not the content
     ContentType {
         // Can use wildcards
         content_type: InputContentType,
     },
 
+    #[bilrost(tag = 2)]
     // Validates the input as json value
-    JsonValue {
-        // Can use wildcards
-        content_type: InputContentType,
-        // Right now we don't use this schema for anything except printing,
-        // so no need to use a more specialized type (we validate the schema is valid inside the schema registry updater)
-        schema: Option<serde_json::Value>,
-    },
+    JsonValue(JsonValue),
 }
 
 impl fmt::Display for InputValidationRule {
@@ -260,10 +271,10 @@ impl fmt::Display for InputValidationRule {
             InputValidationRule::ContentType { content_type } => {
                 write!(f, "{content_type}")
             }
-            InputValidationRule::JsonValue {
+            InputValidationRule::JsonValue(JsonValue {
                 content_type,
                 schema,
-            } => try_display_json_detailed_info(f, schema.as_ref(), || content_type),
+            }) => try_display_json_detailed_info(f, schema.as_ref(), || content_type),
         }
     }
 }
@@ -288,7 +299,7 @@ impl InputValidationRule {
                 }
                 content_type.validate(input_content_type.unwrap())?;
             }
-            InputValidationRule::JsonValue { content_type, .. } => {
+            InputValidationRule::JsonValue(JsonValue { content_type, .. }) => {
                 if input_content_type.is_none() {
                     return Err(InputValidationError::EmptyContentType);
                 }
@@ -307,15 +318,19 @@ impl InputValidationRule {
 }
 
 /// Describes a content type in the same format of the [`Accept` header](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Accept).
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, bilrost::Message, bilrost::Oneof,
+)]
 pub enum InputContentType {
     /// `*/*`
     #[default]
     Any,
     /// `<MIME_type>/*`
+    #[bilrost(tag = 1)]
     MimeType(ByteString),
     /// `<MIME_type>/<MIME_subtype>`
-    MimeTypeAndSubtype(ByteString, ByteString),
+    #[bilrost(tag = 2)]
+    MimeTypeAndSubtype((ByteString, ByteString)),
 }
 
 impl InputContentType {
@@ -332,7 +347,7 @@ impl InputContentType {
                 }
                 Ok(())
             }
-            InputContentType::MimeTypeAndSubtype(ty, sub_ty) => {
+            InputContentType::MimeTypeAndSubtype((ty, sub_ty)) => {
                 let (first_part, second_part) =
                     self.extract_content_type_parts(input_content_type)?;
                 if ty != first_part {
@@ -376,7 +391,7 @@ impl fmt::Display for InputContentType {
         match self {
             InputContentType::Any => write!(f, "*/*"),
             InputContentType::MimeType(t) => write!(f, "{t}/*"),
-            InputContentType::MimeTypeAndSubtype(t, st) => write!(f, "{t}/{st}"),
+            InputContentType::MimeTypeAndSubtype((t, st)) => write!(f, "{t}/{st}"),
         }
     }
 }
@@ -403,17 +418,19 @@ impl FromStr for InputContentType {
                 reason: "the wildcard format */subType is not supported",
             }),
             Some((t, "*")) => Ok(InputContentType::MimeType(t.into())),
-            Some((t, st)) => Ok(InputContentType::MimeTypeAndSubtype(t.into(), st.into())),
+            Some((t, st)) => Ok(InputContentType::MimeTypeAndSubtype((t.into(), st.into()))),
         }
     }
 }
 
 // --- Output rules
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, bilrost::Message)]
 pub struct OutputRules {
+    #[bilrost(tag = 1)]
     pub content_type_rule: OutputContentTypeRule,
     // Json schema, if present
+    #[bilrost(tag = 2, encoding(RestateEncoding))]
     pub json_schema: Option<serde_json::Value>,
 }
 
@@ -421,11 +438,11 @@ impl OutputRules {
     pub fn infer_content_type(&self, is_output_empty: bool) -> Option<http::HeaderValue> {
         match &self.content_type_rule {
             OutputContentTypeRule::None => None,
-            OutputContentTypeRule::Set {
+            OutputContentTypeRule::Set(OutputContentType {
                 content_type,
                 set_content_type_if_empty,
                 ..
-            } => {
+            }) => {
                 if is_output_empty && !set_content_type_if_empty {
                     None
                 } else {
@@ -446,30 +463,36 @@ impl fmt::Display for OutputRules {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Message)]
+pub struct OutputContentType {
+    #[serde(with = "serde_with::As::<restate_serde_util::HeaderValueSerde>")]
+    #[bilrost(tag = 1, encoding(RestateEncoding))]
+    pub content_type: http::HeaderValue,
+    // If true, sets the content-type even if the output is empty.
+    // Otherwise, don't set the content-type.
+    #[bilrost(tag = 2)]
+    pub set_content_type_if_empty: bool,
+    // If true, this should be a JSON Value.
+    // We don't need this field anymore, but we can't remove because we break back-compat
+    #[deprecated]
+    #[serde(default)] // TODO(slinkydeveloper) remove in 1.6
+    pub has_json_schema: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Message, bilrost::Oneof)]
 pub enum OutputContentTypeRule {
     None,
-    Set {
-        #[serde(with = "serde_with::As::<restate_serde_util::HeaderValueSerde>")]
-        content_type: http::HeaderValue,
-        // If true, sets the content-type even if the output is empty.
-        // Otherwise, don't set the content-type.
-        set_content_type_if_empty: bool,
-        // If true, this should be a JSON Value.
-        // We don't need this field anymore, but we can't remove because we break back-compat
-        #[deprecated]
-        #[serde(default)] // TODO(slinkydeveloper) remove in 1.6
-        has_json_schema: bool,
-    },
+    #[bilrost(tag = 1)]
+    Set(OutputContentType),
 }
 
 impl Default for OutputContentTypeRule {
     fn default() -> Self {
-        Self::Set {
+        Self::Set(OutputContentType {
             content_type: http::HeaderValue::from_static("application/json"),
             set_content_type_if_empty: false,
             has_json_schema: false,
-        }
+        })
     }
 }
 
@@ -477,11 +500,11 @@ impl fmt::Display for OutputContentTypeRule {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             OutputContentTypeRule::None => write!(f, "none"),
-            OutputContentTypeRule::Set {
+            OutputContentTypeRule::Set(OutputContentType {
                 content_type,
                 set_content_type_if_empty,
                 ..
-            } => {
+            }) => {
                 if *set_content_type_if_empty {
                     write!(f, "optional ")?;
                 }
@@ -697,10 +720,10 @@ mod tests {
         fn validate_mime_and_subtype_content_type() {
             let input_rules = InputRules {
                 input_validation_rules: vec![InputValidationRule::ContentType {
-                    content_type: InputContentType::MimeTypeAndSubtype(
+                    content_type: InputContentType::MimeTypeAndSubtype((
                         "application".into(),
                         "json".into(),
-                    ),
+                    )),
                 }],
             };
 
@@ -718,10 +741,10 @@ mod tests {
             let input_rules = InputRules {
                 input_validation_rules: vec![
                     InputValidationRule::NoBodyAndContentType,
-                    InputValidationRule::JsonValue {
+                    InputValidationRule::JsonValue(JsonValue {
                         content_type: InputContentType::Any,
                         schema: Default::default(),
-                    },
+                    }),
                 ],
             };
 
@@ -737,13 +760,13 @@ mod tests {
         #[test]
         fn validate_json_only() {
             let input_rules = InputRules {
-                input_validation_rules: vec![InputValidationRule::JsonValue {
-                    content_type: InputContentType::MimeTypeAndSubtype(
+                input_validation_rules: vec![InputValidationRule::JsonValue(JsonValue {
+                    content_type: InputContentType::MimeTypeAndSubtype((
                         "application".into(),
                         "restate+json".into(),
-                    ),
+                    )),
                     schema: Default::default(),
-                }],
+                })],
             };
 
             assert_input_valid!(
@@ -775,11 +798,11 @@ mod tests {
         fn infer_content_type_set_content_type_if_empty() {
             let ct = http::HeaderValue::from_static("application/restate");
             let input_rules = OutputRules {
-                content_type_rule: OutputContentTypeRule::Set {
+                content_type_rule: OutputContentTypeRule::Set(OutputContentType {
                     content_type: ct.clone(),
                     set_content_type_if_empty: true,
                     has_json_schema: false,
-                },
+                }),
                 json_schema: None,
             };
 
