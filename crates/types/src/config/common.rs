@@ -841,12 +841,12 @@ experimental! {
     /// Since v1.7.5
     vqueues_migration_skip_completed,
 
-    /// # Enables the new invocation::Source::Integration
+    /// # Enables the new invocation::Source::Ingestion
     ///
     /// This new source can be set by the ingestion API.
     ///
     /// Since v1.8.0
-    invocation_source_integration,
+    invocation_source_ingestion,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");

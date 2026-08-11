@@ -136,8 +136,9 @@ message Source {
   message RestartAsNew { InvocationId invocation_id = 1; }
 
   message IngestionSource {
-    string integration = 1;
-    string producer = 2;
+    // Intentionally empty
+    // but allows adding fields in the
+    // future when needed.
   }
 
   oneof source {
