@@ -7896,10 +7896,12 @@ version = "1.8.0-dev"
 dependencies = [
  "bilrost",
  "bytes",
+ "http 1.4.2",
  "rand 0.10.1",
  "restate-encoding-derive",
  "restate-platform",
  "restate-workspace-hack",
+ "serde_json",
 ]
 
 [[package]]

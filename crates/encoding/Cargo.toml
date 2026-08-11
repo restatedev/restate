@@ -15,6 +15,8 @@ restate-platform = { workspace = true }
 
 bilrost = { workspace = true }
 bytes = { workspace = true }
+http = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 rand = { workspace = true }
