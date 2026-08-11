@@ -72,8 +72,8 @@ use restate_types::identifiers::{
     DeploymentId, InvocationId, PartitionProcessorRpcRequestId, partitioner,
 };
 use restate_types::invocation::{
-    Header, IngestionSource, InvocationTarget, InvocationTargetType, ServiceInvocation, Source,
-    SpanRelation, WorkflowHandlerType,
+    Header, InvocationTarget, InvocationTargetType, ServiceInvocation, Source, SpanRelation,
+    WorkflowHandlerType,
 };
 use restate_types::limit_key::parse_limit_key;
 use restate_types::live::Live;
@@ -731,10 +731,20 @@ where
             record.offset,
         );
 
+        let source = if Configuration::pinned()
+            .common
+            .experimental
+            .is_invocation_source_ingestion_enabled()
+        {
+            Source::Ingestion
+        } else {
+            restate_types::invocation::Source::Ingress(PartitionProcessorRpcRequestId::default())
+        };
+
         let mut invocation = Box::new(ServiceInvocation::initialize(
             invocation_id,
             invocation_target,
-            restate_types::invocation::Source::Ingress(PartitionProcessorRpcRequestId::default()),
+            source,
         ));
 
         invocation.with_related_span(SpanRelation::parent(span_context));
@@ -744,17 +754,6 @@ where
         invocation.with_retention(invocation_retention);
         invocation.execution_time = execution_time;
         invocation.limit_key = limit_key;
-
-        if Configuration::pinned()
-            .common
-            .experimental
-            .is_invocation_source_integration_enabled()
-        {
-            invocation.source = Source::Ingestion(IngestionSource {
-                integration: state.integration.as_str().into(),
-                producer: state.producer.as_str().into(),
-            });
-        }
 
         let dedup = state
             .producer_id
