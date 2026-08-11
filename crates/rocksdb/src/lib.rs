@@ -40,7 +40,7 @@ pub use restate_types::rocksdb::{BottommostLevelCompaction, ManualCompactionOpti
 
 // re-exports
 pub use self::background::StorageTaskKind;
-pub use self::db_manager::RocksDbManager;
+pub use self::db_manager::{RateLimiterPriorityStats, RateLimiterStats, RocksDbManager};
 pub use self::db_spec::*;
 pub use self::error::*;
 pub use self::iterator::IterAction;

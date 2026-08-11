@@ -19,8 +19,8 @@ use restate_core::task_center::TaskCenterMonitoring;
 use restate_rocksdb::{CfName, RocksDbManager};
 
 use crate::network_server::prometheus_helpers::{
-    MetricUnit, format_rocksdb_histogram_for_prometheus, format_rocksdb_property_for_prometheus,
-    format_rocksdb_stat_ticker_for_prometheus,
+    MetricUnit, format_rocksdb_counter_for_prometheus, format_rocksdb_histogram_for_prometheus,
+    format_rocksdb_property_for_prometheus, format_rocksdb_stat_ticker_for_prometheus,
 };
 use crate::network_server::state::NodeCtrlHandlerState;
 
@@ -265,6 +265,56 @@ pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String
             "rocksdb.memory.write_buffer_manager_usage",
             manager.get_total_write_buffer_usage(),
         );
+
+        // Shared background-I/O rate limiter. Node-level, labelled only by
+        // rocksdb IO priority (high = flush, low = compaction, user = either,
+        // elevated while writes are stalled/stopped); no db/cf labels since a
+        // single limiter is shared across all databases.
+        {
+            let rate_limiter = manager.rate_limiter_stats();
+            let base_labels = state.prometheus_handle.global_labels().clone();
+
+            // Count unit adds no name suffix, keeping the exact metric names.
+            format_rocksdb_property_for_prometheus(
+                &mut out,
+                &base_labels,
+                MetricUnit::Count,
+                "rocksdb.rate_limiter.current_bytes_per_second",
+                rate_limiter.current_bytes_per_second.max(0) as u64,
+            );
+
+            for (priority, stats) in [
+                ("high", rate_limiter.high),
+                ("low", rate_limiter.low),
+                ("user", rate_limiter.user),
+            ] {
+                let mut labels = base_labels.clone();
+                labels.insert("priority".to_owned(), priority.to_owned());
+
+                format_rocksdb_counter_for_prometheus(
+                    &mut out,
+                    &labels,
+                    "rocksdb.rate_limiter.bytes_granted",
+                    stats.bytes_granted.max(0) as u64,
+                );
+                format_rocksdb_counter_for_prometheus(
+                    &mut out,
+                    &labels,
+                    "rocksdb.rate_limiter.requests",
+                    stats.requests.max(0) as u64,
+                );
+                // Absent (not zero) when the limiter reports NotSupported.
+                if let Some(pending) = stats.pending_requests {
+                    format_rocksdb_property_for_prometheus(
+                        &mut out,
+                        &labels,
+                        MetricUnit::Count,
+                        "rocksdb.rate_limiter.pending_requests",
+                        pending.max(0) as u64,
+                    );
+                }
+            }
+        }
 
         // db-level tickers
         for db in &all_dbs {

@@ -562,6 +562,17 @@ pub struct CommonOptions {
     /// The default value assumes a fast NVMe with bandwidth of 7GiB (per second).
     pub rocksdb_max_write_rate_per_second: NonZeroByteCount,
 
+    /// # Rocksdb write rate limiter auto-tuning
+    ///
+    /// When enabled (the default), Rocksdb dynamically adjusts the background
+    /// write rate limit within `[rocksdb-max-write-rate-per-second / 20,
+    /// rocksdb-max-write-rate-per-second]` according to recent demand for
+    /// background I/O. Disable this to pin the limiter at
+    /// `rocksdb-max-write-rate-per-second`.
+    ///
+    /// Since v1.8.0
+    pub rocksdb_rate_limiter_auto_tuned: bool,
+
     /// # Total memory limit for rocksdb caches and memtables.
     ///
     /// This includes memory for uncompressed block cache and all memtables by all open databases.
@@ -1048,6 +1059,7 @@ impl Default for CommonOptions {
             process_total_memory_size: None,
             rocksdb_max_write_rate_per_second: NonZeroByteCount::try_from(7 * 1024 * 1024 * 1024)
                 .unwrap(),
+            rocksdb_rate_limiter_auto_tuned: true,
             rocksdb_total_memory_size: NonZeroByteCount::try_from(2 * 1024 * 1024 * 1024).unwrap(), // 2GiB
             rocksdb_total_memtables_ratio: 0.85, // (85% of rocksdb-total-memory-size)
             rocksdb_low_priority_threads: None,

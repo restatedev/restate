@@ -14,7 +14,7 @@ use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
 use parking_lot::RwLock;
-use rocksdb::{Cache, RateLimiter, RateLimiterMode, WriteBufferManager};
+use rocksdb::{Cache, IoPriority, RateLimiter, RateLimiterMode, WriteBufferManager};
 use tokio_util::task::TaskTracker;
 use tracing::{debug, error, info, warn};
 
@@ -94,7 +94,7 @@ impl RocksDbManager {
             100 * 1000,
             10,
             RateLimiterMode::KWritesOnly,
-            true,
+            opts.rocksdb_rate_limiter_auto_tuned,
         );
 
         // Create our own storage thread pools
@@ -186,6 +186,30 @@ impl RocksDbManager {
         self.shutting_down
             .store(false, std::sync::atomic::Ordering::Release);
         Ok(())
+    }
+
+    /// Snapshot of the shared background-I/O rate limiter's live state.
+    ///
+    /// The rate limiter governs compaction and flush write bandwidth for all
+    /// databases on this node. `low` is compaction output and `high` is flush
+    /// output under normal operation; both are re-submitted at `user` priority
+    /// while the write controller is stalling or stopping writes, so `user`
+    /// carries the background traffic precisely during a write-pressure event.
+    pub fn rate_limiter_stats(&self) -> RateLimiterStats {
+        RateLimiterStats {
+            current_bytes_per_second: self.rate_limiter.bytes_per_second(),
+            high: self.rate_limiter_priority_stats(IoPriority::High),
+            low: self.rate_limiter_priority_stats(IoPriority::Low),
+            user: self.rate_limiter_priority_stats(IoPriority::User),
+        }
+    }
+
+    fn rate_limiter_priority_stats(&self, priority: IoPriority) -> RateLimiterPriorityStats {
+        RateLimiterPriorityStats {
+            bytes_granted: self.rate_limiter.total_bytes_through(priority),
+            requests: self.rate_limiter.total_requests(priority),
+            pending_requests: self.rate_limiter.total_pending_requests(priority),
+        }
     }
 
     pub fn get_total_write_buffer_capacity(&self) -> u64 {
@@ -378,6 +402,32 @@ impl RocksDbManager {
             Priority::Low => self.low_pri_pool.execute(task.into_runner()),
         }
     }
+}
+
+/// Live state of the shared background-I/O [`RateLimiter`], as read at scrape
+/// time. See [`RocksDbManager::rate_limiter_stats`].
+#[derive(Debug, Clone, Copy)]
+pub struct RateLimiterStats {
+    /// Current (possibly auto-tuned) write rate ceiling in bytes per second.
+    pub current_bytes_per_second: i64,
+    /// Flush-output (high-priority) counters.
+    pub high: RateLimiterPriorityStats,
+    /// Compaction-output (low-priority) counters.
+    pub low: RateLimiterPriorityStats,
+    /// User-priority counters: flush/compaction elevated to drain a write-stall
+    /// backlog.
+    pub user: RateLimiterPriorityStats,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RateLimiterPriorityStats {
+    /// Cumulative bytes admitted by the limiter (granted, not physically written).
+    pub bytes_granted: i64,
+    /// Cumulative number of requests that passed through the limiter.
+    pub requests: i64,
+    /// Requests currently waiting for tokens, or `None` if the limiter does not
+    /// support reporting this (never reported as a misleading zero).
+    pub pending_requests: Option<i64>,
 }
 
 #[allow(dead_code)]

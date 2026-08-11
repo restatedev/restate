@@ -9551,7 +9551,7 @@ dependencies = [
 [[package]]
 name = "rust-librocksdb-sys"
 version = "0.47.1+11.1.2"
-source = "git+https://github.com/restatedev/rust-rocksdb?rev=c9ce6e982362da2b2bb783c28056b2603aba50df#c9ce6e982362da2b2bb783c28056b2603aba50df"
+source = "git+https://github.com/restatedev/rust-rocksdb?rev=801e370b31b21f8e5c1addc38cfe89ddafdf1cdc#801e370b31b21f8e5c1addc38cfe89ddafdf1cdc"
 dependencies = [
  "bindgen",
  "bzip2-sys",
@@ -9569,7 +9569,7 @@ dependencies = [
 [[package]]
 name = "rust-rocksdb"
 version = "0.51.0"
-source = "git+https://github.com/restatedev/rust-rocksdb?rev=c9ce6e982362da2b2bb783c28056b2603aba50df#c9ce6e982362da2b2bb783c28056b2603aba50df"
+source = "git+https://github.com/restatedev/rust-rocksdb?rev=801e370b31b21f8e5c1addc38cfe89ddafdf1cdc#801e370b31b21f8e5c1addc38cfe89ddafdf1cdc"
 dependencies = [
  "libc",
  "parking_lot",

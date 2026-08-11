@@ -104,6 +104,34 @@ pub fn format_rocksdb_property_for_prometheus(
     let _ = writeln!(out);
 }
 
+/// Emits a monotonic counter (`_total` suffix, `counter` type) from a
+/// pre-computed value. Unlike [`format_rocksdb_stat_ticker_for_prometheus`],
+/// the value is supplied directly rather than read from a rocksdb ticker, and
+/// the caller controls the metric name and labels.
+pub fn format_rocksdb_counter_for_prometheus(
+    out: &mut String,
+    labels: &IndexMap<String, String>,
+    metric_name: &str,
+    value: u64,
+) {
+    let sanitized_name = format!(
+        "{}_{}",
+        PREFIX,
+        formatting::sanitize_metric_name(metric_name)
+    );
+    formatting::write_type_line(out, &sanitized_name, None, Some("total"), "counter");
+    formatting::write_metric_line::<&str, u64>(
+        out,
+        &sanitized_name,
+        Some("total"),
+        &LabelSet::from_key_and_global(&Key::from_static_name("non-existent"), labels),
+        None,
+        value,
+        None,
+    );
+    let _ = writeln!(out);
+}
+
 //
 // Follows prometheus exposition format like following:
 //    rpc_duration_seconds{quantile="0.01"} 3102
