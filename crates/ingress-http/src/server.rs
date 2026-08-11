@@ -152,6 +152,21 @@ where
             health,
         } = self;
 
+        // BodyLimit only applies to the REST handlers. The grpc (ingestion API)
+        // doesn't have a request size limit since it's a continues stream.
+        let inner = ServiceBuilder::new()
+            .layer(RequestBodyLimitLayer::new(request_size_limit))
+            .service(Handler::new(schemas.clone(), dispatcher));
+
+        // Route the gRPC ingestion path to its own service; everything else keeps
+        // flowing through the layered handler above.
+        let service = ingestion::IngestionRouter::new(
+            inner,
+            ingestion_client,
+            schemas,
+            ingestion_api_options,
+        );
+
         // Prepare the handler
         let service = ServiceBuilder::new()
             .layer(
@@ -202,20 +217,10 @@ where
                     ),
             )
             .layer(NormalizePathLayer::trim_trailing_slash())
-            .layer(RequestBodyLimitLayer::new(request_size_limit))
             .layer(CorsLayer::very_permissive())
             .layer(layers::load_shed::LoadShedLayer::new(concurrency_limit))
             .layer(layers::tracing_context_extractor::HttpTraceContextExtractorLayer)
-            .service(Handler::new(schemas.clone(), dispatcher));
-
-        // Route the gRPC ingestion path to its own service; everything else keeps
-        // flowing through the layered handler above.
-        let service = ingestion::IngestionRouter::new(
-            service,
-            ingestion_client,
-            schemas,
-            ingestion_api_options,
-        );
+            .service(service);
 
         // todo(azmy): `CorsLayer` should sit above `RequestBodyLimitLayer` so CORS is applied
         // as early as possible. This is currently blocked because `CorsLayer` requires the
