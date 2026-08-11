@@ -347,6 +347,12 @@ fn fill_invoked_by(
                 row.fmt_restarted_from(restart_as_new.invocation_id()?)
             }
         }
+        Source::Ingestion(ingestion) => {
+            row.invoked_by("ingestion-api");
+            if row.is_invoked_by_ingestion_defined() {
+                row.fmt_invoked_by_ingestion(ingestion);
+            }
+        }
     }
 
     Ok(())
