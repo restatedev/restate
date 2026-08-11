@@ -827,6 +827,13 @@ experimental! {
     ///
     /// Since v1.7.10
     vqueue_obsolete_cleanup,
+
+    /// # Enables the new invocation::Source::Integration
+    ///
+    /// This new source can be set by the ingestion API.
+    ///
+    /// Since v1.8.0
+    invocation_source_integration,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
