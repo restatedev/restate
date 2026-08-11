@@ -9,7 +9,7 @@
 
 syntax = "proto3";
 
-package dev.restate.ingress.integration.v1;
+package dev.restate.ingress.ingestion.v1;
 
 
 // Required.
@@ -23,8 +23,15 @@ package dev.restate.ingress.integration.v1;
 // to be returned immediately, and stream to be teared down
 // immediately
 message Start {
-    // Unique producer ID for the stream. Deduplication relies on this
-    // ID being unique per ingestion stream
+    // Stable identity of the *producer*, not of this particular stream.
+    // The same producer must reuse the same ID across streams (including
+    // after reconnects), otherwise deduplication cannot work: the server
+    // tracks committed offsets per producer ID, so a new ID starts a fresh
+    // deduplication state and previously committed records may be
+    // duplicated.
+    // The ID must be unique across producers: two distinct producers
+    // sharing an ID will be treated as one and will shadow each other's
+    // offsets. Derive it from something inherently unique to the producer
     // (think Kafka cluster + topic + partition).
     // An explicitly empty producer ID is valid but disables
     // deduplication for the entire stream.
@@ -48,8 +55,21 @@ message Start {
 //
 // It's okay to send settings more than once to tweak and change the defaults
 // during the life time of the stream.
+//
+// Every field here has a matching field on `Invocation`. For those fields the
+// per-record value wins: if the `Invocation` sets the field, its value is used
+// and the default from `Settings` is ignored; if it leaves the field unset, the
+// current default from `Settings` is used instead. If neither is set, the field
+// is treated as absent, which may be an error for fields that are required for
+// the given target (e.g. `key` for virtual objects and workflows).
+//
+// `headers` is the exception: it is not overridden. `Invocation`'s
+// `additional_headers` are appended to the headers established here, so the
+// invocation sees both sets.
+//
+// Note: Keep the field tags uniform with the Invocation message
+// This allows parsing Invocation message as Settings.
 message Settings {
-    // optional fields
     optional string scope = 2;
     optional string limit_key = 3;
     optional string service = 4;
@@ -68,12 +88,12 @@ message Invocation {
     optional string service = 4;
     optional string handler = 5;
     // Required when the target service is a virtual object (VO).
-    // or workflow. This can also be set via the Settings request.
+    // or workflow. This can also be set via a preceding Settings message.
     optional string key = 6;
     optional string idempotency_key = 7;
     map<string, string> additional_headers = 8;
 
-    // delay_ms and invoke_time_ts are mutually
+    // delay_ms and invoke_time_ts_ms are mutually
     // exclusive.
     optional uint64 delay_ms = 9;
     // starttime timestamp in ms.
@@ -158,8 +178,7 @@ message Response {
     }
 }
 
-// Service that is only reachable on nodes that are alive.
-service IntegrationSvc {
+service IngestionSvc {
   // Opens a bidirectional node-to-node stream.
   rpc Ingest(stream Request)
       returns (stream Response);
