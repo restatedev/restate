@@ -31,21 +31,28 @@ use http::Uri;
 /// Externally-tagged enum so future providers (e.g. non-Google OIDC
 /// sources) can be added without altering the encoding of the existing
 /// `GoogleIdToken` variant.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, bilrost::Oneof,
+)]
 pub enum HttpAuth {
+    #[bilrost(tag = 4)]
     GoogleIdToken(GoogleIdTokenAuth),
 }
 
 /// Persisted Google OIDC ID-token authentication. `audience` is always present in the persisted
 /// shape: callers building this value must supply a concrete audience, derived from the deployment
 /// URI when the operator did not provide one explicitly.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, bilrost::Message,
+)]
 pub struct GoogleIdTokenAuth {
     /// Service account email to impersonate via `iamcredentials:generateIdToken`. None means use
     /// the ambient ADC identity directly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag = 1)]
     impersonate_service_account: Option<ByteString>,
     /// Explicit OIDC `aud` claim. Required at the type level on the persisted record.
+    #[bilrost(tag = 2)]
     audience: ByteString,
 }
 
