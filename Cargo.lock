@@ -566,9 +566,9 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "autocfg"
-version = "1.5.0"
+version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
+checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "autotools"
@@ -1187,7 +1187,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7dcaabc24217713f7e0975d5f1276293f89cf458d8c8f3d470f8f1b1a323a705"
 dependencies = [
  "autocfg",
- "bilrost-derive",
+ "bilrost-derive 0.1014.2",
+ "bytes",
+ "bytestring",
+ "smallvec",
+]
+
+[[package]]
+name = "bilrost"
+version = "0.1015.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1402c0425ccea96c6405d5351c4c8b2830a4aeb8e7464c69fc8f76ba28919933"
+dependencies = [
+ "autocfg",
+ "bilrost-derive 0.1015.0",
  "bytes",
  "bytestring",
  "smallvec",
@@ -1201,6 +1214,19 @@ checksum = "afe16e422c489419db85690b3e53864835963af62316f35b0e16ec914dbd30a1"
 dependencies = [
  "eyre",
  "itertools 0.14.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "bilrost-derive"
+version = "0.1015.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62ce38877d770f25bc135ba4339e85710bc223fe984f9db75a72f09c21dd632b"
+dependencies = [
+ "eyre",
+ "itertools 0.15.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -4780,6 +4806,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "itertools"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b4baf93f58d4425749ca49a51c50ebab072c5df6994d08fed93541c331481dc"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7727,7 +7762,7 @@ dependencies = [
 name = "restate-clock"
 version = "1.8.0-dev"
 dependencies = [
- "bilrost",
+ "bilrost 0.1015.0",
  "criterion",
  "jiff",
  "libc",
@@ -7845,7 +7880,7 @@ dependencies = [
  "arrow",
  "async-trait",
  "axum",
- "bilrost",
+ "bilrost 0.1015.0",
  "bytes",
  "bytestring",
  "clap",
@@ -7894,7 +7929,7 @@ dependencies = [
 name = "restate-encoding"
 version = "1.8.0-dev"
 dependencies = [
- "bilrost",
+ "bilrost 0.1015.0",
  "bytes",
  "http 1.4.2",
  "rand 0.10.1",
@@ -8118,7 +8153,7 @@ dependencies = [
 name = "restate-limiter"
 version = "1.8.0-dev"
 dependencies = [
- "bilrost",
+ "bilrost 0.1015.0",
  "bytes",
  "restate-clock",
  "restate-encoding",
@@ -8276,7 +8311,7 @@ dependencies = [
  "async-trait",
  "aws-config",
  "aws-sdk-dynamodb",
- "bilrost",
+ "bilrost 0.1015.0",
  "bytes",
  "bytestring",
  "ciborium",
@@ -8479,7 +8514,7 @@ version = "1.8.0-dev"
 dependencies = [
  "ahash",
  "anyhow",
- "bilrost",
+ "bilrost 0.1015.0",
  "bytes",
  "bytestring",
  "codederror",
@@ -8534,7 +8569,7 @@ dependencies = [
 name = "restate-platform"
 version = "1.8.0-dev"
 dependencies = [
- "bilrost",
+ "bilrost 0.1015.0",
  "bytes",
  "bytestring",
  "derive_more",
@@ -8774,7 +8809,7 @@ dependencies = [
 name = "restate-sharding"
 version = "1.8.0-dev"
 dependencies = [
- "bilrost",
+ "bilrost 0.1015.0",
  "derive_more",
  "flexbuffers",
  "restate-platform",
@@ -8790,7 +8825,7 @@ version = "1.8.0-dev"
 dependencies = [
  "ahash",
  "anyhow",
- "bilrost",
+ "bilrost 0.1015.0",
  "bytes",
  "bytestring",
  "derive_more",
@@ -8948,7 +8983,7 @@ dependencies = [
  "arc-swap",
  "base62",
  "base64 0.22.1",
- "bilrost",
+ "bilrost 0.1015.0",
  "bitflags 2.11.1",
  "bytes",
  "bytestring",
@@ -9041,7 +9076,7 @@ dependencies = [
 name = "restate-util-bytecount"
 version = "1.8.0-dev"
 dependencies = [
- "bilrost",
+ "bilrost 0.1015.0",
  "bytesize",
  "restate-util-bytecount",
  "restate-util-string",
@@ -9065,7 +9100,7 @@ name = "restate-util-string"
 version = "1.8.0-dev"
 dependencies = [
  "ahash",
- "bilrost",
+ "bilrost 0.1015.0",
  "bytes",
  "bytestring",
  "compact_str",
@@ -9109,7 +9144,7 @@ version = "1.8.0-dev"
 dependencies = [
  "anyhow",
  "arrayvec",
- "bilrost",
+ "bilrost 0.1015.0",
  "bytes",
  "criterion",
  "derive_more",
@@ -9150,7 +9185,7 @@ name = "restate-wal-protocol"
 version = "1.8.0-dev"
 dependencies = [
  "anyhow",
- "bilrost",
+ "bilrost 0.1015.0",
  "bytes",
  "derive_more",
  "restate-encoding",
@@ -9292,7 +9327,7 @@ dependencies = [
  "aws-smithy-runtime-api",
  "aws-smithy-types",
  "axum",
- "bilrost",
+ "bilrost 0.1014.2",
  "bitflags 2.11.1",
  "bytes",
  "bytestring",

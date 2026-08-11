@@ -28,7 +28,9 @@ use crate::deployment::{
 };
 use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision, SubscriptionId};
 use crate::net::address::{AdvertisedAddress, HttpIngressPort};
-use crate::schema::deployment::{Deployment, DeploymentResolver, DeploymentType};
+use crate::schema::deployment::{
+    Deployment, DeploymentResolver, DeploymentType, HttpType, LambdaType,
+};
 use crate::schema::kafka::{KafkaCluster, KafkaClusterName, KafkaClusterResolver};
 use crate::schema::metadata::updater;
 use crate::schema::metadata::updater::{
@@ -418,8 +420,8 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
         };
 
         let existing_http_auth = match &existing_deployment.ty {
-            DeploymentType::Http { auth, .. } => auth.clone(),
-            DeploymentType::Lambda { .. } => None,
+            DeploymentType::Http(HttpType { auth, .. }) => auth.clone(),
+            DeploymentType::Lambda(_) | DeploymentType::Unknown => None,
         };
 
         // Merge with update changes requested
@@ -452,11 +454,11 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                         uri: None,
                         use_http_11,
                     }),
-                    DeploymentType::Http {
+                    DeploymentType::Http(HttpType {
                         address,
                         http_version,
                         ..
-                    },
+                    }),
                 ) => (
                     DeploymentAddress::Http(
                         HttpDeploymentAddress::new(address).with_auth(existing_http_auth.clone()),
@@ -468,11 +470,11 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                         arn: None,
                         assume_role_arn: update_assume_role_arn,
                     }),
-                    DeploymentType::Lambda {
+                    DeploymentType::Lambda(LambdaType {
                         arn,
                         assume_role_arn,
                         ..
-                    },
+                    }),
                 ) => (
                     DeploymentAddress::Lambda(LambdaDeploymentAddress::new(
                         arn,
@@ -496,11 +498,11 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                 }
                 (
                     None,
-                    DeploymentType::Http {
+                    DeploymentType::Http(HttpType {
                         address,
                         http_version,
                         ..
-                    },
+                    }),
                 ) => (
                     DeploymentAddress::Http(
                         HttpDeploymentAddress::new(address).with_auth(existing_http_auth.clone()),
@@ -509,11 +511,11 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                 ),
                 (
                     None,
-                    DeploymentType::Lambda {
+                    DeploymentType::Lambda(LambdaType {
                         arn,
                         assume_role_arn,
                         ..
-                    },
+                    }),
                 ) => (
                     DeploymentAddress::Lambda(LambdaDeploymentAddress::new(
                         arn,
@@ -521,6 +523,12 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                     )),
                     false,
                 ),
+                (_, DeploymentType::Unknown) => {
+                    return Err(SchemaRegistryErrorInner::Internal(
+                        "Existing deployment has an unknown type".into(),
+                    )
+                    .into());
+                }
             };
 
         // PATCH preserves the persisted `auth` field verbatim. To rotate audience or

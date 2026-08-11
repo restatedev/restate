@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use arc_swap::ArcSwapOption;
 use http::{HeaderName, HeaderValue};
+use restate_encoding::{Arced, ArcedSlice, RestateEncoding};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_with::serde_as;
@@ -39,7 +40,9 @@ use crate::metadata::GlobalMetadata;
 use crate::net::address::{AdvertisedAddress, HttpIngressPort};
 use crate::net::metadata::{MetadataContainer, MetadataKind};
 use crate::retries::{RetryIter, RetryPolicy};
-use crate::schema::deployment::{DeploymentResolver, DeploymentType, ProtocolType};
+use crate::schema::deployment::{
+    DeploymentResolver, DeploymentType, HttpType, LambdaType, ProtocolType,
+};
 use crate::schema::info::SchemaInfo;
 use crate::schema::invocation_target::{
     DeploymentStatus, InputRules, InvocationAttemptOptions, InvocationTargetMetadata,
@@ -166,11 +169,12 @@ impl ActiveServiceRevision {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, bilrost::Message)]
 struct DeliveryOptions {
     #[serde(
         with = "serde_with::As::<serde_with::FromInto<restate_serde_util::SerdeableHeaderHashMap>>"
     )]
+    #[bilrost(tag = 1, encoding(map<RestateEncoding, RestateEncoding>))]
     pub additional_headers: HashMap<HeaderName, HeaderValue>,
 }
 
@@ -181,33 +185,44 @@ impl DeliveryOptions {
 }
 
 /// Since v1.7.0
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, bilrost::Message)]
 pub struct DeploymentLimits {
     /// Maximum number of concurrent invocations per node for this deployment.
     /// A value of 0 means unlimited.
     #[serde(default)]
+    #[bilrost(tag = 1)]
     pub invocations: u64,
 }
 
 #[serde_as]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message)]
 struct Deployment {
+    #[bilrost(tag = 1)]
     id: DeploymentId,
+    #[bilrost(tag = 2)]
     ty: DeploymentType,
+    #[bilrost(tag = 3)]
     delivery_options: DeliveryOptions,
+    #[bilrost(tag = 4)]
     supported_protocol_versions: RangeInclusive<i32>,
+
     /// Declared SDK during discovery
+    #[bilrost(tag = 5)]
     sdk_version: Option<String>,
+    #[bilrost(tag = 6)]
     created_at: MillisSinceEpoch,
 
     /// User provided metadata during registration
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[bilrost(tag = 7)]
     metadata: HashMap<String, String>,
 
     #[serde_as(as = "restate_serde_util::MapAsVec")]
+    #[bilrost(tag = 8, encoding(map<general_packed, Arced>))]
     services: HashMap<String, Arc<ServiceRevision>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag = 9)]
     limits: Option<DeploymentLimits>,
 }
 
@@ -240,10 +255,10 @@ impl Deployment {
     ) -> bool {
         match (&self.ty, other_addess) {
             (
-                DeploymentType::Http {
+                DeploymentType::Http(HttpType {
                     address: this_address,
                     ..
-                },
+                }),
                 DeploymentAddress::Http(HttpDeploymentAddress {
                     uri: other_address,
                     auth: _,
@@ -256,7 +271,7 @@ impl Deployment {
                 other_additional_headers,
             ),
             (
-                DeploymentType::Lambda { arn: this_arn, .. },
+                DeploymentType::Lambda(LambdaType { arn: this_arn, .. }),
                 DeploymentAddress::Lambda(LambdaDeploymentAddress { arn: other_arn, .. }),
             ) => deployment::Deployment::semantic_eq_lambda(this_arn, other_arn),
             _ => false,
@@ -265,7 +280,7 @@ impl Deployment {
 }
 
 #[serde_as]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message)]
 struct ServiceRevision {
     /// Fully qualified name of the service
     name: String,
@@ -372,7 +387,12 @@ struct ServiceRevision {
 
     /// This is a cache for the computed value of ServiceOpenAPI
     #[serde(skip)]
+    #[bilrost(ignore(default_empty_openapi_cache()))]
     service_openapi_cache: Arc<ArcSwapOption<ServiceOpenAPI>>,
+}
+
+fn default_empty_openapi_cache() -> Arc<ArcSwapOption<ServiceOpenAPI>> {
+    Arc::new(ArcSwapOption::empty())
 }
 
 impl MapAsVecItem for ServiceRevision {
@@ -536,7 +556,7 @@ impl ServiceRevision {
 }
 
 #[serde_as]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message)]
 struct Handler {
     name: String,
     target_ty: InvocationTargetType,
