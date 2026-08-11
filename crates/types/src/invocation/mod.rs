@@ -850,6 +850,8 @@ pub enum Source {
     Subscription(SubscriptionId),
     Service(InvocationId, InvocationTarget),
     RestartAsNew(InvocationId),
+    // Since v1.8
+    Ingestion(ReString),
     /// Internal calls for the non-deterministic built-in services
     Internal,
 }
@@ -1597,6 +1599,7 @@ mod serde_hacks {
         Subscription(SubscriptionId),
         Service(InvocationId, InvocationTarget),
         RestartAsNew(InvocationId),
+        Ingestion(ReString),
         /// Internal calls for the non-deterministic built-in services
         Internal,
     }
@@ -1641,6 +1644,7 @@ mod serde_hacks {
                     Source::Subscription(sid) => super::Source::Subscription(sid),
                     Source::Service(id, target) => super::Source::Service(id, target),
                     Source::RestartAsNew(id) => super::Source::RestartAsNew(id),
+                    Source::Ingestion(ingestion) => super::Source::Ingestion(ingestion),
                     Source::Internal => super::Source::Internal,
                 },
                 restate_version,
@@ -1694,6 +1698,7 @@ mod serde_hacks {
                     super::Source::Service(id, target) => Source::Service(id, target),
                     super::Source::Internal => Source::Internal,
                     super::Source::RestartAsNew(id) => Source::RestartAsNew(id),
+                    super::Source::Ingestion(ingestion) => Source::Ingestion(ingestion),
                 },
             }
         }
