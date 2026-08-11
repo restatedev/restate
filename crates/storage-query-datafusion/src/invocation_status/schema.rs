@@ -79,8 +79,11 @@ define_table!(sys_invocation_status(
     /// The name of caller service if `invoked_by = 'service'`.
     invoked_by_service_name: DataType::LargeUtf8,
 
-    /// the ingestion name if service `invoked_by = 'ingestion'`.
-    invoked_by_ingestion: DataType::LargeUtf8,
+    /// the integration name/version if service `invoked_by = 'ingestion'`.
+    invoked_by_ingestion_integration: DataType::LargeUtf8,
+
+    /// the ingestion producer if service `invoked_by = 'ingestion'`.
+    invoked_by_ingestion_producer: DataType::LargeUtf8,
 
     /// The caller invocation target if `invoked_by = 'service'`.
     invoked_by_target: DataType::LargeUtf8,

@@ -347,8 +347,11 @@ fn fill_invoked_by(
         }
         Source::Ingestion(ingestion) => {
             row.invoked_by("ingestion-api");
-            if row.is_invoked_by_ingestion_defined() {
-                row.fmt_invoked_by_ingestion(ingestion);
+            if row.is_invoked_by_ingestion_integration_defined() {
+                row.fmt_invoked_by_ingestion_integration(ingestion.integration);
+            }
+            if row.is_invoked_by_ingestion_producer_defined() {
+                row.fmt_invoked_by_ingestion_producer(ingestion.producer);
             }
         }
     }
