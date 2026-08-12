@@ -112,9 +112,8 @@ enum DeduplicationMode {
 // is treated as absent, which may be an error for fields that are required for
 // the given target (e.g. `key` for virtual objects and workflows).
 //
-// `headers` is the exception: it is not overridden. `Invocation`'s
-// `additional_headers` are appended to the headers established here, so the
-// invocation sees both sets.
+// `headers` are extended with the Invocation's `additional_headers`
+// overriding existing keys.
 //
 // Note: Keep the field tags uniform with the Invocation message
 // This allows parsing IngestionInvocation message as IngestionDefaults.

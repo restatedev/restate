@@ -167,6 +167,7 @@ where
                 ingestion_client,
                 schemas,
                 ingestion_api_options.max_window_size(),
+                request_size_limit,
             ));
 
         // Route the gRPC ingestion path to its own service; everything else keeps
