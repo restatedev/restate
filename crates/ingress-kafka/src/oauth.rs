@@ -11,15 +11,25 @@
 //! SASL/OAUTHBEARER token generation for Kafka consumers.
 //!
 //! Currently supported providers:
-//! - `msk-iam`: AWS MSK IAM authentication using SIGv4 signed tokens
-//!   (requires the `msk-iam` crate feature to be enabled).
+//! - `msk-iam`: AWS MSK IAM authentication using SIGv4 signed tokens.
 //!
 //! Configuration format (sasl.oauthbearer.config):
 //! - `provider=msk-iam,region=us-east-1`
 //! - `provider=msk-iam,region=us-east-1,profile=my-profile`
 //!
+//! This module is always compiled in. Whether Restate's own OAUTHBEARER token
+//! callback is installed is decided at runtime, per subscription: only when the
+//! config resolves to a Restate-managed provider (currently `msk-iam`) does the
+//! consumer use the `MskOAuth` policy, which enables the custom callback via
+//! `ClientContext::ENABLE_REFRESH_OAUTH_TOKEN = true`. Every other case (no
+//! `provider`, or an OAUTHBEARER mechanism handled by librdkafka itself such as
+//! Confluent OIDC) uses the plain context and leaves librdkafka's built-in
+//! OAUTHBEARER handling untouched. See [`is_msk_iam_config`].
+//!
 //! The provider-based dispatch is designed to be extensible for other
 //! OAUTHBEARER mechanisms in the future (e.g., Confluent Cloud, Azure Event Hubs).
+
+use std::time::Duration;
 
 use aws_config::{BehaviorVersion, Region};
 use tracing::debug;
@@ -31,11 +41,11 @@ const DEFAULT_REGION: &str = "us-east-1";
 /// The only OAUTHBEARER provider currently supported.
 const PROVIDER_MSK_IAM: &str = "msk-iam";
 
+/// Maximum time to wait for MSK IAM token generation before giving up, so a hung
+/// AWS/STS endpoint can never wedge consumer creation or node startup.
+const MSK_TOKEN_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Errors that can occur while generating a SASL/OAUTHBEARER token.
-///
-/// Variants are conditionally compiled to match the code paths available for the
-/// active feature set, so no variant is ever dead code (keeping the strict
-/// `dead_code` lint happy without `allow`/`expect` escape hatches).
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum OAuthError {
     #[error(
@@ -55,6 +65,8 @@ pub(crate) enum OAuthError {
     NoCredentialsProvider,
     #[error("failed to generate AWS MSK IAM token: {0}")]
     TokenGeneration(String),
+    #[error("timed out generating AWS MSK IAM token")]
+    TokenTimeout,
 }
 
 /// Configuration for OAUTHBEARER authentication parsed from sasl.oauthbearer.config
@@ -122,6 +134,24 @@ fn resolve_provider(config: OAuthBearerConfig) -> Result<ResolvedProvider, OAuth
     }
 }
 
+/// Returns `true` if the given `sasl.oauthbearer.config` selects a
+/// Restate-managed OAUTHBEARER provider (currently only `msk-iam`).
+///
+/// This is the runtime switch used at consumer-creation time to decide between
+/// the `MskOAuth` policy (which installs Restate's custom
+/// token callback) and the plain policy (which leaves librdkafka's built-in
+/// OAUTHBEARER handling in place, e.g. for Confluent OIDC).
+///
+/// It deliberately mirrors [`resolve_provider`] so the two never drift: a config
+/// is "MSK IAM" exactly when [`resolve_provider`] would resolve it to
+/// [`ResolvedProvider::MskIam`]. A missing or unknown provider returns `false`
+/// here; the resulting error is surfaced later by [`generate_oauth_token`] only
+/// if librdkafka actually asks for a token.
+pub(crate) fn is_msk_iam_config(oauthbearer_config: Option<&str>) -> bool {
+    let config = parse_oauthbearer_config(oauthbearer_config.unwrap_or(""));
+    matches!(resolve_provider(config), Ok(ResolvedProvider::MskIam { .. }))
+}
+
 /// Generate an OAuth token for SASL/OAUTHBEARER authentication.
 ///
 /// This is intended to be called from `ClientContext::generate_oauth_token`,
@@ -132,19 +162,24 @@ fn resolve_provider(config: OAuthBearerConfig) -> Result<ResolvedProvider, OAuth
 /// # Threading
 ///
 /// This callback can be invoked from two contexts:
-/// 1. During consumer creation - from a tokio runtime thread
+/// 1. During consumer creation - on the thread driving consumer setup
 /// 2. During token refresh - from librdkafka's background polling thread
 ///
-/// To safely call async AWS SDK code from either context, this spawns a fresh
-/// OS thread that has no tokio runtime context, then runs `block_on` from that
-/// thread. This avoids:
-/// - "Cannot start a runtime from within a runtime" panic
-/// - Deadlock when using spawn + channel
+/// It spawns a fresh OS thread that builds its **own** current-thread tokio
+/// runtime and drives the async AWS SDK call on it. Using a dedicated runtime
+/// (rather than the shared node runtime's `Handle`) is essential: on the shared
+/// multi-thread runtime, `block_on` needs a worker thread to advance the I/O
+/// reactor, but during consumer creation the workers can all be blocked - so the
+/// AWS HTTP I/O would never be driven and the node deadlocks (observed as a hang
+/// right after "Generating OAUTHBEARER token" that wedges startup). A
+/// current-thread runtime drives its own I/O on this OS thread, so it cannot be
+/// starved. The call is bounded by [`MSK_TOKEN_TIMEOUT`] so a hung AWS/STS
+/// endpoint returns an error (librdkafka just retries) instead of wedging the
+/// node forever.
 ///
-/// Token refresh occurs roughly every 15 minutes for MSK IAM, so the cost of a
-/// short-lived OS thread per refresh is negligible.
+/// Token refresh occurs roughly every 10-15 minutes for MSK IAM, so the cost of a
+/// short-lived OS thread + runtime per refresh is negligible.
 pub(crate) fn generate_oauth_token(
-    handle: &tokio::runtime::Handle,
     oauthbearer_config: Option<&str>,
 ) -> Result<rdkafka::client::OAuthToken, Box<dyn std::error::Error + 'static>> {
     let config_str = oauthbearer_config.unwrap_or("");
@@ -159,11 +194,26 @@ pub(crate) fn generate_oauth_token(
                 "Generating OAUTHBEARER token"
             );
 
-            let handle = handle.clone();
+            let thread_result = std::thread::spawn(
+                move || -> Result<rdkafka::client::OAuthToken, OAuthError> {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|e| OAuthError::TokenGeneration(e.to_string()))?;
 
-            let thread_result = std::thread::spawn(move || {
-                handle.block_on(generate_msk_token_async(region, profile))
-            })
+                    rt.block_on(async {
+                        match tokio::time::timeout(
+                            MSK_TOKEN_TIMEOUT,
+                            generate_msk_token_async(region, profile),
+                        )
+                        .await
+                        {
+                            Ok(result) => result,
+                            Err(_elapsed) => Err(OAuthError::TokenTimeout),
+                        }
+                    })
+                },
+            )
             .join();
 
             match thread_result {
@@ -353,10 +403,7 @@ mod tests {
 
     #[test]
     fn missing_provider_returns_error() {
-        let handle = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
-        let result = generate_oauth_token(handle.handle(), Some("region=us-east-1"));
+        let result = generate_oauth_token(Some("region=us-east-1"));
 
         let err = result.err().unwrap();
         assert!(err.to_string().contains("Missing 'provider'"), "got: {err}");
@@ -364,10 +411,7 @@ mod tests {
 
     #[test]
     fn unknown_provider_returns_error() {
-        let handle = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
-        let result = generate_oauth_token(handle.handle(), Some("provider=azure-eh"));
+        let result = generate_oauth_token(Some("provider=azure-eh"));
         let err = result.err().unwrap();
         assert!(err.to_string().contains("azure-eh"), "got: {err}");
         assert!(err.to_string().contains("msk-iam"), "got: {err}");
@@ -375,11 +419,8 @@ mod tests {
 
     #[test]
     fn none_config_returns_missing_provider_error() {
-        let handle = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
         // No config at all is equivalent to an empty config: provider is missing.
-        let result = generate_oauth_token(handle.handle(), None);
+        let result = generate_oauth_token(None);
         let err = result.err().unwrap();
         assert!(err.to_string().contains("Missing 'provider'"), "got: {err}");
     }

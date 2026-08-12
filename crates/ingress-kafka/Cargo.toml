@@ -14,9 +14,6 @@ options_schema = []
 # fails with "SSL certificate OpenSSL verify result: unable to get local issuer certificate (20) (-1)" when trying to
 # obtain the OIDC token.
 oidc = ["rdkafka/curl-static", "rdkafka/gssapi-vendored"]
-# support for AWS MSK IAM authentication via SASL/OAUTHBEARER (provider=msk-iam). Pulls in the AWS SDK, so it is gated
-# behind a feature to avoid bloating builds that do not need MSK IAM.
-msk-iam = ["dep:aws-config", "dep:aws-msk-iam-sasl-signer"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
@@ -45,14 +42,15 @@ parking_lot = { workspace = true }
 # which prevents pulling in curl if it is not activated. The additional fixes in fix-build-script fix the musl build.
 rdkafka = { version = "0.38", git = "https://github.com/restatedev/rust-rdkafka.git", rev = "e92cad90eff797a0dc29fa524cabb89b602ae234", features = ["libz-static", "cmake-build", "ssl-vendored", "zstd"] }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["sync", "rt"] }
+tokio = { workspace = true, features = ["sync", "rt", "net", "time"] }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 xxhash-rust = { workspace = true, features = ["xxh3", "std"] }
 
-# AWS MSK IAM Auth (for OAUTHBEARER with provider=msk-iam); enabled by the `msk-iam` feature.
-aws-config = { workspace = true, optional = true }
-aws-msk-iam-sasl-signer = { workspace = true, optional = true }
+# AWS MSK IAM Auth (for OAUTHBEARER with provider=msk-iam). Always compiled in so MSK IAM works on the default build;
+# the AWS SDK is only touched at runtime when a subscription actually configures provider=msk-iam.
+aws-config = { workspace = true }
+aws-msk-iam-sasl-signer = { workspace = true }
 
 [dev-dependencies]
 restate-types = { workspace = true, features = ["test-util"] }

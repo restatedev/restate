@@ -32,9 +32,6 @@ memory-loglet = ["restate-node/memory-loglet"]
 no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"]
 metadata-api = ["restate-admin/metadata-api"]
 kafka-oidc = ["restate-node/kafka-oidc"]
-# msk-iam pulls in the AWS SDK, so it is opt-in (not enabled by default) to
-# avoid bloating the default binary. Enable with `--features msk-iam`.
-msk-iam = ["restate-node/msk-iam"]
 taskdump = ["restate-core/taskdump"]
 
 [dependencies]

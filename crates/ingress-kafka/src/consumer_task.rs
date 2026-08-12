@@ -11,6 +11,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::hash::Hash;
+use std::marker::PhantomData;
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
@@ -44,7 +45,12 @@ use crate::Error;
 use crate::builder::EnvelopeBuilder;
 use crate::metric_definitions::{KAFKA_INGRESS_CONSUMER_LAG, KAFKA_INGRESS_REQUESTS};
 
-type MessageConsumer<T> = StreamConsumer<RebalanceContext<T>>;
+/// The concrete Kafka consumer type for a given transport `T` and OAUTHBEARER
+/// policy `O`. The policy is baked into the type because librdkafka reads
+/// [`ClientContext::ENABLE_REFRESH_OAUTH_TOKEN`] — an associated *const* — to
+/// decide whether to invoke our custom token callback, so it must be fixed at
+/// compile time for each context instantiation.
+type MessageConsumer<T, O> = StreamConsumer<RebalanceContext<T, O>>;
 
 #[derive(Clone)]
 pub struct ConsumerTask<T> {
@@ -72,7 +78,7 @@ where
         }
     }
 
-    pub async fn run(self, mut rx: oneshot::Receiver<()>) -> Result<(), Error> {
+    pub async fn run(self, rx: oneshot::Receiver<()>) -> Result<(), Error> {
         // Create the consumer and subscribe to the topic
         let consumer_group_id = self
             .client_config
@@ -86,6 +92,44 @@ where
             self.topics, self.client_config
         );
 
+        // Decide which OAUTHBEARER policy this subscription needs, based on the
+        // `sasl.oauthbearer.config`. If it selects the MSK IAM provider we install
+        // Restate's custom token callback (`MskOAuth`); otherwise we leave
+        // librdkafka's built-in OAUTHBEARER handling untouched (`PlainOAuth`),
+        // so Confluent OIDC and friends keep working. The policy is baked into
+        // the consumer type because `ClientContext::ENABLE_REFRESH_OAUTH_TOKEN`
+        // is an associated const, hence the branch on distinct concrete types.
+        let oauthbearer_config = self.client_config.get("sasl.oauthbearer.config");
+        let kind = if crate::oauth::is_msk_iam_config(oauthbearer_config.as_deref()) {
+            ConsumerKind::MskIam
+        } else {
+            ConsumerKind::Plain
+        };
+        debug!(
+            restate.subscription.id = %self.builder.subscription().id(),
+            "Selected {kind:?} OAUTHBEARER policy for consumer"
+        );
+
+        match kind {
+            ConsumerKind::MskIam => {
+                self.run_with_context::<MskOAuth>(consumer_group_id, rx)
+                    .await
+            }
+            ConsumerKind::Plain => {
+                self.run_with_context::<PlainOAuth>(consumer_group_id, rx)
+                    .await
+            }
+        }
+    }
+
+    /// Create a consumer with the OAUTHBEARER policy `O`, subscribe, and run the
+    /// main poll/select loop. Shared by both `ConsumerKind` branches so the loop
+    /// logic is written once and monomorphised per policy.
+    async fn run_with_context<O: OAuthMode>(
+        self,
+        consumer_group_id: String,
+        mut rx: oneshot::Receiver<()>,
+    ) -> Result<(), Error> {
         let (failures_tx, failures_rx) = mpsc::unbounded_channel();
 
         let rebalance_context = RebalanceContext {
@@ -96,9 +140,9 @@ where
             ingestion: self.ingestion.clone(),
             builder: self.builder.clone(),
             consumer_group_id,
-            tokio_handle: tokio::runtime::Handle::current(),
+            _oauth: PhantomData,
         };
-        let consumer: Arc<MessageConsumer<T>> =
+        let consumer: Arc<MessageConsumer<T, O>> =
             Arc::new(self.client_config.create_with_context(rebalance_context)?);
         // this OnceLock<Weak> dance is needed because the rebalance callbacks don't get a handle on the consumer,
         // which is strange because practically everything you'd want to do with them involves the consumer.
@@ -133,10 +177,21 @@ where
     }
 }
 
-#[derive(derive_more::Deref)]
-struct ConsumerDrop<T: TransportConnect>(Arc<MessageConsumer<T>>);
+/// Runtime selection of the OAUTHBEARER policy for a consumer. Chosen from the
+/// subscription's `sasl.oauthbearer.config` and mapped to a concrete
+/// [`OAuthMode`] marker (`MskOAuth` / `PlainOAuth`) in [`ConsumerTask::run`].
+#[derive(Debug, Clone, Copy)]
+enum ConsumerKind {
+    /// AWS MSK IAM — install Restate's custom OAUTHBEARER token callback.
+    MskIam,
+    /// Everything else — leave librdkafka's built-in OAUTHBEARER handling in place.
+    Plain,
+}
 
-impl<T: TransportConnect> Drop for ConsumerDrop<T> {
+#[derive(derive_more::Deref)]
+struct ConsumerDrop<T: TransportConnect, O: OAuthMode>(Arc<MessageConsumer<T, O>>);
+
+impl<T: TransportConnect, O: OAuthMode> Drop for ConsumerDrop<T, O> {
     fn drop(&mut self) {
         debug!(
             "Stopping consumer with id {}",
@@ -163,24 +218,58 @@ impl fmt::Display for TopicPartition {
     }
 }
 
-struct RebalanceContext<T: TransportConnect> {
+/// OAUTHBEARER policy for a Kafka consumer, selected at runtime per subscription.
+/// A single generic [`ClientContext`] impl reads these off the policy, so
+/// [`MskOAuth`] and [`PlainOAuth`] yield two distinct `ClientContext` behaviours.
+trait OAuthMode: Send + Sync + 'static {
+    /// `true` makes librdkafka install our token-refresh callback; `false` leaves
+    /// its built-in OAUTHBEARER handling in place (e.g. Confluent OIDC).
+    const ENABLE_REFRESH_OAUTH_TOKEN: bool;
+
+    /// Only invoked by librdkafka when `ENABLE_REFRESH_OAUTH_TOKEN` is `true`, so
+    /// pass-through policies inherit this never-called default.
+    fn generate_oauth_token(
+        _oauthbearer_config: Option<&str>,
+    ) -> Result<rdkafka::client::OAuthToken, Box<dyn std::error::Error + 'static>> {
+        Err("OAUTHBEARER token callback invoked for a pass-through OAuth policy".into())
+    }
+}
+
+/// AWS MSK IAM OAUTHBEARER policy — installs Restate's custom token callback.
+struct MskOAuth;
+impl OAuthMode for MskOAuth {
+    const ENABLE_REFRESH_OAUTH_TOKEN: bool = true;
+
+    fn generate_oauth_token(
+        oauthbearer_config: Option<&str>,
+    ) -> Result<rdkafka::client::OAuthToken, Box<dyn std::error::Error + 'static>> {
+        crate::oauth::generate_oauth_token(oauthbearer_config)
+    }
+}
+
+/// Pass-through OAUTHBEARER policy — leaves librdkafka's built-in handling in place.
+struct PlainOAuth;
+impl OAuthMode for PlainOAuth {
+    const ENABLE_REFRESH_OAUTH_TOKEN: bool = false;
+}
+
+struct RebalanceContext<T: TransportConnect, O: OAuthMode> {
     task_center_handle: task_center::Handle,
-    consumer: OnceLock<Weak<MessageConsumer<T>>>,
+    consumer: OnceLock<Weak<MessageConsumer<T, O>>>,
     topic_partition_tasks: parking_lot::Mutex<HashMap<TopicPartition, AbortOnDrop>>,
     failures_tx: mpsc::UnboundedSender<Error>,
     ingestion: IngestionClient<T, Envelope>,
     builder: EnvelopeBuilder,
     consumer_group_id: String,
-    /// Handle to the tokio runtime for blocking on async operations (e.g., MSK IAM token generation)
-    #[allow(dead_code)]
-    tokio_handle: tokio::runtime::Handle,
+    _oauth: PhantomData<fn() -> O>,
 }
 
-impl<T> ClientContext for RebalanceContext<T>
+impl<T, O> RebalanceContext<T, O>
 where
     T: TransportConnect,
+    O: OAuthMode,
 {
-    fn stats(&self, statistics: Statistics) {
+    fn report_stats(&self, statistics: Statistics) {
         for topic in statistics.topics {
             for partition in topic.1.partitions {
                 let lag = partition.1.consumer_lag as f64;
@@ -194,18 +283,27 @@ where
             }
         }
     }
+}
 
-    // --- Keep default implementation when msk-iam is disabled
+// Must be a single generic impl, not two concrete ones: `RebalanceContext` holds a
+// `Weak<StreamConsumer<Self>>` and `StreamConsumer<C>` requires `C: ConsumerContext`
+// (hence `C: ClientContext`), so `ClientContext` must be provable for every `O: OAuthMode`.
+impl<T, O> ClientContext for RebalanceContext<T, O>
+where
+    T: TransportConnect,
+    O: OAuthMode,
+{
+    const ENABLE_REFRESH_OAUTH_TOKEN: bool = O::ENABLE_REFRESH_OAUTH_TOKEN;
 
-    #[cfg(feature = "msk-iam")]
-    const ENABLE_REFRESH_OAUTH_TOKEN: bool = true;
+    fn stats(&self, statistics: Statistics) {
+        self.report_stats(statistics);
+    }
 
-    #[cfg(feature = "msk-iam")]
     fn generate_oauth_token(
         &self,
         oauthbearer_config: Option<&str>,
     ) -> Result<rdkafka::client::OAuthToken, Box<dyn std::error::Error + 'static>> {
-        crate::oauth::generate_oauth_token(&self.tokio_handle, oauthbearer_config)
+        O::generate_oauth_token(oauthbearer_config)
     }
 }
 
@@ -220,9 +318,10 @@ where
 // and their queues are destroyed. Split partition queues will stop working in this case. We should ensure
 // that they are not polled again after the assign. Then there will be a further rebalance callback after the revoke
 // and we will set up new split partition streams before the assign.
-impl<T> ConsumerContext for RebalanceContext<T>
+impl<T, O> ConsumerContext for RebalanceContext<T, O>
 where
     T: TransportConnect,
+    O: OAuthMode,
 {
     fn pre_rebalance(&self, _base_consumer: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
         let mut topic_partition_tasks = self.topic_partition_tasks.lock();
@@ -336,31 +435,31 @@ impl Drop for AbortOnDrop {
     }
 }
 
-struct TopicPartitionConsumptionTask<T, C>
+struct TopicPartitionConsumptionTask<T, O>
 where
     T: TransportConnect,
-    C: ConsumerContext,
+    O: OAuthMode,
 {
     ingestion: IngestionClient<T, Envelope>,
     builder: EnvelopeBuilder,
     topic_partition: TopicPartition,
-    topic_partition_consumer: StreamPartitionQueue<C>,
-    consumer: Arc<MessageConsumer<T>>,
+    topic_partition_consumer: StreamPartitionQueue<RebalanceContext<T, O>>,
+    consumer: Arc<MessageConsumer<T, O>>,
     consumer_group_id: String,
     failed: mpsc::UnboundedSender<Error>,
 }
 
-impl<T, C> TopicPartitionConsumptionTask<T, C>
+impl<T, O> TopicPartitionConsumptionTask<T, O>
 where
     T: TransportConnect,
-    C: ConsumerContext,
+    O: OAuthMode,
 {
     fn new(
         ingestion: IngestionClient<T, Envelope>,
         builder: EnvelopeBuilder,
         topic_partition: TopicPartition,
-        topic_partition_consumer: StreamPartitionQueue<C>,
-        consumer: Arc<MessageConsumer<T>>,
+        topic_partition_consumer: StreamPartitionQueue<RebalanceContext<T, O>>,
+        consumer: Arc<MessageConsumer<T, O>>,
         consumer_group_id: String,
         failed: mpsc::UnboundedSender<Error>,
     ) -> Self {

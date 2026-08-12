@@ -22,7 +22,6 @@ options_schema = [
     "restate-worker/options_schema"
 ]
 kafka-oidc = ["restate-worker/kafka-oidc"]
-msk-iam = ["restate-worker/msk-iam"]
 test-util = ["restate-worker/test-util"]
 # Enables heap flamegraph generation via /debug/heap/flamegraph endpoint.
 # This feature requires debug symbols and adds the symbolize/flamegraph features to jemalloc_pprof.
