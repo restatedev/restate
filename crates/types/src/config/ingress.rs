@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
+use std::num::{NonZeroU32, NonZeroUsize};
 
 use restate_memory::NonZeroByteCount;
 use serde::{Deserialize, Serialize};
@@ -41,8 +41,10 @@ pub struct IngestionApiOptions {
     /// Maximum number of bytes an ingestion stream may have in flight before the server
     /// applies back pressure.
     ///
+    /// Value is clipped at [`u32::MAX`]
+    ///
     /// Since v1.8
-    pub max_window_size: NonZeroByteCount,
+    max_window_size: NonZeroByteCount,
 
     /// # Maximum concurrent streams
     ///
@@ -54,8 +56,9 @@ pub struct IngestionApiOptions {
 }
 
 impl IngestionApiOptions {
-    pub fn max_window_size(&self) -> NonZeroU64 {
-        NonZeroU64::new(self.max_window_size.as_u64()).expect("byte count is non-zero")
+    pub fn max_window_size(&self) -> NonZeroU32 {
+        let value = self.max_window_size.as_u64().min(u32::MAX as u64) as u32;
+        NonZeroU32::new(value).expect("byte count is non-zero")
     }
 
     pub fn max_concurrent_streams(&self) -> usize {
