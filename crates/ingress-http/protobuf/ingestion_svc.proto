@@ -11,10 +11,13 @@ syntax = "proto3";
 
 package dev.restate.ingress.ingestion.v1;
 
+option java_multiple_files = true;
+option java_package = "dev.restate.ingestion.v1";
+option java_outer_classname = "IngestionProto";
 
 // Required.
-// A Start frame must be sent before any Settings or
-// Invocation frame.
+// A Start frame must be sent before any IngestionDefaults or
+// IngestionInvocation frame.
 // Sending a Start frame again during the lifetime of
 // the stream is illegal: the server will return an
 // error and terminate the stream.
@@ -33,43 +36,79 @@ message IngestionStart {
     // cluster + topic + consumer-group + partition would identify such a
     // source.
     //
-    // The same producer must reuse the same ID across streams (including
-    // after reconnects), otherwise deduplication cannot work: the server
-    // tracks committed offsets per producer ID, so a new ID starts a fresh
-    // deduplication state and previously committed records may be
-    // duplicated.
+    // Depending on the DedupMode, the same producer must reuse the same
+    // ID across streams (including after reconnects), otherwise deduplication
+    // cannot work: the server tracks committed offsets per producer ID,
+    // so a new ID starts a fresh deduplication state and previously committed
+    // records may be duplicated.
     //
     // The ID must be unique across producers: two distinct producers
     // sharing an ID will be treated as one and will shadow each other's
     // offsets.
-    //
-    // An explicitly empty producer ID is valid but disables
-    // deduplication for the entire stream.
     string producer_id = 1;
     // Integration identification in format `name/version`
     string integration = 2;
-    // Initial settings for the stream, letting the client
+    // Deduplication strategy for this stream. Defaults to `OFFSET_BASED`
+    // when unset, which requires `producer_id` to be set.
+    DeduplicationMode deduplication_mode = 3;
+    // Initial ingestion defaults for the stream, letting the client
     // establish its defaults up front instead of following
-    // the Start frame with a separate Settings frame.
-    // Clients can still send further Settings frames later
+    // the Start frame with a separate IngestionDefaults frame.
+    // Clients can still send further IngestionDefaults frames later
     // to update these defaults during the stream.
-    IngestionSettings settings = 3;
+    IngestionDefaults defaults = 4;
 }
 
-// A Settings message defines the default values applied to all
+// How the server deduplicates the records of a stream.
+//
+// The mode is fixed for the lifetime of the stream: it is chosen once in the
+// `Start` frame and cannot be changed by a later `IngestionDefaults` frame.
+//
+// Note that this only controls deduplication. Regardless of the mode, every
+// `Invocation` must still carry an `offset`, offsets must still increase
+// monotonically within a stream, and `Response.last_committed` still reports
+// progress in terms of those offsets.
+enum DeduplicationMode {
+    // Disable deduplication: every record accepted by the server becomes an
+    // invocation.
+    //
+    // Nothing is tracked across streams, so resending records after a
+    // reconnect duplicates them. Pick this mode only when the producer cannot
+    // supply a stable ID, or when duplicates are acceptable or already
+    // suppressed elsewhere (for example by an `idempotency_key`).
+    //
+    // `producer_id` is optional in this mode, but is still recorded on traces
+    // and metrics when set.
+    DISABLED = 0;
+    // Deduplicate on `(producer_id, offset)`.
+    //
+    // The server tracks the highest committed offset per producer ID and
+    // silently drops any record whose offset is not above it, which makes
+    // resending a range of records after a reconnect safe: records the server
+    // already committed do not become duplicate invocations.
+    //
+    // This mode requires `producer_id` to be set; using it with an empty
+    // producer ID fails the stream with `GO_AWAY`. It also requires the
+    // producer to reuse the same ID across streams, since a new ID starts
+    // from a fresh deduplication state.
+    //
+    // This is the default: leaving `deduplication_mode` unset selects it.
+    OFFSET_BASED = 1;
+}
+// A IngestionDefaults message defines the default values applied to all
 // subsequent records in the stream.
-// Each Settings message must specify every field it wants to set:
-// its fields are not merged with those of previous Settings messages.
+// Each IngestionDefaults message must specify every field it wants to set:
+// its fields are not merged with those of previous IngestionDefaults messages.
 // Leaving an optional field unset clears any previously established
 // default, so later records must supply the value explicitly if needed.
 //
-// It's okay to send settings more than once to tweak and change the defaults
+// It's okay to send IngestionDefaults more than once to tweak and change the defaults
 // during the life time of the stream.
 //
 // Every field here has a matching field on `Invocation`. For those fields the
 // per-record value wins: if the `Invocation` sets the field, its value is used
-// and the default from `Settings` is ignored; if it leaves the field unset, the
-// current default from `Settings` is used instead. If neither is set, the field
+// and the default from `IngestionDefaults` is ignored; if it leaves the field unset, the
+// current default from `IngestionDefaults` is used instead. If neither is set, the field
 // is treated as absent, which may be an error for fields that are required for
 // the given target (e.g. `key` for virtual objects and workflows).
 //
@@ -78,8 +117,8 @@ message IngestionStart {
 // invocation sees both sets.
 //
 // Note: Keep the field tags uniform with the Invocation message
-// This allows parsing Invocation message as Settings.
-message IngestionSettings {
+// This allows parsing IngestionInvocation message as IngestionDefaults.
+message IngestionDefaults {
     optional string scope = 2;
     optional string limit_key = 3;
     optional string service = 4;
@@ -121,7 +160,7 @@ message IngestionInvocation {
     optional string service = 4;
     optional string handler = 5;
     // Required when the target service is a virtual object (VO).
-    // or workflow. This can also be set via a preceding Settings message.
+    // or workflow. This can also be set via a preceding IngestionDefaults message.
     optional string key = 6;
     optional string idempotency_key = 7;
     map<string, string> additional_headers = 8;
@@ -143,7 +182,7 @@ message IngestionInvocation {
 message IngestionRequest {
     oneof payload {
         IngestionStart start = 1;
-        IngestionSettings settings = 2;
+        IngestionDefaults defaults = 2;
         IngestionInvocation invocation = 3;
     }
 }
@@ -199,7 +238,7 @@ enum ErrorKind {
 // handler, or an internal ingestion failure) while the stream itself is
 // still well-formed. Stream-scoped errors leave `invocation_offset` unset
 // and describe a condition of the stream as a whole (shutdown, a protocol
-// violation, or invalid `Start`/`Settings`).
+// violation, or invalid `Start`/`IngestionDefaults`).
 //
 // Even a record-scoped error terminates the stream, on purpose. Skipping the
 // faulty record and continuing would commit the records that follow it and
