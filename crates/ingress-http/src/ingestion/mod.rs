@@ -23,106 +23,114 @@
 mod ingestion_svc;
 
 use std::convert::Infallible;
-use std::ops::Not;
 use std::task::{Context, Poll};
 
 use futures::future::BoxFuture;
 use http::{Request, Response};
 use hyper::body::Incoming;
 use tower::ServiceExt;
-use tower::util::BoxCloneService;
-
-use restate_core::network::TransportConnect;
-use restate_ingestion_client::IngestionClient;
-use restate_types::config::IngestionApiOptions;
-use restate_types::live::Live;
-use restate_types::schema::invocation_target::InvocationTargetResolver;
-use restate_wal_protocol::Envelope;
 
 use super::*;
 
-/// The type-erased tonic ingestion server. Boxing keeps `IngestionRouter` free of a
-/// `Schemas` type parameter (the schema resolver is captured inside the server).
-type GrpcService = BoxCloneService<Request<Incoming>, Response<tonic::body::Body>, Infallible>;
+pub(crate) use ingestion_svc::ingestion_server;
 
 /// A [`tower::Service`] that fronts the ingress socket and dispatches each request
-/// to one of two backends:
-///
-/// * `application/grpc` requests are forwarded to the tonic ingestion server
-///   (`grpc`), when the ingestion API is enabled.
-/// * everything else is forwarded to the wrapped HTTP ingress service (`inner`).
+/// to one of two backends based on a Picker.
 ///
 /// Both branches are normalized to a `Response<tonic::body::Body>` so callers see a
-/// single response type regardless of which backend handled the request. The gRPC
-/// server is optional: when `IngestionApiOptions::disable` is `true` it is `None`
-/// and every request falls through to `inner`.
+/// single response type regardless of which backend handled the request.
 #[derive(Clone)]
-pub(super) struct IngestionRouter<S> {
-    inner: S,
-    grpc: Option<GrpcService>,
+pub struct SteerRouter<L, R, P> {
+    left: L,
+    right: R,
+    picker: P,
 }
 
-impl<S> IngestionRouter<S> {
-    pub(crate) fn new<T, Schemas>(
-        inner: S,
-        ingestion_client: IngestionClient<T, Envelope>,
-        schemas: Live<Schemas>,
-        options: IngestionApiOptions,
-    ) -> Self
-    where
-        T: TransportConnect,
-        Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
-    {
-        let grpc = options.disable.not().then(|| {
-            BoxCloneService::new(ingestion_svc::ingestion_server(
-                ingestion_client,
-                schemas,
-                options.max_window_size(),
-            ))
-        });
-
-        Self { inner, grpc }
+impl<L, R, P> SteerRouter<L, R, P> {
+    pub fn new(left: L, right: R, picker: P) -> Self {
+        Self {
+            left,
+            right,
+            picker,
+        }
     }
 }
 
-impl<S, Body> tower::Service<Request<Incoming>> for IngestionRouter<S>
+impl<L, R, P, LB, RB> tower::Service<Request<Incoming>> for SteerRouter<L, R, P>
 where
-    S: tower::Service<Request<Incoming>, Response = Response<Body>, Error = Infallible>
+    P: Picker,
+    L: tower::Service<Request<Incoming>, Response = Response<LB>, Error = Infallible>
         + Clone
         + Send
         + 'static,
-    S::Future: Send + 'static,
-    Body: http_body::Body<Data = Bytes, Error = Infallible> + Send + 'static,
+    L::Future: Send + 'static,
+    R: tower::Service<Request<Incoming>, Response = Response<RB>, Error = Infallible>
+        + Clone
+        + Send
+        + 'static,
+    R::Future: Send + 'static,
+    LB: http_body::Body<Data = Bytes> + Send + 'static,
+    RB: http_body::Body<Data = Bytes> + Send + 'static,
+    LB::Error: std::error::Error + Send + Sync,
+    RB::Error: std::error::Error + Send + Sync,
 {
     type Response = Response<tonic::body::Body>;
     type Error = Infallible;
     type Future = BoxFuture<'static, Result<Self::Response, Infallible>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Infallible>> {
-        // Both inner services are always ready.
+        // call function uses oneshot which also poll for readiness before
+        // calling the service.
+        // It's also impossible to know which service to poll for readiness since
+        // we have no access to the request.
         Poll::Ready(Ok(()))
     }
 
     fn call(&mut self, req: Request<Incoming>) -> Self::Future {
-        if let (true, Some(grpc)) = (is_grpc_request(&req), &self.grpc) {
-            // tonic routes on the full canonical path, so forward the request as-is.
-            let grpc = grpc.clone();
-            Box::pin(async move {
-                let response = grpc.oneshot(req).await?;
-                // Widen the gRPC body's `tonic::Status` error to the unified type.
-                Ok(response)
-            })
-        } else {
-            let main = self.inner.clone();
-            Box::pin(async move {
-                let response = main.oneshot(req).await?;
-                Ok(response.map(|body| tonic::body::Body::new(body)))
-            })
+        match self.picker.pick(&req) {
+            Decision::Left => {
+                let s = self.left.clone();
+                Box::pin(async move {
+                    let response = s
+                        .oneshot(req)
+                        .await?
+                        .map(|body| tonic::body::Body::new(body));
+                    Ok(response)
+                })
+            }
+            Decision::Right => {
+                let s = self.right.clone();
+                Box::pin(async move {
+                    let response = s
+                        .oneshot(req)
+                        .await?
+                        .map(|body| tonic::body::Body::new(body));
+                    Ok(response)
+                })
+            }
         }
     }
 }
 
-fn is_grpc_request<B>(req: &Request<B>) -> bool {
+pub enum Decision {
+    Left,
+    Right,
+}
+
+pub trait Picker {
+    fn pick(&mut self, request: &Request<Incoming>) -> Decision;
+}
+
+impl<F> Picker for F
+where
+    F: Fn(&Request<Incoming>) -> Decision,
+{
+    fn pick(&mut self, request: &Request<Incoming>) -> Decision {
+        self(request)
+    }
+}
+
+pub fn is_grpc_request<B>(req: &Request<B>) -> bool {
     req.headers()
         .get(http::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())

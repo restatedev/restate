@@ -48,6 +48,7 @@ use restate_wal_protocol::Envelope;
 
 use super::*;
 use crate::handler::Handler;
+use crate::ingestion::{Decision, is_grpc_request};
 use crate::metric_definitions::{HTTP_CONNECTION_CREATED, HTTP_CONNECTION_DROPPED};
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -154,17 +155,28 @@ where
 
         // BodyLimit only applies to the REST handlers. The grpc (ingestion API)
         // doesn't have a request size limit since it's a continues stream.
-        let inner = ServiceBuilder::new()
+        let ingress_service = ServiceBuilder::new()
             .layer(RequestBodyLimitLayer::new(request_size_limit))
             .service(Handler::new(schemas.clone(), dispatcher));
 
-        // Route the gRPC ingestion path to its own service; everything else keeps
-        // flowing through the layered handler above.
-        let service = ingestion::IngestionRouter::new(
-            inner,
+        let grpc_service = ingestion::ingestion_server(
             ingestion_client,
             schemas,
-            ingestion_api_options,
+            ingestion_api_options.max_window_size(),
+        );
+
+        // Route the gRPC ingestion path to its own service; everything else keeps
+        // flowing through the layered handler above.
+        let service = ingestion::SteerRouter::new(
+            ingress_service,
+            grpc_service,
+            move |req: &Request<Incoming>| {
+                if is_grpc_request(req) && !ingestion_api_options.disable {
+                    Decision::Right
+                } else {
+                    Decision::Left
+                }
+            },
         );
 
         // Prepare the handler
