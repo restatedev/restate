@@ -22,7 +22,7 @@ package dev.restate.ingress.ingestion.v1;
 // Invalid Start message will cause an error
 // to be returned immediately, and stream to be teared down
 // immediately
-message Start {
+message IngestionStart {
     // Stable identity of the *producer*, not of this particular stream.
     //
     // The ID is an opaque string: this API is generic, so the server
@@ -53,7 +53,7 @@ message Start {
     // the Start frame with a separate Settings frame.
     // Clients can still send further Settings frames later
     // to update these defaults during the stream.
-    Settings settings = 3;
+    IngestionSettings settings = 3;
 }
 
 // A Settings message defines the default values applied to all
@@ -79,7 +79,7 @@ message Start {
 //
 // Note: Keep the field tags uniform with the Invocation message
 // This allows parsing Invocation message as Settings.
-message Settings {
+message IngestionSettings {
     optional string scope = 2;
     optional string limit_key = 3;
     optional string service = 4;
@@ -89,7 +89,7 @@ message Settings {
     map<string, string> headers = 8;
 }
 
-message Invocation {
+message IngestionInvocation {
     // Position of this record within the producer's sequence, and the value
     // deduplication is based on.
     //
@@ -140,11 +140,11 @@ message Invocation {
     bytes payload = 13;
 }
 
-message Request {
+message IngestionRequest {
     oneof payload {
-        Start start = 1;
-        Settings settings = 2;
-        Invocation invocation = 3;
+        IngestionStart start = 1;
+        IngestionSettings settings = 2;
+        IngestionInvocation invocation = 3;
     }
 }
 
@@ -222,7 +222,7 @@ message Error {
     string message = 3;
 }
 
-message Response {
+message IngestionResponse {
     // Offsets are 0-based, so last_committed must be optional
     // to distinguish "offset 0 committed" from "nothing committed yet".
     // This matters when an error is returned on the first
@@ -237,6 +237,6 @@ message Response {
 
 service IngestionSvc {
   // Opens a bidirectional node-to-node stream.
-  rpc Ingest(stream Request)
-      returns (stream Response);
+  rpc Ingest(stream IngestionRequest)
+      returns (stream IngestionResponse);
 }
