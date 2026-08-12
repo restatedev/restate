@@ -24,15 +24,25 @@ package dev.restate.ingress.ingestion.v1;
 // immediately
 message Start {
     // Stable identity of the *producer*, not of this particular stream.
+    //
+    // The ID is an opaque string: this API is generic, so the server
+    // attaches no format or meaning to it. It is entirely up to the producer
+    // to pick an ID that uniquely identifies a single source of sequential,
+    // ordered messages, since offsets are only meaningful relative to that
+    // source. For a Kafka-based producer, for instance, an ID composed of
+    // cluster + topic + consumer-group + partition would identify such a
+    // source.
+    //
     // The same producer must reuse the same ID across streams (including
     // after reconnects), otherwise deduplication cannot work: the server
     // tracks committed offsets per producer ID, so a new ID starts a fresh
     // deduplication state and previously committed records may be
     // duplicated.
+    //
     // The ID must be unique across producers: two distinct producers
     // sharing an ID will be treated as one and will shadow each other's
-    // offsets. Derive it from something inherently unique to the producer
-    // (think Kafka cluster + topic + partition).
+    // offsets.
+    //
     // An explicitly empty producer ID is valid but disables
     // deduplication for the entire stream.
     string producer_id = 1;
@@ -80,6 +90,29 @@ message Settings {
 }
 
 message Invocation {
+    // Position of this record within the producer's sequence, and the value
+    // deduplication is based on.
+    //
+    // It must increase monotonically for a given producer ID, across the whole
+    // lifetime of that producer and not just within a single stream. On
+    // reconnect, resume from the `Response.last_committed` reported for the
+    // producer rather than restarting the numbering.
+    //
+    // Offsets do not have to be contiguous; gaps are allowed, so it is fine to
+    // skip records. Only the ordering matters. Offsets are 0-based, so 0 is a
+    // valid first offset.
+    //
+    // Within a single stream the server enforces this: sending an offset lower
+    // than one already sent on the same stream is a protocol violation and
+    // fails the stream with `GO_AWAY`.
+    //
+    // Across streams nothing is enforced, since the server does not remember
+    // what a previous stream sent. Reusing an offset already committed by an
+    // earlier stream of the same producer is not reported as an error: the
+    // record is treated as a duplicate and silently dropped, meaning it does
+    // not become an invocation and produces no `Error` frame. A client that
+    // restarts its numbering after a reconnect will therefore see its records
+    // disappear without any signal.
     uint64 offset = 1;
 
     // Overrides
