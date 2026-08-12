@@ -15,8 +15,8 @@
 //! `Ingest` is a bidirectional gRPC stream. The client sends a sequence of
 //! [`IngestionRequest`] frames and the server replies with [`IngestionResponse`]
 //! frames. The request stream must begin with a `Start` frame; afterwards the
-//! client sends `Settings` frames (updating the per-record defaults) and
-//! `Invocation` frames (the actual records to ingest). The wire contract is
+//! client sends `IngestionDefaults` frames (updating the per-record defaults) and
+//! `IngestionInvocation` frames (the actual records to ingest). The wire contract is
 //! defined in `protobuf/ingestion_svc.proto`.
 //!
 //! Each request stream is driven by an [`IngestionStream`] state machine, unfolded
@@ -92,12 +92,13 @@ pub mod proto {
 
 use proto::ingestion_svc_server::{IngestionSvc, IngestionSvcServer};
 use proto::{
-    IngestionInvocation, IngestionRequest, IngestionResponse, IngestionSettings, WindowUpdate,
+    IngestionDefaults, IngestionInvocation, IngestionRequest, IngestionResponse, WindowUpdate,
     ingestion_request, ingestion_request::Payload, ingestion_response,
 };
 use tracing::debug;
 
 use crate::ingestion::ingestion_svc::Error::BadRequestWithOffset;
+use crate::ingestion::ingestion_svc::proto::DeduplicationMode;
 use crate::metric_definitions::INGESTION_INGESTED;
 
 /// Builds the tonic server that serves [`IngestionSvc`], wrapping a fresh
@@ -286,7 +287,7 @@ where
         }
     }
 
-    fn validate_settings(&self, settings: &IngestionSettings) -> Result<(), Error> {
+    fn validate_defaults(&self, settings: &IngestionDefaults) -> Result<(), Error> {
         let schemas = self.schemas.pinned();
 
         let service = settings.service.as_deref();
@@ -369,9 +370,9 @@ where
             return Err(Error::GoAway(GoAwayError::ExpectingStartMessage));
         };
 
-        let settings = start.settings;
-        if let Some(ref settings) = settings {
-            self.validate_settings(settings)?;
+        let defaults = start.defaults;
+        if let Some(ref defaults) = defaults {
+            self.validate_defaults(defaults)?;
         }
 
         debug!(
@@ -380,10 +381,17 @@ where
             "Start processing ingestion stream"
         );
 
+        let dedup_mode = DedupMode::create(
+            proto::DeduplicationMode::try_from(start.deduplication_mode)
+                .map_err(|_| BadRequestError::UnknownDeduplicationMode)?,
+            &start.producer_id,
+        )?;
+
         Ok(ProcessorState::new(
             start.producer_id,
             start.integration,
-            settings.unwrap_or_default(),
+            dedup_mode,
+            defaults.unwrap_or_default(),
             (self.max_window_size.get() * UPDATE_WINDOW_THRESHOLD / 100) as i64,
         ))
     }
@@ -482,9 +490,9 @@ where
             Payload::Start(_) => {
                 return Err(Error::GoAway(GoAwayError::UnexpectedStartMessage));
             }
-            Payload::Settings(settings) => {
-                self.validate_settings(&settings)?;
-                state.settings = settings;
+            Payload::Defaults(defaults) => {
+                self.validate_defaults(&defaults)?;
+                state.defaults = defaults;
             }
             Payload::Invocation(invocation) => {
                 if state.current_window_size < 0 {
@@ -550,7 +558,7 @@ where
         let service = record
             .service
             .as_deref()
-            .or(state.settings.service.as_deref())
+            .or(state.defaults.service.as_deref())
             .ok_or(Error::BadRequestWithOffset(
                 record.offset,
                 BadRequestError::MissingService,
@@ -558,7 +566,7 @@ where
         let handler = record
             .handler
             .as_deref()
-            .or(state.settings.handler.as_deref())
+            .or(state.defaults.handler.as_deref())
             .ok_or(Error::BadRequestWithOffset(
                 record.offset,
                 BadRequestError::MissingHandler,
@@ -601,7 +609,7 @@ where
         let scope = record
             .scope
             .as_deref()
-            .or(state.settings.scope.as_deref())
+            .or(state.defaults.scope.as_deref())
             .map(|scope| RestrictedValue::new(ReString::from(scope)).map(Scope::new))
             .transpose()
             .map_err(|err| {
@@ -623,7 +631,7 @@ where
         let limit_key = record
             .limit_key
             .as_deref()
-            .or(state.settings.limit_key.as_deref())
+            .or(state.defaults.limit_key.as_deref())
             .map(parse_limit_key::<ReString>)
             .transpose()
             .map_err(|err| {
@@ -643,7 +651,7 @@ where
                 if record
                     .key
                     .as_deref()
-                    .or(state.settings.key.as_deref())
+                    .or(state.defaults.key.as_deref())
                     .is_some()
                 {
                     return Err(Error::BadRequestWithOffset(
@@ -657,7 +665,7 @@ where
                 let key = record
                     .key
                     .as_deref()
-                    .or(state.settings.key.as_deref())
+                    .or(state.defaults.key.as_deref())
                     .ok_or_else(|| {
                         Error::BadRequestWithOffset(record.offset, BadRequestError::MissingKey)
                     })?;
@@ -673,7 +681,7 @@ where
                 let key = record
                     .key
                     .as_deref()
-                    .or(state.settings.key.as_deref())
+                    .or(state.defaults.key.as_deref())
                     .ok_or_else(|| {
                         Error::BadRequestWithOffset(record.offset, BadRequestError::MissingKey)
                     })?;
@@ -690,7 +698,7 @@ where
         let idempotency_key = record
             .idempotency_key
             .as_deref()
-            .or(state.settings.idempotency_key.as_deref());
+            .or(state.defaults.idempotency_key.as_deref());
 
         if idempotency_key.is_some()
             && target_meta.target_ty
@@ -706,8 +714,8 @@ where
 
         // The default Settings headers plus this record's own headers plus W3C trace context.
         let mut headers =
-            Vec::with_capacity(state.settings.headers.len() + record.additional_headers.len());
-        for (name, value) in &state.settings.headers {
+            Vec::with_capacity(state.defaults.headers.len() + record.additional_headers.len());
+        for (name, value) in &state.defaults.headers {
             headers.push(Header::new(name.as_str(), value.as_str()));
         }
         for (name, value) in &record.additional_headers {
@@ -715,7 +723,7 @@ where
         }
 
         let seed = PartitionKeySeed {
-            producer: state.producer_id,
+            producer: &state.dedup_mode,
             offset: record.offset,
         };
 
@@ -760,9 +768,12 @@ where
         invocation.execution_time = execution_time;
         invocation.limit_key = limit_key;
 
-        let dedup = state
-            .producer_id
-            .map(|producer| DedupInformation::producer(producer, record.offset));
+        let dedup = match state.dedup_mode {
+            DedupMode::None => None,
+            DedupMode::OffsetBased(producer_id) => {
+                Some(DedupInformation::producer(producer_id, record.offset))
+            }
+        };
 
         let header = restate_wal_protocol::Header {
             source: restate_wal_protocol::Source::Ingress {},
@@ -835,8 +846,8 @@ impl<'a> Extractor for TraceContextExtractor<'a> {
 /// [`InvocationId`] deterministic and stable per producer, so retrying the same
 /// record yields the same key.
 #[derive(Hash)]
-struct PartitionKeySeed {
-    producer: Option<u128>,
+struct PartitionKeySeed<'a> {
+    producer: &'a DedupMode,
     offset: u64,
 }
 
@@ -863,13 +874,13 @@ enum Error {
     #[error("Ingress is shutting down")]
     Shutdown,
     #[error("Protocol violation: {0}")]
-    GoAway(GoAwayError),
+    GoAway(#[from] GoAwayError),
     #[error("Invocation target not found: {0}")]
-    NotFound(NotFoundError),
+    NotFound(#[from] NotFoundError),
     #[error("Invocation target not found for invocation at offset {0}: {1}")]
     NotFoundWithOffset(u64, NotFoundError),
     #[error("Bad request: {0}")]
-    BadRequest(BadRequestError),
+    BadRequest(#[from] BadRequestError),
     #[error("Bad request for invocation at offset {0}: {1}")]
     BadRequestWithOffset(u64, BadRequestError),
     #[error("Internal ingestion error as offset {0}: {1}")]
@@ -903,6 +914,8 @@ impl From<Error> for proto::Error {
 enum GoAwayError {
     #[error("Expecting Start message")]
     ExpectingStartMessage,
+    #[error("Required producer id")]
+    RequiredProducerID,
     #[error("Unexpected Start message")]
     UnexpectedStartMessage,
     #[error("window size violation")]
@@ -950,6 +963,8 @@ enum BadRequestError {
     UnexpectedIdempotencyKey,
     #[error("Deployment '{0}' is deprecated")]
     DeprecatedDeployment(DeploymentId),
+    #[error("Unknown deduplication mode")]
+    UnknownDeduplicationMode,
 }
 
 /// The referenced invocation target does not exist in the current schema. Maps
@@ -962,6 +977,30 @@ enum NotFoundError {
     UnknownHandler { service: String, handler: String },
 }
 
+#[derive(Debug, Clone, Hash)]
+enum DedupMode {
+    None,
+    OffsetBased(u128),
+}
+
+impl DedupMode {
+    fn create(mode: DeduplicationMode, producer: impl AsRef<str>) -> Result<Self, GoAwayError> {
+        let value = match mode {
+            DeduplicationMode::Disabled => Self::None,
+            DeduplicationMode::OffsetBased => {
+                let producer = producer.as_ref();
+                if producer.is_empty() {
+                    return Err(GoAwayError::RequiredProducerID);
+                }
+                let mut hasher = xxhash_rust::xxh3::Xxh3::default();
+                producer.hash(&mut hasher);
+                Self::OffsetBased(hasher.digest128())
+            }
+        };
+
+        Ok(value)
+    }
+}
 /// Per-stream context held while in [`State::Processing`].
 ///
 /// Created once the `Start` frame is accepted and carried for the lifetime of the
@@ -970,7 +1009,7 @@ enum NotFoundError {
 struct ProcessorState {
     /// Hash of the producer id used for deduplication, or `None` when the
     /// producer id was empty (deduplication disabled for the stream).
-    producer_id: Option<u128>,
+    dedup_mode: DedupMode,
     /// The raw producer id from the `Start` frame, used for metric labels and
     /// logging.
     producer: ReString,
@@ -978,8 +1017,8 @@ struct ProcessorState {
     integration: ReString,
     /// Counter incremented once per committed record.
     ingested_counter: metrics::Counter,
-    /// Current per-record defaults; replaced whenever a `Settings` frame arrives.
-    settings: IngestionSettings,
+    /// Current per-record defaults; replaced whenever a `Defaults` frame arrives.
+    defaults: IngestionDefaults,
     /// Highest committed offset so far, or `None` if nothing has committed yet.
     /// Offsets are 0-based, hence the `Option`.
     last_committed: Option<CommittedOffset>,
@@ -1003,26 +1042,21 @@ impl ProcessorState {
     fn new(
         producer_id: impl Into<ReString>,
         integration: impl Into<ReString>,
-        settings: IngestionSettings,
+        dedup_mode: DedupMode,
+        defaults: IngestionDefaults,
         yield_threshold: i64,
     ) -> Self {
         let producer = producer_id.into();
         let integration = integration.into();
         Self {
-            producer_id: if producer.is_empty() {
-                None
-            } else {
-                let mut hasher = xxhash_rust::xxh3::Xxh3::default();
-                producer.hash(&mut hasher);
-                Some(hasher.digest128())
-            },
+            dedup_mode,
             producer,
             ingested_counter: metrics::counter!(
                 INGESTION_INGESTED,
                 "integration" => integration.clone(),
             ),
             integration,
-            settings,
+            defaults,
             last_committed: None,
             last_inflight: None,
             current_window_size: 0,
