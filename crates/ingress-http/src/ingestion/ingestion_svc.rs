@@ -108,6 +108,7 @@ pub(crate) fn ingestion_server<T, Schemas>(
     ingestion_client: IngestionClient<T, Envelope>,
     schemas: Live<Schemas>,
     max_window_size: NonZeroU32,
+    max_message_size: usize,
 ) -> IngestionSvcServer<IngestionService<T, Schemas>>
 where
     Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
@@ -117,6 +118,8 @@ where
         schemas,
         max_window_size,
     ))
+    .max_decoding_message_size(max_message_size)
+    .max_encoding_message_size(max_message_size)
 }
 
 /// Window-replenishment threshold, as a percentage of the maximum window size.
@@ -233,6 +236,11 @@ where
                     let state = match self.wait_start().await {
                         Ok(settings) => settings,
                         Err(err) => {
+                            debug!(
+                                error=%err,
+                                "Error encountered while waiting for ingestion start message"
+                            );
+
                             let response = IngestionResponse {
                                 last_committed: None,
                                 response: Some(ingestion_response::Response::Error(err.into())),
@@ -275,10 +283,19 @@ where
                                 )),
                             }
                         }
-                        Err(err) => IngestionResponse {
-                            last_committed: state.last_committed,
-                            response: Some(ingestion_response::Response::Error(err.into())),
-                        },
+                        Err(err) => {
+                            debug!(
+                                producer=%state.producer,
+                                integration=%state.integration,
+                                error=%err,
+                                "Error encountered while processing ingestion messages"
+                            );
+
+                            IngestionResponse {
+                                last_committed: state.last_committed,
+                                response: Some(ingestion_response::Response::Error(err.into())),
+                            }
+                        }
                     };
 
                     return Some((Ok(result), self));
@@ -603,6 +620,13 @@ where
             ));
         }
 
+        if !target_meta.public {
+            return Err(BadRequestWithOffset(
+                record.offset,
+                BadRequestError::PrivateService,
+            ));
+        }
+
         // Scope extraction
         // todo: If we parse and store scope and limit-keys
         // from settings, we can save few cpu cycles here
@@ -671,9 +695,22 @@ where
                     })?;
 
                 match scope {
-                    Some(scope) => InvocationTarget::scoped_virtual_object(
-                        service, key, handler, handler_ty, scope,
-                    ),
+                    Some(scope) => {
+                        if Configuration::pinned()
+                            .common
+                            .experimental
+                            .is_scoped_virtual_objects_enabled()
+                        {
+                            InvocationTarget::scoped_virtual_object(
+                                service, key, handler, handler_ty, scope,
+                            )
+                        } else {
+                            return Err(Error::BadRequestWithOffset(
+                                record.offset,
+                                BadRequestError::UnexpectedScope,
+                            ));
+                        }
+                    }
                     None => InvocationTarget::virtual_object(service, key, handler, handler_ty),
                 }
             }
@@ -712,14 +749,11 @@ where
 
         let invocation_retention = target_meta.compute_retention(idempotency_key.is_some());
 
-        // The default Settings headers plus this record's own headers plus W3C trace context.
-        let mut headers =
-            Vec::with_capacity(state.defaults.headers.len() + record.additional_headers.len());
-        for (name, value) in &state.defaults.headers {
-            headers.push(Header::new(name.as_str(), value.as_str()));
-        }
-        for (name, value) in &record.additional_headers {
-            headers.push(Header::new(name.as_str(), value.as_str()));
+        // merge headers Defaults + Record headers
+        let mut headers = state.defaults.headers.clone();
+
+        for (name, value) in record.additional_headers {
+            headers.insert(name, value);
         }
 
         let seed = PartitionKeySeed {
@@ -762,7 +796,10 @@ where
 
         invocation.with_related_span(SpanRelation::parent(span_context));
         invocation.argument = record.payload;
-        invocation.headers = headers;
+        invocation.headers = headers
+            .into_iter()
+            .map(|(k, v)| Header::new(k, v))
+            .collect();
         invocation.idempotency_key = idempotency_key.map(Into::into);
         invocation.with_retention(invocation_retention);
         invocation.execution_time = execution_time;
@@ -892,7 +929,15 @@ impl From<Error> for proto::Error {
         let (invocation_offset, kind) = match value {
             Error::Shutdown => (None, proto::ErrorKind::ShuttingDown),
             Error::GoAway(_) => (None, proto::ErrorKind::GoAway),
-            Error::Ingestion(offset, _) => (Some(offset), proto::ErrorKind::Unknown),
+            Error::Ingestion(offset, ref err) => {
+                let kind = match err {
+                    IngestionError::Closed(_) => proto::ErrorKind::ShuttingDown,
+                    IngestionError::RecordMaxSizeExceeded { .. } => proto::ErrorKind::BadRequest,
+                    IngestionError::PartitionTableError(_) => proto::ErrorKind::Unknown,
+                };
+
+                (Some(offset), kind)
+            }
             Error::NotFound(_) => (None, proto::ErrorKind::NotFound),
             Error::NotFoundWithOffset(offset, _) => (Some(offset), proto::ErrorKind::NotFound),
             Error::BadRequest(_) => (None, proto::ErrorKind::BadRequest),
@@ -943,6 +988,8 @@ impl GoAwayError {
 enum BadRequestError {
     #[error("Missing service key")]
     MissingService,
+    #[error("Service is private")]
+    PrivateService,
     #[error("Missing service handler")]
     MissingHandler,
     #[error("Missing required service key")]
@@ -1051,10 +1098,7 @@ impl ProcessorState {
         Self {
             dedup_mode,
             producer,
-            ingested_counter: metrics::counter!(
-                INGESTION_INGESTED,
-                "integration" => integration.clone(),
-            ),
+            ingested_counter: metrics::counter!(INGESTION_INGESTED),
             integration,
             defaults,
             last_committed: None,
