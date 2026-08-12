@@ -165,7 +165,7 @@ message IngestionRequest {
 // more invocations while the window is depleted can
 // result in a GO_AWAY error.
 message WindowUpdate {
-    uint64 increment_bytes = 1;
+    uint32 increment_bytes = 1;
 }
 
 enum ErrorKind {
