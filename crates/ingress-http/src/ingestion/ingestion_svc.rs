@@ -50,7 +50,7 @@
 
 use std::collections::VecDeque;
 use std::hash::Hash;
-use std::num::NonZeroU64;
+use std::num::NonZeroU32;
 use std::time::Duration;
 
 use futures::future::OptionFuture;
@@ -106,7 +106,7 @@ use crate::metric_definitions::INGESTION_INGESTED;
 pub(crate) fn ingestion_server<T, Schemas>(
     ingestion_client: IngestionClient<T, Envelope>,
     schemas: Live<Schemas>,
-    max_window_size: NonZeroU64,
+    max_window_size: NonZeroU32,
 ) -> IngestionSvcServer<IngestionService<T, Schemas>>
 where
     Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
@@ -124,7 +124,7 @@ where
 /// responses until the remaining window drops to this percentage of its maximum,
 /// batching acks instead of replying after every commit. See
 /// [`IngestionStream::should_yield`].
-const UPDATE_WINDOW_THRESHOLD: u64 = 50; // 50% of max window size
+const UPDATE_WINDOW_THRESHOLD: u32 = 50; // 50% of max window size
 
 /// The [`IngestionSvc`] implementation.
 ///
@@ -136,14 +136,14 @@ const UPDATE_WINDOW_THRESHOLD: u64 = 50; // 50% of max window size
 pub(crate) struct IngestionService<T, Schemas> {
     ingestion_client: IngestionClient<T, Envelope>,
     schemas: Live<Schemas>,
-    max_window_size: NonZeroU64,
+    max_window_size: NonZeroU32,
 }
 
 impl<T, Schemas> IngestionService<T, Schemas> {
     fn new(
         ingestion_client: IngestionClient<T, Envelope>,
         schemas: Live<Schemas>,
-        max_window_size: NonZeroU64,
+        max_window_size: NonZeroU32,
     ) -> Self {
         Self {
             ingestion_client,
@@ -165,9 +165,6 @@ where
         &self,
         request: Request<Streaming<IngestionRequest>>,
     ) -> Result<Response<Self::IngestStream>, Status> {
-        // Snapshot the schema once so the stream owns a `'static` resolver rather
-        // than borrowing `&self` across `.await` points.
-
         let stream = IngestionStream::new(
             request.into_inner(),
             self.ingestion_client.clone(),
@@ -185,7 +182,7 @@ struct IngestionStream<T, S, Schemas> {
     ingestion_client: IngestionClient<T, Envelope>,
     schemas: Live<Schemas>,
     state: State,
-    max_window_size: NonZeroU64,
+    max_window_size: NonZeroU32,
 }
 
 /// The lifecycle state of an [`IngestionStream`].
@@ -213,7 +210,7 @@ where
         inbound: S,
         ingestion_client: IngestionClient<T, Envelope>,
         schemas: Live<Schemas>,
-        max_window_size: NonZeroU64,
+        max_window_size: NonZeroU32,
     ) -> Self {
         Self {
             inbound,
@@ -415,7 +412,7 @@ where
             return Ok(ProcessorResult::Continue(self.max_window_size.get()));
         }
 
-        let mut replenish_size: u64 = 0;
+        let mut replenish_size: u32 = 0;
 
         loop {
             let head = OptionFuture::from(state.inflight.front_mut());
@@ -497,7 +494,9 @@ where
                 // it's okay if window size goes below zero for a single message
                 // but the client should not send more unless it receives a
                 // window update.
-                let invocation_size = invocation.encoded_len();
+                let invocation_size = u32::try_from(invocation.encoded_len())
+                    .map_err(|_| Error::GoAway(GoAwayError::WindowSizeViolation))?;
+
                 state.current_window_size -= invocation_size as i64;
                 let offset = invocation.offset;
                 if state
@@ -514,7 +513,7 @@ where
                     .ingest(envelope.partition_key(), envelope)
                     .await
                     .map_err(|err| Error::Ingestion(offset, err))?
-                    .map(|_| (offset, invocation_size as u64));
+                    .map(|_| (offset, invocation_size));
 
                 state.last_inflight = Some(offset);
                 state.inflight.push_back(commit);
@@ -845,7 +844,7 @@ struct PartitionKeySeed {
 enum ProcessorResult {
     /// Keep processing; the payload is the number of bytes to add back to the
     /// window in the emitted `WindowUpdate`.
-    Continue(u64),
+    Continue(u32),
     /// The inbound stream ended and all inflight records were drained; the
     /// stream should transition to [`State::Terminated`].
     Terminate,
@@ -997,7 +996,7 @@ struct ProcessorState {
     yield_threshold: i64,
     /// Commit futures for submitted-but-not-yet-committed records, in submission
     /// order. Each resolves to `(offset, encoded_size)`.
-    inflight: VecDeque<RecordCommit<(u64, u64)>>,
+    inflight: VecDeque<RecordCommit<(u64, u32)>>,
 }
 
 impl ProcessorState {
