@@ -124,7 +124,7 @@ where
 /// responses until the remaining window drops to this percentage of its maximum,
 /// batching acks instead of replying after every commit. See
 /// [`IngestionStream::should_yield`].
-const UPDATE_WINDOW_THRESHOLD: u64 = 20; // 20% of max window size
+const UPDATE_WINDOW_THRESHOLD: u64 = 50; // 50% of max window size
 
 /// The [`IngestionSvc`] implementation.
 ///
@@ -387,6 +387,7 @@ where
             start.producer_id,
             start.integration,
             settings.unwrap_or_default(),
+            (self.max_window_size.get() * UPDATE_WINDOW_THRESHOLD / 100) as i64,
         ))
     }
 
@@ -462,13 +463,10 @@ where
         Ok(ProcessorResult::Terminate)
     }
 
-    /// Returns `true` when the remaining window has fallen to
-    /// [`UPDATE_WINDOW_THRESHOLD`] percent (or less) of its maximum, i.e. it is
-    /// time to replenish the client's credit with a `WindowUpdate`. A negative
-    /// window is clamped to zero for the comparison.
+    /// Returns `true` when the remaining window has fallen below
+    /// yield_threshold.
     fn should_yield(&self, state: &ProcessorState) -> bool {
-        let percent = (state.current_window_size.max(0) as u64 * 100) / self.max_window_size.get();
-        percent <= UPDATE_WINDOW_THRESHOLD
+        state.current_window_size < state.yield_threshold
     }
 
     /// Applies a single inbound frame to `state`.
@@ -993,6 +991,10 @@ struct ProcessorState {
     /// received and replenished when it commits; may briefly go negative for a
     /// single oversized invocation.
     current_window_size: i64,
+    /// Threshold at which the stream yields back
+    /// a window update message once current_window_size
+    /// go below this value.
+    yield_threshold: i64,
     /// Commit futures for submitted-but-not-yet-committed records, in submission
     /// order. Each resolves to `(offset, encoded_size)`.
     inflight: VecDeque<RecordCommit<(u64, u64)>>,
@@ -1003,6 +1005,7 @@ impl ProcessorState {
         producer_id: impl Into<ReString>,
         integration: impl Into<ReString>,
         settings: IngestionSettings,
+        yield_threshold: i64,
     ) -> Self {
         let producer = producer_id.into();
         let integration = integration.into();
@@ -1024,6 +1027,7 @@ impl ProcessorState {
             last_committed: None,
             last_inflight: None,
             current_window_size: 0,
+            yield_threshold,
             inflight: VecDeque::default(),
         }
     }
