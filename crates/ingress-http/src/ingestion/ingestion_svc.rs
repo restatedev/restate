@@ -502,6 +502,13 @@ where
                 let invocation_size = invocation.encoded_len();
                 state.current_window_size -= invocation_size as i64;
                 let offset = invocation.offset;
+                if state
+                    .last_inflight
+                    .is_some_and(|last_inflight| last_inflight >= offset)
+                {
+                    return Err(Error::GoAway(GoAwayError::OffsetViolation));
+                }
+
                 let envelope = self.build_envelope(state, invocation)?;
 
                 let commit = self
@@ -511,6 +518,7 @@ where
                     .map_err(|err| Error::Ingestion(offset, err))?
                     .map(|_| (offset, invocation_size as u64));
 
+                state.last_inflight = Some(offset);
                 state.inflight.push_back(commit);
             }
         }
@@ -902,6 +910,8 @@ enum GoAwayError {
     UnexpectedStartMessage,
     #[error("window size violation")]
     WindowSizeViolation,
+    #[error("offset value violation")]
+    OffsetViolation,
     #[error("Missing request payload")]
     MissingRequestPayload,
     #[error("Timeout")]
@@ -976,6 +986,9 @@ struct ProcessorState {
     /// Highest committed offset so far, or `None` if nothing has committed yet.
     /// Offsets are 0-based, hence the `Option`.
     last_committed: Option<CommittedOffset>,
+    /// Highest inflight offset. Mainly used to validate
+    /// offset monotonicity.
+    last_inflight: Option<CommittedOffset>,
     /// Remaining send-window credit in bytes. Debited when an invocation is
     /// received and replenished when it commits; may briefly go negative for a
     /// single oversized invocation.
@@ -1009,6 +1022,7 @@ impl ProcessorState {
             integration,
             settings,
             last_committed: None,
+            last_inflight: None,
             current_window_size: 0,
             inflight: VecDeque::default(),
         }
