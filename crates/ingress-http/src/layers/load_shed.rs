@@ -8,15 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::Bytes;
-use futures::ready;
-use http::{Request, Response};
-use metrics::counter;
-use pin_project_lite::pin_project;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+
+use bytes::Bytes;
+use futures::ready;
+use http::{Request, Response};
+use http_body::Body;
+use metrics::counter;
+use pin_project_lite::pin_project;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tower::{Layer, Service};
 use tracing::warn;
@@ -63,7 +65,7 @@ where
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ResBody: http_body::Body + Default + From<Bytes>,
 {
-    type Response = Response<ResBody>;
+    type Response = Response<PermittedBody<ResBody>>;
     type Error = S::Error;
     type Future = ResponseFuture<S::Future>;
 
@@ -92,7 +94,7 @@ where
         ResponseFuture {
             state: ResponseState::Called {
                 fut: self.inner.call(req),
-                _permit: permit,
+                _permit: Some(permit),
             },
         }
     }
@@ -111,8 +113,9 @@ pin_project! {
         Called {
             #[pin]
             fut: F,
-               // Keep this around so that it is dropped when the future completes
-            _permit: OwnedSemaphorePermit,
+            // Held for the duration of the call. On success it is handed over to the response
+            // body (see `poll`); otherwise it is released when the future is dropped.
+            _permit: Option<OwnedSemaphorePermit>,
         },
         Overloaded,
     }
@@ -123,16 +126,63 @@ where
     F: Future<Output = Result<Response<B>, E>>,
     B: http_body::Body + Default + From<Bytes>,
 {
-    type Output = Result<Response<B>, E>;
+    type Output = Result<Response<PermittedBody<B>>, E>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.project().state.project() {
-            ResponseStateProj::Called { fut, .. } => Poll::Ready(ready!(fut.poll(cx))),
-            // Route through HandlerError so the 429 carries the standard JSON body and the
-            // x-restate-error-source header (source = ingress).
-            ResponseStateProj::Overloaded => {
-                Poll::Ready(Ok(HandlerError::TooManyRequests.into_response()))
+            ResponseStateProj::Called { fut, _permit } => {
+                // `PermittedBody` keeps the permit alive until the body itself is dropped, so a
+                // long-lived stream (e.g. an ingestion stream) counts against the concurrency
+                // limit for its whole duration.
+                let response = ready!(fut.poll(cx))
+                    .map(|response| response.map(|body| PermittedBody::new(body, _permit.take())));
+                Poll::Ready(response)
             }
+            ResponseStateProj::Overloaded => Poll::Ready(Ok(HandlerError::TooManyRequests
+                .into_response()
+                .map(|body| PermittedBody::new(body, None)))),
         }
+    }
+}
+
+pin_project! {
+    #[derive(Default)]
+    pub struct PermittedBody<B> {
+        #[pin]
+        body: B,
+        _permit: Option<OwnedSemaphorePermit>,
+    }
+}
+
+impl<B> PermittedBody<B> {
+    pub fn new(body: B, permit: Option<OwnedSemaphorePermit>) -> Self {
+        Self {
+            body,
+            _permit: permit,
+        }
+    }
+}
+
+impl<B> Body for PermittedBody<B>
+where
+    B: Body,
+{
+    type Data = B::Data;
+    type Error = B::Error;
+
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
+    }
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        let this = self.project();
+        this.body.poll_frame(cx)
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.body.size_hint()
     }
 }

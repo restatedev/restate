@@ -159,11 +159,15 @@ where
             .layer(RequestBodyLimitLayer::new(request_size_limit))
             .service(Handler::new(schemas.clone(), dispatcher));
 
-        let grpc_service = ingestion::ingestion_server(
-            ingestion_client,
-            schemas,
-            ingestion_api_options.max_window_size(),
-        );
+        let grpc_service = ServiceBuilder::new()
+            .layer(layers::load_shed::LoadShedLayer::new(
+                ingestion_api_options.max_concurrent_streams(),
+            ))
+            .service(ingestion::ingestion_server(
+                ingestion_client,
+                schemas,
+                ingestion_api_options.max_window_size(),
+            ));
 
         // Route the gRPC ingestion path to its own service; everything else keeps
         // flowing through the layered handler above.
