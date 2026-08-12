@@ -92,8 +92,8 @@ pub mod proto {
 
 use proto::ingestion_svc_server::{IngestionSvc, IngestionSvcServer};
 use proto::{
-    Invocation as IngestionInvocation, Request as IngestionRequest, Response as IngestionResponse,
-    Settings, WindowUpdate, request, response,
+    IngestionInvocation, IngestionRequest, IngestionResponse, IngestionSettings, WindowUpdate,
+    ingestion_request, ingestion_request::Payload, ingestion_response,
 };
 use tracing::debug;
 
@@ -237,7 +237,7 @@ where
                         Err(err) => {
                             let response = IngestionResponse {
                                 last_committed: None,
-                                response: Some(response::Response::Error(err.into())),
+                                response: Some(ingestion_response::Response::Error(err.into())),
                             };
 
                             self.state = State::Terminated;
@@ -272,14 +272,14 @@ where
 
                             IngestionResponse {
                                 last_committed,
-                                response: Some(response::Response::WindowUpdate(WindowUpdate {
-                                    increment_bytes,
-                                })),
+                                response: Some(ingestion_response::Response::WindowUpdate(
+                                    WindowUpdate { increment_bytes },
+                                )),
                             }
                         }
                         Err(err) => IngestionResponse {
                             last_committed: state.last_committed,
-                            response: Some(response::Response::Error(err.into())),
+                            response: Some(ingestion_response::Response::Error(err.into())),
                         },
                     };
 
@@ -289,7 +289,7 @@ where
         }
     }
 
-    fn validate_settings(&self, settings: &Settings) -> Result<(), Error> {
+    fn validate_settings(&self, settings: &IngestionSettings) -> Result<(), Error> {
         let schemas = self.schemas.pinned();
 
         let service = settings.service.as_deref();
@@ -368,7 +368,7 @@ where
             .payload
             .ok_or_else(|| Error::GoAway(GoAwayError::MissingRequestPayload))?;
 
-        let request::Payload::Start(start) = payload else {
+        let ingestion_request::Payload::Start(start) = payload else {
             return Err(Error::GoAway(GoAwayError::ExpectingStartMessage));
         };
 
@@ -484,14 +484,14 @@ where
         };
 
         match payload {
-            request::Payload::Start(_) => {
+            Payload::Start(_) => {
                 return Err(Error::GoAway(GoAwayError::UnexpectedStartMessage));
             }
-            request::Payload::Settings(settings) => {
+            Payload::Settings(settings) => {
                 self.validate_settings(&settings)?;
                 state.settings = settings;
             }
-            request::Payload::Invocation(invocation) => {
+            Payload::Invocation(invocation) => {
                 if state.current_window_size < 0 {
                     return Err(Error::GoAway(GoAwayError::WindowSizeViolation));
                 }
@@ -982,7 +982,7 @@ struct ProcessorState {
     /// Counter incremented once per committed record.
     ingested_counter: metrics::Counter,
     /// Current per-record defaults; replaced whenever a `Settings` frame arrives.
-    settings: Settings,
+    settings: IngestionSettings,
     /// Highest committed offset so far, or `None` if nothing has committed yet.
     /// Offsets are 0-based, hence the `Option`.
     last_committed: Option<CommittedOffset>,
@@ -1002,7 +1002,7 @@ impl ProcessorState {
     fn new(
         producer_id: impl Into<ReString>,
         integration: impl Into<ReString>,
-        settings: Settings,
+        settings: IngestionSettings,
     ) -> Self {
         let producer = producer_id.into();
         let integration = integration.into();
