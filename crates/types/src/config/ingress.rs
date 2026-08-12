@@ -33,7 +33,7 @@ pub struct IngestionApiOptions {
     ///
     /// Disable the experimental gRPC ingestion API on the ingress endpoint.
     ///
-    /// Since v1.7.4
+    /// Since v1.8
     pub disable: bool,
 
     /// # Maximum ingestion window size
@@ -41,13 +41,27 @@ pub struct IngestionApiOptions {
     /// Maximum number of bytes an ingestion stream may have in flight before the server
     /// applies back pressure.
     ///
-    /// Since v1.7.4
+    /// Since v1.8
     pub max_window_size: NonZeroByteCount,
+
+    /// # Maximum concurrent streams
+    ///
+    /// Maximum number of ingestion streams may have in flight before the server
+    /// start rejecting them
+    ///
+    /// Since v1.8
+    max_concurrent_streams: NonZeroUsize,
 }
 
 impl IngestionApiOptions {
     pub fn max_window_size(&self) -> NonZeroU64 {
         NonZeroU64::new(self.max_window_size.as_u64()).expect("byte count is non-zero")
+    }
+
+    pub fn max_concurrent_streams(&self) -> usize {
+        self.max_concurrent_streams
+            .get()
+            .min(Semaphore::MAX_PERMITS - 1)
     }
 }
 
@@ -55,9 +69,8 @@ impl Default for IngestionApiOptions {
     fn default() -> Self {
         Self {
             disable: false,
-            max_window_size: NonZeroByteCount::new(
-                NonZeroUsize::new(128 * 1024).expect("window size is non-zero"),
-            ),
+            max_window_size: NonZeroByteCount::new(NonZeroUsize::new(128 * 1024).unwrap()),
+            max_concurrent_streams: NonZeroUsize::new(1000).unwrap(),
         }
     }
 }
