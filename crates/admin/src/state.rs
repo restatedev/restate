@@ -8,13 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::cache::{DeploymentStatusCache, DeploymentStatusEntry, DeploymentStatusSnapshot};
 use restate_core::network::TransportConnect;
 use restate_ingestion_client::IngestionClient;
 use restate_limiter::rule_book::RuleBookObserver;
 use restate_metadata_store::MetadataStoreClient;
 use restate_service_protocol_v4::serdes::SerdesClient;
 use restate_storage_query_datafusion::context::QueryContext;
-use restate_types::schema::registry::SchemaRegistry;
+use restate_types::identifiers::DeploymentId;
+use restate_types::schema::registry::{MetadataService, SchemaRegistry};
 use restate_wal_protocol::Envelope;
 use std::sync::Arc;
 
@@ -30,6 +32,7 @@ pub struct AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transp
     // Some value if the query endpoint is activated
     pub query_context: QueryContext,
     pub rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
+    deployment_status_cache: DeploymentStatusCache,
 }
 
 impl<Metadata, Discovery, Telemetry, Invocations, Transport>
@@ -54,6 +57,37 @@ where
             metadata_store_client,
             query_context,
             rule_book_observer,
+            deployment_status_cache: DeploymentStatusCache::new(),
         }
+    }
+}
+
+impl<Metadata, Discovery, Telemetry, Invocations, Transport>
+    AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>
+where
+    Metadata: MetadataService,
+{
+    pub async fn deployment_statuses(
+        &self,
+        force_refresh: bool,
+    ) -> anyhow::Result<DeploymentStatusSnapshot> {
+        self.deployment_status_cache
+            .get_all(&self.schema_registry, &self.query_context, force_refresh)
+            .await
+    }
+
+    pub async fn deployment_status(
+        &self,
+        deployment_id: DeploymentId,
+        force_refresh: bool,
+    ) -> anyhow::Result<DeploymentStatusEntry> {
+        self.deployment_status_cache
+            .get(
+                &self.schema_registry,
+                &self.query_context,
+                deployment_id,
+                force_refresh,
+            )
+            .await
     }
 }

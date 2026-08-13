@@ -12,8 +12,8 @@ use std::collections::HashMap;
 use std::time::SystemTime;
 
 use axum::extract::{Path, Query, State};
-use axum::http::{StatusCode, header};
-use axum::response::IntoResponse;
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use http::{Method, Uri};
 use serde::Deserialize;
@@ -34,6 +34,25 @@ use restate_types::schema::service::ServiceMetadata;
 use super::error::*;
 use crate::rest_api::ErrorDescriptionResponse;
 use crate::state::AdminServiceState;
+
+#[derive(Debug, Default, Deserialize)]
+pub struct DeploymentStatusParams {
+    include: Option<DeploymentStatusInclude>,
+    #[serde(default)]
+    refresh: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DeploymentStatusInclude {
+    Status,
+}
+
+impl DeploymentStatusParams {
+    fn include_status(&self) -> bool {
+        matches!(self.include, Some(DeploymentStatusInclude::Status))
+    }
+}
 
 /// Register deployment
 ///
@@ -198,6 +217,7 @@ where
     tag = "deployment",
     params(
         ("deployment" = String, Path, description = "Deployment identifier"),
+        ("include" = Option<String>, Query, description = "If set to `status`, includes the deployment's computed status (`active` or `drained`) in the response. This information is periodically refreshed and cached, so it might not be fully accurate."),
     ),
     responses(
         (status = 200, description = "Deployment details including services and configuration", body = DetailedDeploymentResponse),
@@ -207,7 +227,8 @@ where
 pub async fn get_deployment<Metadata, Discovery, Telemetry, Invocations, Transport>(
     State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Path(deployment_id): Path<DeploymentId>,
-) -> Result<Json<DetailedDeploymentResponse>, MetaApiError>
+    Query(params): Query<DeploymentStatusParams>,
+) -> Result<Response, MetaApiError>
 where
     Metadata: MetadataService,
 {
@@ -215,8 +236,24 @@ where
         .schema_registry
         .get_deployment_and_services(deployment_id)
         .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
-
-    Ok(to_detailed_deployment_response(deployment, services).into())
+    if params.include_status() {
+        let entry = state
+            .deployment_status(deployment_id, params.refresh)
+            .await
+            .map_err(|err| MetaApiError::Internal(err.to_string()))?;
+        let status = entry.status.unwrap_or(DeploymentStatus::Active);
+        Ok((
+            deployment_status_headers(entry.age),
+            Json(to_detailed_deployment_response(
+                deployment,
+                services,
+                Some(status),
+            )),
+        )
+            .into_response())
+    } else {
+        Ok(Json(to_detailed_deployment_response(deployment, services, None)).into_response())
+    }
 }
 
 /// List deployments
@@ -227,24 +264,55 @@ where
     path = "/deployments",
     operation_id = "list_deployments",
     tag = "deployment",
+    params(
+        ("include" = Option<String>, Query, description = "If set to `status`, includes each deployment's computed status (`active` or `drained`) in the response. This information is periodically refreshed and cached, so it might not be fully accurate."),
+    ),
     responses(
         (status = 200, description = "List of all registered deployments with their metadata", body = ListDeploymentsResponse)
     )
 )]
 pub async fn list_deployments<Metadata, Discovery, Telemetry, Invocations, Transport>(
     State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
-) -> Json<ListDeploymentsResponse>
+    Query(params): Query<DeploymentStatusParams>,
+) -> Result<Response, MetaApiError>
 where
     Metadata: MetadataService,
 {
+    let snapshot = if params.include_status() {
+        Some(
+            state
+                .deployment_statuses(params.refresh)
+                .await
+                .map_err(|err| MetaApiError::Internal(err.to_string()))?,
+        )
+    } else {
+        None
+    };
     let deployments = state
         .schema_registry
         .list_deployments()
         .into_iter()
-        .map(|(deployment, services)| to_deployment_response(deployment, services))
+        .map(|(deployment, services)| {
+            let status = snapshot.as_ref().map(|snapshot| {
+                snapshot
+                    .statuses()
+                    .get(&deployment.id)
+                    .copied()
+                    .unwrap_or(DeploymentStatus::Active)
+            });
+            to_deployment_response(deployment, services, status)
+        })
         .collect();
 
-    ListDeploymentsResponse { deployments }.into()
+    if let Some(snapshot) = snapshot {
+        Ok((
+            deployment_status_headers(snapshot.age),
+            Json(ListDeploymentsResponse { deployments }),
+        )
+            .into_response())
+    } else {
+        Ok(Json(ListDeploymentsResponse { deployments }).into_response())
+    }
 }
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
@@ -359,7 +427,7 @@ where
                     .get_deployment_and_services(deployment_id)
                     .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
 
-                return Ok(to_detailed_deployment_response(deployment, services).into());
+                return Ok(to_detailed_deployment_response(deployment, services, None).into());
             }
 
             if let Some(uri) = &uri {
@@ -413,7 +481,7 @@ where
                     .get_deployment_and_services(deployment_id)
                     .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
 
-                return Ok(to_detailed_deployment_response(deployment, services).into());
+                return Ok(to_detailed_deployment_response(deployment, services, None).into());
             }
 
             (
@@ -450,7 +518,9 @@ where
         .await
         .inspect_err(|e| warn_it!(e))?;
 
-    Ok(Json(to_detailed_deployment_response(deployment, services)))
+    Ok(Json(to_detailed_deployment_response(
+        deployment, services, None,
+    )))
 }
 
 fn to_register_response(
@@ -486,6 +556,7 @@ fn to_deployment_response(
         ..
     }: Deployment,
     services: Vec<(String, ServiceRevision)>,
+    status: Option<DeploymentStatus>,
 ) -> DeploymentResponse {
     match ty {
         DeploymentType::Http {
@@ -495,6 +566,7 @@ fn to_deployment_response(
             auth,
         } => DeploymentResponse::Http {
             id,
+            status,
             uri: address,
             protocol_type,
             http_version,
@@ -517,6 +589,7 @@ fn to_deployment_response(
             compression,
         } => DeploymentResponse::Lambda {
             id,
+            status,
             arn,
             assume_role_arn: assume_role_arn.map(Into::into),
             compression,
@@ -548,6 +621,7 @@ fn to_detailed_deployment_response(
         ..
     }: Deployment,
     services: Vec<ServiceMetadata>,
+    status: Option<DeploymentStatus>,
 ) -> DetailedDeploymentResponse {
     match ty {
         DeploymentType::Http {
@@ -557,6 +631,7 @@ fn to_detailed_deployment_response(
             auth,
         } => DetailedDeploymentResponse::Http {
             id,
+            status,
             uri: address,
             protocol_type,
             http_version,
@@ -576,6 +651,7 @@ fn to_detailed_deployment_response(
             compression,
         } => DetailedDeploymentResponse::Lambda {
             id,
+            status,
             arn,
             assume_role_arn: assume_role_arn.map(Into::into),
             compression,
@@ -589,6 +665,16 @@ fn to_detailed_deployment_response(
             info,
         },
     }
+}
+
+fn deployment_status_headers(age: std::time::Duration) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::AGE,
+        HeaderValue::from_str(&age.as_secs().to_string()).expect("age is a valid header value"),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers
 }
 
 #[inline]

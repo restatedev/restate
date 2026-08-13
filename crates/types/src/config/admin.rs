@@ -75,6 +75,9 @@ pub struct AdminOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "schemars", schemars(skip))]
     pub storage_accounting_update_interval: Option<NonZeroFriendlyDuration>,
+
+    /// Maximum age of the cached deployment status used by the Admin API.
+    pub deployment_status_cache_ttl: NonZeroFriendlyDuration,
 }
 
 impl AdminOptions {
@@ -133,6 +136,7 @@ impl Default for AdminOptions {
             disable_cluster_controller: false,
             disable_web_ui: false,
             storage_accounting_update_interval: None,
+            deployment_status_cache_ttl: NonZeroFriendlyDuration::from_secs_unchecked(60 * 60),
         }
     }
 }

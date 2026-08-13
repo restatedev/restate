@@ -36,6 +36,7 @@ use crate::schema::metadata::updater::{
 };
 use crate::schema::service::{HandlerMetadata, ServiceMetadata, ServiceMetadataResolver};
 use crate::schema::subscriptions::{ListSubscriptionFilter, Subscription, SubscriptionResolver};
+use crate::{Version, Versioned};
 
 use crate::schema::Redaction;
 pub use crate::schema::metadata::updater::{
@@ -713,6 +714,10 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
 
     pub fn list_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)> {
         self.metadata_service.get().get_deployments()
+    }
+
+    pub fn schema_version(&self) -> Version {
+        self.metadata_service.get().version()
     }
 
     pub fn list_service_handlers(

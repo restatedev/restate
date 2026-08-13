@@ -285,6 +285,16 @@ pub struct ListDeploymentsResponse {
 }
 
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DeploymentStatus {
+    /// Active means the deployment is either currently handling in-flight information
+    #[default]
+    Active,
+    Drained,
+}
+
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum DeploymentResponse {
@@ -293,6 +303,15 @@ pub enum DeploymentResponse {
     Http {
         /// # Deployment ID
         id: DeploymentId,
+
+        /// # Status
+        ///
+        /// Whether this deployment is active or fully drained.
+        ///
+        /// This will be returned only if explicitly requested with `include=status`.
+        /// This information is periodically refreshed and cached, it might not be accurate.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<DeploymentStatus>,
 
         /// # Deployment URI
         ///
@@ -369,6 +388,15 @@ pub enum DeploymentResponse {
     Lambda {
         /// # Deployment ID
         id: DeploymentId,
+
+        /// # Status
+        ///
+        /// Whether this deployment is active or fully drained.
+        ///
+        /// This will be returned only if explicitly requested with `include=status`.
+        /// This information is periodically refreshed and cached, it might not be accurate.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<DeploymentStatus>,
 
         /// # Lambda ARN
         ///
@@ -452,6 +480,15 @@ pub enum DetailedDeploymentResponse {
         /// # Deployment ID
         id: DeploymentId,
 
+        /// # Status
+        ///
+        /// Whether this deployment is active or fully drained.
+        ///
+        /// This will be returned only if explicitly requested with `include=status`.
+        /// This information is periodically refreshed and cached, it might not be accurate.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<DeploymentStatus>,
+
         /// # Deployment URI
         ///
         /// URI used to invoke this service deployment.
@@ -525,6 +562,15 @@ pub enum DetailedDeploymentResponse {
     Lambda {
         /// # Deployment ID
         id: DeploymentId,
+
+        /// # Status
+        ///
+        /// Whether this deployment is active or fully drained.
+        ///
+        /// This will be returned only if explicitly requested with `include=status`.
+        /// This information is periodically refreshed and cached, it might not be accurate.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<DeploymentStatus>,
 
         /// # Lambda ARN
         ///
