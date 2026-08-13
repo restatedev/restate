@@ -20,6 +20,7 @@ use restate_admin_rest_model::services::*;
 use restate_core::TaskCenter;
 use restate_core::network::TransportConnect;
 use restate_errors::warn_it;
+use restate_ingestion_client::Ingestion;
 use restate_types::config::Configuration;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
 use restate_types::schema::registry::MetadataService;
