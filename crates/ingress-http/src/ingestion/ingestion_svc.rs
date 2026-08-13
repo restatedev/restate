@@ -181,9 +181,9 @@ where
     }
 }
 
-pub(super) struct IngestionStream<T, S, Schemas> {
+pub(super) struct IngestionStream<I, S, Schemas> {
     inbound: S,
-    ingestion_client: IngestionClient<T, Envelope>,
+    ingestion_client: I,
     schemas: Live<Schemas>,
     state: State,
     max_window_size: NonZeroU32,
@@ -204,15 +204,15 @@ enum State {
     Terminated,
 }
 
-impl<T, S, Schemas> IngestionStream<T, S, Schemas>
+impl<I, S, Schemas> IngestionStream<I, S, Schemas>
 where
-    T: TransportConnect,
+    I: Ingestion<Envelope>,
     S: Stream<Item = Result<IngestionRequest, Status>> + Unpin,
     Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
 {
     pub(super) fn new(
         inbound: S,
-        ingestion_client: IngestionClient<T, Envelope>,
+        ingestion_client: I,
         schemas: Live<Schemas>,
         max_window_size: NonZeroU32,
     ) -> Self {
