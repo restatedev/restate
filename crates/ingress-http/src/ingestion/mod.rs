@@ -21,6 +21,8 @@
 //! implementation lives in [`ingestion_svc`].
 
 mod ingestion_svc;
+#[cfg(test)]
+mod tests;
 
 use std::convert::Infallible;
 use std::task::{Context, Poll};
