@@ -20,6 +20,8 @@ ignore = [
     # using quick-xml >=0.41 and datafusion permits the bump.
     { id = "RUSTSEC-2026-0194", reason = "quick-xml <0.41 quadratic-time DoS, only reachable via inferno flamegraph generation and object_store XML parsing; no upstream release uses 0.41 yet" },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml <0.41 unbounded namespace-declaration allocation DoS, only reachable via inferno flamegraph generation and object_store XML parsing; no upstream release uses 0.41 yet" },
+    # smartstring is a dependency of rust-rocksdb
+    { id = "RUSTSEC-2026-0249", reason = "The smartstring crate is unmaintained; all versions are affected. The GitHub repository was archived by the owner on 2026-05-03." },
 ]
 
 
