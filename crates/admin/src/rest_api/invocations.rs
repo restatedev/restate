@@ -21,6 +21,7 @@ use restate_admin_rest_model::invocations::{
     RestartedInvocation,
 };
 use restate_core::network::TransportConnect;
+use restate_ingestion_client::Ingestion;
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey};
 use restate_types::invocation::client::{
     self, CancelInvocationResponse, InvocationClient, KillInvocationResponse,
