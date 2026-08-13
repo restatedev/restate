@@ -65,7 +65,7 @@ use tokio_util::time::FutureExt;
 use tonic::{Request, Response, Status, Streaming};
 
 use restate_core::network::TransportConnect;
-use restate_ingestion_client::{IngestionClient, IngestionError, RecordCommit};
+use restate_ingestion_client::{Ingestion, IngestionClient, IngestionError, RecordCommit};
 use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{
@@ -128,7 +128,7 @@ where
 /// responses until the remaining window drops to this percentage of its maximum,
 /// batching acks instead of replying after every commit. See
 /// [`IngestionStream::should_yield`].
-const UPDATE_WINDOW_THRESHOLD: u32 = 50; // 50% of max window size
+pub(super) const UPDATE_WINDOW_THRESHOLD: u32 = 50; // 50% of max window size
 
 /// The [`IngestionSvc`] implementation.
 ///
@@ -181,7 +181,7 @@ where
     }
 }
 
-struct IngestionStream<T, S, Schemas> {
+pub(super) struct IngestionStream<T, S, Schemas> {
     inbound: S,
     ingestion_client: IngestionClient<T, Envelope>,
     schemas: Live<Schemas>,
@@ -210,7 +210,7 @@ where
     S: Stream<Item = Result<IngestionRequest, Status>> + Unpin,
     Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
 {
-    fn new(
+    pub(super) fn new(
         inbound: S,
         ingestion_client: IngestionClient<T, Envelope>,
         schemas: Live<Schemas>,
@@ -226,7 +226,7 @@ where
     }
 
     /// Advances the state machine by one step, returning the next response frame
-    async fn step(mut self) -> Option<(Result<IngestionResponse, Status>, Self)> {
+    pub(super) async fn step(mut self) -> Option<(Result<IngestionResponse, Status>, Self)> {
         loop {
             let state = std::mem::replace(&mut self.state, State::Terminated);
 
