@@ -1,3 +1,7 @@
+# Reusable workflow. Consumed by this repo AND by external repos (e.g.
+# restate-operator) via `uses: restatedev/restate/.github/workflows/docker.yml@...`.
+# Keep it generic: don't hardcode the caller's package/crate names, paths, or image —
+# expose them as inputs that default to the restate-server values.
 name: Build Docker image
 
 on:
@@ -38,6 +42,11 @@ on:
         required: false
         default: false
         type: boolean
+      cargoPackage:
+        description: "workspace package whose version is used to label the image"
+        required: false
+        default: "restate-server"
+        type: string
 
   workflow_dispatch:
     inputs:
@@ -76,6 +85,11 @@ on:
         required: false
         default: false
         type: boolean
+      cargoPackage:
+        description: "workspace package whose version is used to label the image"
+        required: false
+        default: "restate-server"
+        type: string
 
 env:
   REPOSITORY_OWNER: ${{ github.repository_owner }}
@@ -218,7 +232,8 @@ jobs:
           # agrees with what the binary reports: RestateVersion::current() uses
           # CARGO_PKG_VERSION.
           IMAGE_VERSION=$(cargo metadata --no-deps --format-version 1 | \
-            jq -er '.packages[] | select(.name == "restate-server") | .version')
+            jq -er --arg pkg "${{ inputs.cargoPackage }}" \
+              '.packages[] | select(.name == $pkg) | .version')
 
           echo "version=${IMAGE_VERSION}" >> $GITHUB_OUTPUT
           echo "OCI image version: ${IMAGE_VERSION}"
