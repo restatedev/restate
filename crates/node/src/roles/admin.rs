@@ -152,8 +152,8 @@ impl<T: TransportConnect> AdminRole<T> {
             serdes_client,
             service_discovery,
             telemetry_http_client,
-        )
-        .with_query_context(query_context.clone());
+            query_context.clone(),
+        );
 
         if let Some(observer) = local_rule_book_observer {
             admin = admin.with_rule_book_observer(observer);

@@ -26,6 +26,7 @@ use restate_ingestion_client::{IngestionClient, SessionOptions};
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol_v4::discovery::ServiceDiscovery;
 use restate_service_protocol_v4::serdes::SerdesClient;
+use restate_storage_query_datafusion::context::{NoTables, QueryContext};
 use restate_storage_query_datafusion::table_docs;
 use restate_types::config::Configuration;
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
@@ -239,6 +240,7 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
         SerdesClient::new(service_client.clone()),
         ServiceDiscovery::new(RetryPolicy::default(), service_client),
         None,
+        QueryContext::create(&Default::default(), NoTables).await?,
     );
 
     TaskCenter::spawn(

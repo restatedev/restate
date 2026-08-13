@@ -28,7 +28,7 @@ pub struct AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transp
     /// directly (e.g. the rule book) via `read_modify_write`.
     pub metadata_store_client: MetadataStoreClient,
     // Some value if the query endpoint is activated
-    pub query_context: Option<QueryContext>,
+    pub query_context: QueryContext,
     pub rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
 }
 
@@ -43,7 +43,7 @@ where
         invocation_client: Invocations,
         ingestion_client: IngestionClient<Transport, Envelope>,
         metadata_store_client: MetadataStoreClient,
-        query_context: Option<QueryContext>,
+        query_context: QueryContext,
         rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
     ) -> Self {
         Self {

@@ -50,8 +50,6 @@ struct QueryErrorBody {
 pub(crate) enum QueryError {
     #[error("Datafusion error: {0}")]
     Datafusion(#[from] datafusion::error::DataFusionError),
-    #[error("Query service not available")]
-    Unavailable,
     #[error("Rate limited")]
     RateLimited(#[from] gardal::RateLimited),
 }
@@ -79,7 +77,6 @@ impl IntoResponse for QueryError {
                 StatusCode::BAD_REQUEST
             }
             QueryError::Datafusion(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            QueryError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             QueryError::RateLimited(e) => {
                 headers.insert(
                     RETRY_AFTER_HEADER,
@@ -128,11 +125,7 @@ where
     Invocations: InvocationClient + Send + Sync + Clone + 'static,
     Transport: TransportConnect,
 {
-    let Some(query_context) = state.query_context.as_ref() else {
-        return Err(QueryError::Unavailable);
-    };
-
-    let query_result = query_context.execute(&payload.query).await?;
+    let query_result = state.query_context.execute(&payload.query).await?;
 
     let (result_stream, content_type) = match headers.get(http::header::ACCEPT) {
         Some(v) if v == HeaderValue::from_static("application/json") => (

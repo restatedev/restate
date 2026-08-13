@@ -29,6 +29,7 @@ use restate_metadata_store::MetadataStoreClient;
 use restate_service_client::HttpClient;
 use restate_service_protocol_v4::discovery::ServiceDiscovery;
 use restate_service_protocol_v4::serdes::SerdesClient;
+use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::config::AdminOptions;
 use restate_types::invocation::client::InvocationClient;
 use restate_types::live::LiveLoad;
@@ -51,7 +52,7 @@ pub struct AdminService<Metadata, Discovery, Telemetry, Invocations, Transport> 
     schema_registry: SchemaRegistry<Metadata, Discovery, Telemetry>,
     serdes_client: SerdesClient,
     invocation_client: Invocations,
-    query_context: Option<restate_storage_query_datafusion::context::QueryContext>,
+    query_context: QueryContext,
     metadata_client: MetadataStoreClient,
     rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
 }
@@ -62,6 +63,7 @@ where
     Invocations: InvocationClient + Send + Sync + Clone + 'static,
     Transport: TransportConnect,
 {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         listeners: Listeners<AdminPort>,
         metadata_writer: MetadataWriter,
@@ -70,6 +72,7 @@ where
         serdes_client: SerdesClient,
         service_discovery: ServiceDiscovery,
         telemetry_http_client: Option<HttpClient>,
+        query_context: QueryContext,
     ) -> Self {
         let metadata_client = metadata_writer.raw_metadata_store_client().clone();
         Self {
@@ -82,19 +85,9 @@ where
             ),
             serdes_client,
             invocation_client,
-            query_context: None,
+            query_context,
             metadata_client,
             rule_book_observer: None,
-        }
-    }
-
-    pub fn with_query_context(
-        self,
-        query_context: restate_storage_query_datafusion::context::QueryContext,
-    ) -> Self {
-        Self {
-            query_context: Some(query_context),
-            ..self
         }
     }
 
