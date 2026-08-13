@@ -95,35 +95,22 @@ where
         // Decide which OAUTHBEARER policy this subscription needs, based on the
         // `sasl.oauthbearer.config`. If it selects the MSK IAM provider we install
         // Restate's custom token callback (`MskOAuth`); otherwise we leave
-        // librdkafka's built-in OAUTHBEARER handling untouched (`PlainOAuth`),
+        // librdkafka's built-in OAUTHBEARER handling untouched (`DefaultAuth`),
         // so Confluent OIDC and friends keep working. The policy is baked into
         // the consumer type because `ClientContext::ENABLE_REFRESH_OAUTH_TOKEN`
         // is an associated const, hence the branch on distinct concrete types.
         let oauthbearer_config = self.client_config.get("sasl.oauthbearer.config");
-        let kind = if crate::oauth::is_msk_iam_config(oauthbearer_config.as_deref()) {
-            ConsumerKind::MskIam
+        if crate::oauth::is_msk_iam_config(oauthbearer_config.as_deref()) {
+            self.run_with_context::<MskOAuth>(consumer_group_id, rx)
+                .await
         } else {
-            ConsumerKind::Plain
-        };
-        debug!(
-            restate.subscription.id = %self.builder.subscription().id(),
-            "Selected {kind:?} OAUTHBEARER policy for consumer"
-        );
-
-        match kind {
-            ConsumerKind::MskIam => {
-                self.run_with_context::<MskOAuth>(consumer_group_id, rx)
-                    .await
-            }
-            ConsumerKind::Plain => {
-                self.run_with_context::<PlainOAuth>(consumer_group_id, rx)
-                    .await
-            }
+            self.run_with_context::<DefaultAuth>(consumer_group_id, rx)
+                .await
         }
     }
 
     /// Create a consumer with the OAUTHBEARER policy `O`, subscribe, and run the
-    /// main poll/select loop. Shared by both `ConsumerKind` branches so the loop
+    /// main poll/select loop. Shared by both branches so the loop
     /// logic is written once and monomorphised per policy.
     async fn run_with_context<O: OAuthMode>(
         self,
@@ -177,17 +164,6 @@ where
     }
 }
 
-/// Runtime selection of the OAUTHBEARER policy for a consumer. Chosen from the
-/// subscription's `sasl.oauthbearer.config` and mapped to a concrete
-/// [`OAuthMode`] marker (`MskOAuth` / `PlainOAuth`) in [`ConsumerTask::run`].
-#[derive(Debug, Clone, Copy)]
-enum ConsumerKind {
-    /// AWS MSK IAM — install Restate's custom OAUTHBEARER token callback.
-    MskIam,
-    /// Everything else — leave librdkafka's built-in OAUTHBEARER handling in place.
-    Plain,
-}
-
 #[derive(derive_more::Deref)]
 struct ConsumerDrop<T: TransportConnect, O: OAuthMode>(Arc<MessageConsumer<T, O>>);
 
@@ -220,7 +196,7 @@ impl fmt::Display for TopicPartition {
 
 /// OAUTHBEARER policy for a Kafka consumer, selected at runtime per subscription.
 /// A single generic [`ClientContext`] impl reads these off the policy, so
-/// [`MskOAuth`] and [`PlainOAuth`] yield two distinct `ClientContext` behaviours.
+/// [`MskOAuth`] and [`DefaultAuth`] yield two distinct `ClientContext` behaviours.
 trait OAuthMode: Send + Sync + 'static {
     /// `true` makes librdkafka install our token-refresh callback; `false` leaves
     /// its built-in OAUTHBEARER handling in place (e.g. Confluent OIDC).
@@ -248,8 +224,8 @@ impl OAuthMode for MskOAuth {
 }
 
 /// Pass-through OAUTHBEARER policy — leaves librdkafka's built-in handling in place.
-struct PlainOAuth;
-impl OAuthMode for PlainOAuth {
+struct DefaultAuth;
+impl OAuthMode for DefaultAuth {
     const ENABLE_REFRESH_OAUTH_TOKEN: bool = false;
 }
 
@@ -264,12 +240,17 @@ struct RebalanceContext<T: TransportConnect, O: OAuthMode> {
     _oauth: PhantomData<fn() -> O>,
 }
 
-impl<T, O> RebalanceContext<T, O>
+// Must be a single generic impl, not two concrete ones: `RebalanceContext` holds a
+// `Weak<StreamConsumer<Self>>` and `StreamConsumer<C>` requires `C: ConsumerContext`
+// (hence `C: ClientContext`), so `ClientContext` must be provable for every `O: OAuthMode`.
+impl<T, O> ClientContext for RebalanceContext<T, O>
 where
     T: TransportConnect,
     O: OAuthMode,
 {
-    fn report_stats(&self, statistics: Statistics) {
+    const ENABLE_REFRESH_OAUTH_TOKEN: bool = O::ENABLE_REFRESH_OAUTH_TOKEN;
+
+    fn stats(&self, statistics: Statistics) {
         for topic in statistics.topics {
             for partition in topic.1.partitions {
                 let lag = partition.1.consumer_lag as f64;
@@ -282,21 +263,6 @@ where
                 .set(lag);
             }
         }
-    }
-}
-
-// Must be a single generic impl, not two concrete ones: `RebalanceContext` holds a
-// `Weak<StreamConsumer<Self>>` and `StreamConsumer<C>` requires `C: ConsumerContext`
-// (hence `C: ClientContext`), so `ClientContext` must be provable for every `O: OAuthMode`.
-impl<T, O> ClientContext for RebalanceContext<T, O>
-where
-    T: TransportConnect,
-    O: OAuthMode,
-{
-    const ENABLE_REFRESH_OAUTH_TOKEN: bool = O::ENABLE_REFRESH_OAUTH_TOKEN;
-
-    fn stats(&self, statistics: Statistics) {
-        self.report_stats(statistics);
     }
 
     fn generate_oauth_token(
