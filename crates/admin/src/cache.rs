@@ -148,8 +148,9 @@ impl DeploymentStatusCache {
                 Ok(guard) => {
                     // Drop current to avoid holding lock.
                     drop(current);
-                    self.refresh_locked(source, requested_at, guard).await
-                },
+                    self.refresh_locked(source, requested_at, false, guard)
+                        .await
+                }
                 Err(_) => Ok(Arc::clone(current_ref)),
             };
         }
@@ -159,7 +160,8 @@ impl DeploymentStatusCache {
 
         // Cold start (nothing to serve) or a forced refresh: wait our turn, then refresh.
         let guard = self.inner.refresh.lock().await;
-        self.refresh_locked(source, requested_at, guard).await
+        self.refresh_locked(source, requested_at, force_refresh, guard)
+            .await
     }
 
     /// Recomputes the cache entry while holding the refresh lock, stores it, and returns it.
@@ -167,10 +169,12 @@ impl DeploymentStatusCache {
         &self,
         source: &S,
         requested_at: Instant,
+        force_refresh: bool,
         _guard: MutexGuard<'_, ()>,
     ) -> anyhow::Result<Arc<CachedDeploymentStatuses>> {
         // Another caller may have refreshed while we entered the lock, skip refreshing in that case.
-        if let Some(current) = self.inner.value.load().as_ref()
+        if !force_refresh
+            && let Some(current) = self.inner.value.load().as_ref()
             && current.computed_at >= requested_at
             && current.schema_version == source.schema_version()
         {
