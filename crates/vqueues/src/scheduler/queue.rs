@@ -862,9 +862,9 @@ impl<S: VQueueStore> Queue<S> {
             refill_anchor: refill_anchor.or_else(|| self.items.back().map(|(k, _)| *k)),
         };
 
-        // at the end, if the cache is empty and end_of_queue is true, then we must
-        // have exhausted the inbox.
-        if self.items.is_empty() && end_of_queue {
+        // at the end, if the cache is empty and end_of_queue is true, and
+        // there were no deferred entries in the queue (overlay horizon is none).
+        if self.items.is_empty() && end_of_queue && horizon.is_none() {
             self.stage = Stage::Empty;
         }
 

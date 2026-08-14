@@ -152,6 +152,10 @@ impl GatedStore {
             parked = cv.wait(parked).unwrap();
         }
     }
+
+    fn replace_entries(&self, entries: Vec<(EntryKey, EntryValue)>) {
+        *self.entries.lock().unwrap() = entries;
+    }
 }
 
 struct GatedReader {
@@ -433,5 +437,44 @@ async fn overlay_tombstone_then_add_resurrects_row() {
         drained,
         vec![target.0],
         "re-enqueued row should be present after tombstone→add upgrade",
+    );
+}
+
+// reproduces the delayed refill scenario with few conditions. the inbox is loaded async,
+// all loaded items are notified for removal, and there is one extra item that overflows
+// the limit, requesting an additional refill. In such cases, the final item should not
+// be missed out.
+#[restate_core::test]
+async fn overflowed_overlay_refills_deferred_entries() {
+    let removed_entries = (1..=INBOX_CACHE_CAPACITY as u64)
+        .map(entry_at_seq)
+        .collect::<Vec<_>>();
+    let storage = GatedStore::new(removed_entries[..INBOX_CACHE_CAPACITY - 1].to_vec());
+    let qid = test_qid(5);
+    let mut queue: Queue<GatedStore> = Queue::new(0, &storage, &qid);
+    let skip = UnconfirmedAssignments::new();
+
+    // Ensure that the load will be async.
+    poll_once_expect_pending(&mut queue, &storage, &skip, &qid);
+    storage.wait_until_parked();
+
+    // Simulate concurrent removal notifications during load, resulting
+    // in effective empty item set, plus one extra to overflow the overlay.
+    for (key, _) in &removed_entries {
+        queue.remove(key);
+    }
+
+    // Add one extra item at the end of the queue, which overflows the overlay horizon
+    let target = entry_at_seq(INBOX_CACHE_CAPACITY as u64 + 1);
+    storage.replace_entries(vec![target.clone()]);
+    queue.enqueue(&target.0, &target.1);
+
+    storage.release_refill_thread();
+    drive_until_ready(&mut queue, &storage, &skip, &qid).await;
+
+    assert_eq!(
+        drain_cache(&mut queue),
+        vec![target.0],
+        "the next refill must recover the target deferred beyond the overlay horizon"
     );
 }
