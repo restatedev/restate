@@ -77,6 +77,8 @@ pub struct AdminOptions {
     pub storage_accounting_update_interval: Option<NonZeroFriendlyDuration>,
 
     /// Maximum age of the cached deployment status used by the Admin API.
+    ///
+    /// Since v1.8.0
     pub deployment_status_cache_ttl: NonZeroFriendlyDuration,
 }
 
