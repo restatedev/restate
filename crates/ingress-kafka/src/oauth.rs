@@ -149,7 +149,10 @@ fn resolve_provider(config: OAuthBearerConfig) -> Result<ResolvedProvider, OAuth
 /// if librdkafka actually asks for a token.
 pub(crate) fn is_msk_iam_config(oauthbearer_config: Option<&str>) -> bool {
     let config = parse_oauthbearer_config(oauthbearer_config.unwrap_or(""));
-    matches!(resolve_provider(config), Ok(ResolvedProvider::MskIam { .. }))
+    matches!(
+        resolve_provider(config),
+        Ok(ResolvedProvider::MskIam { .. })
+    )
 }
 
 /// Generate an OAuth token for SASL/OAUTHBEARER authentication.
@@ -194,8 +197,8 @@ pub(crate) fn generate_oauth_token(
                 "Generating OAUTHBEARER token"
             );
 
-            let thread_result = std::thread::spawn(
-                move || -> Result<rdkafka::client::OAuthToken, OAuthError> {
+            let thread_result =
+                std::thread::spawn(move || -> Result<rdkafka::client::OAuthToken, OAuthError> {
                     let rt = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
@@ -212,9 +215,8 @@ pub(crate) fn generate_oauth_token(
                             Err(_elapsed) => Err(OAuthError::TokenTimeout),
                         }
                     })
-                },
-            )
-            .join();
+                })
+                .join();
 
             match thread_result {
                 Ok(result) => result.map_err(Into::into),
