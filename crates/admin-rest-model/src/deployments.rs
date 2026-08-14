@@ -288,9 +288,12 @@ pub struct ListDeploymentsResponse {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DeploymentStatus {
-    /// Active means the deployment is either currently handling in-flight information
+    /// Active means the deployment is either currently handling in-flight invocations and/or
+    /// it serves the latest service revisions for some/all its services.
     #[default]
     Active,
+    /// Drained means the deployment is not handling in-flight invocations,
+    /// and it's serving outdated service revisions for all its services.
     Drained,
 }
 
@@ -310,7 +313,7 @@ pub enum DeploymentResponse {
         ///
         /// This will be returned only if explicitly requested with `include=status`.
         /// This information is periodically refreshed and cached, it might not be accurate.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         status: Option<DeploymentStatus>,
 
         /// # Deployment URI
@@ -395,7 +398,7 @@ pub enum DeploymentResponse {
         ///
         /// This will be returned only if explicitly requested with `include=status`.
         /// This information is periodically refreshed and cached, it might not be accurate.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         status: Option<DeploymentStatus>,
 
         /// # Lambda ARN
@@ -486,7 +489,7 @@ pub enum DetailedDeploymentResponse {
         ///
         /// This will be returned only if explicitly requested with `include=status`.
         /// This information is periodically refreshed and cached, it might not be accurate.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         status: Option<DeploymentStatus>,
 
         /// # Deployment URI
@@ -569,7 +572,7 @@ pub enum DetailedDeploymentResponse {
         ///
         /// This will be returned only if explicitly requested with `include=status`.
         /// This information is periodically refreshed and cached, it might not be accurate.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         status: Option<DeploymentStatus>,
 
         /// # Lambda ARN

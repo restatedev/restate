@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -135,20 +135,27 @@ impl DeploymentStatusCache {
             .into();
         let current = self.inner.value.load();
 
-        if !force_refresh && let Some(current) = current.as_ref() {
+        if !force_refresh && let Some(current_ref) = current.as_ref() {
             // Fast path: we have a value that satisfies the requirements already.
-            if current.schema_version == source.schema_version()
-                && current.computed_at.elapsed() < ttl
+            if current_ref.schema_version == source.schema_version()
+                && current_ref.computed_at.elapsed() < ttl
             {
-                return Ok(Arc::clone(current));
+                return Ok(Arc::clone(current_ref));
             }
 
             // We need a refresh. Try lock to refresh. If already held, another refresh is happening, just return current stale data.
             return match self.inner.refresh.try_lock() {
-                Ok(guard) => self.refresh_locked(source, requested_at, guard).await,
-                Err(_) => Ok(Arc::clone(current)),
+                Ok(guard) => {
+                    // Drop current to avoid holding lock.
+                    drop(current);
+                    self.refresh_locked(source, requested_at, guard).await
+                },
+                Err(_) => Ok(Arc::clone(current_ref)),
             };
         }
+
+        // Drop current to avoid holding lock.
+        drop(current);
 
         // Cold start (nothing to serve) or a forced refresh: wait our turn, then refresh.
         let guard = self.inner.refresh.lock().await;
@@ -232,7 +239,7 @@ where
             {
                 format!(
                     "SELECT DISTINCT deployment FROM sys_vqueues \
-             WHERE entry_kind = 'invocation' AND stage != 'finished' \
+             WHERE entry_kind = 'invocation' AND stage IN ('inbox', 'running', 'suspended', 'paused') \
              AND deployment IN ({not_latest_deployments_in_clause})"
                 )
             } else {
