@@ -130,6 +130,11 @@ where
 /// [`IngestionStream::should_yield`].
 pub(super) const UPDATE_WINDOW_THRESHOLD: u32 = 50; // 50% of max window size
 
+/// Once window sizes falls below the UPDATE_WINDOW_THRESHOLD, only
+/// send a Window update if the reclaimed window is greater than this
+/// threshold
+pub(super) const RECLAIM_WINDOW_THRESHOLD: u32 = 15; // 15% of max window size
+
 /// The [`IngestionSvc`] implementation.
 ///
 /// Cheaply cloneable: tonic clones the service per connection, so every field is
@@ -187,6 +192,15 @@ pub(super) struct IngestionStream<I, S, Schemas> {
     schemas: Live<Schemas>,
     state: State,
     max_window_size: NonZeroU32,
+
+    /// Threshold at which the stream yields back
+    /// a window update message once current_window_size
+    /// go below this value.
+    window_threshold: i64,
+    /// Once window size drops below the window_threshold, don't
+    /// yield until the reclaimed window size is greater than
+    /// this reclaim threshold.
+    reclaim_threshold: u32,
 }
 
 /// The lifecycle state of an [`IngestionStream`].
@@ -222,6 +236,8 @@ where
             schemas,
             state: State::WaitingStart,
             max_window_size,
+            window_threshold: (max_window_size.get() * UPDATE_WINDOW_THRESHOLD / 100) as i64,
+            reclaim_threshold: (max_window_size.get() * RECLAIM_WINDOW_THRESHOLD / 100),
         }
     }
 
@@ -409,7 +425,6 @@ where
             start.integration,
             dedup_mode,
             defaults.unwrap_or_default(),
-            (self.max_window_size.get() * UPDATE_WINDOW_THRESHOLD / 100) as i64,
         ))
     }
 
@@ -459,7 +474,7 @@ where
                     state.ingested_counter.increment(1);
                     replenish_size += invocation_size;
 
-                    if state.inflight.is_empty() || self.should_yield(state){
+                    if state.inflight.is_empty() || self.should_yield(state, replenish_size) {
                         // yielding now will force the stream to send a
                         // window update message to restore the window size
                         // and also update the last committed offset.
@@ -487,8 +502,8 @@ where
 
     /// Returns `true` when the remaining window has fallen below
     /// yield_threshold.
-    fn should_yield(&self, state: &ProcessorState) -> bool {
-        state.current_window_size < state.yield_threshold
+    fn should_yield(&self, state: &ProcessorState, replenish_size: u32) -> bool {
+        state.current_window_size < self.window_threshold && replenish_size > self.reclaim_threshold
     }
 
     /// Applies a single inbound frame to `state`.
@@ -1076,10 +1091,6 @@ struct ProcessorState {
     /// received and replenished when it commits; may briefly go negative for a
     /// single oversized invocation.
     current_window_size: i64,
-    /// Threshold at which the stream yields back
-    /// a window update message once current_window_size
-    /// go below this value.
-    yield_threshold: i64,
     /// Commit futures for submitted-but-not-yet-committed records, in submission
     /// order. Each resolves to `(offset, encoded_size)`.
     inflight: VecDeque<RecordCommit<(u64, u32)>>,
@@ -1091,7 +1102,6 @@ impl ProcessorState {
         integration: impl Into<ReString>,
         dedup_mode: DedupMode,
         defaults: IngestionDefaults,
-        yield_threshold: i64,
     ) -> Self {
         let producer = producer_id.into();
         let integration = integration.into();
@@ -1104,7 +1114,6 @@ impl ProcessorState {
             last_committed: None,
             last_inflight: None,
             current_window_size: 0,
-            yield_threshold,
             inflight: VecDeque::default(),
         }
     }
