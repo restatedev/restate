@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod awakeables;
-mod error;
+pub(crate) mod error;
 mod health;
 mod invocation;
 mod lookup;
@@ -114,8 +114,8 @@ where
             match res? {
                 RequestType::Health => this.handle_health(req),
                 RequestType::OpenAPI => {
-                    // TODO
-                    Err(HandlerError::NotImplemented)
+                    // TODO the OpenAPI endpoint is not implemented yet, so the route is not available
+                    Err(HandlerError::NotFound)
                 }
                 RequestType::Awakeable(awakeable_request) => {
                     this.handle_awakeable(req, awakeable_request).await

@@ -8037,6 +8037,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "strum",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

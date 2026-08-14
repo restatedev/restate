@@ -161,13 +161,14 @@ where
         let response = match self
             .dispatcher
             .attach_invocation(invocation_query.clone())
-            .await?
+            .await
+            .map_err(HandlerError::GenericReadDispatcherError)?
         {
             AttachInvocationResponse::NotFound => {
                 return Err(HandlerError::InvocationNotFound);
             }
             AttachInvocationResponse::NotSupported => {
-                return Err(HandlerError::NotImplemented);
+                return Err(HandlerError::UnsupportedGetOutput);
             }
             AttachInvocationResponse::Ready(response) => response,
         };
@@ -206,7 +207,7 @@ where
                     "Failed to read output: {}",
                     e,
                 );
-                return Err(HandlerError::Unavailable);
+                return Err(HandlerError::GenericReadDispatcherError(e));
             }
         };
 
