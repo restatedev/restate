@@ -42,10 +42,15 @@ parking_lot = { workspace = true }
 # which prevents pulling in curl if it is not activated. The additional fixes in fix-build-script fix the musl build.
 rdkafka = { version = "0.38", git = "https://github.com/restatedev/rust-rdkafka.git", rev = "e92cad90eff797a0dc29fa524cabb89b602ae234", features = ["libz-static", "cmake-build", "ssl-vendored", "zstd"] }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["sync", "rt"] }
+tokio = { workspace = true, features = ["sync", "rt", "net", "time"] }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 xxhash-rust = { workspace = true, features = ["xxh3", "std"] }
+
+# AWS MSK IAM Auth (for OAUTHBEARER with provider=msk-iam). Always compiled in so MSK IAM works on the default build;
+# the AWS SDK is only touched at runtime when a subscription actually configures provider=msk-iam.
+aws-config = { workspace = true }
+aws-msk-iam-sasl-signer = { workspace = true }
 
 [dev-dependencies]
 restate-types = { workspace = true, features = ["test-util"] }
