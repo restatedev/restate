@@ -784,6 +784,9 @@ impl<S: VQueueStore> Queue<S> {
         // If we got less items than what we asked, then this must have been the end of the queue
         // at the time of the refill.
         let end_of_queue = items.len() < INBOX_CACHE_CAPACITY;
+        // The queue is exhausted if we reached the end of queue and didn't add more items that
+        // spilled over the overlay horizon.
+        let queue_exhausted = end_of_queue && horizon.is_none();
 
         // We now need to merge the items we received, apply the overlays, and deduplicate
         // with existing entries in cache.
@@ -862,9 +865,8 @@ impl<S: VQueueStore> Queue<S> {
             refill_anchor: refill_anchor.or_else(|| self.items.back().map(|(k, _)| *k)),
         };
 
-        // at the end, if the cache is empty and end_of_queue is true, then we must
-        // have exhausted the inbox.
-        if self.items.is_empty() && end_of_queue {
+        // at the end, if the cache is empty and the queue is fully exhausted
+        if self.items.is_empty() && queue_exhausted {
             self.stage = Stage::Empty;
         }
 
