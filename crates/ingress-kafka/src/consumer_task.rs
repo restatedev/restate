@@ -100,7 +100,7 @@ where
         // the consumer type because `ClientContext::ENABLE_REFRESH_OAUTH_TOKEN`
         // is an associated const, hence the branch on distinct concrete types.
         let oauthbearer_config = self.client_config.get("sasl.oauthbearer.config");
-        if crate::oauth::is_msk_iam_config(oauthbearer_config.as_deref()) {
+        if crate::oauth::is_msk_iam_config(oauthbearer_config) {
             self.run_with_context::<MskOAuth>(consumer_group_id, rx)
                 .await
         } else {
