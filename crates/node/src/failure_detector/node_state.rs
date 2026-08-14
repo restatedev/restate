@@ -24,6 +24,19 @@ use restate_types::{GenerationalNodeId, Version};
 /// transition.
 const SELF_SUSPECT_OFFSET: Duration = Duration::from_millis(600);
 
+#[derive(Clone, Copy)]
+enum FailureCause {
+    GossipAge,
+    TerminalConnection,
+}
+
+#[derive(Clone, Copy)]
+enum TargetState {
+    Dead(FailureCause),
+    FailingOver,
+    Alive,
+}
+
 /// Node state transitions
 ///
 /// We start by assuming that all nodes are [`NodeState::Dead`]. As we receive gossip messages, we start to
@@ -106,6 +119,8 @@ pub struct Node {
     // The connection swims on gossip's swimlane.
     #[debug("is_closed?={}, is_none?={}", connection.as_ref().is_some_and(|c| c.is_closed()), connection.is_none())]
     connection: Option<LazyConnection>,
+    #[cfg(test)]
+    terminally_closed_for_test: bool,
 }
 
 impl Node {
@@ -118,6 +133,8 @@ impl Node {
             in_failover: false,
             nc_version_witness: Version::INVALID,
             connection: None,
+            #[cfg(test)]
+            terminally_closed_for_test: false,
         }
     }
     /// Resets the node state if the generation is higher than the current one.
@@ -138,6 +155,10 @@ impl Node {
             self.in_failover = false;
             self.nc_version_witness = nc_version;
             self.connection = None;
+            #[cfg(test)]
+            {
+                self.terminally_closed_for_test = false;
+            }
             true
         } else if instance_ts > self.instance_ts {
             // note that instance_ts can be 0 if the node is not alive yet, we accept that we don't
@@ -160,11 +181,16 @@ impl Node {
     ///
     /// `force_alive` is used exclusively to force this node to be alive without transitioning into
     /// suspect state in standalone setups.
+    /// `hold_age_failure_transition` suppresses an age-expiry target unconditionally, including
+    /// when a stale `in_failover` marker is also present. Terminal connections are never held;
+    /// direct gossip and failover messages call this with `false` and retain their existing
+    /// immediate transitions.
     pub fn maybe_update_state(
         &mut self,
         opts: &GossipOptions,
         my_node_id: GenerationalNodeId,
         force_alive: bool,
+        hold_age_failure_transition: bool,
     ) -> Option<NodeState> {
         // A node is considered dead if any of the following is true:
         // 1. It's not been gossiping for `gossip_failure_threshold` intervals.
@@ -172,14 +198,28 @@ impl Node {
         //    it's not immediately marked dead, we just don't deduct from its gossip-age when we
         //    receive messages from it.
         // 3. We have lost gossip connection terminally
-        let target_state =
-            if (self.gossip_age > opts.gossip_failure_threshold.get()) || self.is_gone() {
-                NodeState::Dead
-            } else if self.in_failover {
-                NodeState::FailingOver
-            } else {
-                NodeState::Alive
-            };
+        let target_state = if self.is_gone() {
+            TargetState::Dead(FailureCause::TerminalConnection)
+        } else if self.gossip_age > opts.gossip_failure_threshold.get() {
+            TargetState::Dead(FailureCause::GossipAge)
+        } else if self.in_failover {
+            TargetState::FailingOver
+        } else {
+            TargetState::Alive
+        };
+
+        let target_state = match target_state {
+            TargetState::Dead(FailureCause::GossipAge) if hold_age_failure_transition => {
+                return None;
+            }
+            target_state => target_state,
+        };
+
+        let target_state = match target_state {
+            TargetState::Dead(_) => NodeState::Dead,
+            TargetState::FailingOver => NodeState::FailingOver,
+            TargetState::Alive => NodeState::Alive,
+        };
 
         let now = Instant::now();
         let current_state = self.state;
@@ -286,7 +326,21 @@ impl Node {
     }
 
     pub fn is_gone(&self) -> bool {
-        self.connection.as_ref().is_some_and(|c| c.is_closed())
+        self.connection.as_ref().is_some_and(|c| c.is_closed()) || {
+            #[cfg(test)]
+            {
+                self.terminally_closed_for_test
+            }
+            #[cfg(not(test))]
+            {
+                false
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn mark_terminally_closed_for_test(&mut self) {
+        self.terminally_closed_for_test = true;
     }
 
     pub fn send_gossip(

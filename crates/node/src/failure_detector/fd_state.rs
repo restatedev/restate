@@ -10,7 +10,7 @@
 
 use ahash::{HashMap, HashMapExt};
 use itertools::Itertools;
-use metrics::{counter, gauge};
+use metrics::{counter, gauge, histogram};
 use rand::seq::{IteratorRandom, SliceRandom};
 use tokio::time::Instant;
 use tracing::{debug, error, warn};
@@ -26,13 +26,24 @@ use restate_types::time::MillisSinceEpoch;
 use restate_types::{GenerationalNodeId, PlainNodeId, Version, net};
 
 use crate::metric_definitions::{
-    GOSSIP_INSTANCE, GOSSIP_LONELY, GOSSIP_NODES, GOSSIP_RECEIVED, STATE_ALIVE, STATE_DEAD,
-    STATE_FAILING_OVER, STATE_SUSPECT,
+    GOSSIP_INSTANCE, GOSSIP_LONELY, GOSSIP_NODES, GOSSIP_OBSERVER_GAP_INTERVALS,
+    GOSSIP_OBSERVER_GRACE_ACTIVE, GOSSIP_OBSERVER_GRACE_DURATION, GOSSIP_OBSERVER_GRACE_ENTERED,
+    GOSSIP_RECEIVED, STATE_ALIVE, STATE_DEAD, STATE_FAILING_OVER, STATE_SUSPECT,
 };
 
 use super::node_state::{Node, NodeState};
 
 const GOSSIP_ATTEMPT_LIMIT: usize = 20;
+
+/// Tracks only intervals this observer actually processed; elapsed wall intervals stay in
+/// `gossip_age` and on the wire.
+fn advance_normal_poll_counter(current: u32, full_intervals: u32) -> u32 {
+    match full_intervals {
+        0 => current,
+        1 => current.saturating_add(1),
+        _ => 0,
+    }
+}
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -77,6 +88,10 @@ pub struct FdState {
     // show the elapsed in debug
     #[debug("{:?}", last_gossip_tick.elapsed())]
     last_gossip_tick: Instant,
+    // Age-based death requires more than the configured failure threshold of consecutive normal
+    // local polls after an observer scheduling gap.
+    consecutive_normal_gossip_polls: u32,
+    observer_grace_started_at: Option<Instant>,
     num_gossip_received: usize,
     node_states: HashMap<PlainNodeId, Node>,
     #[debug(skip)]
@@ -100,6 +115,8 @@ impl FdState {
             my_node_id,
             last_gossip_received_at: now,
             last_gossip_tick: now,
+            consecutive_normal_gossip_polls: u32::MAX,
+            observer_grace_started_at: None,
             num_gossip_received: 0,
             node_states: HashMap::with_capacity(nodes_config.len()),
             replica_set_states,
@@ -108,6 +125,7 @@ impl FdState {
         // make sure that our state is pre-seeded with our exact generation
         let my_instance_ts = this.my_instance_ts;
         gauge!(GOSSIP_INSTANCE).set(my_instance_ts.as_u64() as f64);
+        gauge!(GOSSIP_OBSERVER_GRACE_ACTIVE).set(0);
         let my_node = this.get_node_or_insert(my_node_id);
         my_node.maybe_reset(my_node_id, nodes_config.version(), my_instance_ts);
 
@@ -215,6 +233,44 @@ impl FdState {
             .div_duration_f32(*opts.gossip_tick_interval)
             .floor() as u32;
         if full_intervals > 0 {
+            let previous_consecutive_normal_gossip_polls = self.consecutive_normal_gossip_polls;
+            self.consecutive_normal_gossip_polls =
+                advance_normal_poll_counter(self.consecutive_normal_gossip_polls, full_intervals);
+            if full_intervals > 1 {
+                histogram!(GOSSIP_OBSERVER_GAP_INTERVALS).record(full_intervals);
+                if self.observer_grace_started_at.is_none() {
+                    self.observer_grace_started_at = Some(now);
+                    counter!(GOSSIP_OBSERVER_GRACE_ENTERED).increment(1);
+                    gauge!(GOSSIP_OBSERVER_GRACE_ACTIVE).set(1);
+                    debug!(
+                        full_intervals,
+                        "Failure detector observer grace started after missed gossip intervals"
+                    );
+                } else {
+                    debug!(
+                        full_intervals,
+                        "Failure detector observer grace normal-poll authority reset after missed gossip intervals"
+                    );
+                }
+            } else if previous_consecutive_normal_gossip_polls
+                <= opts.gossip_failure_threshold.get()
+                && self.consecutive_normal_gossip_polls > opts.gossip_failure_threshold.get()
+            {
+                let observer_grace_duration = self
+                    .observer_grace_started_at
+                    .take()
+                    .map(|started_at| started_at.elapsed());
+                gauge!(GOSSIP_OBSERVER_GRACE_ACTIVE).set(0);
+                if let Some(observer_grace_duration) = observer_grace_duration {
+                    histogram!(GOSSIP_OBSERVER_GRACE_DURATION).record(observer_grace_duration);
+                }
+                debug!(
+                    ?observer_grace_duration,
+                    consecutive_normal_gossip_polls = self.consecutive_normal_gossip_polls,
+                    "Failure detector observer grace ended"
+                );
+            }
+
             for node in self.node_states.values_mut() {
                 if node.gen_node_id.as_plain() == self.my_node_id.as_plain() {
                     // keeping ourselves alive
@@ -242,6 +298,8 @@ impl FdState {
 
     pub fn detect_peer_failures(&mut self, opts: &GossipOptions) {
         let is_standalone = self.node_states.len() == 1;
+        let hold_age_failure_transition =
+            self.consecutive_normal_gossip_polls <= opts.gossip_failure_threshold.get();
 
         let changed: Vec<_> = self
             .node_states
@@ -249,9 +307,19 @@ impl FdState {
             .filter_map(|node| {
                 let maybe_updated_state =
                     if node.gen_node_id.as_plain() == self.my_node_id.as_plain() {
-                        node.maybe_update_state(opts, self.my_node_id, is_standalone)
+                        node.maybe_update_state(
+                            opts,
+                            self.my_node_id,
+                            is_standalone,
+                            hold_age_failure_transition,
+                        )
                     } else {
-                        node.maybe_update_state(opts, self.my_node_id, false)
+                        node.maybe_update_state(
+                            opts,
+                            self.my_node_id,
+                            false,
+                            hold_age_failure_transition,
+                        )
                     };
 
                 match maybe_updated_state {
@@ -337,7 +405,7 @@ impl FdState {
                 // mark the sender alive
                 sender_node.maybe_reset(sender_id, sender_nc_version, msg.instance_ts);
                 sender_node.gossip_age = 0;
-                sender_node.maybe_update_state(opts, my_node_id, false)
+                sender_node.maybe_update_state(opts, my_node_id, false, false)
             } else if is_sender_in_failover {
                 // sender is failing over
                 sender_node.maybe_reset(sender_id, sender_nc_version, msg.instance_ts);
@@ -354,7 +422,7 @@ impl FdState {
                     sender_node.gossip_age
                 };
                 sender_node.in_failover = true;
-                sender_node.maybe_update_state(opts, my_node_id, false)
+                sender_node.maybe_update_state(opts, my_node_id, false, false)
             } else {
                 // for more flags in the future
                 None
@@ -593,7 +661,7 @@ impl FdState {
         let my_node_id = self.my_node_id;
         if let Some(new_state) =
             self.my_node_mut()
-                .maybe_update_state(opts, my_node_id, is_standalone)
+                .maybe_update_state(opts, my_node_id, is_standalone, false)
         {
             self.cs_updater
                 .upsert_node_state(self.my_node_id, new_state.into());
@@ -695,3 +763,7 @@ impl FdState {
             .expect("my node must be in FD")
     }
 }
+
+#[cfg(test)]
+#[path = "fd_state/tests.rs"]
+mod tests;

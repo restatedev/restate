@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use metrics::{Unit, describe_counter, describe_gauge};
+use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
 
 pub const STATE_ALIVE: &str = "alive";
 pub const STATE_SUSPECT: &str = "suspect";
@@ -22,6 +22,11 @@ pub const GOSSIP_INSTANCE: &str = "restate.failure_detector.instance";
 pub const GOSSIP_LONELY: &str = "restate.failure_detector.lonely";
 /// dimensioned by "state" (STATE_*)
 pub const GOSSIP_NODES: &str = "restate.failure_detector.nodes.total";
+pub const GOSSIP_OBSERVER_GRACE_ENTERED: &str =
+    "restate.failure_detector.observer_grace.entered.total";
+pub const GOSSIP_OBSERVER_GRACE_ACTIVE: &str = "restate.failure_detector.observer_grace.active";
+pub const GOSSIP_OBSERVER_GRACE_DURATION: &str = "restate.failure_detector.observer_grace.duration";
+pub const GOSSIP_OBSERVER_GAP_INTERVALS: &str = "restate.failure_detector.observer_gap.intervals";
 
 // Jemalloc memory statistics
 pub const JEMALLOC_ALLOCATED: &str = "restate.jemalloc.allocated.bytes";
@@ -48,6 +53,25 @@ pub fn describe_metrics() {
     describe_gauge!(
         GOSSIP_NODES,
         "Number of nodes per node state, dimensioned by state"
+    );
+    describe_counter!(
+        GOSSIP_OBSERVER_GRACE_ENTERED,
+        Unit::Count,
+        "Number of failure detector observer grace periods entered"
+    );
+    describe_gauge!(
+        GOSSIP_OBSERVER_GRACE_ACTIVE,
+        "Whether failure detector observer grace is active"
+    );
+    describe_histogram!(
+        GOSSIP_OBSERVER_GRACE_DURATION,
+        Unit::Seconds,
+        "Duration of completed failure detector observer grace periods"
+    );
+    describe_histogram!(
+        GOSSIP_OBSERVER_GAP_INTERVALS,
+        Unit::Count,
+        "Number of elapsed gossip intervals observed after a failure detector scheduling gap"
     );
 
     // jemalloc memory statistics
