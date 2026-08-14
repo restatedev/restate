@@ -138,7 +138,7 @@ impl Default for AdminOptions {
             disable_cluster_controller: false,
             disable_web_ui: false,
             storage_accounting_update_interval: None,
-            // TODO reconsider this default once vqueues are enabled by default
+            // TODO v1.8.0 reconsider this default once vqueues are enabled by default
             deployment_status_cache_ttl: NonZeroFriendlyDuration::from_secs_unchecked(60 * 60),
         }
     }

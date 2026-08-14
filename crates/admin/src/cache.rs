@@ -247,7 +247,7 @@ where
              AND deployment IN ({not_latest_deployments_in_clause})"
                 )
             } else {
-                // TODO remove this once vqueues are enabled by default
+                // TODO v1.8.0 remove this once vqueues are enabled by default
                 format!(
                     "SELECT DISTINCT pinned_deployment_id FROM sys_invocation_status \
              WHERE status != 'completed' AND pinned_deployment_id IN ({not_latest_deployments_in_clause})"
