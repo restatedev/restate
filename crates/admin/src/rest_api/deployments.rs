@@ -243,7 +243,7 @@ where
             .map_err(|err| MetaApiError::Internal(err.to_string()))?;
         let status = entry.status.unwrap_or(DeploymentStatus::Active);
         Ok((
-            deployment_status_headers(entry.age),
+            deployment_status_headers(entry.age()),
             Json(to_detailed_deployment_response(
                 deployment,
                 services,
@@ -306,7 +306,7 @@ where
 
     if let Some(snapshot) = snapshot {
         Ok((
-            deployment_status_headers(snapshot.age),
+            deployment_status_headers(snapshot.age()),
             Json(ListDeploymentsResponse { deployments }),
         )
             .into_response())

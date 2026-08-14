@@ -29,19 +29,30 @@ use tokio::time::Instant;
 #[derive(Clone)]
 pub struct DeploymentStatusSnapshot {
     cached: Arc<CachedDeploymentStatuses>,
-    pub age: Duration,
 }
 
 impl DeploymentStatusSnapshot {
     pub fn statuses(&self) -> &HashMap<DeploymentId, DeploymentStatus> {
         &self.cached.statuses
     }
+
+    /// Age of the underlying cache entry.
+    pub fn age(&self) -> Duration {
+        self.cached.computed_at.elapsed()
+    }
 }
 
 /// Status of a single deployment together with the age of the underlying cache entry.
 pub struct DeploymentStatusEntry {
     pub status: Option<DeploymentStatus>,
-    pub age: Duration,
+    computed_at: Instant,
+}
+
+impl DeploymentStatusEntry {
+    /// Age of the underlying cache entry.
+    pub fn age(&self) -> Duration {
+        self.computed_at.elapsed()
+    }
 }
 
 struct CachedDeploymentStatuses {
@@ -96,8 +107,7 @@ impl DeploymentStatusCache {
             query_context,
         };
         let cached = self.ensure_fresh(&source, force_refresh).await?;
-        let age = cached.computed_at.elapsed();
-        Ok(DeploymentStatusSnapshot { cached, age })
+        Ok(DeploymentStatusSnapshot { cached })
     }
 
     /// Returns the status of a single deployment without cloning the whole status map.
@@ -118,7 +128,7 @@ impl DeploymentStatusCache {
         let cached = self.ensure_fresh(&source, force_refresh).await?;
         Ok(DeploymentStatusEntry {
             status: cached.statuses.get(&deployment_id).copied(),
-            age: cached.computed_at.elapsed(),
+            computed_at: cached.computed_at,
         })
     }
 
