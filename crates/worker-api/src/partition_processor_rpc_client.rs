@@ -468,9 +468,7 @@ where
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
-                PartitionProcessorRpcRequestInner::GetInvocationStatus {
-                    invocation_id,
-                },
+                PartitionProcessorRpcRequestInner::GetInvocationStatus { invocation_id },
             )
             .await?;
 

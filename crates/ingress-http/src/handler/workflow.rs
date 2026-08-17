@@ -49,6 +49,14 @@ where
                 )
                 .await
             }
+            WorkflowRequestType::Status(name, key) => {
+                self.handle_invocation_get_status(
+                    req,
+                    InvocationQuery::Workflow(ServiceId::new(None, name.as_str(), key.as_str()))
+                        .to_invocation_id(),
+                )
+                .await
+            }
         }
     }
 
