@@ -163,8 +163,9 @@ impl<T: NetworkSender> FailureDetector<T> {
             self.broadcast_bring_up(node_status, &mut fd_state);
         }
         info!("Failure Detector Started");
-        // Explicit reset because the interval could have been created long time ago, and we don't
-        // want to erroneously report that a stall was detected.
+        // Explicit reset because the interval and FD state could have been created long ago, and
+        // we don't want to treat startup time as missed gossip activity.
+        fd_state.reset_gossip_timing();
         self.gossip_interval.reset_immediately();
 
         // Start receiving gossip messages
