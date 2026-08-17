@@ -186,7 +186,7 @@ impl DeploymentStatusCache {
         if !force_refresh
             && let Some(current) = self.inner.value.load().as_ref()
             && current.computed_at >= requested_at
-            && current.schema_version == source.schema_version()
+            && current.schema_version >= source.schema_version()
         {
             return Ok(Arc::clone(current));
         }
@@ -405,6 +405,26 @@ mod tests {
         let refreshed = cache.ensure_fresh(&source, false).await.unwrap();
         assert_eq!(source.computes(), 2);
         assert_eq!(refreshed.schema_version, Version::MIN.next());
+    }
+
+    /// A refresh computed against an older schema version must never clobber a newer cached entry,
+    /// even when forced.
+    #[tokio::test]
+    async fn refresh_never_regresses_schema_version() {
+        install_config();
+        let cache = DeploymentStatusCache::new();
+        let source = FakeSource::new();
+
+        // Cache an entry at a newer schema version.
+        source.set_version(Version::MIN.next());
+        let newer = cache.ensure_fresh(&source, true).await.unwrap();
+
+        // A forced refresh that sees an older schema version recomputes but keeps the newer entry.
+        source.set_version(Version::MIN);
+        let after = cache.ensure_fresh(&source, true).await.unwrap();
+        assert!(Arc::ptr_eq(&after, &newer));
+        assert_eq!(after.schema_version, Version::MIN.next());
+        assert_eq!(source.computes(), 2);
     }
 
     /// Once the TTL elapses the next read recomputes.
