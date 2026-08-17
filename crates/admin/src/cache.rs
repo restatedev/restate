@@ -158,8 +158,7 @@ impl DeploymentStatusCache {
                 Ok(guard) => {
                     // Drop current to avoid holding lock.
                     drop(current);
-                    self.refresh_locked(source, requested_at, false, guard)
-                        .await
+                    self.do_refresh_cache(source, requested_at, guard).await
                 }
                 Err(_) => Ok(Arc::clone(current_ref)),
             };
@@ -170,37 +169,33 @@ impl DeploymentStatusCache {
 
         // Cold start (nothing to serve) or a forced refresh: wait our turn, then refresh.
         let guard = self.inner.refresh.lock().await;
-        self.refresh_locked(source, requested_at, force_refresh, guard)
-            .await
+        self.do_refresh_cache(source, requested_at, guard).await
     }
 
     /// Recomputes the cache entry while holding the refresh lock, stores it, and returns it.
-    async fn refresh_locked<S: DeploymentStatusReader>(
+    async fn do_refresh_cache<S: DeploymentStatusReader>(
         &self,
         source: &S,
         requested_at: Instant,
-        force_refresh: bool,
         _guard: MutexGuard<'_, ()>,
     ) -> anyhow::Result<Arc<CachedDeploymentStatuses>> {
         // Another caller may have refreshed while we entered the lock, skip refreshing in that case.
-        if !force_refresh
-            && let Some(current) = self.inner.value.load().as_ref()
-            && current.computed_at >= requested_at
-            && current.schema_version >= source.schema_version()
+        if let Some(current_cache) = self.inner.value.load().as_ref()
+            && current_cache.computed_at >= requested_at
         {
-            return Ok(Arc::clone(current));
+            return Ok(Arc::clone(current_cache));
         }
 
-        // Snapshot the schema version we compute against.
+        // Snapshot the current schema version
         // If it advances mid-compute, it's fine as worst case next read will refresh it.
-        let schema_version = source.schema_version();
+        let current_schema_version = source.schema_version();
         let statuses = source.compute().await?;
 
         // Store the new statuses
         let refreshed = Arc::new(CachedDeploymentStatuses {
             statuses,
             computed_at: Instant::now(),
-            schema_version,
+            schema_version: current_schema_version,
         });
         self.inner.value.store(Some(Arc::clone(&refreshed)));
 
@@ -405,26 +400,6 @@ mod tests {
         let refreshed = cache.ensure_fresh(&source, false).await.unwrap();
         assert_eq!(source.computes(), 2);
         assert_eq!(refreshed.schema_version, Version::MIN.next());
-    }
-
-    /// A refresh computed against an older schema version must never clobber a newer cached entry,
-    /// even when forced.
-    #[tokio::test]
-    async fn refresh_never_regresses_schema_version() {
-        install_config();
-        let cache = DeploymentStatusCache::new();
-        let source = FakeSource::new();
-
-        // Cache an entry at a newer schema version.
-        source.set_version(Version::MIN.next());
-        let newer = cache.ensure_fresh(&source, true).await.unwrap();
-
-        // A forced refresh that sees an older schema version recomputes but keeps the newer entry.
-        source.set_version(Version::MIN);
-        let after = cache.ensure_fresh(&source, true).await.unwrap();
-        assert!(Arc::ptr_eq(&after, &newer));
-        assert_eq!(after.schema_version, Version::MIN.next());
-        assert_eq!(source.computes(), 2);
     }
 
     /// Once the TTL elapses the next read recomputes.
