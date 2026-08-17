@@ -29,21 +29,19 @@ use restate_types::schema::invocation_target::InvocationTargetResolver;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum InvocationStatus {
-    /// not yet started, be run later (might be in inbox, or queued, or cron scheduled)
-    Scheduled,
-    /// invocation started (this might be either actually in flight now, or suspended)
-    Running,
-    Paused,
-    Killed,
-    Failed,
-    Succeeded,
+pub enum InvocationStage {
+    /// Means the invocation has been created but not yet started.
+    Created,
+    /// The invocation started and has not yet completed.
+    Started,
+    /// The invocation completed, with either success or failure.
+    Completed,
 }
 
 #[derive(Debug, Serialize)]
 pub struct InvocationStatusResponse {
-    status: InvocationStatus,
-    /// Filled if `status = 'failed'`
+    stage: InvocationStage,
+    /// Filled if `stage = 'completed'` and the invocation failed
     error: Option<InvocationError>,
 }
 
@@ -296,21 +294,20 @@ where
             }
         };
 
-        let status = match response.state {
+        let stage = match response.state {
             client::InvocationState::Scheduled | client::InvocationState::Inboxed => {
-                InvocationStatus::Scheduled
+                InvocationStage::Created
             }
-            client::InvocationState::Invoked | client::InvocationState::Suspended => {
-                InvocationStatus::Running
-            }
-            client::InvocationState::Paused => InvocationStatus::Paused,
-            client::InvocationState::Killed => InvocationStatus::Killed,
-            client::InvocationState::Failed => InvocationStatus::Failed,
-            client::InvocationState::Succeeded => InvocationStatus::Succeeded,
+            client::InvocationState::Invoked
+            | client::InvocationState::Suspended
+            | client::InvocationState::Paused => InvocationStage::Started,
+            client::InvocationState::Killed
+            | client::InvocationState::Failed
+            | client::InvocationState::Succeeded => InvocationStage::Completed,
         };
 
         let body = serde_json::to_vec(&InvocationStatusResponse {
-            status,
+            stage,
             error: response.error,
         })
         .unwrap();
