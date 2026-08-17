@@ -40,26 +40,31 @@ where
                     InvocationStatus::Scheduled(_) => {
                         PartitionProcessorRpcResponse::Status(client::InvocationStatus {
                             state: client::InvocationState::Scheduled,
+                            error: None,
                         })
                     }
                     InvocationStatus::Inboxed(_) => {
                         PartitionProcessorRpcResponse::Status(client::InvocationStatus {
                             state: client::InvocationState::Inboxed,
+                            error: None,
                         })
                     }
                     InvocationStatus::Invoked(_) => {
                         PartitionProcessorRpcResponse::Status(client::InvocationStatus {
                             state: client::InvocationState::Invoked,
+                            error: None,
                         })
                     }
                     InvocationStatus::Suspended { .. } => {
                         PartitionProcessorRpcResponse::Status(client::InvocationStatus {
                             state: client::InvocationState::Suspended,
+                            error: None,
                         })
                     }
                     InvocationStatus::Paused(_) => {
                         PartitionProcessorRpcResponse::Status(client::InvocationStatus {
                             state: client::InvocationState::Paused,
+                            error: None,
                         })
                     }
                     InvocationStatus::Completed(CompletedInvocation {
@@ -67,12 +72,14 @@ where
                         ..
                     }) => PartitionProcessorRpcResponse::Status(client::InvocationStatus {
                         state: client::InvocationState::Succeeded,
+                        error: None,
                     }),
                     InvocationStatus::Completed(CompletedInvocation {
-                        response_result: ResponseResult::Failure(_),
+                        response_result: ResponseResult::Failure(error),
                         ..
                     }) => PartitionProcessorRpcResponse::Status(client::InvocationStatus {
                         state: client::InvocationState::Failed,
+                        error: Some(error),
                     }),
                     InvocationStatus::Free => PartitionProcessorRpcResponse::NotFound,
                 })

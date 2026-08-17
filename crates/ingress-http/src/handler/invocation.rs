@@ -19,7 +19,7 @@ use super::path_parsing::{InvocationRequestType, InvocationTargetType, TargetTyp
 use super::{Handler, InvocationTargetRequest};
 use crate::RequestDispatcher;
 use crate::handler::responses::X_RESTATE_ID;
-use restate_types::errors::GenericError;
+use restate_types::errors::{GenericError, InvocationError};
 use restate_types::identifiers::{IdempotencyId, InvocationId};
 use restate_types::invocation::client::{
     AttachInvocationResponse, GetInvocationOutputResponse, GetInvocationStatusResponse,
@@ -43,6 +43,8 @@ pub enum InvocationStatus {
 #[derive(Debug, Serialize)]
 pub struct InvocationStatusResponse {
     status: InvocationStatus,
+    /// Filled if `status = 'failed'`
+    error: Option<InvocationError>,
 }
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
@@ -307,7 +309,11 @@ where
             client::InvocationState::Succeeded => InvocationStatus::Succeeded,
         };
 
-        let body = serde_json::to_vec(&InvocationStatusResponse { status }).unwrap();
+        let body = serde_json::to_vec(&InvocationStatusResponse {
+            status,
+            error: response.error,
+        })
+        .unwrap();
 
         Ok(Response::builder()
             .header(X_RESTATE_ID, invocation_id.to_string())

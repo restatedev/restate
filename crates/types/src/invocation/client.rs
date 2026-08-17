@@ -103,6 +103,7 @@ pub enum InvocationState {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InvocationStatus {
     pub state: InvocationState,
+    pub error: Option<InvocationError>,
 }
 
 // the most used variant is the largest one, so we are muting clippy intentionally.
