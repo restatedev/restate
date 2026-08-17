@@ -595,6 +595,11 @@ impl FdSimulation {
         self.record("reset FD tick baseline", node_id, Some(0));
     }
 
+    fn reset_gossip_timing(&mut self, node_id: GenerationalNodeId) {
+        self.actor_mut(node_id).state.reset_gossip_timing();
+        self.record("reset FD gossip timing", node_id, Some(0));
+    }
+
     fn mark_terminal_connection(&mut self, observer: GenerationalNodeId, peer: GenerationalNodeId) {
         self.actor_mut(observer)
             .state
@@ -724,6 +729,30 @@ async fn resetting_only_the_tokio_interval_does_not_prevent_startup_pre_aging() 
         NodeState::Dead,
         "resetting the scheduler interval leaves FdState's age baseline in the past"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn resetting_fd_gossip_timing_excludes_startup_time() {
+    let mut sim = FdSimulation::stable_three_node_cluster();
+    tokio::time::advance(
+        *sim.opts.gossip_tick_interval * (sim.opts.gossip_loneliness_threshold.get() + 1),
+    )
+    .await;
+    assert!(sim.actor(A).state.is_lonely(&sim.opts));
+
+    sim.reset_gossip_timing(A);
+
+    assert!(!sim.actor(A).state.is_lonely(&sim.opts));
+    assert_eq!(sim.tick(A), 0, "trace:\n{}", sim.trace());
+    for peer in [B, C] {
+        assert_eq!(sim.actor(A).peer_age(peer), 0, "trace:\n{}", sim.trace());
+        assert_eq!(sim.actor(A).peer_state(peer), NodeState::Alive);
+    }
+
+    sim.advance_one_interval().await;
+    assert_eq!(sim.tick(A), 1, "trace:\n{}", sim.trace());
+    assert_eq!(sim.actor(A).peer_age(B), 1);
+    assert!(!sim.actor(A).state.is_lonely(&sim.opts));
 }
 
 #[tokio::test(start_paused = true)]
