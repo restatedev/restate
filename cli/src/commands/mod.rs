@@ -23,4 +23,5 @@ pub mod services;
 pub mod sql;
 pub mod state;
 pub mod subscriptions;
+pub mod vqueues;
 pub mod whoami;
