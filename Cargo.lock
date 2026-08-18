@@ -591,7 +591,7 @@ dependencies = [
  "aws-sdk-ssooidc",
  "aws-sdk-sts",
  "aws-smithy-async",
- "aws-smithy-http 0.64.0",
+ "aws-smithy-http",
  "aws-smithy-json",
  "aws-smithy-runtime",
  "aws-smithy-runtime-api",
@@ -628,21 +628,9 @@ version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ce2b2dcc879c3bae0d371e77c99f2238400ef24ec001394befa67b6e543add9e"
 dependencies = [
- "aws-lc-sys 0.44.0",
+ "aws-lc-sys",
  "untrusted 0.7.1",
  "zeroize",
-]
-
-[[package]]
-name = "aws-lc-sys"
-version = "0.40.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f50037ee5e1e41e7b8f9d161680a725bd1626cb6f8c7e901f91f942850852fe7"
-dependencies = [
- "cc",
- "cmake",
- "dunce",
- "fs_extra",
 ]
 
 [[package]]
@@ -685,8 +673,8 @@ dependencies = [
  "aws-credential-types",
  "aws-sigv4",
  "aws-smithy-async",
- "aws-smithy-eventstream 0.61.2",
- "aws-smithy-http 0.64.0",
+ "aws-smithy-eventstream",
+ "aws-smithy-http",
  "aws-smithy-runtime",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
@@ -712,7 +700,7 @@ dependencies = [
  "aws-credential-types",
  "aws-runtime",
  "aws-smithy-async",
- "aws-smithy-http 0.64.0",
+ "aws-smithy-http",
  "aws-smithy-json",
  "aws-smithy-observability",
  "aws-smithy-runtime",
@@ -739,8 +727,8 @@ dependencies = [
  "aws-credential-types",
  "aws-runtime",
  "aws-smithy-async",
- "aws-smithy-eventstream 0.61.2",
- "aws-smithy-http 0.64.0",
+ "aws-smithy-eventstream",
+ "aws-smithy-http",
  "aws-smithy-json",
  "aws-smithy-observability",
  "aws-smithy-runtime",
@@ -766,7 +754,7 @@ dependencies = [
  "aws-credential-types",
  "aws-runtime",
  "aws-smithy-async",
- "aws-smithy-http 0.64.0",
+ "aws-smithy-http",
  "aws-smithy-json",
  "aws-smithy-observability",
  "aws-smithy-runtime",
@@ -792,7 +780,7 @@ dependencies = [
  "aws-credential-types",
  "aws-runtime",
  "aws-smithy-async",
- "aws-smithy-http 0.64.0",
+ "aws-smithy-http",
  "aws-smithy-json",
  "aws-smithy-observability",
  "aws-smithy-runtime",
@@ -818,7 +806,7 @@ dependencies = [
  "aws-credential-types",
  "aws-runtime",
  "aws-smithy-async",
- "aws-smithy-http 0.64.0",
+ "aws-smithy-http",
  "aws-smithy-json",
  "aws-smithy-observability",
  "aws-smithy-query",
@@ -842,8 +830,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "723c2234ad7511ceef63eab016b7ba6ff7c55590fefb96fa8467af014a07309f"
 dependencies = [
  "aws-credential-types",
- "aws-smithy-eventstream 0.61.2",
- "aws-smithy-http 0.64.0",
+ "aws-smithy-eventstream",
+ "aws-smithy-http",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
  "bytes",
@@ -871,17 +859,6 @@ dependencies = [
 
 [[package]]
 name = "aws-smithy-eventstream"
-version = "0.60.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78d8391e65fcea47c586a22e1a41f173b38615b112b2c6b7a44e80cec3e6b706"
-dependencies = [
- "aws-smithy-types",
- "bytes",
- "crc32fast",
-]
-
-[[package]]
-name = "aws-smithy-eventstream"
 version = "0.61.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6de526c7b567420a31bc283657a7921b45c4cafe0827fdf2490713dcc770c28f"
@@ -893,33 +870,11 @@ dependencies = [
 
 [[package]]
 name = "aws-smithy-http"
-version = "0.63.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba1ab2dc1c2c3749ead27180d333c42f11be8b0e934058fb4b2258ee8dbe5231"
-dependencies = [
- "aws-smithy-eventstream 0.60.21",
- "aws-smithy-runtime-api",
- "aws-smithy-types",
- "bytes",
- "bytes-utils",
- "futures-core",
- "futures-util",
- "http 1.5.0",
- "http-body 1.1.0",
- "http-body-util",
- "percent-encoding",
- "pin-project-lite",
- "pin-utils",
- "tracing",
-]
-
-[[package]]
-name = "aws-smithy-http"
 version = "0.64.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37843d9add67c3aff5856f409c6dc315d3cdff60f9c0cb5b670dab1e9920306d"
 dependencies = [
- "aws-smithy-eventstream 0.61.2",
+ "aws-smithy-eventstream",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
  "bytes",
@@ -999,7 +954,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "483b858ff67522011c4786310c5cd8fd88d0be7ea3d5f1a48328446300c4269e"
 dependencies = [
  "aws-smithy-async",
- "aws-smithy-http 0.64.0",
+ "aws-smithy-http",
  "aws-smithy-http-client",
  "aws-smithy-observability",
  "aws-smithy-runtime-api",
@@ -3147,7 +3102,6 @@ version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 dependencies = [
- "powerfmt",
  "serde_core",
 ]
 
@@ -9372,15 +9326,16 @@ dependencies = [
  "aws-config",
  "aws-credential-types",
  "aws-lc-rs",
- "aws-lc-sys 0.40.0",
+ "aws-lc-sys",
  "aws-runtime",
  "aws-sdk-sts",
  "aws-sigv4",
- "aws-smithy-http 0.63.6",
+ "aws-smithy-http",
  "aws-smithy-types",
  "axum",
  "bilrost",
  "bitflags 2.13.1",
+ "block-buffer 0.12.1",
  "bytes",
  "bytestring",
  "cc",
@@ -9399,6 +9354,7 @@ dependencies = [
  "derive_more",
  "derive_more-impl",
  "digest 0.10.7",
+ "digest 0.11.3",
  "displaydoc",
  "either",
  "enum-map",
@@ -9418,6 +9374,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "hdrhistogram",
  "hex",
+ "hmac",
  "hyper",
  "hyper-rustls",
  "hyper-util",
@@ -9440,7 +9397,6 @@ dependencies = [
  "num-bigint",
  "num-integer",
  "num-traits",
- "object 0.37.3",
  "once_cell",
  "petgraph",
  "portable-atomic",
@@ -9452,7 +9408,6 @@ dependencies = [
  "prost-types",
  "protobuf",
  "quanta",
- "quick-xml 0.39.4",
  "quote",
  "rdkafka",
  "rdkafka-sys",
@@ -9471,13 +9426,13 @@ dependencies = [
  "serde_core",
  "serde_json",
  "serde_with",
- "sha2 0.10.9",
  "signal-hook",
  "simd-adler32",
  "slab",
  "smallvec",
  "stable_deref_trait",
  "syn 2.0.119",
+ "syn 3.0.3",
  "sync_wrapper",
  "tempfile",
  "thiserror 2.0.20",
@@ -9498,7 +9453,6 @@ dependencies = [
  "tracing-core",
  "tracing-log",
  "tracing-subscriber",
- "typenum",
  "ulid",
  "url",
  "utoipa",
@@ -9507,6 +9461,7 @@ dependencies = [
  "winnow 1.0.4",
  "xxhash-rust",
  "zerocopy",
+ "zeroize",
  "zstd",
  "zstd-safe",
  "zstd-sys",
