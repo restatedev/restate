@@ -147,7 +147,7 @@ impl DeploymentStatusCache {
 
         if !force_refresh && let Some(current_ref) = current.as_ref() {
             // Fast path: we have a value that satisfies the requirements already.
-            if current_ref.schema_version == source.schema_version()
+            if current_ref.schema_version >= source.schema_version()
                 && current_ref.computed_at.elapsed() < ttl
             {
                 return Ok(Arc::clone(current_ref));
@@ -156,7 +156,7 @@ impl DeploymentStatusCache {
             // We need a refresh. Try lock to refresh. If already held, another refresh is happening, just return current stale data.
             return match self.inner.refresh.try_lock() {
                 Ok(guard) => {
-                    // Drop current to avoid holding lock.
+                    // Drop current to avoid holding proxy returned by arcswap.
                     drop(current);
                     self.do_refresh_cache(source, requested_at, guard).await
                 }
@@ -164,7 +164,7 @@ impl DeploymentStatusCache {
             };
         }
 
-        // Drop current to avoid holding lock.
+        // Drop current to avoid holding proxy returned by arcswap.
         drop(current);
 
         // Cold start (nothing to serve) or a forced refresh: wait our turn, then refresh.
@@ -179,7 +179,7 @@ impl DeploymentStatusCache {
         requested_at: Instant,
         _guard: MutexGuard<'_, ()>,
     ) -> anyhow::Result<Arc<CachedDeploymentStatuses>> {
-        // Another caller may have refreshed while we entered the lock, skip refreshing in that case.
+        // Another caller may have refreshed while we waited for obtaining the lock, skip refreshing in that case.
         if let Some(current_cache) = self.inner.value.load().as_ref()
             && current_cache.computed_at >= requested_at
         {
