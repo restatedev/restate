@@ -26,8 +26,21 @@ mod subscription_integration;
 use std::sync::Arc;
 
 use codederror::CodedError;
+use futures::FutureExt;
+use futures::future;
+use futures::future::Either;
 use restate_core::network::Swimlane;
 use restate_ingestion_client::SessionOptions;
+use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
+use restate_storage_api::journal_table_v2::ReadJournalTable;
+use restate_types::identifiers::InvocationId;
+use restate_types::invocation::ResponseResult;
+use restate_types::invocation::ResponseResultRef;
+use restate_types::journal_v2;
+use restate_types::journal_v2::CommandType;
+use restate_types::journal_v2::EntryMetadata;
+use restate_types::journal_v2::OutputCommand;
+use restate_types::journal_v2::OutputResult;
 use restate_types::net::connect_opts::GrpcConnectionOptions;
 use restate_wal_protocol::Envelope;
 use tracing::info;
@@ -269,4 +282,64 @@ where
 
         Ok(())
     }
+}
+
+pub(crate) trait ReadJournalTableExt {
+    fn resolve_response_result_ref(
+        &mut self,
+        invocation_id: InvocationId,
+        result_ref: &ResponseResultRef,
+    ) -> impl Future<Output = Result<Option<ResponseResult>, ResolveResultError>> + Send;
+}
+
+impl<T> ReadJournalTableExt for T
+where
+    T: ReadJournalTable,
+{
+    fn resolve_response_result_ref(
+        &mut self,
+        invocation_id: InvocationId,
+        result_ref: &ResponseResultRef,
+    ) -> impl Future<Output = Result<Option<ResponseResult>, ResolveResultError>> + Send {
+        match result_ref {
+            ResponseResultRef::Success(bytes) => Either::Left(future::ready(Ok(Some(
+                ResponseResult::Success(bytes.clone()),
+            )))),
+            ResponseResultRef::Failure(err) => Either::Left(future::ready(Ok(Some(
+                ResponseResult::Failure(err.clone()),
+            )))),
+            ResponseResultRef::Reference(reference) => {
+                let fut = self.get_journal_entry(invocation_id, reference.entry_index);
+                async {
+                    fut.await?
+                        .map(|entry| {
+                            if entry.ty() == journal_v2::EntryType::Command(CommandType::Output) {
+                                let cmd =
+                                    entry.decode::<ServiceProtocolV4Codec, OutputCommand>()?;
+                                Ok(match cmd.result {
+                                    OutputResult::Success(s) => ResponseResult::Success(s),
+                                    OutputResult::Failure(f) => ResponseResult::Failure(f.into()),
+                                })
+                            } else {
+                                Err(ResolveResultError::BadEntryVariant(
+                                    journal_v2::EntryType::Command(CommandType::Output),
+                                ))
+                            }
+                        })
+                        .transpose()
+                }
+                .right_future()
+            }
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ResolveResultError {
+    #[error(transparent)]
+    Storage(#[from] restate_storage_api::StorageError),
+    #[error("expecting entry type {0:?}, but wasn't. This indicates data corruption.")]
+    BadEntryVariant(journal_v2::EntryType),
+    #[error("failed to deserialize entry: {0}")]
+    EntryDecoding(#[from] journal_v2::raw::RawEntryError),
 }
