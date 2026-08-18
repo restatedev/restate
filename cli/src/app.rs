@@ -71,6 +71,9 @@ pub enum Command {
     /// Manage active invocations
     #[clap(subcommand)]
     Invocations(invocations::Invocations),
+    /// Manage virtual queues
+    #[clap(name = "vqueues", subcommand)]
+    VQueues(vqueues::VQueues),
     /// Manage concurrency-limit rules
     #[clap(subcommand)]
     Rules(rules::Rules),
