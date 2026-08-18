@@ -94,6 +94,10 @@ impl Default for Schema {
 }
 
 impl Schema {
+    pub(in crate::schema) fn deployment_count(&self) -> usize {
+        self.deployments.len()
+    }
+
     pub fn is_legacy_v1(&self) -> bool {
         self.legacy_v1
     }

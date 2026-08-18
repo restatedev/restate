@@ -22,12 +22,14 @@ use codederror::{BoxedCodedError, CodedError};
 use http::{StatusCode, Uri};
 use tracing::subscriber::NoSubscriber;
 
+use crate::config::Configuration;
 use crate::deployment;
 use crate::deployment::{
     DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
 };
 use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision, SubscriptionId};
 use crate::net::address::{AdvertisedAddress, HttpIngressPort};
+use crate::schema::Schema;
 use crate::schema::deployment::{Deployment, DeploymentResolver, DeploymentType};
 use crate::schema::kafka::{KafkaCluster, KafkaClusterName, KafkaClusterResolver};
 use crate::schema::metadata::updater;
@@ -76,7 +78,8 @@ impl SchemaRegistryError {
                 SchemaError::KafkaCluster(_) => StatusCode::BAD_REQUEST,
                 _ => StatusCode::BAD_REQUEST,
             },
-            SchemaRegistryErrorInner::UpdateDeployment { .. } => StatusCode::BAD_REQUEST,
+            SchemaRegistryErrorInner::UpdateDeployment { .. }
+            | SchemaRegistryErrorInner::DeploymentLimit { .. } => StatusCode::BAD_REQUEST,
             SchemaRegistryErrorInner::Discovery(_) | SchemaRegistryErrorInner::Internal(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
@@ -106,6 +109,11 @@ enum SchemaRegistryErrorInner {
         actual_deployment_type: &'static str,
         expected_deployment_type: &'static str,
     },
+    #[error(
+        "cannot register deployment because the deployment count {actual} exceeds the configured limit of {limit}. Delete unused deployments before registering a new one"
+    )]
+    #[code(unknown)]
+    DeploymentLimit { actual: usize, limit: usize },
     #[error("{0}")]
     Discovery(
         #[source]
@@ -346,6 +354,8 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry: Telemetry
 
         let sdk_version = discovery_response.sdk_version.clone();
 
+        let num_deployments_limit = Configuration::pinned().admin.num_deployments_limit();
+
         let add_deployment_request = updater::AddDeploymentRequest {
             deployment_address,
             additional_headers,
@@ -366,6 +376,8 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry: Telemetry
                     )
                 })?;
 
+            validate_deployment_limit(deployment_result, &schemas, num_deployments_limit)?;
+
             let (deployment, services) = schemas
                 .get_deployment_and_services(&deployment_id)
                 .expect("deployment was just added");
@@ -376,11 +388,16 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry: Telemetry
             let ((new_deployment_result, new_deployment_id), schemas) = self
                 .metadata_service
                 .update(|schema| {
-                    SchemaUpdater::update_and_return(schema, |updater| {
-                        updater
-                            .add_deployment(add_deployment_request.clone())
-                            .map_err(Into::into)
-                    })
+                    let ((deployment_result, deployment_id), schema) =
+                        SchemaUpdater::update_and_return(schema, |updater| {
+                            updater
+                                .add_deployment(add_deployment_request.clone())
+                                .map_err(SchemaRegistryError::from)
+                        })?;
+
+                    validate_deployment_limit(deployment_result, &schema, num_deployments_limit)?;
+
+                    Ok(((deployment_result, deployment_id), schema))
                 })
                 .await?;
 
@@ -398,6 +415,26 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry: Telemetry
 
         Ok((register_deployment_result, deployment, services))
     }
+}
+
+fn validate_deployment_limit(
+    result: AddDeploymentResult,
+    schema: &Schema,
+    limit: Option<usize>,
+) -> Result<(), SchemaRegistryError> {
+    if result != AddDeploymentResult::Created {
+        return Ok(());
+    }
+    let Some(limit) = limit else {
+        return Ok(());
+    };
+
+    let actual = schema.deployment_count();
+    if actual > limit {
+        return Err(SchemaRegistryErrorInner::DeploymentLimit { actual, limit }.into());
+    }
+
+    Ok(())
 }
 impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
     SchemaRegistry<Metadata, Discovery, Telemetry>
