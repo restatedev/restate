@@ -18,7 +18,7 @@ use restate_storage_api::invocation_status_table::{
 use restate_types::identifiers::PartitionProcessorRpcRequestId;
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, InvocationTarget, PurgeInvocationRequest,
-    SubmitNotificationSink,
+    ResponseResultRef, SubmitNotificationSink,
 };
 use restate_worker_api::invoker::Effect;
 use rstest::*;
@@ -94,7 +94,7 @@ async fn start_and_complete_idempotent_invocation() {
     assert_that!(
         invocation_status,
         pat!(InvocationStatus::Completed(pat!(CompletedInvocation {
-            response_result: eq(ResponseResult::Success(response_bytes))
+            response_result: eq(ResponseResultRef::Success(response_bytes))
         })))
     );
     test_env.shutdown().await;
@@ -123,7 +123,7 @@ async fn complete_already_completed_invocation() {
             execution_time: None,
             idempotency_key: Some(idempotency_key.clone()),
             timestamps: StatusTimestamps::mock(),
-            response_result: ResponseResult::Success(response_bytes.clone()),
+            response_result: ResponseResultRef::Success(response_bytes.clone()),
             completion_retention_duration: Default::default(),
             journal_retention_duration: Default::default(),
             journal_metadata: JournalMetadata::empty(),
