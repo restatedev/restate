@@ -290,7 +290,7 @@ where
                     "Failed to read status: {}",
                     e,
                 );
-                return Err(HandlerError::Unavailable);
+                return Err(HandlerError::GenericReadDispatcherError(e));
             }
         };
 
