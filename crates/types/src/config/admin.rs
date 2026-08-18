@@ -58,6 +58,15 @@ pub struct AdminOptions {
     ///
     /// Concurrency limit for the Admin APIs. Default is unlimited.
     concurrent_api_requests_limit: Option<NonZeroUsize>,
+
+    /// # Number of deployments limit
+    ///
+    /// Maximum number of deployments that can be registered. Default is unlimited.
+    ///
+    /// Since v1.8.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    num_deployments_limit: Option<NonZeroUsize>,
+
     pub query_engine: QueryEngineOptions,
 
     /// # Controller heartbeats
@@ -105,6 +114,10 @@ impl AdminOptions {
         )
     }
 
+    pub fn num_deployments_limit(&self) -> Option<usize> {
+        self.num_deployments_limit.map(Into::into)
+    }
+
     pub fn is_cluster_controller_enabled(&self) -> bool {
         #[cfg(not(any(test, feature = "test-util")))]
         return true;
@@ -127,6 +140,7 @@ impl Default for AdminOptions {
             // max is limited by Tower's LoadShedLayer.
             deployment_routing_headers: vec![],
             concurrent_api_requests_limit: None,
+            num_deployments_limit: None,
             query_engine: Default::default(),
             heartbeat_interval: NonZeroFriendlyDuration::from_millis_unchecked(1500),
             #[cfg(any(test, feature = "test-util"))]

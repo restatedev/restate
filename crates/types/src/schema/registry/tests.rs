@@ -8,12 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
+use std::assert_matches;
 
+use test_log::test;
+
+use restate_test_util::assert_eq;
+
+use super::*;
 use crate::endpoint_manifest;
 use crate::schema::registry::mocks::mock_arc_schema;
-use restate_test_util::assert_eq;
-use test_log::test;
 
 const GREETER_SERVICE_NAME: &str = "greeter.Greeter";
 const GREET_HANDLER_NAME: &str = "greet";
@@ -161,6 +164,49 @@ pub async fn register_deployment_lambda() {
     schema_metadata
         .get()
         .assert_service_revision(GREETER_SERVICE_NAME, 3);
+}
+
+#[test]
+fn validate_deployment_count_limit() {
+    let request = |uri| updater::AddDeploymentRequest {
+        deployment_address: DeploymentAddress::mock_uri(uri),
+        additional_headers: Default::default(),
+        metadata: Default::default(),
+        discovery_response: DiscoveryResponse::mock(vec![greeter_service()]),
+        allow_breaking_changes: AllowBreakingChanges::No,
+        overwrite: Overwrite::No,
+    };
+    let (_, schema) = SchemaUpdater::update_and_return(Schema::default(), |updater| {
+        updater.add_deployment(request("http://localhost:9080"))?;
+        updater.add_deployment(request("http://localhost:9081"))
+    })
+    .unwrap();
+
+    assert_matches!(
+        validate_deployment_limit(AddDeploymentResult::Created, &schema, Some(1)),
+        Err(SchemaRegistryError(
+            SchemaRegistryErrorInner::DeploymentLimit {
+                actual: 2,
+                limit: 1
+            }
+        ))
+    );
+    assert_matches!(
+        validate_deployment_limit(AddDeploymentResult::Created, &schema, Some(2)),
+        Ok(())
+    );
+    assert_matches!(
+        validate_deployment_limit(AddDeploymentResult::Created, &schema, None),
+        Ok(())
+    );
+    assert_matches!(
+        validate_deployment_limit(AddDeploymentResult::Overwritten, &schema, Some(1)),
+        Ok(())
+    );
+    assert_matches!(
+        validate_deployment_limit(AddDeploymentResult::Unchanged, &schema, Some(1)),
+        Ok(())
+    );
 }
 
 #[cfg(test)]
