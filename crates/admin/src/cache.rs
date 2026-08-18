@@ -138,7 +138,6 @@ impl DeploymentStatusCache {
         source: &S,
         force_refresh: bool,
     ) -> anyhow::Result<Arc<CachedDeploymentStatuses>> {
-        let requested_at = Instant::now();
         let ttl: Duration = Configuration::pinned()
             .admin
             .deployment_status_cache_ttl
@@ -158,7 +157,7 @@ impl DeploymentStatusCache {
                 Ok(guard) => {
                     // Drop current to avoid holding proxy returned by arcswap.
                     drop(current);
-                    self.do_refresh_cache(source, requested_at, guard).await
+                    self.do_refresh_cache(source, guard).await
                 }
                 Err(_) => Ok(Arc::clone(current_ref)),
             };
@@ -169,23 +168,15 @@ impl DeploymentStatusCache {
 
         // Cold start (nothing to serve) or a forced refresh: wait our turn, then refresh.
         let guard = self.inner.refresh.lock().await;
-        self.do_refresh_cache(source, requested_at, guard).await
+        self.do_refresh_cache(source, guard).await
     }
 
     /// Recomputes the cache entry while holding the refresh lock, stores it, and returns it.
     async fn do_refresh_cache<S: DeploymentStatusReader>(
         &self,
         source: &S,
-        requested_at: Instant,
         _guard: MutexGuard<'_, ()>,
     ) -> anyhow::Result<Arc<CachedDeploymentStatuses>> {
-        // Another caller may have refreshed while we waited for obtaining the lock, skip refreshing in that case.
-        if let Some(current_cache) = self.inner.value.load().as_ref()
-            && current_cache.computed_at >= requested_at
-        {
-            return Ok(Arc::clone(current_cache));
-        }
-
         // Snapshot the current schema version
         // If it advances mid-compute, it's fine as worst case next read will refresh it.
         let current_schema_version = source.schema_version();
@@ -469,41 +460,6 @@ mod tests {
                 let refreshed = refresher.await.unwrap();
                 assert!(!Arc::ptr_eq(&refreshed, &stale));
                 assert_eq!(source.computes(), 2);
-            })
-            .await;
-    }
-
-    /// Concurrent callers against a cold cache trigger exactly one recompute and share its result.
-    #[tokio::test]
-    async fn cold_start_coalesces() {
-        install_config();
-        let cache = DeploymentStatusCache::new();
-        let source = Arc::new(FakeSource::new());
-        source.set_gated(true);
-
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                // Three cold callers race; one wins the lock and blocks in compute, the rest queue.
-                let mut handles = Vec::new();
-                for _ in 0..3 {
-                    let cache = cache.clone();
-                    let source = Arc::clone(&source);
-                    handles.push(tokio::task::spawn_local(async move {
-                        cache.ensure_fresh(&*source, false).await.unwrap()
-                    }));
-                }
-                // Wait until the winner is inside compute.
-                source.entered.notified().await;
-                assert_eq!(source.computes(), 1);
-
-                // Release; the queued callers should coalesce onto the winner's result.
-                source.gate.notify_one();
-                let mut results = Vec::new();
-                for handle in handles {
-                    results.push(handle.await.unwrap());
-                }
-                assert_eq!(source.computes(), 1, "cold-start callers must coalesce");
-                assert!(results.iter().all(|r| Arc::ptr_eq(r, &results[0])));
             })
             .await;
     }
