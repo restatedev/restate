@@ -8,8 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::ReadJournalTableExt;
+use crate::partition::state_machine;
+
 use super::*;
-use restate_storage_api::StorageError;
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::invocation;
@@ -30,13 +32,13 @@ pub(super) struct Request {
 
 impl<'a, TSchemas, TStorage> RpcContext<'a, TSchemas, TStorage>
 where
-    TStorage: ReadInvocationStatusTable,
+    TStorage: ReadInvocationStatusTable + ReadJournalTable,
 {
     async fn get_invocation_output(
         &mut self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_query: InvocationQuery,
-    ) -> Result<PartitionProcessorRpcResponse, StorageError> {
+    ) -> Result<PartitionProcessorRpcResponse, state_machine::Error> {
         // We can handle this immediately by querying the partition store, no need to go through proposals
         let invocation_id = invocation_query.to_invocation_id();
         let invocation_status = self.storage.get_invocation_status(&invocation_id).await?;
@@ -47,11 +49,16 @@ where
                 let completion_expiry_time = completed.completion_expiry_time();
                 Ok(PartitionProcessorRpcResponse::Output(InvocationOutput {
                     request_id,
-                    response: match completed.response_result.clone() {
-                        invocation::ResponseResult::Success(res) => {
+                    response: match self
+                        .storage
+                        .resolve_response_result_ref(invocation_id, &completed.response_result)
+                        .await?
+                    {
+                        None => InvocationOutputResponse::Gone,
+                        Some(invocation::ResponseResult::Success(res)) => {
                             InvocationOutputResponse::Success(completed.invocation_target, res)
                         }
-                        invocation::ResponseResult::Failure(err) => {
+                        Some(invocation::ResponseResult::Failure(err)) => {
                             InvocationOutputResponse::Failure(err)
                         }
                     },
@@ -66,7 +73,7 @@ where
 
 impl<'a, TSchemas, Storage> RpcHandler<Request> for RpcContext<'a, TSchemas, Storage>
 where
-    Storage: ReadInvocationStatusTable,
+    Storage: ReadInvocationStatusTable + ReadJournalTable,
 {
     async fn handle(
         mut self,
