@@ -31,7 +31,7 @@ use restate_memory::ByteCount;
 use restate_util_string::ReString;
 
 use crate::Scope;
-use crate::errors::InvocationError;
+use crate::errors::{InvocationError, InvocationErrorCode};
 use crate::identifiers::{
     DeploymentId, EntryIndex, IdempotencyId, InvocationId, PartitionKey,
     PartitionProcessorRpcRequestId, ServiceId, SubscriptionId, WithInvocationId, WithPartitionKey,
@@ -744,6 +744,85 @@ impl From<InvocationError> for ResponseResult {
 impl From<&InvocationError> for ResponseResult {
     fn from(e: &InvocationError) -> Self {
         ResponseResult::Failure(e.clone())
+    }
+}
+
+#[derive(derive_more::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+// A stripped down version of InvocationError
+pub struct ExitFailure {
+    pub code: InvocationErrorCode,
+    pub message: Cow<'static, str>,
+}
+
+#[derive(derive_more::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ExitCode {
+    Success,
+    Failure(ExitFailure),
+}
+
+#[derive(derive_more::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ResponseReference {
+    pub entry_index: EntryIndex,
+    pub exit_code: ExitCode,
+}
+
+#[derive(derive_more::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ResponseResultRef {
+    Reference(ResponseReference),
+    // Embedded success/failure status
+    // Used for overrides and backward compatibility
+    // with older ResponseResult
+    #[debug("Success(<data>)")]
+    Success(Bytes),
+    #[debug("Failure({_0})")]
+    Failure(InvocationError),
+}
+
+impl ResponseResultRef {
+    /// Create a new ResponseResultRef. It's the caller responsibility to make
+    /// sure the EntryIndex is valid (if set) and that it points to the journal
+    /// entry of the ResponseResult.
+    pub fn new(result: ResponseResult, output_index: Option<EntryIndex>) -> Self {
+        match (output_index, result) {
+            (None, ResponseResult::Success(bytes)) => Self::Success(bytes),
+            (None, ResponseResult::Failure(failure)) => Self::Failure(failure),
+            (Some(entry_index), result) => Self::Reference(ResponseReference {
+                entry_index,
+                exit_code: result.into(),
+            }),
+        }
+    }
+
+    pub fn exit_code(&self) -> ExitCode {
+        match self {
+            Self::Success(_) => ExitCode::Success,
+            Self::Failure(err) => ExitCode::Failure(ExitFailure {
+                code: err.code,
+                message: err.message.clone(),
+            }),
+            Self::Reference(reference) => reference.exit_code.clone(),
+        }
+    }
+}
+
+impl From<ResponseResult> for ResponseResultRef {
+    fn from(value: ResponseResult) -> Self {
+        match value {
+            ResponseResult::Success(bytes) => Self::Success(bytes),
+            ResponseResult::Failure(failure) => Self::Failure(failure),
+        }
+    }
+}
+
+impl From<ResponseResult> for ExitCode {
+    fn from(value: ResponseResult) -> Self {
+        match value {
+            ResponseResult::Success(_) => Self::Success,
+            ResponseResult::Failure(failure) => Self::Failure(ExitFailure {
+                code: failure.code,
+                message: failure.message,
+            }),
+        }
     }
 }
 

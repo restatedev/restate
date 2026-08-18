@@ -46,7 +46,9 @@ use restate_storage_api::{StorageError, lock_table};
 use restate_types::ServiceName;
 use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey};
-use restate_types::invocation::{InvocationTarget, InvocationTargetType, VirtualObjectHandlerType};
+use restate_types::invocation::{
+    ExitCode, InvocationTarget, InvocationTargetType, VirtualObjectHandlerType,
+};
 use restate_types::sharding::WithPartitionKey;
 use restate_types::vqueues::{EntryId, Seq, VQueueId};
 use restate_types::{LockName, Scope};
@@ -1433,10 +1435,10 @@ where
         let stage = Stage::Finished;
 
         // How do we know if the invocation was "killed" or cancelled?
-        let status = match completed.response_result {
-            restate_types::invocation::ResponseResult::Success(_) => Status::Succeeded,
-            restate_types::invocation::ResponseResult::Failure(ref e) => {
-                if e.code() == restate_types::errors::codes::ABORTED {
+        let status = match completed.response_result.exit_code() {
+            ExitCode::Success => Status::Succeeded,
+            ExitCode::Failure(ref e) => {
+                if e.code == restate_types::errors::codes::ABORTED {
                     // Special handling for cancel/kill. Definitely not ideal, but the current
                     // design leaves me with no other options.
                     //
