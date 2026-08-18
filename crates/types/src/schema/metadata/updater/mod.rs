@@ -22,10 +22,10 @@ use crate::invocation::{
     InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use crate::schema::Redaction;
-use crate::schema::deployment::DeploymentType;
+use crate::schema::deployment::{DeploymentType, HttpType, LambdaType};
 use crate::schema::invocation_target::{
-    BadInputContentType, InputRules, InputValidationRule, OnMaxAttempts, OutputContentTypeRule,
-    OutputRules,
+    BadInputContentType, InputRules, InputValidationRule, JsonValue, OnMaxAttempts,
+    OutputContentType, OutputContentTypeRule, OutputRules,
 };
 use crate::schema::kafka::{KafkaClusterName, KafkaClusterResolver};
 use crate::schema::registry::{DeploymentConnectionParameters, DiscoveryResponse};
@@ -465,20 +465,20 @@ impl SchemaUpdater {
                     http_version,
                     protocol_type,
                 },
-            ) => DeploymentType::Http {
+            ) => DeploymentType::Http(HttpType {
                 address: a.uri,
                 protocol_type,
                 http_version,
                 auth: a.auth,
-            },
+            }),
             (
                 DeploymentAddress::Lambda(a),
                 DeploymentConnectionParameters::Lambda { compression },
-            ) => DeploymentType::Lambda {
+            ) => DeploymentType::Lambda(LambdaType {
                 arn: a.arn,
                 assume_role_arn: a.assume_role_arn.map(Into::into),
                 compression,
-            },
+            }),
             _ => unreachable!(
                 "deployment address and discovered deployment parameters are not of the same type"
             ),
@@ -1343,10 +1343,10 @@ impl Handler {
                     });
                 }
 
-                input_validation_rules.push(InputValidationRule::JsonValue {
+                input_validation_rules.push(InputValidationRule::JsonValue(JsonValue {
                     content_type,
                     schema: Some(schema),
-                });
+                }));
             } else {
                 input_validation_rules.push(InputValidationRule::ContentType { content_type });
             }
@@ -1377,12 +1377,12 @@ impl Handler {
             }
 
             OutputRules {
-                content_type_rule: OutputContentTypeRule::Set {
+                content_type_rule: OutputContentTypeRule::Set(OutputContentType {
                     content_type: HeaderValue::from_str(&ct)
                         .map_err(|e| ServiceError::BadOutputContentType(ct, e))?,
                     set_content_type_if_empty: schema.set_content_type_if_empty.unwrap_or(false),
                     has_json_schema: schema.json_schema.is_some(),
-                },
+                }),
                 json_schema: schema.json_schema,
             }
         } else {

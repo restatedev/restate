@@ -40,7 +40,7 @@ use crate::id_util::{IdDecoder, IdEncoder};
 use crate::invocation::{InvocationTarget, InvocationTargetType, WorkflowHandlerType};
 use crate::journal_v2::SignalId;
 use crate::time::MillisSinceEpoch;
-use restate_encoding::{BilrostNewType, NetSerde};
+use restate_encoding::{BilrostNewType, NetSerde, bilrost_as_display_from_str};
 
 thread_local! {
     // a thread-local xxh3 hashing state to reuse its allocation since its internal buffer is quite
@@ -908,6 +908,20 @@ pub struct LambdaARN {
     arn: Arc<str>,
     region: std::ops::Range<u32>,
 }
+
+// This is only needed for the bilrost implementation below
+// but it creates an invalid LambdaARN that should not be used
+// as a value.
+// todo(azmy): Drop the default implementation
+impl Default for LambdaARN {
+    fn default() -> Self {
+        Self {
+            arn: Arc::from(""),
+            region: 0..0,
+        }
+    }
+}
+bilrost_as_display_from_str!(LambdaARN);
 
 impl LambdaARN {
     pub fn region(&self) -> &str {
