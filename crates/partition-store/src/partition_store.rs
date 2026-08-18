@@ -1140,6 +1140,18 @@ pub(crate) trait StorageAccess {
     }
 
     #[inline]
+    fn put_kv_proto_owned<K: EncodeTableKey, V: PartitionStoreProtobufValue + 'static>(
+        &mut self,
+        key: K,
+        value: V,
+    ) -> Result<()> {
+        self.put_kv_storage_codec(
+            key,
+            &ProtobufStorageWrapper::<V::ProtobufType>(value.into()),
+        )
+    }
+
+    #[inline]
     fn put_kv_storage_codec<K: EncodeTableKey, V: StorageEncode + 'static>(
         &mut self,
         key: K,
