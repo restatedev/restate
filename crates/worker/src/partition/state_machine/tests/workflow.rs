@@ -21,7 +21,7 @@ use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR;
 use restate_types::invocation::{
     AttachInvocationRequest, IngressInvocationResponseSink, InvocationQuery, InvocationTarget,
-    PurgeInvocationRequest,
+    PurgeInvocationRequest, ResponseResultRef,
 };
 use restate_types::service_protocol;
 
@@ -149,7 +149,7 @@ async fn start_workflow_method() {
     assert_that!(
         invocation_status,
         pat!(InvocationStatus::Completed(pat!(CompletedInvocation {
-            response_result: eq(ResponseResult::Success(response_bytes.clone()))
+            response_result: eq(ResponseResultRef::Success(response_bytes.clone()))
         })))
     );
 
@@ -288,7 +288,7 @@ async fn attach_by_workflow_key() {
     assert_that!(
         invocation_status,
         pat!(InvocationStatus::Completed(pat!(CompletedInvocation {
-            response_result: eq(ResponseResult::Success(response_bytes.clone()))
+            response_result: eq(ResponseResultRef::Success(response_bytes.clone()))
         })))
     );
 
