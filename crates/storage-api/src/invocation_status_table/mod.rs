@@ -20,8 +20,8 @@ use futures::Stream;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
-    Header, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
-    ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
+    Header, InvocationInput, InvocationTarget, ResponseResult, ResponseResultRef,
+    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
 };
 use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::sharding::KeyRange;
@@ -733,7 +733,7 @@ pub struct CompletedInvocation {
     pub execution_time: Option<MillisSinceEpoch>,
     pub idempotency_key: Option<ByteString>,
     pub timestamps: StatusTimestamps,
-    pub response_result: ResponseResult,
+    pub response_result: ResponseResultRef,
 
     pub completion_retention_duration: Duration,
     pub journal_retention_duration: Duration,
@@ -802,7 +802,7 @@ impl CompletedInvocation {
     pub fn from_in_flight_invocation_metadata(
         mut in_flight_invocation_metadata: InFlightInvocationMetadata,
         journal_retention_policy: JournalRetentionPolicy,
-        response_result: ResponseResult,
+        response_result: impl Into<ResponseResultRef>,
         timestamp: MillisSinceEpoch,
     ) -> Self {
         in_flight_invocation_metadata
@@ -819,7 +819,7 @@ impl CompletedInvocation {
             execution_time: in_flight_invocation_metadata.execution_time,
             idempotency_key: in_flight_invocation_metadata.idempotency_key,
             timestamps: in_flight_invocation_metadata.timestamps,
-            response_result,
+            response_result: response_result.into(),
             completion_retention_duration: in_flight_invocation_metadata
                 .completion_retention_duration,
             journal_retention_duration: in_flight_invocation_metadata.journal_retention_duration,
@@ -1057,7 +1057,7 @@ mod test_util {
                 execution_time: None,
                 idempotency_key: None,
                 timestamps,
-                response_result: ResponseResult::Success(Bytes::from_static(b"123")),
+                response_result: ResponseResult::Success(Bytes::from_static(b"123")).into(),
                 completion_retention_duration: Duration::from_secs(60 * 60),
                 journal_retention_duration: Duration::ZERO,
                 journal_metadata: JournalMetadata::empty(),
@@ -1085,7 +1085,7 @@ mod test_util {
                 execution_time: None,
                 idempotency_key: None,
                 timestamps,
-                response_result: ResponseResult::Success(Bytes::from_static(b"123")),
+                response_result: ResponseResult::Success(Bytes::from_static(b"123")).into(),
                 completion_retention_duration: Duration::from_secs(60 * 60),
                 journal_retention_duration: Duration::ZERO,
                 journal_metadata: JournalMetadata::empty(),
