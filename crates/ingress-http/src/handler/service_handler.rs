@@ -349,7 +349,8 @@ where
         let response = dispatcher
             .call(invocation_request)
             .instrument(trace_span!("Waiting for response"))
-            .await?;
+            .await
+            .map_err(HandlerError::InvocationDispatcherError)?;
 
         Self::reply_with_invocation_response(response, move |_| Ok(invocation_target_metadata))
     }
@@ -361,7 +362,10 @@ where
         let invocation_id = invocation_request.invocation_id();
 
         // Send the service invocation, wait for the submit notification
-        let response = dispatcher.send(invocation_request).await?;
+        let response = dispatcher
+            .send(invocation_request)
+            .await
+            .map_err(HandlerError::InvocationDispatcherError)?;
 
         trace!("Complete external HTTP send request successfully");
         Ok(Response::builder()

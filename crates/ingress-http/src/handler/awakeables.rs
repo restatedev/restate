@@ -110,7 +110,7 @@ where
 
         if let Err(e) = res {
             warn!("Failed to dispatch awakeable completion: {}", e);
-            return Err(HandlerError::Unavailable);
+            return Err(HandlerError::GenericWriteDispatcherError(e));
         }
 
         Ok(hyper::Response::builder()

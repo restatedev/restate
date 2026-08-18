@@ -8,9 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::metric_definitions::{INGRESS_REQUESTS, REQUEST_ADMITTED, REQUEST_RATE_LIMITED};
+use bytes::Bytes;
 use futures::ready;
-use http::{Request, Response, StatusCode};
+use http::{Request, Response};
 use metrics::counter;
 use pin_project_lite::pin_project;
 use std::future::Future;
@@ -20,6 +20,9 @@ use std::task::{Context, Poll};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tower::{Layer, Service};
 use tracing::warn;
+
+use crate::handler::error::HandlerError;
+use crate::metric_definitions::{INGRESS_REQUESTS, REQUEST_ADMITTED, REQUEST_RATE_LIMITED};
 
 // This service is inspired by tower-util LoadShed and ConcurrencyLimit, but returns a http response.
 
@@ -58,7 +61,7 @@ impl<S> LoadShed<S> {
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for LoadShed<S>
 where
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
-    ResBody: Default,
+    ResBody: http_body::Body + Default + From<Bytes>,
 {
     type Response = Response<ResBody>;
     type Error = S::Error;
@@ -118,17 +121,18 @@ pin_project! {
 impl<F, B, E> Future for ResponseFuture<F>
 where
     F: Future<Output = Result<Response<B>, E>>,
-    B: Default,
+    B: http_body::Body + Default + From<Bytes>,
 {
     type Output = Result<Response<B>, E>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.project().state.project() {
             ResponseStateProj::Called { fut, .. } => Poll::Ready(ready!(fut.poll(cx))),
-            ResponseStateProj::Overloaded => Poll::Ready(Ok(Response::builder()
-                .status(StatusCode::TOO_MANY_REQUESTS)
-                .body(Default::default())
-                .unwrap())),
+            // Route through HandlerError so the 429 carries the standard JSON body and the
+            // x-restate-error-source header (source = ingress).
+            ResponseStateProj::Overloaded => {
+                Poll::Ready(Ok(HandlerError::TooManyRequests.into_response()))
+            }
         }
     }
 }
