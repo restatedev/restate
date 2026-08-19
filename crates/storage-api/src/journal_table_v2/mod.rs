@@ -120,7 +120,11 @@ pub trait WriteJournalTable {
     ) -> Result<()>;
 
     /// When length is available, it is suggested to provide it as it makes the delete more efficient.
-    fn delete_journal(&mut self, invocation_id: &InvocationId, length: EntryIndex) -> Result<()>;
+    fn delete_journals(
+        &mut self,
+        invocation_id: &InvocationId,
+        journals: impl Iterator<Item = EntryIndex>,
+    ) -> Result<()>;
 }
 
 #[derive(Debug, Clone)]

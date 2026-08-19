@@ -7,9 +7,8 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
+use tracing::trace;
 
-use crate::partition::processor::ProcessorContext;
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
@@ -19,7 +18,9 @@ use restate_storage_api::journal_table_v2::WriteJournalTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::InvocationMutationResponseSink;
 use restate_types::invocation::client::PurgeInvocationResponse;
-use tracing::trace;
+
+use crate::partition::processor::ProcessorContext;
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub struct OnPurgeJournalCommand<'a> {
     pub invocation_id: &'a InvocationId,
@@ -48,11 +49,15 @@ where
                     .as_ref()
                     .map(|pd| pd.service_protocol_version);
 
+                let retained_output_index = completed.response_result.referenced_journal_index();
                 // If journal is not empty, clean it up
                 if completed.journal_metadata.length != 0 {
                     ctx.do_drop_journal(
                         invocation_id,
                         completed.journal_metadata.length,
+                        (0..completed.journal_metadata.length).filter(|idx| {
+                            retained_output_index.is_none_or(|retain| retain != *idx)
+                        }),
                         pinned_service_protocol_version,
                     )
                     .await?;

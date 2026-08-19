@@ -761,6 +761,16 @@ impl ResponseResultRef {
             Self::Completed(status) => status.clone().into(),
         }
     }
+
+    /// Returns Some(index) only if the response result is a reference
+    /// to an output journal. If embedded returns None
+    pub fn referenced_journal_index(&self) -> Option<EntryIndex> {
+        if let Self::Reference(ResponseReference { entry_index, .. }) = self {
+            Some(*entry_index)
+        } else {
+            None
+        }
+    }
 }
 
 impl From<ResponseResult> for ResponseResultRef {
