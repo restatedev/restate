@@ -68,7 +68,17 @@ static FEDERATION_CONFIG: std::sync::OnceLock<Option<GcpFederationOptions>> =
 /// `ServiceClientOptions` calls this, so installing an identical config (including `None`) is a
 /// no-op; installing a config that differs from one already installed only warns and keeps the
 /// first one, since a broker built from it may already be in use by in-flight federated mints.
-pub(crate) fn install_config(config: Option<GcpFederationOptions>) {
+///
+/// Validates `config` before installing it, so an operator learns about a typo in
+/// `broker-role-arn` or `session-name` at server startup rather than on the first federated
+/// invocation -- config errors here are always permanent, unlike the runtime failures
+/// `GcpAuthError` classifies as transient/permanent.
+pub(crate) fn install_config(config: Option<GcpFederationOptions>) -> Result<(), String> {
+    if let Some(cfg) = &config {
+        validate_broker_role_arn(&cfg.broker_role_arn)?;
+        validate_session_name(&cfg.session_name)?;
+    }
+
     match FEDERATION_CONFIG.get() {
         None => {
             let _ = FEDERATION_CONFIG.set(config);
@@ -79,6 +89,55 @@ pub(crate) fn install_config(config: Option<GcpFederationOptions>) {
              differing re-install attempt"
         ),
     }
+    Ok(())
+}
+
+/// Validates `arn` against the shape of an AWS IAM role ARN Restate can assume:
+/// `arn:aws[-\w]*:iam::<12-digit account id>:role/<name-or-path>`. Rejects anything else with an
+/// actionable message rather than deferring the typo to the first `sts:AssumeRole` failure.
+fn validate_broker_role_arn(arn: &str) -> Result<(), String> {
+    let invalid = || {
+        format!(
+            "broker-role-arn '{arn}' is not a valid AWS IAM role ARN; expected the form              arn:aws:iam::<12-digit account id>:role/<role-name-or-path>"
+        )
+    };
+    let parts: Vec<&str> = arn.split(':').collect();
+    let [scheme, partition, service, region, account, resource] = parts.as_slice() else {
+        return Err(invalid());
+    };
+    let partition_suffix_ok = partition.strip_prefix("aws").is_some_and(|suffix| {
+        suffix
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    });
+    if *scheme != "arn"
+        || !partition_suffix_ok
+        || *service != "iam"
+        || !region.is_empty()
+        || account.len() != 12
+        || !account.bytes().all(|b| b.is_ascii_digit())
+        || !resource.starts_with("role/")
+        || resource.len() <= "role/".len()
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+/// Validates `name` against AWS STS's `RoleSessionName` constraints: 2-64 characters from
+/// `[\w+=,.@-]`. AWS itself enforces this at `sts:AssumeRole` time; validating it at config-install
+/// time surfaces a typo at server startup instead of on the first federated mint attempt.
+fn validate_session_name(name: &str) -> Result<(), String> {
+    let len = name.chars().count();
+    let chars_ok = name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "_+=,.@-".contains(c));
+    if !(2..=64).contains(&len) || !chars_ok {
+        return Err(format!(
+            "session-name '{name}' is not a valid AWS STS RoleSessionName; expected 2-64              characters from [A-Za-z0-9_+=,.@-]"
+        ));
+    }
+    Ok(())
 }
 
 /// The shared AWS broker identity: one role assumption for the whole process, reused by every
@@ -902,5 +961,75 @@ mod federation_tests {
             "constructing and using a federated subject-token provider must not mutate any \
              AWS_* environment variable"
         );
+    }
+
+    #[test]
+    fn accepts_a_well_formed_broker_role_arn() {
+        super::validate_broker_role_arn("arn:aws:iam::123456789012:role/RestateCloudGcpFederation")
+            .expect("well-formed ARN accepted");
+        super::validate_broker_role_arn("arn:aws-us-gov:iam::123456789012:role/path/to/role")
+            .expect("non-default partition with a role path accepted");
+    }
+
+    #[test]
+    fn rejects_malformed_broker_role_arns() {
+        for arn in [
+            "not-an-arn",
+            "arn:aws:s3::123456789012:role/wrong-service",
+            "arn:aws:iam:us-east-1:123456789012:role/has-a-region",
+            "arn:aws:iam::12345:role/too-short-account",
+            "arn:aws:iam::12345678901a:role/non-numeric-account",
+            "arn:aws:iam::123456789012:user/not-a-role",
+            "arn:aws:iam::123456789012:role/",
+            "arn:aws!:iam::123456789012:role/bad-partition-chars",
+        ] {
+            super::validate_broker_role_arn(arn)
+                .expect_err(&format!("expected '{arn}' to be rejected"));
+        }
+    }
+
+    #[test]
+    fn accepts_well_formed_session_names() {
+        for name in [
+            "ab",
+            "env-xyz",
+            "env_xyz.123@foo,bar+baz=qux",
+            &"a".repeat(64),
+        ] {
+            super::validate_session_name(name).expect("well-formed session name accepted");
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_session_names() {
+        for name in [
+            "",
+            "a",
+            &"a".repeat(65),
+            "has a space",
+            "has/slash",
+            "has#hash",
+        ] {
+            super::validate_session_name(name)
+                .expect_err(&format!("expected '{name}' to be rejected"));
+        }
+    }
+
+    #[test]
+    fn install_config_rejects_invalid_broker_role_arn() {
+        let config = super::GcpFederationOptions {
+            broker_role_arn: "not-an-arn".to_owned(),
+            session_name: "valid-session".to_owned(),
+        };
+        super::install_config(Some(config)).expect_err("invalid broker-role-arn must be rejected");
+    }
+
+    #[test]
+    fn install_config_rejects_invalid_session_name() {
+        let config = super::GcpFederationOptions {
+            broker_role_arn: "arn:aws:iam::123456789012:role/RestateCloudGcpFederation".to_owned(),
+            session_name: "has a space".to_owned(),
+        };
+        super::install_config(Some(config)).expect_err("invalid session-name must be rejected");
     }
 }

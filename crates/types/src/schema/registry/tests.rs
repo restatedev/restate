@@ -386,4 +386,48 @@ mod workload_identity_federation_validation_tests {
     fn accepts_no_auth() {
         validate_workload_identity_federation(None).expect("no auth block is accepted");
     }
+
+    fn provider_auth(provider: &str) -> HttpAuth {
+        HttpAuth::GoogleIdToken(
+            GoogleIdTokenAuth::new(
+                ByteString::from_static("https://svc.example.com"),
+                Some(ByteString::from_static("sa@proj.iam.gserviceaccount.com")),
+            )
+            .with_workload_identity_provider(Some(ByteString::from(provider.to_owned()))),
+        )
+    }
+
+    #[test]
+    fn accepts_canonical_provider_resource_names() {
+        for provider in [
+            PROVIDER,
+            "//iam.googleapis.com/projects/999999999999/locations/global/workloadIdentityPools/my-pool/providers/my-provider",
+            "//iam.googleapis.com/projects/1/locations/eu/workloadIdentityPools/p/providers/r",
+        ] {
+            validate_workload_identity_federation(Some(&provider_auth(provider)))
+                .unwrap_or_else(|e| panic!("expected '{provider}' to be accepted, got {e}"));
+        }
+    }
+
+    #[test]
+    fn rejects_non_canonical_provider_resource_names() {
+        for provider in [
+            "",
+            "not-a-resource-name",
+            "iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/aws",
+            "//iam.googleapis.com/projects/abc/locations/global/workloadIdentityPools/pool/providers/aws",
+            "//iam.googleapis.com/projects//locations/global/workloadIdentityPools/pool/providers/aws",
+            "//iam.googleapis.com/projects/123/locations//workloadIdentityPools/pool/providers/aws",
+            "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools//providers/aws",
+            "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/",
+            "//iam.googleapis.com/projects/123/regions/global/workloadIdentityPools/pool/providers/aws",
+            "//iam.googleapis.com/projects/123/locations/global/pools/pool/providers/aws",
+            "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/endpoints/aws",
+            "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/aws/extra",
+        ] {
+            let err = validate_workload_identity_federation(Some(&provider_auth(provider)))
+                .expect_err(&format!("expected '{provider}' to be rejected"));
+            assert_eq!(err.field(), "auth.workload_identity_provider");
+        }
+    }
 }

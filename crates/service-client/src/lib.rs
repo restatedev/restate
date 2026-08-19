@@ -99,7 +99,8 @@ impl ServiceClient {
             Arc::new(ArcSwapOption::empty())
         };
 
-        gcp::install_federation_config(options.gcp_federation.clone());
+        gcp::install_federation_config(options.gcp_federation.clone())
+            .map_err(BuildError::GcpFederationConfig)?;
 
         Ok(Self::new(
             HttpClient::from_options(&options.http),
@@ -119,6 +120,8 @@ impl ServiceClient {
 pub enum BuildError {
     #[error("Failed to read request identity private key: {0}")]
     SigningPrivateKeyReadError(#[from] request_identity::v1::SigningPrivateKeyReadError),
+    #[error("{0}")]
+    GcpFederationConfig(String),
 }
 
 impl ServiceClient {
