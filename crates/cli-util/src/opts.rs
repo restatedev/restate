@@ -44,6 +44,20 @@ pub enum TimeFormat {
     Rfc2822,
 }
 
+#[derive(ValueEnum, Clone, Copy, Eq, PartialEq, Default, Debug)]
+#[clap(rename_all = "kebab-case")]
+pub enum OutputFormat {
+    /// Human-friendly output with colors and icons (default)
+    #[default]
+    Human,
+    /// Plain table suitable for shell pipelines
+    Table,
+    /// JSON array
+    Json,
+    /// Newline-delimited JSON
+    Jsonl,
+}
+
 /// Silent (no) logging by default in CLI
 #[derive(Clone, Default)]
 pub(crate) struct Quiet;
@@ -73,6 +87,10 @@ pub(crate) struct UiOpts {
 
     #[arg(long, default_value = "human", global = true)]
     pub time_format: TimeFormat,
+
+    /// Output format for list and describe commands
+    #[arg(long, default_value = "human", global = true)]
+    pub output: OutputFormat,
 }
 
 #[derive(Args, Clone, Default)]
