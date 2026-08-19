@@ -157,26 +157,38 @@ impl DeploymentStatusCache {
                 Ok(guard) => {
                     // Drop current to avoid holding proxy returned by arcswap.
                     drop(current);
-                    self.do_refresh_cache(source, guard).await
+                    self.do_refresh_cache(source, false, false, guard).await
                 }
                 Err(_) => Ok(Arc::clone(current_ref)),
             };
         }
 
         // Drop current to avoid holding proxy returned by arcswap.
+        let was_empty = current.is_none();
         drop(current);
 
         // Cold start (nothing to serve) or a forced refresh: wait our turn, then refresh.
         let guard = self.inner.refresh.lock().await;
-        self.do_refresh_cache(source, guard).await
+        self.do_refresh_cache(source, force_refresh, was_empty, guard)
+            .await
     }
 
     /// Recomputes the cache entry while holding the refresh lock, stores it, and returns it.
     async fn do_refresh_cache<S: DeploymentStatusReader>(
         &self,
         source: &S,
+        force_refresh: bool,
+        was_empty: bool,
         _guard: MutexGuard<'_, ()>,
     ) -> anyhow::Result<Arc<CachedDeploymentStatuses>> {
+        if !force_refresh
+            && was_empty
+            && let Some(current_cache) = self.inner.value.load().as_ref()
+        {
+            // In this case, it was a storm of refreshes on startup. Skip it.
+            return Ok(Arc::clone(current_cache));
+        }
+
         // Snapshot the current schema version
         // If it advances mid-compute, it's fine as worst case next read will refresh it.
         let current_schema_version = source.schema_version();
