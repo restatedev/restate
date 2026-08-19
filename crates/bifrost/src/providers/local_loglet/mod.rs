@@ -138,8 +138,7 @@ impl Loglet for LocalLoglet {
         from: LogletOffset,
     ) -> Result<SendableLogletReadStream, OperationError> {
         let readable_tail = OffsetWatch::default();
-        let read_stream =
-            LocalLogletReadStream::create(self, filter, from, readable_tail.clone()).await?;
+        let read_stream = LocalLogletReadStream::create(self, filter, from, readable_tail.clone())?;
         Ok(SendableLogletReadStream::new(read_stream, readable_tail))
     }
 
@@ -389,17 +388,19 @@ mod tests {
             ("record-1", Keys::Single(1)).into(),
             ("record-2", Keys::Single(2)).into(),
             ("record-3", Keys::Single(1)).into(),
+            ("record-4", Keys::Single(2)).into(),
         ]
         .into();
         let offset = loglet.enqueue_batch(batch).await?.await?;
 
         let key_filter = KeyFilter::Include(1);
-        let read_stream = loglet
+        let mut read_stream = loglet
             .create_read_stream(key_filter, LogletOffset::OLDEST)
             .await?;
         read_stream.notify_readable_tail(offset.next());
 
         let records: Vec<_> = read_stream
+            .by_ref()
             .take(2)
             .try_collect::<Vec<_>>()
             .await?
@@ -419,6 +420,9 @@ mod tests {
                 eq((LogletOffset::from(3), "record-3".to_owned()))
             ]
         );
+        let filtered = read_stream.next().await.unwrap()?;
+        assert_that!(filtered.kind(), eq(crate::RecordKind::Filtered));
+        assert_that!(read_stream.read_pointer(), eq(offset.next()));
 
         Ok(())
     }
