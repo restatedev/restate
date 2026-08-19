@@ -1031,6 +1031,13 @@ impl LeaderState {
                 invocation_target,
                 idempotency_key,
             } => {
+                if self.scheduler.is_disabled() {
+                    debug!(
+                        entry_key = ?key,
+                        "Suppressing VQueue invocation dispatch because the scheduler is disabled"
+                    );
+                    return Ok(());
+                }
                 let metas = processor.vqueues();
                 let slot = metas.get(vq_handle).expect("vqueue meta must be in cache");
                 // state mutations should not create Invoke actions. At least for now.

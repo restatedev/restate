@@ -131,6 +131,10 @@ impl<S: VQueueStore> SchedulerService<S> {
         }
     }
 
+    pub fn is_disabled(&self) -> bool {
+        matches!(self.state, State::Disabled)
+    }
+
     pub async fn create(
         resource_manager: ResourceManager,
         storage: S,

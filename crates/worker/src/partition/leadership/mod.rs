@@ -671,19 +671,28 @@ where
                 })?
                 .into_guard();
 
-            let scheduler_service = SchedulerService::create(
-                ResourceManager::create(
+            let scheduler_service = if config.worker.disable_scheduler {
+                warn!(
+                    leader_epoch = %leader_epoch,
+                    "The VQueue scheduler is disabled on this partition processor. Unsetting \
+                     worker.disable-scheduler and re-acquiring leadership is required to enable it."
+                );
+                SchedulerService::new_disabled()
+            } else {
+                SchedulerService::create(
+                    ResourceManager::create(
+                        partition_store.partition_db().clone(),
+                        node_ctx.invoker_capacity.concurrency.clone(),
+                        node_ctx.invoker_capacity.invocation_token_bucket.clone(),
+                        node_ctx.invoker_capacity.memory_pool.clone(),
+                        node_ctx.invoker_capacity.initial_invocation_memory,
+                    )
+                    .await?,
                     partition_store.partition_db().clone(),
-                    node_ctx.invoker_capacity.concurrency.clone(),
-                    node_ctx.invoker_capacity.invocation_token_bucket.clone(),
-                    node_ctx.invoker_capacity.memory_pool.clone(),
-                    node_ctx.invoker_capacity.initial_invocation_memory,
+                    processor.vqueues_mut(),
                 )
-                .await?,
-                partition_store.partition_db().clone(),
-                processor.vqueues_mut(),
-            )
-            .await?;
+                .await?
+            };
 
             // Seed the scheduler's UserLimiter with whatever rules
             // have already been applied to this partition.
@@ -1022,39 +1031,45 @@ mod tests {
 
     use assert2::let_assert;
     use restate_bifrost::Bifrost;
+    use restate_clock::RoughTimestamp;
+    use restate_clock::time::MillisSinceEpoch;
+    use restate_core::network::Reciprocal;
     use restate_core::partitions::PartitionRouting;
     use restate_core::{TaskCenter, TestCoreEnv};
     use restate_ingestion_client::{IngestionClient, SessionOptions};
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
+    use restate_storage_api::vqueue_table::EntryKey;
     use restate_types::config::Configuration;
-    use restate_types::identifiers::{LeaderEpoch, PartitionId};
+    use restate_types::deployment::PinnedDeployment;
+    use restate_types::identifiers::{
+        DeploymentId, InvocationId, LeaderEpoch, PartitionId, PartitionProcessorRpcRequestId,
+    };
+    use restate_types::invocation::{FencingToken, InvocationTarget};
+    use restate_types::live::Live;
     use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
     use restate_types::partitions::state::PartitionReplicaSetStates;
     use restate_types::partitions::{
         Partition, PartitionConfiguration, PartitionFeatureChange, PersistedFeatures,
     };
+    use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_types::sharding::KeyRange;
+    use restate_types::vqueues::{EntryId, EntryKind};
     use restate_types::{GenerationalNodeId, Version};
+    use restate_vqueues::VQueueHandle;
     use restate_wal_protocol::Command;
     use restate_wal_protocol::Envelope;
+    use restate_wal_protocol::invocation::PauseInvocationCommand;
     use restate_worker_api::invoker::capacity::InvokerCapacity;
+    use restate_worker_api::invoker::{Effect, EffectKind, FencedEffect};
 
     use crate::partition::leadership::{LeadershipState, State};
     use crate::partition::processor::ProcessorRawContext;
+    use crate::partition::state_machine::Action;
+    use crate::partition::types::InvokerEffect;
     use crate::partition::{LeadershipInfo, NodeContext};
     use crate::partition_processor_manager::PartitionLeaderHandlesRegistry;
     use crate::rule_book_cache::RuleBookCacheHandle;
-
-    use restate_core::network::Reciprocal;
-    use restate_types::deployment::PinnedDeployment;
-    use restate_types::identifiers::{DeploymentId, InvocationId, PartitionProcessorRpcRequestId};
-    use restate_types::invocation::FencingToken;
-    use restate_types::service_protocol::ServiceProtocolVersion;
-    use restate_wal_protocol::invocation::PauseInvocationCommand;
-    use restate_worker_api::invoker::{Effect, EffectKind, FencedEffect};
-
-    use crate::partition::types::InvokerEffect;
 
     const PARTITION_ID: PartitionId = PartitionId::MIN;
     const NODE_ID: GenerationalNodeId = GenerationalNodeId::new(0, 0);
@@ -1194,9 +1209,12 @@ mod tests {
             NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
             SessionOptions::default(),
         );
+        let mut configuration = Configuration::default();
+        configuration.worker.disable_scheduler = true;
+
         let mut node_ctx = NodeContext::new(
             NODE_ID,
-            Configuration::live(),
+            Live::from_value(configuration),
             replica_set_states,
             RuleBookCacheHandle::detached(),
             bifrost.clone(),
@@ -1253,6 +1271,31 @@ mod tests {
         let State::Leader(leader_state) = &mut state.state else {
             panic!("expected to be leader");
         };
+
+        let suppressed_target = InvocationTarget::service("test.Service", "handler");
+        let suppressed_invocation_id = InvocationId::mock_generate(&suppressed_target);
+        leader_state.handle_actions(
+            &mut ctx,
+            [Action::VQInvoke {
+                vq_handle: VQueueHandle::default(),
+                key: EntryKey::new(
+                    false,
+                    RoughTimestamp::from_unix_millis_clamped(MillisSinceEpoch::new(0)),
+                    0,
+                    EntryId::new(EntryKind::Invocation, [0; EntryId::REMAINDER_LEN]),
+                ),
+                invocation_target: suppressed_target,
+                idempotency_key: None,
+            }]
+            .into_iter(),
+        )?;
+        let first_token = leader_state
+            .fencing_tokens_mut()
+            .mint(suppressed_invocation_id);
+        assert_eq!(first_token, 0, "suppressed dispatch must not mint a token");
+        leader_state
+            .fencing_tokens_mut()
+            .clear(&suppressed_invocation_id);
 
         let invocation_id = InvocationId::mock_random();
         // Four distinguishable effects so we can assert exactly which were appended.

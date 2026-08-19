@@ -63,6 +63,13 @@ pub struct WorkerOptions {
 
     pub storage: StorageOptions,
 
+    /// # Disable scheduler
+    ///
+    /// Prevents this worker from scheduling VQueue entries.
+    ///
+    /// Since v1.7.5
+    pub disable_scheduler: bool,
+
     pub invoker: InvokerOptions,
 
     /// # Maximum command batch size (count) for partition processors
@@ -203,6 +210,7 @@ impl Default for WorkerOptions {
             num_timers_in_memory_limit: None,
             cleanup_interval: NonZeroFriendlyDuration::from_secs_unchecked(60 * 60),
             storage: StorageOptions::default(),
+            disable_scheduler: false,
             invoker: Default::default(),
             max_command_batch_size: NonZeroUsize::new(32).expect("Non zero number"),
             max_command_batch_bytes: NonZeroByteCount::new(NonZeroUsize::new(1024 * 1024).unwrap()),
@@ -1170,6 +1178,19 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+
+    #[test]
+    fn scheduler_is_enabled_by_default_and_can_be_disabled() {
+        let options = WorkerOptions::default();
+        assert!(!options.disable_scheduler);
+
+        let mut value = serde_json::to_value(options).unwrap();
+        assert_eq!(value["disable-scheduler"], false);
+        value["disable-scheduler"] = true.into();
+
+        let options: WorkerOptions = serde_json::from_value(value).unwrap();
+        assert!(options.disable_scheduler);
+    }
 
     #[test]
     fn apply_deprecated_precedence() {
