@@ -21,8 +21,8 @@ use restate_core::my_node_id;
 use restate_core::network::{Networking, TransportConnect};
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{
-    KeyFilter, LogId, LogletId, LogletOffset, Record, RecordCache, SequenceNumber, TailOffsetWatch,
-    TailState,
+    KeyFilter, LogId, LogletId, LogletOffset, OffsetWatch, Record, RecordCache, SequenceNumber,
+    TailOffsetWatch, TailState,
 };
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 
@@ -282,20 +282,21 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         self: Arc<Self>,
         filter: KeyFilter,
         from: LogletOffset,
-        to: Option<LogletOffset>,
     ) -> Result<SendableLogletReadStream, OperationError> {
         trace!("create_read_stream() called");
         let cache = self.record_cache.clone();
         let known_global_tail = self.known_global_tail.clone();
         let my_params = self.my_params.clone();
         let networking = self.networking.clone();
+        let readable_tail = OffsetWatch::default();
 
         let (rx_stream, reader_task) = ReadStreamTask::start(
             my_params,
             networking,
             filter,
             from,
-            to,
+            None,
+            readable_tail.clone(),
             known_global_tail,
             cache,
             false,
@@ -303,7 +304,7 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         .await?;
         let read_stream = ReplicatedLogletReadStream::new(from, rx_stream, reader_task);
 
-        Ok(Box::pin(read_stream))
+        Ok(SendableLogletReadStream::new(read_stream, readable_tail))
     }
 
     fn watch_tail(&self) -> BoxStream<'static, TailState<LogletOffset>> {

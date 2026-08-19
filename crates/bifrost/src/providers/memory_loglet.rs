@@ -27,7 +27,7 @@ use restate_types::logs::metadata::{
     Chain, LogletParams, ProviderConfiguration, ProviderKind, SegmentIndex,
 };
 use restate_types::logs::{
-    KeyFilter, LogId, LogletId, LogletOffset, MatchKeyQuery, Record, SequenceNumber,
+    KeyFilter, LogId, LogletId, LogletOffset, MatchKeyQuery, OffsetWatch, Record, SequenceNumber,
     TailOffsetWatch, TailState,
 };
 
@@ -203,8 +203,8 @@ struct MemoryReadStream {
     tail_watch: BoxStream<'static, TailState<LogletOffset>>,
     /// stop when read_pointer is at or beyond this offset
     last_known_tail: LogletOffset,
-    /// Last offset to read before terminating the stream. None means "tailing" reader.
-    read_to: Option<LogletOffset>,
+    readable_tail_watch: BoxStream<'static, LogletOffset>,
+    readable_tail: LogletOffset,
     terminated: bool,
 }
 
@@ -213,7 +213,7 @@ impl MemoryReadStream {
         loglet: Arc<MemoryLoglet>,
         filter: KeyFilter,
         from_offset: LogletOffset,
-        to: Option<LogletOffset>,
+        readable_tail: OffsetWatch,
     ) -> Self {
         let mut tail_watch = loglet.watch_tail();
         let last_known_tail = tail_watch
@@ -228,7 +228,8 @@ impl MemoryReadStream {
             read_pointer: from_offset,
             tail_watch,
             last_known_tail,
-            read_to: to,
+            readable_tail_watch: Box::pin(readable_tail.to_stream()),
+            readable_tail: readable_tail.get(),
             terminated: false,
         }
     }
@@ -256,13 +257,20 @@ impl Stream for MemoryReadStream {
             return Poll::Ready(None);
         }
 
-        let next_offset = self.read_pointer;
-
         loop {
-            // We have reached the limit we are allowed to read
-            if self.read_to.is_some_and(|read_to| next_offset > read_to) {
-                self.terminated = true;
-                return Poll::Ready(None);
+            let next_offset = self.read_pointer;
+
+            if next_offset >= self.readable_tail {
+                match ready!(self.readable_tail_watch.poll_next_unpin(cx)) {
+                    Some(readable_tail) => {
+                        self.readable_tail = readable_tail;
+                        continue;
+                    }
+                    None => {
+                        self.terminated = true;
+                        return Poll::Ready(Some(Err(OperationError::Shutdown(ShutdownError))));
+                    }
+                }
             }
 
             // Are we reading after commit offset?
@@ -340,11 +348,10 @@ impl Loglet for MemoryLoglet {
         self: Arc<Self>,
         filter: KeyFilter,
         from: LogletOffset,
-        to: Option<LogletOffset>,
     ) -> Result<SendableLogletReadStream, OperationError> {
-        Ok(Box::pin(
-            MemoryReadStream::create(self, filter, from, to).await,
-        ))
+        let readable_tail = OffsetWatch::default();
+        let read_stream = MemoryReadStream::create(self, filter, from, readable_tail.clone()).await;
+        Ok(SendableLogletReadStream::new(read_stream, readable_tail))
     }
 
     fn watch_tail(&self) -> BoxStream<'static, TailState<LogletOffset>> {

@@ -28,7 +28,7 @@ use futures::stream::BoxStream;
 use futures::{FutureExt, Stream};
 use tokio::sync::oneshot;
 
-use restate_types::logs::{KeyFilter, LogletId, LogletOffset, Record, TailState};
+use restate_types::logs::{KeyFilter, LogletId, LogletOffset, OffsetWatch, Record, TailState};
 
 use crate::LogEntry;
 use crate::Result;
@@ -77,13 +77,10 @@ pub trait Loglet: Send + Sync {
 
     /// Create a read stream that streams record from a single loglet instance.
     ///
-    /// `to`: The offset of the last record to be read (inclusive). If `None`, the
-    /// stream is an open-ended tailing read stream.
     async fn create_read_stream(
         self: Arc<Self>,
         filter: KeyFilter,
         from: LogletOffset,
-        to: Option<LogletOffset>,
     ) -> Result<SendableLogletReadStream, OperationError>;
 
     /// Create a stream watching the state of tail for this loglet
@@ -172,7 +169,56 @@ pub trait LogletReadStream: Stream<Item = Result<LogEntry<LogletOffset>, Operati
     fn is_terminated(&self) -> bool;
 }
 
-pub type SendableLogletReadStream = Pin<Box<dyn LogletReadStream + Send>>;
+pub struct SendableLogletReadStream {
+    inner: Pin<Box<dyn LogletReadStream + Send>>,
+    readable_tail: OffsetWatch,
+}
+
+impl SendableLogletReadStream {
+    pub(crate) fn new(
+        inner: impl LogletReadStream + Send + 'static,
+        readable_tail: OffsetWatch,
+    ) -> Self {
+        Self {
+            inner: Box::pin(inner),
+            readable_tail,
+        }
+    }
+
+    /// Advances the exclusive readable tail. Only lower offsets may be returned.
+    pub fn notify_readable_tail(&self, tail: LogletOffset) -> bool {
+        self.readable_tail.notify(tail)
+    }
+
+    pub fn read_pointer(&self) -> LogletOffset {
+        self.inner.read_pointer()
+    }
+
+    pub fn is_terminated(&self) -> bool {
+        self.inner.is_terminated()
+    }
+}
+
+impl LogletReadStream for SendableLogletReadStream {
+    fn read_pointer(&self) -> LogletOffset {
+        self.inner.read_pointer()
+    }
+
+    fn is_terminated(&self) -> bool {
+        self.inner.is_terminated()
+    }
+}
+
+impl Stream for SendableLogletReadStream {
+    type Item = Result<LogEntry<LogletOffset>, OperationError>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        self.inner.as_mut().poll_next(cx)
+    }
+}
 
 pub struct LogletCommitResolver {
     tx: oneshot::Sender<Result<LogletOffset, AppendError>>,

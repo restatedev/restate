@@ -20,7 +20,7 @@ use tracing::{debug, error, warn};
 
 use restate_core::ShutdownError;
 use restate_rocksdb::RocksDbReadPerfGuard;
-use restate_types::logs::{KeyFilter, LogletOffset, SequenceNumber, TailState};
+use restate_types::logs::{KeyFilter, LogletOffset, OffsetWatch, SequenceNumber, TailState};
 
 use crate::loglet::{Loglet, LogletReadStream, OperationError};
 use crate::providers::local_loglet::LogStoreError;
@@ -39,8 +39,8 @@ pub(crate) struct LocalLogletReadStream {
     read_pointer: LogletOffset,
     /// stop when read_pointer is at or beyond this offset
     last_known_tail: LogletOffset,
-    /// Last offset to read before terminating the stream. None means "tailing" reader.
-    read_to: Option<LogletOffset>,
+    readable_tail_watch: BoxStream<'static, LogletOffset>,
+    readable_tail: LogletOffset,
     iterator: DBRawIteratorWithThreadMode<'static, DB>,
     tail_watch: BoxStream<'static, TailState<LogletOffset>>,
     terminated: bool,
@@ -68,7 +68,7 @@ impl LocalLogletReadStream {
         loglet: Arc<LocalLoglet>,
         filter: KeyFilter,
         from_offset: LogletOffset,
-        to: Option<LogletOffset>,
+        readable_tail: OffsetWatch,
     ) -> Result<Self, OperationError> {
         // Reading from INVALID resets to OLDEST.
         let from_offset = from_offset.max(LogletOffset::OLDEST);
@@ -125,7 +125,8 @@ impl LocalLogletReadStream {
             terminated: false,
             tail_watch,
             last_known_tail,
-            read_to: to,
+            readable_tail_watch: Box::pin(readable_tail.to_stream()),
+            readable_tail: readable_tail.get(),
         })
     }
 }
@@ -154,13 +155,24 @@ impl Stream for LocalLogletReadStream {
 
         let perf_guard = RocksDbReadPerfGuard::new("local-loglet-next");
         loop {
-            // We have reached the limit we are allowed to read
-            if self
-                .read_to
-                .is_some_and(|read_to| self.read_pointer > read_to)
-            {
-                self.terminated = true;
-                return Poll::Ready(None);
+            if self.read_pointer >= self.readable_tail {
+                let maybe_readable_tail = match self.readable_tail_watch.poll_next_unpin(cx) {
+                    Poll::Ready(tail) => tail,
+                    Poll::Pending => {
+                        perf_guard.forget();
+                        return Poll::Pending;
+                    }
+                };
+                match maybe_readable_tail {
+                    Some(readable_tail) => {
+                        self.readable_tail = readable_tail;
+                        continue;
+                    }
+                    None => {
+                        self.terminated = true;
+                        return Poll::Ready(Some(Err(OperationError::Shutdown(ShutdownError))));
+                    }
+                }
             }
             // Are we reading after commit offset?
             // We are at tail. We need to wait until new records have been released.
