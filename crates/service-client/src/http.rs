@@ -78,9 +78,10 @@ pub struct HttpClient {
 }
 
 impl HttpClient {
-    pub fn from_options(options: &HttpOptions) -> HttpClient {
-        let mut builder =
-            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::default());
+    pub fn from_options(options: &HttpOptions, io_runtime: tokio::runtime::Handle) -> HttpClient {
+        let mut builder = hyper_util::client::legacy::Client::builder(RestateTokioExecutor {
+            io_runtime: io_runtime.clone(),
+        });
         builder.timer(hyper_util::rt::TokioTimer::default());
 
         let keep_alive_interval: Duration = options
@@ -164,7 +165,7 @@ impl HttpClient {
                 None => builder,
             };
 
-            builder.build(connector)
+            builder.build(connector, io_runtime)
         };
 
         HttpClient {
@@ -276,6 +277,21 @@ impl HttpClient {
         };
 
         Either::Left(fut)
+    }
+}
+
+#[derive(Clone)]
+struct RestateTokioExecutor {
+    io_runtime: tokio::runtime::Handle,
+}
+
+impl<Fut> hyper::rt::Executor<Fut> for RestateTokioExecutor
+where
+    Fut: Future + Send + 'static,
+    Fut::Output: Send + 'static,
+{
+    fn execute(&self, fut: Fut) {
+        self.io_runtime.spawn(fut);
     }
 }
 

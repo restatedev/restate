@@ -229,6 +229,7 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
     let service_client = ServiceClient::from_options(
         &config.worker.invoker.service_client,
         AssumeRoleCacheMode::None,
+        TaskCenter::with_io_runtime_handle(|handle| handle.clone()),
     )
     .unwrap();
     let admin_service = AdminService::new(

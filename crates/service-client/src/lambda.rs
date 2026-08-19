@@ -159,8 +159,6 @@ impl LambdaClient {
         <B as Body>::Data: Send,
         <B as Body>::Error: Error + Send + Sync + 'static,
     {
-        let function_name = arn.to_string();
-        let region = Region::new(arn.region().to_string());
         let inner = self.inner.clone();
 
         async move {
@@ -211,9 +209,11 @@ impl LambdaClient {
                 is_base64_encoded: true,
             };
 
+            let region = Region::new(arn.region().to_string());
+
             let res = inner
                 .build_invoke(assume_role_arn)
-                .function_name(function_name)
+                .function_name(arn.as_str())
                 .payload(Blob::new(
                     serde_json::to_vec(&payload).map_err(LambdaError::SerializationError)?,
                 ))

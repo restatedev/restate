@@ -37,7 +37,7 @@ use tokio_util::time::delay_queue::Key as RetryTimerKey;
 use tracing::instrument;
 use tracing::{debug, trace, warn};
 
-use restate_core::cancellation_token;
+use restate_core::{TaskCenter, TaskCenterFutureExt, cancellation_token};
 use restate_errors::warn_it;
 use restate_memory::{ByteCount, LocalMemoryPool, MemoryLease, MemoryPool, OutOfMemoryKind};
 use restate_queue::SegmentQueue;
@@ -188,7 +188,8 @@ where
                     self.allow_protocol_v7,
                     opts.max_awaited_future_depth,
                 )
-                .run(storage_reader, budget),
+                .run(storage_reader, budget)
+                .in_current_tc(),
             )
             .expect("to spawn invocation task")
     }
@@ -330,8 +331,11 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
         Schemas: DeploymentResolver + InvocationTargetResolver + Clone,
     {
         metric_definitions::describe_metrics();
-        let client =
-            ServiceClient::from_options(service_client_options, AssumeRoleCacheMode::Unbounded)?;
+        let client = ServiceClient::from_options(
+            service_client_options,
+            AssumeRoleCacheMode::Unbounded,
+            TaskCenter::with_io_runtime_handle(|handle| handle.clone()),
+        )?;
 
         Ok(Service::new(
             invoker_id,
@@ -2283,6 +2287,7 @@ mod tests {
             ServiceClient::from_options(
                 &ServiceClientOptions::default(),
                 AssumeRoleCacheMode::None,
+                tokio::runtime::Handle::current(),
             )
             .unwrap(),
             test_util::MockEntryEnricher,
