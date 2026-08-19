@@ -840,6 +840,15 @@ experimental! {
     ///
     /// Since v1.7.5
     vqueues_migration_skip_completed,
+
+    /// # Write invocation response result using reference
+    ///
+    /// Instead of embedding the response result (which can be huge)
+    /// in the invocation status, we instead keep a reference to the
+    /// output journal entry.
+    ///
+    /// Since v1.8.0
+    write_result_reference,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
