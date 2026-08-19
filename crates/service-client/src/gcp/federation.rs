@@ -148,22 +148,38 @@ impl Broker {
 
 static BROKER: OnceCell<Arc<Broker>> = OnceCell::const_new();
 
+/// Test-only override for [`broker`], consulted inside `BROKER`'s single-flight initializer so it
+/// participates in the exact same cache-on-success, retry-on-error semantics as the real path.
+/// Lets unit tests exercise the federation chain without `[gcp-federation]` configuration or real
+/// `aws_config::load_defaults()`/`AssumeRole` calls; see `install_fixture_broker_for_test`, the
+/// only place this is ever installed.
+#[cfg(test)]
+type BrokerOverride = Arc<dyn Fn() -> Result<Arc<Broker>, String> + Send + Sync>;
+#[cfg(test)]
+static BROKER_OVERRIDE: parking_lot::Mutex<Option<BrokerOverride>> = parking_lot::Mutex::new(None);
+
 /// Returns the shared broker, constructing it on first use. Construction failure (missing
 /// `[gcp-federation]` config, or no AWS region resolvable) is not cached: [`OnceCell::get_or_try_init`]
 /// leaves the cell empty on `Err`, so the next attempt retries, exactly like a fixed misconfiguration
 /// being picked up immediately elsewhere in this module.
 async fn broker(audience: &str) -> Result<Arc<Broker>, GcpAuthError> {
-    let Some(config) = FEDERATION_CONFIG.get().cloned().flatten() else {
-        return Err(GcpAuthError::Build {
-            audience: audience.to_owned(),
-            message: "this deployment requests GCP workload identity federation, but the server \
-                      has no [gcp-federation] configuration; set broker-role-arn and \
-                      session-name to enable it"
-                .to_owned(),
-        });
-    };
     BROKER
-        .get_or_try_init(|| async { Broker::init(&config).await.map(Arc::new) })
+        .get_or_try_init(|| async {
+            #[cfg(test)]
+            if let Some(f) = BROKER_OVERRIDE.lock().clone() {
+                return f();
+            }
+
+            let Some(config) = FEDERATION_CONFIG.get().cloned().flatten() else {
+                return Err(
+                    "this deployment requests GCP workload identity federation, but the server \
+                     has no [gcp-federation] configuration; set broker-role-arn and \
+                     session-name to enable it"
+                        .to_owned(),
+                );
+            };
+            Broker::init(&config).await.map(Arc::new)
+        })
         .await
         .cloned()
         .map_err(|message| GcpAuthError::Build {
@@ -331,9 +347,16 @@ struct SubjectTokenHeader {
 }
 
 /// Assembles the federation chain for `key` (whose `wif_provider` is `Some`) and returns the
-/// resulting [`IdTokenSource`]: broker credentials -> SigV4 subject token -> Google STS exchange
+/// resulting [`IdTokenSource`]: broker credentials -> shared external-account source credential
 /// -> impersonation. Runs on the auth runtime, under the same construction semaphore as the
 /// ambient/impersonated paths (see `Registry::get_or_build`).
+///
+/// The external-account source credential (the Google-side actor the SigV4 subject token and STS
+/// exchange produce) is shared per WIF provider via [`external_account_source`], not rebuilt per
+/// key: like the registry's shared ambient source, it is itself a `google-cloud-auth` actor with
+/// its own background refresh task, so a fresh one per key would leak exactly the way the ambient
+/// source did before it was shared (restatedev/restate#5151 follow-up). Only the outer impersonated
+/// credential built here is per-key.
 pub(super) async fn build_federated_source(
     key: CacheKey,
 ) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
@@ -357,25 +380,18 @@ pub(super) async fn build_federated_source(
     };
 
     let broker = broker(&audience).await?;
-    let subject_token_provider = Arc::new(AwsSubjectTokenProvider {
-        broker,
-        provider_resource: wif_provider.clone(),
-    });
-
-    let source_credentials = ProgrammaticBuilder::new(subject_token_provider)
-        .with_audience(wif_provider.clone())
-        .with_subject_token_type(AWS4_SUBJECT_TOKEN_TYPE)
-        .with_token_url(GOOGLE_STS_TOKEN_URL)
-        .build()
-        .map_err(|e| GcpAuthError::Build {
+    let source = external_account_source(&wif_provider, broker)
+        .await
+        .map_err(|message| GcpAuthError::Adc {
             audience: audience.clone(),
-            message: format!("building GCP workload identity federation credentials: {e}"),
+            impersonate: impersonate.clone(),
+            message,
         })?;
 
     let credentials = idtoken::impersonated::Builder::from_source_credentials(
         audience.clone(),
         impersonate,
-        source_credentials,
+        (*source).clone(),
     )
     .build()
     .map_err(|e| GcpAuthError::Build {
@@ -384,6 +400,168 @@ pub(super) async fn build_federated_source(
     })?;
 
     Ok(Arc::new(Live(credentials)) as Arc<dyn IdTokenSource>)
+}
+
+/// One [`super::SourceSlot`] per WIF provider resource name, each holding the shared
+/// external-account source credential every federated key targeting that provider clones. Keyed
+/// by provider rather than a single process-wide slot (unlike the ambient source, of which there
+/// is exactly one) because distinct providers are distinct external identities with no shared
+/// actor to begin with; cardinality is registration-bounded, like the outer credential cache.
+static EXTERNAL_ACCOUNT_SOURCES: std::sync::LazyLock<
+    parking_lot::Mutex<
+        std::collections::HashMap<
+            String,
+            Arc<super::SourceSlot<google_cloud_auth::credentials::Credentials>>,
+        >,
+    >,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Returns the [`super::SourceSlot`] for `provider`, creating an empty one on first reference.
+pub(super) fn external_account_source_slot(
+    provider: &str,
+) -> Arc<super::SourceSlot<google_cloud_auth::credentials::Credentials>> {
+    let mut sources = EXTERNAL_ACCOUNT_SOURCES.lock();
+    Arc::clone(
+        sources
+            .entry(provider.to_owned())
+            .or_insert_with(|| Arc::new(super::SourceSlot::new())),
+    )
+}
+
+/// Returns `provider`'s shared external-account source credential, building it via `broker` on
+/// first use and reusing it thereafter -- single-flighted by the provider's [`super::SourceSlot`],
+/// so N concurrent cold federated keys for the same provider share one build. Its own recovery
+/// from a permanent post-build failure is driven separately, from `mint()`'s permanent-failure
+/// path (see [`recover_federated_source_if_dead`]), exactly like the ambient source.
+async fn external_account_source(
+    provider: &str,
+    broker: Arc<Broker>,
+) -> Result<Arc<google_cloud_auth::credentials::Credentials>, String> {
+    external_account_source_slot(provider)
+        .get_or_build(build_external_account_source(provider.to_owned(), broker))
+        .await
+}
+
+/// Probes `provider`'s cached external-account source credential and replaces it if -- and only
+/// if -- the probe proves its background refresh actor has permanently died. Called from `mint()`
+/// after any permanent mint failure on a federated key targeting `provider`, mirroring
+/// `Registry::recover_ambient_source_if_dead` exactly: a healthy, self-healing, or inconclusive
+/// (timed-out) probe leaves the slot untouched, since an impersonation-only failure against a
+/// healthy source must never replace it.
+pub(super) async fn recover_federated_source_if_dead(provider: &str) {
+    let slot = external_account_source_slot(provider);
+    let Some(current) = slot.peek().await else {
+        return;
+    };
+    if !super::credentials_source_is_dead(&current).await {
+        return;
+    }
+    // Without a broker there is nothing to rebuild with; leave the dead source in place for the
+    // next recovery attempt to retry once federation is reconfigured.
+    let Ok(broker) = broker(provider).await else {
+        return;
+    };
+    let _ = slot
+        .replace_if_unchanged(
+            &current,
+            build_external_account_source(provider.to_owned(), broker),
+        )
+        .await;
+}
+
+/// Test-only override for [`external_account_source`]'s build step, keyed by provider so distinct
+/// providers' tests cannot interfere with each other. See `BROKER_OVERRIDE` for why this needs to
+/// live inside the initializer it overrides rather than short-circuit `external_account_source`
+/// itself: it must participate in the same single-flight/retry-on-error semantics.
+#[cfg(test)]
+type FederatedSourceOverride =
+    Arc<dyn Fn() -> Result<google_cloud_auth::credentials::Credentials, String> + Send + Sync>;
+#[cfg(test)]
+static FEDERATED_SOURCE_OVERRIDES: std::sync::LazyLock<
+    parking_lot::Mutex<std::collections::HashMap<String, FederatedSourceOverride>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Builds a fresh external-account source credential for `provider`, consulting the test override
+/// when compiled for tests. Shared by `external_account_source` (first build) and
+/// `recover_federated_source_if_dead` (rebuild after a proven-dead probe), exactly like
+/// `Registry::build_ambient_source` is shared by its two callers.
+async fn build_external_account_source(
+    provider_resource: String,
+    broker: Arc<Broker>,
+) -> Result<google_cloud_auth::credentials::Credentials, String> {
+    #[cfg(test)]
+    if let Some(f) = FEDERATED_SOURCE_OVERRIDES
+        .lock()
+        .get(&provider_resource)
+        .cloned()
+    {
+        return f();
+    }
+
+    let subject_token_provider = Arc::new(AwsSubjectTokenProvider {
+        broker,
+        provider_resource: provider_resource.clone(),
+    });
+    ProgrammaticBuilder::new(subject_token_provider)
+        .with_audience(provider_resource)
+        .with_subject_token_type(AWS4_SUBJECT_TOKEN_TYPE)
+        .with_token_url(GOOGLE_STS_TOKEN_URL)
+        .build()
+        .map_err(|e| format!("building GCP workload identity federation source credentials: {e}"))
+}
+
+/// Test-only: install `f` as the build step for `provider`'s shared external-account source (see
+/// [`FEDERATED_SOURCE_OVERRIDES`]). `f` returns a `google_cloud_auth::credentials::Credentials`
+/// directly -- a fully public type -- so callers outside this module (e.g. `gcp::tests`) can
+/// install one without needing to see anything internal to federation.
+#[cfg(test)]
+pub(super) fn install_federated_source_override_for_test(
+    provider: &str,
+    f: impl Fn() -> Result<google_cloud_auth::credentials::Credentials, String> + Send + Sync + 'static,
+) {
+    FEDERATED_SOURCE_OVERRIDES
+        .lock()
+        .insert(provider.to_owned(), Arc::new(f));
+}
+
+/// Test-only: install a `Broker` fixture -- built once here, offline, with an explicit region so
+/// construction never touches `aws_config::load_defaults()`'s environment/IMDS probing -- as the
+/// override [`broker`] consults. Exposed as a zero-argument async setup call (rather than letting
+/// callers supply their own `Broker`) because `Broker`'s fields are private to this module; callers
+/// like `gcp::tests` only need *some* broker in place; they never need to control its behavior
+/// directly; the `[gcp-federation]` broker-role hop is exercised offline).
+#[cfg(test)]
+pub(super) async fn install_fixture_broker_for_test() {
+    let broker = fixture_broker().await;
+    *BROKER_OVERRIDE.lock() = Some(Arc::new(move || Ok(Arc::clone(&broker))));
+}
+
+/// Builds a `Broker` that never performs AWS network I/O: its cached credentials are pre-seeded
+/// (so `Broker::credentials()` always takes the cache-hit path and never calls
+/// `provide_credentials()`), and an explicit region on the `SdkConfig` means construction never
+/// touches `aws_config::load_defaults()`'s environment/IMDS probing. Shared by every test in this
+/// module that needs `broker()`/`external_account_source` to resolve without real AWS access,
+/// whether or not the test also signs a real SigV4 envelope with the seeded credentials.
+#[cfg(test)]
+async fn fixture_broker() -> Arc<Broker> {
+    use aws_config::sts::AssumeRoleProvider;
+    use aws_config::{BehaviorVersion, Region};
+
+    let sdk_config = aws_config::defaults(BehaviorVersion::latest())
+        .region(Region::new("us-east-1"))
+        .load()
+        .await;
+    let provider = AssumeRoleProvider::builder("arn:aws:iam::123456789012:role/unused-in-test")
+        .configure(&sdk_config)
+        .session_name("federation-test-fixture")
+        .build()
+        .await;
+
+    Arc::new(Broker {
+        region: "us-east-1".to_owned(),
+        provider,
+        cached: Mutex::new(Some(AwsCredentials::for_tests())),
+    })
 }
 
 #[cfg(test)]
@@ -554,40 +732,8 @@ mod federation_tests {
     use hyper::{Request, Response, StatusCode};
     use hyper_util::rt::TokioIo;
     use tokio::net::TcpListener;
-    use tokio::sync::Mutex as AsyncMutex;
 
-    use super::{AWS4_SUBJECT_TOKEN_TYPE, AwsSubjectTokenProvider, Broker};
-
-    /// A `Broker` that never performs AWS network I/O: its cached credentials never expire, so
-    /// `Broker::credentials()` always takes the cache-hit path. `AssumeRoleProvider::builder(..).build()`
-    /// itself does no I/O (only `provide_credentials()` would), and an explicit region on the
-    /// `SdkConfig` passed via `.configure(..)` means construction never touches
-    /// `aws_config::load_defaults()`'s environment/IMDS probing either.
-    async fn fixture_broker() -> Arc<Broker> {
-        use aws_config::sts::AssumeRoleProvider;
-        use aws_config::{BehaviorVersion, Region};
-
-        // `aws_config::defaults(..).region(..).load()` fills in a time source, sleep
-        // implementation, and HTTP client without any network I/O: region is explicitly
-        // overridden here, and credential-provider resolution is lazy (only the later
-        // `provide_credentials()` call would touch the network, which this fixture never makes --
-        // its cached credentials never expire).
-        let sdk_config = aws_config::defaults(BehaviorVersion::latest())
-            .region(Region::new("us-east-1"))
-            .load()
-            .await;
-        let provider = AssumeRoleProvider::builder("arn:aws:iam::123456789012:role/unused-in-test")
-            .configure(&sdk_config)
-            .session_name("federation-wire-format-test")
-            .build()
-            .await;
-
-        Arc::new(Broker {
-            region: "us-east-1".to_owned(),
-            provider,
-            cached: AsyncMutex::new(Some(AwsCredentials::for_tests())),
-        })
-    }
+    use super::{AWS4_SUBJECT_TOKEN_TYPE, AwsSubjectTokenProvider, fixture_broker};
 
     type CapturedBody = Arc<Mutex<Option<Bytes>>>;
 
