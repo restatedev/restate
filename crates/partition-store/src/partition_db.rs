@@ -576,6 +576,7 @@ impl DbConfigurator for RocksConfigurator<AllDataCf> {
 
         let storage_config = &Configuration::pinned().worker.storage;
         self.apply_db_opts_from_config(&mut db_options, &storage_config.rocksdb);
+        db_options.set_max_subcompactions(storage_config.rocksdb_max_sub_compactions());
 
         // Avoid pushing back on compaction delays, sacrifice storage and do not hinder
         // writes and flushes.
