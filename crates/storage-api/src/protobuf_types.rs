@@ -4259,10 +4259,12 @@ pub mod v1 {
         };
 
         use crate::protobuf_types::v1::{
-            InvocationTarget, ResponseResult, Source, SpanContextLite,
+            InvocationTarget, Source, SpanContextLite,
             pb_conversion::{expect_or_fail, try_bytes_into_trace_id},
-            response_result, source,
+            source,
         };
+
+        use crate::protobuf_types::v1::{ResponseResultRef, response_result_ref};
 
         fn merge_bytes_zerocopy<'a>(
             wire_type: prost::encoding::WireType,
@@ -4565,13 +4567,13 @@ pub mod v1 {
 
             pub fn response_result(
                 &self,
-            ) -> Result<response_result::ResponseResult, ConversionError> {
+            ) -> Result<response_result_ref::ResponseResult, ConversionError> {
                 use ConversionError;
 
                 let result = self.result_lazy.as_ref();
                 let result = expect_or_fail!(result)?;
 
-                let result = ResponseResult::decode(*result)
+                let result = ResponseResultRef::decode(*result)
                     .map_err(|_| ConversionError::invalid_data_static("result"))?;
 
                 let response_result = result.response_result.as_ref();
