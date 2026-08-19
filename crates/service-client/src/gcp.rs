@@ -19,6 +19,12 @@
 //! refreshes ~4 minutes before expiry, so a steady-state `mint()` call reads a `watch` channel and
 //! never awaits network I/O.
 //!
+//! An impersonated key is a two-actor stack: an outer ID-token credential wrapping a source ADC
+//! credential used to authenticate the impersonation call. That source credential represents the
+//! process's own ambient identity, not any one key, so it is held once, process-wide, and shared
+//! by every impersonated key rather than rebuilt per key (see [`Registry::ambient_source`]). Only
+//! the outer credential is subject to per-key eviction.
+//!
 //! All credential construction executes on a small dedicated tokio runtime (see
 //! [`build_auth_runtime`]) so refresh tasks live on a runtime with process lifetime rather than a
 //! partition invoker runtime that can be torn down out from under them.
@@ -32,7 +38,7 @@ use moka::future::Cache;
 use moka::ops::compute::Op;
 use thiserror::Error;
 use tokio::runtime::{Handle, Runtime};
-use tokio::sync::Semaphore;
+use tokio::sync::{OnceCell, Semaphore};
 
 #[cfg(any(test, feature = "test_util"))]
 use ahash::HashMap;
@@ -189,6 +195,33 @@ struct Registry {
     _runtime: Runtime,
     handle: Handle,
     construction_permits: Semaphore,
+    /// The process's shared ambient ADC identity, used as the source credential for every
+    /// impersonated key. See [`Registry::ambient_source`] and the module docs.
+    ambient_source: OnceCell<google_cloud_auth::credentials::Credentials>,
+    #[cfg(any(test, feature = "test_util"))]
+    test_hooks: TestHooks,
+}
+
+#[cfg(any(test, feature = "test_util"))]
+type ConstructOverride =
+    Arc<dyn Fn(&CacheKey) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> + Send + Sync>;
+#[cfg(any(test, feature = "test_util"))]
+type AmbientSourceOverride =
+    Arc<dyn Fn() -> Result<google_cloud_auth::credentials::Credentials, String> + Send + Sync>;
+
+/// Test-only hooks that let unit tests drive the real moka-backed construction and eviction paths
+/// deterministically, without touching ADC or the network. Never consulted in production builds.
+/// `construct_overrides` is keyed by `CacheKey` so tests using distinct cache keys cannot
+/// interfere with each other even if `cargo test` runs them concurrently in one process.
+/// `ambient_source_override` is a single process-wide slot, matching the singleton it stands in
+/// for — `nextest` (the primary test runner for this crate) isolates each test in its own
+/// process, which is what makes sharing that slot safe in practice.
+#[cfg(any(test, feature = "test_util"))]
+#[derive(Default)]
+struct TestHooks {
+    construct_overrides: Mutex<HashMap<CacheKey, ConstructOverride>>,
+    ambient_source_override: Mutex<Option<AmbientSourceOverride>>,
+    ambient_source_builds: std::sync::atomic::AtomicUsize,
 }
 
 static REGISTRY: LazyLock<Registry> = LazyLock::new(Registry::init);
@@ -223,6 +256,9 @@ impl Registry {
             _runtime: runtime,
             handle,
             construction_permits: Semaphore::new(MAX_CONCURRENT_CONSTRUCTIONS),
+            ambient_source: OnceCell::new(),
+            #[cfg(any(test, feature = "test_util"))]
+            test_hooks: TestHooks::default(),
         }
     }
 
@@ -234,6 +270,14 @@ impl Registry {
         &'static self,
         key: CacheKey,
     ) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
+        #[cfg(any(test, feature = "test_util"))]
+        let override_fn = self
+            .test_hooks
+            .construct_overrides
+            .lock()
+            .get(&key)
+            .cloned();
+
         let init_key = key.clone();
         self.cache
             .try_get_with(key, async move {
@@ -242,7 +286,13 @@ impl Registry {
                     .acquire()
                     .await
                     .expect("construction semaphore is never closed");
-                build_on_auth_runtime(&self.handle, init_key).await
+
+                #[cfg(any(test, feature = "test_util"))]
+                if let Some(f) = override_fn {
+                    return f(&init_key);
+                }
+
+                build_on_auth_runtime(self, init_key).await
             })
             .await
             .map_err(|error| (*error).clone())
@@ -264,15 +314,74 @@ impl Registry {
             })
             .await;
     }
+
+    /// Returns the process's shared ambient source credential, building it on the auth runtime on
+    /// first use. This credential represents the process's own ADC identity, not any particular
+    /// mint key: every impersonated `(impersonate, audience)` key clones the same underlying actor
+    /// rather than each spawning its own. A failed build is not cached — the next caller retries —
+    /// but concurrent callers during a build share the one attempt, via `OnceCell`'s semaphore.
+    async fn ambient_source(
+        &'static self,
+    ) -> Result<google_cloud_auth::credentials::Credentials, String> {
+        #[cfg(any(test, feature = "test_util"))]
+        let override_fn = self.test_hooks.ambient_source_override.lock().clone();
+
+        self.ambient_source
+            .get_or_try_init(|| async {
+                let _permit = self
+                    .construction_permits
+                    .acquire()
+                    .await
+                    .expect("construction semaphore is never closed");
+
+                #[cfg(any(test, feature = "test_util"))]
+                {
+                    self.test_hooks
+                        .ambient_source_builds
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if let Some(f) = override_fn {
+                        return f();
+                    }
+                }
+
+                build_ambient_source_on_auth_runtime(&self.handle).await
+            })
+            .await
+            .cloned()
+    }
 }
 
+/// Resolves the credential(s) needed for `key` and builds the outer ID-token credential on the
+/// auth runtime. The impersonated arm first resolves the process-wide ambient source (see
+/// [`Registry::ambient_source`]) before building its own outer credential, so a permanent failure
+/// here can only ever strand the outer actor — the shared source actor is independent of any
+/// single key and is evicted-then-rebuilt on its own failure/retry cycle.
 async fn build_on_auth_runtime(
-    handle: &Handle,
+    registry: &'static Registry,
     key: CacheKey,
 ) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
     let audience = key.audience.clone();
-    handle
-        .spawn_blocking(move || build_source(key))
+
+    let build: Box<dyn FnOnce() -> Result<Arc<dyn IdTokenSource>, GcpAuthError> + Send> =
+        match key.impersonate.clone() {
+            None => Box::new(move || build_ambient_credentials(key)),
+            Some(sa) => {
+                let source =
+                    registry
+                        .ambient_source()
+                        .await
+                        .map_err(|message| GcpAuthError::Adc {
+                            audience: audience.clone(),
+                            impersonate: sa.clone(),
+                            message,
+                        })?;
+                Box::new(move || build_impersonated_credentials(key, sa, source))
+            }
+        };
+
+    registry
+        .handle
+        .spawn_blocking(build)
         .await
         .unwrap_or_else(|join_error| {
             Err(GcpAuthError::Build {
@@ -282,56 +391,72 @@ async fn build_on_auth_runtime(
         })
 }
 
-/// Constructs the credential for `key`. Runs inside `spawn_blocking` on the auth runtime: ADC
-/// discovery does blocking filesystem reads, and `build()` synchronously spawns the credential's
-/// refresh task via `tokio::spawn` — which lands on the ambient runtime, i.e. the auth runtime,
-/// because tokio propagates runtime context into `spawn_blocking` closures.
-fn build_source(key: CacheKey) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
+/// Runs inside `spawn_blocking` on the auth runtime: `build()` synchronously spawns the ambient
+/// source credential's refresh task via `tokio::spawn` — which lands on the ambient runtime, i.e.
+/// the auth runtime, because tokio propagates runtime context into `spawn_blocking` closures. ADC
+/// discovery here is also blocking filesystem reads.
+async fn build_ambient_source_on_auth_runtime(
+    handle: &Handle,
+) -> Result<google_cloud_auth::credentials::Credentials, String> {
+    handle
+        .spawn_blocking(|| {
+            google_cloud_auth::credentials::Builder::default()
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap_or_else(|join_error| Err(format!("GCP auth runtime task failed: {join_error}")))
+}
+
+/// Builds the outer ID-token credential for an unimpersonated (ambient) key. Runs inside
+/// `spawn_blocking` on the auth runtime — see [`build_on_auth_runtime`].
+fn build_ambient_credentials(key: CacheKey) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
     use google_cloud_auth::credentials::idtoken;
 
-    let credentials = match &key.impersonate {
-        None => idtoken::Builder::new(key.audience.clone())
-            .build()
-            .map_err(|e| {
-                // authorized_user (gcloud) and external_account (Workload Identity Federation)
-                // ADC sources cannot mint ID tokens directly.
-                if e.is_not_supported() {
-                    tracing::debug!(
-                        audience = %key.audience,
-                        error = %e,
-                        "ambient ADC identity cannot mint an ID token; impersonation required"
-                    );
-                    GcpAuthError::AmbientUnsupported {
-                        audience: key.audience.clone(),
-                    }
-                } else {
-                    GcpAuthError::Build {
-                        audience: key.audience.clone(),
-                        message: e.to_string(),
-                    }
-                }
-            })?,
-        Some(sa) => {
-            let source = google_cloud_auth::credentials::Builder::default()
-                .build()
-                .map_err(|e| GcpAuthError::Adc {
+    let credentials = idtoken::Builder::new(key.audience.clone())
+        .build()
+        .map_err(|e| {
+            // authorized_user (gcloud) and external_account (Workload Identity Federation) ADC
+            // sources cannot mint ID tokens directly.
+            if e.is_not_supported() {
+                tracing::debug!(
+                    audience = %key.audience,
+                    error = %e,
+                    "ambient ADC identity cannot mint an ID token; impersonation required"
+                );
+                GcpAuthError::AmbientUnsupported {
                     audience: key.audience.clone(),
-                    impersonate: sa.clone(),
+                }
+            } else {
+                GcpAuthError::Build {
+                    audience: key.audience.clone(),
                     message: e.to_string(),
-                })?;
-            idtoken::impersonated::Builder::from_source_credentials(
-                key.audience.clone(),
-                sa.clone(),
-                source,
-            )
-            .build()
-            .map_err(|e| GcpAuthError::Build {
-                audience: key.audience.clone(),
-                message: e.to_string(),
-            })?
-        }
-    };
+                }
+            }
+        })?;
+    Ok(Arc::new(Live(credentials)) as Arc<dyn IdTokenSource>)
+}
 
+/// Builds the outer ID-token credential for an impersonated key, from the process-wide shared
+/// `source` credential. Runs inside `spawn_blocking` on the auth runtime — see
+/// [`build_on_auth_runtime`].
+fn build_impersonated_credentials(
+    key: CacheKey,
+    service_account: String,
+    source: google_cloud_auth::credentials::Credentials,
+) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
+    use google_cloud_auth::credentials::idtoken;
+
+    let credentials = idtoken::impersonated::Builder::from_source_credentials(
+        key.audience.clone(),
+        service_account,
+        source,
+    )
+    .build()
+    .map_err(|e| GcpAuthError::Build {
+        audience: key.audience.clone(),
+        message: e.to_string(),
+    })?;
     Ok(Arc::new(Live(credentials)) as Arc<dyn IdTokenSource>)
 }
 
@@ -650,32 +775,102 @@ mod tests {
         }
     }
 
+    /// Installs a per-key override that `get_or_build` consults instead of `build_on_auth_runtime`.
+    /// Keying by `CacheKey` means tests using distinct cache keys cannot interfere with each other
+    /// even if `cargo test` runs them concurrently in one process.
+    fn install_construct_override(
+        cache_key: CacheKey,
+        f: impl Fn(&CacheKey) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> + Send + Sync + 'static,
+    ) {
+        registry()
+            .test_hooks
+            .construct_overrides
+            .lock()
+            .insert(cache_key, Arc::new(f));
+    }
+
+    /// Installs the process-wide override that `Registry::ambient_source` consults instead of
+    /// building real ADC credentials.
+    fn install_ambient_source_override(
+        f: impl Fn() -> Result<google_cloud_auth::credentials::Credentials, String>
+        + Send
+        + Sync
+        + 'static,
+    ) {
+        *registry().test_hooks.ambient_source_override.lock() = Some(Arc::new(f));
+    }
+
     #[tokio::test]
     async fn single_flight_builds_once_under_concurrent_misses() {
-        let registry = registry();
-        let builds = Arc::new(AtomicUsize::new(0));
+        let client = GcpTokenClient::new();
         let audience = "https://single-flight.example.com";
+        let builds = Arc::new(AtomicUsize::new(0));
 
-        let futures = (0..64).map(|_| {
+        install_construct_override(key(audience), {
             let builds = builds.clone();
-            async move {
-                registry
-                    .cache
-                    .try_get_with(key(audience), async move {
-                        builds.fetch_add(1, Ordering::SeqCst);
-                        tokio::task::yield_now().await;
-                        Ok::<_, GcpAuthError>(
-                            MockSource::new(|_| MockOutcome::Token(fresh_token()))
-                                as Arc<dyn IdTokenSource>,
-                        )
-                    })
-                    .await
+            move |_| {
+                builds.fetch_add(1, Ordering::SeqCst);
+                Ok(MockSource::new(|_| MockOutcome::Token(fresh_token()))
+                    as Arc<dyn IdTokenSource>)
             }
         });
 
-        let results = futures::future::join_all(futures).await;
-        assert!(results.iter().all(|r| r.is_ok()));
+        let results = futures::future::join_all((0..64).map(|_| client.mint(None, audience))).await;
+
+        assert!(results.iter().all(|r| r.is_ok()), "{results:?}");
         assert_eq!(builds.load(Ordering::SeqCst), 1);
+    }
+
+    #[derive(Debug)]
+    struct FakeCredentialsProvider;
+
+    impl google_cloud_auth::credentials::CredentialsProvider for FakeCredentialsProvider {
+        async fn headers(
+            &self,
+            _extensions: http::Extensions,
+        ) -> std::result::Result<
+            google_cloud_auth::credentials::CacheableResource<http::HeaderMap>,
+            google_cloud_auth::errors::CredentialsError,
+        > {
+            Ok(google_cloud_auth::credentials::CacheableResource::New {
+                entity_tag: google_cloud_auth::credentials::EntityTag::new(),
+                data: http::HeaderMap::new(),
+            })
+        }
+
+        async fn universe_domain(&self) -> Option<String> {
+            None
+        }
+    }
+
+    /// Pins P1's fix (restatedev/restate#5151): the impersonated arm's source ADC credential is a
+    /// single process-wide actor, not one per key. `Registry::ambient_source` is exactly what
+    /// `build_on_auth_runtime` calls before building any impersonated key's outer credential, so
+    /// proving it single-flights and shares its result here is equivalent to proving that N
+    /// concurrent impersonated constructions share one source build — without also leaving N real
+    /// (if harmless) background refresh tasks running for their outer credentials, which
+    /// `get_or_build` would otherwise spin up for the rest of the test process.
+    ///
+    /// Relies on `ambient_source` being uninitialized when this test starts, which holds under
+    /// `nextest` (one process per test) as long as no other test in this file exercises
+    /// impersonation for real; see `TestHooks`'s doc comment.
+    #[tokio::test]
+    async fn impersonated_constructions_share_one_ambient_source_build() {
+        let build_count = Arc::new(AtomicUsize::new(0));
+        install_ambient_source_override({
+            let build_count = build_count.clone();
+            move || {
+                build_count.fetch_add(1, Ordering::SeqCst);
+                Ok(google_cloud_auth::credentials::Credentials::from(
+                    FakeCredentialsProvider,
+                ))
+            }
+        });
+
+        let results = futures::future::join_all((0..8).map(|_| registry().ambient_source())).await;
+
+        assert!(results.iter().all(|r| r.is_ok()), "{results:?}");
+        assert_eq!(build_count.load(Ordering::SeqCst), 1);
     }
 
     /// Real credentials can't be constructed in a unit test (no ADC, no network), so this
@@ -722,8 +917,9 @@ mod tests {
 
     #[tokio::test]
     async fn transient_error_keeps_entry_and_self_heals() {
-        let registry = registry();
+        let client = GcpTokenClient::new();
         let audience = "https://transient.example.com";
+        let cache_key = key(audience);
         let source = MockSource::new(|call| {
             if call == 0 {
                 MockOutcome::Error(transient_error("temporarily unavailable"))
@@ -732,59 +928,89 @@ mod tests {
             }
         });
         let dyn_source: Arc<dyn IdTokenSource> = source.clone();
-        registry
+        registry()
             .cache
-            .insert(key(audience), dyn_source.clone())
+            .insert(cache_key.clone(), dyn_source.clone())
             .await;
 
-        let first = mint_from_source(dyn_source.as_ref(), Duration::from_secs(1)).await;
-        assert!(matches!(first, Err(FetchError::Source(e)) if e.is_transient()));
+        let first = client.mint(None, audience).await;
+        assert!(matches!(first, Err(GcpAuthError::Mint { .. })), "{first:?}");
 
         // The entry must still be present and unchanged (no eviction on transient failure).
-        let still_cached = registry.cache.get(&key(audience)).await;
+        let still_cached = registry().cache.get(&cache_key).await;
         assert!(matches!(still_cached, Some(s) if Arc::ptr_eq(&s, &dyn_source)));
 
         // The mock "self-heals" on the next call, as a real credential's refresh loop would.
-        let second = mint_from_source(dyn_source.as_ref(), Duration::from_secs(1)).await;
-        assert!(second.is_ok());
+        let second = client.mint(None, audience).await;
+        assert!(second.is_ok(), "{second:?}");
     }
 
     #[tokio::test]
     async fn permanent_error_evicts_conditionally() {
-        let registry = registry();
+        let client = GcpTokenClient::new();
         let audience = "https://permanent.example.com";
+        let cache_key = key(audience);
         let source: Arc<dyn IdTokenSource> =
             MockSource::new(|_| MockOutcome::Error(permanent_error("misconfigured")));
-        registry.cache.insert(key(audience), source.clone()).await;
+        registry()
+            .cache
+            .insert(cache_key.clone(), source.clone())
+            .await;
 
-        let outcome = mint_from_source(source.as_ref(), Duration::from_secs(1)).await;
-        assert!(matches!(outcome, Err(FetchError::Source(e)) if !e.is_transient()));
+        let outcome = client.mint(None, audience).await;
+        assert!(
+            matches!(outcome, Err(GcpAuthError::Mint { .. })),
+            "{outcome:?}"
+        );
 
-        registry.evict_if_unchanged(&key(audience), &source).await;
-        assert!(registry.cache.get(&key(audience)).await.is_none());
+        assert!(registry().cache.get(&cache_key).await.is_none());
     }
 
     #[tokio::test]
     async fn aba_race_stale_caller_evict_is_a_no_op() {
-        let registry = registry();
+        let client = GcpTokenClient::new();
         let audience = "https://aba.example.com";
-        let old_source: Arc<dyn IdTokenSource> =
-            MockSource::new(|_| MockOutcome::Error(permanent_error("old, now gone")));
+        let cache_key = key(audience);
         let new_source: Arc<dyn IdTokenSource> =
             MockSource::new(|_| MockOutcome::Token(fresh_token()));
 
-        // Simulate: old_source failed permanently and was already replaced by a rebuilt, healthy
-        // new_source before the slow caller holding old_source gets to evict.
-        registry
+        /// Simulates a concurrent rebuild completing — replacing this source in the registry
+        /// cache with `replacement` — before this permanently-failing source's own error is
+        /// reported back to `mint()`. Driving the swap from inside `id_token()` exercises the
+        /// exact race `evict_if_unchanged`'s compare-and-evict guards against, through the real
+        /// `mint()` call path rather than by hand-simulating the two steps independently.
+        struct SwapThenFail {
+            key: CacheKey,
+            replacement: Arc<dyn IdTokenSource>,
+        }
+
+        #[async_trait]
+        impl IdTokenSource for SwapThenFail {
+            async fn id_token(&self) -> Result<String, SourceError> {
+                registry()
+                    .cache
+                    .insert(self.key.clone(), self.replacement.clone())
+                    .await;
+                Err(permanent_error("old, now gone"))
+            }
+        }
+
+        let old_source: Arc<dyn IdTokenSource> = Arc::new(SwapThenFail {
+            key: cache_key.clone(),
+            replacement: new_source.clone(),
+        });
+        registry()
             .cache
-            .insert(key(audience), new_source.clone())
+            .insert(cache_key.clone(), old_source.clone())
             .await;
 
-        registry
-            .evict_if_unchanged(&key(audience), &old_source)
-            .await;
+        let outcome = client.mint(None, audience).await;
+        assert!(
+            matches!(outcome, Err(GcpAuthError::Mint { .. })),
+            "{outcome:?}"
+        );
 
-        let cached = registry.cache.get(&key(audience)).await;
+        let cached = registry().cache.get(&cache_key).await;
         assert!(
             matches!(cached, Some(s) if Arc::ptr_eq(&s, &new_source)),
             "evict from a stale caller must not remove the freshly rebuilt healthy entry"
