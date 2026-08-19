@@ -54,6 +54,7 @@ digest-93f6ce9d446188ac = { package = "digest", version = "0.10", features = ["m
 digest-a6292c17cd707f01 = { package = "digest", version = "0.11", features = ["alloc", "mac", "oid", "zeroize"] }
 either = { version = "1", features = ["use_std"] }
 enum-map = { version = "2", default-features = false, features = ["serde"] }
+event-listener = { version = "5" }
 flate2 = { version = "1", features = ["zlib-rs"] }
 foldhash = { version = "0.2" }
 futures-channel = { version = "0.3", features = ["sink"] }
@@ -75,7 +76,8 @@ hyper-util = { version = "0.1", features = ["full"] }
 idna = { version = "1" }
 indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2", features = ["serde"] }
-itertools = { version = "0.14" }
+itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
+itertools-93f6ce9d446188ac = { package = "itertools", version = "0.10" }
 lexical-parse-float = { version = "1", features = ["format"] }
 lexical-parse-integer = { version = "1", default-features = false, features = ["format", "std"] }
 lexical-util = { version = "1", default-features = false, features = ["format", "parse-floats", "parse-integers", "std", "write-floats", "write-integers"] }
@@ -83,13 +85,13 @@ libc = { version = "0.2", features = ["extra_traits"] }
 libz-sys = { version = "1", features = ["static"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
 memchr = { version = "2" }
+moka = { version = "0.12", features = ["future", "logging", "sync"] }
 nom = { version = "7" }
 num-bigint = { version = "0.4" }
 num-integer = { version = "0.1", features = ["i128"] }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
 once_cell = { version = "1", features = ["critical-section"] }
 petgraph = { version = "0.8" }
-portable-atomic = { version = "1" }
 pprof = { version = "0.15", features = ["criterion", "flamegraph", "frame-pointer"] }
 proc-macro2 = { version = "1" }
 prost = { version = "0.14" }
@@ -188,6 +190,7 @@ digest-a6292c17cd707f01 = { package = "digest", version = "0.11", features = ["a
 displaydoc = { version = "0.2" }
 either = { version = "1", features = ["use_std"] }
 enum-map = { version = "2", default-features = false, features = ["serde"] }
+event-listener = { version = "5" }
 flate2 = { version = "1", features = ["zlib-rs"] }
 foldhash = { version = "0.2" }
 futures-channel = { version = "0.3", features = ["sink"] }
@@ -209,7 +212,8 @@ hyper-util = { version = "0.1", features = ["full"] }
 idna = { version = "1" }
 indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2", features = ["serde"] }
-itertools = { version = "0.14" }
+itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
+itertools-93f6ce9d446188ac = { package = "itertools", version = "0.10" }
 lexical-parse-float = { version = "1", features = ["format"] }
 lexical-parse-integer = { version = "1", default-features = false, features = ["format", "std"] }
 lexical-util = { version = "1", default-features = false, features = ["format", "parse-floats", "parse-integers", "std", "write-floats", "write-integers"] }
@@ -217,13 +221,13 @@ libc = { version = "0.2", features = ["extra_traits"] }
 libz-sys = { version = "1", features = ["static"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
 memchr = { version = "2" }
+moka = { version = "0.12", features = ["future", "logging", "sync"] }
 nom = { version = "7" }
 num-bigint = { version = "0.4" }
 num-integer = { version = "0.1", features = ["i128"] }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
 once_cell = { version = "1", features = ["critical-section"] }
 petgraph = { version = "0.8" }
-portable-atomic = { version = "1" }
 pprof = { version = "0.15", features = ["criterion", "flamegraph", "frame-pointer"] }
 proc-macro2 = { version = "1" }
 prost = { version = "0.14" }
