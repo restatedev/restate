@@ -78,7 +78,7 @@ pub struct AdminOptions {
 
     /// Maximum age of the cached deployment status used by the Admin API.
     ///
-    /// Since v1.8.0
+    /// Since v1.7.5
     pub deployment_status_cache_ttl: NonZeroFriendlyDuration,
 }
 
