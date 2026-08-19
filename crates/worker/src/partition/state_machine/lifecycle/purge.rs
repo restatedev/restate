@@ -68,6 +68,7 @@ where
                 invocation_target,
                 journal_metadata,
                 pinned_deployment,
+                response_result,
                 ..
             }) => {
                 // delete the vqueue entry information.
@@ -127,6 +128,17 @@ where
                     ctx.do_drop_journal(
                         invocation_id,
                         journal_metadata.length,
+                        0..journal_metadata.length,
+                        pinned_service_protocol_version,
+                    )
+                    .await?;
+                } else if let Some(output_idx) = response_result.referenced_journal_index() {
+                    // delete only the output journal index
+                    // since it's the only one remaining
+                    ctx.do_drop_journal(
+                        invocation_id,
+                        0,
+                        output_idx..=output_idx,
                         pinned_service_protocol_version,
                     )
                     .await?;

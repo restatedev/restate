@@ -199,7 +199,7 @@ async fn sleep_point_lookups<T: ReadJournalTable>(txn: &mut T) {
 }
 
 fn delete_journal<T: WriteJournalTable>(txn: &mut T, length: usize) {
-    txn.delete_journal(&MOCK_INVOCATION_ID_1, length as u32)
+    txn.delete_journals(&MOCK_INVOCATION_ID_1, 0..length as u32)
         .unwrap();
 }
 

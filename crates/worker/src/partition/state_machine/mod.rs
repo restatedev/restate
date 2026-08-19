@@ -1930,6 +1930,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             self.do_drop_journal(
                 &invocation_id,
                 journal_length,
+                0..journal_length,
                 pinned_service_protocol_version,
             )
             .await?;
@@ -2077,6 +2078,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             self.do_drop_journal(
                 &invocation_id,
                 journal_length,
+                0..journal_length,
                 pinned_service_protocol_version,
             )
             .await?;
@@ -4792,10 +4794,19 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             .map_err(Error::Storage)
     }
 
+    /// Drop all invocations indexes specified
+    /// by the journals iterator.
+    ///
+    /// Note: journal_length is **ONLY** used by
+    /// journal_table v1 (Protocol version < V4)
+    /// in that case, no retention is possible.
     async fn do_drop_journal(
         &mut self,
         invocation_id: &InvocationId,
+        // journal length is only for backward compatibility
+        // with journal table v1
         journal_length: EntryIndex,
+        journals: impl Iterator<Item = EntryIndex>,
         pinned_protocol_version: Option<ServiceProtocolVersion>,
     ) -> Result<(), Error>
     where
@@ -4812,10 +4823,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 .map_err(Error::Storage)?;
         };
         if pinned_protocol_version.is_none_or(|sp| sp >= ServiceProtocolVersion::V4) {
-            journal_table_v2::WriteJournalTable::delete_journal(
+            journal_table_v2::WriteJournalTable::delete_journals(
                 self.storage,
                 invocation_id,
-                journal_length,
+                journals,
             )
             .map_err(Error::Storage)?
         };
