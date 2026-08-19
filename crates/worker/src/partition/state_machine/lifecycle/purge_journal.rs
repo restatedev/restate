@@ -236,16 +236,18 @@ mod tests {
                 ..ServiceInvocation::mock()
             }))
             .await;
+
+        // Note: We can no longer match on the response result
+        // after the journals has been purged. This is because
+        // we don't embed the result any longer in the completion
+        // message and instead keep a reference. Once the journal
+        // is gone, we should get ErrorCode "GONE".
         assert_that!(
             actions,
             contains(pat!(Action::ReplyRpc {
                 reply: pat!(RpcReply::Output(pat!(InvocationOutput {
                     request_id: eq(request_id),
                     invocation_id: some(eq(invocation_id)),
-                    response: eq(InvocationOutputResponse::Success(
-                        invocation_target.clone(),
-                        response_bytes.clone()
-                    ))
                 })))
             }))
         );
