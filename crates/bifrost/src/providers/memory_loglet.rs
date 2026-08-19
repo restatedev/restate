@@ -27,7 +27,7 @@ use restate_types::logs::metadata::{
     Chain, LogletParams, ProviderConfiguration, ProviderKind, SegmentIndex,
 };
 use restate_types::logs::{
-    KeyFilter, LogId, LogletId, LogletOffset, MatchKeyQuery, Record, SequenceNumber,
+    KeyFilter, LogId, LogletId, LogletOffset, MatchKeyQuery, OffsetWatch, Record, SequenceNumber,
     TailOffsetWatch, TailState,
 };
 
@@ -200,35 +200,24 @@ struct MemoryReadStream {
     filter: KeyFilter,
     /// The next offset to read from
     read_pointer: LogletOffset,
-    tail_watch: BoxStream<'static, TailState<LogletOffset>>,
-    /// stop when read_pointer is at or beyond this offset
-    last_known_tail: LogletOffset,
-    /// Last offset to read before terminating the stream. None means "tailing" reader.
-    read_to: Option<LogletOffset>,
+    readable_tail_watch: BoxStream<'static, LogletOffset>,
+    readable_tail: LogletOffset,
     terminated: bool,
 }
 
 impl MemoryReadStream {
-    async fn create(
+    fn create(
         loglet: Arc<MemoryLoglet>,
         filter: KeyFilter,
         from_offset: LogletOffset,
-        to: Option<LogletOffset>,
+        readable_tail: OffsetWatch,
     ) -> Self {
-        let mut tail_watch = loglet.watch_tail();
-        let last_known_tail = tail_watch
-            .next()
-            .await
-            .expect("loglet watch returns tail pointer")
-            .offset();
-
         Self {
             loglet,
             filter,
             read_pointer: from_offset,
-            tail_watch,
-            last_known_tail,
-            read_to: to,
+            readable_tail_watch: Box::pin(readable_tail.to_stream()),
+            readable_tail: readable_tail.get(),
             terminated: false,
         }
     }
@@ -256,36 +245,28 @@ impl Stream for MemoryReadStream {
             return Poll::Ready(None);
         }
 
-        let next_offset = self.read_pointer;
-
+        let mut filtered_from = None;
         loop {
-            // We have reached the limit we are allowed to read
-            if self.read_to.is_some_and(|read_to| next_offset > read_to) {
-                self.terminated = true;
-                return Poll::Ready(None);
-            }
+            let next_offset = self.read_pointer;
 
-            // Are we reading after commit offset?
-            // We are at tail. We need to wait until new records have been released.
-            if next_offset >= self.last_known_tail {
-                match ready!(self.tail_watch.poll_next_unpin(cx)) {
-                    Some(tail_state) => {
-                        self.last_known_tail = tail_state.offset();
+            if next_offset >= self.readable_tail {
+                if let Some(filtered_from) = filtered_from {
+                    return Poll::Ready(Some(Ok(LogEntry::new_filtered_gap(
+                        filtered_from,
+                        next_offset.prev(),
+                    ))));
+                }
+                match ready!(self.readable_tail_watch.poll_next_unpin(cx)) {
+                    Some(readable_tail) => {
+                        self.readable_tail = readable_tail;
                         continue;
                     }
                     None => {
-                        // system shutdown. Or that the loglet has been unexpectedly shutdown.
                         self.terminated = true;
                         return Poll::Ready(Some(Err(OperationError::Shutdown(ShutdownError))));
                     }
                 }
             }
-
-            // tail has been updated.
-            let last_known_tail = self.last_known_tail;
-
-            // assert that we are behind tail
-            assert!(last_known_tail > next_offset);
 
             // Trim point is the the slot **before** the first readable record (if it exists)
             // trim point might have been updated since last time.
@@ -296,9 +277,10 @@ impl Stream for MemoryReadStream {
             // Are we reading behind the loglet head? -> TrimGap
             assert!(next_offset > LogletOffset::from(0));
             if next_offset < head_offset {
-                let trim_gap = LogEntry::new_trim_gap(next_offset, trim_point);
+                let gap_to = trim_point.min(self.readable_tail.prev());
+                let trim_gap = LogEntry::new_trim_gap(next_offset, gap_to);
                 // next record should be beyond at the head
-                self.read_pointer = head_offset;
+                self.read_pointer = gap_to.next();
                 return Poll::Ready(Some(Ok(trim_gap)));
             }
 
@@ -316,8 +298,7 @@ impl Stream for MemoryReadStream {
             if let Some(data_record) = next_record.as_record()
                 && !data_record.matches_key_query(&self.filter)
             {
-                // read_pointer is already advanced, just don't return the
-                // record and fast-forward.
+                filtered_from.get_or_insert(next_offset);
                 continue;
             }
 
@@ -340,11 +321,10 @@ impl Loglet for MemoryLoglet {
         self: Arc<Self>,
         filter: KeyFilter,
         from: LogletOffset,
-        to: Option<LogletOffset>,
     ) -> Result<SendableLogletReadStream, OperationError> {
-        Ok(Box::pin(
-            MemoryReadStream::create(self, filter, from, to).await,
-        ))
+        let readable_tail = OffsetWatch::default();
+        let read_stream = MemoryReadStream::create(self, filter, from, readable_tail.clone());
+        Ok(SendableLogletReadStream::new(read_stream, readable_tail))
     }
 
     fn watch_tail(&self) -> BoxStream<'static, TailState<LogletOffset>> {

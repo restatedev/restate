@@ -30,8 +30,8 @@ use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
 use restate_core::ShutdownError;
-use restate_types::logs::TailOffsetWatch;
 use restate_types::logs::{KeyFilter, LogletId, LogletOffset, Record, SequenceNumber, TailState};
+use restate_types::logs::{OffsetWatch, TailOffsetWatch};
 
 use self::log_store::LogStoreError;
 use self::log_store::RocksDbLogStore;
@@ -136,11 +136,10 @@ impl Loglet for LocalLoglet {
         self: Arc<Self>,
         filter: KeyFilter,
         from: LogletOffset,
-        to: Option<LogletOffset>,
     ) -> Result<SendableLogletReadStream, OperationError> {
-        Ok(Box::pin(
-            LocalLogletReadStream::create(self, filter, from, to).await?,
-        ))
+        let readable_tail = OffsetWatch::default();
+        let read_stream = LocalLogletReadStream::create(self, filter, from, readable_tail.clone())?;
+        Ok(SendableLogletReadStream::new(read_stream, readable_tail))
     }
 
     fn watch_tail(&self) -> BoxStream<'static, TailState<LogletOffset>> {
@@ -290,7 +289,7 @@ impl Loglet for LocalLoglet {
 
 #[cfg(test)]
 mod tests {
-    use futures::TryStreamExt;
+    use futures::{StreamExt, TryStreamExt};
     use googletest::prelude::eq;
     use googletest::{IntoTestResult, assert_that, elements_are};
     use test_log::test;
@@ -389,16 +388,20 @@ mod tests {
             ("record-1", Keys::Single(1)).into(),
             ("record-2", Keys::Single(2)).into(),
             ("record-3", Keys::Single(1)).into(),
+            ("record-4", Keys::Single(2)).into(),
         ]
         .into();
         let offset = loglet.enqueue_batch(batch).await?.await?;
 
         let key_filter = KeyFilter::Include(1);
-        let read_stream = loglet
-            .create_read_stream(key_filter, LogletOffset::OLDEST, Some(offset))
+        let mut read_stream = loglet
+            .create_read_stream(key_filter, LogletOffset::OLDEST)
             .await?;
+        read_stream.notify_readable_tail(offset.next());
 
         let records: Vec<_> = read_stream
+            .by_ref()
+            .take(2)
             .try_collect::<Vec<_>>()
             .await?
             .into_iter()
@@ -417,6 +420,9 @@ mod tests {
                 eq((LogletOffset::from(3), "record-3".to_owned()))
             ]
         );
+        let filtered = read_stream.next().await.unwrap()?;
+        assert_that!(filtered.kind(), eq(crate::RecordKind::Filtered));
+        assert_that!(read_stream.read_pointer(), eq(offset.next()));
 
         Ok(())
     }

@@ -38,7 +38,7 @@ use restate_types::sharding::{PartitionId, WithPartitionKey};
 use restate_types::storage::StorageCodec;
 use restate_types::vqueues::EntryId;
 use restate_types::{LimitKey, LockName, ServiceName};
-use restate_util_string::ReString;
+use restate_util_string::{ReString, ToReString};
 use restate_util_time::DurationExt;
 
 use crate::{VQueue, VQueueEvent, VQueuesMetaCache};
@@ -173,6 +173,15 @@ async fn migrate_inboxes(
                     .try_as_inboxed()
                     .expect("inbox entry must be inboxed");
 
+                let entry_metadata = EntryMetadata {
+                    deployment: inboxed
+                        .metadata
+                        .input
+                        .pinned_deployment()
+                        .map(|pinned_deployment| pinned_deployment.deployment_id.to_restring()),
+                    ..Default::default()
+                };
+
                 vqueue.enqueue_new(
                     UniqueTimestamp::from_unix_millis_unchecked(
                         inboxed.metadata.timestamps.creation_time(),
@@ -184,7 +193,7 @@ async fn migrate_inboxes(
                     seq,
                     inboxed.metadata.execution_time,
                     EntryId::from(invocation_id),
-                    EntryMetadata::default(),
+                    entry_metadata,
                 );
                 // Now, let's update the invocation status to make it vqueue-powered
                 inboxed.metadata.vqueue_id = Some(qid.clone());
@@ -406,6 +415,15 @@ async fn migrate_scheduled_invocation(
     let entry_created_at =
         UniqueTimestamp::from_unix_millis_unchecked(scheduled.metadata.timestamps.creation_time());
 
+    let entry_metadata = EntryMetadata {
+        deployment: scheduled
+            .metadata
+            .input
+            .pinned_deployment()
+            .map(|pinned_deployment| pinned_deployment.deployment_id.to_restring()),
+        ..Default::default()
+    };
+
     // We use a special value (0) for invocations under the following assumptions:
     // - We don't allow two invocations with the same ID to co-exist
     // - Any new invocation with the same ID will be created with Lsn > 0 after migration.
@@ -415,7 +433,7 @@ async fn migrate_scheduled_invocation(
         seq,
         scheduled.metadata.execution_time,
         EntryId::from(invocation_id),
-        EntryMetadata::default(),
+        entry_metadata,
     );
 
     // Delete the timer entry, we don't need it anymore.

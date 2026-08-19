@@ -448,6 +448,13 @@ impl PreFlightInvocationArgument {
             }) => &journal_metadata.span_context,
         }
     }
+
+    pub fn pinned_deployment(&self) -> Option<&PinnedDeployment> {
+        match self {
+            PreFlightInvocationArgument::Input(_) => None,
+            PreFlightInvocationArgument::Journal(journal) => journal.pinned_deployment.as_ref(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

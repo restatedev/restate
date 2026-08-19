@@ -115,7 +115,7 @@ use restate_types::state_mut::StateMutationVersion;
 use restate_types::storage::{StorageDecodeError, StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::{self, EntryId, VQueueId};
-use restate_util_string::ReString;
+use restate_util_string::{ReString, ToReString};
 use restate_vqueues::{VQueue, VQueueHandle};
 use restate_wal_protocol::timer::TimerKeyDisplay;
 use restate_wal_protocol::timer::TimerKeyValue;
@@ -931,6 +931,14 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             .vqueue_id
             .as_ref()
             .expect("invariant violation: vqueue id must be set");
+        let entry_metadata = vqueue_table::EntryMetadata {
+            deployment: metadata
+                .input
+                .pinned_deployment()
+                .map(|pinned_deployment| pinned_deployment.deployment_id.to_restring()),
+            ..Default::default()
+        };
+
         VQueue::vqueue_from_invocation_target(
             record_unique_ts,
             qid,
@@ -946,7 +954,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             self.record_lsn,
             metadata.execution_time,
             EntryId::from(invocation_id),
-            vqueue_table::EntryMetadata::default(),
+            entry_metadata,
         );
 
         // 1. Check if we need to schedule it

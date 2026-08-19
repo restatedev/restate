@@ -167,9 +167,9 @@ fn put_journal_entry<S: StorageAccess>(
         }
     }
 
-    storage.put_kv_proto(
+    storage.put_kv_proto_owned(
         write_journal_entry_key(invocation_id, journal_index),
-        &StoredEntry(journal_entry.clone()),
+        StoredEntry(journal_entry.clone()),
     )
 }
 

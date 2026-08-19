@@ -31,10 +31,12 @@ use super::lookup::LookupResponse;
 use super::mocks::*;
 use super::service_handler::*;
 use crate::MockRequestDispatcher;
+use crate::handler::error::X_RESTATE_ERROR_SOURCE;
 use crate::handler::responses::X_RESTATE_ID;
 use restate_core::TestCoreEnv;
 use restate_test_util::{assert, assert_eq};
 use restate_types::config::{Configuration, set_current_config};
+use restate_types::errors::InvocationError;
 use restate_types::identifiers::{IdempotencyId, InvocationId, ServiceId, WithInvocationId};
 use restate_types::invocation::client::{
     AttachInvocationResponse, GetInvocationOutputResponse, InvocationOutput,
@@ -106,6 +108,55 @@ async fn call_service() {
     let response_bytes = response_body.collect().await.unwrap().to_bytes();
     let response_value: GreetingResponse = serde_json::from_slice(&response_bytes).unwrap();
     assert_eq!(response_value.greeting, "Igal");
+}
+
+#[restate_core::test]
+#[traced_test]
+async fn call_service_returning_terminal_failure() {
+    let req = hyper::Request::builder()
+        .uri("http://localhost/greeter.Greeter/greet")
+        .method(Method::POST)
+        .header("content-type", "application/json")
+        .body(Full::new(Bytes::from(
+            serde_json::to_vec(&GreetingRequest {
+                person: "Francesco".to_string(),
+            })
+            .unwrap(),
+        )))
+        .unwrap();
+
+    let mut mock_dispatcher = MockRequestDispatcher::default();
+    mock_dispatcher
+        .expect_call()
+        .return_once(|invocation_request| {
+            Box::pin(ready(Ok(InvocationOutput {
+                request_id: Default::default(),
+                invocation_id: Some(invocation_request.invocation_id()),
+                completion_expiry_time: None,
+                // A user terminal error carrying a transient-looking 503 status.
+                response: InvocationOutputResponse::Failure(InvocationError::new(503u16, "boom")),
+            })))
+        });
+
+    let response = handle(req, mock_dispatcher).await;
+
+    // The user-controlled status is preserved, but the response is unambiguously tagged as an
+    // invocation (not ingress) failure, so clients don't retry it as a transient error (#5152).
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response
+            .headers()
+            .get(X_RESTATE_ERROR_SOURCE)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "invocation"
+    );
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["source"], "invocation");
+    assert_eq!(value["code"], 503);
+    assert_eq!(value["message"], "boom");
 }
 
 #[restate_core::test]
@@ -913,6 +964,19 @@ async fn unknown_service() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    // Ingress-generated errors are tagged as such, both in the header and the body (see #5152)
+    assert_eq!(
+        response
+            .headers()
+            .get(X_RESTATE_ERROR_SOURCE)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "ingress"
+    );
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["source"], "ingress");
 }
 
 #[restate_core::test]

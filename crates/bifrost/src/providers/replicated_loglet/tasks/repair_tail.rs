@@ -14,7 +14,9 @@ use tracing::{Instrument, debug, error, info, warn};
 
 use restate_core::network::{NetworkSender, Networking, Swimlane, TransportConnect};
 use restate_core::{Metadata, ShutdownError, TaskCenterFutureExt};
-use restate_types::logs::{KeyFilter, LogletOffset, RecordCache, SequenceNumber, TailOffsetWatch};
+use restate_types::logs::{
+    KeyFilter, LogletOffset, OffsetWatch, RecordCache, SequenceNumber, TailOffsetWatch,
+};
 use restate_types::net::log_server::{GetDigest, LogServerRequestHeader};
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 
@@ -258,10 +260,9 @@ impl<T: TransportConnect> RepairTail<T> {
             self.networking.clone(),
             KeyFilter::Any,
             self.digests.start_offset(),
-            Some(self.digests.target_tail().prev()),
+            OffsetWatch::new(self.digests.target_tail()),
             self.known_global_tail.clone(),
             self.record_cache.clone(),
-            /* move-beyond-global-tail = */ true,
         )
         .await
         else {

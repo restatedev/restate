@@ -16,7 +16,9 @@ use async_trait::async_trait;
 use futures::stream::{self, BoxStream};
 use futures::{Stream, StreamExt};
 
-use restate_types::logs::{KeyFilter, LogletId, LogletOffset, Record, SequenceNumber, TailState};
+use restate_types::logs::{
+    KeyFilter, LogletId, LogletOffset, OffsetWatch, Record, SequenceNumber, TailState,
+};
 
 use crate::LogEntry;
 use crate::Result;
@@ -74,9 +76,11 @@ impl Loglet for SealedLoglet {
         self: Arc<Self>,
         _filter: KeyFilter,
         _from: LogletOffset,
-        _to: Option<LogletOffset>,
     ) -> Result<SendableLogletReadStream, OperationError> {
-        Ok(Box::pin(SealedLogletReadStream))
+        Ok(SendableLogletReadStream::new(
+            SealedLogletReadStream,
+            OffsetWatch::default(),
+        ))
     }
 
     fn watch_tail(&self) -> BoxStream<'static, TailState<LogletOffset>> {
