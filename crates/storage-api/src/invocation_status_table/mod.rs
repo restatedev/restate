@@ -20,8 +20,8 @@ use futures::Stream;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
-    Header, InvocationInput, InvocationTarget, ResponseResult, ResponseResultRef,
-    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
+    Header, InvocationInput, InvocationTarget, ResponseResultRef, ServiceInvocation,
+    ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
 };
 use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::sharding::KeyRange;
@@ -920,8 +920,7 @@ mod test_util {
     use super::*;
     use restate_sharding::PartitionKey;
     use restate_types::identifiers::PartitionProcessorRpcRequestId;
-
-    use restate_types::invocation::VirtualObjectHandlerType;
+    use restate_types::invocation::{ResponseResult, VirtualObjectHandlerType};
 
     impl StatusTimestamps {
         pub fn mock() -> Self {

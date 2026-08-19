@@ -16,6 +16,7 @@ mod utils;
 pub use actions::{Action, ActionCollector};
 // Re-exported so the resume RPC handler can resolve deployments the same way the apply path does.
 pub(crate) use lifecycle::resolve_pinned_deployment;
+use restate_types::config::Configuration;
 use restate_worker_api::processor::PartitionFeatures;
 
 use std::collections::HashSet;
@@ -87,9 +88,10 @@ use restate_types::invocation::{
     AttachInvocationRequest, IngressInvocationResponseSink, InvocationInput,
     InvocationMutationResponseSink, InvocationQuery, InvocationResponse, InvocationTarget,
     InvocationTargetType, InvocationTermination, JournalCompletionTarget, NotifySignalRequest,
-    PurgeInvocationRequest, ResponseResult, RestartAsNewInvocationRequest, ResumeInvocationRequest,
-    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
-    SubmitNotificationSink, TerminationFlavor, VirtualObjectHandlerType, WorkflowHandlerType,
+    PurgeInvocationRequest, ResponseResult, ResponseResultRef, RestartAsNewInvocationRequest,
+    ResumeInvocationRequest, ServiceInvocation, ServiceInvocationResponseSink,
+    ServiceInvocationSpanContext, Source, SubmitNotificationSink, TerminationFlavor,
+    VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use restate_types::journal::Completion;
 use restate_types::journal::CompletionResult;
@@ -2848,9 +2850,18 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         // If there are any response sinks, or we need to store back the completed status,
         //  we need to find the latest output entry
         if !invocation_metadata.response_sinks.is_empty() || !completion_retention.is_zero() {
-            let response_result = if let Some(response_result) = response_result_override {
-                response_result
-            } else if let Some(response_result) = self
+            //  output_index can be None if the output is overridden or because
+            // read_last_output_entry detected protocol version <= V3.
+            // In that case, the results is embedded in the ResponseResult and we
+            // can't use Reference
+            let (output_index, response_result) = if let Some(response_result) =
+                response_result_override
+            {
+                // when the output is overridden, we have no way to reference
+                // output journal, so we return None instead.
+
+                (None, response_result)
+            } else if let Some((output_index, response_result)) = self
                 .read_last_output_entry_result(
                     &invocation_id,
                     journal_length,
@@ -2862,7 +2873,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 )
                 .await?
             {
-                response_result
+                (output_index, response_result)
             } else {
                 // We don't panic on this, although it indicates a bug at the moment.
                 warn!("Invocation completed without an output entry. This is not supported yet.");
@@ -2905,6 +2916,18 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
             // Store the completed status, if needed
             if !completion_retention.is_zero() {
+                // Only use `reference` if write-result-reference feature is enabled.
+                let output_index = if Configuration::pinned()
+                    .common
+                    .experimental
+                    .is_write_result_reference_enabled()
+                {
+                    output_index
+                } else {
+                    // force embed
+                    None
+                };
+
                 let completed_invocation = CompletedInvocation::from_in_flight_invocation_metadata(
                     invocation_metadata,
                     if journal_retention.is_zero() {
@@ -2912,7 +2935,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     } else {
                         JournalRetentionPolicy::Retain
                     },
-                    response_result,
+                    ResponseResultRef::new(response_result, output_index),
                     self.record_created_at,
                 );
                 self.do_store_completed_invocation(invocation_id, completed_invocation)?;
@@ -4218,7 +4241,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         invocation_id: &InvocationId,
         journal_length: EntryIndex,
         service_protocol_version: ServiceProtocolVersion,
-    ) -> Result<Option<ResponseResult>, Error>
+    ) -> Result<Option<(Option<EntryIndex>, ResponseResult)>, Error>
     where
         S: ReadJournalTable + journal_table_v2::ReadJournalTable,
     {
@@ -4234,10 +4257,13 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 .unwrap_or_else(|| panic!("There should be a journal entry at index {i}"));
                 if entry.ty() == journal_v2::EntryType::Command(CommandType::Output) {
                     let cmd = entry.decode::<ServiceProtocolV4Codec, OutputCommand>()?;
-                    return Ok(Some(match cmd.result {
-                        OutputResult::Success(s) => ResponseResult::Success(s),
-                        OutputResult::Failure(f) => ResponseResult::Failure(f.into()),
-                    }));
+                    return Ok(Some((
+                        Some(i),
+                        match cmd.result {
+                            OutputResult::Success(s) => ResponseResult::Success(s),
+                            OutputResult::Failure(f) => ResponseResult::Failure(f.into()),
+                        },
+                    )));
                 }
             }
             Ok(None)
@@ -4262,7 +4288,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                         Entry::Output(e) =
                             enriched_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
-                    Ok(e.result.into())
+                    Ok((None, e.result.into()))
                 })
                 .transpose()
         }
