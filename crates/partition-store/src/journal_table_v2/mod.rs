@@ -258,16 +258,26 @@ fn get_journal<'a, S: StorageAccess>(
     Ok(JournalEntryIter::new(iter, journal_length))
 }
 
-fn delete_journal<S: StorageAccess>(
+fn delete_journal_entry<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
-    journal_length: EntryIndex,
+    journal_index: EntryIndex,
+) -> Result<()> {
+    let _x = RocksDbReadPerfGuard::new("delete-journal");
+    let key = write_journal_entry_key(invocation_id, journal_index);
+    storage.delete_key(&key)
+}
+
+fn delete_journals<S: StorageAccess>(
+    storage: &mut S,
+    invocation_id: &InvocationId,
+    journals: impl Iterator<Item = EntryIndex>,
 ) -> Result<()> {
     let _x = RocksDbReadPerfGuard::new("delete-journal");
 
     let mut key = write_journal_entry_key(invocation_id, 0);
     let k = &mut key;
-    for journal_index in 0..journal_length {
+    for journal_index in journals {
         k.journal_index = journal_index;
         storage.delete_key(k)?;
     }
@@ -757,6 +767,11 @@ fn budgeted_journal_v2_stream<'a, DB: DBAccess + Send>(
     })
 }
 
+pub enum DeleteJournal {
+    Full(EntryIndex),
+    Point(EntryIndex),
+}
+
 impl WriteJournalTable for PartitionStoreTransaction<'_> {
     fn put_journal_entry(
         &mut self,
@@ -769,14 +784,13 @@ impl WriteJournalTable for PartitionStoreTransaction<'_> {
         put_journal_entry(self, invocation_id, index, entry, related_completion_ids)
     }
 
-    fn delete_journal(
+    fn delete_journals(
         &mut self,
         invocation_id: &InvocationId,
-        journal_length: EntryIndex,
+        journals: impl Iterator<Item = EntryIndex>,
     ) -> Result<()> {
         self.assert_partition_key(invocation_id)?;
-        let _x = RocksDbReadPerfGuard::new("delete-journal");
-        delete_journal(self, invocation_id, journal_length)
+        delete_journals(self, invocation_id, journals)
     }
 }
 

@@ -4978,10 +4978,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 .map_err(Error::Storage)?;
         };
         if pinned_protocol_version.is_none_or(|sp| sp >= ServiceProtocolVersion::V4) {
-            journal_table_v2::WriteJournalTable::delete_journal(
+            journal_table_v2::WriteJournalTable::delete_journals(
                 self.storage,
                 invocation_id,
-                journal_length,
+                0..journal_length,
             )
             .map_err(Error::Storage)?
         };
