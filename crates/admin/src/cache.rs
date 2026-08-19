@@ -331,7 +331,7 @@ mod tests {
         }
 
         fn computes(&self) -> usize {
-            self.computes.load(Ordering::SeqCst)
+            self.computes.load(Ordering::Relaxed)
         }
 
         fn set_version(&self, version: Version) {
