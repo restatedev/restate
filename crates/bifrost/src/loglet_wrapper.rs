@@ -87,31 +87,27 @@ impl LogletWrapper {
         filter: KeyFilter,
         start_lsn: Lsn,
     ) -> Result<LogletReadStreamWrapper, OperationError> {
-        let tail_lsn = self.tail_lsn;
-        self.create_read_stream_with_tail(filter, start_lsn, tail_lsn)
-            .await
+        let base_lsn = self.base_lsn;
+        let inner_read_stream = self
+            .loglet
+            .clone()
+            .create_read_stream(filter, start_lsn.into_offset(base_lsn))
+            .await?;
+        let stream = LogletReadStreamWrapper::new(self, inner_read_stream, base_lsn);
+        if let Some(tail_lsn) = stream.tail_lsn() {
+            stream.notify_readable_tail(tail_lsn);
+        }
+        Ok(stream)
     }
 
     pub async fn create_read_stream_with_tail(
-        self,
+        mut self,
         filter: KeyFilter,
         start_lsn: Lsn,
-        tail_lsn: Option<Lsn>,
+        tail_lsn: Lsn,
     ) -> Result<LogletReadStreamWrapper, OperationError> {
-        // Translates LSN to loglet offset
-        Ok(LogletReadStreamWrapper::new(
-            self.clone(),
-            self.loglet
-                .create_read_stream(
-                    filter,
-                    start_lsn.into_offset(self.base_lsn),
-                    // We go back one LSN because `to` is inclusive and `tail_lsn` is exclusive.
-                    // transposed to loglet offset (if set)
-                    tail_lsn.map(|tail| tail.prev().into_offset(self.base_lsn)),
-                )
-                .await?,
-            self.base_lsn,
-        ))
+        self.tail_lsn = Some(tail_lsn);
+        self.create_read_stream(filter, start_lsn).await
     }
 
     /// Read or wait for the record at `from` offset, or the next available record if `from` isn't
@@ -123,15 +119,25 @@ impl LogletWrapper {
             .clone()
             .create_read_stream(KeyFilter::Any, from)
             .await?;
-        stream.next().await.unwrap_or_else(|| {
-            // We are trying to read past the the last record.
-            Err(OperationError::terminal(
-                LogletWrapperError::OutOfBoundsRead {
-                    attempt_lsn: from,
-                    tail_lsn: self.tail_lsn.unwrap_or(Lsn::INVALID),
-                },
-            ))
-        })
+        let mut tail_watch = self.watch_tail();
+        loop {
+            tokio::select! {
+                record = stream.next() => {
+                    return record.unwrap_or_else(|| {
+                        Err(OperationError::terminal(LogletWrapperError::OutOfBoundsRead {
+                            attempt_lsn: from,
+                            tail_lsn: self.tail_lsn.unwrap_or(Lsn::INVALID),
+                        }))
+                    });
+                }
+                tail = tail_watch.next() => {
+                    let Some(tail) = tail else {
+                        return Err(OperationError::Shutdown(restate_core::ShutdownError));
+                    };
+                    stream.notify_readable_tail(tail.offset());
+                }
+            }
+        }
     }
 
     #[allow(unused)]
@@ -143,7 +149,7 @@ impl LogletWrapper {
         };
         let mut stream = self
             .clone()
-            .create_read_stream_with_tail(KeyFilter::Any, from, Some(tail_lsn))
+            .create_read_stream_with_tail(KeyFilter::Any, from, tail_lsn)
             .await?;
         stream.next().await.transpose()
     }
@@ -266,7 +272,13 @@ impl LogletReadStreamWrapper {
     }
 
     pub fn set_tail_lsn(&mut self, tail_lsn: Lsn) {
-        self.loglet.tail_lsn = Some(tail_lsn)
+        self.loglet.tail_lsn = Some(tail_lsn);
+        self.notify_readable_tail(tail_lsn);
+    }
+
+    pub fn notify_readable_tail(&self, tail_lsn: Lsn) -> bool {
+        self.inner_read_stream
+            .notify_readable_tail(tail_lsn.into_offset(self.base_lsn))
     }
 
     pub fn loglet_id(&self) -> Option<LogletId> {
