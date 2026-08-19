@@ -295,11 +295,9 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
             networking,
             filter,
             from,
-            None,
             readable_tail.clone(),
             known_global_tail,
             cache,
-            false,
         )
         .await?;
         let read_stream = ReplicatedLogletReadStream::new(from, rx_stream, reader_task);
@@ -442,7 +440,7 @@ mod tests {
     use googletest::prelude::*;
     use test_log::test;
 
-    use restate_core::network::NetworkServerBuilder;
+    use restate_core::network::{FailingConnector, NetworkServerBuilder, Networking};
     use restate_core::{TaskCenter, TestCoreEnvBuilder};
     use restate_log_server::LogServerService;
     use restate_rocksdb::RocksDbManager;
@@ -459,6 +457,7 @@ mod tests {
     struct TestEnv {
         pub loglet: Arc<dyn Loglet>,
         pub record_cache: RecordCache,
+        pub networking: Networking<FailingConnector>,
     }
 
     async fn run_in_test_env<F, O>(
@@ -508,6 +507,7 @@ mod tests {
         let env = TestEnv {
             loglet,
             record_cache,
+            networking: node_env.networking.clone(),
         };
 
         future(env).await?;
@@ -709,6 +709,73 @@ mod tests {
         run_in_test_env(Configuration::default(), params, record_cache, |env| {
             crate::loglet::loglet_tests::seal_empty(env.loglet)
         })
+        .await
+    }
+
+    #[test(restate_core::test(start_paused = true))]
+    async fn readable_tail_does_not_depend_on_known_global_tail() -> Result<()> {
+        use std::time::Duration;
+
+        use futures::StreamExt;
+
+        let loglet_id = LogletId::new_unchecked(122);
+        let params = ReplicatedLogletParams {
+            loglet_id,
+            sequencer: GenerationalNodeId::new(1, 1),
+            replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
+            nodeset: NodeSet::from_single(PlainNodeId::new(1)),
+        };
+        let record_cache = RecordCache::new(1_000_000);
+
+        run_in_test_env(
+            Configuration::default(),
+            params,
+            record_cache,
+            |env| async move {
+                let batch: Arc<[Record]> = vec![
+                    ("record-1", Keys::Single(1)).into(),
+                    ("record-2", Keys::Single(2)).into(),
+                    ("record-3", Keys::Single(3)).into(),
+                    ("record-4", Keys::Single(4)).into(),
+                    ("record-5", Keys::Single(5)).into(),
+                ]
+                .into();
+                let last_offset = env.loglet.enqueue_batch(batch).await?.await?;
+                assert_that!(last_offset, eq(LogletOffset::new(5)));
+
+                let follower = Arc::new(ReplicatedLoglet::new(
+                    LogId::new(1),
+                    SegmentIndex::from(1),
+                    ReplicatedLogletParams {
+                        loglet_id,
+                        sequencer: GenerationalNodeId::new(2, 1),
+                        replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
+                        nodeset: NodeSet::from_single(PlainNodeId::new(1)),
+                    },
+                    env.networking,
+                    env.record_cache,
+                ));
+                assert_that!(
+                    follower.last_known_global_tail(),
+                    eq(TailState::Open(LogletOffset::OLDEST))
+                );
+
+                let mut reader = follower
+                    .create_read_stream(KeyFilter::Any, LogletOffset::OLDEST)
+                    .await?;
+                reader.notify_readable_tail(LogletOffset::new(6));
+
+                for i in 1..=5 {
+                    let record = tokio::time::timeout(Duration::from_secs(5), reader.next())
+                        .await
+                        .expect("reader must progress to its readable tail")
+                        .expect("reader must not terminate")?;
+                    assert_that!(record.sequence_number(), eq(LogletOffset::new(i)));
+                }
+
+                Ok(())
+            },
+        )
         .await
     }
 }
