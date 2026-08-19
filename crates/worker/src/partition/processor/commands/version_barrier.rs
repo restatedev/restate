@@ -186,6 +186,7 @@ impl<L: LeaderPromotion> ApplyPartitionCommand<VersionBarrierCommand>
                     // point. Pre-existing invocations without a stored random seed keep working via the
                     // `to_random_seed()` fallback in `invoker_storage_reader.rs`.
                     PartitionFeatureChange::EnableUniqueRandomSeeds => {}
+                    PartitionFeatureChange::EnableWriteResultReference => {}
                 }
             }
         }
