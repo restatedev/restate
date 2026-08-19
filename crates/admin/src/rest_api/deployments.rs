@@ -673,7 +673,6 @@ fn deployment_status_headers(age: std::time::Duration) -> HeaderMap {
         header::AGE,
         HeaderValue::from_str(&age.as_secs().to_string()).expect("age is a valid header value"),
     );
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers
 }
 
