@@ -188,6 +188,7 @@ impl<L: LeaderPromotion> ApplyPartitionCommand<VersionBarrierCommand>
                     // `to_random_seed()` fallback in `invoker_storage_reader.rs`.
                     PartitionFeatureChange::EnableUniqueRandomSeeds => {}
                     PartitionFeatureChange::EnablePreflightInvocationTerminationRetention => {}
+                    PartitionFeatureChange::EnableWriteResultReference => {}
                 }
             }
         }
