@@ -2932,6 +2932,19 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
             // Store the completed status, if needed
             if !completion_retention.is_zero() {
+                // Only use `reference` if write-result-reference feature is enabled.
+                let output_index = if self
+                    .processor
+                    .fsm()
+                    .features()
+                    .is_write_result_reference_enabled()
+                {
+                    output_index
+                } else {
+                    // force embed
+                    None
+                };
+
                 let completed_invocation = CompletedInvocation::from_in_flight_invocation_metadata(
                     invocation_metadata,
                     if journal_retention.is_zero() {
