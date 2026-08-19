@@ -14,6 +14,8 @@ mod lifecycle;
 mod utils;
 
 pub use actions::{Action, ActionCollector};
+// Re-exported so the resume RPC handler can resolve deployments the same way the apply path does.
+pub(crate) use lifecycle::resolve_pinned_deployment;
 use restate_worker_api::processor::PartitionFeatures;
 
 use std::collections::HashSet;
@@ -2862,6 +2864,19 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
             // Store the completed status, if needed
             if !completion_retention.is_zero() {
+                // Only use `reference` if write-result-reference feature is enabled.
+                let output_index = if self
+                    .processor
+                    .fsm()
+                    .features()
+                    .is_write_result_reference_enabled()
+                {
+                    output_index
+                } else {
+                    // force embed
+                    None
+                };
+
                 let completed_invocation = CompletedInvocation::from_in_flight_invocation_metadata(
                     invocation_metadata,
                     if journal_retention.is_zero() {
