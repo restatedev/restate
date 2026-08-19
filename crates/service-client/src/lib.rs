@@ -29,7 +29,7 @@ use restate_types::deployment::HttpAuth;
 use restate_types::identifiers::LambdaARN;
 use restate_types::schema::deployment::{Deployment, DeploymentType, EndpointLambdaCompression};
 
-pub use crate::gcp::{GcpAuthError, GcpTokenClient, IdTokenCacheMode};
+pub use crate::gcp::{GcpAuthError, GcpTokenClient};
 pub use crate::http::HttpClient;
 pub use crate::http::HttpError;
 pub use crate::lambda::AssumeRoleCacheMode;
@@ -86,14 +86,6 @@ impl ServiceClient {
         options: &ServiceClientOptions,
         assume_role_cache_mode: AssumeRoleCacheMode,
     ) -> Result<Self, BuildError> {
-        // The GCP token-cache mode mirrors the Lambda assume-role-cache mode.
-        // None on admin/discovery dispatch, Unbounded on the worker/invoker
-        // dispatch. AssumeRoleCacheMode is the carrier we already plumb.
-        let gcp_cache_mode = match assume_role_cache_mode {
-            AssumeRoleCacheMode::None => IdTokenCacheMode::None,
-            AssumeRoleCacheMode::Unbounded => IdTokenCacheMode::Unbounded,
-        };
-
         let request_identity_key = if let Some(request_identity_private_key_pem_file) =
             options.request_identity_private_key_pem_file.clone()
         {
@@ -110,7 +102,7 @@ impl ServiceClient {
         Ok(Self::new(
             HttpClient::from_options(&options.http),
             LambdaClient::from_options(&options.lambda, assume_role_cache_mode),
-            GcpTokenClient::new(gcp_cache_mode),
+            GcpTokenClient::new(),
             request_identity_key,
             options
                 .additional_request_headers
