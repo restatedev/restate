@@ -80,6 +80,17 @@ pub struct Register {
     #[clap(long)]
     gcp_audience: Option<String>,
 
+    /// Full resource name of a GCP workload identity federation provider, e.g.
+    /// `//iam.googleapis.com/projects/N/locations/global/workloadIdentityPools/P/providers/R`.
+    /// When set, Restate mints the ID token via the AWS -> GCP workload identity federation
+    /// chain (an AWS role assumption signed and exchanged at this provider) instead of its
+    /// ambient Application Default Credentials. Requires the Restate server to be configured
+    /// with a `[gcp-federation]` broker role, and requires
+    /// --gcp-impersonate-service-account: the resulting external-account credential cannot mint
+    /// an ID token ambiently. Implies --gcp-id-token.
+    #[clap(long)]
+    gcp_workload_identity_provider: Option<String>,
+
     /// Additional header that will be sent to the endpoint during the discovery request.
     ///
     /// Use `--extra-header name=value` format and repeat --extra-header for each additional header.
@@ -229,11 +240,21 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
 
     let id_token_auth = discover_opts.gcp_id_token
         || discover_opts.gcp_impersonate_service_account.is_some()
-        || discover_opts.gcp_audience.is_some();
+        || discover_opts.gcp_audience.is_some()
+        || discover_opts.gcp_workload_identity_provider.is_some();
     if id_token_auth && matches!(discover_opts.deployment, DeploymentEndpoint::Lambda(_)) {
         bail!(
-            "--gcp-id-token, --gcp-impersonate-service-account, and --gcp-audience are \
-             HTTP-only flags. Lambda deployments use --assume-role-arn instead."
+            "--gcp-id-token, --gcp-impersonate-service-account, --gcp-audience, and \
+             --gcp-workload-identity-provider are HTTP-only flags. Lambda deployments use \
+             --assume-role-arn instead."
+        );
+    }
+    if discover_opts.gcp_workload_identity_provider.is_some()
+        && discover_opts.gcp_impersonate_service_account.is_none()
+    {
+        bail!(
+            "--gcp-workload-identity-provider requires --gcp-impersonate-service-account: the \
+             resulting external-account credential cannot mint an ID token ambiently."
         );
     }
 
@@ -244,6 +265,10 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
                 .clone()
                 .map(Into::into),
             audience: discover_opts.gcp_audience.clone().map(Into::into),
+            workload_identity_provider: discover_opts
+                .gcp_workload_identity_provider
+                .clone()
+                .map(Into::into),
         })
     });
 

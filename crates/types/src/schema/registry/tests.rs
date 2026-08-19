@@ -340,3 +340,50 @@ pub async fn register_http_with_gcp_auth_persists_audience_verbatim() {
         "audience must be preserved verbatim by the registry",
     );
 }
+
+#[cfg(test)]
+mod workload_identity_federation_validation_tests {
+    use super::super::validate_workload_identity_federation;
+    use crate::deployment::{GoogleIdTokenAuth, HttpAuth};
+    use bytestring::ByteString;
+
+    const PROVIDER: &str = "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/aws";
+
+    #[test]
+    fn rejects_provider_without_impersonation() {
+        let auth = HttpAuth::GoogleIdToken(
+            GoogleIdTokenAuth::new(ByteString::from_static("https://svc.example.com"), None)
+                .with_workload_identity_provider(Some(ByteString::from_static(PROVIDER))),
+        );
+        let err = validate_workload_identity_federation(Some(&auth))
+            .expect_err("provider without impersonation must be rejected");
+        assert_eq!(err.field(), "auth.workload_identity_provider");
+    }
+
+    #[test]
+    fn accepts_provider_with_impersonation() {
+        let auth = HttpAuth::GoogleIdToken(
+            GoogleIdTokenAuth::new(
+                ByteString::from_static("https://svc.example.com"),
+                Some(ByteString::from_static("sa@proj.iam.gserviceaccount.com")),
+            )
+            .with_workload_identity_provider(Some(ByteString::from_static(PROVIDER))),
+        );
+        validate_workload_identity_federation(Some(&auth))
+            .expect("provider with impersonation is accepted");
+    }
+
+    #[test]
+    fn accepts_no_provider() {
+        let auth = HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
+            ByteString::from_static("https://svc.example.com"),
+            None,
+        ));
+        validate_workload_identity_federation(Some(&auth)).expect("no provider is accepted");
+    }
+
+    #[test]
+    fn accepts_no_auth() {
+        validate_workload_identity_federation(None).expect("no auth block is accepted");
+    }
+}

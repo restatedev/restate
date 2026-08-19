@@ -28,6 +28,7 @@ use restate_types::schema::deployment::{Deployment, DeploymentType};
 use restate_types::schema::registry::{
     AddDeploymentResult, AllowBreakingChanges, ApplyMode, DiscoveryClient, MetadataService,
     Overwrite, TelemetryClient, effective_http_patch_inputs, validate_http_auth,
+    validate_workload_identity_federation,
 };
 use restate_types::schema::service::ServiceMetadata;
 
@@ -108,11 +109,11 @@ where
                 let headers_for_validation: Option<HashMap<http::HeaderName, http::HeaderValue>> =
                     additional_headers.clone().map(Into::into);
                 validate_http_auth(&uri, headers_for_validation.as_ref())?;
-                Some(
-                    wire_auth
-                        .into_persisted(&uri)
-                        .map_err(|e| MetaApiError::InvalidField("auth.audience", e.to_string()))?,
-                )
+                let persisted = wire_auth
+                    .into_persisted(&uri)
+                    .map_err(|e| MetaApiError::InvalidField("auth.audience", e.to_string()))?;
+                validate_workload_identity_federation(Some(&persisted))?;
+                Some(persisted)
             } else {
                 None
             };
@@ -376,7 +377,7 @@ where
                 .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
             if let DeploymentType::Http {
                 address: existing_uri,
-                auth: Some(_existing_auth),
+                auth: Some(existing_auth),
                 ..
             } = &existing_deployment.ty
             {
@@ -389,6 +390,7 @@ where
                     &existing_deployment.additional_headers,
                 );
                 validate_http_auth(effective_uri, Some(effective_headers.as_ref()))?;
+                validate_workload_identity_federation(Some(existing_auth))?;
             }
 
             (

@@ -24,7 +24,7 @@ use tracing::subscriber::NoSubscriber;
 
 use crate::deployment;
 use crate::deployment::{
-    DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
+    DeploymentAddress, Headers, HttpAuth, HttpDeploymentAddress, LambdaDeploymentAddress,
 };
 use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision, SubscriptionId};
 use crate::net::address::{AdvertisedAddress, HttpIngressPort};
@@ -184,6 +184,29 @@ pub fn validate_http_auth(
         );
     }
 
+    Ok(())
+}
+
+/// Validate the GCP workload identity federation invariant: a deployment that names a
+/// `workload_identity_provider` must also name a service account to impersonate, since the
+/// external-account credential the federation chain produces cannot mint an ID token ambiently.
+/// Kept separate from [`validate_http_auth`] (which predates workload identity federation) so its
+/// existing (uri, additional_headers) call sites and tests are unaffected.
+pub fn validate_workload_identity_federation(
+    auth: Option<&HttpAuth>,
+) -> Result<(), HttpAuthValidationError> {
+    if let Some(HttpAuth::GoogleIdToken(g)) = auth
+        && g.workload_identity_provider().is_some()
+        && g.impersonate_service_account().is_none()
+    {
+        return Err(HttpAuthValidationError::invalid_field(
+            "auth.workload_identity_provider",
+            "workload_identity_provider requires impersonate_service_account to be set; the \
+             external-account credential the federation chain produces cannot mint an ID token \
+             ambiently"
+                .to_owned(),
+        ));
+    }
     Ok(())
 }
 

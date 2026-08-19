@@ -47,6 +47,14 @@ pub struct GoogleIdTokenAuth {
     impersonate_service_account: Option<ByteString>,
     /// Explicit OIDC `aud` claim. Required at the type level on the persisted record.
     audience: ByteString,
+    /// Full resource name of a GCP workload identity federation provider, e.g.
+    /// `//iam.googleapis.com/projects/N/locations/global/workloadIdentityPools/P/providers/R`.
+    /// When set, the ID token is minted via the AWS -> GCP federation chain (broker role
+    /// assumption, SigV4 subject token, Google STS exchange, then impersonation) instead of the
+    /// server's ambient Application Default Credentials. Requires `impersonate_service_account`:
+    /// the external-account credential this chain produces cannot mint an ID token ambiently.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workload_identity_provider: Option<ByteString>,
 }
 
 impl GoogleIdTokenAuth {
@@ -54,7 +62,16 @@ impl GoogleIdTokenAuth {
         Self {
             impersonate_service_account,
             audience,
+            workload_identity_provider: None,
         }
+    }
+
+    pub fn with_workload_identity_provider(
+        mut self,
+        workload_identity_provider: Option<ByteString>,
+    ) -> Self {
+        self.workload_identity_provider = workload_identity_provider;
+        self
     }
 
     pub fn audience(&self) -> &ByteString {
@@ -63,6 +80,10 @@ impl GoogleIdTokenAuth {
 
     pub fn impersonate_service_account(&self) -> Option<&ByteString> {
         self.impersonate_service_account.as_ref()
+    }
+
+    pub fn workload_identity_provider(&self) -> Option<&ByteString> {
+        self.workload_identity_provider.as_ref()
     }
 }
 

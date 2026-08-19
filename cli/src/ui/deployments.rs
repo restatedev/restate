@@ -138,6 +138,9 @@ pub fn add_deployment_to_kv_table(deployment: &Deployment, table: &mut Table) {
                 table.add_kv_row("Authentication:", "Google OIDC ID token");
                 table.add_kv_row("Impersonation:", impersonation);
                 table.add_kv_row("Audience:", audience);
+                if let Some(provider) = &token_auth.workload_identity_provider {
+                    table.add_kv_row("Workload identity provider:", provider.to_string());
+                }
             }
             (
                 additional_headers.clone(),
