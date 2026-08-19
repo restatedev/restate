@@ -1,0 +1,53 @@
+# Release Notes for Issue #5151: Cache GCP ID-token credentials instead of tokens
+
+## Bug Fix
+
+### What Changed
+
+GCP ID-token minting for HTTP deployments (Cloud Run, Cloud Functions, and similar Google-fronted
+endpoints) now caches the underlying credential objects, not just the minted token strings. Every
+distinct `(impersonation target, audience)` identity shares one credential, built once and reused
+process-wide, instead of a new credential per mint attempt or per hourly token refresh. All
+credential construction runs on a small dedicated background runtime with process lifetime, so a
+credential's refresh task keeps running even if the partition or invoker that first requested it is
+later torn down.
+
+### Why This Matters
+
+The `google-cloud-auth` library starts a background token-refresh task every time a credential is
+built. Restate previously discarded credentials right after minting a token, so each mint
+attempt — or, in the worst case, every retried attempt during a GCP outage — could strand a
+refresh task that never exits. Under sustained failures (e.g. the metadata server or IAM
+Credentials API being unreachable) this could accumulate background tasks and blocking work
+without bound.
+
+### Impact on Users
+
+- No configuration changes are required. GCP-authenticated HTTP deployments behave the same from
+  the caller's perspective.
+- The admin/discovery path (deployment registration) now caches credentials the same way the
+  worker/invoker path always did. A re-registration that changes the audience or impersonation
+  target uses a different cache key, so this introduces no staleness risk.
+- Cached credentials proactively refresh while in use, which is a small amount of background mint
+  traffic that did not exist before, in exchange for steady-state mint calls never waiting on
+  network I/O. A credential idle for more than about an hour (no deployments minting against it)
+  stops refreshing and is evicted; a credential that a deployment actively uses stays cached
+  indefinitely.
+- Tokens may now be served up to a few minutes before their literal expiry, governed by the
+  credential library's own proactive-refresh window, rather than Restate's previous 60-second
+  skew. Restate still rejects and re-mints a token with less than 60 seconds of validity
+  remaining, so no request is handed a token that is about to expire.
+
+### Known Limitation
+
+If a credential's refresh task is genuinely stuck mid-fetch (for example, blocked in a DNS
+resolution that never returns) when its cache entry is evicted, that task keeps running until the
+stuck fetch resolves rather than being cancelled immediately. This is bounded by the number of
+distinct GCP identities Restate has minted for, not by the number of mint attempts, so it cannot
+grow unbounded the way the original issue's task-per-attempt leak could. A future
+`google-cloud-auth` update is expected to close this gap by tearing down a refresh task as soon as
+its credential is evicted, regardless of what the task is doing at the time.
+
+### Related Issues
+
+- Issue #5151: GCP ID-token mint failures can exhaust process threads
