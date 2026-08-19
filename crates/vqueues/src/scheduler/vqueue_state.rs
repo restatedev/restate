@@ -85,9 +85,9 @@ impl DetailedEligibility {
 /// via `Stats::set_wait`, and the elapsed time is the wait time attributed to
 /// that bucket.
 ///
-/// `WaitBucket::for_resource` maps every `BlockedOn(ResourceKind)` outcome to a
-/// bucket. The match is exhaustive, so adding a new `ResourceKind` is a compile
-/// error until a bucket is assigned.
+/// `WaitBucket::for_resource` maps measured `BlockedOn(ResourceKind)` outcomes to
+/// a bucket. The match is exhaustive, so adding a new `ResourceKind` is a compile
+/// error until its accounting behavior is explicitly chosen.
 ///
 /// The throttling buckets (`ThrottlingRules`, `InvokerThrottling`) are entered
 /// through normal `BlockedOn(ResourceKind)` outcomes.
@@ -118,18 +118,23 @@ impl WaitBucket {
     }
 
     /// Categorize a `BlockedOn(ResourceKind)` outcome into the wait bucket that
-    /// will accumulate the time spent blocked on it.
+    /// will accumulate the time spent blocked on it. Returning [`None`] means that
+    /// the wait time won't be added to a wait bucket.
     ///
     /// The match is exhaustive on purpose: any new `ResourceKind` variant must
     /// choose a bucket here, so accounting can never silently drop on the floor.
-    fn for_resource(r: &ResourceKind) -> Self {
+    fn for_resource(r: &ResourceKind) -> Option<Self> {
         match r {
-            ResourceKind::Lock { .. } => WaitBucket::Lock,
-            ResourceKind::LimitKeyConcurrency { .. } => WaitBucket::ConcurrencyRules,
-            ResourceKind::InvokerConcurrency => WaitBucket::InvokerConcurrency,
-            ResourceKind::InvokerMemory => WaitBucket::InvokerMemory,
-            ResourceKind::InvokerThrottling { .. } => WaitBucket::InvokerThrottling,
-            ResourceKind::DeploymentConcurrency => WaitBucket::DeploymentConcurrency,
+            ResourceKind::Lock { .. } => Some(WaitBucket::Lock),
+            ResourceKind::LimitKeyConcurrency { .. } => Some(WaitBucket::ConcurrencyRules),
+            ResourceKind::InvokerConcurrency => Some(WaitBucket::InvokerConcurrency),
+            // Administrative disablement is rare and already exposed as the queue's current
+            // blocked resource. Do not misattribute it to concurrency or grow WaitStats, which is
+            // persisted for every invocation and vqueue, solely to measure maintenance downtime.
+            ResourceKind::InvocationsDisabled => None,
+            ResourceKind::InvokerMemory => Some(WaitBucket::InvokerMemory),
+            ResourceKind::InvokerThrottling { .. } => Some(WaitBucket::InvokerThrottling),
+            ResourceKind::DeploymentConcurrency => Some(WaitBucket::DeploymentConcurrency),
         }
     }
 }
@@ -308,7 +313,7 @@ impl<S: VQueueStore> VQueueState<S> {
                 // One call handles the full state transition: closes any previously
                 // open segment (for a different resource) and opens the new one.
                 self.head_stats
-                    .set_wait(Some(WaitBucket::for_resource(&resource)));
+                    .set_wait(WaitBucket::for_resource(&resource));
                 Ok(Pop::Blocked(resource))
             }
         }

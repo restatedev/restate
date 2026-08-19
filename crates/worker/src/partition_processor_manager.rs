@@ -82,7 +82,7 @@ use restate_types::protobuf::common::WorkerStatus;
 use restate_util_string::format_restring;
 use restate_util_time::DurationExt;
 use restate_wal_protocol::Envelope;
-use restate_worker_api::invoker::capacity::InvokerCapacity;
+use restate_worker_api::invoker::capacity::{InvocationExecutionMode, InvokerCapacity};
 use restate_worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 
 use crate::metric_definitions::{
@@ -221,6 +221,17 @@ where
         ingestion_client: IngestionClient<T, Envelope>,
     ) -> Self {
         let config = updateable_config.pinned();
+        let invocation_execution_mode = if config.worker.invoker.disable_invocation_execution {
+            InvocationExecutionMode::Disabled
+        } else {
+            InvocationExecutionMode::Enabled
+        };
+        if invocation_execution_mode == InvocationExecutionMode::Disabled {
+            warn!(
+                "Invocation execution is disabled on this worker. A restart with \
+                 worker.invoker.disable-invocation-execution=false is required to enable it."
+            );
+        }
         let ppm_svc_rx = router_builder.register_service(BackPressureMode::Lossy);
 
         // NOTE: this is a shared pool for RPC requests from ingress and ingestion
@@ -241,6 +252,7 @@ where
         });
 
         let invoker_capacity = InvokerCapacity::new(
+            invocation_execution_mode,
             config.worker.invoker.concurrent_invocations_limit(),
             config.worker.invoker.invocation_throttling.as_ref(),
             config.worker.invoker.action_throttling.as_ref(),

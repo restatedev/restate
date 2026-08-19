@@ -381,6 +381,14 @@ pub struct InvokerOptions {
     /// Number of concurrent invocations that can be processed by the invoker.
     concurrent_invocations_limit: Option<NonZeroUsize>,
 
+    /// # Disable invocation execution
+    ///
+    /// Prevents this worker from starting or resuming service invocations. This option is
+    /// evaluated when the worker starts and requires a restart to take effect.
+    ///
+    /// Since v1.7.5
+    pub disable_invocation_execution: bool,
+
     /// # Eager state size limit (since v1.7.0)
     ///
     /// Maximum total size (in bytes) of state entries to send eagerly in the StartMessage.
@@ -615,6 +623,7 @@ impl Default for InvokerOptions {
             message_size_limit: None,
             tmp_dir: None,
             concurrent_invocations_limit: Some(NonZeroUsize::new(1000).expect("is non zero")),
+            disable_invocation_execution: false,
             eager_state_size_limit: None,
             disable_eager_state: false,
             invocation_throttling: None,
@@ -1154,6 +1163,19 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+
+    #[test]
+    fn invocation_execution_is_enabled_by_default_and_can_be_disabled() {
+        let options = InvokerOptions::default();
+        assert!(!options.disable_invocation_execution);
+
+        let mut value = serde_json::to_value(options).unwrap();
+        assert_eq!(value["disable-invocation-execution"], false);
+        value["disable-invocation-execution"] = true.into();
+
+        let options: InvokerOptions = serde_json::from_value(value).unwrap();
+        assert!(options.disable_invocation_execution);
+    }
 
     #[test]
     fn apply_deprecated_precedence() {

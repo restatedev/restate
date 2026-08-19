@@ -90,6 +90,8 @@ pub enum ResourceKind {
     },
     /// Waiting to acquire invoker concurrency capacity
     InvokerConcurrency,
+    /// Invocation execution is administratively disabled on this worker.
+    InvocationsDisabled,
     /// Waiting to acquire invoker throttling tokens.
     InvokerThrottling {
         /// Best-effort estimate for when this queue can retry token acquisition.
@@ -129,6 +131,7 @@ impl ResourceKind {
                 lock_name: lock_name.clone(),
             },
             ResourceKind::InvokerConcurrency => BlockedResource::InvokerConcurrency,
+            ResourceKind::InvocationsDisabled => BlockedResource::InvocationsDisabled,
             ResourceKind::InvokerThrottling { estimated_retry_at } => {
                 BlockedResource::InvokerThrottling {
                     estimated_retry_at: *estimated_retry_at,
@@ -178,6 +181,8 @@ pub enum BlockedResource {
     },
     /// Waiting on global invoker concurrency capacity.
     InvokerConcurrency,
+    /// Invocation execution is administratively disabled on this worker.
+    InvocationsDisabled,
     /// Waiting on node-level invoker throttling tokens.
     InvokerThrottling {
         /// Best-effort estimate for when this queue can retry token acquisition.
@@ -206,6 +211,7 @@ impl std::fmt::Display for BlockedResource {
                 None => write!(f, "Lock(name={lock_name})"),
             },
             BlockedResource::InvokerConcurrency => f.write_str("InvokerConcurrency"),
+            BlockedResource::InvocationsDisabled => f.write_str("InvocationsDisabled"),
             BlockedResource::InvokerThrottling { estimated_retry_at } => match estimated_retry_at {
                 Some(retry_at) => write!(f, "InvokerThrottling(retry_at_ts={})", retry_at.as_u64()),
                 None => f.write_str("InvokerThrottling"),

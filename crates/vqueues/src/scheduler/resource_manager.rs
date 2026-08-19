@@ -35,6 +35,7 @@ use restate_types::identifiers::PartitionKey;
 use restate_types::vqueues::EntryKind;
 use restate_types::{LockName, Scope};
 use restate_util_string::ReString;
+use restate_worker_api::invoker::capacity::InvocationExecutionMode;
 use restate_worker_api::resources::{ResourceManagerUpdate, UserPermitKind};
 use restate_worker_api::{ResourceKind, UserLimitCounterEntry};
 
@@ -52,6 +53,7 @@ use crate::GlobalTokenBucket;
 type Waiters = VecDeque<VQueueHandle>;
 
 pub struct ResourceManager {
+    invocation_execution_mode: InvocationExecutionMode,
     // Resources
     locks: Locks,
     /// Limiter for invoker global capacity
@@ -73,6 +75,7 @@ pub(super) enum AcquireOutcome {
 impl ResourceManager {
     pub async fn create<S: LoadLocks + Send + Sync + 'static>(
         storage: S,
+        invocation_execution_mode: InvocationExecutionMode,
         concurrency_limiter: Concurrency,
         global_throttling: Option<GlobalTokenBucket>,
         memory_pool: MemoryPool,
@@ -83,6 +86,7 @@ impl ResourceManager {
         let (_tx, rx) = mpsc::unbounded_channel();
 
         Ok(Self {
+            invocation_execution_mode,
             invoker_concurrency: InvokerConcurrencyLimiter::new(concurrency_limiter),
             invoker_throttling: InvokerThrottlingLimiter::new(global_throttling),
             invoker_memory: InvokerMemoryLimiter::new(memory_pool, initial_invocation_memory),
@@ -111,6 +115,7 @@ impl ResourceManager {
             ResourceKind::InvokerConcurrency => {
                 self.invoker_concurrency.remove_from_waiters(handle);
             }
+            ResourceKind::InvocationsDisabled => {}
             ResourceKind::InvokerThrottling { .. } => {
                 self.invoker_throttling.remove_from_waiters(handle);
             }
@@ -186,6 +191,12 @@ impl ResourceManager {
         _metadata: &EntryMetadata,
         current_permit: &mut PermitBuilder,
     ) -> AcquireOutcome {
+        if matches!(key.kind(), EntryKind::Invocation)
+            && self.invocation_execution_mode == InvocationExecutionMode::Disabled
+        {
+            return AcquireOutcome::BlockedOn(ResourceKind::InvocationsDisabled);
+        }
+
         if !current_permit.has_user_permit() {
             // we need to acquire user permit first
 

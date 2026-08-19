@@ -16,8 +16,15 @@ use restate_types::config::{DEFAULT_PER_INVOCATION_INITIAL_MEMORY, ThrottlingOpt
 
 pub type TokenBucket<C = gardal::TokioClock> = gardal::SharedTokenBucket<C>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvocationExecutionMode {
+    Enabled,
+    Disabled,
+}
+
 #[derive(Clone)]
 pub struct InvokerCapacity {
+    pub invocation_execution_mode: InvocationExecutionMode,
     pub concurrency: Concurrency,
     pub invocation_token_bucket: Option<TokenBucket>,
     pub action_token_bucket: Option<TokenBucket>,
@@ -29,6 +36,7 @@ pub struct InvokerCapacity {
 impl InvokerCapacity {
     pub const fn new_unlimited() -> Self {
         Self {
+            invocation_execution_mode: InvocationExecutionMode::Enabled,
             concurrency: Concurrency::new_unlimited(),
             invocation_token_bucket: None,
             action_token_bucket: None,
@@ -38,6 +46,7 @@ impl InvokerCapacity {
     }
 
     pub fn new(
+        invocation_execution_mode: InvocationExecutionMode,
         concurrency: Option<NonZeroUsize>,
         invocation_throttling: Option<&ThrottlingOptions>,
         action_throttling: Option<&ThrottlingOptions>,
@@ -45,6 +54,7 @@ impl InvokerCapacity {
         initial_invocation_memory: NonZeroByteCount,
     ) -> Self {
         Self {
+            invocation_execution_mode,
             concurrency: Concurrency::new(concurrency),
             invocation_token_bucket: invocation_throttling.map(|opts| {
                 TokenBucket::new(gardal::Limit::from(opts.clone()), gardal::TokioClock)

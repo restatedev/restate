@@ -56,6 +56,7 @@ use restate_wal_protocol::control::{UpdatePartitionDurabilityCommand, UpsertSche
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::v1::UpsertRuleBookCommandWrapper;
 use restate_worker_api::invoker::InvokerHandle;
+use restate_worker_api::invoker::capacity::InvocationExecutionMode;
 use restate_worker_api::resources::ReservedResources;
 use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
 
@@ -93,6 +94,7 @@ pub struct LeaderState {
     shuffle_task_handle: Option<TaskHandle<anyhow::Result<()>>>,
     pub timer_service: Pin<Box<TimerService>>,
     scheduler: SchedulerService<PartitionDb>,
+    invocation_execution_mode: InvocationExecutionMode,
     invoker_handle: InvokerChannelServiceHandle,
     invoker_task_handle: Option<TaskHandle<()>>,
     self_proposer: SelfProposer,
@@ -132,6 +134,7 @@ impl LeaderState {
         shuffle_hint_tx: HintSender,
         timer_service: TimerService,
         scheduler: SchedulerService<PartitionDb>,
+        invocation_execution_mode: InvocationExecutionMode,
         invoker_handle: InvokerChannelServiceHandle,
         invoker_task_handle: TaskHandle<()>,
         self_proposer: SelfProposer,
@@ -160,6 +163,7 @@ impl LeaderState {
             rule_book_stream: WatchStream::new(rule_book_rx),
             timer_service: Box::pin(timer_service),
             scheduler,
+            invocation_execution_mode,
             invoker_handle,
             invoker_task_handle: Some(invoker_task_handle),
             self_proposer,
@@ -867,6 +871,13 @@ impl LeaderState {
                 invocation_id,
                 invocation_target,
             } => {
+                if self.invocation_execution_mode == InvocationExecutionMode::Disabled {
+                    debug!(
+                        restate.invocation.id = %invocation_id,
+                        "Suppressing invocation dispatch because invocation execution is disabled"
+                    );
+                    return Ok(());
+                }
                 let fencing_token = self.fencing_tokens.mint(invocation_id);
                 self.invoker_handle
                     .invoke(invocation_id, fencing_token, invocation_target)
@@ -1031,6 +1042,13 @@ impl LeaderState {
                 invocation_target,
                 idempotency_key,
             } => {
+                if self.invocation_execution_mode == InvocationExecutionMode::Disabled {
+                    debug!(
+                        entry_key = ?key,
+                        "Suppressing VQueue invocation dispatch because invocation execution is disabled"
+                    );
+                    return Ok(());
+                }
                 let metas = processor.vqueues();
                 let slot = metas.get(vq_handle).expect("vqueue meta must be in cache");
                 // state mutations should not create Invoke actions. At least for now.

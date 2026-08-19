@@ -480,6 +480,7 @@ mod tests {
     use restate_types::vqueues::VQueueId;
     use restate_types::vqueues::{EntryId, EntryKind};
     use restate_worker_api::BlockedResource;
+    use restate_worker_api::invoker::capacity::InvocationExecutionMode;
 
     use crate::cache::VQueuesMetaCache;
     use crate::{GlobalTokenBucket, SchedulingStatus, VQueue, VQueueEvent};
@@ -686,6 +687,7 @@ mod tests {
     ) -> ResourceManager {
         ResourceManager::create(
             db.clone(),
+            InvocationExecutionMode::Enabled,
             concurrency,
             global_throttling,
             MemoryPool::unlimited(),
@@ -700,6 +702,22 @@ mod tests {
         concurrency: Concurrency,
     ) -> ResourceManager {
         create_resource_manager_with_throttling(db, concurrency, None).await
+    }
+
+    async fn create_resource_manager_with_invocation_execution(
+        db: &PartitionDb,
+        invocation_execution_mode: InvocationExecutionMode,
+    ) -> ResourceManager {
+        ResourceManager::create(
+            db.clone(),
+            invocation_execution_mode,
+            Concurrency::new_unlimited(),
+            None,
+            MemoryPool::unlimited(),
+            NonZeroByteCount::new(NonZeroUsize::MIN),
+        )
+        .await
+        .expect("resource manager creation should succeed")
     }
 
     async fn create_scheduler(
@@ -731,6 +749,49 @@ mod tests {
             db.clone(),
             cache.view(),
         )
+    }
+
+    #[restate_core::test]
+    async fn disabled_invocation_execution_yields_running_without_running_inbox() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+        let qid = test_qid(20_001);
+
+        let mut txn = rocksdb.transaction();
+        let running = enqueue_entry(&mut txn, &mut cache, &qid, 1, 0, None).await;
+        move_to_running(&mut txn, &mut cache, &qid, &running, None).await;
+        enqueue_entry(&mut txn, &mut cache, &qid, 2, 0, None).await;
+        txn.commit().await.expect("commit should succeed");
+        drop(txn);
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = DRRScheduler::new(
+            NonZeroU16::new(100).unwrap(),
+            NonZeroU16::new(100).unwrap(),
+            create_resource_manager_with_invocation_execution(
+                db,
+                InvocationExecutionMode::Disabled,
+            )
+            .await,
+            db.clone(),
+            cache.view(),
+        );
+
+        let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
+        else {
+            panic!("expected recovery decision");
+        };
+        assert_eq!(decision.num_yield(), 1);
+        assert_eq!(decision.num_run(), 0);
+
+        let handle = cache.view().handle_for(&qid).unwrap();
+        let status = scheduler.get_status(cache.view(), handle);
+        assert_eq!(
+            status.status,
+            SchedulingStatus::BlockedOn(BlockedResource::InvocationsDisabled)
+        );
+        assert_eq!(status.waiting_inbox, 1);
+        assert_eq!(status.remaining_running, 0);
     }
 
     fn poll_scheduler(
