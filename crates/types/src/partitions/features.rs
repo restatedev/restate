@@ -75,6 +75,12 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.8.0*
     EnableInconsistentStateMutationCleanup = 6,
+    /// Write a reference to the output journal
+    /// instead of embedding the invocation result
+    /// in the completion status.
+    ///
+    /// *Since v1.8.0*
+    EnableWriteResultReference = 7,
 }
 
 impl PartitionFeatureChange {
@@ -94,6 +100,7 @@ impl PartitionFeatureChange {
             Self::EnableVqueuesSkipCompleted => &RESTATE_VERSION_1_7_5,
             Self::EnablePreflightInvocationTerminationRetention => &RESTATE_VERSION_1_7_8,
             Self::EnableInconsistentStateMutationCleanup => &RESTATE_VERSION_1_8_0,
+            Self::EnableWriteResultReference => &RESTATE_VERSION_1_8_0,
         }
     }
 
@@ -120,6 +127,9 @@ impl PartitionFeatureChange {
             ),
             Self::EnableInconsistentStateMutationCleanup => {
                 !std::mem::replace(&mut features.inconsistent_state_mutation_cleanup, true)
+            }
+            Self::EnableWriteResultReference => {
+                !std::mem::replace(&mut features.write_result_reference, true)
             }
         }
     }
@@ -184,6 +194,14 @@ pub struct PersistedFeatures {
     /// *Since v1.8.0*
     #[bilrost(tag(6))]
     pub inconsistent_state_mutation_cleanup: bool,
+
+    /// Write a reference to the output journal
+    /// instead of embedding the invocation result
+    /// in the completion status.
+    ///
+    /// *Since v1.8.0*
+    #[bilrost(tag(7))]
+    pub write_result_reference: bool,
 }
 
 impl PersistedFeatures {
