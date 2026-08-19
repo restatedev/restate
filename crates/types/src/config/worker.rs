@@ -1257,6 +1257,25 @@ pub struct SnapshotsOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub export_concurrency_limit: Option<NonZeroU32>,
 
+    /// # Automatic snapshot concurrency limit
+    ///
+    /// Bounds the number of partition snapshots this node will have in progress at any one time.
+    /// Automatic snapshots are only scheduled while the node is below this bound.
+    ///
+    /// Snapshots explicitly requested using `restatectl` are never refused by this limit, but they
+    /// do count against it while they run, so a burst of manual snapshots temporarily suspends
+    /// automatic scheduling.
+    ///
+    /// Raising this beyond `export-concurrency-limit` does not increase export parallelism: the
+    /// additional snapshot tasks are admitted, then wait for an export permit while still counting
+    /// against this limit.
+    ///
+    /// Default: 4
+    ///
+    /// Since v1.8.0
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub automatic_snapshot_concurrency_limit: Option<NonZeroU32>,
+
     #[cfg(any(test, feature = "test-util"))]
     pub enable_cleanup: bool,
 }
@@ -1275,6 +1294,7 @@ impl Default for SnapshotsOptions {
             object_store_retry_policy: Self::default_retry_policy(),
             num_retained: default_num_retained(),
             export_concurrency_limit: None,
+            automatic_snapshot_concurrency_limit: None,
             #[cfg(any(test, feature = "test-util"))]
             enable_cleanup: true,
         }
@@ -1293,6 +1313,11 @@ impl SnapshotsOptions {
 
     pub fn export_concurrency_limit(&self) -> u32 {
         self.export_concurrency_limit.map(|v| v.get()).unwrap_or(4)
+    }
+
+    pub fn automatic_snapshot_concurrency_limit(&self) -> usize {
+        self.automatic_snapshot_concurrency_limit
+            .map_or(4, |v| v.get() as usize)
     }
 
     pub fn snapshots_base_dir(&self) -> PathBuf {

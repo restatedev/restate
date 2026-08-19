@@ -1121,6 +1121,7 @@ where
         let snapshots_options = &self.updateable_config.live_load().worker.snapshots;
         let snapshot_interval = snapshots_options.snapshot_interval;
         let records_per_snapshot = snapshots_options.snapshot_interval_num_records;
+        let concurrency_limit = snapshots_options.automatic_snapshot_concurrency_limit();
         if snapshot_interval.is_none() && records_per_snapshot.is_none() {
             return;
         };
@@ -1155,8 +1156,7 @@ where
         }
 
         // Limit the number of snapshots we schedule automatically
-        const MAX_CONCURRENT_SNAPSHOTS: usize = 4;
-        let limit = MAX_CONCURRENT_SNAPSHOTS.saturating_sub(self.pending_snapshots.len());
+        let limit = concurrency_limit.saturating_sub(self.pending_snapshots.len());
 
         candidate_partitions.shuffle(&mut rand::rng());
         let snapshot_partitions = candidate_partitions
