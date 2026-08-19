@@ -35,6 +35,11 @@ without bound.
   network I/O. A credential idle for more than about an hour (no deployments minting against it)
   stops refreshing and is evicted; a credential that a deployment actively uses stays cached
   indefinitely.
+- The shared ambient source credential is never idle-evicted (it has no single deployment to go
+  idle with). If its background refresh task hits a permanent error and gives up — for example, a
+  revoked service-account key — Restate notices the next time an impersonated mint fails and
+  rebuilds it automatically; a misconfigured *impersonation target* on an otherwise healthy source
+  never triggers a rebuild.
 - Tokens may now be served up to a few minutes before their literal expiry, governed by the
   credential library's own proactive-refresh window, rather than Restate's previous 60-second
   skew. Restate still rejects and re-mints a token with less than 60 seconds of validity
