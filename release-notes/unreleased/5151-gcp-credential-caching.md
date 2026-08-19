@@ -6,11 +6,13 @@
 
 GCP ID-token minting for HTTP deployments (Cloud Run, Cloud Functions, and similar Google-fronted
 endpoints) now caches the underlying credential objects, not just the minted token strings. Every
-distinct `(impersonation target, audience)` identity shares one credential, built once and reused
-process-wide, instead of a new credential per mint attempt or per hourly token refresh. All
-credential construction runs on a small dedicated background runtime with process lifetime, so a
-credential's refresh task keeps running even if the partition or invoker that first requested it is
-later torn down.
+distinct `(impersonation target, audience)` identity shares one outer ID-token credential, built
+once and reused process-wide, instead of a new credential per mint attempt or per hourly token
+refresh. Impersonated identities additionally share a single process-wide ambient source
+credential — the identity used to authenticate the impersonation call itself — rather than each
+impersonated identity building its own copy. All credential construction runs on a small dedicated
+background runtime with process lifetime, so a credential's refresh task keeps running even if the
+partition or invoker that first requested it is later torn down.
 
 ### Why This Matters
 
@@ -43,10 +45,11 @@ without bound.
 If a credential's refresh task is genuinely stuck mid-fetch (for example, blocked in a DNS
 resolution that never returns) when its cache entry is evicted, that task keeps running until the
 stuck fetch resolves rather than being cancelled immediately. This is bounded by the number of
-distinct GCP identities Restate has minted for, not by the number of mint attempts, so it cannot
-grow unbounded the way the original issue's task-per-attempt leak could. A future
-`google-cloud-auth` update is expected to close this gap by tearing down a refresh task as soon as
-its credential is evicted, regardless of what the task is doing at the time.
+distinct GCP identities Restate has minted for — one ambient source actor for the whole process,
+plus at most one outer actor per `(impersonation target, audience)` key — not by the number of mint
+attempts, so it cannot grow unbounded the way the original issue's task-per-attempt leak could. A
+future `google-cloud-auth` update is expected to close this gap by tearing down a refresh task as
+soon as its credential is evicted, regardless of what the task is doing at the time.
 
 ### Related Issues
 
